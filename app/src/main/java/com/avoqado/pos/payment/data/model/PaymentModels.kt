@@ -1,0 +1,93 @@
+package com.avoqado.pos.payment.data.model
+
+import kotlinx.serialization.Serializable
+
+enum class PaymentMethod(val value: String, val displayName: String) {
+    CARD("CARD", "Tarjeta"),
+    CASH("CASH", "Efectivo"),
+}
+
+enum class PaymentErrorSource {
+    NETWORK,
+    TERMINAL,
+    SERVER,
+    UNKNOWN,
+}
+
+sealed class PaymentFlowState {
+    data object Loading : PaymentFlowState()
+    data class SelectingPaymentMethod(val amount: Int) : PaymentFlowState()
+    data class CollectingCashAmount(val total: Int) : PaymentFlowState()
+    data class CollectingRating(val amount: Int) : PaymentFlowState()
+    data class CollectingTip(val amount: Int, val rating: Int?) : PaymentFlowState()
+    data class Confirming(val amount: Int, val tip: Int, val rating: Int?) : PaymentFlowState()
+    data class SelectingTerminal(val totalAmount: Int) : PaymentFlowState()
+    data class Processing(val totalAmount: Int) : PaymentFlowState()
+    data class SentToTerminal(val totalAmount: Int) : PaymentFlowState()
+    data class Success(
+        val totalAmount: Int,
+        val method: PaymentMethod,
+        val changeAmount: Int = 0,
+    ) : PaymentFlowState()
+    data class Error(val message: String, val source: PaymentErrorSource) : PaymentFlowState()
+}
+
+data class PaymentContext(
+    val subtotalCents: Int,
+    val tipCents: Int = 0,
+    val totalCents: Int = subtotalCents,
+    val rating: Int? = null,
+    val tipPercentage: Int? = null,
+    val items: List<PaymentItem>? = null,
+)
+
+data class PaymentItem(
+    val name: String,
+    val quantity: Int,
+    val unitPrice: Int,
+    val modifiers: String? = null,
+)
+
+@Serializable
+data class CreateOrderRequest(
+    val items: List<OrderItemRequest>,
+    val subtotal: Int,
+    val discount: Int = 0,
+    val tip: Int = 0,
+    val total: Int,
+    val paymentMethod: String,
+    val rating: Int? = null,
+    val note: String? = null,
+)
+
+@Serializable
+data class OrderItemRequest(
+    val productId: String? = null,
+    val name: String,
+    val quantity: Int,
+    val unitPrice: Int,
+    val modifiers: List<OrderModifierRequest> = emptyList(),
+    val note: String? = null,
+    val isCortesia: Boolean = false,
+)
+
+@Serializable
+data class OrderModifierRequest(
+    val modifierId: String,
+    val name: String,
+    val price: Int,
+)
+
+@Serializable
+data class CreateOrderResponse(
+    val success: Boolean = true,
+    val data: OrderData? = null,
+    val message: String? = null,
+)
+
+@Serializable
+data class OrderData(
+    val id: String,
+    val totalAmount: Int? = null,
+    val status: String? = null,
+)

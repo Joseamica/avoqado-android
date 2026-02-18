@@ -1,0 +1,354 @@
+package com.avoqado.pos.timeclock.presentation
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.avoqado.pos.designsystem.components.PrimaryButton
+import com.avoqado.pos.designsystem.theme.AvoqadoTheme
+import com.avoqado.pos.designsystem.theme.Success
+import com.avoqado.pos.designsystem.theme.Warning
+import com.avoqado.pos.timeclock.data.TimeEntryRepository
+import com.avoqado.pos.timeclock.data.model.StaffData
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import java.time.LocalTime
+import java.time.format.DateTimeFormatter
+
+// MARK: - Screen state machine (matching iOS: 3 screens)
+
+private enum class TimeClockScreen {
+    PIN_ENTRY,
+    IDENTIFIED,
+    BREAK_SELECTION,
+}
+
+// MARK: - Break type (matching iOS: 3 predefined break types)
+
+private data class BreakType(
+    val id: String,
+    val name: String,
+    val duration: String,
+)
+
+private val defaultBreakTypes = listOf(
+    BreakType("meal", "Descanso para comer", "30 min"),
+    BreakType("rest", "Descanso", "20 min"),
+    BreakType("quick", "Descanso rapido", "10 min"),
+)
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun TimeClockSheet(
+    repository: TimeEntryRepository,
+    onDismiss: () -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    val scope = rememberCoroutineScope()
+    var pin by remember { mutableStateOf("") }
+    var staffData by remember { mutableStateOf<StaffData?>(null) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var isLoading by remember { mutableStateOf(false) }
+    var currentScreen by remember { mutableStateOf(TimeClockScreen.PIN_ENTRY) }
+
+    // Live clock (matching iOS: ticks every second)
+    var currentTime by remember { mutableStateOf(LocalTime.now()) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            currentTime = LocalTime.now()
+            delay(1000)
+        }
+    }
+    val timeDisplay = currentTime.format(DateTimeFormatter.ofPattern("HH:mm"))
+
+    ModalBottomSheet(
+        onDismissRequest = {
+            pin = ""
+            staffData = null
+            error = null
+            currentScreen = TimeClockScreen.PIN_ENTRY
+            onDismiss()
+        },
+        sheetState = sheetState,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(AvoqadoTheme.spacing.lg),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            // Live clock display (matching iOS: 72pt font)
+            Text(
+                text = timeDisplay,
+                style = MaterialTheme.typography.displayLarge.copy(
+                    fontSize = 64.sp,
+                    fontWeight = FontWeight.Light,
+                ),
+            )
+
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
+
+            when (currentScreen) {
+                TimeClockScreen.PIN_ENTRY -> {
+                    // MARK: - PIN Entry Screen
+
+                    Text(
+                        text = "Reloj de entrada",
+                        style = MaterialTheme.typography.headlineMedium,
+                    )
+
+                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
+
+                    PinPadView(
+                        pin = pin,
+                        onPinChange = { pin = it },
+                        maxLength = 10,
+                        minLength = 4,
+                    )
+
+                    error?.let {
+                        Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+                        Text(
+                            text = it,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
+
+                    PrimaryButton(
+                        text = "Identificar",
+                        onClick = {
+                            scope.launch {
+                                isLoading = true
+                                error = null
+                                repository.identifyStaff(pin).fold(
+                                    onSuccess = {
+                                        staffData = it
+                                        currentScreen = TimeClockScreen.IDENTIFIED
+                                    },
+                                    onFailure = { error = it.message },
+                                )
+                                isLoading = false
+                            }
+                        },
+                        enabled = pin.length >= 4,
+                        isLoading = isLoading,
+                    )
+                }
+
+                TimeClockScreen.IDENTIFIED -> {
+                    // MARK: - Identified Screen (matching iOS: name + status + actions)
+
+                    val staff = staffData!!
+
+                    Text(
+                        text = "Hola, ${staff.name}",
+                        style = MaterialTheme.typography.headlineMedium,
+                    )
+
+                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+
+                    // Status indicator (matching iOS: green/orange dot + label)
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
+                    ) {
+                        val statusColor = if (staff.onBreak) Warning else Success
+                        val statusText = if (staff.onBreak) "En descanso" else "Trabajando"
+
+                        Box(
+                            modifier = Modifier
+                                .size(10.dp)
+                                .background(statusColor, CircleShape),
+                        )
+                        Text(
+                            text = statusText,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = statusColor,
+                            fontWeight = FontWeight.Medium,
+                        )
+                    }
+
+                    // Role display
+                    staff.role?.let { role ->
+                        Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxs))
+                        Text(
+                            text = role,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
+
+                    error?.let {
+                        Text(
+                            text = it,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                        Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+                    }
+
+                    // Clock actions (matching iOS)
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
+                    ) {
+                        if (!staff.clockedIn) {
+                            PrimaryButton(
+                                text = "Entrada",
+                                onClick = {
+                                    scope.launch {
+                                        isLoading = true
+                                        error = null
+                                        repository.clockIn(pin).fold(
+                                            onSuccess = { onDismiss() },
+                                            onFailure = { error = it.message },
+                                        )
+                                        isLoading = false
+                                    }
+                                },
+                                isLoading = isLoading,
+                            )
+                        } else {
+                            if (!staff.onBreak) {
+                                PrimaryButton(
+                                    text = "Iniciar descanso",
+                                    onClick = {
+                                        currentScreen = TimeClockScreen.BREAK_SELECTION
+                                    },
+                                )
+                            } else {
+                                PrimaryButton(
+                                    text = "Terminar descanso",
+                                    onClick = {
+                                        scope.launch {
+                                            isLoading = true
+                                            error = null
+                                            repository.endBreak(pin).fold(
+                                                onSuccess = { onDismiss() },
+                                                onFailure = { error = it.message },
+                                            )
+                                            isLoading = false
+                                        }
+                                    },
+                                    isLoading = isLoading,
+                                )
+                            }
+                            PrimaryButton(
+                                text = "Salida",
+                                onClick = {
+                                    scope.launch {
+                                        isLoading = true
+                                        error = null
+                                        repository.clockOut(pin).fold(
+                                            onSuccess = { onDismiss() },
+                                            onFailure = { error = it.message },
+                                        )
+                                        isLoading = false
+                                    }
+                                },
+                                isLoading = isLoading,
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+
+                    // "Cambiar usuario" button (matching iOS)
+                    TextButton(onClick = {
+                        pin = ""
+                        staffData = null
+                        error = null
+                        currentScreen = TimeClockScreen.PIN_ENTRY
+                    }) {
+                        Text("Cambiar usuario")
+                    }
+                }
+
+                TimeClockScreen.BREAK_SELECTION -> {
+                    // MARK: - Break Selection Screen (matching iOS: 3 break types)
+
+                    Text(
+                        text = "Tipo de descanso",
+                        style = MaterialTheme.typography.headlineMedium,
+                    )
+
+                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
+
+                    Column(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
+                    ) {
+                        defaultBreakTypes.forEach { breakType ->
+                            PrimaryButton(
+                                text = "${breakType.duration} ${breakType.name}",
+                                onClick = {
+                                    scope.launch {
+                                        isLoading = true
+                                        error = null
+                                        repository.startBreak(pin, breakType.id).fold(
+                                            onSuccess = { onDismiss() },
+                                            onFailure = { error = it.message },
+                                        )
+                                        isLoading = false
+                                    }
+                                },
+                                isLoading = isLoading,
+                            )
+                        }
+                    }
+
+                    error?.let {
+                        Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+                        Text(
+                            text = it,
+                            color = MaterialTheme.colorScheme.error,
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+
+                    TextButton(onClick = {
+                        currentScreen = TimeClockScreen.IDENTIFIED
+                    }) {
+                        Text("Cancelar")
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxxl))
+        }
+    }
+}
