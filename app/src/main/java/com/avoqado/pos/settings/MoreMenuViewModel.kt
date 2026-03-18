@@ -6,6 +6,9 @@ import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.auth.data.AuthRepository
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.local.StoredVenue
+import com.avoqado.pos.core.domain.RoleManager
+import com.avoqado.pos.printing.data.PrinterService
+import com.avoqado.pos.timeclock.data.TimeEntryRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -17,6 +20,9 @@ import javax.inject.Inject
 class MoreMenuViewModel @Inject constructor(
     private val secureStorage: SecureStorage,
     private val authRepository: AuthRepository,
+    val timeEntryRepository: TimeEntryRepository,
+    val printerService: PrinterService,
+    private val roleManager: RoleManager,
 ) : ViewModel() {
 
     private val _venueName = MutableStateFlow(secureStorage.venueName ?: "Sin establecimiento")
@@ -36,6 +42,9 @@ class MoreMenuViewModel @Inject constructor(
 
     val hasMultipleVenues: Boolean
         get() = secureStorage.venuesList.size > 1
+
+    val canCreateProducts: Boolean
+        get() = roleManager.canCreateProducts
 
     fun switchVenue(venue: StoredVenue) {
         if (venue.id == secureStorage.venueId) return

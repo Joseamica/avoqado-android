@@ -1,8 +1,10 @@
 package com.avoqado.pos.settings
 
 import android.content.pm.PackageManager
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -16,6 +18,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.LocalOffer
 import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Security
@@ -23,10 +26,13 @@ import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Store
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -37,24 +43,29 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.avoqado.pos.articles.presentation.ArticlesScreen
 import com.avoqado.pos.auth.presentation.VenueSwitcherSheet
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
-import com.avoqado.pos.timeclock.data.TimeEntryRepository
+import com.avoqado.pos.printing.presentation.PrinterSettingsSheet
 import com.avoqado.pos.timeclock.presentation.TimeClockSheet
 
 @Composable
 fun MoreMenuScreen(
     onLogout: () -> Unit,
-    timeEntryRepository: TimeEntryRepository? = null,
     viewModel: MoreMenuViewModel = hiltViewModel(),
 ) {
     val venueName by viewModel.venueName.collectAsState()
     val isSwitching by viewModel.isSwitching.collectAsState()
     var showVenueSwitcher by remember { mutableStateOf(false) }
     var showTimeClock by remember { mutableStateOf(false) }
+    var showPrinter by remember { mutableStateOf(false) }
+    var showPermissions by remember { mutableStateOf(false) }
+    var showPinSettings by remember { mutableStateOf(false) }
+    var showArticles by remember { mutableStateOf(false) }
 
     // Get real version from PackageManager
     val context = LocalContext.current
@@ -148,15 +159,22 @@ fun MoreMenuScreen(
             label = "Reloj de entrada",
             onClick = { showTimeClock = true },
         )
+        if (viewModel.canCreateProducts) {
+            MenuRow(
+                icon = Icons.Filled.LocalOffer,
+                label = "Articulos",
+                onClick = { showArticles = true },
+            )
+        }
         MenuRow(
             icon = Icons.Filled.Security,
             label = "Permisos",
-            onClick = { /* TODO: PermissionsManagementSheet */ },
+            onClick = { showPermissions = true },
         )
         MenuRow(
             icon = Icons.Filled.Settings,
             label = "Configuracion PIN",
-            onClick = { /* TODO: PinSettingsSheet */ },
+            onClick = { showPinSettings = true },
         )
 
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
@@ -166,7 +184,7 @@ fun MoreMenuScreen(
         MenuRow(
             icon = Icons.Filled.Print,
             label = "Impresora",
-            onClick = { /* TODO: PrinterSettingsSheet */ },
+            onClick = { showPrinter = true },
         )
 
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
@@ -212,11 +230,87 @@ fun MoreMenuScreen(
     }
 
     // Time Clock Sheet
-    if (showTimeClock && timeEntryRepository != null) {
+    if (showTimeClock) {
         TimeClockSheet(
-            repository = timeEntryRepository,
+            repository = viewModel.timeEntryRepository,
             onDismiss = { showTimeClock = false },
         )
+    }
+
+    // Printer Settings Sheet
+    if (showPrinter) {
+        PrinterSettingsSheet(
+            printerService = viewModel.printerService,
+            onDismiss = { showPrinter = false },
+        )
+    }
+
+    // Permissions Placeholder Sheet
+    if (showPermissions) {
+        PlaceholderSheet(
+            title = "Permisos",
+            message = "La gestion de permisos estara disponible proximamente.",
+            onDismiss = { showPermissions = false },
+        )
+    }
+
+    // PIN Settings Placeholder Sheet
+    if (showPinSettings) {
+        PlaceholderSheet(
+            title = "Configuracion PIN",
+            message = "La configuracion de PIN estara disponible proximamente.",
+            onDismiss = { showPinSettings = false },
+        )
+    }
+
+    // Articles Fullscreen Overlay
+    if (showArticles) {
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.surface),
+        ) {
+            val isTablet = maxWidth >= 600.dp
+            ArticlesScreen(
+                isTablet = isTablet,
+                onDismiss = { showArticles = false },
+            )
+        }
+    }
+}
+
+// MARK: - Placeholder Sheet (for unimplemented features)
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PlaceholderSheet(
+    title: String,
+    message: String,
+    onDismiss: () -> Unit,
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(AvoqadoTheme.spacing.lg),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(
+                text = title,
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold,
+            )
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
+            Text(
+                text = message,
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxxl))
+        }
     }
 }
 
