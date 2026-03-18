@@ -4,6 +4,7 @@ import android.content.pm.PackageManager
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -78,6 +79,7 @@ fun MoreMenuScreen(
         }
     }
 
+    Box(modifier = Modifier.fillMaxSize()) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -216,6 +218,22 @@ fun MoreMenuScreen(
         )
     }
 
+    // Articles Fullscreen Overlay (inside Box, stacks over the Column)
+    if (showArticles) {
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.surface),
+        ) {
+            val isTablet = maxWidth >= 600.dp
+            ArticlesScreen(
+                isTablet = isTablet,
+                onDismiss = { showArticles = false },
+            )
+        }
+    }
+    } // end Box
+
     // Venue Switcher Sheet
     if (showVenueSwitcher) {
         VenueSwitcherSheet(
@@ -263,20 +281,6 @@ fun MoreMenuScreen(
         )
     }
 
-    // Articles Fullscreen Overlay
-    if (showArticles) {
-        BoxWithConstraints(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(MaterialTheme.colorScheme.surface),
-        ) {
-            val isTablet = maxWidth >= 600.dp
-            ArticlesScreen(
-                isTablet = isTablet,
-                onDismiss = { showArticles = false },
-            )
-        }
-    }
 }
 
 // MARK: - Placeholder Sheet (for unimplemented features)

@@ -1,8 +1,8 @@
 package com.avoqado.pos.articles.presentation.discounts
 
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -36,8 +36,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.clickable
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.avoqado.pos.articles.data.model.AdminDiscount
@@ -184,6 +184,7 @@ fun DiscountListView(viewModel: ArticlesViewModel) {
 
 // MARK: - Discount Row
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun DiscountRow(
     discount: AdminDiscount,
@@ -197,10 +198,10 @@ private fun DiscountRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onTap)
-            .pointerInput(Unit) {
-                detectTapGestures(onLongPress = { showMenu = true })
-            }
+            .combinedClickable(
+                onClick = { onTap() },
+                onLongClick = { showMenu = true },
+            )
             .padding(
                 horizontal = AvoqadoTheme.spacing.lg,
                 vertical = AvoqadoTheme.spacing.md,
