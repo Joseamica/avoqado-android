@@ -7,6 +7,7 @@ import com.avoqado.pos.articles.data.model.ArticleCategory
 import com.avoqado.pos.articles.data.model.ArticleProduct
 import com.avoqado.pos.articles.data.model.CreditPack
 import com.avoqado.pos.articles.data.model.ModifierGroup
+import com.avoqado.pos.articles.data.model.RawMaterial
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ApiConstants
 import kotlinx.coroutines.Dispatchers
@@ -274,6 +275,519 @@ class ArticlesRepository @Inject constructor(
             Log.e(TAG, "❌ deleteCategory exception: ${e.message}", e)
             _errorMessage.value = "Error al eliminar categoría"
             false
+        }
+    }
+
+    // MARK: - Modifier Groups
+
+    suspend fun fetchModifierGroups() {
+        val venueId = secureStorage.venueId ?: return
+        _isLoading.value = true
+
+        try {
+            val request = Request.Builder()
+                .url("${baseUrl()}/modifier-groups")
+                .get()
+                .build()
+
+            val (code, body) = executeRequest(request)
+            if (code in 200..299 && body.isNotEmpty()) {
+                val list = json.decodeFromString<List<ModifierGroup>>(body)
+                _modifierGroups.value = list
+                Log.d(TAG, "✅ Loaded ${list.size} modifier groups for venue $venueId")
+            } else {
+                Log.e(TAG, "❌ fetchModifierGroups error: HTTP $code")
+                _errorMessage.value = "Error al cargar grupos de modificadores"
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ fetchModifierGroups exception: ${e.message}", e)
+            _errorMessage.value = "Error al cargar grupos de modificadores"
+        } finally {
+            _isLoading.value = false
+        }
+    }
+
+    suspend fun createModifierGroup(payload: String): Boolean {
+        return try {
+            val body = payload.toRequestBody(JSON_MEDIA)
+            val request = Request.Builder()
+                .url("${baseUrl()}/modifier-groups")
+                .post(body)
+                .build()
+
+            val (code, _) = executeRequest(request)
+            if (code in 200..299) {
+                Log.d(TAG, "✅ Modifier group created")
+                fetchModifierGroups()
+                true
+            } else {
+                Log.e(TAG, "❌ createModifierGroup error: HTTP $code")
+                _errorMessage.value = "Error al crear grupo de modificadores"
+                false
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ createModifierGroup exception: ${e.message}", e)
+            _errorMessage.value = "Error al crear grupo de modificadores"
+            false
+        }
+    }
+
+    suspend fun updateModifierGroup(groupId: String, payload: String): Boolean {
+        return try {
+            val body = payload.toRequestBody(JSON_MEDIA)
+            val request = Request.Builder()
+                .url("${baseUrl()}/modifier-groups/$groupId")
+                .patch(body)
+                .build()
+
+            val (code, _) = executeRequest(request)
+            if (code in 200..299) {
+                Log.d(TAG, "✅ Modifier group $groupId updated")
+                fetchModifierGroups()
+                true
+            } else {
+                Log.e(TAG, "❌ updateModifierGroup error: HTTP $code")
+                _errorMessage.value = "Error al actualizar grupo de modificadores"
+                false
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ updateModifierGroup exception: ${e.message}", e)
+            _errorMessage.value = "Error al actualizar grupo de modificadores"
+            false
+        }
+    }
+
+    suspend fun deleteModifierGroup(groupId: String): Boolean {
+        return try {
+            val request = Request.Builder()
+                .url("${baseUrl()}/modifier-groups/$groupId")
+                .delete()
+                .build()
+
+            val (code, _) = executeRequest(request)
+            if (code in 200..299) {
+                Log.d(TAG, "✅ Modifier group $groupId deleted")
+                fetchModifierGroups()
+                true
+            } else {
+                Log.e(TAG, "❌ deleteModifierGroup error: HTTP $code")
+                _errorMessage.value = "Error al eliminar grupo de modificadores"
+                false
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ deleteModifierGroup exception: ${e.message}", e)
+            _errorMessage.value = "Error al eliminar grupo de modificadores"
+            false
+        }
+    }
+
+    // MARK: - Individual Modifiers
+
+    suspend fun addModifierToGroup(groupId: String, payload: String): Boolean {
+        return try {
+            val body = payload.toRequestBody(JSON_MEDIA)
+            val request = Request.Builder()
+                .url("${baseUrl()}/modifier-groups/$groupId/modifiers")
+                .post(body)
+                .build()
+
+            val (code, _) = executeRequest(request)
+            if (code in 200..299) {
+                Log.d(TAG, "✅ Modifier added to group $groupId")
+                fetchModifierGroups()
+                true
+            } else {
+                Log.e(TAG, "❌ addModifierToGroup error: HTTP $code")
+                _errorMessage.value = "Error al agregar modificador"
+                false
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ addModifierToGroup exception: ${e.message}", e)
+            _errorMessage.value = "Error al agregar modificador"
+            false
+        }
+    }
+
+    suspend fun updateModifier(groupId: String, modifierId: String, payload: String): Boolean {
+        return try {
+            val body = payload.toRequestBody(JSON_MEDIA)
+            val request = Request.Builder()
+                .url("${baseUrl()}/modifier-groups/$groupId/modifiers/$modifierId")
+                .patch(body)
+                .build()
+
+            val (code, _) = executeRequest(request)
+            if (code in 200..299) {
+                Log.d(TAG, "✅ Modifier $modifierId updated in group $groupId")
+                fetchModifierGroups()
+                true
+            } else {
+                Log.e(TAG, "❌ updateModifier error: HTTP $code")
+                _errorMessage.value = "Error al actualizar modificador"
+                false
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ updateModifier exception: ${e.message}", e)
+            _errorMessage.value = "Error al actualizar modificador"
+            false
+        }
+    }
+
+    suspend fun deleteModifier(groupId: String, modifierId: String): Boolean {
+        return try {
+            val request = Request.Builder()
+                .url("${baseUrl()}/modifier-groups/$groupId/modifiers/$modifierId")
+                .delete()
+                .build()
+
+            val (code, _) = executeRequest(request)
+            if (code in 200..299) {
+                Log.d(TAG, "✅ Modifier $modifierId deleted from group $groupId")
+                fetchModifierGroups()
+                true
+            } else {
+                Log.e(TAG, "❌ deleteModifier error: HTTP $code")
+                _errorMessage.value = "Error al eliminar modificador"
+                false
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ deleteModifier exception: ${e.message}", e)
+            _errorMessage.value = "Error al eliminar modificador"
+            false
+        }
+    }
+
+    // MARK: - Discounts
+
+    suspend fun fetchDiscounts() {
+        val venueId = secureStorage.venueId ?: return
+        _isLoading.value = true
+
+        try {
+            val request = Request.Builder()
+                .url("${baseUrl()}/discounts")
+                .get()
+                .build()
+
+            val (code, body) = executeRequest(request)
+            if (code in 200..299 && body.isNotEmpty()) {
+                val list = json.decodeFromString<List<AdminDiscount>>(body)
+                _discounts.value = list
+                Log.d(TAG, "✅ Loaded ${list.size} discounts for venue $venueId")
+            } else {
+                Log.e(TAG, "❌ fetchDiscounts error: HTTP $code")
+                _errorMessage.value = "Error al cargar descuentos"
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ fetchDiscounts exception: ${e.message}", e)
+            _errorMessage.value = "Error al cargar descuentos"
+        } finally {
+            _isLoading.value = false
+        }
+    }
+
+    suspend fun createDiscount(payload: String): Boolean {
+        return try {
+            val body = payload.toRequestBody(JSON_MEDIA)
+            val request = Request.Builder()
+                .url("${baseUrl()}/discounts")
+                .post(body)
+                .build()
+
+            val (code, _) = executeRequest(request)
+            if (code in 200..299) {
+                Log.d(TAG, "✅ Discount created")
+                fetchDiscounts()
+                true
+            } else {
+                Log.e(TAG, "❌ createDiscount error: HTTP $code")
+                _errorMessage.value = "Error al crear descuento"
+                false
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ createDiscount exception: ${e.message}", e)
+            _errorMessage.value = "Error al crear descuento"
+            false
+        }
+    }
+
+    suspend fun updateDiscount(discountId: String, payload: String): Boolean {
+        return try {
+            val body = payload.toRequestBody(JSON_MEDIA)
+            val request = Request.Builder()
+                .url("${baseUrl()}/discounts/$discountId")
+                .put(body)
+                .build()
+
+            val (code, _) = executeRequest(request)
+            if (code in 200..299) {
+                Log.d(TAG, "✅ Discount $discountId updated")
+                fetchDiscounts()
+                true
+            } else {
+                Log.e(TAG, "❌ updateDiscount error: HTTP $code")
+                _errorMessage.value = "Error al actualizar descuento"
+                false
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ updateDiscount exception: ${e.message}", e)
+            _errorMessage.value = "Error al actualizar descuento"
+            false
+        }
+    }
+
+    suspend fun deleteDiscount(discountId: String): Boolean {
+        return try {
+            val request = Request.Builder()
+                .url("${baseUrl()}/discounts/$discountId")
+                .delete()
+                .build()
+
+            val (code, _) = executeRequest(request)
+            if (code in 200..299) {
+                Log.d(TAG, "✅ Discount $discountId deleted")
+                fetchDiscounts()
+                true
+            } else {
+                Log.e(TAG, "❌ deleteDiscount error: HTTP $code")
+                _errorMessage.value = "Error al eliminar descuento"
+                false
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ deleteDiscount exception: ${e.message}", e)
+            _errorMessage.value = "Error al eliminar descuento"
+            false
+        }
+    }
+
+    // MARK: - Coupons
+
+    suspend fun fetchCoupons() {
+        val venueId = secureStorage.venueId ?: return
+        _isLoading.value = true
+
+        try {
+            val request = Request.Builder()
+                .url("${baseUrl()}/coupons")
+                .get()
+                .build()
+
+            val (code, body) = executeRequest(request)
+            if (code in 200..299 && body.isNotEmpty()) {
+                val list = json.decodeFromString<List<AdminCoupon>>(body)
+                _coupons.value = list
+                Log.d(TAG, "✅ Loaded ${list.size} coupons for venue $venueId")
+            } else {
+                Log.e(TAG, "❌ fetchCoupons error: HTTP $code")
+                _errorMessage.value = "Error al cargar cupones"
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ fetchCoupons exception: ${e.message}", e)
+            _errorMessage.value = "Error al cargar cupones"
+        } finally {
+            _isLoading.value = false
+        }
+    }
+
+    suspend fun createCoupon(payload: String): Boolean {
+        return try {
+            val body = payload.toRequestBody(JSON_MEDIA)
+            val request = Request.Builder()
+                .url("${baseUrl()}/coupons")
+                .post(body)
+                .build()
+
+            val (code, _) = executeRequest(request)
+            if (code in 200..299) {
+                Log.d(TAG, "✅ Coupon created")
+                fetchCoupons()
+                true
+            } else {
+                Log.e(TAG, "❌ createCoupon error: HTTP $code")
+                _errorMessage.value = "Error al crear cupón"
+                false
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ createCoupon exception: ${e.message}", e)
+            _errorMessage.value = "Error al crear cupón"
+            false
+        }
+    }
+
+    suspend fun updateCoupon(couponId: String, payload: String): Boolean {
+        return try {
+            val body = payload.toRequestBody(JSON_MEDIA)
+            val request = Request.Builder()
+                .url("${baseUrl()}/coupons/$couponId")
+                .put(body)
+                .build()
+
+            val (code, _) = executeRequest(request)
+            if (code in 200..299) {
+                Log.d(TAG, "✅ Coupon $couponId updated")
+                fetchCoupons()
+                true
+            } else {
+                Log.e(TAG, "❌ updateCoupon error: HTTP $code")
+                _errorMessage.value = "Error al actualizar cupón"
+                false
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ updateCoupon exception: ${e.message}", e)
+            _errorMessage.value = "Error al actualizar cupón"
+            false
+        }
+    }
+
+    suspend fun deleteCoupon(couponId: String): Boolean {
+        return try {
+            val request = Request.Builder()
+                .url("${baseUrl()}/coupons/$couponId")
+                .delete()
+                .build()
+
+            val (code, _) = executeRequest(request)
+            if (code in 200..299) {
+                Log.d(TAG, "✅ Coupon $couponId deleted")
+                fetchCoupons()
+                true
+            } else {
+                Log.e(TAG, "❌ deleteCoupon error: HTTP $code")
+                _errorMessage.value = "Error al eliminar cupón"
+                false
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ deleteCoupon exception: ${e.message}", e)
+            _errorMessage.value = "Error al eliminar cupón"
+            false
+        }
+    }
+
+    // MARK: - Credit Packs
+
+    suspend fun fetchCreditPacks() {
+        val venueId = secureStorage.venueId ?: return
+        _isLoading.value = true
+
+        try {
+            val request = Request.Builder()
+                .url("${baseUrl()}/credit-packs")
+                .get()
+                .build()
+
+            val (code, body) = executeRequest(request)
+            if (code in 200..299 && body.isNotEmpty()) {
+                val list = json.decodeFromString<List<CreditPack>>(body)
+                _creditPacks.value = list
+                Log.d(TAG, "✅ Loaded ${list.size} credit packs for venue $venueId")
+            } else {
+                Log.e(TAG, "❌ fetchCreditPacks error: HTTP $code")
+                _errorMessage.value = "Error al cargar paquetes de crédito"
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ fetchCreditPacks exception: ${e.message}", e)
+            _errorMessage.value = "Error al cargar paquetes de crédito"
+        } finally {
+            _isLoading.value = false
+        }
+    }
+
+    suspend fun createCreditPack(payload: String): Boolean {
+        return try {
+            val body = payload.toRequestBody(JSON_MEDIA)
+            val request = Request.Builder()
+                .url("${baseUrl()}/credit-packs")
+                .post(body)
+                .build()
+
+            val (code, _) = executeRequest(request)
+            if (code in 200..299) {
+                Log.d(TAG, "✅ Credit pack created")
+                fetchCreditPacks()
+                true
+            } else {
+                Log.e(TAG, "❌ createCreditPack error: HTTP $code")
+                _errorMessage.value = "Error al crear paquete de crédito"
+                false
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ createCreditPack exception: ${e.message}", e)
+            _errorMessage.value = "Error al crear paquete de crédito"
+            false
+        }
+    }
+
+    suspend fun updateCreditPack(packId: String, payload: String): Boolean {
+        return try {
+            val body = payload.toRequestBody(JSON_MEDIA)
+            val request = Request.Builder()
+                .url("${baseUrl()}/credit-packs/$packId")
+                .patch(body)
+                .build()
+
+            val (code, _) = executeRequest(request)
+            if (code in 200..299) {
+                Log.d(TAG, "✅ Credit pack $packId updated")
+                fetchCreditPacks()
+                true
+            } else {
+                Log.e(TAG, "❌ updateCreditPack error: HTTP $code")
+                _errorMessage.value = "Error al actualizar paquete de crédito"
+                false
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ updateCreditPack exception: ${e.message}", e)
+            _errorMessage.value = "Error al actualizar paquete de crédito"
+            false
+        }
+    }
+
+    suspend fun deleteCreditPack(packId: String): Boolean {
+        return try {
+            val request = Request.Builder()
+                .url("${baseUrl()}/credit-packs/$packId")
+                .delete()
+                .build()
+
+            val (code, _) = executeRequest(request)
+            if (code in 200..299) {
+                Log.d(TAG, "✅ Credit pack $packId deleted")
+                fetchCreditPacks()
+                true
+            } else {
+                Log.e(TAG, "❌ deleteCreditPack error: HTTP $code")
+                _errorMessage.value = "Error al eliminar paquete de crédito"
+                false
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ deleteCreditPack exception: ${e.message}", e)
+            _errorMessage.value = "Error al eliminar paquete de crédito"
+            false
+        }
+    }
+
+    // MARK: - Raw Materials Search
+
+    suspend fun searchRawMaterials(query: String): List<RawMaterial> {
+        return try {
+            val encodedQuery = java.net.URLEncoder.encode(query, "UTF-8")
+            val request = Request.Builder()
+                .url("${baseUrl()}/inventory/raw-materials?active=true&search=$encodedQuery")
+                .get()
+                .build()
+
+            val (code, body) = executeRequest(request)
+            if (code in 200..299 && body.isNotEmpty()) {
+                val list = json.decodeFromString<List<RawMaterial>>(body)
+                Log.d(TAG, "✅ Found ${list.size} raw materials for query '$query'")
+                list
+            } else {
+                Log.e(TAG, "❌ searchRawMaterials error: HTTP $code")
+                emptyList()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ searchRawMaterials exception: ${e.message}", e)
+            emptyList()
         }
     }
 }
