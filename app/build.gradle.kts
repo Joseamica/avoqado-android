@@ -22,8 +22,8 @@ android {
         applicationId = "com.avoqado.pos"
         minSdk = 26
         targetSdk = 35
-        versionCode = 4
-        versionName = "1.0.3"
+        versionCode = 6
+        versionName = "1.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -42,11 +42,12 @@ android {
     buildTypes {
         debug {
             isMinifyEnabled = false
-            buildConfigField("String", "BASE_URL", "\"https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1\"")
+            buildConfigField("String", "BASE_URL", "\"https://humane-immortal-pika.ngrok-free.app/api/v1\"")
         }
         release {
             signingConfig = signingConfigs.getByName("release")
             isMinifyEnabled = true
+            ndk { debugSymbolLevel = "FULL" }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -66,6 +67,10 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+    }
+
+    testOptions {
+        unitTests.isReturnDefaultValues = true
     }
 }
 
@@ -118,6 +123,18 @@ dependencies {
     implementation(libs.camerax.view)
     implementation(libs.barcode.scanning)
 
+    // Room
+    implementation(libs.room.runtime)
+    implementation(libs.room.ktx)
+    ksp(libs.room.compiler)
+
     // Adaptive Layout
     implementation(libs.material3.window.size)
+
+    // Testing
+    testImplementation(libs.junit)
+    testImplementation(libs.mockk)
+    testImplementation(libs.coroutines.test)
+    testImplementation(libs.okhttp.mockwebserver)
+    testImplementation(libs.turbine)
 }
