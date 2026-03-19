@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material3.Badge
 import androidx.compose.material3.BadgedBox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -57,6 +58,7 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import com.avoqado.pos.auth.presentation.AppState
 import com.avoqado.pos.auth.presentation.LandingScreen
+import com.avoqado.pos.core.domain.RoleManager
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.inventory.presentation.InventoryScreen
 import com.avoqado.pos.notifications.presentation.NotificationsScreen
@@ -72,6 +74,7 @@ fun AvoqadoNavGraph(
     appState: AppState = hiltViewModel(),
 ) {
     val isLoggedIn by appState.isLoggedIn.collectAsState()
+    val pendingPaymentCount by appState.pendingPaymentCount.collectAsState()
     val isTablet = windowSizeClass.widthSizeClass >= WindowWidthSizeClass.Medium
 
     if (isLoggedIn) {
@@ -79,6 +82,9 @@ fun AvoqadoNavGraph(
             isTablet = isTablet,
             onLogout = { appState.onLogout() },
             timeEntryRepository = appState.timeEntryRepository,
+            visibleTabs = appState.visibleTabs,
+            roleManager = appState.roleManager,
+            pendingPaymentCount = pendingPaymentCount,
         )
     } else {
         LandingScreen(
@@ -92,6 +98,9 @@ private fun MainScaffold(
     isTablet: Boolean,
     onLogout: () -> Unit,
     timeEntryRepository: TimeEntryRepository,
+    visibleTabs: List<MainTab>,
+    roleManager: RoleManager,
+    pendingPaymentCount: Int = 0,
 ) {
     // Set dark status bar icons on light background (opposite of landing screen)
     val view = LocalView.current
@@ -103,6 +112,7 @@ private fun MainScaffold(
     val navController = rememberNavController()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = navBackStackEntry?.destination
+    val startTab = visibleTabs.firstOrNull() ?: MainTab.NOTIFICATIONS
 
     fun navigateToTab(tab: MainTab) {
         navController.navigate(tab.route) {
@@ -118,29 +128,37 @@ private fun MainScaffold(
 
     if (isTablet) {
         // iPad-style: custom capsule tab bar at bottom
-        var selectedTab by remember { mutableStateOf(MainTab.CHECKOUT) }
+        var selectedTab by remember { mutableStateOf(startTab) }
 
         Scaffold(
             contentWindowInsets = WindowInsets.statusBars,
             bottomBar = {
                 TabletTabBar(
+                    visibleTabs = visibleTabs,
                     selectedTab = selectedTab,
                     onTabSelected = { tab ->
                         selectedTab = tab
                         navigateToTab(tab)
                     },
                     onClockTap = { showTimeClock = true },
+                    pendingPaymentCount = pendingPaymentCount,
                 )
             },
         ) { innerPadding ->
             NavHost(
                 navController = navController,
-                startDestination = MainTab.CHECKOUT.route,
+                startDestination = startTab.route,
                 modifier = Modifier.padding(innerPadding),
             ) {
-                composable(MainTab.CHECKOUT.route) { CheckoutScreen(isTablet = true) }
-                composable(MainTab.INVENTORY.route) { InventoryScreen() }
-                composable(MainTab.TRANSACTIONS.route) { TransactionsScreen() }
+                if (roleManager.canAccessPOS) {
+                    composable(MainTab.CHECKOUT.route) { CheckoutScreen(isTablet = true, roleManager = roleManager) }
+                }
+                if (roleManager.canAccessInventory) {
+                    composable(MainTab.INVENTORY.route) { InventoryScreen() }
+                }
+                if (roleManager.canAccessTransactions) {
+                    composable(MainTab.TRANSACTIONS.route) { TransactionsScreen(isTablet = true) }
+                }
                 composable(MainTab.NOTIFICATIONS.route) { NotificationsScreen() }
                 composable(MainTab.MORE.route) { MoreMenuScreen(onLogout = onLogout) }
             }
@@ -150,19 +168,27 @@ private fun MainScaffold(
         Scaffold(
             bottomBar = {
                 NavigationBar {
-                    MainTab.entries.forEach { tab ->
+                    visibleTabs.forEach { tab ->
                         val selected = currentDestination?.hierarchy?.any { it.route == tab.route } == true
                         NavigationBarItem(
                             selected = selected,
                             onClick = { navigateToTab(tab) },
                             icon = {
                                 val icon = if (selected) tab.selectedIcon else tab.unselectedIcon
-                                if (tab == MainTab.NOTIFICATIONS) {
-                                    BadgedBox(badge = { /* TODO: unread count */ }) {
+                                when {
+                                    tab == MainTab.CHECKOUT && pendingPaymentCount > 0 -> {
+                                        BadgedBox(badge = { Badge { Text("$pendingPaymentCount") } }) {
+                                            Icon(icon, contentDescription = tab.label)
+                                        }
+                                    }
+                                    tab == MainTab.NOTIFICATIONS -> {
+                                        BadgedBox(badge = { /* TODO: unread count */ }) {
+                                            Icon(icon, contentDescription = tab.label)
+                                        }
+                                    }
+                                    else -> {
                                         Icon(icon, contentDescription = tab.label)
                                     }
-                                } else {
-                                    Icon(icon, contentDescription = tab.label)
                                 }
                             },
                             label = { Text(tab.shortLabel) },
@@ -173,12 +199,18 @@ private fun MainScaffold(
         ) { innerPadding ->
             NavHost(
                 navController = navController,
-                startDestination = MainTab.CHECKOUT.route,
+                startDestination = startTab.route,
                 modifier = Modifier.padding(innerPadding),
             ) {
-                composable(MainTab.CHECKOUT.route) { CheckoutScreen(isTablet = false) }
-                composable(MainTab.INVENTORY.route) { InventoryScreen() }
-                composable(MainTab.TRANSACTIONS.route) { TransactionsScreen() }
+                if (roleManager.canAccessPOS) {
+                    composable(MainTab.CHECKOUT.route) { CheckoutScreen(isTablet = false, roleManager = roleManager) }
+                }
+                if (roleManager.canAccessInventory) {
+                    composable(MainTab.INVENTORY.route) { InventoryScreen() }
+                }
+                if (roleManager.canAccessTransactions) {
+                    composable(MainTab.TRANSACTIONS.route) { TransactionsScreen() }
+                }
                 composable(MainTab.NOTIFICATIONS.route) { NotificationsScreen() }
                 composable(MainTab.MORE.route) { MoreMenuScreen(onLogout = onLogout) }
             }
@@ -198,9 +230,11 @@ private fun MainScaffold(
 
 @Composable
 private fun TabletTabBar(
+    visibleTabs: List<MainTab>,
     selectedTab: MainTab,
     onTabSelected: (MainTab) -> Unit,
     onClockTap: () -> Unit,
+    pendingPaymentCount: Int = 0,
 ) {
     Box(
         modifier = Modifier
@@ -250,12 +284,13 @@ private fun TabletTabBar(
                     .padding(4.dp),
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
-                MainTab.entries.forEach { tab ->
+                visibleTabs.forEach { tab ->
                     val isSelected = selectedTab == tab
                     TabBarItem(
                         tab = tab,
                         isSelected = isSelected,
                         onClick = { onTabSelected(tab) },
+                        badgeCount = if (tab == MainTab.CHECKOUT) pendingPaymentCount else 0,
                     )
                 }
             }
@@ -273,6 +308,7 @@ private fun TabBarItem(
     tab: MainTab,
     isSelected: Boolean,
     onClick: () -> Unit,
+    badgeCount: Int = 0,
 ) {
     val bgColor by animateColorAsState(
         targetValue = if (isSelected) MaterialTheme.colorScheme.surface else Color.Transparent,
@@ -299,15 +335,22 @@ private fun TabBarItem(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.Center,
     ) {
-        // Badge for notifications
-        Box {
+        if (badgeCount > 0) {
+            BadgedBox(badge = { Badge { Text("$badgeCount") } }) {
+                Icon(
+                    imageVector = if (isSelected) tab.selectedIcon else tab.unselectedIcon,
+                    contentDescription = tab.label,
+                    tint = contentColor,
+                    modifier = Modifier.size(18.dp),
+                )
+            }
+        } else {
             Icon(
                 imageVector = if (isSelected) tab.selectedIcon else tab.unselectedIcon,
                 contentDescription = tab.label,
                 tint = contentColor,
                 modifier = Modifier.size(18.dp),
             )
-            // TODO: notification badge
         }
 
         if (isSelected) {
