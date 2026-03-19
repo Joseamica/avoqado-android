@@ -5,7 +5,10 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.payment.data.CashPaymentRepository
 import com.avoqado.pos.payment.data.CashPaymentResult
+import com.avoqado.pos.payment.data.OnlineTerminal
 import com.avoqado.pos.payment.data.OrderRepository
+import com.avoqado.pos.payment.data.PaymentSyncService
+import com.avoqado.pos.payment.data.TerminalListResult
 import com.avoqado.pos.payment.data.TerminalPaymentResult
 import com.avoqado.pos.payment.data.TerminalPaymentService
 import com.avoqado.pos.payment.data.model.CreateOrderRequest
@@ -29,16 +32,21 @@ class PaymentFlowViewModel @Inject constructor(
     private val cashPaymentRepository: CashPaymentRepository,
     private val terminalPaymentService: TerminalPaymentService,
     private val tpvSettingsRepository: TpvSettingsRepository,
+    private val paymentSyncService: PaymentSyncService,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<PaymentFlowState>(PaymentFlowState.Loading)
     val state: StateFlow<PaymentFlowState> = _state.asStateFlow()
+
+    private val _onlineTerminals = MutableStateFlow<List<OnlineTerminal>>(emptyList())
+    val onlineTerminals: StateFlow<List<OnlineTerminal>> = _onlineTerminals.asStateFlow()
 
     private var cartState: CartState? = null
     private var selectedMethod: PaymentMethod? = null
     private var currentRating: Int? = null
     private var currentTipCents: Int = 0
     private var createdOrderId: String? = null
+    private var selectedTerminalId: String? = null
 
     val settings: TpvSettings get() = tpvSettingsRepository.getCurrentSettings()
 
@@ -86,13 +94,50 @@ class PaymentFlowViewModel @Inject constructor(
                 _state.value = PaymentFlowState.CollectingCashAmount(total)
             }
             PaymentMethod.CARD -> {
-                _state.value = PaymentFlowState.Confirming(
-                    amount = baseAmount,
-                    tip = currentTipCents,
-                    rating = currentRating,
-                )
+                // Fetch online terminals and show terminal selection
+                _state.value = PaymentFlowState.SelectingTerminal(total)
+                fetchTerminals()
             }
         }
+    }
+
+    /** Cash preset tapped directly from payment method screen (iOS-style direct confirm) */
+    fun confirmCashPreset(tenderedCents: Int) {
+        selectedMethod = PaymentMethod.CASH
+        processCashPayment(tenderedCents)
+    }
+
+    /** Custom cash amount confirmed from bottom sheet keypad */
+    fun confirmCashCustom(tenderedCents: Int) {
+        selectedMethod = PaymentMethod.CASH
+        processCashPayment(tenderedCents)
+    }
+
+    private fun fetchTerminals() {
+        viewModelScope.launch {
+            when (val result = terminalPaymentService.fetchOnlineTerminals()) {
+                is TerminalListResult.Success -> {
+                    _onlineTerminals.value = result.terminals
+                    if (result.terminals.isEmpty()) {
+                        _state.value = PaymentFlowState.Error(
+                            message = "No hay terminales conectadas",
+                            source = PaymentErrorSource.TERMINAL,
+                        )
+                    }
+                }
+                is TerminalListResult.Error -> {
+                    _state.value = PaymentFlowState.Error(
+                        message = result.message,
+                        source = PaymentErrorSource.TERMINAL,
+                    )
+                }
+            }
+        }
+    }
+
+    fun selectTerminalAndPay(terminalId: String) {
+        selectedTerminalId = terminalId
+        confirmPayment()
     }
 
     fun confirmPayment() {
@@ -102,62 +147,117 @@ class PaymentFlowViewModel @Inject constructor(
 
         viewModelScope.launch {
             try {
-                // Create order
-                val orderRequest = buildOrderRequest(cart)
-                val orderResult = orderRepository.createOrder(orderRequest)
+                // Check if cart has real products (not just custom amounts from keypad)
+                val hasRealProducts = cart.items.any {
+                    it.type is com.avoqado.pos.pos.data.model.CartItemType.ProductItem
+                }
 
-                orderResult.fold(
-                    onSuccess = { response ->
-                        createdOrderId = response.data?.id
+                if (hasRealProducts) {
+                    // Create order on server for real products
+                    val orderRequest = buildOrderRequest(cart)
+                    val orderResult = orderRepository.createOrder(orderRequest)
 
-                        when (selectedMethod) {
-                            PaymentMethod.CARD -> {
-                                // Send to terminal
-                                _state.value = PaymentFlowState.SentToTerminal(total)
-                                val terminalResult = terminalPaymentService.sendPaymentToTerminal(
-                                    orderId = response.data?.id ?: "",
-                                    amountCents = total,
-                                )
-                                when (terminalResult) {
-                                    is TerminalPaymentResult.Success -> {
-                                        _state.value = PaymentFlowState.Success(
-                                            totalAmount = total,
-                                            method = PaymentMethod.CARD,
-                                        )
-                                    }
-                                    is TerminalPaymentResult.Error -> {
-                                        _state.value = PaymentFlowState.Error(
-                                            message = terminalResult.message,
-                                            source = PaymentErrorSource.TERMINAL,
-                                        )
-                                    }
+                    orderResult.fold(
+                        onSuccess = { response ->
+                            createdOrderId = response.data?.id
+                            processPaymentMethod(total, orderRequest = null, cashTenderedCents = null)
+                        },
+                        onFailure = { error ->
+                            // For CASH payments: queue offline if network/server error
+                            if (selectedMethod == PaymentMethod.CASH) {
+                                val isQueueable = OrderRepository.isQueueableError(error) ||
+                                    (error is OrderRepository.ServerException && OrderRepository.isQueueableHttpCode(error.code))
+
+                                if (isQueueable) {
+                                    cashPaymentRepository.queueCashPayment(
+                                        orderRequest = orderRequest,
+                                        cashTenderedCents = null,
+                                        changeCents = null,
+                                        rating = currentRating,
+                                    )
+                                    _state.value = PaymentFlowState.Success(
+                                        totalAmount = total,
+                                        method = PaymentMethod.CASH,
+                                        changeAmount = 0,
+                                        isQueued = true,
+                                    )
+                                } else {
+                                    _state.value = PaymentFlowState.Error(
+                                        message = error.message ?: "Error al crear la orden",
+                                        source = PaymentErrorSource.SERVER,
+                                    )
                                 }
-                            }
-                            PaymentMethod.CASH -> {
-                                _state.value = PaymentFlowState.Success(
-                                    totalAmount = total,
-                                    method = PaymentMethod.CASH,
-                                )
-                            }
-                            null -> {
+                            } else {
                                 _state.value = PaymentFlowState.Error(
-                                    message = "Método de pago no seleccionado",
-                                    source = PaymentErrorSource.UNKNOWN,
+                                    message = error.message ?: "Error al crear la orden",
+                                    source = PaymentErrorSource.SERVER,
                                 )
                             }
-                        }
-                    },
-                    onFailure = { error ->
-                        _state.value = PaymentFlowState.Error(
-                            message = error.message ?: "Error al crear la orden",
-                            source = PaymentErrorSource.SERVER,
-                        )
-                    },
-                )
+                        },
+                    )
+                } else {
+                    // Custom amount only — process payment directly without server order
+                    Log.d("💰", "Custom amount payment - skipping order creation, total: $total")
+                    processPaymentMethod(total, orderRequest = null, cashTenderedCents = null)
+                }
             } catch (e: Exception) {
                 Log.e("💰", "Payment error: ${e.message}")
                 _state.value = PaymentFlowState.Error(
                     message = e.message ?: "Error inesperado",
+                    source = PaymentErrorSource.UNKNOWN,
+                )
+            }
+        }
+    }
+
+    private suspend fun processPaymentMethod(
+        total: Int,
+        orderRequest: CreateOrderRequest?,
+        cashTenderedCents: Int?,
+    ) {
+        when (selectedMethod) {
+            PaymentMethod.CARD -> {
+                val terminalId = selectedTerminalId
+                if (terminalId == null) {
+                    _state.value = PaymentFlowState.Error(
+                        message = "No se seleccionó una terminal",
+                        source = PaymentErrorSource.TERMINAL,
+                    )
+                    return
+                }
+
+                _state.value = PaymentFlowState.SentToTerminal(total)
+                val terminalResult = terminalPaymentService.sendPaymentToTerminal(
+                    terminalId = terminalId,
+                    amountCents = cartState?.totalCents ?: total,
+                    tipCents = currentTipCents,
+                    rating = currentRating,
+                    orderId = createdOrderId,
+                )
+                when (terminalResult) {
+                    is TerminalPaymentResult.Success -> {
+                        _state.value = PaymentFlowState.Success(
+                            totalAmount = total,
+                            method = PaymentMethod.CARD,
+                        )
+                    }
+                    is TerminalPaymentResult.Error -> {
+                        _state.value = PaymentFlowState.Error(
+                            message = terminalResult.message,
+                            source = PaymentErrorSource.TERMINAL,
+                        )
+                    }
+                }
+            }
+            PaymentMethod.CASH -> {
+                _state.value = PaymentFlowState.Success(
+                    totalAmount = total,
+                    method = PaymentMethod.CASH,
+                )
+            }
+            null -> {
+                _state.value = PaymentFlowState.Error(
+                    message = "Método de pago no seleccionado",
                     source = PaymentErrorSource.UNKNOWN,
                 )
             }
@@ -169,15 +269,47 @@ class PaymentFlowViewModel @Inject constructor(
 
         when (val result = cashPaymentRepository.processCashPayment(total, cashReceivedCents)) {
             is CashPaymentResult.Success -> {
-                // Create order then show success
                 viewModelScope.launch {
                     _state.value = PaymentFlowState.Processing(total)
                     val orderRequest = buildOrderRequest(cartState!!)
-                    orderRepository.createOrder(orderRequest)
-                    _state.value = PaymentFlowState.Success(
-                        totalAmount = total,
-                        method = PaymentMethod.CASH,
-                        changeAmount = result.changeCents,
+
+                    val orderResult = orderRepository.createOrder(orderRequest)
+                    orderResult.fold(
+                        onSuccess = {
+                            createdOrderId = it.data?.id
+                            _state.value = PaymentFlowState.Success(
+                                totalAmount = total,
+                                method = PaymentMethod.CASH,
+                                changeAmount = result.changeCents,
+                            )
+                        },
+                        onFailure = { error ->
+                            // Check if this is a queueable error (network/server)
+                            val isQueueable = OrderRepository.isQueueableError(error) ||
+                                (error is OrderRepository.ServerException && OrderRepository.isQueueableHttpCode(error.code))
+
+                            if (isQueueable) {
+                                // Queue for offline sync
+                                cashPaymentRepository.queueCashPayment(
+                                    orderRequest = orderRequest,
+                                    cashTenderedCents = cashReceivedCents,
+                                    changeCents = result.changeCents,
+                                    rating = currentRating,
+                                )
+                                _state.value = PaymentFlowState.Success(
+                                    totalAmount = total,
+                                    method = PaymentMethod.CASH,
+                                    changeAmount = result.changeCents,
+                                    isQueued = true,
+                                )
+                            } else {
+                                // Non-queueable error (validation, auth, etc.)
+                                _state.value = PaymentFlowState.Error(
+                                    message = error.message ?: "Error al crear la orden",
+                                    source = PaymentErrorSource.SERVER,
+                                )
+                            }
+                        },
                     )
                 }
             }
@@ -188,10 +320,17 @@ class PaymentFlowViewModel @Inject constructor(
     }
 
     fun retry() {
-        cartState?.let { startPaymentFlow(it) }
+        val baseAmount = cartState?.totalCents ?: return
+        val total = baseAmount + currentTipCents
+        // Go back to terminal selection instead of restarting the whole flow
+        _state.value = PaymentFlowState.SelectingTerminal(total)
+        fetchTerminals()
     }
 
     fun cancel() {
+        // Cancel pending terminal payment if in progress
+        terminalPaymentService.cancelCurrentPayment()
+
         createdOrderId?.let { orderId ->
             viewModelScope.launch {
                 orderRepository.cancelOrder(orderId)
@@ -200,21 +339,19 @@ class PaymentFlowViewModel @Inject constructor(
     }
 
     private fun buildOrderRequest(cart: CartState): CreateOrderRequest {
-        val items = cart.items.map { item ->
-            OrderItemRequest(
-                productId = when (item.type) {
-                    is com.avoqado.pos.pos.data.model.CartItemType.ProductItem ->
-                        (item.type as com.avoqado.pos.pos.data.model.CartItemType.ProductItem).productId
-                    is com.avoqado.pos.pos.data.model.CartItemType.CustomAmount ->
-                        "custom_amount"
-                },
-                name = item.name,
-                quantity = item.quantity,
-                unitPrice = item.effectiveUnitPrice,
-                note = item.itemNote,
-                isCortesia = item.isCortesia,
-            )
-        }
+        // Only include real products — custom amounts are handled separately
+        val items = cart.items
+            .filter { it.type is com.avoqado.pos.pos.data.model.CartItemType.ProductItem }
+            .map { item ->
+                OrderItemRequest(
+                    productId = (item.type as com.avoqado.pos.pos.data.model.CartItemType.ProductItem).productId,
+                    name = item.name,
+                    quantity = item.quantity,
+                    unitPrice = item.effectiveUnitPrice,
+                    note = item.itemNote,
+                    isCortesia = item.isCortesia,
+                )
+            }
 
         return CreateOrderRequest(
             items = items,

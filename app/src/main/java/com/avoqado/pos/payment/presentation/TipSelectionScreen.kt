@@ -15,11 +15,13 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -36,11 +38,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
-import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Success
 
-// Keep the old function signature for backward compat (used in CollectingTip state)
 @Composable
 fun TipSelectionScreen(
     amountCents: Int,
@@ -93,9 +93,10 @@ fun TipSelectionSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = AvoqadoTheme.spacing.lg),
+                .padding(horizontal = AvoqadoTheme.spacing.lg)
+                .padding(bottom = AvoqadoTheme.spacing.xl),
         ) {
-            // Header: "Propina" + close button (matching iOS)
+            // Header: "Propina" + close button
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -103,12 +104,12 @@ fun TipSelectionSheet(
             ) {
                 Text(
                     text = "Propina",
-                    style = MaterialTheme.typography.headlineMedium,
+                    style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.Bold,
                 )
                 Box(
                     modifier = Modifier
-                        .size(32.dp)
+                        .size(28.dp)
                         .clip(RoundedCornerShape(50))
                         .background(MaterialTheme.colorScheme.surfaceVariant)
                         .clickable(onClick = onDismiss),
@@ -117,14 +118,14 @@ fun TipSelectionSheet(
                     Icon(
                         Icons.Filled.Close,
                         contentDescription = "Cerrar",
-                        modifier = Modifier.size(18.dp),
+                        modifier = Modifier.size(16.dp),
                     )
                 }
             }
 
-            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xl))
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
 
-            // 3 percentage buttons in a Row (matching iOS)
+            // 3 percentage buttons
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
@@ -133,32 +134,37 @@ fun TipSelectionSheet(
                     val isSelected = selectedTipPercent == percent && !showCustomInput
                     val tipAmount = (amountCents * percent / 100.0).toInt()
 
-                    Surface(
+                    Box(
                         modifier = Modifier
                             .weight(1f)
-                            .height(64.dp)
+                            .height(60.dp)
+                            .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.lg))
+                            .background(
+                                if (isSelected) Success
+                                else MaterialTheme.colorScheme.surfaceVariant,
+                            )
                             .clickable {
                                 selectedTipPercent = percent
                                 showCustomInput = false
                                 customTipCents = 0
                             },
-                        shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.lg),
-                        color = if (isSelected) Success else MaterialTheme.colorScheme.surfaceVariant,
+                        contentAlignment = Alignment.Center,
                     ) {
                         Column(
-                            modifier = Modifier.padding(AvoqadoTheme.spacing.md),
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.Center,
                         ) {
                             Text(
                                 text = "$percent%",
-                                style = MaterialTheme.typography.headlineSmall,
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.SemiBold,
                                 color = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurface,
                             )
                             Text(
                                 text = "$${String.format("%.2f", tipAmount / 100.0)}",
                                 style = MaterialTheme.typography.bodySmall,
-                                color = if (isSelected) Color.White.copy(alpha = 0.8f) else MaterialTheme.colorScheme.onSurfaceVariant,
+                                color = if (isSelected) Color.White.copy(alpha = 0.8f)
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                     }
@@ -167,21 +173,21 @@ fun TipSelectionSheet(
 
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
 
-            // "Otra cantidad" button or custom input (matching iOS)
+            // "Otra cantidad" or custom input
             if (showCustomInput) {
-                // Custom input with % <-> $ toggle
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.lg))
                         .border(
                             1.dp,
                             MaterialTheme.colorScheme.outlineVariant,
                             RoundedCornerShape(AvoqadoTheme.cornerRadius.lg),
                         )
-                        .padding(AvoqadoTheme.spacing.lg),
-                    verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
+                        .padding(AvoqadoTheme.spacing.md),
+                    verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.xs),
                 ) {
-                    // Display row: prefix + value + mode toggle
+                    // Display row
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         verticalAlignment = Alignment.CenterVertically,
@@ -189,10 +195,9 @@ fun TipSelectionSheet(
                     ) {
                         Text(
                             text = if (isPercentageMode) "%" else "$",
-                            style = MaterialTheme.typography.headlineSmall,
+                            style = MaterialTheme.typography.titleLarge,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-
                         Text(
                             text = if (customTipCents == 0) {
                                 if (isPercentageMode) "0" else "0.00"
@@ -200,13 +205,11 @@ fun TipSelectionSheet(
                                 if (isPercentageMode) "$customTipCents"
                                 else String.format("%.2f", customTipCents / 100.0)
                             },
-                            style = MaterialTheme.typography.headlineSmall,
+                            style = MaterialTheme.typography.titleLarge,
                             color = if (customTipCents == 0) MaterialTheme.colorScheme.outlineVariant
                             else MaterialTheme.colorScheme.onSurface,
                             modifier = Modifier.weight(1f),
                         )
-
-                        // Mode toggle button
                         Box(
                             modifier = Modifier
                                 .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
@@ -219,10 +222,7 @@ fun TipSelectionSheet(
                                     isPercentageMode = !isPercentageMode
                                     customTipCents = 0
                                 }
-                                .padding(
-                                    horizontal = AvoqadoTheme.spacing.sm,
-                                    vertical = AvoqadoTheme.spacing.xxs,
-                                ),
+                                .padding(horizontal = AvoqadoTheme.spacing.sm, vertical = AvoqadoTheme.spacing.xxs),
                         ) {
                             Text(
                                 text = if (isPercentageMode) "% \u2192 $" else "$ \u2192 %",
@@ -232,7 +232,7 @@ fun TipSelectionSheet(
                         }
                     }
 
-                    // In-sheet keypad
+                    // Compact keypad
                     val buttons = listOf(
                         listOf("1", "2", "3"),
                         listOf("4", "5", "6"),
@@ -249,7 +249,7 @@ fun TipSelectionSheet(
                                 Box(
                                     modifier = Modifier
                                         .weight(1f)
-                                        .height(48.dp)
+                                        .height(40.dp)
                                         .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.sm))
                                         .background(MaterialTheme.colorScheme.surfaceVariant)
                                         .clickable {
@@ -272,7 +272,7 @@ fun TipSelectionSheet(
                                 ) {
                                     Text(
                                         text = label,
-                                        style = MaterialTheme.typography.titleMedium,
+                                        style = MaterialTheme.typography.titleSmall,
                                     )
                                 }
                             }
@@ -281,44 +281,69 @@ fun TipSelectionSheet(
                     }
                 }
             } else {
-                // "Otra cantidad" outlined button (matching iOS)
+                // "Otra cantidad" button with pencil icon (matching iOS)
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.lg))
                         .border(
                             1.dp,
                             MaterialTheme.colorScheme.outlineVariant,
                             RoundedCornerShape(AvoqadoTheme.cornerRadius.lg),
                         )
-                        .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.lg))
                         .clickable {
                             showCustomInput = true
                             selectedTipPercent = -1
                         }
-                        .padding(vertical = AvoqadoTheme.spacing.lg),
+                        .padding(vertical = AvoqadoTheme.spacing.md),
                     contentAlignment = Alignment.Center,
                 ) {
-                    Text(
-                        text = "Otra cantidad",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.xs),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(
+                            Icons.Filled.Edit,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                            tint = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Text(
+                            text = "Otra cantidad",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
                 }
             }
 
-            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xl))
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
 
-            // "Continuar (total)" button
-            PrimaryButton(
-                text = "Continuar (${String.format("$%.2f", (amountCents + tipCents) / 100.0)})",
+            // "Continuar (total)" button — gray like iOS
+            Button(
                 onClick = { onTipSelected(tipCents) },
-                modifier = Modifier.fillMaxWidth(),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp),
                 enabled = hasSelection,
-            )
+                shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.xl),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.inverseSurface,
+                    contentColor = MaterialTheme.colorScheme.inverseOnSurface,
+                    disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    disabledContentColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f),
+                ),
+            ) {
+                Text(
+                    text = "Continuar (${String.format("$%.2f", (amountCents + tipCents) / 100.0)})",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
 
-            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xs))
 
-            // "Sin propina" underlined link (matching iOS)
+            // "Sin propina" underlined link
             TextButton(
                 onClick = onSkip,
                 modifier = Modifier.align(Alignment.CenterHorizontally),
@@ -330,8 +355,6 @@ fun TipSelectionSheet(
                     textDecoration = TextDecoration.Underline,
                 )
             }
-
-            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxxl))
         }
     }
 }

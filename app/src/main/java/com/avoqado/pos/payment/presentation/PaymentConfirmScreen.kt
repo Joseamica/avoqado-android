@@ -40,6 +40,7 @@ fun PaymentConfirmScreen(
     subtotalCents: Int,
     tipCents: Int,
     totalCents: Int,
+    rating: Int? = null,
     onConfirm: () -> Unit,
     onCancel: () -> Unit,
 ) {
@@ -84,6 +85,22 @@ fun PaymentConfirmScreen(
             if (tipCents > 0) {
                 HorizontalDivider()
                 DetailRow("Propina", tipCents)
+            }
+            if (rating != null) {
+                HorizontalDivider()
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = AvoqadoTheme.spacing.xl)
+                        .padding(vertical = AvoqadoTheme.spacing.lg),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                ) {
+                    Text("Calificación", style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        text = "★".repeat(rating) + "☆".repeat(5 - rating),
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                }
             }
             HorizontalDivider()
             Row(

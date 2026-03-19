@@ -16,6 +16,7 @@ fun PaymentFlowScreen(
     viewModel: PaymentFlowViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsState()
+    val terminals by viewModel.onlineTerminals.collectAsState()
 
     LaunchedEffect(cartState) {
         viewModel.startPaymentFlow(cartState)
@@ -23,7 +24,7 @@ fun PaymentFlowScreen(
 
     when (val currentState = state) {
         is PaymentFlowState.Loading -> {
-            // Loading indicator
+            PaymentLoadingView()
         }
         is PaymentFlowState.CollectingRating -> {
             RatingScreen(
@@ -36,6 +37,8 @@ fun PaymentFlowScreen(
             PaymentMethodSelectionScreen(
                 amountCents = currentState.amount,
                 onMethodSelected = { viewModel.selectPaymentMethod(it) },
+                onCashPresetSelected = { viewModel.confirmCashPreset(it) },
+                onCashCustomSelected = { viewModel.confirmCashCustom(it) },
                 onCancel = onCancel,
             )
             TipSelectionSheet(
@@ -50,10 +53,13 @@ fun PaymentFlowScreen(
             PaymentMethodSelectionScreen(
                 amountCents = currentState.amount,
                 onMethodSelected = { viewModel.selectPaymentMethod(it) },
+                onCashPresetSelected = { viewModel.confirmCashPreset(it) },
+                onCashCustomSelected = { viewModel.confirmCashCustom(it) },
                 onCancel = onCancel,
             )
         }
         is PaymentFlowState.CollectingCashAmount -> {
+            // Legacy full-screen cash (kept for backward compat, rarely reached)
             CashPaymentScreen(
                 totalCents = currentState.total,
                 onCashReceived = { viewModel.processCashPayment(it) },
@@ -65,24 +71,32 @@ fun PaymentFlowScreen(
                 subtotalCents = currentState.amount,
                 tipCents = currentState.tip,
                 totalCents = currentState.amount + currentState.tip,
+                rating = currentState.rating,
                 onConfirm = { viewModel.confirmPayment() },
                 onCancel = onCancel,
             )
         }
         is PaymentFlowState.SelectingTerminal -> {
             TerminalSelectionScreen(
-                onTerminalSelected = { viewModel.confirmPayment() },
+                terminals = terminals,
+                onTerminalSelected = { viewModel.selectTerminalAndPay(it) },
                 onCancel = onCancel,
             )
         }
         is PaymentFlowState.Processing, is PaymentFlowState.SentToTerminal -> {
-            PaymentProcessingView()
+            PaymentProcessingView(
+                onCancel = {
+                    viewModel.cancel()
+                    onCancel()
+                },
+            )
         }
         is PaymentFlowState.Success -> {
             PaymentResultScreen(
                 totalCents = currentState.totalAmount,
                 method = currentState.method,
                 changeCents = currentState.changeAmount,
+                isQueued = currentState.isQueued,
                 onDone = onComplete,
             )
         }

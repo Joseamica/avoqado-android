@@ -14,6 +14,8 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.Print
@@ -22,6 +24,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -33,6 +36,7 @@ import androidx.compose.ui.unit.dp
 import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Success
+import com.avoqado.pos.designsystem.theme.Warning
 import com.avoqado.pos.payment.data.model.PaymentMethod
 
 @Composable
@@ -40,6 +44,7 @@ fun PaymentResultScreen(
     totalCents: Int,
     method: PaymentMethod,
     changeCents: Int = 0,
+    isQueued: Boolean = false,
     onDone: () -> Unit,
 ) {
     Column(
@@ -49,6 +54,35 @@ fun PaymentResultScreen(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
+        // Offline queued banner
+        if (isQueued) {
+            Surface(
+                color = Warning.copy(alpha = 0.15f),
+                shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.md),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = AvoqadoTheme.spacing.lg),
+            ) {
+                Row(
+                    modifier = Modifier.padding(AvoqadoTheme.spacing.md),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
+                ) {
+                    Icon(
+                        Icons.Filled.CloudOff,
+                        contentDescription = null,
+                        tint = Warning,
+                        modifier = Modifier.size(20.dp),
+                    )
+                    Text(
+                        text = "Se sincronizara cuando haya conexion",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Warning,
+                    )
+                }
+            }
+        }
+
         Icon(
             Icons.Filled.CheckCircle,
             contentDescription = "Exito",
@@ -161,7 +195,9 @@ private fun ReceiptOptionRow(
 // MARK: - Payment Processing View
 
 @Composable
-fun PaymentProcessingView() {
+fun PaymentProcessingView(
+    onCancel: (() -> Unit)? = null,
+) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -181,10 +217,21 @@ fun PaymentProcessingView() {
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
 
         Text(
-            text = "No cierres la aplicacion",
+            text = "Esperando respuesta de la terminal",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+
+        if (onCancel != null) {
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxxl))
+
+            TextButton(onClick = onCancel) {
+                Text(
+                    text = "Cancelar",
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+        }
     }
 }
 
@@ -237,5 +284,27 @@ fun PaymentErrorView(
         TextButton(onClick = onCancel) {
             Text("Cancelar")
         }
+    }
+}
+
+// MARK: - Payment Loading View
+
+@Composable
+fun PaymentLoadingView() {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(AvoqadoTheme.spacing.xxxl),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        CircularProgressIndicator(modifier = Modifier.size(48.dp))
+
+        Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
+
+        Text(
+            text = "Preparando pago...",
+            style = MaterialTheme.typography.headlineMedium,
+        )
     }
 }

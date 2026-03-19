@@ -1,11 +1,23 @@
 package com.avoqado.pos.payment.data
 
 import android.util.Log
+import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.core.data.local.database.PendingPaymentDao
+import com.avoqado.pos.core.data.local.database.PendingPaymentEntity
+import com.avoqado.pos.core.data.local.database.PaymentSyncStatus
+import com.avoqado.pos.payment.data.model.CreateOrderRequest
+import kotlinx.serialization.json.Json
+import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
-class CashPaymentRepository @Inject constructor() {
+class CashPaymentRepository @Inject constructor(
+    private val secureStorage: SecureStorage,
+    private val pendingPaymentDao: PendingPaymentDao,
+    private val paymentSyncService: PaymentSyncService,
+) {
+    private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
     fun processCashPayment(
         totalCents: Int,
@@ -19,6 +31,43 @@ class CashPaymentRepository @Inject constructor() {
         } else {
             CashPaymentResult.InsufficientFunds(shortfall = -changeCents)
         }
+    }
+
+    /**
+     * Queue a cash payment for offline sync.
+     * Called when the order creation API fails with a network/server error.
+     */
+    suspend fun queueCashPayment(
+        orderRequest: CreateOrderRequest,
+        cashTenderedCents: Int?,
+        changeCents: Int?,
+        rating: Int?,
+    ): String {
+        val localId = UUID.randomUUID().toString()
+        val entity = PendingPaymentEntity(
+            id = localId,
+            venueId = secureStorage.venueId ?: "",
+            staffId = secureStorage.userId ?: "",
+            amountCents = orderRequest.total - orderRequest.tip,
+            tipCents = orderRequest.tip,
+            method = "CASH",
+            paymentType = "FAST",
+            orderId = null,
+            orderNumber = null,
+            cashTenderedCents = cashTenderedCents,
+            changeCents = changeCents,
+            rating = rating,
+            itemsJson = null,
+            orderRequestJson = json.encodeToString(CreateOrderRequest.serializer(), orderRequest),
+            syncStatus = PaymentSyncStatus.PENDING.name,
+            retryCount = 0,
+            createdAt = System.currentTimeMillis(),
+        )
+
+        pendingPaymentDao.insert(entity)
+        paymentSyncService.refreshCounts()
+        Log.d("💵", "💾 Cash payment queued offline: $localId")
+        return localId
     }
 }
 

@@ -22,6 +22,23 @@ class OrderRepository @Inject constructor(
 ) {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
+    // MARK: - Exception types
+
+    class ServerException(val code: Int, message: String) : Exception(message)
+
+    companion object {
+        fun isQueueableError(e: Throwable): Boolean {
+            return e is java.net.UnknownHostException ||
+                e is java.net.ConnectException ||
+                e is java.net.SocketTimeoutException ||
+                e is java.io.IOException
+        }
+
+        fun isQueueableHttpCode(code: Int): Boolean {
+            return code >= 500
+        }
+    }
+
     suspend fun createOrder(request: CreateOrderRequest): Result<CreateOrderResponse> {
         val venueId = secureStorage.venueId ?: return Result.failure(Exception("No venue selected"))
         val token = secureStorage.accessToken ?: return Result.failure(Exception("Not authenticated"))
@@ -49,7 +66,7 @@ class OrderRepository @Inject constructor(
                 Result.success(orderResponse)
             } else {
                 Log.e("📦", "❌ Order creation failed: $responseCode - $responseBody")
-                Result.failure(Exception("Error al crear orden ($responseCode)"))
+                Result.failure(ServerException(responseCode, "Error al crear orden ($responseCode)"))
             }
         } catch (e: Exception) {
             Log.e("📦", "❌ Order creation error: ${e.message}")
