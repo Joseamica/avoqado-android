@@ -46,6 +46,9 @@ class MoreMenuViewModel @Inject constructor(
     val canCreateProducts: Boolean
         get() = roleManager.canCreateProducts
 
+    val canAccessReports: Boolean
+        get() = roleManager.canAccessReports
+
     fun switchVenue(venue: StoredVenue) {
         if (venue.id == secureStorage.venueId) return
 

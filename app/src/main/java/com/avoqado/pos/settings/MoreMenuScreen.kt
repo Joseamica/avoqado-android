@@ -18,7 +18,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
+import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.LocalOffer
 import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.Schedule
@@ -50,6 +52,8 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.avoqado.pos.articles.presentation.ArticlesScreen
 import com.avoqado.pos.auth.presentation.VenueSwitcherSheet
+import com.avoqado.pos.orders.presentation.OrdersScreen
+import com.avoqado.pos.reports.presentation.ReportsScreen
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.printing.presentation.PrinterSettingsSheet
 import com.avoqado.pos.timeclock.presentation.TimeClockSheet
@@ -67,6 +71,8 @@ fun MoreMenuScreen(
     var showPermissions by remember { mutableStateOf(false) }
     var showPinSettings by remember { mutableStateOf(false) }
     var showArticles by remember { mutableStateOf(false) }
+    var showReports by remember { mutableStateOf(false) }
+    var showOrders by remember { mutableStateOf(false) }
 
     // Get real version from PackageManager
     val context = LocalContext.current
@@ -161,6 +167,18 @@ fun MoreMenuScreen(
             label = "Reloj de entrada",
             onClick = { showTimeClock = true },
         )
+        if (viewModel.canAccessReports) {
+            MenuRow(
+                icon = Icons.Filled.BarChart,
+                label = "Informes",
+                onClick = { showReports = true },
+            )
+        }
+        MenuRow(
+            icon = Icons.Filled.Description,
+            label = "Pedidos",
+            onClick = { showOrders = true },
+        )
         if (viewModel.canCreateProducts) {
             MenuRow(
                 icon = Icons.Filled.LocalOffer,
@@ -230,6 +248,29 @@ fun MoreMenuScreen(
                 isTablet = isTablet,
                 onDismiss = { showArticles = false },
             )
+        }
+    }
+
+    // Reports Fullscreen Overlay
+    if (showReports) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.surface),
+        ) {
+            ReportsScreen(onDismiss = { showReports = false })
+        }
+    }
+
+    // Orders Fullscreen Overlay
+    if (showOrders) {
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.surface),
+        ) {
+            val isTablet = maxWidth >= 600.dp
+            OrdersScreen(isTablet = isTablet, onDismiss = { showOrders = false })
         }
     }
     } // end Box
