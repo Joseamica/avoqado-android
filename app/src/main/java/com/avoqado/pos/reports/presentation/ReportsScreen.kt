@@ -21,7 +21,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import com.avoqado.pos.designsystem.components.CircleBackButton
 import androidx.compose.material.icons.automirrored.filled.TrendingUp
 import androidx.compose.material.icons.filled.AttachMoney
 import androidx.compose.material.icons.filled.CalendarMonth
@@ -78,10 +78,21 @@ import com.avoqado.pos.reports.data.model.ReportData
 import com.avoqado.pos.reports.data.model.ReportPeriod
 import com.avoqado.pos.reports.data.model.SalesSummaryReport
 import com.avoqado.pos.reports.data.model.TopProduct
+import androidx.compose.runtime.remember
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+
+// MARK: - File-level constants
+
+private val reportPeriods = listOf(
+    ReportPeriod.TODAY,
+    ReportPeriod.THIS_WEEK,
+    ReportPeriod.THIS_MONTH,
+    ReportPeriod.THREE_MONTHS,
+    ReportPeriod.THIS_YEAR,
+)
 
 // MARK: - Main Screen
 
@@ -221,13 +232,7 @@ private fun ReportsTopBar(onDismiss: () -> Unit) {
                 .padding(horizontal = spacing.sm, vertical = spacing.xs),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            IconButton(onClick = onDismiss) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = "Regresar",
-                    tint = MaterialTheme.colorScheme.onSurface,
-                )
-            }
+            CircleBackButton(onClick = onDismiss)
             Spacer(modifier = Modifier.width(spacing.sm))
             Text(
                 text = "Informes",
@@ -261,14 +266,7 @@ private fun PeriodSelectorSection(
             horizontalArrangement = Arrangement.spacedBy(spacing.sm),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            val periods = listOf(
-                ReportPeriod.TODAY,
-                ReportPeriod.THIS_WEEK,
-                ReportPeriod.THIS_MONTH,
-                ReportPeriod.THREE_MONTHS,
-                ReportPeriod.THIS_YEAR,
-            )
-            periods.forEach { period ->
+            reportPeriods.forEach { period ->
                 val isSelected = selectedPeriod == period
                 Box(
                     modifier = Modifier
@@ -329,7 +327,7 @@ private fun CustomDatePickerSection(
     val spacing = AvoqadoTheme.spacing
     val cornerRadius = AvoqadoTheme.cornerRadius
     val context = LocalContext.current
-    val dateFormatter = SimpleDateFormat("dd/MM/yyyy", Locale.US)
+    val dateFormatter = remember { SimpleDateFormat("dd/MM/yyyy", Locale.US) }
 
     Surface(
         color = MaterialTheme.colorScheme.surface,
@@ -505,38 +503,40 @@ private fun SalesSummarySection(
             Spacer(modifier = Modifier.height(spacing.sm))
 
             // Primary metrics grid (2 columns)
-            val primaryMetrics = listOf(
-                MetricCardData(
-                    icon = Icons.Filled.AttachMoney,
-                    label = "Ventas brutas",
-                    value = summary.grossSalesFormatted,
-                ),
-                MetricCardData(
-                    icon = Icons.AutoMirrored.Filled.TrendingUp,
-                    label = "Ventas netas",
-                    value = summary.netSalesFormatted,
-                ),
-                MetricCardData(
-                    icon = Icons.Filled.Receipt,
-                    label = "Venta promedio",
-                    value = summary.averageTicketFormatted,
-                ),
-                MetricCardData(
-                    icon = Icons.AutoMirrored.Filled.Undo,
-                    label = "Devoluciones",
-                    value = summary.refundsFormatted,
-                ),
-                MetricCardData(
-                    icon = Icons.Filled.Percent,
-                    label = "Descuentos",
-                    value = "-${summary.discountsFormatted}",
-                ),
-                MetricCardData(
-                    icon = Icons.Filled.LocalOffer,
-                    label = "Transacciones",
-                    value = summary.transactionCount.toString(),
-                ),
-            )
+            val primaryMetrics = remember(summary) {
+                listOf(
+                    MetricCardData(
+                        icon = Icons.Filled.AttachMoney,
+                        label = "Ventas brutas",
+                        value = summary.grossSalesFormatted,
+                    ),
+                    MetricCardData(
+                        icon = Icons.AutoMirrored.Filled.TrendingUp,
+                        label = "Ventas netas",
+                        value = summary.netSalesFormatted,
+                    ),
+                    MetricCardData(
+                        icon = Icons.Filled.Receipt,
+                        label = "Venta promedio",
+                        value = summary.averageTicketFormatted,
+                    ),
+                    MetricCardData(
+                        icon = Icons.AutoMirrored.Filled.Undo,
+                        label = "Devoluciones",
+                        value = summary.refundsFormatted,
+                    ),
+                    MetricCardData(
+                        icon = Icons.Filled.Percent,
+                        label = "Descuentos",
+                        value = "-${summary.discountsFormatted}",
+                    ),
+                    MetricCardData(
+                        icon = Icons.Filled.LocalOffer,
+                        label = "Transacciones",
+                        value = summary.transactionCount.toString(),
+                    ),
+                )
+            }
 
             MetricsGrid(metrics = primaryMetrics)
 
@@ -568,38 +568,40 @@ private fun SalesSummarySection(
             if (showDetailed) {
                 Spacer(modifier = Modifier.height(spacing.sm))
 
-                val detailMetrics = listOf(
-                    MetricCardData(
-                        icon = Icons.Filled.Star,
-                        label = "Propinas",
-                        value = summary.tipsFormatted,
-                    ),
-                    MetricCardData(
-                        icon = Icons.Filled.Percent,
-                        label = "Impuestos",
-                        value = summary.taxesFormatted,
-                    ),
-                    MetricCardData(
-                        icon = Icons.Filled.Payments,
-                        label = "Com. plataforma",
-                        value = summary.platformFeesFormatted,
-                    ),
-                    MetricCardData(
-                        icon = Icons.Filled.Payments,
-                        label = "Com. personal",
-                        value = summary.staffCommissionsFormatted,
-                    ),
-                    MetricCardData(
-                        icon = Icons.Filled.AttachMoney,
-                        label = "Total recibido",
-                        value = summary.totalCollectedFormatted,
-                    ),
-                    MetricCardData(
-                        icon = Icons.AutoMirrored.Filled.TrendingUp,
-                        label = "Ganancia neta",
-                        value = summary.netProfitFormatted,
-                    ),
-                )
+                val detailMetrics = remember(summary) {
+                    listOf(
+                        MetricCardData(
+                            icon = Icons.Filled.Star,
+                            label = "Propinas",
+                            value = summary.tipsFormatted,
+                        ),
+                        MetricCardData(
+                            icon = Icons.Filled.Percent,
+                            label = "Impuestos",
+                            value = summary.taxesFormatted,
+                        ),
+                        MetricCardData(
+                            icon = Icons.Filled.Payments,
+                            label = "Com. plataforma",
+                            value = summary.platformFeesFormatted,
+                        ),
+                        MetricCardData(
+                            icon = Icons.Filled.Payments,
+                            label = "Com. personal",
+                            value = summary.staffCommissionsFormatted,
+                        ),
+                        MetricCardData(
+                            icon = Icons.Filled.AttachMoney,
+                            label = "Total recibido",
+                            value = summary.totalCollectedFormatted,
+                        ),
+                        MetricCardData(
+                            icon = Icons.AutoMirrored.Filled.TrendingUp,
+                            label = "Ganancia neta",
+                            value = summary.netProfitFormatted,
+                        ),
+                    )
+                }
                 MetricsGrid(metrics = detailMetrics)
             }
         }
@@ -618,7 +620,7 @@ private data class MetricCardData(
 private fun MetricsGrid(metrics: List<MetricCardData>) {
     val spacing = AvoqadoTheme.spacing
     // 3-column layout using rows of 3
-    val chunked = metrics.chunked(3)
+    val chunked = remember(metrics) { metrics.chunked(3) }
     Column(verticalArrangement = Arrangement.spacedBy(spacing.sm)) {
         chunked.forEach { rowMetrics ->
             Row(

@@ -117,11 +117,13 @@ fun CategoryFormSheet(
                     userScrollEnabled = false,
                 ) {
                     items(categoryColors) { hex ->
-                        val circleColor = try {
-                            Color(android.graphics.Color.parseColor(hex))
-                        } catch (_: Exception) {
-                            MaterialTheme.colorScheme.outlineVariant
-                        }
+                        val circleColor = remember(hex) {
+                            try {
+                                Color(android.graphics.Color.parseColor(hex))
+                            } catch (_: Exception) {
+                                null
+                            }
+                        } ?: MaterialTheme.colorScheme.outlineVariant
                         val isSelected = selectedColor == hex
 
                         Box(

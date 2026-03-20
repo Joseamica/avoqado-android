@@ -14,6 +14,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
@@ -59,7 +60,9 @@ fun CouponFormSheet(
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val isEditing = coupon != null
 
-    val selectedDiscount = discounts.firstOrNull { it.id == selectedDiscountId }
+    val selectedDiscount = remember(discounts, selectedDiscountId) {
+        discounts.firstOrNull { it.id == selectedDiscountId }
+    }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -123,7 +126,7 @@ fun CouponFormSheet(
                         label = { Text("Descuento") },
                         trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = discountMenuExpanded) },
                         modifier = Modifier
-                            .menuAnchor()
+                            .menuAnchor(MenuAnchorType.PrimaryNotEditable)
                             .fillMaxWidth(),
                         isError = selectedDiscountId.isBlank(),
                     )

@@ -25,7 +25,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import com.avoqado.pos.designsystem.components.CircleBackButton
 import androidx.compose.material.icons.filled.AttachMoney
 import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.CheckCircle
@@ -71,8 +71,39 @@ import com.avoqado.pos.orders.data.model.OrderPaymentInfo
 import com.avoqado.pos.orders.data.model.OrderStatus
 import com.avoqado.pos.orders.data.model.OrderSummary
 import com.avoqado.pos.orders.data.model.PaymentStatus
+import androidx.compose.runtime.remember
 import java.text.SimpleDateFormat
 import java.util.Locale
+
+// MARK: - File-level constants
+
+private data class FilterOption(val label: String, val value: String?)
+
+private val statusFilters = listOf(
+    FilterOption("Todos", null),
+    FilterOption("Pendientes", "PENDING"),
+    FilterOption("Completados", "COMPLETED"),
+    FilterOption("Cancelados", "CANCELLED"),
+)
+
+// Status badge color constants (avoids Color.copy() allocations on every recomposition)
+private val OrderPendingBg = Warning.copy(alpha = 0.15f)
+private val OrderCompletedBg = Success.copy(alpha = 0.15f)
+private val OrderConfirmedBg = Info.copy(alpha = 0.15f)
+private val OrderCancelledBg = Error.copy(alpha = 0.15f)
+private val PaymentPendingBg = Warning.copy(alpha = 0.15f)
+private val PaymentPartialBg = Info.copy(alpha = 0.15f)
+private val PaymentPaidBg = Success.copy(alpha = 0.15f)
+private val WarningSubtleBg = Warning.copy(alpha = 0.1f)
+
+// Pre-built SimpleDateFormat parsers for formatDetailDate
+private val detailDateOutputSdf = SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.US)
+private val detailDateInputFormats = listOf(
+    "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",
+    "yyyy-MM-dd'T'HH:mm:ss'Z'",
+    "yyyy-MM-dd'T'HH:mm:ssXXX",
+    "yyyy-MM-dd'T'HH:mm:ss.SSSXXX",
+).map { SimpleDateFormat(it, Locale.US).also { sdf -> sdf.isLenient = false } }
 
 // MARK: - Main Entry Point
 
@@ -177,7 +208,7 @@ private fun OrderListView(
     val statusFilter by viewModel.statusFilter.collectAsState()
     val selectedOrderId by viewModel.selectedOrderId.collectAsState()
 
-    val grouped = viewModel.groupOrdersByDate(orders)
+    val grouped = remember(orders) { viewModel.groupOrdersByDate(orders) }
 
     Column(
         modifier = modifier.background(MaterialTheme.colorScheme.surface),
@@ -195,16 +226,7 @@ private fun OrderListView(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             if (!isTablet) {
-                IconButton(
-                    onClick = onBack,
-                    modifier = Modifier.size(36.dp),
-                ) {
-                    Icon(
-                        Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "Regresar",
-                        tint = MaterialTheme.colorScheme.onSurface,
-                    )
-                }
+                CircleBackButton(onClick = onBack)
                 Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
             }
             Text(
@@ -372,16 +394,7 @@ fun OrderDetailView(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             if (onBack != null) {
-                IconButton(
-                    onClick = onBack,
-                    modifier = Modifier.size(36.dp),
-                ) {
-                    Icon(
-                        Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "Regresar",
-                        tint = MaterialTheme.colorScheme.onSurface,
-                    )
-                }
+                CircleBackButton(onClick = onBack)
                 Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
             }
             Text(
@@ -451,7 +464,7 @@ private fun OrderStatusSection(order: OrderDetail) {
         if (!order.specialRequests.isNullOrBlank()) {
             Card(
                 colors = CardDefaults.cardColors(
-                    containerColor = Warning.copy(alpha = 0.1f),
+                    containerColor = WarningSubtleBg,
                 ),
                 shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.md),
             ) {
@@ -885,10 +898,10 @@ private fun OrderRow(
 @Composable
 private fun OrderStatusBadge(status: OrderStatus) {
     val (bgColor, textColor) = when (status) {
-        OrderStatus.PENDING -> Warning.copy(alpha = 0.15f) to Warning
-        OrderStatus.COMPLETED -> Success.copy(alpha = 0.15f) to Success
-        OrderStatus.CONFIRMED -> Info.copy(alpha = 0.15f) to Info
-        OrderStatus.CANCELLED -> Error.copy(alpha = 0.15f) to Error
+        OrderStatus.PENDING -> OrderPendingBg to Warning
+        OrderStatus.COMPLETED -> OrderCompletedBg to Success
+        OrderStatus.CONFIRMED -> OrderConfirmedBg to Info
+        OrderStatus.CANCELLED -> OrderCancelledBg to Error
     }
 
     Box(
@@ -909,9 +922,9 @@ private fun OrderStatusBadge(status: OrderStatus) {
 @Composable
 private fun PaymentStatusBadge(status: PaymentStatus) {
     val (bgColor, textColor) = when (status) {
-        PaymentStatus.PENDING -> Warning.copy(alpha = 0.15f) to Warning
-        PaymentStatus.PARTIAL -> Info.copy(alpha = 0.15f) to Info
-        PaymentStatus.PAID -> Success.copy(alpha = 0.15f) to Success
+        PaymentStatus.PENDING -> PaymentPendingBg to Warning
+        PaymentStatus.PARTIAL -> PaymentPartialBg to Info
+        PaymentStatus.PAID -> PaymentPaidBg to Success
     }
 
     Box(
@@ -953,21 +966,12 @@ private fun StatusFilterRow(
     currentFilter: String?,
     onFilterSelected: (String?) -> Unit,
 ) {
-    data class FilterOption(val label: String, val value: String?)
-
-    val filters = listOf(
-        FilterOption("Todos", null),
-        FilterOption("Pendientes", "PENDING"),
-        FilterOption("Completados", "COMPLETED"),
-        FilterOption("Cancelados", "CANCELLED"),
-    )
-
     LazyRow(
         contentPadding = PaddingValues(horizontal = AvoqadoTheme.spacing.lg),
         horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
         modifier = Modifier.padding(vertical = AvoqadoTheme.spacing.xs),
     ) {
-        items(filters) { option ->
+        items(statusFilters) { option ->
             val isSelected = currentFilter == option.value
             Box(
                 modifier = Modifier
@@ -1095,18 +1099,10 @@ private fun paymentMethodIcon(method: String) = when (method.uppercase()) {
 }
 
 private fun formatDetailDate(isoString: String): String {
-    val formats = listOf(
-        "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",
-        "yyyy-MM-dd'T'HH:mm:ss'Z'",
-        "yyyy-MM-dd'T'HH:mm:ssXXX",
-        "yyyy-MM-dd'T'HH:mm:ss.SSSXXX",
-    )
-    for (fmt in formats) {
+    for (sdf in detailDateInputFormats) {
         try {
-            val sdf = java.text.SimpleDateFormat(fmt, Locale.US)
-            sdf.isLenient = false
             val date = sdf.parse(isoString) ?: continue
-            return SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.US).format(date)
+            return detailDateOutputSdf.format(date)
         } catch (_: Exception) {
             // try next
         }

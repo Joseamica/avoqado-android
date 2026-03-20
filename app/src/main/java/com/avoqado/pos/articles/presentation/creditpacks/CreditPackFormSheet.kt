@@ -18,6 +18,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
+import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -289,7 +290,9 @@ private fun CreditPackItemRow(
     onRemove: () -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
-    val selectedProduct = products.firstOrNull { it.id == item.productId }
+    val selectedProduct = remember(products, item.productId) {
+        products.firstOrNull { it.id == item.productId }
+    }
 
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -308,7 +311,7 @@ private fun CreditPackItemRow(
                 label = { Text("Seleccionar...") },
                 trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
                 modifier = Modifier
-                    .menuAnchor()
+                    .menuAnchor(MenuAnchorType.PrimaryNotEditable)
                     .fillMaxWidth(),
                 singleLine = true,
             )

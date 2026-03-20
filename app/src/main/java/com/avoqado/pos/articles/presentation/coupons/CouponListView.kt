@@ -47,6 +47,9 @@ import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Error
 import com.avoqado.pos.designsystem.theme.Success
 
+private val SuccessSubtleBg = Success.copy(alpha = 0.15f)
+private val ErrorSubtleBg = Error.copy(alpha = 0.15f)
+
 @Composable
 fun CouponListView(viewModel: ArticlesViewModel) {
     val coupons by viewModel.coupons.collectAsState()
@@ -256,7 +259,7 @@ private fun CouponRow(
                 Surface(
                     shape = RoundedCornerShape(50),
                     color = if (isActive) {
-                        Success.copy(alpha = 0.15f)
+                        SuccessSubtleBg
                     } else {
                         MaterialTheme.colorScheme.outlineVariant
                     },
@@ -276,7 +279,7 @@ private fun CouponRow(
                 if (coupon.isExpired) {
                     Surface(
                         shape = RoundedCornerShape(50),
-                        color = Error.copy(alpha = 0.15f),
+                        color = ErrorSubtleBg,
                     ) {
                         Text(
                             text = "Expirado",

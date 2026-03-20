@@ -2,6 +2,7 @@ package com.avoqado.pos.articles.presentation.products
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -13,9 +14,13 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Clear
@@ -41,10 +46,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.clickable
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.avoqado.pos.articles.data.model.ArticleCategory
 import com.avoqado.pos.articles.data.model.ArticleProduct
+import com.avoqado.pos.articles.data.model.PriceType
+import com.avoqado.pos.articles.data.model.ProductType
 import com.avoqado.pos.articles.presentation.ArticlesViewModel
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 
@@ -57,6 +67,10 @@ fun ProductListView(viewModel: ArticlesViewModel) {
     var showCreateForm by remember { mutableStateOf(false) }
     var editingProduct by remember { mutableStateOf<ArticleProduct?>(null) }
     var deletingProduct by remember { mutableStateOf<ArticleProduct?>(null) }
+
+    // Quick-add inline state
+    var quickAddName by remember { mutableStateOf("") }
+    var quickAddPrice by remember { mutableStateOf("") }
 
     // Show detail view (create or edit) instead of the list
     if (showCreateForm || editingProduct != null) {
@@ -71,11 +85,11 @@ fun ProductListView(viewModel: ArticlesViewModel) {
         return
     }
 
-    val filteredProducts = if (searchQuery.isBlank()) {
-        products
-    } else {
-        products.filter { it.name.contains(searchQuery, ignoreCase = true) }
+    val filteredProducts = remember(products, searchQuery) {
+        if (searchQuery.isBlank()) products
+        else products.filter { it.name.contains(searchQuery, ignoreCase = true) }
     }
+    val categoryMap = remember(categories) { categories.associateBy { it.id } }
 
     Column(modifier = Modifier.fillMaxSize()) {
         // MARK: - Header
@@ -107,20 +121,25 @@ fun ProductListView(viewModel: ArticlesViewModel) {
                 Icon(
                     imageVector = Icons.Filled.Add,
                     contentDescription = "Crear articulo",
-                    tint = Color.White,
+                    tint = MaterialTheme.colorScheme.onPrimary,
                     modifier = Modifier.size(20.dp),
                 )
             }
         }
 
-        // MARK: - Search bar
+        // MARK: - Search bar (outlined style)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.sm)
+                .border(
+                    width = 1.dp,
+                    color = MaterialTheme.colorScheme.outlineVariant,
+                    shape = RoundedCornerShape(12.dp),
+                )
                 .background(
-                    color = MaterialTheme.colorScheme.surfaceVariant,
-                    shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.md),
+                    color = MaterialTheme.colorScheme.surface,
+                    shape = RoundedCornerShape(12.dp),
                 )
                 .padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.sm),
             verticalAlignment = Alignment.CenterVertically,
@@ -165,7 +184,7 @@ fun ProductListView(viewModel: ArticlesViewModel) {
         }
 
         // MARK: - Content
-        if (filteredProducts.isEmpty()) {
+        if (filteredProducts.isEmpty() && searchQuery.isNotBlank()) {
             // Empty state
             Box(
                 modifier = Modifier
@@ -199,8 +218,40 @@ fun ProductListView(viewModel: ArticlesViewModel) {
             }
         } else {
             LazyColumn(modifier = Modifier.fillMaxSize()) {
+                // MARK: - Quick-add inline row
+                item {
+                    QuickAddRow(
+                        name = quickAddName,
+                        price = quickAddPrice,
+                        onNameChange = { quickAddName = it },
+                        onPriceChange = { quickAddPrice = it },
+                        onSubmit = {
+                            if (quickAddName.isNotBlank()) {
+                                viewModel.createProduct(
+                                    name = quickAddName.trim(),
+                                    type = ProductType.REGULAR,
+                                    priceType = PriceType.FIXED,
+                                    price = quickAddPrice.toDoubleOrNull(),
+                                    taxRate = 0.16,
+                                    isActive = true,
+                                    trackInventory = false,
+                                )
+                                quickAddName = ""
+                                quickAddPrice = ""
+                            }
+                        },
+                    )
+                    // Full-width divider
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(0.5.dp)
+                            .background(MaterialTheme.colorScheme.outlineVariant),
+                    )
+                }
+
                 items(filteredProducts, key = { it.id }) { product ->
-                    val category = categories.find { it.id == product.categoryId }
+                    val category = categoryMap[product.categoryId]
                         ?: product.category
                     ProductRow(
                         product = product,
@@ -244,6 +295,99 @@ fun ProductListView(viewModel: ArticlesViewModel) {
     }
 }
 
+// MARK: - Quick-Add Inline Row
+
+@Composable
+private fun QuickAddRow(
+    name: String,
+    price: String,
+    onNameChange: (String) -> Unit,
+    onPriceChange: (String) -> Unit,
+    onSubmit: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(
+                horizontal = AvoqadoTheme.spacing.lg,
+                vertical = 14.dp,
+            ),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
+    ) {
+        // Plus icon in a gray rounded square
+        Box(
+            modifier = Modifier
+                .size(44.dp)
+                .background(
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.sm),
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Add,
+                contentDescription = "Agregar",
+                modifier = Modifier.size(20.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        // Name text field
+        Box(modifier = Modifier.weight(1f)) {
+            if (name.isEmpty()) {
+                Text(
+                    text = "Nombre del artículo",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            BasicTextField(
+                value = name,
+                onValueChange = onNameChange,
+                textStyle = MaterialTheme.typography.bodyMedium.copy(
+                    color = MaterialTheme.colorScheme.onSurface,
+                ),
+                singleLine = true,
+                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Next),
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+
+        // Price text field
+        Box(modifier = Modifier.width(72.dp)) {
+            if (price.isEmpty()) {
+                Text(
+                    text = "$0.00",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.End,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            BasicTextField(
+                value = price,
+                onValueChange = onPriceChange,
+                textStyle = MaterialTheme.typography.bodyMedium.copy(
+                    color = MaterialTheme.colorScheme.onSurface,
+                    textAlign = TextAlign.End,
+                ),
+                singleLine = true,
+                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                keyboardOptions = KeyboardOptions(
+                    keyboardType = KeyboardType.Decimal,
+                    imeAction = ImeAction.Done,
+                ),
+                keyboardActions = KeyboardActions(
+                    onDone = { onSubmit() },
+                ),
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+    }
+}
+
 // MARK: - Product Row
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -266,13 +410,13 @@ private fun ProductRow(
             )
             .padding(
                 horizontal = AvoqadoTheme.spacing.lg,
-                vertical = AvoqadoTheme.spacing.md,
+                vertical = 14.dp,
             ),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
     ) {
-        // Avatar
-        ProductAvatar(product = product, category = category)
+        // Avatar (neutral gray)
+        ProductAvatar(product = product)
 
         // Name + category
         Column(modifier = Modifier.weight(1f)) {
@@ -326,41 +470,26 @@ private fun ProductRow(
         }
     }
 
-    // Divider
+    // Divider (full width, no horizontal padding)
     Box(
         modifier = Modifier
             .fillMaxWidth()
             .height(0.5.dp)
-            .padding(horizontal = AvoqadoTheme.spacing.lg)
             .background(MaterialTheme.colorScheme.outlineVariant),
     )
 }
 
-// MARK: - Product Avatar
+// MARK: - Product Avatar (neutral gray)
 
 @Composable
 private fun ProductAvatar(
     product: ArticleProduct,
-    category: ArticleCategory?,
 ) {
-    val categoryColor = category?.color?.let { hex ->
-        try {
-            Color(android.graphics.Color.parseColor(hex))
-        } catch (_: Exception) {
-            null
-        }
-    }
-
-    val bgColor = categoryColor?.copy(alpha = 0.2f)
-        ?: MaterialTheme.colorScheme.surfaceContainerHigh
-    val textColor = categoryColor
-        ?: MaterialTheme.colorScheme.onSurfaceVariant
-
     Box(
         modifier = Modifier
             .size(44.dp)
             .background(
-                color = bgColor,
+                color = MaterialTheme.colorScheme.surfaceContainerHigh,
                 shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.sm),
             ),
         contentAlignment = Alignment.Center,
@@ -368,7 +497,7 @@ private fun ProductAvatar(
         Text(
             text = product.initials,
             style = MaterialTheme.typography.labelLarge,
-            color = textColor,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
 }

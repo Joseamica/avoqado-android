@@ -45,6 +45,8 @@ import com.avoqado.pos.articles.presentation.ArticlesViewModel
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Success
 
+private val SuccessSubtleBg = Success.copy(alpha = 0.15f)
+
 @Composable
 fun DiscountListView(viewModel: ArticlesViewModel) {
     val discounts by viewModel.discounts.collectAsState()
@@ -247,7 +249,7 @@ private fun DiscountRow(
             Surface(
                 shape = RoundedCornerShape(50),
                 color = if (isActive) {
-                    Success.copy(alpha = 0.15f)
+                    SuccessSubtleBg
                 } else {
                     MaterialTheme.colorScheme.outlineVariant
                 },

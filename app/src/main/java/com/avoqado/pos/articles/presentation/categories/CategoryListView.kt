@@ -208,10 +208,12 @@ private fun CategoryRow(
     ) {
         // Color circle
         val circleColor = category.color?.let { hex ->
-            try {
-                Color(android.graphics.Color.parseColor(hex))
-            } catch (_: Exception) {
-                null
+            remember(hex) {
+                try {
+                    Color(android.graphics.Color.parseColor(hex))
+                } catch (_: Exception) {
+                    null
+                }
             }
         } ?: MaterialTheme.colorScheme.outlineVariant
 
