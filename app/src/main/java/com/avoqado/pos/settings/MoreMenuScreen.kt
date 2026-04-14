@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.ui.zIndex
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -20,13 +21,21 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Extension
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.LocalOffer
+import androidx.compose.material.icons.filled.People
+import androidx.compose.material.icons.automirrored.filled.PlaylistAddCheck
+import androidx.compose.material.icons.filled.PointOfSale
 import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Restaurant
 import androidx.compose.material.icons.filled.Store
+import androidx.compose.material.icons.automirrored.filled.HelpOutline
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -50,12 +59,21 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.avoqado.pos.addons.presentation.AddonsScreen
 import com.avoqado.pos.articles.presentation.ArticlesScreen
 import com.avoqado.pos.auth.presentation.VenueSwitcherSheet
-import com.avoqado.pos.orders.presentation.OrdersScreen
-import com.avoqado.pos.reports.presentation.ReportsScreen
+import com.avoqado.pos.cashdrawer.presentation.CashDrawerScreen
+import com.avoqado.pos.customers.presentation.CustomersScreen
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
+import com.avoqado.pos.estimates.presentation.EstimatesScreen
+import com.avoqado.pos.kds.presentation.KDSScreen
+import com.avoqado.pos.orders.presentation.OrdersScreen
 import com.avoqado.pos.printing.presentation.PrinterSettingsSheet
+import com.avoqado.pos.reports.presentation.ReportsScreen
+import com.avoqado.pos.settings.presentation.ChangeModeSheet
+import com.avoqado.pos.settings.presentation.CustomizeMenuSheet
+import com.avoqado.pos.settings.presentation.SetupWizardScreen
+import com.avoqado.pos.settings.presentation.SupportScreen
 import com.avoqado.pos.timeclock.presentation.TimeClockSheet
 
 @Composable
@@ -65,14 +83,24 @@ fun MoreMenuScreen(
 ) {
     val venueName by viewModel.venueName.collectAsState()
     val isSwitching by viewModel.isSwitching.collectAsState()
+    val currentMode by viewModel.posModeManager.currentMode.collectAsState()
     var showVenueSwitcher by remember { mutableStateOf(false) }
     var showTimeClock by remember { mutableStateOf(false) }
     var showPrinter by remember { mutableStateOf(false) }
     var showPermissions by remember { mutableStateOf(false) }
     var showPinSettings by remember { mutableStateOf(false) }
     var showArticles by remember { mutableStateOf(false) }
+    var showCustomers by remember { mutableStateOf(false) }
     var showReports by remember { mutableStateOf(false) }
     var showOrders by remember { mutableStateOf(false) }
+    var showCashDrawer by remember { mutableStateOf(false) }
+    var showEstimates by remember { mutableStateOf(false) }
+    var showSetupWizard by remember { mutableStateOf(false) }
+    var showCustomizeMenu by remember { mutableStateOf(false) }
+    var showSupport by remember { mutableStateOf(false) }
+    var showChangeMode by remember { mutableStateOf(false) }
+    var showAddons by remember { mutableStateOf(false) }
+    var showKDS by remember { mutableStateOf(false) }
 
     // Get real version from PackageManager
     val context = LocalContext.current
@@ -103,7 +131,31 @@ fun MoreMenuScreen(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
 
-        Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
+        Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
+
+        // Mode Selector Row
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { showChangeMode = true }
+                .padding(vertical = AvoqadoTheme.spacing.sm),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = "Modo: ${currentMode.displayName}",
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Icon(
+                Icons.Filled.KeyboardArrowDown,
+                contentDescription = null,
+                modifier = Modifier.size(AvoqadoTheme.dimensions.iconLarge),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
 
         // Venue Card (matching iOS: "Sucursal" + venue name + chevron)
         Card(modifier = Modifier.fillMaxWidth()) {
@@ -179,6 +231,16 @@ fun MoreMenuScreen(
             label = "Pedidos",
             onClick = { showOrders = true },
         )
+        MenuRow(
+            icon = Icons.Filled.PointOfSale,
+            label = "Caja",
+            onClick = { showCashDrawer = true },
+        )
+        MenuRow(
+            icon = Icons.Filled.Restaurant,
+            label = "Pantalla de cocina",
+            onClick = { showKDS = true },
+        )
         if (viewModel.canCreateProducts) {
             MenuRow(
                 icon = Icons.Filled.LocalOffer,
@@ -186,6 +248,16 @@ fun MoreMenuScreen(
                 onClick = { showArticles = true },
             )
         }
+        MenuRow(
+            icon = Icons.Filled.People,
+            label = "Clientes",
+            onClick = { showCustomers = true },
+        )
+        MenuRow(
+            icon = Icons.Filled.Description,
+            label = "Presupuestos",
+            onClick = { showEstimates = true },
+        )
         MenuRow(
             icon = Icons.Filled.Security,
             label = "Permisos",
@@ -195,6 +267,26 @@ fun MoreMenuScreen(
             icon = Icons.Filled.Settings,
             label = "Configuracion PIN",
             onClick = { showPinSettings = true },
+        )
+        MenuRow(
+            icon = Icons.AutoMirrored.Filled.PlaylistAddCheck,
+            label = "Configuracion",
+            onClick = { showSetupWizard = true },
+        )
+        MenuRow(
+            icon = Icons.Filled.Dashboard,
+            label = "Personalizar menu",
+            onClick = { showCustomizeMenu = true },
+        )
+        MenuRow(
+            icon = Icons.Filled.Extension,
+            label = "Complementos",
+            onClick = { showAddons = true },
+        )
+        MenuRow(
+            icon = Icons.AutoMirrored.Filled.HelpOutline,
+            label = "Atencion al cliente",
+            onClick = { showSupport = true },
         )
 
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
@@ -241,6 +333,7 @@ fun MoreMenuScreen(
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
+                .zIndex(10f)
                 .background(MaterialTheme.colorScheme.surface),
         ) {
             val isTablet = maxWidth >= 600.dp
@@ -251,11 +344,28 @@ fun MoreMenuScreen(
         }
     }
 
+    // Customers Fullscreen Overlay
+    if (showCustomers) {
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxSize()
+                .zIndex(10f)
+                .background(MaterialTheme.colorScheme.surface),
+        ) {
+            val isTablet = maxWidth >= 600.dp
+            CustomersScreen(
+                isTablet = isTablet,
+                onDismiss = { showCustomers = false },
+            )
+        }
+    }
+
     // Reports Fullscreen Overlay
     if (showReports) {
         Box(
             modifier = Modifier
                 .fillMaxSize()
+                .zIndex(10f)
                 .background(MaterialTheme.colorScheme.surface),
         ) {
             ReportsScreen(onDismiss = { showReports = false })
@@ -267,13 +377,107 @@ fun MoreMenuScreen(
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
+                .zIndex(10f)
                 .background(MaterialTheme.colorScheme.surface),
         ) {
             val isTablet = maxWidth >= 600.dp
             OrdersScreen(isTablet = isTablet, onDismiss = { showOrders = false })
         }
     }
+
+    // Cash Drawer Fullscreen Overlay
+    if (showCashDrawer) {
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxSize()
+                .zIndex(10f)
+                .background(MaterialTheme.colorScheme.surface),
+        ) {
+            val isTablet = maxWidth >= 600.dp
+            CashDrawerScreen(
+                isTablet = isTablet,
+                onDismiss = { showCashDrawer = false },
+            )
+        }
+    }
+    // Estimates Fullscreen Overlay
+    if (showEstimates) {
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxSize()
+                .zIndex(10f)
+                .background(MaterialTheme.colorScheme.surface),
+        ) {
+            val isTablet = maxWidth >= 600.dp
+            EstimatesScreen(
+                isTablet = isTablet,
+                onDismiss = { showEstimates = false },
+            )
+        }
+    }
+
+    // Setup Wizard Fullscreen Overlay
+    if (showSetupWizard) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .zIndex(10f)
+                .background(MaterialTheme.colorScheme.surface),
+        ) {
+            SetupWizardScreen(onDismiss = { showSetupWizard = false })
+        }
+    }
+
+    // Support Fullscreen Overlay
+    if (showSupport) {
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxSize()
+                .zIndex(10f)
+                .background(MaterialTheme.colorScheme.surface),
+        ) {
+            val isTablet = maxWidth >= 600.dp
+            SupportScreen(
+                isTablet = isTablet,
+                onDismiss = { showSupport = false },
+            )
+        }
+    }
+
+    // KDS Fullscreen Overlay
+    if (showKDS) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .zIndex(10f)
+                .background(MaterialTheme.colorScheme.surface),
+        ) {
+            KDSScreen(onDismiss = { showKDS = false })
+        }
+    }
+
+    // Addons Fullscreen Overlay
+    if (showAddons) {
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxSize()
+                .zIndex(10f)
+                .background(MaterialTheme.colorScheme.surface),
+        ) {
+            val isTablet = maxWidth >= 600.dp
+            AddonsScreen(
+                isTablet = isTablet,
+                addonsManager = viewModel.addonsManager,
+                onDismiss = { showAddons = false },
+            )
+        }
+    }
     } // end Box
+
+    // Customize Menu Sheet
+    if (showCustomizeMenu) {
+        CustomizeMenuSheet(onDismiss = { showCustomizeMenu = false })
+    }
 
     // Venue Switcher Sheet
     if (showVenueSwitcher) {
@@ -319,6 +523,14 @@ fun MoreMenuScreen(
             title = "Configuracion PIN",
             message = "La configuracion de PIN estara disponible proximamente.",
             onDismiss = { showPinSettings = false },
+        )
+    }
+
+    // Change Mode Sheet
+    if (showChangeMode) {
+        ChangeModeSheet(
+            posModeManager = viewModel.posModeManager,
+            onDismiss = { showChangeMode = false },
         )
     }
 

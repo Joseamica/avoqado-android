@@ -1,5 +1,6 @@
 package com.avoqado.pos.pos.presentation.checkout
 
+import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -16,6 +17,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.GridItemSpan
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
@@ -23,7 +25,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import com.avoqado.pos.designsystem.components.CircleBackButton
 import androidx.compose.material.icons.filled.CardGiftcard
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
@@ -70,9 +72,11 @@ import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Success
 import com.avoqado.pos.pos.data.DiscountsRepository
 import com.avoqado.pos.pos.data.SavedCartsRepository
+import androidx.compose.ui.platform.LocalContext
 import com.avoqado.pos.pos.data.model.CartItem
 import com.avoqado.pos.pos.data.model.CartItemType
 import com.avoqado.pos.pos.data.model.Discount
+import com.avoqado.pos.pos.data.model.Product
 import com.avoqado.pos.pos.data.model.SavedCart
 import com.avoqado.pos.pos.data.model.SelectedModifier
 import com.avoqado.pos.pos.presentation.cart.CartState
@@ -122,15 +126,21 @@ fun ShortcutsGridView(
     discountsRepository: DiscountsRepository,
     onCustomerSearch: () -> Unit = {},
     onCreateItem: () -> Unit = {},
+    onProductTap: (Product) -> Unit = {},
+    canCreateProducts: Boolean = true,
 ) {
     val cartState by cartViewModel.cartState.collectAsState()
+    val allProducts by cartViewModel.products.collectAsState()
     var currentScreen by remember { mutableStateOf(ShortcutsScreen.MAIN) }
 
     when (currentScreen) {
         ShortcutsScreen.MAIN -> {
             ShortcutsMainGrid(
                 cartState = cartState,
+                allProducts = allProducts,
                 onNavigate = { currentScreen = it },
+                onProductTap = onProductTap,
+                canCreateProducts = canCreateProducts,
             )
         }
         ShortcutsScreen.DISCOUNTS -> {
@@ -184,11 +194,21 @@ fun ShortcutsGridView(
 @Composable
 private fun ShortcutsMainGrid(
     cartState: CartState,
+    allProducts: List<Product>,
     onNavigate: (ShortcutsScreen) -> Unit,
+    onProductTap: (Product) -> Unit = {},
+    canCreateProducts: Boolean = true,
 ) {
     val hasItems = !cartState.isEmpty
+    val context = LocalContext.current
 
-    val shortcuts = listOf(
+    // Load mosaic products from saved preferences
+    val savedIds = remember { MosaicPreferences.getSavedProductIds(context) }
+    val mosaicProducts = remember(savedIds, allProducts) {
+        savedIds.mapNotNull { id -> allProducts.find { it.id == id } }
+    }
+
+    val shortcuts = listOfNotNull(
         ShortcutItem(
             id = "giftcard",
             name = "Gift Card",
@@ -198,13 +218,13 @@ private fun ShortcutsMainGrid(
             enabled = false,
             badge = "Pronto",
         ),
-        ShortcutItem(
+        if (canCreateProducts) ShortcutItem(
             id = "createitem",
             name = "Crear articulo",
             icon = Icons.Filled.LocalOffer,
             color = ActionColors.createItem,
             screen = ShortcutsScreen.CREATE_ITEM,
-        ),
+        ) else null,
         ShortcutItem(
             id = "discounts",
             name = "Descuentos",
@@ -266,7 +286,7 @@ private fun ShortcutsMainGrid(
             )
         }
 
-        // Shortcuts grid
+        // Combined grid: mosaic products + action shortcuts
         LazyVerticalGrid(
             columns = GridCells.Fixed(2),
             contentPadding = PaddingValues(AvoqadoTheme.spacing.lg),
@@ -274,6 +294,40 @@ private fun ShortcutsMainGrid(
             verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
             modifier = Modifier.fillMaxSize(),
         ) {
+            // Mosaic products section
+            if (mosaicProducts.isNotEmpty()) {
+                item(span = { GridItemSpan(2) }) {
+                    Text(
+                        text = "Favoritos",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(bottom = AvoqadoTheme.spacing.xs),
+                    )
+                }
+
+                items(mosaicProducts, key = { "mosaic_${it.id}" }) { product ->
+                    MosaicProductTile(
+                        product = product,
+                        onClick = { onProductTap(product) },
+                    )
+                }
+
+                item(span = { GridItemSpan(2) }) {
+                    Text(
+                        text = "Acciones",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(
+                            top = AvoqadoTheme.spacing.md,
+                            bottom = AvoqadoTheme.spacing.xs,
+                        ),
+                    )
+                }
+            }
+
+            // Action shortcuts
             items(shortcuts, key = { it.id }) { shortcut ->
                 ShortcutTile(
                     shortcut = shortcut,
@@ -353,6 +407,64 @@ private fun ShortcutTile(
     }
 }
 
+// MARK: - Mosaic Product Tile (quick-add product button)
+
+@Composable
+private fun MosaicProductTile(
+    product: Product,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(110.dp)
+            .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.lg))
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+            .clickable(onClick = onClick),
+    ) {
+        // Initials at top-left
+        Box(
+            modifier = Modifier
+                .padding(start = 14.dp, top = 14.dp)
+                .size(28.dp)
+                .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.sm))
+                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f))
+                .align(Alignment.TopStart),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = product.name.take(2).uppercase(),
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
+
+        // Price at top-right
+        Text(
+            text = product.displayPrice,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = 14.dp, end = 14.dp),
+        )
+
+        // Name at bottom-left
+        Text(
+            text = product.name,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(start = 14.dp, bottom = 14.dp, end = 14.dp),
+        )
+    }
+}
+
 // MARK: - Breadcrumb Header (matching iOS: back button + Shortcuts > Title)
 
 @Composable
@@ -369,21 +481,7 @@ private fun BreadcrumbHeader(
             horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
         ) {
             // Back button
-            Box(
-                modifier = Modifier
-                    .size(36.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.surfaceVariant)
-                    .clickable(onClick = onBack),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = "Volver",
-                    tint = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.size(18.dp),
-                )
-            }
+            CircleBackButton(onClick = onBack)
 
             // Breadcrumb: Shortcuts > Title
             Row(

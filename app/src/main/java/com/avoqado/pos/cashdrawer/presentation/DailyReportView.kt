@@ -1,0 +1,302 @@
+package com.avoqado.pos.cashdrawer.presentation
+
+import android.widget.Toast
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import com.avoqado.pos.cashdrawer.data.model.CashDrawerEventEntity
+import com.avoqado.pos.cashdrawer.data.model.CashDrawerEventType
+import com.avoqado.pos.cashdrawer.data.model.CashDrawerSessionEntity
+import com.avoqado.pos.designsystem.components.CircleBackButton
+import com.avoqado.pos.designsystem.theme.AvoqadoTheme
+import com.avoqado.pos.designsystem.theme.Error
+import com.avoqado.pos.designsystem.theme.Success
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+import kotlin.math.abs
+
+// MARK: - Daily Report (Z-Report / Corte de Caja)
+
+@Composable
+fun DailyReportView(
+    session: CashDrawerSessionEntity,
+    events: List<CashDrawerEventEntity>,
+    venueName: String = "Avoqado",
+    onDismiss: () -> Unit,
+) {
+    val context = LocalContext.current
+    val dateFormat = SimpleDateFormat("dd MMM yyyy", Locale("es", "MX"))
+    val timeFormat = SimpleDateFormat("HH:mm", Locale("es", "MX"))
+
+    // Compute totals from events
+    val cashSalesCents = events
+        .filter { it.type == CashDrawerEventType.CASH_SALE.name }
+        .sumOf { it.amountCents }
+    val payInsCents = events
+        .filter { it.type == CashDrawerEventType.PAY_IN.name }
+        .sumOf { it.amountCents }
+    val payOutsCents = events
+        .filter { it.type == CashDrawerEventType.PAY_OUT.name }
+        .sumOf { it.amountCents }
+
+    val transactionCount = events.count { it.type == CashDrawerEventType.CASH_SALE.name }
+    val totalSalesCents = cashSalesCents
+    val avgTicketCents = if (transactionCount > 0) totalSalesCents / transactionCount else 0
+
+    val expectedCents = session.startingAmountCents + cashSalesCents + payInsCents - payOutsCents
+    val actualCents = session.actualAmountCents ?: 0
+    val differenceCents = actualCents - expectedCents
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.surface),
+    ) {
+        // Header
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(
+                    horizontal = AvoqadoTheme.spacing.lg,
+                    vertical = AvoqadoTheme.spacing.md,
+                ),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            CircleBackButton(onClick = onDismiss)
+            Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.md))
+            Text(
+                text = "Corte de caja",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+        }
+
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .padding(AvoqadoTheme.spacing.lg),
+        ) {
+            // Report header info
+            Text(
+                text = venueName,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+                text = dateFormat.format(Date(session.openedAt)),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = "Apertura: ${timeFormat.format(Date(session.openedAt))} - Cierre: ${
+                    session.closedAt?.let { timeFormat.format(Date(it)) } ?: "--"
+                }",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = "Operador: ${session.openedByName}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
+
+            // Sales summary section
+            ReportSectionTitle(text = "Resumen de ventas")
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+
+            ReportRow(label = "Ventas totales", value = formatCurrency(totalSalesCents))
+            ReportRow(label = "No. de transacciones", value = "$transactionCount")
+            ReportRow(label = "Ticket promedio", value = formatCurrency(avgTicketCents))
+
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
+
+            // Payment method breakdown
+            ReportSectionTitle(text = "Desglose por metodo de pago")
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+
+            ReportRow(label = "Efectivo", value = formatCurrency(cashSalesCents))
+            // Card and other methods would come from order data, placeholder for now
+            ReportRow(label = "Tarjeta", value = formatCurrency(0))
+
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
+
+            // Cash movements section
+            ReportSectionTitle(text = "Movimientos de efectivo")
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                ),
+                shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.lg),
+            ) {
+                Column(modifier = Modifier.padding(AvoqadoTheme.spacing.lg)) {
+                    ReportRow(
+                        label = "Monto inicial",
+                        value = formatCurrency(session.startingAmountCents),
+                    )
+                    HorizontalDivider(
+                        color = MaterialTheme.colorScheme.outlineVariant,
+                        modifier = Modifier.padding(vertical = AvoqadoTheme.spacing.sm),
+                    )
+                    ReportRow(
+                        label = "Ingresos (pay-in)",
+                        value = "+${formatCurrency(payInsCents)}",
+                        valueColor = Success,
+                    )
+                    HorizontalDivider(
+                        color = MaterialTheme.colorScheme.outlineVariant,
+                        modifier = Modifier.padding(vertical = AvoqadoTheme.spacing.sm),
+                    )
+                    ReportRow(
+                        label = "Egresos (pay-out)",
+                        value = "-${formatCurrency(payOutsCents)}",
+                        valueColor = Error,
+                    )
+                    HorizontalDivider(
+                        color = MaterialTheme.colorScheme.outlineVariant,
+                        modifier = Modifier.padding(vertical = AvoqadoTheme.spacing.sm),
+                    )
+                    ReportRow(
+                        label = "Ventas en efectivo",
+                        value = "+${formatCurrency(cashSalesCents)}",
+                        valueColor = Success,
+                    )
+                    HorizontalDivider(
+                        color = MaterialTheme.colorScheme.outlineVariant,
+                        modifier = Modifier.padding(vertical = AvoqadoTheme.spacing.sm),
+                    )
+                    ReportRow(
+                        label = "Efectivo esperado",
+                        value = formatCurrency(expectedCents),
+                        isBold = true,
+                    )
+                    HorizontalDivider(
+                        color = MaterialTheme.colorScheme.outlineVariant,
+                        modifier = Modifier.padding(vertical = AvoqadoTheme.spacing.sm),
+                    )
+                    ReportRow(
+                        label = "Conteo real",
+                        value = formatCurrency(actualCents),
+                        isBold = true,
+                    )
+                    HorizontalDivider(
+                        color = MaterialTheme.colorScheme.outlineVariant,
+                        modifier = Modifier.padding(vertical = AvoqadoTheme.spacing.sm),
+                    )
+
+                    val (diffLabel, diffColor) = when {
+                        differenceCents > 0 -> "Sobrante" to Success
+                        differenceCents < 0 -> "Faltante" to Error
+                        else -> "Diferencia" to MaterialTheme.colorScheme.onSurface
+                    }
+                    ReportRow(
+                        label = diffLabel,
+                        value = formatCurrency(abs(differenceCents)),
+                        valueColor = diffColor,
+                        isBold = true,
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxxl))
+
+            // Print button
+            Button(
+                onClick = {
+                    Toast.makeText(context, "Impresion no disponible", Toast.LENGTH_SHORT).show()
+                },
+                shape = RoundedCornerShape(50),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.primary,
+                    contentColor = MaterialTheme.colorScheme.onPrimary,
+                ),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(48.dp),
+            ) {
+                Text(
+                    text = "Imprimir corte",
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
+        }
+    }
+}
+
+// MARK: - Helper Composables
+
+@Composable
+private fun ReportSectionTitle(text: String) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.titleSmall,
+        fontWeight = FontWeight.SemiBold,
+        color = MaterialTheme.colorScheme.onSurface,
+    )
+}
+
+@Composable
+private fun ReportRow(
+    label: String,
+    value: String,
+    valueColor: androidx.compose.ui.graphics.Color? = null,
+    isBold: Boolean = false,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = AvoqadoTheme.spacing.xxs),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontWeight = if (isBold) FontWeight.SemiBold else FontWeight.Normal,
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodyMedium,
+            color = valueColor ?: MaterialTheme.colorScheme.onSurface,
+            fontWeight = if (isBold) FontWeight.Bold else FontWeight.Medium,
+        )
+    }
+}

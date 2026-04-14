@@ -1,0 +1,11 @@
+{
+  "enabledPlugins": {
+    "swift-lsp@claude-plugins-official": false,
+    "typescript-lsp@claude-plugins-official": false,
+    "cloudflare@cloudflare": false,
+    "frontend-design@claude-plugins-official": false,
+    "playwright@claude-plugins-official": false,
+    "impeccable@impeccable": false,
+    "prompts.chat@prompts.chat": false
+  }
+}

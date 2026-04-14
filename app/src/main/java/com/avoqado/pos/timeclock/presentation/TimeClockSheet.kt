@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
@@ -77,6 +78,7 @@ fun TimeClockSheet(
     var error by remember { mutableStateOf<String?>(null) }
     var isLoading by remember { mutableStateOf(false) }
     var currentScreen by remember { mutableStateOf(TimeClockScreen.PIN_ENTRY) }
+    var note by remember { mutableStateOf("") }
 
     // Live clock (matching iOS: ticks every second)
     var currentTime by remember { mutableStateOf(LocalTime.now()) }
@@ -93,6 +95,7 @@ fun TimeClockSheet(
             pin = ""
             staffData = null
             error = null
+            note = ""
             currentScreen = TimeClockScreen.PIN_ENTRY
             onDismiss()
         },
@@ -219,6 +222,23 @@ fun TimeClockSheet(
                         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
                     }
 
+                    // Optional note field
+                    OutlinedTextField(
+                        value = note,
+                        onValueChange = { note = it },
+                        placeholder = {
+                            Text(
+                                "Agregar nota (opcional)",
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        textStyle = MaterialTheme.typography.bodyMedium,
+                        singleLine = true,
+                    )
+
+                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+
                     // Clock actions (matching iOS)
                     Column(
                         modifier = Modifier.fillMaxWidth(),
@@ -231,7 +251,7 @@ fun TimeClockSheet(
                                     scope.launch {
                                         isLoading = true
                                         error = null
-                                        repository.clockIn(pin).fold(
+                                        repository.clockIn(pin, note.ifBlank { null }).fold(
                                             onSuccess = { onDismiss() },
                                             onFailure = { error = it.message },
                                         )
@@ -255,7 +275,7 @@ fun TimeClockSheet(
                                         scope.launch {
                                             isLoading = true
                                             error = null
-                                            repository.endBreak(pin).fold(
+                                            repository.endBreak(pin, note.ifBlank { null }).fold(
                                                 onSuccess = { onDismiss() },
                                                 onFailure = { error = it.message },
                                             )
@@ -271,7 +291,7 @@ fun TimeClockSheet(
                                     scope.launch {
                                         isLoading = true
                                         error = null
-                                        repository.clockOut(pin).fold(
+                                        repository.clockOut(pin, note.ifBlank { null }).fold(
                                             onSuccess = { onDismiss() },
                                             onFailure = { error = it.message },
                                         )
@@ -290,6 +310,7 @@ fun TimeClockSheet(
                         pin = ""
                         staffData = null
                         error = null
+                        note = ""
                         currentScreen = TimeClockScreen.PIN_ENTRY
                     }) {
                         Text("Cambiar usuario")

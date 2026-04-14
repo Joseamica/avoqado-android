@@ -13,6 +13,25 @@ val keystorePropertiesFile = rootProject.file("keystore.properties")
 val keystoreProperties = Properties().apply {
     if (keystorePropertiesFile.exists()) load(keystorePropertiesFile.inputStream())
 }
+val localPropertiesFile = rootProject.file("local.properties")
+val localProperties = Properties().apply {
+    if (localPropertiesFile.exists()) load(localPropertiesFile.inputStream())
+}
+
+fun configValue(key: String, defaultValue: String): String {
+    return providers.gradleProperty(key).orNull
+        ?: localProperties.getProperty(key)
+        ?: defaultValue
+}
+
+val releaseBaseUrl = "https://api.avoqado.io/api/v1"
+val defaultDebugBaseUrl = "https://humane-immortal-pika.ngrok-free.app/api/v1"
+val debugBaseUrl = configValue("avoqado.devBaseUrl", defaultDebugBaseUrl).trim()
+
+check(debugBaseUrl != releaseBaseUrl) {
+    "Debug/development BASE_URL must not point to production. " +
+        "Set avoqado.devBaseUrl in local.properties or pass -Pavoqado.devBaseUrl=..."
+}
 
 android {
     namespace = "com.avoqado.pos"
@@ -27,7 +46,8 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        buildConfigField("String", "BASE_URL", "\"https://api.avoqado.io/api/v1\"")
+        buildConfigField("String", "BASE_URL", "\"$releaseBaseUrl\"")
+        buildConfigField("String", "ENVIRONMENT_NAME", "\"production\"")
     }
 
     signingConfigs {
@@ -42,7 +62,8 @@ android {
     buildTypes {
         debug {
             isMinifyEnabled = false
-            buildConfigField("String", "BASE_URL", "\"https://humane-immortal-pika.ngrok-free.app/api/v1\"")
+            buildConfigField("String", "BASE_URL", "\"$debugBaseUrl\"")
+            buildConfigField("String", "ENVIRONMENT_NAME", "\"development\"")
         }
         release {
             signingConfig = signingConfigs.getByName("release")
@@ -72,6 +93,10 @@ android {
     testOptions {
         unitTests.isReturnDefaultValues = true
     }
+}
+
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
 }
 
 dependencies {
@@ -137,4 +162,9 @@ dependencies {
     testImplementation(libs.coroutines.test)
     testImplementation(libs.okhttp.mockwebserver)
     testImplementation(libs.turbine)
+
+    androidTestImplementation(libs.junit)
+    androidTestImplementation(libs.androidx.test.core)
+    androidTestImplementation(libs.androidx.test.ext.junit)
+    androidTestImplementation(libs.androidx.test.runner)
 }

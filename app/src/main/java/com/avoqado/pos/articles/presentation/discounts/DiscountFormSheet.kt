@@ -2,6 +2,8 @@ package com.avoqado.pos.articles.presentation.discounts
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -21,6 +23,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -30,6 +33,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import com.avoqado.pos.articles.data.model.ArticleSection
 import com.avoqado.pos.articles.data.model.AdminDiscount
 import com.avoqado.pos.articles.data.model.DiscountScope
 import com.avoqado.pos.articles.data.model.DiscountType
@@ -38,7 +42,7 @@ import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Info
 import com.avoqado.pos.designsystem.theme.Success
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
 fun DiscountFormSheet(
     discount: AdminDiscount?,
@@ -46,6 +50,8 @@ fun DiscountFormSheet(
     onDismiss: () -> Unit,
 ) {
     val isSaving by viewModel.isSaving.collectAsState()
+    val products by viewModel.products.collectAsState()
+    val categories by viewModel.categories.collectAsState()
 
     var name by remember { mutableStateOf(discount?.name ?: "") }
     var type by remember { mutableStateOf(discount?.discountType ?: DiscountType.PERCENTAGE) }
@@ -59,11 +65,27 @@ fun DiscountFormSheet(
     var scope by remember { mutableStateOf(discount?.discountScope ?: DiscountScope.ORDER) }
     var active by remember { mutableStateOf(discount?.active ?: true) }
     var requiresApproval by remember { mutableStateOf(discount?.requiresApproval ?: false) }
+    var selectedTargetItemIds by remember {
+        mutableStateOf(discount?.targetItemIds?.toSet() ?: emptySet())
+    }
+    var selectedTargetCategoryIds by remember {
+        mutableStateOf(discount?.targetCategoryIds?.toSet() ?: emptySet())
+    }
 
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val isEditing = discount != null
 
     val formScopes = listOf(DiscountScope.ORDER, DiscountScope.ITEM, DiscountScope.CATEGORY)
+    val hasValidTargets = when (scope) {
+        DiscountScope.ITEM -> selectedTargetItemIds.isNotEmpty()
+        DiscountScope.CATEGORY -> selectedTargetCategoryIds.isNotEmpty()
+        else -> true
+    }
+
+    LaunchedEffect(Unit) {
+        viewModel.loadSectionData(ArticleSection.PRODUCTS)
+        viewModel.loadSectionData(ArticleSection.CATEGORIES)
+    }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -164,6 +186,80 @@ fun DiscountFormSheet(
                 }
             }
 
+            if (scope == DiscountScope.ITEM) {
+                Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                    Text(
+                        text = "ARTICULOS OBJETIVO",
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (products.isEmpty()) {
+                        Text(
+                            text = "No hay artículos disponibles",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else {
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
+                            verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
+                        ) {
+                            products.forEach { product ->
+                                val selected = selectedTargetItemIds.contains(product.id)
+                                FilterChip(
+                                    selected = selected,
+                                    onClick = {
+                                        selectedTargetItemIds = if (selected) {
+                                            selectedTargetItemIds - product.id
+                                        } else {
+                                            selectedTargetItemIds + product.id
+                                        }
+                                    },
+                                    label = { Text(product.name) },
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (scope == DiscountScope.CATEGORY) {
+                Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                    Text(
+                        text = "CATEGORIAS OBJETIVO",
+                        style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    if (categories.isEmpty()) {
+                        Text(
+                            text = "No hay categorías disponibles",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else {
+                        FlowRow(
+                            horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
+                            verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
+                        ) {
+                            categories.forEach { category ->
+                                val selected = selectedTargetCategoryIds.contains(category.id)
+                                FilterChip(
+                                    selected = selected,
+                                    onClick = {
+                                        selectedTargetCategoryIds = if (selected) {
+                                            selectedTargetCategoryIds - category.id
+                                        } else {
+                                            selectedTargetCategoryIds + category.id
+                                        }
+                                    },
+                                    label = { Text(category.name) },
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
             // MARK: - OPCIONES
             Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
                 Text(
@@ -240,6 +336,8 @@ fun DiscountFormSheet(
                                 scope = scope,
                                 active = active,
                                 requiresApproval = requiresApproval,
+                                targetItemIds = selectedTargetItemIds.toList(),
+                                targetCategoryIds = selectedTargetCategoryIds.toList(),
                             )
                         } else {
                             viewModel.createDiscount(
@@ -249,11 +347,13 @@ fun DiscountFormSheet(
                                 scope = scope,
                                 active = active,
                                 requiresApproval = requiresApproval,
+                                targetItemIds = selectedTargetItemIds.toList(),
+                                targetCategoryIds = selectedTargetCategoryIds.toList(),
                             )
                         }
                         onDismiss()
                     },
-                    enabled = name.isNotBlank() && !isSaving,
+                    enabled = name.isNotBlank() && !isSaving && hasValidTargets,
                 ) {
                     Text(text = if (isEditing) "Guardar" else "Crear")
                 }

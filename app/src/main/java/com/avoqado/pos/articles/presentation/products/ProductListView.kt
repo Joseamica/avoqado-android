@@ -55,6 +55,8 @@ import com.avoqado.pos.articles.data.model.ArticleCategory
 import com.avoqado.pos.articles.data.model.ArticleProduct
 import com.avoqado.pos.articles.data.model.PriceType
 import com.avoqado.pos.articles.data.model.ProductType
+import android.widget.Toast
+import androidx.compose.ui.platform.LocalContext
 import com.avoqado.pos.articles.presentation.ArticlesViewModel
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 
@@ -63,6 +65,7 @@ fun ProductListView(viewModel: ArticlesViewModel) {
     val products by viewModel.products.collectAsState()
     val categories by viewModel.categories.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
+    val context = LocalContext.current
 
     var showCreateForm by remember { mutableStateOf(false) }
     var editingProduct by remember { mutableStateOf<ArticleProduct?>(null) }
@@ -259,6 +262,13 @@ fun ProductListView(viewModel: ArticlesViewModel) {
                         onTap = { editingProduct = product },
                         onEdit = { editingProduct = product },
                         onDelete = { deletingProduct = product },
+                        onPrintLabel = {
+                            Toast.makeText(
+                                context,
+                                "Impresion no disponible",
+                                Toast.LENGTH_SHORT,
+                            ).show()
+                        },
                     )
                 }
             }
@@ -398,6 +408,7 @@ private fun ProductRow(
     onTap: () -> Unit,
     onEdit: () -> Unit,
     onDelete: () -> Unit,
+    onPrintLabel: () -> Unit = {},
 ) {
     var showMenu by remember { mutableStateOf(false) }
 
@@ -432,6 +443,13 @@ private fun ProductRow(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            if (product.isService && product.displayDuration != null) {
+                Text(
+                    text = product.displayDuration!!,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
         }
 
         // Price
@@ -452,6 +470,13 @@ private fun ProductRow(
                     onClick = {
                         showMenu = false
                         onEdit()
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text("Imprimir etiqueta") },
+                    onClick = {
+                        showMenu = false
+                        onPrintLabel()
                     },
                 )
                 DropdownMenuItem(

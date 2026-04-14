@@ -11,7 +11,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import com.avoqado.pos.designsystem.components.CircleBackButton
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -55,12 +55,13 @@ fun SearchOverlayView(
             TopAppBar(
                 title = { Text("Buscar") },
                 navigationIcon = {
-                    IconButton(onClick = {
-                        viewModel.updateSearchQuery("")
-                        onDismiss()
-                    }) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Cerrar")
-                    }
+                    CircleBackButton(
+                        onClick = {
+                            viewModel.updateSearchQuery("")
+                            onDismiss()
+                        },
+                        modifier = Modifier.padding(start = AvoqadoTheme.spacing.sm),
+                    )
                 },
             )
         },

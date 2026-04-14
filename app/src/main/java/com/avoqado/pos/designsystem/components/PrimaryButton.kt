@@ -20,12 +20,13 @@ fun PrimaryButton(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     isLoading: Boolean = false,
+    fullWidth: Boolean = true,
 ) {
     Button(
         onClick = onClick,
         enabled = enabled && !isLoading,
         modifier = modifier
-            .fillMaxWidth()
+            .then(if (fullWidth) Modifier.fillMaxWidth() else Modifier)
             .height(AvoqadoTheme.dimensions.buttonLarge),
         shape = RoundedCornerShape(50),
         colors = ButtonDefaults.buttonColors(

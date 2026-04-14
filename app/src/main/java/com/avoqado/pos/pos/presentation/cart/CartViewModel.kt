@@ -304,8 +304,14 @@ class CartViewModel @Inject constructor(
                         )
                     },
                     note = item.itemNote,
+                    isCortesia = item.isCortesia,
+                    cortesiaReason = item.cortesiaReason,
+                    priceAdjustment = item.priceAdjustment,
+                    itemDiscountId = item.itemDiscountId,
                 )
             },
+            orderDiscount = state.orderDiscount,
+            orderNote = state.orderNote,
         )
         savedCartsRepository.saveCart(savedCart)
         clearCart()
@@ -339,9 +345,17 @@ class CartViewModel @Inject constructor(
                     )
                 },
                 itemNote = savedItem.note,
+                isCortesia = savedItem.isCortesia,
+                cortesiaReason = savedItem.cortesiaReason,
+                priceAdjustment = savedItem.priceAdjustment,
+                itemDiscountId = savedItem.itemDiscountId,
             )
         }
-        _cartState.value = CartState(items = items)
+        _cartState.value = CartState(
+            items = items,
+            orderDiscount = savedCart.orderDiscount,
+            orderNote = savedCart.orderNote,
+        )
         savedCartsRepository.deleteCart(savedCart.id)
         Log.d("🛒", "Restored saved cart: ${savedCart.name}")
     }

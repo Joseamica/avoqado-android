@@ -18,7 +18,11 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -59,7 +63,17 @@ class PaymentSyncService @Inject constructor(
     private var syncJob: Job? = null
     private var timerJob: Job? = null
     private var connectivityJob: Job? = null
+    private var pendingCountJob: Job? = null
+    private var failedCountJob: Job? = null
     private val syncScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val json = Json { ignoreUnknownKeys = true }
+
+    private sealed interface OrderResolution {
+        data class Ready(val orderId: String) : OrderResolution
+        data class RetryableFailure(val message: String) : OrderResolution
+        data class PermanentFailure(val message: String) : OrderResolution
+        data object AuthExpired : OrderResolution
+    }
 
     // MARK: - Lifecycle
 
@@ -71,7 +85,7 @@ class PaymentSyncService @Inject constructor(
         syncScope.launch {
             // Reset stuck SYNCING payments (crash recovery)
             dao.resetSyncingToPending()
-            refreshCounts()
+            startCountObservers()
 
             // Immediate sync attempt
             syncNow()
@@ -91,6 +105,8 @@ class PaymentSyncService @Inject constructor(
         timerJob?.cancel()
         connectivityJob?.cancel()
         syncJob?.cancel()
+        pendingCountJob?.cancel()
+        failedCountJob?.cancel()
     }
 
     // MARK: - Timer
@@ -170,8 +186,6 @@ class PaymentSyncService @Inject constructor(
                     val shouldStopBatch = syncPayment(payment)
                     if (shouldStopBatch) break
                 }
-
-                refreshCounts()
             } catch (e: Exception) {
                 Log.e(TAG, "Sync batch error: ${e.message}")
             }
@@ -189,15 +203,41 @@ class PaymentSyncService @Inject constructor(
 
     private suspend fun syncPayment(payment: PendingPaymentEntity): Boolean {
         // Returns true if batch should stop (e.g., auth expired)
-
-        val venueId = secureStorage.venueId ?: payment.venueId
+        val venueId = payment.venueId.ifBlank { secureStorage.venueId.orEmpty() }
+        if (venueId.isBlank()) {
+            dao.updateStatusWithError(
+                payment.id,
+                PaymentSyncStatus.FAILED.name,
+                "No venueId for pending payment",
+            )
+            return false
+        }
 
         try {
+            var resolvedOrderId: String? = payment.orderId
+            if (payment.paymentType == "ORDER" && resolvedOrderId == null) {
+                when (val result = resolveMissingOrderId(payment, venueId)) {
+                    is OrderResolution.Ready -> resolvedOrderId = result.orderId
+                    is OrderResolution.AuthExpired -> {
+                        dao.updateStatus(payment.id, PaymentSyncStatus.PENDING.name)
+                        return true
+                    }
+                    is OrderResolution.PermanentFailure -> {
+                        dao.updateStatusWithError(payment.id, PaymentSyncStatus.FAILED.name, result.message)
+                        return false
+                    }
+                    is OrderResolution.RetryableFailure -> {
+                        handleNetworkError(payment, result.message)
+                        return false
+                    }
+                }
+            }
+
             val url: String
 
-            if (payment.paymentType == "ORDER" && payment.orderId != null) {
+            if (payment.paymentType == "ORDER" && resolvedOrderId != null) {
                 // Order payment: POST /mobile/venues/{venueId}/orders/{orderId}/pay
-                url = "${ApiConstants.BASE_URL}/mobile/venues/$venueId/orders/${payment.orderId}/pay"
+                url = "${ApiConstants.BASE_URL}/mobile/venues/$venueId/orders/$resolvedOrderId/pay"
             } else {
                 // Fast payment: POST /mobile/venues/{venueId}/fast
                 url = "${ApiConstants.BASE_URL}/mobile/venues/$venueId/fast"
@@ -240,6 +280,56 @@ class PaymentSyncService @Inject constructor(
         } catch (e: Exception) {
             handleNetworkError(payment, e.message ?: "Error desconocido")
             return false
+        }
+    }
+
+    private suspend fun resolveMissingOrderId(payment: PendingPaymentEntity, venueId: String): OrderResolution {
+        val orderRequestJson = payment.orderRequestJson
+            ?: return OrderResolution.PermanentFailure("Missing orderRequestJson for ORDER sync")
+
+        val request = Request.Builder()
+            .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/orders")
+            .post(orderRequestJson.toRequestBody(JSON_MEDIA))
+            .build()
+
+        return try {
+            val (code, body) = withContext(Dispatchers.IO) {
+                val response = client.newCall(request).execute()
+                response.code to (response.body?.string() ?: "")
+            }
+
+            when {
+                code in 200..299 -> {
+                    val orderId = extractOrderId(body)
+                    if (orderId.isNullOrBlank()) {
+                        OrderResolution.RetryableFailure("Order sync missing orderId in response")
+                    } else {
+                        Log.d(TAG, "✅ Recreated order for queued payment ${payment.id}: $orderId")
+                        OrderResolution.Ready(orderId)
+                    }
+                }
+                code == 401 -> OrderResolution.AuthExpired
+                code in 400..499 -> OrderResolution.PermanentFailure("Order recreate failed ($code): $body")
+                else -> OrderResolution.RetryableFailure("Order recreate server error ($code)")
+            }
+        } catch (e: java.net.UnknownHostException) {
+            OrderResolution.RetryableFailure("Sin conexion")
+        } catch (e: java.net.ConnectException) {
+            OrderResolution.RetryableFailure("No se pudo conectar al servidor")
+        } catch (e: java.io.IOException) {
+            OrderResolution.RetryableFailure(e.message ?: "Error de red")
+        } catch (e: Exception) {
+            OrderResolution.RetryableFailure(e.message ?: "Error recreando orden")
+        }
+    }
+
+    private fun extractOrderId(body: String): String? {
+        return try {
+            val root = json.parseToJsonElement(body).jsonObject
+            root["data"]?.jsonObject?.get("id")?.jsonPrimitive?.contentOrNull
+                ?: root["id"]?.jsonPrimitive?.contentOrNull
+        } catch (_: Exception) {
+            null
         }
     }
 
@@ -293,11 +383,14 @@ class PaymentSyncService @Inject constructor(
 
     // MARK: - Count Refresh
 
-    fun refreshCounts() {
-        syncScope.launch {
+    private fun startCountObservers() {
+        pendingCountJob?.cancel()
+        failedCountJob?.cancel()
+
+        pendingCountJob = syncScope.launch {
             dao.getPendingCount().collect { _pendingCount.value = it }
         }
-        syncScope.launch {
+        failedCountJob = syncScope.launch {
             dao.getFailedCount().collect { _failedCount.value = it }
         }
     }

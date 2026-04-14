@@ -9,6 +9,7 @@ import com.avoqado.pos.articles.data.model.ArticleSection
 import com.avoqado.pos.articles.data.model.DiscountScope
 import com.avoqado.pos.articles.data.model.DiscountType
 import com.avoqado.pos.articles.data.model.PriceType
+import com.avoqado.pos.articles.data.model.ProductOption
 import com.avoqado.pos.articles.data.model.ProductType
 import com.avoqado.pos.articles.data.model.RawMaterial
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -16,10 +17,12 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.add
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
+import java.util.UUID
 import javax.inject.Inject
 
 private const val TAG = "🗂️ ArticlesVM"
@@ -37,6 +40,7 @@ class ArticlesViewModel @Inject constructor(
     val discounts = repository.discounts
     val coupons = repository.coupons
     val creditPacks = repository.creditPacks
+    val productOptions = repository.productOptions
     val isLoading = repository.isLoading
     val errorMessage = repository.errorMessage
 
@@ -53,6 +57,9 @@ class ArticlesViewModel @Inject constructor(
 
     private val _rawMaterialResults = MutableStateFlow<List<RawMaterial>>(emptyList())
     val rawMaterialResults: StateFlow<List<RawMaterial>> = _rawMaterialResults.asStateFlow()
+
+    private val _customUnits = MutableStateFlow<List<Pair<String, String>>>(emptyList())
+    val customUnits: StateFlow<List<Pair<String, String>>> = _customUnits.asStateFlow()
 
     // MARK: - Inner data classes
 
@@ -101,9 +108,15 @@ class ArticlesViewModel @Inject constructor(
                     repository.fetchCoupons()
                     repository.fetchDiscounts()
                 }
+                ArticleSection.OPTIONS -> {
+                    repository.fetchProductOptions()
+                }
                 ArticleSection.CREDIT_PACKS -> {
                     repository.fetchCreditPacks()
                     repository.fetchProducts()
+                }
+                ArticleSection.UNITS -> {
+                    // Built-in units are always available; no fetch needed
                 }
             }
         }
@@ -138,12 +151,14 @@ class ArticlesViewModel @Inject constructor(
         viewModelScope.launch {
             _isSaving.value = true
             try {
+                // Generate SKU if not provided (mobile route may require it)
+                val resolvedSku = sku ?: UUID.randomUUID().toString().take(8).uppercase()
                 val payload = buildJsonObject {
                     put("name", name)
                     if (description != null) put("description", description)
                     put("type", type.name)
                     if (categoryId != null) put("categoryId", categoryId)
-                    if (sku != null) put("sku", sku)
+                    put("sku", resolvedSku)
                     if (gtin != null) put("gtin", gtin)
                     put("priceType", priceType.name)
                     if (price != null) put("price", price)
@@ -426,6 +441,8 @@ class ArticlesViewModel @Inject constructor(
         scope: DiscountScope,
         active: Boolean,
         requiresApproval: Boolean,
+        targetItemIds: List<String> = emptyList(),
+        targetCategoryIds: List<String> = emptyList(),
     ) {
         viewModelScope.launch {
             _isSaving.value = true
@@ -443,6 +460,16 @@ class ArticlesViewModel @Inject constructor(
                     put("scope", scope.name)
                     put("active", active)
                     put("requiresApproval", requiresApproval)
+                    if (scope == DiscountScope.ITEM) {
+                        putJsonArray("targetItemIds") {
+                            targetItemIds.forEach { add(it) }
+                        }
+                    }
+                    if (scope == DiscountScope.CATEGORY) {
+                        putJsonArray("targetCategoryIds") {
+                            targetCategoryIds.forEach { add(it) }
+                        }
+                    }
                 }.toString()
                 val success = repository.createDiscount(payload)
                 Log.d(TAG, if (success) "✅ Discount created" else "❌ Discount creation failed")
@@ -460,6 +487,8 @@ class ArticlesViewModel @Inject constructor(
         scope: DiscountScope,
         active: Boolean,
         requiresApproval: Boolean,
+        targetItemIds: List<String> = emptyList(),
+        targetCategoryIds: List<String> = emptyList(),
     ) {
         viewModelScope.launch {
             _isSaving.value = true
@@ -477,6 +506,16 @@ class ArticlesViewModel @Inject constructor(
                     put("scope", scope.name)
                     put("active", active)
                     put("requiresApproval", requiresApproval)
+                    if (scope == DiscountScope.ITEM) {
+                        putJsonArray("targetItemIds") {
+                            targetItemIds.forEach { add(it) }
+                        }
+                    }
+                    if (scope == DiscountScope.CATEGORY) {
+                        putJsonArray("targetCategoryIds") {
+                            targetCategoryIds.forEach { add(it) }
+                        }
+                    }
                 }.toString()
                 val success = repository.updateDiscount(discountId, payload)
                 Log.d(TAG, if (success) "✅ Discount $discountId updated" else "❌ Discount update failed")
@@ -631,6 +670,59 @@ class ArticlesViewModel @Inject constructor(
     fun deleteCreditPack(packId: String) {
         viewModelScope.launch {
             repository.deleteCreditPack(packId)
+        }
+    }
+
+    // MARK: - Product Options CRUD
+
+    fun createProductOption(
+        name: String,
+        values: List<String>,
+        onSuccess: () -> Unit = {},
+    ) {
+        viewModelScope.launch {
+            _isSaving.value = true
+            try {
+                val payload = buildJsonObject {
+                    put("name", name)
+                    putJsonArray("values") {
+                        values.forEach { v ->
+                            add(buildJsonObject { put("name", v) })
+                        }
+                    }
+                }.toString()
+                val success = repository.createProductOption(payload)
+                if (success) {
+                    Log.d(TAG, "✅ Product option created")
+                    onSuccess()
+                } else {
+                    Log.d(TAG, "❌ Product option creation failed")
+                }
+            } finally {
+                _isSaving.value = false
+            }
+        }
+    }
+
+    fun deleteProductOption(optionId: String) {
+        viewModelScope.launch {
+            repository.deleteProductOption(optionId)
+        }
+    }
+
+    // MARK: - Custom Units (local)
+
+    fun addCustomUnit(name: String, abbreviation: String) {
+        val current = _customUnits.value.toMutableList()
+        current.add(name to abbreviation)
+        _customUnits.value = current
+    }
+
+    fun updateCustomUnit(index: Int, name: String, abbreviation: String) {
+        val current = _customUnits.value.toMutableList()
+        if (index in current.indices) {
+            current[index] = name to abbreviation
+            _customUnits.value = current
         }
     }
 }

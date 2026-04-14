@@ -5,13 +5,11 @@ import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.local.database.PendingPaymentDao
 import com.avoqado.pos.payment.data.CashPaymentRepository
 import com.avoqado.pos.payment.data.CashPaymentResult
-import com.avoqado.pos.payment.data.PaymentSyncService
 import com.avoqado.pos.payment.data.model.CreateOrderRequest
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
-import io.mockk.verify
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
@@ -30,7 +28,6 @@ class CashPaymentRepositoryTest {
 
     private val secureStorage = mockk<SecureStorage>(relaxed = true)
     private val dao = mockk<PendingPaymentDao>(relaxed = true)
-    private val syncService = mockk<PaymentSyncService>(relaxed = true)
 
     private lateinit var repository: CashPaymentRepository
 
@@ -40,7 +37,7 @@ class CashPaymentRepositoryTest {
         every { secureStorage.userId } returns "user-456"
         coEvery { dao.getPendingCount() } returns flowOf(0)
         coEvery { dao.getFailedCount() } returns flowOf(0)
-        repository = CashPaymentRepository(secureStorage, dao, syncService)
+        repository = CashPaymentRepository(secureStorage, dao)
     }
 
     // MARK: - processCashPayment tests
@@ -106,20 +103,6 @@ class CashPaymentRepositoryTest {
                 },
             )
         }
-    }
-
-    @Test
-    fun `queueCashPayment calls refreshCounts on sync service`() = runTest {
-        val orderRequest = CreateOrderRequest(
-            items = emptyList(),
-            subtotal = 5000,
-            total = 5000,
-            paymentMethod = "CASH",
-        )
-
-        repository.queueCashPayment(orderRequest, 5000, 0, null)
-
-        verify { syncService.refreshCounts() }
     }
 
     @Test

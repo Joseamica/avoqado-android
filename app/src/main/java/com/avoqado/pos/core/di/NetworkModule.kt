@@ -1,8 +1,11 @@
 package com.avoqado.pos.core.di
 
+import com.avoqado.pos.BuildConfig
 import com.avoqado.pos.core.data.network.ApiConstants
 import com.avoqado.pos.core.data.network.ApiService
 import com.avoqado.pos.core.data.network.AuthInterceptor
+import com.avoqado.pos.core.data.network.ErrorNotifier
+import com.avoqado.pos.core.data.network.ForbiddenInterceptor
 import com.avoqado.pos.core.data.network.TokenRefreshAuthenticator
 import dagger.Module
 import dagger.Provides
@@ -34,13 +37,20 @@ object NetworkModule {
     fun provideOkHttpClient(
         authInterceptor: AuthInterceptor,
         tokenRefreshAuthenticator: TokenRefreshAuthenticator,
+        errorNotifier: ErrorNotifier,
     ): OkHttpClient {
         val logging = HttpLoggingInterceptor().apply {
-            level = HttpLoggingInterceptor.Level.BODY
+            redactHeader("Authorization")
+            level = if (BuildConfig.DEBUG) {
+                HttpLoggingInterceptor.Level.BODY
+            } else {
+                HttpLoggingInterceptor.Level.NONE
+            }
         }
 
         return OkHttpClient.Builder()
             .addInterceptor(authInterceptor)
+            .addInterceptor(ForbiddenInterceptor(errorNotifier))
             .addInterceptor(logging)
             .authenticator(tokenRefreshAuthenticator)
             .connectTimeout(30, TimeUnit.SECONDS)

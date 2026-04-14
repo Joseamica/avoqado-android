@@ -11,26 +11,17 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.ChevronRight
-import androidx.compose.material.icons.filled.ConfirmationNumber
-import androidx.compose.material.icons.filled.CreditCard
-import androidx.compose.material.icons.filled.Folder
-import androidx.compose.material.icons.filled.LocalOffer
-import androidx.compose.material.icons.filled.Percent
-import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -38,7 +29,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -48,7 +39,10 @@ import com.avoqado.pos.articles.presentation.coupons.CouponListView
 import com.avoqado.pos.articles.presentation.creditpacks.CreditPackListView
 import com.avoqado.pos.articles.presentation.discounts.DiscountListView
 import com.avoqado.pos.articles.presentation.modifiers.ModifierGroupListView
+import com.avoqado.pos.articles.presentation.options.OptionsView
 import com.avoqado.pos.articles.presentation.products.ProductListView
+import com.avoqado.pos.articles.presentation.units.UnitsView
+import com.avoqado.pos.designsystem.components.CircleBackButton
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 
 // MARK: - Entry Point
@@ -80,7 +74,16 @@ private fun TabletArticlesLayout(
     onDismiss: () -> Unit,
 ) {
     val selectedSection by viewModel.selectedSection.collectAsState()
+    val errorMessage by viewModel.errorMessage.collectAsState()
+    val snackbarHostState = remember { SnackbarHostState() }
 
+    LaunchedEffect(errorMessage) {
+        errorMessage?.let {
+            snackbarHostState.showSnackbar(it)
+        }
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
     Row(modifier = Modifier.fillMaxSize()) {
         // Sidebar (280dp)
         Column(
@@ -89,24 +92,17 @@ private fun TabletArticlesLayout(
                 .fillMaxHeight()
                 .background(MaterialTheme.colorScheme.surfaceVariant),
         ) {
-            // Header: back arrow + title
-            Row(
+            // Header: back button on its own line, title below
+            Column(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(
-                        horizontal = AvoqadoTheme.spacing.md,
-                        vertical = AvoqadoTheme.spacing.sm,
+                        horizontal = AvoqadoTheme.spacing.lg,
+                        vertical = AvoqadoTheme.spacing.md,
                     ),
-                verticalAlignment = Alignment.CenterVertically,
             ) {
-                IconButton(onClick = onDismiss) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "Volver",
-                        tint = MaterialTheme.colorScheme.onSurface,
-                    )
-                }
-                Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
+                CircleBackButton(onClick = onDismiss)
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
                 Text(
                     text = "Artículos",
                     style = MaterialTheme.typography.titleLarge,
@@ -143,6 +139,12 @@ private fun TabletArticlesLayout(
             SectionContent(section = selectedSection, viewModel = viewModel)
         }
     }
+
+    SnackbarHost(
+        hostState = snackbarHostState,
+        modifier = Modifier.align(Alignment.BottomCenter),
+    )
+    } // end outer Box
 }
 
 // MARK: - Phone Layout
@@ -152,8 +154,18 @@ private fun PhoneArticlesLayout(
     viewModel: ArticlesViewModel,
     onDismiss: () -> Unit,
 ) {
+    val errorMessage by viewModel.errorMessage.collectAsState()
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    LaunchedEffect(errorMessage) {
+        errorMessage?.let {
+            snackbarHostState.showSnackbar(it)
+        }
+    }
+
     var showingSection by remember { mutableStateOf<ArticleSection?>(null) }
 
+    Box(modifier = Modifier.fillMaxSize()) {
     if (showingSection != null) {
         val section = showingSection!!
         Column(modifier = Modifier.fillMaxSize()) {
@@ -162,19 +174,13 @@ private fun PhoneArticlesLayout(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(
-                        horizontal = AvoqadoTheme.spacing.md,
-                        vertical = AvoqadoTheme.spacing.sm,
+                        horizontal = AvoqadoTheme.spacing.lg,
+                        vertical = AvoqadoTheme.spacing.md,
                     ),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                IconButton(onClick = { showingSection = null }) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "Volver",
-                        tint = MaterialTheme.colorScheme.onSurface,
-                    )
-                }
-                Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
+                CircleBackButton(onClick = { showingSection = null })
+                Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.md))
                 Text(
                     text = section.label,
                     style = MaterialTheme.typography.titleLarge,
@@ -197,19 +203,13 @@ private fun PhoneArticlesLayout(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(
-                        horizontal = AvoqadoTheme.spacing.md,
-                        vertical = AvoqadoTheme.spacing.sm,
+                        horizontal = AvoqadoTheme.spacing.lg,
+                        vertical = AvoqadoTheme.spacing.md,
                     ),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                IconButton(onClick = onDismiss) {
-                    Icon(
-                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = "Volver",
-                        tint = MaterialTheme.colorScheme.onSurface,
-                    )
-                }
-                Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
+                CircleBackButton(onClick = onDismiss)
+                Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.md))
                 Text(
                     text = "Artículos",
                     style = MaterialTheme.typography.titleLarge,
@@ -238,6 +238,12 @@ private fun PhoneArticlesLayout(
             }
         }
     }
+
+    SnackbarHost(
+        hostState = snackbarHostState,
+        modifier = Modifier.align(Alignment.BottomCenter),
+    )
+    } // end outer Box
 }
 
 // MARK: - Section Row
@@ -249,52 +255,49 @@ private fun SectionRow(
     onClick: () -> Unit,
 ) {
     val bgColor = if (isSelected) {
-        MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)
+        MaterialTheme.colorScheme.surfaceContainerLow
     } else {
-        androidx.compose.ui.graphics.Color.Transparent
+        Color.Transparent
     }
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .background(bgColor)
-            .clickable(onClick = onClick)
-            .padding(
-                horizontal = AvoqadoTheme.spacing.lg,
-                vertical = AvoqadoTheme.spacing.md,
-            ),
+            .then(
+                if (isSelected) {
+                    Modifier.background(bgColor)
+                } else {
+                    Modifier.background(bgColor)
+                }
+            )
+            .clickable(onClick = onClick),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(
-            imageVector = sectionIcon(section),
-            contentDescription = null,
-            modifier = Modifier.size(20.dp),
-            tint = if (isSelected) {
-                MaterialTheme.colorScheme.primary
-            } else {
-                MaterialTheme.colorScheme.onSurfaceVariant
-            },
-        )
-
-        Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.md))
+        // Left border bar for selected state
+        if (isSelected) {
+            Box(
+                modifier = Modifier
+                    .width(4.dp)
+                    .height(48.dp)
+                    .background(MaterialTheme.colorScheme.primary),
+            )
+        }
 
         Text(
             text = section.label,
             style = MaterialTheme.typography.bodyLarge,
             color = if (isSelected) {
-                MaterialTheme.colorScheme.primary
-            } else {
                 MaterialTheme.colorScheme.onSurface
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
             },
             fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
-            modifier = Modifier.weight(1f),
-        )
-
-        Icon(
-            imageVector = Icons.Filled.ChevronRight,
-            contentDescription = null,
-            modifier = Modifier.size(16.dp),
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier
+                .weight(1f)
+                .padding(
+                    horizontal = if (isSelected) AvoqadoTheme.spacing.md else AvoqadoTheme.spacing.lg,
+                    vertical = AvoqadoTheme.spacing.md,
+                ),
         )
     }
 }
@@ -310,19 +313,10 @@ private fun SectionContent(
         ArticleSection.PRODUCTS -> ProductListView(viewModel = viewModel)
         ArticleSection.CATEGORIES -> CategoryListView(viewModel = viewModel)
         ArticleSection.MODIFIERS -> ModifierGroupListView(viewModel = viewModel)
+        ArticleSection.OPTIONS -> OptionsView(viewModel = viewModel)
         ArticleSection.DISCOUNTS -> DiscountListView(viewModel = viewModel)
         ArticleSection.COUPONS -> CouponListView(viewModel = viewModel)
         ArticleSection.CREDIT_PACKS -> CreditPackListView(viewModel = viewModel)
+        ArticleSection.UNITS -> UnitsView(viewModel = viewModel)
     }
-}
-
-// MARK: - Section Icon Helper
-
-private fun sectionIcon(section: ArticleSection): ImageVector = when (section) {
-    ArticleSection.PRODUCTS -> Icons.Filled.LocalOffer
-    ArticleSection.CATEGORIES -> Icons.Filled.Folder
-    ArticleSection.MODIFIERS -> Icons.Filled.Tune
-    ArticleSection.DISCOUNTS -> Icons.Filled.Percent
-    ArticleSection.COUPONS -> Icons.Filled.ConfirmationNumber
-    ArticleSection.CREDIT_PACKS -> Icons.Filled.CreditCard
 }

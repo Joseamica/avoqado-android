@@ -7,7 +7,6 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -33,10 +32,14 @@ class NotificationsViewModel @Inject constructor(
     }
 
     fun markAsRead(notificationId: String) {
-        repository.markAsRead(notificationId)
+        viewModelScope.launch {
+            repository.markAsRead(notificationId)
+        }
     }
 
     fun markAllAsRead() {
-        repository.markAllAsRead()
+        viewModelScope.launch {
+            repository.markAllAsRead()
+        }
     }
 }

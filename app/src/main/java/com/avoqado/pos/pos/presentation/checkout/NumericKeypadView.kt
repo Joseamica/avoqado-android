@@ -94,7 +94,41 @@ fun NumericKeypadView(
             }
         }
 
-        Spacer(modifier = Modifier.height(if (isCompact) AvoqadoTheme.spacing.sm else AvoqadoTheme.spacing.xl))
+        Spacer(modifier = Modifier.height(if (isCompact) AvoqadoTheme.spacing.sm else AvoqadoTheme.spacing.md))
+
+        // Quick amount buttons
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = AvoqadoTheme.spacing.lg),
+            horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
+        ) {
+            val quickAmounts = listOf(50, 100, 200, 500)
+            quickAmounts.forEach { amount ->
+                Box(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(50))
+                        .border(
+                            width = 1.dp,
+                            color = MaterialTheme.colorScheme.outline,
+                            shape = RoundedCornerShape(50),
+                        )
+                        .clickable { onAmountChange(amount * 100) }
+                        .padding(vertical = if (isCompact) AvoqadoTheme.spacing.xs else AvoqadoTheme.spacing.sm),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = "$$amount",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(if (isCompact) AvoqadoTheme.spacing.sm else AvoqadoTheme.spacing.md))
 
         // Keypad grid - fills remaining space
         val rows = listOf(

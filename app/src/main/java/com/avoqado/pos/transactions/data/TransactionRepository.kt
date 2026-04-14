@@ -3,7 +3,9 @@ package com.avoqado.pos.transactions.data
 import android.util.Log
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ApiConstants
+import com.avoqado.pos.transactions.data.model.PaginationMeta
 import com.avoqado.pos.transactions.data.model.Transaction
+import com.avoqado.pos.transactions.data.model.TransactionDetailResponse
 import com.avoqado.pos.transactions.data.model.TransactionsResponse
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -13,6 +15,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.net.URLEncoder
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -29,20 +32,69 @@ class TransactionRepository @Inject constructor(
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
+    private val _isLoadingMore = MutableStateFlow(false)
+    val isLoadingMore: StateFlow<Boolean> = _isLoadingMore.asStateFlow()
+
+    private var currentPage = 1
+    private var hasMore = true
+    private val pageSize = 20
+
     suspend fun fetchTransactions(
         page: Int = 1,
-        startDate: String? = null,
-        endDate: String? = null,
+        search: String? = null,
     ) {
         val venueId = secureStorage.venueId ?: return
         val token = secureStorage.accessToken ?: return
-        _isLoading.value = true
+
+        if (page == 1) {
+            _isLoading.value = true
+            currentPage = 1
+            hasMore = true
+        } else {
+            _isLoadingMore.value = true
+        }
 
         try {
-            var url = "${ApiConstants.BASE_URL}/mobile/venues/$venueId/orders?page=$page&pageSize=50"
-            if (startDate != null) url += "&startDate=$startDate"
-            if (endDate != null) url += "&endDate=$endDate"
+            val urlBuilder = StringBuilder(
+                "${ApiConstants.BASE_URL}/mobile/venues/$venueId/transactions?page=$page&pageSize=$pageSize",
+            )
+            if (!search.isNullOrBlank()) {
+                urlBuilder.append("&search=${URLEncoder.encode(search, "UTF-8")}")
+            }
 
+            val request = Request.Builder()
+                .url(urlBuilder.toString())
+                .header("Authorization", "Bearer $token")
+                .build()
+
+            val (responseCode, body) = withContext(Dispatchers.IO) {
+                val response = client.newCall(request).execute()
+                response.code to (response.body?.string() ?: "")
+            }
+
+            if (responseCode in 200..299 && body.isNotEmpty()) {
+                val result = json.decodeFromString<TransactionsResponse>(body)
+                _transactions.value = if (page == 1) result.data else _transactions.value + result.data
+                currentPage = page
+                hasMore = result.meta?.let { page < it.pageCount } ?: false
+                Log.d("📦", "✅ Loaded ${result.data.size} transactions (page $page)")
+            } else {
+                Log.e("📦", "❌ Transactions fetch failed: $responseCode")
+            }
+        } catch (e: Exception) {
+            Log.e("📦", "❌ Transactions fetch error: ${e.message}")
+        } finally {
+            _isLoading.value = false
+            _isLoadingMore.value = false
+        }
+    }
+
+    suspend fun fetchTransactionDetail(paymentId: String): Transaction? {
+        val venueId = secureStorage.venueId ?: return null
+        val token = secureStorage.accessToken ?: return null
+
+        return try {
+            val url = "${ApiConstants.BASE_URL}/mobile/venues/$venueId/transactions/$paymentId"
             val request = Request.Builder()
                 .url(url)
                 .header("Authorization", "Bearer $token")
@@ -52,21 +104,28 @@ class TransactionRepository @Inject constructor(
                 val response = client.newCall(request).execute()
                 response.code to (response.body?.string() ?: "")
             }
+
             if (responseCode in 200..299 && body.isNotEmpty()) {
-                val result = json.decodeFromString<TransactionsResponse>(body)
-                _transactions.value = if (page == 1) result.data else _transactions.value + result.data
-                Log.d("📦", "✅ Loaded ${result.data.size} transactions (page $page)")
+                val result = json.decodeFromString<TransactionDetailResponse>(body)
+                Log.d("📦", "✅ Loaded transaction detail: $paymentId")
+                result.transaction
             } else {
-                Log.e("📦", "❌ Transactions fetch failed: $responseCode")
+                Log.e("📦", "❌ Transaction detail fetch failed: $responseCode")
+                null
             }
         } catch (e: Exception) {
-            Log.e("📦", "❌ Transactions fetch error: ${e.message}")
-        } finally {
-            _isLoading.value = false
+            Log.e("📦", "❌ Transaction detail fetch error: ${e.message}")
+            null
         }
     }
 
+    fun canLoadMore(): Boolean = hasMore && !_isLoadingMore.value
+
+    fun getNextPage(): Int = currentPage + 1
+
     fun clearCache() {
         _transactions.value = emptyList()
+        currentPage = 1
+        hasMore = true
     }
 }

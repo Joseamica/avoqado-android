@@ -1,5 +1,10 @@
 package com.avoqado.pos.printing.presentation
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -21,6 +26,7 @@ import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Print
+import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -32,16 +38,26 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Success
 import com.avoqado.pos.printing.data.PrinterService
-import com.avoqado.pos.printing.data.model.PrinterDevice
+import com.avoqado.pos.printing.data.model.DiscoveredPrinter
+import com.avoqado.pos.printing.data.model.PrinterConnectionType
+import com.avoqado.pos.printing.data.model.PrinterStatus
+import com.avoqado.pos.printing.data.model.SavedPrinter
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -49,12 +65,51 @@ fun PrinterSettingsSheet(
     printerService: PrinterService,
     onDismiss: () -> Unit,
 ) {
-    val connectedPrinter by printerService.connectedPrinter.collectAsState()
-    val isScanning by printerService.isScanning.collectAsState()
+    val savedPrinters by printerService.savedPrinters.collectAsState()
+    val statuses by printerService.printerStatuses.collectAsState()
+    val isDiscovering by printerService.isDiscovering.collectAsState()
     val discoveredPrinters by printerService.discoveredPrinters.collectAsState()
+    val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+
+    // Config sheet state
+    var configPrinter by remember { mutableStateOf<SavedPrinter?>(null) }
+
+    // Bluetooth permission handling
+    var hasBluetoothPermission by remember {
+        mutableStateOf(
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+            } else {
+                true
+            },
+        )
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { permissions ->
+        hasBluetoothPermission = permissions.values.all { it }
+        if (hasBluetoothPermission) {
+            printerService.startDiscovery()
+        }
+    }
+
+    // If config sheet is open, render only that — avoid stacked ModalBottomSheets
+    configPrinter?.let { printer ->
+        PrinterConfigSheet(
+            printer = printer,
+            printerService = printerService,
+            onDismiss = { configPrinter = null },
+        )
+        return
+    }
 
     ModalBottomSheet(
-        onDismissRequest = onDismiss,
+        onDismissRequest = {
+            printerService.stopDiscovery()
+            onDismiss()
+        },
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
     ) {
         Column(
@@ -63,131 +118,113 @@ fun PrinterSettingsSheet(
                 .padding(AvoqadoTheme.spacing.lg),
         ) {
             Text(
-                text = "Impresora",
+                text = "Impresoras",
                 style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.Bold,
             )
 
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
 
-            // Connected printer section
-            if (connectedPrinter != null) {
-                val printer = connectedPrinter!!
-
-                // Connected status card (matching iOS: green status)
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.lg))
-                        .background(Success.copy(alpha = 0.1f))
-                        .padding(AvoqadoTheme.spacing.lg),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(44.dp)
-                            .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
-                            .background(Success.copy(alpha = 0.15f)),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(
-                            Icons.Filled.Print,
-                            contentDescription = null,
-                            tint = Success,
-                            modifier = Modifier.size(24.dp),
-                        )
-                    }
-                    Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.md))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = printer.name,
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.SemiBold,
-                        )
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.xs),
-                        ) {
-                            Box(
-                                modifier = Modifier
-                                    .size(8.dp)
-                                    .background(Success, CircleShape),
-                            )
-                            Text(
-                                text = "Conectada",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = Success,
-                            )
-                        }
-                    }
-                    Icon(
-                        Icons.Filled.Check,
-                        contentDescription = null,
-                        tint = Success,
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
-
-                TextButton(
-                    onClick = { printerService.disconnect() },
-                    modifier = Modifier.align(Alignment.CenterHorizontally),
-                ) {
-                    Text("Desconectar impresora")
-                }
-            } else {
-                // Discovery section
+            // Saved printers list
+            if (savedPrinters.isNotEmpty()) {
                 Text(
-                    text = "Impresoras disponibles",
+                    text = "Impresoras guardadas",
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
 
-                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
 
-                PrimaryButton(
-                    text = if (isScanning) "Buscando..." else "Buscar impresoras",
-                    onClick = { printerService.startScan() },
-                    isLoading = isScanning,
-                )
+                savedPrinters.forEach { printer ->
+                    val status = statuses[printer.id] ?: PrinterStatus.Disconnected
+                    SavedPrinterRow(
+                        printer = printer,
+                        status = status,
+                        onClick = { configPrinter = printer },
+                    )
+                    HorizontalDivider()
+                }
 
-                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
+            }
 
-                if (discoveredPrinters.isEmpty() && !isScanning) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = AvoqadoTheme.spacing.xxxl),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                    ) {
-                        Icon(
-                            Icons.Filled.Bluetooth,
-                            contentDescription = null,
-                            modifier = Modifier.size(48.dp),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+            // Discovery section
+            Text(
+                text = "Buscar impresoras",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+
+            PrimaryButton(
+                text = if (isDiscovering) "Buscando..." else "Buscar impresoras",
+                onClick = {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !hasBluetoothPermission) {
+                        permissionLauncher.launch(
+                            arrayOf(
+                                Manifest.permission.BLUETOOTH_CONNECT,
+                                Manifest.permission.BLUETOOTH_SCAN,
+                            ),
                         )
-                        Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
-                        Text(
-                            text = "No se encontraron impresoras",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Text(
-                            text = "Asegurate que tu impresora esta encendida y emparejada",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                    } else {
+                        printerService.startDiscovery()
                     }
-                } else {
-                    LazyColumn {
-                        items(discoveredPrinters) { printer ->
-                            PrinterRow(
-                                printer = printer,
-                                onClick = { printerService.connect(printer) },
-                            )
-                            HorizontalDivider()
-                        }
+                },
+                isLoading = isDiscovering,
+            )
+
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+
+            if (discoveredPrinters.isEmpty() && !isDiscovering) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = AvoqadoTheme.spacing.xxl),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Icon(
+                        Icons.Filled.Print,
+                        contentDescription = null,
+                        modifier = Modifier.size(48.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                    )
+                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+                    Text(
+                        text = "No se encontraron impresoras",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        text = "Asegurate que tu impresora este encendida y en la misma red WiFi, o emparejada por Bluetooth",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            } else {
+                LazyColumn {
+                    items(discoveredPrinters) { printer ->
+                        val alreadySaved = savedPrinters.any { it.address == printer.address }
+                        DiscoveredPrinterRow(
+                            printer = printer,
+                            alreadySaved = alreadySaved,
+                            onClick = {
+                                if (!alreadySaved) {
+                                    val saved = printer.toSavedPrinter()
+                                    printerService.savePrinter(saved)
+                                    scope.launch {
+                                        try {
+                                            printerService.connect(saved)
+                                        } catch (_: Exception) {}
+                                    }
+                                    // Open config for the new printer
+                                    configPrinter = saved
+                                }
+                            },
+                        )
+                        HorizontalDivider()
                     }
                 }
             }
@@ -197,17 +234,102 @@ fun PrinterSettingsSheet(
     }
 }
 
-// MARK: - Printer Row (matching iOS: icon + name + chevron)
+// MARK: - Saved Printer Row
 
 @Composable
-private fun PrinterRow(
-    printer: PrinterDevice,
+private fun SavedPrinterRow(
+    printer: SavedPrinter,
+    status: PrinterStatus,
     onClick: () -> Unit,
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
+            .padding(vertical = AvoqadoTheme.spacing.md),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // Icon
+        Box(
+            modifier = Modifier
+                .size(44.dp)
+                .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
+                .background(
+                    if (status.isConnected) Success.copy(alpha = 0.15f)
+                    else MaterialTheme.colorScheme.surfaceVariant,
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                if (printer.connectionTypeEnum == PrinterConnectionType.WIFI)
+                    Icons.Filled.Wifi else Icons.Filled.Bluetooth,
+                contentDescription = null,
+                tint = if (status.isConnected) Success
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(24.dp),
+            )
+        }
+
+        Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.md))
+
+        // Info
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = printer.name,
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.Medium,
+            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.xs),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .background(
+                            when (status) {
+                                is PrinterStatus.Connected, is PrinterStatus.Printing -> Success
+                                is PrinterStatus.Connecting -> MaterialTheme.colorScheme.tertiary
+                                is PrinterStatus.Error -> MaterialTheme.colorScheme.error
+                                else -> MaterialTheme.colorScheme.outlineVariant
+                            },
+                            CircleShape,
+                        ),
+                )
+                Text(
+                    text = status.displayName,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            // Roles
+            Text(
+                text = printer.roleEnums.joinToString(", ") { it.displayName },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        Icon(
+            Icons.Filled.ChevronRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+// MARK: - Discovered Printer Row
+
+@Composable
+private fun DiscoveredPrinterRow(
+    printer: DiscoveredPrinter,
+    alreadySaved: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(enabled = !alreadySaved, onClick = onClick)
             .padding(vertical = AvoqadoTheme.spacing.md),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -219,7 +341,8 @@ private fun PrinterRow(
             contentAlignment = Alignment.Center,
         ) {
             Icon(
-                Icons.Filled.Print,
+                if (printer.connectionType == PrinterConnectionType.WIFI)
+                    Icons.Filled.Wifi else Icons.Filled.Bluetooth,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(20.dp),
@@ -228,20 +351,28 @@ private fun PrinterRow(
         Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.md))
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = printer.name,
+                text = printer.displayName,
                 style = MaterialTheme.typography.bodyLarge,
                 fontWeight = FontWeight.Medium,
             )
             Text(
-                text = printer.address,
+                text = "${printer.connectionType.displayName} - ${printer.address}${printer.port?.let { ":$it" } ?: ""}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        Icon(
-            Icons.Filled.ChevronRight,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        if (alreadySaved) {
+            Icon(
+                Icons.Filled.Check,
+                contentDescription = "Ya guardada",
+                tint = Success,
+            )
+        } else {
+            Icon(
+                Icons.Filled.ChevronRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }

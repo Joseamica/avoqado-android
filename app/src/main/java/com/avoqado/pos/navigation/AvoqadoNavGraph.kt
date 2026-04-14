@@ -182,9 +182,7 @@ private fun MainScaffold(
                                         }
                                     }
                                     tab == MainTab.NOTIFICATIONS -> {
-                                        BadgedBox(badge = { /* TODO: unread count */ }) {
-                                            Icon(icon, contentDescription = tab.label)
-                                        }
+                                        Icon(icon, contentDescription = tab.label)
                                     }
                                     else -> {
                                         Icon(icon, contentDescription = tab.label)

@@ -11,15 +11,23 @@ import java.time.temporal.ChronoUnit
 data class AppNotification(
     val id: String,
     val title: String,
-    val body: String,
+    val message: String = "",
     val type: String = "GENERAL",
-    val isRead: Boolean = false,
     val createdAt: String? = null,
-    val data: Map<String, String>? = null,
+    val readAt: String? = null,
+    val sentAt: String? = null,
+    val recipientId: String? = null,
+    val venueId: String? = null,
+    val entityType: String? = null,
+    val entityId: String? = null,
+    val priority: String? = null,
     val actionLabel: String? = null,
     val actionUrl: String? = null,
-    val priority: String? = null,
 ) {
+    // UI compatibility: existing code references body and isRead
+    val body: String get() = message
+    val isRead: Boolean get() = readAt != null
+
     // MARK: - Notification type for icon display
 
     val notificationType: NotificationType
@@ -82,7 +90,28 @@ enum class NotificationCategory(val label: String) {
 @Serializable
 data class NotificationsResponse(
     val success: Boolean = true,
-    val data: List<AppNotification> = emptyList(),
+    val data: NotificationsData = NotificationsData(),
+)
+
+@Serializable
+data class NotificationsData(
+    val notifications: List<AppNotification> = emptyList(),
+    val pagination: NotificationPagination? = null,
+    val unreadCount: Int = 0,
+)
+
+@Serializable
+data class NotificationPagination(
+    val total: Int = 0,
+    val page: Int = 1,
+    val limit: Int = 20,
+    val pageCount: Int = 1,
+)
+
+@Serializable
+data class UnreadCountResponse(
+    val success: Boolean = true,
+    val count: Int = 0,
 )
 
 enum class NotificationTab(val label: String) {

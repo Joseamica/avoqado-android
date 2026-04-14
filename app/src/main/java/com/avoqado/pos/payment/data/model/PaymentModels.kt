@@ -29,6 +29,7 @@ sealed class PaymentFlowState {
         val method: PaymentMethod,
         val changeAmount: Int = 0,
         val isQueued: Boolean = false,  // true when payment was queued offline
+        val paymentId: String? = null,
     ) : PaymentFlowState()
     data class Error(val message: String, val source: PaymentErrorSource) : PaymentFlowState()
 }
@@ -59,6 +60,7 @@ data class CreateOrderRequest(
     val paymentMethod: String,
     val rating: Int? = null,
     val note: String? = null,
+    val splitType: String? = null,
 )
 
 @Serializable

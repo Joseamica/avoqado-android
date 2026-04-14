@@ -21,8 +21,25 @@ private val LightColorScheme = lightColorScheme(
     surfaceVariant = SurfaceVariantLight,
     onSurfaceVariant = OnSurfaceVariantLight,
     outline = OutlineLight,
+    outlineVariant = OutlineVariantLight,
     error = Error,
     onError = AvoqadoOnPrimaryLight,
+    // Neutral surface containers (prevent Material3 pink/purple tint)
+    background = SurfaceLight,
+    onBackground = OnSurfaceLight,
+    surfaceContainerLowest = SurfaceLight,
+    surfaceContainerLow = SurfaceContainerLowLight,
+    surfaceContainer = SurfaceContainerLight,
+    surfaceContainerHigh = SurfaceContainerHighLight,
+    surfaceContainerHighest = SurfaceVariantLight,
+    inverseSurface = InverseSurfaceLight,
+    inverseOnSurface = InverseOnSurfaceLight,
+    surfaceBright = SurfaceLight,
+    surfaceDim = SurfaceContainerLight,
+    secondaryContainer = SurfaceVariantLight,
+    onSecondaryContainer = OnSurfaceLight,
+    tertiaryContainer = SurfaceVariantLight,
+    onTertiaryContainer = OnSurfaceLight,
 )
 
 private val DarkColorScheme = darkColorScheme(
@@ -33,8 +50,25 @@ private val DarkColorScheme = darkColorScheme(
     surfaceVariant = SurfaceVariantDark,
     onSurfaceVariant = OnSurfaceVariantDark,
     outline = OutlineDark,
+    outlineVariant = OutlineVariantDark,
     error = Error,
     onError = AvoqadoOnPrimaryLight,
+    // Neutral surface containers
+    background = SurfaceDark,
+    onBackground = OnSurfaceDark,
+    surfaceContainerLowest = SurfaceContainerLowestDark,
+    surfaceContainerLow = SurfaceContainerLowDark,
+    surfaceContainer = SurfaceContainerDark,
+    surfaceContainerHigh = SurfaceContainerHighDark,
+    surfaceContainerHighest = SurfaceVariantDark,
+    inverseSurface = InverseSurfaceDark,
+    inverseOnSurface = InverseOnSurfaceDark,
+    surfaceBright = SurfaceContainerHighDark,
+    surfaceDim = SurfaceDark,
+    secondaryContainer = SurfaceVariantDark,
+    onSecondaryContainer = OnSurfaceDark,
+    tertiaryContainer = SurfaceVariantDark,
+    onTertiaryContainer = OnSurfaceDark,
 )
 
 @Composable

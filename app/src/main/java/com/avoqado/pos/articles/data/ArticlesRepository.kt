@@ -7,6 +7,8 @@ import com.avoqado.pos.articles.data.model.ArticleCategory
 import com.avoqado.pos.articles.data.model.ArticleProduct
 import com.avoqado.pos.articles.data.model.CreditPack
 import com.avoqado.pos.articles.data.model.ModifierGroup
+import com.avoqado.pos.articles.data.model.ProductOption
+import com.avoqado.pos.articles.data.model.ProductOptionsListResponse
 import com.avoqado.pos.articles.data.model.RawMaterial
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ApiConstants
@@ -53,6 +55,9 @@ class ArticlesRepository @Inject constructor(
     private val _creditPacks = MutableStateFlow<List<CreditPack>>(emptyList())
     val creditPacks: StateFlow<List<CreditPack>> = _creditPacks.asStateFlow()
 
+    private val _productOptions = MutableStateFlow<List<ProductOption>>(emptyList())
+    val productOptions: StateFlow<List<ProductOption>> = _productOptions.asStateFlow()
+
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
@@ -63,7 +68,7 @@ class ArticlesRepository @Inject constructor(
 
     private fun baseUrl(): String? {
         val venueId = secureStorage.venueId ?: return null
-        return "${ApiConstants.BASE_URL}/dashboard/venues/$venueId"
+        return "${ApiConstants.BASE_URL}/mobile/venues/$venueId"
     }
 
     private suspend fun executeRequest(request: Request): Pair<Int, String> =
@@ -783,6 +788,90 @@ class ArticlesRepository @Inject constructor(
         } catch (e: Exception) {
             Log.e(TAG, "❌ deleteCreditPack exception: ${e.message}", e)
             _errorMessage.value = "Error al eliminar paquete de crédito"
+            false
+        }
+    }
+
+    // MARK: - Product Options
+
+    suspend fun fetchProductOptions() {
+        val venueId = secureStorage.venueId ?: return
+        val url = "${ApiConstants.BASE_URL}/mobile/venues/$venueId/product-options"
+        _isLoading.value = true
+
+        try {
+            val request = Request.Builder()
+                .url(url)
+                .get()
+                .build()
+
+            val (code, body) = executeRequest(request)
+            if (code in 200..299 && body.isNotEmpty()) {
+                val wrapper = json.decodeFromString<ProductOptionsListResponse>(body)
+                val list = wrapper.data
+                _productOptions.value = list
+                Log.d(TAG, "✅ Loaded ${list.size} product options")
+            } else {
+                Log.e(TAG, "❌ fetchProductOptions error: HTTP $code")
+                _errorMessage.value = "Error al cargar opciones de producto"
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ fetchProductOptions exception: ${e.message}", e)
+            _errorMessage.value = "Error al cargar opciones de producto"
+        } finally {
+            _isLoading.value = false
+        }
+    }
+
+    suspend fun createProductOption(payload: String): Boolean {
+        val venueId = secureStorage.venueId ?: return false
+        val url = "${ApiConstants.BASE_URL}/mobile/venues/$venueId/product-options"
+        return try {
+            val body = payload.toRequestBody(JSON_MEDIA)
+            val request = Request.Builder()
+                .url(url)
+                .post(body)
+                .build()
+
+            val (code, _) = executeRequest(request)
+            if (code in 200..299) {
+                Log.d(TAG, "✅ Product option created")
+                fetchProductOptions()
+                true
+            } else {
+                Log.e(TAG, "❌ createProductOption error: HTTP $code")
+                _errorMessage.value = "Error al crear opcion de producto"
+                false
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ createProductOption exception: ${e.message}", e)
+            _errorMessage.value = "Error al crear opcion de producto"
+            false
+        }
+    }
+
+    suspend fun deleteProductOption(optionId: String): Boolean {
+        val venueId = secureStorage.venueId ?: return false
+        val url = "${ApiConstants.BASE_URL}/mobile/venues/$venueId/product-options/$optionId"
+        return try {
+            val request = Request.Builder()
+                .url(url)
+                .delete()
+                .build()
+
+            val (code, _) = executeRequest(request)
+            if (code in 200..299) {
+                Log.d(TAG, "✅ Product option $optionId deleted")
+                fetchProductOptions()
+                true
+            } else {
+                Log.e(TAG, "❌ deleteProductOption error: HTTP $code")
+                _errorMessage.value = "Error al eliminar opcion de producto"
+                false
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ deleteProductOption exception: ${e.message}", e)
+            _errorMessage.value = "Error al eliminar opcion de producto"
             false
         }
     }

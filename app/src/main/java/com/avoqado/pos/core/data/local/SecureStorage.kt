@@ -200,6 +200,16 @@ class SecureStorage @Inject constructor(
         isBiometricLoginEnabled = true
     }
 
+    fun restoreBiometricSession(venue: StoredVenue?): Boolean {
+        val restoredUserId = biometricUserId ?: return false
+        val restoredVenue = venue ?: return false
+
+        userId = restoredUserId
+        userEmail = biometricUserEmail
+        switchVenue(restoredVenue)
+        return true
+    }
+
     fun clearSession() {
         prefs.edit()
             .remove(KEY_USER_ID)
@@ -273,11 +283,16 @@ data class StoredVenue(
 ) {
     val displayRole: String
         get() = when (role?.uppercase()) {
+            "SUPERADMIN" -> "Super Admin"
             "OWNER" -> "Propietario"
             "ADMIN" -> "Administrador"
             "MANAGER" -> "Gerente"
-            "STAFF" -> "Staff"
             "CASHIER" -> "Cajero"
+            "WAITER" -> "Mesero"
+            "KITCHEN" -> "Cocina"
+            "HOST" -> "Anfitrion"
+            "VIEWER" -> "Observador"
+            "STAFF" -> "Staff"
             else -> role ?: "Staff"
         }
 }

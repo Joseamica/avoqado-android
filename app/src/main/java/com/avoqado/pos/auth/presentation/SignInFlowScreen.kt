@@ -1,5 +1,7 @@
 package com.avoqado.pos.auth.presentation
 
+import android.content.Context
+import android.content.ContextWrapper
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -34,6 +36,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -41,6 +44,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
+import androidx.fragment.app.FragmentActivity
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.avoqado.pos.designsystem.components.AuthButton
 import com.avoqado.pos.designsystem.components.BackButton
@@ -54,6 +58,7 @@ fun SignInFlowScreen(
     viewModel: SignInViewModel = hiltViewModel(),
 ) {
     val uiState by viewModel.uiState.collectAsState()
+    val activity = LocalContext.current.findFragmentActivity()
     val keyboardController = LocalSoftwareKeyboardController.current
 
     Column(
@@ -97,13 +102,17 @@ fun SignInFlowScreen(
                         email = uiState.email,
                         onEmailChange = viewModel::onEmailChange,
                         isEmailValid = uiState.isEmailValid,
+                        isLoading = uiState.isLoading,
+                        errorMessage = uiState.errorMessage,
                         canUseBiometric = uiState.canUseBiometric,
                         biometricEmail = uiState.biometricEmail,
                         onNext = {
                             keyboardController?.hide()
                             viewModel.goToPassword()
                         },
-                        onBiometricLogin = { viewModel.loginWithBiometric(onLoginSuccess) },
+                        onBiometricLogin = {
+                            activity?.let { viewModel.loginWithBiometric(it, onLoginSuccess) }
+                        },
                     )
                     SignInStep.PASSWORD -> PasswordStepContent(
                         email = uiState.email,
@@ -125,11 +134,19 @@ fun SignInFlowScreen(
     }
 }
 
+private tailrec fun Context.findFragmentActivity(): FragmentActivity? = when (this) {
+    is FragmentActivity -> this
+    is ContextWrapper -> baseContext.findFragmentActivity()
+    else -> null
+}
+
 @Composable
 private fun EmailStepContent(
     email: String,
     onEmailChange: (String) -> Unit,
     isEmailValid: Boolean,
+    isLoading: Boolean,
+    errorMessage: String?,
     canUseBiometric: Boolean,
     biometricEmail: String?,
     onNext: () -> Unit,
@@ -180,13 +197,18 @@ private fun EmailStepContent(
             )
         }
 
+        if (errorMessage != null) {
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+            AuthErrorCard(errorMessage = errorMessage)
+        }
+
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
 
-        // Rectangular auth button (NOT pill)
         AuthButton(
             text = "Siguiente",
             onClick = onNext,
             enabled = isEmailValid,
+            isLoading = isLoading,
         )
     }
 }
@@ -274,32 +296,9 @@ private fun PasswordStepContent(
             textDecoration = TextDecoration.Underline,
         )
 
-        // Error message card (iOS-style: red bg + icon)
         if (errorMessage != null) {
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(
-                        Error.copy(alpha = 0.1f),
-                        RoundedCornerShape(AvoqadoTheme.cornerRadius.md),
-                    )
-                    .padding(AvoqadoTheme.spacing.md),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Icon(
-                    Icons.Filled.ErrorOutline,
-                    contentDescription = null,
-                    tint = Error,
-                    modifier = Modifier.size(20.dp),
-                )
-                Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
-                Text(
-                    text = errorMessage,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Error,
-                )
-            }
+            AuthErrorCard(errorMessage = errorMessage)
         }
 
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
@@ -310,6 +309,33 @@ private fun PasswordStepContent(
             onClick = onLogin,
             enabled = password.length >= 4,
             isLoading = isLoading,
+        )
+    }
+}
+
+@Composable
+private fun AuthErrorCard(errorMessage: String) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(
+                Error.copy(alpha = 0.1f),
+                RoundedCornerShape(AvoqadoTheme.cornerRadius.md),
+            )
+            .padding(AvoqadoTheme.spacing.md),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            Icons.Filled.ErrorOutline,
+            contentDescription = null,
+            tint = Error,
+            modifier = Modifier.size(20.dp),
+        )
+        Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
+        Text(
+            text = errorMessage,
+            style = MaterialTheme.typography.bodySmall,
+            color = Error,
         )
     }
 }

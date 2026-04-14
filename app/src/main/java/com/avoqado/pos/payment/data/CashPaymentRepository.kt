@@ -15,7 +15,6 @@ import javax.inject.Singleton
 class CashPaymentRepository @Inject constructor(
     private val secureStorage: SecureStorage,
     private val pendingPaymentDao: PendingPaymentDao,
-    private val paymentSyncService: PaymentSyncService,
 ) {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
@@ -42,8 +41,11 @@ class CashPaymentRepository @Inject constructor(
         cashTenderedCents: Int?,
         changeCents: Int?,
         rating: Int?,
+        orderId: String? = null,
     ): String {
         val localId = UUID.randomUUID().toString()
+        val hasOrderItems = orderRequest.items.isNotEmpty()
+        val paymentType = if (orderId != null || hasOrderItems) "ORDER" else "FAST"
         val entity = PendingPaymentEntity(
             id = localId,
             venueId = secureStorage.venueId ?: "",
@@ -51,22 +53,25 @@ class CashPaymentRepository @Inject constructor(
             amountCents = orderRequest.total - orderRequest.tip,
             tipCents = orderRequest.tip,
             method = "CASH",
-            paymentType = "FAST",
-            orderId = null,
+            paymentType = paymentType,
+            orderId = orderId,
             orderNumber = null,
             cashTenderedCents = cashTenderedCents,
             changeCents = changeCents,
             rating = rating,
             itemsJson = null,
-            orderRequestJson = json.encodeToString(CreateOrderRequest.serializer(), orderRequest),
+            orderRequestJson = if (hasOrderItems) {
+                json.encodeToString(CreateOrderRequest.serializer(), orderRequest)
+            } else {
+                null
+            },
             syncStatus = PaymentSyncStatus.PENDING.name,
             retryCount = 0,
             createdAt = System.currentTimeMillis(),
         )
 
         pendingPaymentDao.insert(entity)
-        paymentSyncService.refreshCounts()
-        Log.d("💵", "💾 Cash payment queued offline: $localId")
+        Log.d("💵", "💾 Cash payment queued offline: $localId ($paymentType)")
         return localId
     }
 }

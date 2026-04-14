@@ -1,0 +1,9 @@
+{
+  "enabled": false,
+  "latency_ms": 0,
+  "bandwidth_kbps": 0,
+  "profile": "none",
+  "log_requests": true,
+  "log_responses": true,
+  "block_hosts": []
+}

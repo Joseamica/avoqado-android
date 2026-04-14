@@ -1,5 +1,6 @@
 package com.avoqado.pos.inventory.presentation
 
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -8,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -16,101 +18,300 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Inventory2
-import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.automirrored.filled.Sort
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Inventory2
+import androidx.compose.material.icons.filled.Print
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
-import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRow
+import androidx.compose.material3.Snackbar
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
+import androidx.compose.material3.VerticalDivider
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.avoqado.pos.designsystem.components.PrimaryButton
+import com.avoqado.pos.designsystem.components.SearchPillField
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Success
 import com.avoqado.pos.designsystem.theme.Warning
 import com.avoqado.pos.inventory.data.model.StockCount
-import com.avoqado.pos.inventory.data.model.StockCountType
 import com.avoqado.pos.inventory.data.model.StockItem
 import com.avoqado.pos.inventory.data.model.StockSortOption
+import com.avoqado.pos.inventory.presentation.purchaseorders.PurchaseOrderDetailView
+import com.avoqado.pos.inventory.presentation.purchaseorders.PurchaseOrdersView
+import com.avoqado.pos.inventory.presentation.transfers.TransferDetailView
+import com.avoqado.pos.inventory.presentation.transfers.TransfersView
 
+// MARK: - Entry Point
+
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun InventoryScreen(
     viewModel: InventoryViewModel = hiltViewModel(),
 ) {
-    val selectedTab by viewModel.selectedTab.collectAsState()
+    val selectedSection by viewModel.selectedSection.collectAsState()
+    val selectedPO by viewModel.selectedPurchaseOrder.collectAsState()
+    val selectedTransfer by viewModel.selectedTransfer.collectAsState()
+    val isLoading by viewModel.isLoading.collectAsState()
     val stockItems by viewModel.stockItems.collectAsState()
     val stockCounts by viewModel.stockCounts.collectAsState()
-    val isLoading by viewModel.isLoading.collectAsState()
-    val searchQuery by viewModel.searchQuery.collectAsState()
-    val sortOption by viewModel.sortOption.collectAsState()
+    val errorMessage by viewModel.errorMessage.collectAsState()
+    val snackbarHostState = remember { SnackbarHostState() }
 
-    Column(modifier = Modifier.fillMaxSize()) {
-        Text(
-            text = "Inventario",
-            style = MaterialTheme.typography.headlineLarge,
-            modifier = Modifier.padding(
-                horizontal = AvoqadoTheme.spacing.lg,
-                vertical = AvoqadoTheme.spacing.md,
-            ),
+    // Show error as Snackbar
+    LaunchedEffect(errorMessage) {
+        errorMessage?.let {
+            snackbarHostState.showSnackbar(it)
+            viewModel.clearError()
+        }
+    }
+
+    // Stock counting state
+    val showCounting by viewModel.showCounting.collectAsState()
+    val showReview by viewModel.showReview.collectAsState()
+    val showCountTypeSheet by viewModel.showCountTypeSheet.collectAsState()
+    val selectedDetail by viewModel.selectedDetail.collectAsState()
+
+    // Show counting view (full screen)
+    if (showCounting) {
+        StockCountingView(viewModel = viewModel, isTablet = true)
+        return
+    }
+
+    // Show review view (full screen)
+    if (showReview) {
+        StockCountReviewView(viewModel = viewModel, isTablet = true)
+        return
+    }
+
+    // Show count detail view (full screen)
+    if (selectedDetail != null) {
+        StockCountDetailView(
+            count = selectedDetail!!,
+            viewModel = viewModel,
+            isTablet = true,
+            onBack = { viewModel.selectCountDetail(null) },
         )
+        return
+    }
 
-        TabRow(selectedTabIndex = InventoryTab.entries.indexOf(selectedTab)) {
-            InventoryTab.entries.forEach { tab ->
-                Tab(
-                    selected = selectedTab == tab,
-                    onClick = { viewModel.selectTab(tab) },
-                    text = { Text(tab.label) },
+    // Show PO detail if one is selected
+    if (selectedPO != null) {
+        PurchaseOrderDetailView(
+            order = selectedPO!!,
+            viewModel = viewModel,
+            onBack = { viewModel.selectPurchaseOrder(null) },
+        )
+        return
+    }
+
+    // Show transfer detail if one is selected
+    if (selectedTransfer != null) {
+        TransferDetailView(
+            transfer = selectedTransfer!!,
+            viewModel = viewModel,
+            onBack = { viewModel.selectTransfer(null) },
+        )
+        return
+    }
+
+    Box(modifier = Modifier.fillMaxSize()) {
+    Row(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.surface),
+    ) {
+        // Sidebar (280dp) - matching ArticlesScreen pattern
+        Column(
+            modifier = Modifier
+                .width(280.dp)
+                .fillMaxHeight()
+                .background(MaterialTheme.colorScheme.surfaceVariant),
+        ) {
+            // Header
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(
+                        horizontal = AvoqadoTheme.spacing.lg,
+                        vertical = AvoqadoTheme.spacing.md,
+                    ),
+            ) {
+                Text(
+                    text = "Inventario",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurface,
                 )
+            }
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+
+            // Section rows
+            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                InventorySection.entries.forEach { section ->
+                    SectionRow(
+                        section = section,
+                        isSelected = section == selectedSection,
+                        onClick = { viewModel.selectSection(section) },
+                    )
+                }
             }
         }
 
-        when {
-            isLoading && stockItems.isEmpty() && stockCounts.isEmpty() -> {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    CircularProgressIndicator()
+        // Hairline divider
+        VerticalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+        // Content area
+        Box(
+            modifier = Modifier
+                .weight(1f)
+                .fillMaxHeight(),
+        ) {
+            when {
+                isLoading && stockItems.isEmpty() && stockCounts.isEmpty() -> {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        CircularProgressIndicator()
+                    }
+                }
+                else -> {
+                    SectionContent(section = selectedSection, viewModel = viewModel)
                 }
             }
-            selectedTab == InventoryTab.OVERVIEW -> {
-                StockOverviewContent(
-                    items = stockItems,
-                    searchQuery = searchQuery,
-                    sortOption = sortOption,
-                    onSearchChange = { viewModel.updateSearch(it) },
-                    onSortChange = { viewModel.updateSort(it) },
-                )
-            }
-            selectedTab == InventoryTab.COUNTS -> {
-                StockCountsContent(counts = stockCounts)
-            }
+        }
+    }
+
+    // Snackbar for error feedback
+    SnackbarHost(
+        hostState = snackbarHostState,
+        modifier = Modifier.align(Alignment.BottomCenter),
+    )
+    } // end outer Box
+
+    // Count type bottom sheet
+    if (showCountTypeSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { viewModel.closeCountTypeSheet() },
+        ) {
+            StockCountTypeSheet(viewModel = viewModel)
+        }
+    }
+}
+
+// MARK: - Section Row (matching ArticlesScreen SectionRow)
+
+@Composable
+private fun SectionRow(
+    section: InventorySection,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+) {
+    val bgColor = if (isSelected) {
+        MaterialTheme.colorScheme.surfaceContainerLow
+    } else {
+        Color.Transparent
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(bgColor)
+            .clickable(onClick = onClick),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        // Left border bar for selected state
+        if (isSelected) {
+            Box(
+                modifier = Modifier
+                    .width(4.dp)
+                    .height(48.dp)
+                    .background(MaterialTheme.colorScheme.primary),
+            )
+        }
+
+        Text(
+            text = section.label,
+            style = MaterialTheme.typography.bodyLarge,
+            color = if (isSelected) {
+                MaterialTheme.colorScheme.onSurface
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+            modifier = Modifier
+                .weight(1f)
+                .padding(
+                    horizontal = if (isSelected) AvoqadoTheme.spacing.md else AvoqadoTheme.spacing.lg,
+                    vertical = AvoqadoTheme.spacing.md,
+                ),
+        )
+    }
+}
+
+// MARK: - Section Content Dispatcher
+
+@Composable
+private fun SectionContent(
+    section: InventorySection,
+    viewModel: InventoryViewModel,
+) {
+    when (section) {
+        InventorySection.OVERVIEW -> {
+            val stockItems by viewModel.stockItems.collectAsState()
+            val searchQuery by viewModel.searchQuery.collectAsState()
+            val sortOption by viewModel.sortOption.collectAsState()
+            StockOverviewContent(
+                items = stockItems,
+                searchQuery = searchQuery,
+                sortOption = sortOption,
+                onSearchChange = { viewModel.updateSearch(it) },
+                onSortChange = { viewModel.updateSort(it) },
+            )
+        }
+        InventorySection.COUNTS -> {
+            val stockCounts by viewModel.stockCounts.collectAsState()
+            StockCountsContent(counts = stockCounts, viewModel = viewModel)
+        }
+        InventorySection.PURCHASE_ORDERS -> {
+            PurchaseOrdersView(viewModel = viewModel)
+        }
+        InventorySection.TRANSFERS -> {
+            TransfersView(viewModel = viewModel)
+        }
+        InventorySection.METRICS -> {
+            InventoryMetricsView(viewModel = viewModel)
         }
     }
 }
@@ -126,6 +327,7 @@ private fun StockOverviewContent(
     onSortChange: (StockSortOption) -> Unit,
 ) {
     var showSortSheet by remember { mutableStateOf(false) }
+    val context = LocalContext.current
 
     // Filter by search
     val filteredItems = if (searchQuery.isBlank()) {
@@ -148,7 +350,7 @@ private fun StockOverviewContent(
     }
 
     Column {
-        // Search bar + sort button (matching iOS)
+        // Search bar + sort button (matching iOS: systemGray6 pill)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -159,55 +361,51 @@ private fun StockOverviewContent(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
         ) {
-            // Search bar
-            Row(
+            // Search bar (pill style matching iOS)
+            SearchPillField(
+                query = searchQuery,
+                onQueryChange = onSearchChange,
+                placeholder = "Buscar por nombre, SKU o GTIN",
+                modifier = Modifier.weight(1f),
+            )
+
+            // Print labels button
+            Box(
                 modifier = Modifier
-                    .weight(1f)
-                    .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.lg))
+                    .size(44.dp)
+                    .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
                     .background(MaterialTheme.colorScheme.surfaceVariant)
-                    .padding(horizontal = AvoqadoTheme.spacing.md, vertical = AvoqadoTheme.spacing.xs),
-                verticalAlignment = Alignment.CenterVertically,
+                    .clickable {
+                        Toast
+                            .makeText(
+                                context,
+                                "Impresion no disponible",
+                                Toast.LENGTH_SHORT,
+                            )
+                            .show()
+                    },
+                contentAlignment = Alignment.Center,
             ) {
                 Icon(
-                    Icons.Filled.Search,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(20.dp),
+                    Icons.Filled.Print,
+                    contentDescription = "Imprimir etiquetas",
+                    tint = MaterialTheme.colorScheme.onSurface,
                 )
-                Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
-                OutlinedTextField(
-                    value = searchQuery,
-                    onValueChange = onSearchChange,
-                    placeholder = { Text("Buscar por nombre, SKU o GTIN") },
-                    singleLine = true,
-                    modifier = Modifier.weight(1f),
-                    colors = OutlinedTextFieldDefaults.colors(
-                        unfocusedBorderColor = Color.Transparent,
-                        focusedBorderColor = Color.Transparent,
-                        unfocusedContainerColor = Color.Transparent,
-                        focusedContainerColor = Color.Transparent,
-                    ),
-                )
-                if (searchQuery.isNotEmpty()) {
-                    IconButton(
-                        onClick = { onSearchChange("") },
-                        modifier = Modifier.size(20.dp),
-                    ) {
-                        Icon(
-                            Icons.Filled.Close,
-                            contentDescription = "Limpiar",
-                            modifier = Modifier.size(16.dp),
-                        )
-                    }
-                }
             }
 
-            // Sort button (matching iOS: arrow.up.arrow.down)
-            IconButton(onClick = { showSortSheet = true }) {
+            // Sort button (matching iOS: systemGray6 square)
+            Box(
+                modifier = Modifier
+                    .size(44.dp)
+                    .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .clickable { showSortSheet = true },
+                contentAlignment = Alignment.Center,
+            ) {
                 Icon(
                     Icons.AutoMirrored.Filled.Sort,
                     contentDescription = "Ordenar",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    tint = MaterialTheme.colorScheme.onSurface,
                 )
             }
         }
@@ -221,19 +419,26 @@ private fun StockOverviewContent(
                     Icon(
                         Icons.Filled.Inventory2,
                         contentDescription = null,
-                        modifier = Modifier.size(48.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                        modifier = Modifier.size(60.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f),
                     )
-                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
                     Text(
-                        text = "No hay productos con inventario",
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        text = "Sin articulos con inventario",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = MaterialTheme.colorScheme.onSurface,
                     )
+                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
                     if (searchQuery.isNotEmpty()) {
                         Text(
                             text = "Intenta con otro termino de busqueda",
-                            style = MaterialTheme.typography.bodySmall,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else {
+                        Text(
+                            text = "Los productos con seguimiento de inventario apareceran aqui",
+                            style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
@@ -245,7 +450,7 @@ private fun StockOverviewContent(
             ) {
                 items(sortedItems, key = { it.id }) { item ->
                     StockItemRow(item = item)
-                    HorizontalDivider()
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 }
             }
         }
@@ -274,12 +479,12 @@ private fun StockItemRow(item: StockItem) {
             .padding(vertical = AvoqadoTheme.spacing.md),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        // Product initials avatar (matching iOS)
+        // Product initials avatar (matching iOS: systemGray5)
         Box(
             modifier = Modifier
                 .size(40.dp)
                 .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.sm))
-                .background(MaterialTheme.colorScheme.surfaceVariant),
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh),
             contentAlignment = Alignment.Center,
         ) {
             Text(
@@ -297,6 +502,7 @@ private fun StockItemRow(item: StockItem) {
                 text = item.productName,
                 style = MaterialTheme.typography.bodyLarge,
                 fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.onSurface,
             )
             item.sku?.let { sku ->
                 Text(
@@ -309,14 +515,14 @@ private fun StockItemRow(item: StockItem) {
 
         // Stock quantity (matching iOS: colored based on level)
         val qtyColor = when {
+            item.onHand <= 0 -> MaterialTheme.colorScheme.error
             item.isLowStock -> Warning
-            item.onHand > 0 -> MaterialTheme.colorScheme.onSurface
-            else -> MaterialTheme.colorScheme.error
+            else -> MaterialTheme.colorScheme.onSurface
         }
         Text(
-            text = "${item.currentQuantity}",
+            text = item.currentQuantityDisplay,
             style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold,
+            fontWeight = if (item.onHand <= 0) FontWeight.SemiBold else FontWeight.Bold,
             color = qtyColor,
         )
     }
@@ -325,7 +531,10 @@ private fun StockItemRow(item: StockItem) {
 // MARK: - Stock Counts Content (matching iOS: count type button + list)
 
 @Composable
-private fun StockCountsContent(counts: List<StockCount>) {
+private fun StockCountsContent(
+    counts: List<StockCount>,
+    viewModel: InventoryViewModel,
+) {
     if (counts.isEmpty()) {
         Box(
             modifier = Modifier.fillMaxSize(),
@@ -338,23 +547,24 @@ private fun StockCountsContent(counts: List<StockCount>) {
                 Icon(
                     Icons.Filled.Inventory2,
                     contentDescription = null,
-                    modifier = Modifier.size(48.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+                    modifier = Modifier.size(60.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f),
                 )
                 Text(
                     text = "No hay conteos de inventario",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.titleLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
                 )
                 Text(
                     text = "Crea tu primer conteo para verificar existencias",
-                    style = MaterialTheme.typography.bodySmall,
+                    style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
                 PrimaryButton(
                     text = "Contar existencia",
-                    onClick = { /* TODO: open StockCountTypeSheet */ },
+                    onClick = { viewModel.openCountTypeSheet() },
+                    fullWidth = false,
                 )
             }
         }
@@ -369,7 +579,8 @@ private fun StockCountsContent(counts: List<StockCount>) {
             ) {
                 PrimaryButton(
                     text = "Contar existencia",
-                    onClick = { /* TODO: open StockCountTypeSheet */ },
+                    onClick = { viewModel.openCountTypeSheet() },
+                    fullWidth = false,
                 )
             }
 
@@ -377,8 +588,11 @@ private fun StockCountsContent(counts: List<StockCount>) {
                 contentPadding = PaddingValues(horizontal = AvoqadoTheme.spacing.lg),
             ) {
                 items(counts, key = { it.id }) { count ->
-                    StockCountRow(count = count)
-                    HorizontalDivider()
+                    StockCountRow(
+                        count = count,
+                        onTap = { viewModel.selectCountDetail(count) },
+                    )
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 }
             }
         }
@@ -388,11 +602,14 @@ private fun StockCountsContent(counts: List<StockCount>) {
 // MARK: - Stock Count Row (matching iOS: colored icon + type + status)
 
 @Composable
-private fun StockCountRow(count: StockCount) {
+private fun StockCountRow(
+    count: StockCount,
+    onTap: () -> Unit = {},
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { /* TODO: open StockCountDetailView */ }
+            .clickable(onClick = onTap)
             .padding(vertical = AvoqadoTheme.spacing.md),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -460,6 +677,7 @@ private fun SortOptionsSheet(
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(),
+        containerColor = MaterialTheme.colorScheme.surface,
     ) {
         Column(
             modifier = Modifier
@@ -496,7 +714,7 @@ private fun SortOptionsSheet(
                         )
                     }
                 }
-                HorizontalDivider()
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             }
 
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxxl))

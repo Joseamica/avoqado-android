@@ -1,23 +1,39 @@
 package com.avoqado.pos.inventory.data.model
 
 import kotlinx.serialization.Serializable
+import java.util.Locale
 
 @Serializable
 data class StockItem(
     val id: String,
-    val productId: String,
-    val productName: String,
+    val name: String = "",
     val sku: String? = null,
     val gtin: String? = null,
     val imageUrl: String? = null,
-    val currentQuantity: Int = 0,
     val onHand: Double = 0.0,
     val available: Double = 0.0,
     val onOrder: Double = 0.0,
-    val category: String? = null,
+    val categoryName: String? = null,
+    val unit: String? = null,
 ) {
+    // UI compatibility: existing code references productName
+    val productName: String get() = name
+
+    // UI compatibility: existing code references currentQuantity
+    val currentQuantity: Double get() = onHand
+
+    val currentQuantityDisplay: String
+        get() = if (currentQuantity == currentQuantity.toLong().toDouble()) {
+            currentQuantity.toLong().toString()
+        } else {
+            String.format(Locale.US, "%.2f", currentQuantity)
+        }
+
+    // UI compatibility: existing code references category
+    val category: String? get() = categoryName
+
     val initials: String
-        get() = productName.take(2).uppercase()
+        get() = name.take(2).uppercase()
 
     val isLowStock: Boolean
         get() = onHand > 0 && onHand <= 5
@@ -26,14 +42,14 @@ data class StockItem(
 @Serializable
 data class StockCount(
     val id: String,
-    val name: String,
     val type: StockCountType = StockCountType.FULL,
-    val status: String = "DRAFT",
+    val status: String = "IN_PROGRESS",
     val itemCount: Int = 0,
     val createdAt: String? = null,
     val completedAt: String? = null,
     val createdBy: String? = null,
     val note: String? = null,
+    val items: List<StockCountItem> = emptyList(),
 ) {
     val statusDisplay: String
         get() = when (status) {
@@ -44,28 +60,24 @@ data class StockCount(
         }
 }
 
-enum class StockCountType(
-    val label: String,
-    val description: String,
-) {
+@Serializable
+enum class StockCountType(val label: String, val description: String) {
     FULL("Conteo completo", "Contar todos los productos"),
-    CYCLE("Conteo por ciclo", "Contar productos seleccionados"),
+    CYCLE("Conteo ciclico", "Contar productos seleccionados"),
 }
 
+@Serializable
 data class StockCountItem(
-    val productId: String,
-    val productName: String,
+    val id: String = "",
+    val productId: String = "",
+    val productName: String = "",
     val sku: String? = null,
     val gtin: String? = null,
-    val expectedQuantity: Int = 0,
-    var countedQuantity: Int? = null,
-) {
-    val variance: Int?
-        get() = countedQuantity?.let { it - expectedQuantity }
-
-    val hasVariance: Boolean
-        get() = variance != null && variance != 0
-}
+    val imageUrl: String? = null,
+    val expected: Double = 0.0,
+    var counted: Double = 0.0,
+    var difference: Double = 0.0,
+)
 
 enum class StockSortOption(val label: String) {
     NAME_ASC("Nombre A-Z"),
@@ -77,11 +89,31 @@ enum class StockSortOption(val label: String) {
 @Serializable
 data class StockOverviewResponse(
     val success: Boolean = true,
-    val data: List<StockItem> = emptyList(),
+    val items: List<StockItem> = emptyList(),
+    val pagination: PaginationInfo? = null,
 )
 
 @Serializable
 data class StockCountsResponse(
     val success: Boolean = true,
-    val data: List<StockCount> = emptyList(),
+    val counts: List<StockCount> = emptyList(),
+)
+
+@Serializable
+data class CreateStockCountResponse(
+    val success: Boolean = true,
+    val count: StockCount? = null,
+)
+
+@Serializable
+data class UpdateStockCountResponse(
+    val success: Boolean = true,
+)
+
+@Serializable
+data class PaginationInfo(
+    val total: Int = 0,
+    val page: Int = 1,
+    val pageSize: Int = 20,
+    val pageCount: Int = 1,
 )

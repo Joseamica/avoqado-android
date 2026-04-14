@@ -53,6 +53,7 @@ fun CustomersView(
     onCustomerSelected: (Customer) -> Unit,
     onDismiss: () -> Unit,
     onCreateCustomer: (searchText: String) -> Unit,
+    canCreateCustomer: Boolean = true,
 ) {
     val customers by viewModel.customers.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
@@ -118,16 +119,18 @@ fun CustomersView(
 
             Spacer(modifier = Modifier.weight(1f))
 
-            // "Crear cliente" outlined button
-            OutlinedButton(
-                onClick = { onCreateCustomer(searchText) },
-                shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.xl),
-            ) {
-                Text(
-                    text = "Crear cliente",
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.Medium,
-                )
+            // "Crear cliente" outlined button (gated by role)
+            if (canCreateCustomer) {
+                OutlinedButton(
+                    onClick = { onCreateCustomer(searchText) },
+                    shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.xl),
+                ) {
+                    Text(
+                        text = "Crear cliente",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
+                    )
+                }
             }
         }
 
@@ -210,20 +213,23 @@ fun CustomersView(
                     )
                     Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
                     Text(
-                        text = "Crea un nuevo cliente con esta informacion",
+                        text = if (canCreateCustomer) "Crea un nuevo cliente con esta informacion"
+                        else "No se encontraron resultados",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
-                    OutlinedButton(
-                        onClick = { onCreateCustomer(searchText) },
-                        shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.xl),
-                    ) {
-                        Text(
-                            text = "Crear cliente",
-                            style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.Medium,
-                        )
+                    if (canCreateCustomer) {
+                        Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
+                        OutlinedButton(
+                            onClick = { onCreateCustomer(searchText) },
+                            shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.xl),
+                        ) {
+                            Text(
+                                text = "Crear cliente",
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontWeight = FontWeight.Medium,
+                            )
+                        }
                     }
                 }
             }

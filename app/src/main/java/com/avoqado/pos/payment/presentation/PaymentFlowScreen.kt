@@ -13,12 +13,19 @@ fun PaymentFlowScreen(
     cartState: CartState,
     onComplete: () -> Unit,
     onCancel: () -> Unit,
+    splitConfig: SplitConfig = SplitConfig(),
     viewModel: PaymentFlowViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsState()
     val terminals by viewModel.onlineTerminals.collectAsState()
 
-    LaunchedEffect(cartState) {
+    LaunchedEffect(cartState, splitConfig) {
+        viewModel.setSplitConfig(
+            type = splitConfig.type.toApiSplitType(),
+            selectedItemIds = splitConfig.selectedItemIds,
+            numberOfParts = splitConfig.numberOfParts,
+            customAmountCents = splitConfig.customAmountCents,
+        )
         viewModel.startPaymentFlow(cartState)
     }
 
@@ -92,11 +99,31 @@ fun PaymentFlowScreen(
             )
         }
         is PaymentFlowState.Success -> {
+            val whatsAppSending by viewModel.whatsAppSending.collectAsState()
+            val whatsAppResult by viewModel.whatsAppResult.collectAsState()
+            val emailSending by viewModel.emailSending.collectAsState()
+            val emailResult by viewModel.emailResult.collectAsState()
+            val printSending by viewModel.printSending.collectAsState()
+            val printResult by viewModel.printResult.collectAsState()
+
             PaymentResultScreen(
                 totalCents = currentState.totalAmount,
                 method = currentState.method,
                 changeCents = currentState.changeAmount,
                 isQueued = currentState.isQueued,
+                paymentId = currentState.paymentId,
+                isSendingWhatsApp = whatsAppSending,
+                whatsAppResultMessage = whatsAppResult,
+                onSendWhatsApp = { phone -> viewModel.sendReceiptWhatsApp(phone) },
+                onClearWhatsAppResult = { viewModel.clearWhatsAppResult() },
+                isSendingEmail = emailSending,
+                emailResultMessage = emailResult,
+                onSendEmail = { email -> viewModel.sendReceiptEmail(email) },
+                onClearEmailResult = { viewModel.clearEmailResult() },
+                isPrintingReceipt = printSending,
+                printResultMessage = printResult,
+                onPrintReceipt = { viewModel.reprintReceipt() },
+                onClearPrintResult = { viewModel.clearPrintResult() },
                 onDone = onComplete,
             )
         }
@@ -110,5 +137,14 @@ fun PaymentFlowScreen(
                 },
             )
         }
+    }
+}
+
+private fun SplitType.toApiSplitType(): String {
+    return when (this) {
+        SplitType.FULL_PAYMENT -> "FULLPAYMENT"
+        SplitType.BY_PRODUCT -> "BYPRODUCT"
+        SplitType.EQUAL_PARTS -> "EQUALPARTS"
+        SplitType.CUSTOM_AMOUNT -> "CUSTOMAMOUNT"
     }
 }

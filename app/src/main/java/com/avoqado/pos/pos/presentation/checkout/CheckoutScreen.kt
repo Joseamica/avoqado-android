@@ -56,6 +56,8 @@ import com.avoqado.pos.customers.presentation.CustomersView
 import com.avoqado.pos.customers.presentation.CustomersViewModel
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.payment.presentation.PaymentFlowScreen
+import com.avoqado.pos.payment.presentation.SplitConfig
+import com.avoqado.pos.payment.presentation.SplitPaymentSheet
 import com.avoqado.pos.pos.data.model.CartItem
 import com.avoqado.pos.pos.data.model.Product
 import com.avoqado.pos.pos.presentation.cart.CartPanelView
@@ -64,17 +66,20 @@ import com.avoqado.pos.pos.presentation.product.CreateProductView
 import com.avoqado.pos.pos.presentation.product.ProductDetailPanel
 import com.avoqado.pos.pos.presentation.product.ProductGridView
 import com.avoqado.pos.pos.presentation.scanner.BarcodeScannerView
+import com.avoqado.pos.core.domain.RoleManager
 import com.avoqado.pos.pos.presentation.search.SearchOverlayView
 
 enum class InputTab(val label: String) {
     KEYPAD("Teclado"),
     SHORTCUTS("Shortcuts"),
     PRODUCTS("Todos los productos"),
+    MOSAIC("Configurar"),
 }
 
 @Composable
 fun CheckoutScreen(
     isTablet: Boolean,
+    roleManager: RoleManager? = null,
     cartViewModel: CartViewModel = hiltViewModel(),
 ) {
     val cartState by cartViewModel.cartState.collectAsState()
@@ -95,6 +100,8 @@ fun CheckoutScreen(
     var showSavedSnackbar by remember { mutableStateOf(false) }
     var showBarcodeScanner by remember { mutableStateOf(false) }
     var showCreateProduct by remember { mutableStateOf(false) }
+    var showSplitPayment by remember { mutableStateOf(false) }
+    var pendingSplitConfig by remember { mutableStateOf(SplitConfig()) }
     val customersViewModel: CustomersViewModel = hiltViewModel()
 
     if (isTablet) {
@@ -158,6 +165,10 @@ fun CheckoutScreen(
                                     discountsRepository = cartViewModel.discountsRepository,
                                     onCustomerSearch = { showCustomersSheet = true },
                                     onCreateItem = { showCreateProduct = true },
+                                    onProductTap = { product ->
+                                        handleProductTap(product, cartViewModel, { selectedProduct = it })
+                                    },
+                                    canCreateProducts = roleManager?.canCreateProducts ?: true,
                                 )
                             }
                             InputTab.PRODUCTS -> {
@@ -170,6 +181,11 @@ fun CheckoutScreen(
                                             { selectedProduct = it },
                                         )
                                     },
+                                )
+                            }
+                            InputTab.MOSAIC -> {
+                                MosaicConfigView(
+                                    cartViewModel = cartViewModel,
                                 )
                             }
                         }
@@ -194,7 +210,10 @@ fun CheckoutScreen(
                 CartPanelView(
                     cartState = cartState,
                     onItemTap = { item -> selectedCartItem = item },
-                    onCharge = { showPaymentFlow = true },
+                    onCharge = {
+                        pendingSplitConfig = SplitConfig()
+                        showPaymentFlow = true
+                    },
                     onClearCart = { cartViewModel.clearCart() },
                     onSaveCart = {
                         if (cartViewModel.saveCurrentCart()) {
@@ -205,6 +224,7 @@ fun CheckoutScreen(
                     onRemoveItem = { cartViewModel.removeItem(it) },
                     customerName = selectedCustomer?.fullName,
                     onCustomerTap = { showCustomersSheet = true },
+                    onSplitPayment = { showSplitPayment = true },
                 )
             }
         }
@@ -263,6 +283,10 @@ fun CheckoutScreen(
                                     discountsRepository = cartViewModel.discountsRepository,
                                     onCustomerSearch = { showCustomersSheet = true },
                                     onCreateItem = { showCreateProduct = true },
+                                    onProductTap = { product ->
+                                        handleProductTap(product, cartViewModel, { selectedProduct = it })
+                                    },
+                                    canCreateProducts = roleManager?.canCreateProducts ?: true,
                                 )
                             }
                             InputTab.PRODUCTS -> {
@@ -275,6 +299,11 @@ fun CheckoutScreen(
                                             { selectedProduct = it },
                                         )
                                     },
+                                )
+                            }
+                            InputTab.MOSAIC -> {
+                                MosaicConfigView(
+                                    cartViewModel = cartViewModel,
                                 )
                             }
                         }
@@ -353,6 +382,7 @@ fun CheckoutScreen(
             onItemTap = { item -> selectedCartItem = item },
             onCharge = {
                 showIPhoneCart = false
+                pendingSplitConfig = SplitConfig()
                 showPaymentFlow = true
             },
             onClearCart = { cartViewModel.clearCart() },
@@ -424,10 +454,29 @@ fun CheckoutScreen(
                 onComplete = {
                     cartViewModel.clearCart()
                     showPaymentFlow = false
+                    pendingSplitConfig = SplitConfig()
                 },
-                onCancel = { showPaymentFlow = false },
+                onCancel = {
+                    showPaymentFlow = false
+                    pendingSplitConfig = SplitConfig()
+                },
+                splitConfig = pendingSplitConfig,
             )
         }
+    }
+
+    // Split payment sheet
+    if (showSplitPayment && !cartState.isEmpty) {
+        SplitPaymentSheet(
+            totalCents = cartState.totalCents,
+            items = cartState.items,
+            onDismiss = { showSplitPayment = false },
+            onConfirm = { splitConfig ->
+                showSplitPayment = false
+                pendingSplitConfig = splitConfig
+                showPaymentFlow = true
+            },
+        )
     }
 
     // Save cart snackbar
@@ -479,6 +528,7 @@ fun CheckoutScreen(
                         createCustomerSearchText = searchText
                         showCreateCustomer = true
                     },
+                    canCreateCustomer = roleManager?.canManageCustomers ?: true,
                 )
             }
         }

@@ -8,6 +8,7 @@ import com.avoqado.pos.auth.data.BiometricAuthManager
 import com.avoqado.pos.auth.data.model.LoginResult
 import com.avoqado.pos.core.data.local.SecureStorage
 import dagger.hilt.android.lifecycle.HiltViewModel
+import androidx.fragment.app.FragmentActivity
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -94,23 +95,32 @@ class SignInViewModel @Inject constructor(
         }
     }
 
-    fun loginWithBiometric(onSuccess: () -> Unit) {
+    fun loginWithBiometric(activity: FragmentActivity, onSuccess: () -> Unit) {
         val refreshToken = secureStorage.biometricRefreshToken ?: return
 
         viewModelScope.launch {
             _uiState.update { it.copy(isLoading = true, errorMessage = null) }
 
             try {
-                // Biometric prompt will be triggered from the Activity context
-                // For now, use the stored refresh token directly
+                val didAuthenticate = biometricAuthManager.authenticate(activity)
+                if (!didAuthenticate) {
+                    _uiState.update {
+                        it.copy(
+                            isLoading = false,
+                            errorMessage = biometricAuthManager.error.value,
+                        )
+                    }
+                    return@launch
+                }
+
                 authRepository.refreshTokensForBiometric(refreshToken)
 
-                // Restore session from biometric credentials
                 val biometricVenues = secureStorage.biometricVenuesList
-                val primaryVenue = biometricVenues.firstOrNull()
+                val restoredVenue = biometricVenues.firstOrNull { it.id == secureStorage.biometricVenueId }
+                    ?: biometricVenues.firstOrNull()
 
-                if (primaryVenue != null) {
-                    secureStorage.switchVenue(primaryVenue)
+                if (!secureStorage.restoreBiometricSession(restoredVenue)) {
+                    throw IllegalStateException("Missing biometric session data")
                 }
 
                 Log.d("🔐", "✅ Biometric login success")

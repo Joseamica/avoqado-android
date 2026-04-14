@@ -99,6 +99,7 @@ fun ProductDetailView(
             } ?: MeasurementUnit.UNIT
         )
     }
+    var durationMinutes by remember { mutableStateOf(product?.durationMinutes?.toString() ?: "") }
     var showDeleteDialog by remember { mutableStateOf(false) }
 
     // MARK: - Save action
@@ -248,6 +249,40 @@ fun ProductDetailView(
                         selectedId = categoryId,
                         onSelected = { categoryId = it },
                     )
+                }
+            }
+
+            // MARK: 3.5. DURACION (services only)
+            if (type == ProductType.APPOINTMENTS_SERVICE) {
+                item {
+                    SectionCard(title = "DURACION DEL SERVICIO") {
+                        OutlinedTextField(
+                            value = durationMinutes,
+                            onValueChange = { durationMinutes = it },
+                            label = { Text("Duracion (minutos)") },
+                            placeholder = { Text("Ej: 30, 60, 90") },
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        )
+                        if (durationMinutes.isNotBlank()) {
+                            val mins = durationMinutes.toIntOrNull() ?: 0
+                            if (mins > 0) {
+                                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+                                Text(
+                                    text = if (mins >= 60) {
+                                        val h = mins / 60
+                                        val m = mins % 60
+                                        if (m > 0) "= ${h}h ${m}min" else "= ${h}h"
+                                    } else {
+                                        "= ${mins}min"
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
                 }
             }
 

@@ -11,9 +11,11 @@ enum class ArticleSection(val label: String, val iconName: String) {
     PRODUCTS("Productos", "inventory_2"),
     CATEGORIES("Categorías", "category"),
     MODIFIERS("Modificadores", "tune"),
+    OPTIONS("Opciones", "tune"),
     DISCOUNTS("Descuentos", "local_offer"),
     COUPONS("Cupones", "confirmation_number"),
     CREDIT_PACKS("Paquetes de crédito", "card_giftcard"),
+    UNITS("Unidades", "straighten"),
 }
 
 enum class ProductType(val label: String) {
@@ -107,6 +109,7 @@ data class ArticleProduct(
     val categoryId: String? = null,
     val category: ArticleCategory? = null,
     val modifierGroups: List<ProductModifierGroupJoin>? = null,
+    val durationMinutes: Int? = null,
 ) {
     val initials: String
         get() = name.take(2).uppercase(Locale.US)
@@ -117,6 +120,20 @@ data class ArticleProduct(
             price != null -> "$${String.format(Locale.US, "%.2f", price)}"
             else -> "—"
         }
+
+    val displayDuration: String?
+        get() = durationMinutes?.let { mins ->
+            if (mins >= 60) {
+                val hours = mins / 60
+                val remainder = mins % 60
+                if (remainder > 0) "${hours}h ${remainder}min" else "${hours}h"
+            } else {
+                "${mins}min"
+            }
+        }
+
+    val isService: Boolean
+        get() = type == "APPOINTMENTS_SERVICE"
 
     val productType: ProductType
         get() = when (type) {
@@ -185,6 +202,8 @@ data class AdminDiscount(
     val scope: String = "ORDER",
     val active: Boolean? = null,
     val requiresApproval: Boolean? = null,
+    val targetItemIds: List<String>? = null,
+    val targetCategoryIds: List<String>? = null,
 ) {
     val discountType: DiscountType
         get() = when (type) {

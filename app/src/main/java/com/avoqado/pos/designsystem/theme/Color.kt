@@ -11,12 +11,29 @@ val AvoqadoOnPrimaryDark = Color(0xFF1C1C1E)
 // Surfaces
 val SurfaceLight = Color(0xFFFFFFFF)       // systemBackground
 val SurfaceDark = Color(0xFF1C1C1E)
-val SurfaceVariantLight = Color(0xFFF2F2F7) // secondarySystemBackground
+val SurfaceVariantLight = Color(0xFFF2F2F7) // secondarySystemBackground / systemGray6
 val SurfaceVariantDark = Color(0xFF2C2C2E)
+
+// Surface containers (neutral grays matching iOS system colors)
+val SurfaceContainerLowLight = Color(0xFFF9F9F9)   // slightly off-white
+val SurfaceContainerLight = Color(0xFFF2F2F7)       // systemGray6
+val SurfaceContainerHighLight = Color(0xFFE5E5EA)   // systemGray5
+val SurfaceContainerLowestDark = Color(0xFF000000)
+val SurfaceContainerLowDark = Color(0xFF1C1C1E)
+val SurfaceContainerDark = Color(0xFF2C2C2E)
+val SurfaceContainerHighDark = Color(0xFF3A3A3C)
+
+// Inverse surfaces
+val InverseSurfaceLight = Color(0xFF1C1C1E)
+val InverseOnSurfaceLight = Color(0xFFFFFFFF)
+val InverseSurfaceDark = Color(0xFFE5E5EA)
+val InverseOnSurfaceDark = Color(0xFF1C1C1E)
 
 // Outline / borders
 val OutlineLight = Color(0xFFD1D1D6)       // systemGray4
 val OutlineDark = Color(0xFF3A3A3C)
+val OutlineVariantLight = Color(0xFFE5E5EA) // systemGray5
+val OutlineVariantDark = Color(0xFF48484A)  // systemGray3
 
 // On-surface
 val OnSurfaceLight = Color(0xFF1C1C1E)

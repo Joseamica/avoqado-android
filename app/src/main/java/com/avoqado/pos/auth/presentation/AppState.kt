@@ -20,6 +20,12 @@ class AppState @Inject constructor(
     private val paymentSyncService: PaymentSyncService,
 ) : ViewModel() {
 
+    init {
+        if (secureStorage.isLoggedIn) {
+            paymentSyncService.start()
+        }
+    }
+
     private val _isLoggedIn = MutableStateFlow(secureStorage.isLoggedIn)
     val isLoggedIn: StateFlow<Boolean> = _isLoggedIn.asStateFlow()
 

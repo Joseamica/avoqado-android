@@ -2,8 +2,12 @@ package com.avoqado.pos.core.di
 
 import android.content.Context
 import androidx.room.Room
+import com.avoqado.pos.cashdrawer.data.CashDrawerDao
 import com.avoqado.pos.core.data.local.database.AvoqadoDatabase
+import com.avoqado.pos.core.data.local.database.AvoqadoDatabaseMigrations
 import com.avoqado.pos.core.data.local.database.PendingPaymentDao
+import com.avoqado.pos.inventory.data.local.InventoryTransferDao
+import com.avoqado.pos.inventory.data.local.PurchaseOrderDao
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -21,11 +25,30 @@ object DatabaseModule {
             context,
             AvoqadoDatabase::class.java,
             "avoqado_db",
-        ).build()
+        ).addMigrations(
+            AvoqadoDatabaseMigrations.MIGRATION_1_2,
+            AvoqadoDatabaseMigrations.MIGRATION_2_3,
+        )
+            .build()
     }
 
     @Provides
     fun providePendingPaymentDao(database: AvoqadoDatabase): PendingPaymentDao {
         return database.pendingPaymentDao()
+    }
+
+    @Provides
+    fun provideCashDrawerDao(database: AvoqadoDatabase): CashDrawerDao {
+        return database.cashDrawerDao()
+    }
+
+    @Provides
+    fun providePurchaseOrderDao(database: AvoqadoDatabase): PurchaseOrderDao {
+        return database.purchaseOrderDao()
+    }
+
+    @Provides
+    fun provideInventoryTransferDao(database: AvoqadoDatabase): InventoryTransferDao {
+        return database.inventoryTransferDao()
     }
 }

@@ -2,6 +2,25 @@
 
 This file provides guidance to Claude Code when working with this repository.
 
+## UI/UX Rules (BLOCKING — read before ANY UI work)
+
+**Before creating or modifying ANY Composable, you MUST:**
+
+1. **Read the Design System** — `designsystem/` package contains theme, colors, typography, and reusable components. Use these instead of hardcoded values.
+2. **Check `../square-ui-reference/`** — 174 screenshots + notes from Square POS (v6.99sw) on iPad. Use as design baseline when implementing features that Square already has.
+3. **Reference iOS** — `../avoqado-ios/ui-patterns-ios.md` has mandatory component patterns. Match parity with iOS app.
+
+**If you skip these steps and create inconsistent UI, it will need to be redone.**
+
+### Quick reference — mandatory patterns:
+| Need | Use | Never |
+|------|-----|-------|
+| Back/dismiss button | Circle with chevron (match iOS `CircleBackButton`) | Plain text "Back" or raw Icon |
+| Primary button | `PrimaryButton` composable or `RoundedCornerShape(50)` | `RoundedCornerShape(12.dp)` |
+| Spacing | `Spacing.md`, `Spacing.lg` from design tokens | Hardcoded `12.dp`, `16.dp` |
+| Colors | `MaterialTheme.colorScheme.*` | Hardcoded `Color.Black`, `Color.White` |
+| Typography | `MaterialTheme.typography.*` | `fontSize = 14.sp` inline |
+
 ## Build Commands
 
 ```bash
@@ -14,6 +33,21 @@ This file provides guidance to Claude Code when working with this repository.
 # Run on connected device/emulator
 ./gradlew installDebug
 ```
+
+## Release / Production Build
+
+When the user asks to build for production, release, or to upload to Google Play:
+
+1. Bump `versionCode` and `versionName` in `app/build.gradle.kts`
+2. Run `./gradlew bundleRelease` (AAB) and `./gradlew assembleRelease` (APK)
+3. Create a folder with the version name and copy both artifacts:
+   ```
+   /Users/amieva/Library/Mobile Documents/com~apple~CloudDocs/Avoqado/Releases/avoqado-android/<versionName>/
+   ```
+4. Copy `app-release.aab` and `app-release.apk` into that folder
+5. Create a `CAPTION.md` in that same folder with:
+   - **Nombre de la versión**: `<versionCode> (<versionName>)`
+   - **Notas de la versión**: wrapped in `<es-419>...</es-419>` tags, with a bullet list summarizing the changes in this release (in Spanish). Ready to copy-paste into Google Play Console.
 
 ## Architecture Overview
 

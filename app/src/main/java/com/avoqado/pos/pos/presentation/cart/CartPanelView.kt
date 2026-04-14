@@ -20,6 +20,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AttachMoney
+import androidx.compose.material.icons.automirrored.filled.CallSplit
 import androidx.compose.material.icons.filled.CardGiftcard
 import androidx.compose.material.icons.filled.Campaign
 import androidx.compose.material.icons.filled.Delete
@@ -54,7 +55,9 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import android.widget.Toast
 import coil.compose.AsyncImage
 import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
@@ -72,7 +75,9 @@ fun CartPanelView(
     onRemoveItem: (String) -> Unit = {},
     customerName: String? = null,
     onCustomerTap: () -> Unit = {},
+    onSplitPayment: () -> Unit = {},
 ) {
+    val context = LocalContext.current
     var showCartOptions by remember { mutableStateOf(false) }
     var showSectionMenu by remember { mutableStateOf(false) }
     var showTaxDialog by remember { mutableStateOf(false) }
@@ -211,6 +216,32 @@ fun CartPanelView(
                 // Bottom action buttons
                 HorizontalDivider()
 
+                // "Dividir cuenta" row
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = AvoqadoTheme.spacing.xl)
+                        .padding(top = AvoqadoTheme.spacing.sm),
+                    horizontalArrangement = Arrangement.Center,
+                ) {
+                    OutlinedButton(
+                        onClick = onSplitPayment,
+                        modifier = Modifier.height(AvoqadoTheme.dimensions.buttonMedium),
+                        shape = RoundedCornerShape(50),
+                    ) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.CallSplit,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp),
+                        )
+                        Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.xxs))
+                        Text(
+                            text = "Dividir cuenta",
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                    }
+                }
+
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -290,8 +321,8 @@ fun CartPanelView(
                 },
                 confirmButton = {
                     TextButton(onClick = {
-                        // TODO: Apply tax percentage to cart items via ViewModel
                         showTaxDialog = false
+                        Toast.makeText(context, "Proximamente", Toast.LENGTH_SHORT).show()
                     }) {
                         Text("Aplicar")
                     }

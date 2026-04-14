@@ -1,5 +1,6 @@
 package com.avoqado.pos.designsystem.components
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
@@ -75,4 +76,32 @@ fun CloseButton(
         icon = Icons.Filled.Close,
         contentDescription = "Cerrar",
     )
+}
+
+/**
+ * Circle back button matching iOS CircleBackButton:
+ * - 36dp circle with surfaceContainerHigh background
+ * - Chevron left / ArrowBack icon at 16dp
+ * - No border, filled style
+ */
+@Composable
+fun CircleBackButton(
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .size(36.dp)
+            .clip(CircleShape)
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh, CircleShape)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+            contentDescription = "Regresar",
+            modifier = Modifier.size(16.dp),
+            tint = MaterialTheme.colorScheme.onSurface,
+        )
+    }
 }

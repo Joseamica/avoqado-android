@@ -1,6 +1,9 @@
 package com.avoqado.pos.auth.presentation
 
 import android.app.Activity
+import android.content.Intent
+import android.net.Uri
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -13,9 +16,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBars
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
@@ -26,6 +31,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -108,21 +114,45 @@ fun LandingScreen(
 
                 Spacer(modifier = Modifier.weight(2f))
 
-                // Sign in button - iOS style: white bg, black text, 24dp radius
-                Button(
-                    onClick = { showSignIn = true },
-                    modifier = Modifier.height(52.dp),
-                    shape = RoundedCornerShape(24.dp),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = Color.White,
-                        contentColor = Color.Black,
-                    ),
-                ) {
-                    Text(
-                        text = "Iniciar sesión",
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.Medium,
-                    )
+                // Sign in + Create account buttons
+                Row {
+                    Button(
+                        onClick = { showSignIn = true },
+                        modifier = Modifier.height(52.dp),
+                        shape = RoundedCornerShape(24.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = Color.White,
+                            contentColor = Color.Black,
+                        ),
+                    ) {
+                        Text(
+                            text = "Iniciar sesión",
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Medium,
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.width(12.dp))
+
+                    val context = LocalContext.current
+                    OutlinedButton(
+                        onClick = {
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://dashboardv2.avoqado.io/signup"))
+                            context.startActivity(intent)
+                        },
+                        modifier = Modifier.height(52.dp),
+                        shape = RoundedCornerShape(24.dp),
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            contentColor = Color.White,
+                        ),
+                        border = BorderStroke(1.dp, Color.White),
+                    ) {
+                        Text(
+                            text = "Crear cuenta",
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Medium,
+                        )
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(40.dp))
