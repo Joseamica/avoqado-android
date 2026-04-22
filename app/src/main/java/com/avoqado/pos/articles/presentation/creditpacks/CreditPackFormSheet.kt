@@ -2,6 +2,7 @@ package com.avoqado.pos.articles.presentation.creditpacks
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -13,7 +14,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
@@ -22,13 +22,11 @@ import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -44,6 +42,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.avoqado.pos.articles.data.model.CreditPack
 import com.avoqado.pos.articles.presentation.ArticlesViewModel
+import com.avoqado.pos.designsystem.components.AvoqadoFullScreenModal
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Success
 
@@ -87,27 +86,54 @@ fun CreditPackFormSheet(
         }
     }
 
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val isEditing = pack != null
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
+    AvoqadoFullScreenModal(
+        title = if (isEditing) "Editar paquete" else "Nuevo paquete",
+        onDismiss = onDismiss,
+        primaryActionText = if (isEditing) "Guardar" else "Crear",
+        onPrimaryAction = {
+            val packItems = items
+                .filter { it.productId.isNotBlank() }
+                .map {
+                    ArticlesViewModel.CreditPackItemInput(
+                        productId = it.productId,
+                        quantity = it.quantity.toIntOrNull() ?: 1,
+                    )
+                }
+            if (isEditing) {
+                viewModel.updateCreditPack(
+                    packId = pack!!.id,
+                    name = name,
+                    description = description.ifBlank { null },
+                    price = price.toDoubleOrNull() ?: 0.0,
+                    validityDays = validityDays.toIntOrNull(),
+                    maxPerCustomer = maxPerCustomer.toIntOrNull(),
+                    active = active,
+                    items = packItems,
+                )
+            } else {
+                viewModel.createCreditPack(
+                    name = name,
+                    description = description.ifBlank { null },
+                    price = price.toDoubleOrNull() ?: 0.0,
+                    validityDays = validityDays.toIntOrNull(),
+                    maxPerCustomer = maxPerCustomer.toIntOrNull(),
+                    active = active,
+                    items = packItems,
+                )
+            }
+            onDismiss()
+        },
+        primaryActionEnabled = name.isNotBlank() && !isSaving,
     ) {
         Column(
             modifier = Modifier
-                .fillMaxWidth()
+                .fillMaxSize()
                 .verticalScroll(rememberScrollState())
                 .padding(AvoqadoTheme.spacing.lg),
             verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.lg),
         ) {
-            // MARK: - Title
-            Text(
-                text = if (isEditing) "Editar paquete" else "Nuevo paquete",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-
             // MARK: - DETALLES
             Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
                 Text(
@@ -224,55 +250,6 @@ fun CreditPackFormSheet(
                         checkedTrackColor = Success,
                     ),
                 )
-            }
-
-            // MARK: - Buttons
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                TextButton(onClick = onDismiss) {
-                    Text(text = "Cancelar")
-                }
-                Spacer(modifier = Modifier.weight(1f))
-                Button(
-                    onClick = {
-                        val packItems = items
-                            .filter { it.productId.isNotBlank() }
-                            .map {
-                                ArticlesViewModel.CreditPackItemInput(
-                                    productId = it.productId,
-                                    quantity = it.quantity.toIntOrNull() ?: 1,
-                                )
-                            }
-                        if (isEditing) {
-                            viewModel.updateCreditPack(
-                                packId = pack!!.id,
-                                name = name,
-                                description = description.ifBlank { null },
-                                price = price.toDoubleOrNull() ?: 0.0,
-                                validityDays = validityDays.toIntOrNull(),
-                                maxPerCustomer = maxPerCustomer.toIntOrNull(),
-                                active = active,
-                                items = packItems,
-                            )
-                        } else {
-                            viewModel.createCreditPack(
-                                name = name,
-                                description = description.ifBlank { null },
-                                price = price.toDoubleOrNull() ?: 0.0,
-                                validityDays = validityDays.toIntOrNull(),
-                                maxPerCustomer = maxPerCustomer.toIntOrNull(),
-                                active = active,
-                                items = packItems,
-                            )
-                        }
-                        onDismiss()
-                    },
-                    enabled = name.isNotBlank() && !isSaving,
-                ) {
-                    Text(text = if (isEditing) "Guardar" else "Crear")
-                }
             }
         }
     }

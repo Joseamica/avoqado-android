@@ -17,6 +17,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.KSerializer
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -28,12 +30,37 @@ import javax.inject.Singleton
 private const val TAG = "📦 ArticlesRepo"
 private val JSON_MEDIA = "application/json".toMediaType()
 
+/**
+ * Mobile endpoints return either a bare array `[...]` OR an envelope `{success, data}`.
+ * We support both shapes so a backend wrap/unwrap doesn't break the client.
+ */
+@Serializable
+private data class ApiEnvelope<T>(val success: Boolean = true, val data: T)
+
 @Singleton
 class ArticlesRepository @Inject constructor(
     private val secureStorage: SecureStorage,
     private val client: OkHttpClient,
 ) {
     private val json = Json { ignoreUnknownKeys = true }
+
+    /**
+     * Decode a response that may be either a bare array `[...]` or the
+     * `{success, data:[...]}` envelope the mobile API uses. Picks based on
+     * the first non-whitespace character so we don't need two code paths
+     * everywhere.
+     */
+    private inline fun <reified T> decodeListEnvelope(body: String, itemSerializer: KSerializer<T>): List<T> {
+        val first = body.firstOrNull { !it.isWhitespace() }
+        return if (first == '[') {
+            json.decodeFromString(kotlinx.serialization.builtins.ListSerializer(itemSerializer), body)
+        } else {
+            json.decodeFromString(
+                ApiEnvelope.serializer(kotlinx.serialization.builtins.ListSerializer(itemSerializer)),
+                body,
+            ).data
+        }
+    }
 
     // MARK: - State Flows
 
@@ -71,6 +98,23 @@ class ArticlesRepository @Inject constructor(
         return "${ApiConstants.BASE_URL}/mobile/venues/$venueId"
     }
 
+    /**
+     * Modifier groups are currently exposed under dashboard routes on the backend.
+     * Keep Articles on mobile routes for other resources, but use dashboard for modifiers.
+     */
+    private fun modifierBaseUrl(): String? {
+        val venueId = secureStorage.venueId ?: return null
+        return "${ApiConstants.BASE_URL}/dashboard/venues/$venueId"
+    }
+
+    /**
+     * Credit packs are served from dashboard routes on backend.
+     */
+    private fun creditPackBaseUrl(): String? {
+        val venueId = secureStorage.venueId ?: return null
+        return "${ApiConstants.BASE_URL}/dashboard/venues/$venueId"
+    }
+
     private suspend fun executeRequest(request: Request): Pair<Int, String> =
         withContext(Dispatchers.IO) {
             val response = client.newCall(request).execute()
@@ -91,7 +135,7 @@ class ArticlesRepository @Inject constructor(
 
             val (code, body) = executeRequest(request)
             if (code in 200..299 && body.isNotEmpty()) {
-                val list = json.decodeFromString<List<ArticleProduct>>(body)
+                val list = decodeListEnvelope(body, ArticleProduct.serializer())
                 _products.value = list
                 Log.d(TAG, "✅ Loaded ${list.size} products")
             } else {
@@ -191,13 +235,13 @@ class ArticlesRepository @Inject constructor(
 
         try {
             val request = Request.Builder()
-                .url("$url/menucategories")
+                .url("$url/categories")
                 .get()
                 .build()
 
             val (code, body) = executeRequest(request)
             if (code in 200..299 && body.isNotEmpty()) {
-                val list = json.decodeFromString<List<ArticleCategory>>(body)
+                val list = decodeListEnvelope(body, ArticleCategory.serializer())
                 _categories.value = list
                 Log.d(TAG, "✅ Loaded ${list.size} categories")
             } else {
@@ -217,7 +261,7 @@ class ArticlesRepository @Inject constructor(
         return try {
             val body = categoryJson.toRequestBody(JSON_MEDIA)
             val request = Request.Builder()
-                .url("$url/menucategories")
+                .url("$url/categories")
                 .post(body)
                 .build()
 
@@ -243,7 +287,7 @@ class ArticlesRepository @Inject constructor(
         return try {
             val body = categoryJson.toRequestBody(JSON_MEDIA)
             val request = Request.Builder()
-                .url("$url/menucategories/$categoryId")
+                .url("$url/categories/$categoryId")
                 .patch(body)
                 .build()
 
@@ -268,7 +312,7 @@ class ArticlesRepository @Inject constructor(
         val url = baseUrl() ?: return false
         return try {
             val request = Request.Builder()
-                .url("$url/menucategories/$categoryId")
+                .url("$url/categories/$categoryId")
                 .delete()
                 .build()
 
@@ -292,7 +336,7 @@ class ArticlesRepository @Inject constructor(
     // MARK: - Modifier Groups
 
     suspend fun fetchModifierGroups() {
-        val url = baseUrl() ?: return
+        val url = modifierBaseUrl() ?: return
         _isLoading.value = true
 
         try {
@@ -303,7 +347,7 @@ class ArticlesRepository @Inject constructor(
 
             val (code, body) = executeRequest(request)
             if (code in 200..299 && body.isNotEmpty()) {
-                val list = json.decodeFromString<List<ModifierGroup>>(body)
+                val list = decodeListEnvelope(body, ModifierGroup.serializer())
                 _modifierGroups.value = list
                 Log.d(TAG, "✅ Loaded ${list.size} modifier groups")
             } else {
@@ -319,7 +363,7 @@ class ArticlesRepository @Inject constructor(
     }
 
     suspend fun createModifierGroup(payload: String): Boolean {
-        val url = baseUrl() ?: return false
+        val url = modifierBaseUrl() ?: return false
         return try {
             val body = payload.toRequestBody(JSON_MEDIA)
             val request = Request.Builder()
@@ -345,7 +389,7 @@ class ArticlesRepository @Inject constructor(
     }
 
     suspend fun updateModifierGroup(groupId: String, payload: String): Boolean {
-        val url = baseUrl() ?: return false
+        val url = modifierBaseUrl() ?: return false
         return try {
             val body = payload.toRequestBody(JSON_MEDIA)
             val request = Request.Builder()
@@ -371,7 +415,7 @@ class ArticlesRepository @Inject constructor(
     }
 
     suspend fun deleteModifierGroup(groupId: String): Boolean {
-        val url = baseUrl() ?: return false
+        val url = modifierBaseUrl() ?: return false
         return try {
             val request = Request.Builder()
                 .url("$url/modifier-groups/$groupId")
@@ -398,7 +442,7 @@ class ArticlesRepository @Inject constructor(
     // MARK: - Individual Modifiers
 
     suspend fun addModifierToGroup(groupId: String, payload: String): Boolean {
-        val url = baseUrl() ?: return false
+        val url = modifierBaseUrl() ?: return false
         return try {
             val body = payload.toRequestBody(JSON_MEDIA)
             val request = Request.Builder()
@@ -424,7 +468,7 @@ class ArticlesRepository @Inject constructor(
     }
 
     suspend fun updateModifier(groupId: String, modifierId: String, payload: String): Boolean {
-        val url = baseUrl() ?: return false
+        val url = modifierBaseUrl() ?: return false
         return try {
             val body = payload.toRequestBody(JSON_MEDIA)
             val request = Request.Builder()
@@ -450,7 +494,7 @@ class ArticlesRepository @Inject constructor(
     }
 
     suspend fun deleteModifier(groupId: String, modifierId: String): Boolean {
-        val url = baseUrl() ?: return false
+        val url = modifierBaseUrl() ?: return false
         return try {
             val request = Request.Builder()
                 .url("$url/modifier-groups/$groupId/modifiers/$modifierId")
@@ -488,7 +532,7 @@ class ArticlesRepository @Inject constructor(
 
             val (code, body) = executeRequest(request)
             if (code in 200..299 && body.isNotEmpty()) {
-                val list = json.decodeFromString<List<AdminDiscount>>(body)
+                val list = decodeListEnvelope(body, AdminDiscount.serializer())
                 _discounts.value = list
                 Log.d(TAG, "✅ Loaded ${list.size} discounts")
             } else {
@@ -594,7 +638,7 @@ class ArticlesRepository @Inject constructor(
 
             val (code, body) = executeRequest(request)
             if (code in 200..299 && body.isNotEmpty()) {
-                val list = json.decodeFromString<List<AdminCoupon>>(body)
+                val list = decodeListEnvelope(body, AdminCoupon.serializer())
                 _coupons.value = list
                 Log.d(TAG, "✅ Loaded ${list.size} coupons")
             } else {
@@ -689,7 +733,7 @@ class ArticlesRepository @Inject constructor(
     // MARK: - Credit Packs
 
     suspend fun fetchCreditPacks() {
-        val url = baseUrl() ?: return
+        val url = creditPackBaseUrl() ?: return
         _isLoading.value = true
 
         try {
@@ -700,7 +744,7 @@ class ArticlesRepository @Inject constructor(
 
             val (code, body) = executeRequest(request)
             if (code in 200..299 && body.isNotEmpty()) {
-                val list = json.decodeFromString<List<CreditPack>>(body)
+                val list = decodeListEnvelope(body, CreditPack.serializer())
                 _creditPacks.value = list
                 Log.d(TAG, "✅ Loaded ${list.size} credit packs")
             } else {
@@ -716,7 +760,7 @@ class ArticlesRepository @Inject constructor(
     }
 
     suspend fun createCreditPack(payload: String): Boolean {
-        val url = baseUrl() ?: return false
+        val url = creditPackBaseUrl() ?: return false
         return try {
             val body = payload.toRequestBody(JSON_MEDIA)
             val request = Request.Builder()
@@ -742,7 +786,7 @@ class ArticlesRepository @Inject constructor(
     }
 
     suspend fun updateCreditPack(packId: String, payload: String): Boolean {
-        val url = baseUrl() ?: return false
+        val url = creditPackBaseUrl() ?: return false
         return try {
             val body = payload.toRequestBody(JSON_MEDIA)
             val request = Request.Builder()
@@ -768,7 +812,7 @@ class ArticlesRepository @Inject constructor(
     }
 
     suspend fun deleteCreditPack(packId: String): Boolean {
-        val url = baseUrl() ?: return false
+        val url = creditPackBaseUrl() ?: return false
         return try {
             val request = Request.Builder()
                 .url("$url/credit-packs/$packId")
@@ -889,7 +933,7 @@ class ArticlesRepository @Inject constructor(
 
             val (code, body) = executeRequest(request)
             if (code in 200..299 && body.isNotEmpty()) {
-                val list = json.decodeFromString<List<RawMaterial>>(body)
+                val list = decodeListEnvelope(body, RawMaterial.serializer())
                 Log.d(TAG, "✅ Found ${list.size} raw materials for query '$query'")
                 list
             } else {

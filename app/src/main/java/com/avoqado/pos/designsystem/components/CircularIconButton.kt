@@ -17,10 +17,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
+import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 
 /**
  * Circular icon button matching iOS style:
- * - 44dp circle with 1dp gray border
+ * - Compact uses 44dp circle with 1dp gray border
+ * - Medium/Expanded scale through adaptive tokens
  * - Used for back button and close button
  */
 @Composable
@@ -30,9 +32,11 @@ fun CircularIconButton(
     icon: ImageVector = Icons.AutoMirrored.Filled.ArrowBack,
     contentDescription: String = "Regresar",
 ) {
+    val adaptive = AvoqadoTheme.adaptive
+
     Box(
         modifier = modifier
-            .size(44.dp)
+            .size(adaptive.circularIconButtonSize)
             .clip(CircleShape)
             .border(1.dp, MaterialTheme.colorScheme.outline, CircleShape)
             .clickable(onClick = onClick),
@@ -41,6 +45,7 @@ fun CircularIconButton(
         Icon(
             imageVector = icon,
             contentDescription = contentDescription,
+            modifier = Modifier.size(adaptive.circularIconButtonIconSize),
             tint = MaterialTheme.colorScheme.onSurface,
         )
     }
@@ -80,8 +85,9 @@ fun CloseButton(
 
 /**
  * Circle back button matching iOS CircleBackButton:
- * - 36dp circle with surfaceContainerHigh background
- * - Chevron left / ArrowBack icon at 16dp
+ * - Compact uses 36dp circle with surfaceContainerHigh background
+ * - Chevron left / ArrowBack icon at 16dp in compact
+ * - Medium/Expanded scale through adaptive tokens
  * - No border, filled style
  */
 @Composable
@@ -89,9 +95,11 @@ fun CircleBackButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val adaptive = AvoqadoTheme.adaptive
+
     Box(
         modifier = modifier
-            .size(36.dp)
+            .size(adaptive.circleBackButtonSize)
             .clip(CircleShape)
             .background(MaterialTheme.colorScheme.surfaceContainerHigh, CircleShape)
             .clickable(onClick = onClick),
@@ -100,7 +108,7 @@ fun CircleBackButton(
         Icon(
             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
             contentDescription = "Regresar",
-            modifier = Modifier.size(16.dp),
+            modifier = Modifier.size(adaptive.circleBackButtonIconSize),
             tint = MaterialTheme.colorScheme.onSurface,
         )
     }

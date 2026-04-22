@@ -50,7 +50,7 @@ class ProductsRepository @Inject constructor(
         try {
             val token = secureStorage.accessToken ?: return
             val request = Request.Builder()
-                .url("${ApiConstants.BASE_URL}/dashboard/venues/$venue/products")
+                .url("${ApiConstants.BASE_URL}/mobile/venues/$venue/products")
                 .header("Authorization", "Bearer $token")
                 .build()
 
@@ -108,7 +108,7 @@ class ProductsRepository @Inject constructor(
 
         return try {
             val request = Request.Builder()
-                .url("${ApiConstants.BASE_URL}/dashboard/venues/$venue/menucategories")
+                .url("${ApiConstants.BASE_URL}/mobile/venues/$venue/categories")
                 .build()
 
             val (code, body) = withContext(Dispatchers.IO) {
@@ -117,9 +117,15 @@ class ProductsRepository @Inject constructor(
             }
 
             if (code in 200..299) {
-                val result = json.decodeFromString<CategoriesResponse>(body)
-                Log.d("📦", "Fetched ${result.data.size} menu categories")
-                result.data
+                // Backend may return either {"data": [...]} or a bare array [...]
+                val categories = try {
+                    val result = json.decodeFromString<CategoriesResponse>(body)
+                    result.data
+                } catch (_: Exception) {
+                    json.decodeFromString<List<ProductCategory>>(body)
+                }
+                Log.d("📦", "Fetched ${categories.size} menu categories")
+                categories
             } else {
                 Log.e("📦", "Menu categories fetch failed: $code")
                 emptyList()
@@ -140,7 +146,7 @@ class ProductsRepository @Inject constructor(
                 .toRequestBody("application/json".toMediaType())
 
             val httpRequest = Request.Builder()
-                .url("${ApiConstants.BASE_URL}/dashboard/venues/$venue/products")
+                .url("${ApiConstants.BASE_URL}/mobile/venues/$venue/products")
                 .post(requestBody)
                 .build()
 

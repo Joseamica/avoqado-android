@@ -26,7 +26,6 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -131,20 +130,33 @@ private fun TabletEstimatesLayout(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     CircleBackButton(onClick = onDismiss)
-
-                    Spacer(modifier = Modifier.weight(1f))
+                    Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.md))
 
                     Text(
                         text = "Presupuestos",
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.weight(1f),
                     )
 
-                    Spacer(modifier = Modifier.weight(1f))
-
-                    // Placeholder for balance
-                    Spacer(modifier = Modifier.size(36.dp))
+                    Box(
+                        modifier = Modifier
+                            .size(36.dp)
+                            .background(
+                                color = MaterialTheme.colorScheme.primary,
+                                shape = RoundedCornerShape(50),
+                            )
+                            .clickable { showCreateSheet = true },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.Add,
+                            contentDescription = "Crear presupuesto",
+                            tint = MaterialTheme.colorScheme.onPrimary,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
                 }
 
                 // Search bar
@@ -267,21 +279,6 @@ private fun TabletEstimatesLayout(
             }
         }
 
-        // FAB
-        FloatingActionButton(
-            onClick = { showCreateSheet = true },
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(AvoqadoTheme.spacing.lg),
-            containerColor = MaterialTheme.colorScheme.primary,
-        ) {
-            Icon(
-                Icons.Filled.Add,
-                contentDescription = "Crear presupuesto",
-                tint = MaterialTheme.colorScheme.onPrimary,
-            )
-        }
-
         SnackbarHost(
             hostState = snackbarHostState,
             modifier = Modifier.align(Alignment.BottomCenter),
@@ -375,15 +372,31 @@ private fun PhoneEstimatesLayout(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 CircleBackButton(onClick = onDismiss)
-                Spacer(modifier = Modifier.weight(1f))
+                Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.md))
                 Text(
                     text = "Presupuestos",
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.weight(1f),
                 )
-                Spacer(modifier = Modifier.weight(1f))
-                Spacer(modifier = Modifier.size(36.dp))
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .background(
+                            color = MaterialTheme.colorScheme.primary,
+                            shape = RoundedCornerShape(50),
+                        )
+                        .clickable { showCreateSheet = true },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Add,
+                        contentDescription = "Crear presupuesto",
+                        tint = MaterialTheme.colorScheme.onPrimary,
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
             }
 
             // Search bar
@@ -478,21 +491,6 @@ private fun PhoneEstimatesLayout(
                     }
                 }
             }
-        }
-
-        // FAB
-        FloatingActionButton(
-            onClick = { showCreateSheet = true },
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(AvoqadoTheme.spacing.lg),
-            containerColor = MaterialTheme.colorScheme.primary,
-        ) {
-            Icon(
-                Icons.Filled.Add,
-                contentDescription = "Crear presupuesto",
-                tint = MaterialTheme.colorScheme.onPrimary,
-            )
         }
 
         SnackbarHost(

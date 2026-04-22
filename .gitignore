@@ -78,3 +78,10 @@ Thumbs.db
 
 # Secrets
 *.env
+
+# Playwright MCP browser automation artifacts
+.playwright-mcp/
+
+# QA / debugging screenshots dropped at repo root
+/[0-9][0-9]-*.png
+/snapshot-*.md

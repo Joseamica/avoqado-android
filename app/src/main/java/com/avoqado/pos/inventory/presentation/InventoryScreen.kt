@@ -18,6 +18,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -74,6 +75,7 @@ import com.avoqado.pos.inventory.presentation.transfers.TransfersView
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun InventoryScreen(
+    isTablet: Boolean,
     viewModel: InventoryViewModel = hiltViewModel(),
 ) {
     val selectedSection by viewModel.selectedSection.collectAsState()
@@ -101,13 +103,13 @@ fun InventoryScreen(
 
     // Show counting view (full screen)
     if (showCounting) {
-        StockCountingView(viewModel = viewModel, isTablet = true)
+        StockCountingView(viewModel = viewModel, isTablet = isTablet)
         return
     }
 
     // Show review view (full screen)
     if (showReview) {
-        StockCountReviewView(viewModel = viewModel, isTablet = true)
+        StockCountReviewView(viewModel = viewModel, isTablet = isTablet)
         return
     }
 
@@ -116,7 +118,7 @@ fun InventoryScreen(
         StockCountDetailView(
             count = selectedDetail!!,
             viewModel = viewModel,
-            isTablet = true,
+            isTablet = isTablet,
             onBack = { viewModel.selectCountDetail(null) },
         )
         return
@@ -143,6 +145,52 @@ fun InventoryScreen(
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
+        if (isTablet) {
+            TabletInventoryLayout(
+                selectedSection = selectedSection,
+                onSectionSelected = { viewModel.selectSection(it) },
+                isLoading = isLoading,
+                stockItemsEmpty = stockItems.isEmpty(),
+                stockCountsEmpty = stockCounts.isEmpty(),
+                viewModel = viewModel,
+            )
+        } else {
+            PhoneInventoryLayout(
+                selectedSection = selectedSection,
+                onSectionSelected = { viewModel.selectSection(it) },
+                isLoading = isLoading,
+                stockItemsEmpty = stockItems.isEmpty(),
+                stockCountsEmpty = stockCounts.isEmpty(),
+                viewModel = viewModel,
+            )
+        }
+
+        // Snackbar for error feedback
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier.align(Alignment.BottomCenter),
+        )
+    }
+
+    // Count type bottom sheet
+    if (showCountTypeSheet) {
+        ModalBottomSheet(
+            onDismissRequest = { viewModel.closeCountTypeSheet() },
+        ) {
+            StockCountTypeSheet(viewModel = viewModel)
+        }
+    }
+}
+
+@Composable
+private fun TabletInventoryLayout(
+    selectedSection: InventorySection,
+    onSectionSelected: (InventorySection) -> Unit,
+    isLoading: Boolean,
+    stockItemsEmpty: Boolean,
+    stockCountsEmpty: Boolean,
+    viewModel: InventoryViewModel,
+) {
     Row(
         modifier = Modifier
             .fillMaxSize()
@@ -182,7 +230,7 @@ fun InventoryScreen(
                     SectionRow(
                         section = section,
                         isSelected = section == selectedSection,
-                        onClick = { viewModel.selectSection(section) },
+                        onClick = { onSectionSelected(section) },
                     )
                 }
             }
@@ -197,35 +245,133 @@ fun InventoryScreen(
                 .weight(1f)
                 .fillMaxHeight(),
         ) {
-            when {
-                isLoading && stockItems.isEmpty() && stockCounts.isEmpty() -> {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        CircularProgressIndicator()
-                    }
-                }
-                else -> {
-                    SectionContent(section = selectedSection, viewModel = viewModel)
-                }
-            }
+            InventorySectionContentOrLoading(
+                isLoading = isLoading,
+                stockItemsEmpty = stockItemsEmpty,
+                stockCountsEmpty = stockCountsEmpty,
+                selectedSection = selectedSection,
+                viewModel = viewModel,
+            )
         }
     }
+}
 
-    // Snackbar for error feedback
-    SnackbarHost(
-        hostState = snackbarHostState,
-        modifier = Modifier.align(Alignment.BottomCenter),
-    )
-    } // end outer Box
+@Composable
+private fun PhoneInventoryLayout(
+    selectedSection: InventorySection,
+    onSectionSelected: (InventorySection) -> Unit,
+    isLoading: Boolean,
+    stockItemsEmpty: Boolean,
+    stockCountsEmpty: Boolean,
+    viewModel: InventoryViewModel,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.surface),
+    ) {
+        Text(
+            text = "Inventario",
+            style = MaterialTheme.typography.titleLarge,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.padding(
+                horizontal = AvoqadoTheme.spacing.lg,
+                vertical = AvoqadoTheme.spacing.md,
+            ),
+        )
 
-    // Count type bottom sheet
-    if (showCountTypeSheet) {
-        ModalBottomSheet(
-            onDismissRequest = { viewModel.closeCountTypeSheet() },
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.sm),
+            horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
         ) {
-            StockCountTypeSheet(viewModel = viewModel)
+            InventorySection.entries.forEach { section ->
+                PhoneSectionChip(
+                    section = section,
+                    isSelected = section == selectedSection,
+                    onClick = { onSectionSelected(section) },
+                )
+            }
+        }
+
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .weight(1f),
+        ) {
+            InventorySectionContentOrLoading(
+                isLoading = isLoading,
+                stockItemsEmpty = stockItemsEmpty,
+                stockCountsEmpty = stockCountsEmpty,
+                selectedSection = selectedSection,
+                viewModel = viewModel,
+            )
+        }
+    }
+}
+
+@Composable
+private fun PhoneSectionChip(
+    section: InventorySection,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+) {
+    val backgroundColor = if (isSelected) {
+        MaterialTheme.colorScheme.primary
+    } else {
+        MaterialTheme.colorScheme.surfaceContainerHigh
+    }
+    val contentColor = if (isSelected) {
+        MaterialTheme.colorScheme.onPrimary
+    } else {
+        MaterialTheme.colorScheme.onSurface
+    }
+
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .background(backgroundColor)
+            .clickable(onClick = onClick)
+            .padding(
+                horizontal = AvoqadoTheme.spacing.md,
+                vertical = AvoqadoTheme.spacing.sm,
+            ),
+    ) {
+        Text(
+            text = section.label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = contentColor,
+            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
+        )
+    }
+}
+
+@Composable
+private fun InventorySectionContentOrLoading(
+    isLoading: Boolean,
+    stockItemsEmpty: Boolean,
+    stockCountsEmpty: Boolean,
+    selectedSection: InventorySection,
+    viewModel: InventoryViewModel,
+) {
+    when {
+        isLoading && stockItemsEmpty && stockCountsEmpty -> {
+            Box(
+                modifier = Modifier.fillMaxSize(),
+                contentAlignment = Alignment.Center,
+            ) {
+                CircularProgressIndicator()
+            }
+        }
+        else -> {
+            SectionContent(section = selectedSection, viewModel = viewModel)
         }
     }
 }
@@ -564,7 +710,6 @@ private fun StockCountsContent(
                 PrimaryButton(
                     text = "Contar existencia",
                     onClick = { viewModel.openCountTypeSheet() },
-                    fullWidth = false,
                 )
             }
         }
@@ -580,7 +725,6 @@ private fun StockCountsContent(
                 PrimaryButton(
                     text = "Contar existencia",
                     onClick = { viewModel.openCountTypeSheet() },
-                    fullWidth = false,
                 )
             }
 

@@ -2,19 +2,19 @@ package com.avoqado.pos.payment.presentation
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
@@ -24,12 +24,10 @@ import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.Sms
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -44,6 +42,11 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.avoqado.pos.designsystem.components.AvoqadoDialog
+import com.avoqado.pos.designsystem.components.AvoqadoPhoneInput
+import com.avoqado.pos.designsystem.components.AvoqadoPillTextField
+import com.avoqado.pos.designsystem.components.Countries
+import com.avoqado.pos.designsystem.components.Country
 import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Success
@@ -57,6 +60,7 @@ fun PaymentResultScreen(
     changeCents: Int = 0,
     isQueued: Boolean = false,
     paymentId: String? = null,
+    canSendReceipt: Boolean = paymentId != null,
     isSendingWhatsApp: Boolean = false,
     whatsAppResultMessage: String? = null,
     onSendWhatsApp: ((String) -> Unit)? = null,
@@ -72,9 +76,11 @@ fun PaymentResultScreen(
     onDone: () -> Unit,
 ) {
     var showWhatsAppInput by remember { mutableStateOf(false) }
-    var whatsAppPhone by remember { mutableStateOf("") }
+    var whatsAppPhoneDigits by remember { mutableStateOf("") }
+    var whatsAppCountry by remember { mutableStateOf<Country>(Countries.byIso("MX")) }
     var showEmailInput by remember { mutableStateOf(false) }
     var emailAddress by remember { mutableStateOf("") }
+    var showNoPrinterDialog by remember { mutableStateOf(false) }
 
     // Combine result messages for display (whatsApp/email/print)
     val resultMessage = whatsAppResultMessage ?: emailResultMessage ?: printResultMessage
@@ -82,15 +88,35 @@ fun PaymentResultScreen(
         resultMessage == "Recibo enviado por correo" ||
         resultMessage == "Recibo impreso"
 
-    androidx.compose.material3.Scaffold { paddingValues ->
+    androidx.compose.material3.Scaffold(
+        bottomBar = {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
+                    .padding(
+                        horizontal = AvoqadoTheme.spacing.xl,
+                        vertical = AvoqadoTheme.spacing.md,
+                    ),
+                contentAlignment = Alignment.Center,
+            ) {
+                PrimaryButton(
+                    text = "Venta nueva",
+                    onClick = onDone,
+                    fullWidth = true,
+                    modifier = Modifier.widthIn(max = 400.dp),
+                )
+            }
+        },
+    ) { paddingValues ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(paddingValues)
-                .padding(AvoqadoTheme.spacing.xxxl)
+                .padding(horizontal = AvoqadoTheme.spacing.xl)
+                .padding(vertical = AvoqadoTheme.spacing.lg)
                 .verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center,
         ) {
             // Offline queued banner
             if (isQueued) {
@@ -128,7 +154,7 @@ fun PaymentResultScreen(
                 modifier = Modifier.size(80.dp),
             )
 
-            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
 
             Text(
                 text = "Pago exitoso",
@@ -149,7 +175,7 @@ fun PaymentResultScreen(
             )
 
             if (method == PaymentMethod.CASH && changeCents > 0) {
-                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
                 Text(
                     text = "Cambio: $${String.format("%.2f", changeCents / 100.0)}",
                     style = MaterialTheme.typography.titleLarge,
@@ -175,104 +201,89 @@ fun PaymentResultScreen(
                 }
             }
 
-            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxxl))
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xl))
 
-            // Receipt options + primary action share the same explicit width.
-            // We use BoxWithConstraints (instead of widthIn) because that fully
-            // bypasses any modifier-order quirks: we read the available maxWidth
-            // as a Dp, clamp it, and apply Modifier.width(...) directly. The
-            // resulting width is centered horizontally inside the parent Column
-            // (which already has horizontalAlignment = CenterHorizontally).
-            BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-                val maxFormWidth = 400.dp
-                val targetWidth = if (maxWidth > maxFormWidth) maxFormWidth else maxWidth
-                Column(
-                    modifier = Modifier
-                        .width(targetWidth)
-                        .align(Alignment.Center),
-                ) {
-                    ReceiptOptionRow(
-                        icon = Icons.Filled.Print,
-                        title = if (isPrintingReceipt) "Imprimiendo..." else "Imprimir recibo",
-                        enabled = onPrintReceipt != null && !isPrintingReceipt,
-                        onClick = {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .widthIn(max = 400.dp),
+            ) {
+                ReceiptOptionRow(
+                    icon = Icons.Filled.Print,
+                    title = if (isPrintingReceipt) "Imprimiendo..." else "Imprimir recibo",
+                    enabled = !isPrintingReceipt,
+                    onClick = {
+                        if (onPrintReceipt != null) {
                             onClearPrintResult?.invoke()
                             onClearWhatsAppResult?.invoke()
                             onClearEmailResult?.invoke()
-                            onPrintReceipt?.invoke()
-                        },
-                    )
-                    HorizontalDivider(modifier = Modifier.padding(start = 48.dp))
+                            onPrintReceipt.invoke()
+                        } else {
+                            showNoPrinterDialog = true
+                        }
+                    },
+                )
+                HorizontalDivider(modifier = Modifier.padding(start = 48.dp))
 
-                    ReceiptOptionRow(
-                        icon = Icons.Filled.Email,
-                        title = "Enviar por correo",
-                        onClick = {
-                            if (paymentId != null && onSendEmail != null) {
-                                onClearEmailResult?.invoke()
-                                onClearWhatsAppResult?.invoke()
-                                emailAddress = ""
-                                showEmailInput = true
-                            }
-                        },
-                    )
-                    HorizontalDivider(modifier = Modifier.padding(start = 48.dp))
+                ReceiptOptionRow(
+                    icon = Icons.Filled.Email,
+                    title = "Enviar por correo",
+                    enabled = canSendReceipt && onSendEmail != null,
+                    onClick = {
+                        onClearEmailResult?.invoke()
+                        onClearWhatsAppResult?.invoke()
+                        emailAddress = ""
+                        showEmailInput = true
+                    },
+                )
+                HorizontalDivider(modifier = Modifier.padding(start = 48.dp))
 
-                    ReceiptOptionRow(
-                        icon = Icons.Filled.Sms,
-                        title = "Enviar por WhatsApp",
-                        onClick = {
-                            if (paymentId != null && onSendWhatsApp != null) {
-                                onClearWhatsAppResult?.invoke()
-                                onClearEmailResult?.invoke()
-                                whatsAppPhone = ""
-                                showWhatsAppInput = true
-                            }
-                        },
-                    )
-                    HorizontalDivider(modifier = Modifier.padding(start = 48.dp))
-
-                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxxl))
-
-                    PrimaryButton(
-                        text = "Venta nueva",
-                        onClick = onDone,
-                    )
-                }
+                ReceiptOptionRow(
+                    icon = Icons.Filled.Sms,
+                    title = "Enviar por WhatsApp",
+                    enabled = canSendReceipt && onSendWhatsApp != null,
+                    onClick = {
+                        onClearWhatsAppResult?.invoke()
+                        onClearEmailResult?.invoke()
+                        whatsAppPhoneDigits = ""
+                        showWhatsAppInput = true
+                    },
+                )
+                HorizontalDivider(modifier = Modifier.padding(start = 48.dp))
             }
+
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
         }
     }
 
     // WhatsApp phone input dialog
     if (showWhatsAppInput) {
-        PhoneInputDialog(
+        WhatsAppReceiptDialog(
             title = "Enviar recibo por WhatsApp",
-            description = "Ingresa el numero de telefono del cliente",
-            label = "Telefono",
-            placeholder = "+52 10 digitos",
-            value = whatsAppPhone,
-            onValueChange = { whatsAppPhone = it.filter { c -> c.isDigit() || c == '+' } },
+            description = "Selecciona el país y escribe el número del cliente",
+            country = whatsAppCountry,
+            onCountryChange = { whatsAppCountry = it },
+            digits = whatsAppPhoneDigits,
+            onDigitsChange = { whatsAppPhoneDigits = it },
             isSending = isSendingWhatsApp,
             onConfirm = {
-                val phone = whatsAppPhone.trim()
-                if (phone.isNotEmpty()) {
-                    onSendWhatsApp?.invoke(phone)
+                val digits = whatsAppPhoneDigits.trim()
+                if (digits.isNotEmpty()) {
+                    onSendWhatsApp?.invoke("+${whatsAppCountry.dialCode}$digits")
                     showWhatsAppInput = false
                 }
             },
             onDismiss = { if (!isSendingWhatsApp) showWhatsAppInput = false },
-            confirmEnabled = whatsAppPhone.trim().isNotEmpty() && !isSendingWhatsApp,
+            confirmEnabled = whatsAppPhoneDigits.trim().isNotEmpty() && !isSendingWhatsApp,
             dismissEnabled = !isSendingWhatsApp,
-            keyboardType = KeyboardType.Phone,
         )
     }
 
     // Email input dialog
     if (showEmailInput) {
-        PhoneInputDialog(
+        ReceiptInputDialog(
             title = "Enviar recibo por correo",
             description = "Ingresa el correo electronico del cliente",
-            label = "Correo electronico",
             placeholder = "cliente@ejemplo.com",
             value = emailAddress,
             onValueChange = { emailAddress = it },
@@ -290,15 +301,37 @@ fun PaymentResultScreen(
             keyboardType = KeyboardType.Email,
         )
     }
+
+    // No printer configured dialog
+    if (showNoPrinterDialog) {
+        AvoqadoDialog(
+            title = "Sin impresora configurada",
+            description = "No hay una impresora de recibos configurada. Ve a Configuración > Impresoras para conectar una.",
+            onDismiss = { showNoPrinterDialog = false },
+            actionButton = {
+                PrimaryButton(
+                    text = "Entendido",
+                    onClick = { showNoPrinterDialog = false },
+                    fullWidth = true,
+                )
+            },
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Print,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(24.dp),
+            )
+        }
+    }
 }
 
-// MARK: - Reusable Input Dialog
+// MARK: - Reusable Input Dialogs
 
 @Composable
-private fun PhoneInputDialog(
+private fun ReceiptInputDialog(
     title: String,
     description: String,
-    label: String,
     placeholder: String,
     value: String,
     onValueChange: (String) -> Unit,
@@ -309,60 +342,69 @@ private fun PhoneInputDialog(
     dismissEnabled: Boolean,
     keyboardType: KeyboardType,
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(title) },
-        text = {
-            Column {
-                Text(
-                    text = description,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
-                OutlinedTextField(
-                    value = value,
-                    onValueChange = onValueChange,
-                    label = { Text(label) },
-                    placeholder = { Text(placeholder) },
-                    keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = !isSending,
-                )
-                if (isSending) {
-                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
-                    ) {
-                        CircularProgressIndicator(modifier = Modifier.size(16.dp))
-                        Text(
-                            text = "Enviando...",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(
+    AvoqadoDialog(
+        title = title,
+        description = description,
+        onDismiss = onDismiss,
+        dismissOnClickOutside = dismissEnabled,
+        actionButton = {
+            PrimaryButton(
+                text = if (isSending) "Enviando..." else "Enviar",
                 onClick = onConfirm,
                 enabled = confirmEnabled,
-            ) {
-                Text("Enviar")
-            }
+                isLoading = isSending,
+                fullWidth = true,
+            )
         },
-        dismissButton = {
-            TextButton(
-                onClick = onDismiss,
-                enabled = dismissEnabled,
-            ) {
-                Text("Cancelar")
-            }
+    ) {
+        AvoqadoPillTextField(
+            value = value,
+            onValueChange = onValueChange,
+            placeholder = placeholder,
+            enabled = !isSending,
+            keyboardType = keyboardType,
+        )
+    }
+}
+
+@Composable
+private fun WhatsAppReceiptDialog(
+    title: String,
+    description: String,
+    country: Country,
+    onCountryChange: (Country) -> Unit,
+    digits: String,
+    onDigitsChange: (String) -> Unit,
+    isSending: Boolean,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+    confirmEnabled: Boolean,
+    dismissEnabled: Boolean,
+) {
+    AvoqadoDialog(
+        title = title,
+        description = description,
+        onDismiss = onDismiss,
+        dismissOnClickOutside = dismissEnabled,
+        actionButton = {
+            PrimaryButton(
+                text = if (isSending) "Enviando..." else "Enviar",
+                onClick = onConfirm,
+                enabled = confirmEnabled,
+                isLoading = isSending,
+                fullWidth = true,
+            )
         },
-    )
+    ) {
+        AvoqadoPhoneInput(
+            country = country,
+            onCountryChange = onCountryChange,
+            digits = digits,
+            onDigitsChange = onDigitsChange,
+            enabled = !isSending,
+            placeholder = "Número",
+        )
+    }
 }
 
 // MARK: - Receipt Option Row (matching iOS)

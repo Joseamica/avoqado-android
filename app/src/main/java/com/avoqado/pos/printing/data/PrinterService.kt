@@ -336,6 +336,7 @@ class PrinterService @Inject constructor(
         stopNetworkDiscovery()
     }
 
+    @Suppress("DEPRECATION")
     private fun startNetworkDiscovery() {
         try {
             nsdManager = context.getSystemService(Context.NSD_SERVICE) as NsdManager

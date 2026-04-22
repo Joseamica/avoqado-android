@@ -38,7 +38,7 @@ class NotificationsRepository @Inject constructor(
 
         try {
             val request = Request.Builder()
-                .url("${ApiConstants.BASE_URL}/dashboard/notifications?page=$page&limit=$limit")
+                .url("${ApiConstants.BASE_URL}/mobile/notifications?page=$page&limit=$limit")
                 .header("Authorization", "Bearer $token")
                 .build()
 
@@ -72,7 +72,7 @@ class NotificationsRepository @Inject constructor(
 
         try {
             val request = Request.Builder()
-                .url("${ApiConstants.BASE_URL}/dashboard/notifications/$notificationId/read")
+                .url("${ApiConstants.BASE_URL}/mobile/notifications/$notificationId/read")
                 .header("Authorization", "Bearer $token")
                 .patch("".toRequestBody("application/json".toMediaType()))
                 .build()
@@ -100,7 +100,7 @@ class NotificationsRepository @Inject constructor(
 
         try {
             val request = Request.Builder()
-                .url("${ApiConstants.BASE_URL}/dashboard/notifications/mark-all-read")
+                .url("${ApiConstants.BASE_URL}/mobile/notifications/mark-all-read")
                 .header("Authorization", "Bearer $token")
                 .patch("".toRequestBody("application/json".toMediaType()))
                 .build()

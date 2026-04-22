@@ -30,24 +30,31 @@ sealed class PaymentFlowState {
         val changeAmount: Int = 0,
         val isQueued: Boolean = false,  // true when payment was queued offline
         val paymentId: String? = null,
+        val receiptAccessKey: String? = null,
     ) : PaymentFlowState()
     data class Error(val message: String, val source: PaymentErrorSource) : PaymentFlowState()
 }
 
 data class PaymentContext(
     val subtotalCents: Int,
+    val discountCents: Int = 0,
+    val taxCents: Int = 0,
     val tipCents: Int = 0,
     val totalCents: Int = subtotalCents,
     val rating: Int? = null,
     val tipPercentage: Int? = null,
-    val items: List<PaymentItem>? = null,
+    val items: List<PaymentItem> = emptyList(),
+    val splitType: String = "FULLPAYMENT",
 )
 
 data class PaymentItem(
     val name: String,
     val quantity: Int,
     val unitPrice: Int,
-    val modifiers: String? = null,
+    val lineTotal: Int,
+    val modifiers: List<String> = emptyList(),
+    val note: String? = null,
+    val isCortesia: Boolean = false,
 )
 
 @Serializable

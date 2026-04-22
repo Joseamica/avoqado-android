@@ -25,13 +25,17 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.hilt.navigation.compose.hiltViewModel
 import com.avoqado.pos.designsystem.components.CircleBackButton
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Success
@@ -49,7 +53,11 @@ data class SetupTask(
 @Composable
 fun SetupWizardScreen(
     onDismiss: () -> Unit,
+    viewModel: SetupWizardViewModel = hiltViewModel(),
 ) {
+    val settings by viewModel.settings.collectAsState()
+    val isSavingTipTaxSetting by viewModel.isSavingTipTaxSetting.collectAsState()
+
     val tasks = listOf(
         SetupTask(
             title = "Crear tu primer producto",
@@ -115,6 +123,47 @@ fun SetupWizardScreen(
                 .verticalScroll(rememberScrollState())
                 .padding(AvoqadoTheme.spacing.lg),
         ) {
+            Card(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceContainerLow,
+                ),
+                shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.lg),
+            ) {
+                Column(modifier = Modifier.padding(AvoqadoTheme.spacing.lg)) {
+                    Text(
+                        text = "Propinas e IVA",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xs))
+                    Text(
+                        text = "Define sobre qué base se calcula el porcentaje de propina.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+                    TipTaxToggleRow(
+                        checked = settings.includeTaxInTipBase,
+                        enabled = !isSavingTipTaxSetting,
+                        onCheckedChange = viewModel::updateIncludeTaxInTipBase,
+                    )
+                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xs))
+                    Text(
+                        text = if (settings.includeTaxInTipBase) {
+                            "La propina porcentual se calcula sobre el total con IVA."
+                        } else {
+                            "La propina porcentual se calcula antes de IVA."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
+
             // Progress card
             Card(
                 modifier = Modifier.fillMaxWidth(),
@@ -177,6 +226,39 @@ fun SetupWizardScreen(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun TipTaxToggleRow(
+    checked: Boolean,
+    enabled: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = AvoqadoTheme.spacing.xs),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = "Incluir IVA en base de propina",
+                style = MaterialTheme.typography.bodyLarge,
+                color = MaterialTheme.colorScheme.onSurface,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = "Recomendado en MX: desactivado",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            enabled = enabled,
+        )
     }
 }
 

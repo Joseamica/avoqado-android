@@ -2,6 +2,7 @@ package com.avoqado.pos.pos.presentation.checkout
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -15,6 +16,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -26,22 +28,19 @@ import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Snackbar
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -54,6 +53,10 @@ import com.avoqado.pos.customers.data.model.Customer
 import com.avoqado.pos.customers.presentation.CreateCustomerView
 import com.avoqado.pos.customers.presentation.CustomersView
 import com.avoqado.pos.customers.presentation.CustomersViewModel
+import com.avoqado.pos.designsystem.components.AvoqadoDialog
+import com.avoqado.pos.designsystem.components.AvoqadoPillTextField
+import com.avoqado.pos.designsystem.components.AvoqadoSuccessToast
+import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.payment.presentation.PaymentFlowScreen
 import com.avoqado.pos.payment.presentation.SplitConfig
@@ -68,12 +71,18 @@ import com.avoqado.pos.pos.presentation.product.ProductGridView
 import com.avoqado.pos.pos.presentation.scanner.BarcodeScannerView
 import com.avoqado.pos.core.domain.RoleManager
 import com.avoqado.pos.pos.presentation.search.SearchOverlayView
+import kotlinx.coroutines.launch
 
 enum class InputTab(val label: String) {
     KEYPAD("Teclado"),
     SHORTCUTS("Shortcuts"),
     PRODUCTS("Todos los productos"),
     MOSAIC("Configurar"),
+}
+
+private enum class CustomerSelectionContext {
+    GENERAL,
+    PAY_LATER,
 }
 
 @Composable
@@ -100,9 +109,51 @@ fun CheckoutScreen(
     var showSavedSnackbar by remember { mutableStateOf(false) }
     var showBarcodeScanner by remember { mutableStateOf(false) }
     var showCreateProduct by remember { mutableStateOf(false) }
+    var createProductInitialName by remember { mutableStateOf("") }
+    var createProductInitialGtin by remember { mutableStateOf("") }
+    var unknownBarcode by remember { mutableStateOf<String?>(null) }
     var showSplitPayment by remember { mutableStateOf(false) }
     var pendingSplitConfig by remember { mutableStateOf(SplitConfig()) }
+    var customerSelectionContext by remember { mutableStateOf(CustomerSelectionContext.GENERAL) }
+    var isSubmittingPayLater by remember { mutableStateOf(false) }
+    var payLaterError by remember { mutableStateOf<String?>(null) }
+    var showPayLaterSuccessToast by remember { mutableStateOf(false) }
+    var reopenPayLaterToken by remember { mutableIntStateOf(0) }
+    val checkoutScope = rememberCoroutineScope()
     val customersViewModel: CustomersViewModel = hiltViewModel()
+
+    val openGeneralCustomerPicker: () -> Unit = {
+        customerSelectionContext = CustomerSelectionContext.GENERAL
+        showCustomersSheet = true
+    }
+    val openPayLaterCustomerPicker: () -> Unit = {
+        customerSelectionContext = CustomerSelectionContext.PAY_LATER
+        showCustomersSheet = true
+    }
+    fun confirmPayLaterOrder() {
+        if (isSubmittingPayLater) return
+        val customerId = selectedCustomer?.id
+        if (customerId.isNullOrBlank()) {
+            openPayLaterCustomerPicker()
+            return
+        }
+        checkoutScope.launch {
+            isSubmittingPayLater = true
+            val payLaterResult = cartViewModel.createPayLaterOrder(customerId)
+            isSubmittingPayLater = false
+            payLaterResult.fold(
+                onSuccess = {
+                    cartViewModel.clearCart()
+                    selectedCustomer = null
+                    customerSelectionContext = CustomerSelectionContext.GENERAL
+                    showPayLaterSuccessToast = true
+                },
+                onFailure = { error ->
+                    payLaterError = error.message ?: "No se pudo registrar la venta como pagar despues"
+                },
+            )
+        }
+    }
 
     if (isTablet) {
         // iPad-style: 50/50 split with left=input, right=cart
@@ -121,6 +172,13 @@ fun CheckoutScreen(
                             handleProductTap(product, cartViewModel, { selectedProduct = it })
                             showSearch = false
                         },
+                        onCreateProduct = if (roleManager?.canCreateProducts != false) {
+                            { searchName ->
+                                showSearch = false
+                                createProductInitialName = searchName
+                                showCreateProduct = true
+                            }
+                        } else null,
                         onDismiss = { showSearch = false },
                     )
                 } else {
@@ -157,13 +215,18 @@ fun CheckoutScreen(
                                     },
                                     onNoteTap = { showNoteDialog = true },
                                     noteText = currentNote,
+                                    useCompactSizing = true,
                                 )
                             }
                             InputTab.SHORTCUTS -> {
                                 ShortcutsGridView(
                                     cartViewModel = cartViewModel,
                                     discountsRepository = cartViewModel.discountsRepository,
-                                    onCustomerSearch = { showCustomersSheet = true },
+                                    onCustomerSearch = openPayLaterCustomerPicker,
+                                    reopenPayLaterToken = reopenPayLaterToken,
+                                    selectedPayLaterCustomerName = selectedCustomer?.fullName,
+                                    onConfirmPayLater = ::confirmPayLaterOrder,
+                                    isConfirmingPayLater = isSubmittingPayLater,
                                     onCreateItem = { showCreateProduct = true },
                                     onProductTap = { product ->
                                         handleProductTap(product, cartViewModel, { selectedProduct = it })
@@ -222,8 +285,9 @@ fun CheckoutScreen(
                     },
                     onAddCustomAmount = { selectedTab = InputTab.KEYPAD },
                     onRemoveItem = { cartViewModel.removeItem(it) },
+                    onApplyTaxPercent = { cartViewModel.applyOrderTaxPercent(it) },
                     customerName = selectedCustomer?.fullName,
-                    onCustomerTap = { showCustomersSheet = true },
+                    onCustomerTap = openGeneralCustomerPicker,
                     onSplitPayment = { showSplitPayment = true },
                 )
             }
@@ -239,6 +303,13 @@ fun CheckoutScreen(
                             handleProductTap(product, cartViewModel, { selectedProduct = it })
                             showSearch = false
                         },
+                        onCreateProduct = if (roleManager?.canCreateProducts != false) {
+                            { searchName ->
+                                showSearch = false
+                                createProductInitialName = searchName
+                                showCreateProduct = true
+                            }
+                        } else null,
                         onDismiss = { showSearch = false },
                     )
                 } else {
@@ -275,13 +346,18 @@ fun CheckoutScreen(
                                     },
                                     onNoteTap = { showNoteDialog = true },
                                     noteText = currentNote,
+                                    useCompactSizing = false,
                                 )
                             }
                             InputTab.SHORTCUTS -> {
                                 ShortcutsGridView(
                                     cartViewModel = cartViewModel,
                                     discountsRepository = cartViewModel.discountsRepository,
-                                    onCustomerSearch = { showCustomersSheet = true },
+                                    onCustomerSearch = openPayLaterCustomerPicker,
+                                    reopenPayLaterToken = reopenPayLaterToken,
+                                    selectedPayLaterCustomerName = selectedCustomer?.fullName,
+                                    onConfirmPayLater = ::confirmPayLaterOrder,
+                                    isConfirmingPayLater = isSubmittingPayLater,
                                     onCreateItem = { showCreateProduct = true },
                                     onProductTap = { product ->
                                         handleProductTap(product, cartViewModel, { selectedProduct = it })
@@ -396,6 +472,7 @@ fun CheckoutScreen(
                 selectedTab = InputTab.KEYPAD
             },
             onRemoveItem = { cartViewModel.removeItem(it) },
+            onApplyTaxPercent = { cartViewModel.applyOrderTaxPercent(it) },
             onDismiss = { showIPhoneCart = false },
         )
     }
@@ -410,13 +487,14 @@ fun CheckoutScreen(
             BarcodeScannerView(
                 onBarcodeScanned = { barcode ->
                     showBarcodeScanner = false
-                    // Search for product by SKU/barcode and add to cart
                     val products = cartViewModel.products.value
                     val matched = products.find { product ->
                         product.sku == barcode || product.barcode == barcode || product.gtin == barcode
                     }
                     if (matched != null) {
                         handleProductTap(matched, cartViewModel, { selectedProduct = it })
+                    } else {
+                        unknownBarcode = barcode
                     }
                 },
                 onDismiss = { showBarcodeScanner = false },
@@ -433,13 +511,41 @@ fun CheckoutScreen(
         ) {
             CreateProductView(
                 productsRepository = cartViewModel.productsRepository,
+                initialName = createProductInitialName,
+                initialGtin = createProductInitialGtin,
                 onProductCreated = { product ->
                     showCreateProduct = false
+                    createProductInitialName = ""
+                    createProductInitialGtin = ""
                     handleProductTap(product, cartViewModel, { selectedProduct = it })
                 },
-                onDismiss = { showCreateProduct = false },
+                onDismiss = {
+                    showCreateProduct = false
+                    createProductInitialName = ""
+                    createProductInitialGtin = ""
+                },
             )
         }
+    }
+
+    // Unknown barcode confirmation dialog
+    unknownBarcode?.let { scannedCode ->
+        AvoqadoDialog(
+            title = "Producto no encontrado",
+            description = "No existe un producto con el código $scannedCode. ¿Quieres crear uno nuevo?",
+            onDismiss = { unknownBarcode = null },
+            actionButton = {
+                PrimaryButton(
+                    text = "Crear nuevo",
+                    onClick = {
+                        createProductInitialGtin = scannedCode
+                        unknownBarcode = null
+                        showCreateProduct = true
+                    },
+                    fullWidth = true,
+                )
+            },
+        ) {}
     }
 
     // Payment flow overlay (full screen, matching iOS fullScreenCover)
@@ -451,8 +557,25 @@ fun CheckoutScreen(
         ) {
             PaymentFlowScreen(
                 cartState = cartState,
-                onComplete = {
-                    cartViewModel.clearCart()
+                onComplete = { completion ->
+                    when {
+                        completion.splitType == "BYPRODUCT" && completion.paidItemIds.isNotEmpty() -> {
+                            completion.paidItemIds.forEach { paidItemId ->
+                                cartViewModel.removeItem(paidItemId)
+                            }
+                        }
+                        completion.remainingBalanceCents > 0 -> {
+                            // For amount-based partial splits, carry remaining balance as pending amount.
+                            cartViewModel.clearCart()
+                            cartViewModel.addCustomAmount(
+                                name = "Saldo pendiente",
+                                amountCents = completion.remainingBalanceCents,
+                            )
+                        }
+                        else -> {
+                            cartViewModel.clearCart()
+                        }
+                    }
                     showPaymentFlow = false
                     pendingSplitConfig = SplitConfig()
                 },
@@ -479,22 +602,19 @@ fun CheckoutScreen(
         )
     }
 
-    // Save cart snackbar
+    // Save cart success toast
     if (showSavedSnackbar) {
-        LaunchedEffect(Unit) {
-            kotlinx.coroutines.delay(2000)
-            showSavedSnackbar = false
-        }
-        Box(
-            modifier = Modifier.fillMaxSize(),
-            contentAlignment = Alignment.BottomCenter,
-        ) {
-            Snackbar(
-                modifier = Modifier.padding(AvoqadoTheme.spacing.xl),
-            ) {
-                Text("Carrito guardado")
-            }
-        }
+        AvoqadoSuccessToast(
+            message = "¡Carrito guardado!",
+            onDismiss = { showSavedSnackbar = false },
+        )
+    }
+
+    if (showPayLaterSuccessToast) {
+        AvoqadoSuccessToast(
+            message = "¡Venta enviada a pagar después!",
+            onDismiss = { showPayLaterSuccessToast = false },
+        )
     }
 
     // Customers sheet (full screen overlay matching iOS)
@@ -510,9 +630,15 @@ fun CheckoutScreen(
                     initialPhone = createCustomerSearchText.takeIf { it.all { c -> c.isDigit() || c == '+' } },
                     initialName = createCustomerSearchText.takeIf { !it.all { c -> c.isDigit() || c == '+' } },
                     onCustomerCreated = { customer ->
+                        val fromPayLater = customerSelectionContext == CustomerSelectionContext.PAY_LATER
                         selectedCustomer = customer
                         showCreateCustomer = false
                         showCustomersSheet = false
+                        if (fromPayLater) {
+                            selectedTab = InputTab.SHORTCUTS
+                            reopenPayLaterToken += 1
+                        }
+                        customerSelectionContext = CustomerSelectionContext.GENERAL
                     },
                     onBack = { showCreateCustomer = false },
                 )
@@ -520,10 +646,21 @@ fun CheckoutScreen(
                 CustomersView(
                     viewModel = customersViewModel,
                     onCustomerSelected = { customer ->
+                        val fromPayLater = customerSelectionContext == CustomerSelectionContext.PAY_LATER
                         selectedCustomer = customer
                         showCustomersSheet = false
+                        showCreateCustomer = false
+                        if (fromPayLater) {
+                            selectedTab = InputTab.SHORTCUTS
+                            reopenPayLaterToken += 1
+                        }
+                        customerSelectionContext = CustomerSelectionContext.GENERAL
                     },
-                    onDismiss = { showCustomersSheet = false },
+                    onDismiss = {
+                        showCustomersSheet = false
+                        showCreateCustomer = false
+                        customerSelectionContext = CustomerSelectionContext.GENERAL
+                    },
                     onCreateCustomer = { searchText ->
                         createCustomerSearchText = searchText
                         showCreateCustomer = true
@@ -534,38 +671,57 @@ fun CheckoutScreen(
         }
     }
 
+    payLaterError?.let { message ->
+        AvoqadoDialog(
+            title = "No se pudo diferir el pago",
+            description = message,
+            onDismiss = { payLaterError = null },
+            actionButton = {
+                PrimaryButton(
+                    text = "Entendido",
+                    onClick = { payLaterError = null },
+                    fullWidth = true,
+                )
+            },
+        ) {}
+    }
+
     // Note dialog for keypad custom amount
     if (showNoteDialog) {
         var noteInput by remember { mutableStateOf(currentNote) }
-        AlertDialog(
-            onDismissRequest = { showNoteDialog = false },
-            title = { Text("Agregar nota") },
-            text = {
-                OutlinedTextField(
-                    value = noteInput,
-                    onValueChange = { noteInput = it },
-                    label = { Text("Nota para el importe") },
-                    modifier = Modifier.fillMaxWidth(),
-                    singleLine = true,
+        AvoqadoDialog(
+            title = "Agregar nota",
+            description = "Escribe una nota para el importe personalizado",
+            onDismiss = { showNoteDialog = false },
+            actionButton = {
+                PrimaryButton(
+                    text = "Guardar",
+                    onClick = {
+                        currentNote = noteInput
+                        showNoteDialog = false
+                    },
+                    fullWidth = true,
                 )
             },
-            confirmButton = {
-                TextButton(onClick = {
-                    currentNote = noteInput
-                    showNoteDialog = false
-                }) {
-                    Text("Guardar")
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = {
-                    currentNote = ""
-                    showNoteDialog = false
-                }) {
-                    Text("Quitar nota")
-                }
-            },
-        )
+        ) {
+            AvoqadoPillTextField(
+                value = noteInput,
+                onValueChange = { noteInput = it },
+                placeholder = "Nota para el importe",
+            )
+            if (currentNote.isNotBlank()) {
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+                Text(
+                    text = "Quitar nota",
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.clickable {
+                        currentNote = ""
+                        showNoteDialog = false
+                    },
+                )
+            }
+        }
     }
 }
 
@@ -592,6 +748,7 @@ private fun IPhoneCartSheet(
     onSaveCart: () -> Unit,
     onAddCustomAmount: () -> Unit,
     onRemoveItem: (String) -> Unit,
+    onApplyTaxPercent: (Int?) -> Unit,
     onDismiss: () -> Unit,
 ) {
     Box(
@@ -640,6 +797,7 @@ private fun IPhoneCartSheet(
                 onSaveCart = onSaveCart,
                 onAddCustomAmount = onAddCustomAmount,
                 onRemoveItem = onRemoveItem,
+                onApplyTaxPercent = onApplyTaxPercent,
             )
         }
     }
@@ -1019,9 +1177,10 @@ private fun TabSelectorView(
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
             .padding(horizontal = AvoqadoTheme.spacing.xl)
             .padding(bottom = AvoqadoTheme.spacing.xxs),
-        horizontalArrangement = Arrangement.spacedBy(28.dp),
+        horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.lg),
     ) {
         InputTab.entries.forEach { tab ->
             val isSelected = selectedTab == tab
@@ -1043,6 +1202,8 @@ private fun TabSelectorView(
                     } else {
                         MaterialTheme.colorScheme.onSurfaceVariant
                     },
+                    maxLines = 1,
+                    softWrap = false,
                 )
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
                 Box(
@@ -1059,7 +1220,6 @@ private fun TabSelectorView(
                 )
             }
         }
-        Spacer(modifier = Modifier.weight(1f))
     }
 }
 

@@ -7,27 +7,25 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
-import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Error
-import kotlinx.coroutines.flow.StateFlow
 
 @Composable
 fun ConnectivityBanner(
-    isConnectedFlow: StateFlow<Boolean>,
+    visible: Boolean,
     modifier: Modifier = Modifier,
 ) {
-    val isConnected by isConnectedFlow.collectAsState()
-
     AnimatedVisibility(
-        visible = !isConnected,
+        visible = visible,
         enter = slideInVertically { -it },
         exit = slideOutVertically { -it },
         modifier = modifier,
@@ -35,17 +33,22 @@ fun ConnectivityBanner(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(Error)
-                .padding(
-                    horizontal = AvoqadoTheme.spacing.lg,
-                    vertical = AvoqadoTheme.spacing.sm,
-                ),
+                .background(Error),
             contentAlignment = Alignment.Center,
         ) {
             Text(
-                text = "Sin conexión a internet",
+                text = "Sin conexión",
                 color = Color.White,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
                 textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .statusBarsPadding()
+                    .fillMaxWidth()
+                    .padding(
+                        horizontal = AvoqadoTheme.spacing.lg,
+                        vertical = AvoqadoTheme.spacing.xs,
+                    ),
             )
         }
     }

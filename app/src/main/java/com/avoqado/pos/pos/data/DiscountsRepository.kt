@@ -37,7 +37,7 @@ class DiscountsRepository @Inject constructor(
         try {
             val token = secureStorage.accessToken ?: return
             val request = Request.Builder()
-                .url("${ApiConstants.BASE_URL}/dashboard/venues/$venue/discounts")
+                .url("${ApiConstants.BASE_URL}/mobile/venues/$venue/discounts")
                 .header("Authorization", "Bearer $token")
                 .build()
 
@@ -83,7 +83,7 @@ class DiscountsRepository @Inject constructor(
                 .toRequestBody("application/json".toMediaType())
 
             val request = Request.Builder()
-                .url("${ApiConstants.BASE_URL}/dashboard/venues/$venue/coupons/validate")
+                .url("${ApiConstants.BASE_URL}/mobile/venues/$venue/coupons/validate")
                 .post(body)
                 .build()
 

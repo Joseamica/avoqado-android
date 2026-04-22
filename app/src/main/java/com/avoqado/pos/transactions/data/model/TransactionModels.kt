@@ -1,5 +1,6 @@
 package com.avoqado.pos.transactions.data.model
 
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.Transient
 import java.time.LocalDate
@@ -17,6 +18,8 @@ data class Transaction(
     val amount: Double = 0.0,
     val tipAmount: Double = 0.0,
     val items: List<TransactionItem> = emptyList(),
+    val refunds: List<TransactionRefund> = emptyList(),
+    val remainingRefundable: Double = 0.0,
     val customerName: String? = null,
     val createdAt: String? = null,
     val staffName: String? = null,
@@ -30,6 +33,7 @@ data class Transaction(
     val totalAmount: Double get() = amount + tipAmount
 
     val totalDisplay: String get() = "$${String.format("%.2f", totalAmount)}"
+    val remainingRefundableDisplay: String get() = "$${String.format("%.2f", remainingRefundable)}"
     val formattedAmount: String get() = "$${String.format("%.2f", amount)}"
     val formattedTip: String get() = "$${String.format("%.2f", tipAmount)}"
 
@@ -111,12 +115,47 @@ data class TransactionItem(
     val productName: String = "",
     val quantity: Int = 1,
     val unitPrice: Double = 0.0,
+    @SerialName("total")
     val amount: Double = 0.0,
     val productImageUrl: String? = null,
+    val trackInventory: Boolean = false,
+    /** Quantity already refunded across prior REFUND payments on this payment. */
+    val refundedQty: Int = 0,
+    /** Total amount already refunded for this orderItem (decimal). */
+    val refundedAmount: Double = 0.0,
+    /** Quantity still available to refund = quantity − refundedQty. */
+    val remainingQty: Int = 0,
     val modifiers: List<TransactionItemModifier> = emptyList(),
 ) {
     val name: String get() = productName
     val formattedTotal: String get() = "$${String.format("%.2f", amount)}"
+    /** True when every unit on this line has been refunded. */
+    val fullyRefunded: Boolean get() = refundedQty >= quantity && quantity > 0
+    /** True when some — but not all — units have been refunded. */
+    val partiallyRefunded: Boolean get() = refundedQty in 1 until quantity
+}
+
+@Serializable
+data class TransactionRefund(
+    val id: String,
+    val amount: Double = 0.0,
+    val reason: String? = null,
+    val createdAt: String? = null,
+    val status: String = "COMPLETED",
+) {
+    val formattedAmount: String get() = "-$${String.format("%.2f", amount)}"
+
+    val reasonDisplay: String
+        get() = when (reason) {
+            "RETURNED_GOODS" -> "Productos devueltos"
+            "ACCIDENTAL_CHARGE" -> "Cargo accidental"
+            "CANCELLED_ORDER" -> "Pedido cancelado"
+            "FRAUDULENT_CHARGE" -> "Cargo fraudulento"
+            "OTHER" -> "Otro"
+            null -> "Reembolso"
+            else -> reason.replace("_", " ").lowercase()
+                .replaceFirstChar { it.titlecase() }
+        }
 }
 
 @Serializable

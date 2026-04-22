@@ -225,10 +225,8 @@ private fun OrderListView(
                 ),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            if (!isTablet) {
-                CircleBackButton(onClick = onBack)
-                Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
-            }
+            CircleBackButton(onClick = onBack)
+            Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
             Text(
                 text = "Pedidos",
                 style = MaterialTheme.typography.headlineLarge,

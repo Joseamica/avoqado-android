@@ -4,25 +4,22 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExposedDropdownMenuBox
 import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -36,6 +33,7 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import com.avoqado.pos.articles.data.model.AdminCoupon
 import com.avoqado.pos.articles.presentation.ArticlesViewModel
+import com.avoqado.pos.designsystem.components.AvoqadoFullScreenModal
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Success
 
@@ -57,31 +55,46 @@ fun CouponFormSheet(
 
     var discountMenuExpanded by remember { mutableStateOf(false) }
 
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val isEditing = coupon != null
 
     val selectedDiscount = remember(discounts, selectedDiscountId) {
         discounts.firstOrNull { it.id == selectedDiscountId }
     }
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
+    AvoqadoFullScreenModal(
+        title = if (isEditing) "Editar cupon" else "Nuevo cupon",
+        onDismiss = onDismiss,
+        primaryActionText = if (isEditing) "Guardar" else "Crear",
+        onPrimaryAction = {
+            if (isEditing) {
+                viewModel.updateCoupon(
+                    couponId = coupon!!.id,
+                    code = code,
+                    discountId = selectedDiscountId,
+                    maxUses = maxUses.toIntOrNull(),
+                    maxUsesPerCustomer = maxUsesPerCustomer.toIntOrNull(),
+                    active = active,
+                )
+            } else {
+                viewModel.createCoupon(
+                    code = code,
+                    discountId = selectedDiscountId,
+                    maxUses = maxUses.toIntOrNull(),
+                    maxUsesPerCustomer = maxUsesPerCustomer.toIntOrNull(),
+                    active = active,
+                )
+            }
+            onDismiss()
+        },
+        primaryActionEnabled = code.isNotBlank() && selectedDiscountId.isNotBlank() && !isSaving,
     ) {
         Column(
             modifier = Modifier
-                .fillMaxWidth()
+                .fillMaxSize()
                 .verticalScroll(rememberScrollState())
                 .padding(AvoqadoTheme.spacing.lg),
             verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.lg),
         ) {
-            // MARK: - Title
-            Text(
-                text = if (isEditing) "Editar cupon" else "Nuevo cupon",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-
             // MARK: - CODIGO section
             Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
                 Text(
@@ -193,43 +206,6 @@ fun CouponFormSheet(
                         checkedTrackColor = Success,
                     ),
                 )
-            }
-
-            // MARK: - Buttons
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                TextButton(onClick = onDismiss) {
-                    Text(text = "Cancelar")
-                }
-                Spacer(modifier = Modifier.weight(1f))
-                Button(
-                    onClick = {
-                        if (isEditing) {
-                            viewModel.updateCoupon(
-                                couponId = coupon!!.id,
-                                code = code,
-                                discountId = selectedDiscountId,
-                                maxUses = maxUses.toIntOrNull(),
-                                maxUsesPerCustomer = maxUsesPerCustomer.toIntOrNull(),
-                                active = active,
-                            )
-                        } else {
-                            viewModel.createCoupon(
-                                code = code,
-                                discountId = selectedDiscountId,
-                                maxUses = maxUses.toIntOrNull(),
-                                maxUsesPerCustomer = maxUsesPerCustomer.toIntOrNull(),
-                                active = active,
-                            )
-                        }
-                        onDismiss()
-                    },
-                    enabled = code.isNotBlank() && selectedDiscountId.isNotBlank() && !isSaving,
-                ) {
-                    Text(text = if (isEditing) "Guardar" else "Crear")
-                }
             }
         }
     }

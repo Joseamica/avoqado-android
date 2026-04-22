@@ -306,8 +306,17 @@ private fun CountingHeader(
             .padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.md),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        TextButton(onClick = onCancel) {
-            Text("Cancelar")
+        // Cancel pill button
+        Surface(
+            onClick = onCancel,
+            shape = RoundedCornerShape(50),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        ) {
+            Text(
+                text = "Cancelar",
+                style = MaterialTheme.typography.labelLarge,
+                modifier = Modifier.padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.sm),
+            )
         }
 
         Spacer(modifier = Modifier.weight(1f))
@@ -320,11 +329,21 @@ private fun CountingHeader(
 
         Spacer(modifier = Modifier.weight(1f))
 
-        TextButton(
+        // Next pill button
+        Surface(
             onClick = onNext,
             enabled = hasItems,
+            shape = RoundedCornerShape(50),
+            color = if (hasItems) MaterialTheme.colorScheme.primary
+            else MaterialTheme.colorScheme.surfaceContainerHigh,
         ) {
-            Text("Siguiente")
+            Text(
+                text = "Siguiente",
+                style = MaterialTheme.typography.labelLarge,
+                color = if (hasItems) MaterialTheme.colorScheme.onPrimary
+                else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f),
+                modifier = Modifier.padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.sm),
+            )
         }
     }
 }
@@ -421,8 +440,7 @@ private fun ItemListPanel(
                             PrimaryButton(
                                 text = "Agregar articulos",
                                 onClick = onAddItems,
-                                fullWidth = false,
-                            )
+                                )
                         }
                     }
                 }

@@ -138,7 +138,6 @@ fun TransfersView(viewModel: InventoryViewModel) {
                         PrimaryButton(
                             text = "Crear transferencia",
                             onClick = { showCreateSheet = true },
-                            modifier = Modifier.padding(horizontal = AvoqadoTheme.spacing.xxxl),
                         )
                     }
                 }

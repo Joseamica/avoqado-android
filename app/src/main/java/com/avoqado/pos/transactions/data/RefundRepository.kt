@@ -43,6 +43,11 @@ import javax.inject.Singleton
 
 private const val TAG = "💸 RefundRepo"
 
+class RefundApiException(
+    val statusCode: Int,
+    override val message: String,
+) : Exception(message)
+
 @Serializable
 data class RefundResult(
     val refundId: String? = null,
@@ -72,12 +77,115 @@ private data class RefundResponse(
     val message: String? = null,
 )
 
+/** Item-level refund request (new associated-refund endpoint) */
+@Serializable
+data class AssociatedRefundItem(
+    val orderItemId: String,
+    val quantity: Int? = null,
+)
+
+@Serializable
+private data class AssociatedRefundRequest(
+    val amount: Int? = null, // cents
+    val items: List<AssociatedRefundItem>? = null,
+    val restockItemIds: List<String>? = null,
+    val reason: String,
+    val note: String? = null,
+    /**
+     * Optional explicit tip portion of the refund, in cents.
+     * Null => backend uses proportional split (default for payments with tip).
+     * 0    => refund only the sale portion, staff tip stays intact.
+     * =amount => refund only the tip (accidental tip charge case).
+     */
+    val tipRefundCents: Int? = null,
+)
+
+@Serializable
+private data class AssociatedRefundResponse(
+    val success: Boolean = false,
+    val data: AssociatedRefundData? = null,
+    val message: String? = null,
+)
+
+@Serializable
+data class AssociatedRefundData(
+    val refundId: String,
+    val amount: Double,
+    val remainingRefundable: Double,
+    val status: String,
+)
+
 @Singleton
 class RefundRepository @Inject constructor(
     private val secureStorage: SecureStorage,
     private val client: OkHttpClient,
 ) {
-    private val json = Json { ignoreUnknownKeys = true }
+    private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+
+    /**
+     * Issue an associated refund against an existing payment.
+     * Supports either amount-based (`amountCents`) or item-based (`items`) refunds,
+     * with an optional `restockItemIds` list to return inventory.
+     */
+    suspend fun issueAssociatedRefund(
+        paymentId: String,
+        reason: String,
+        amountCents: Int? = null,
+        items: List<AssociatedRefundItem>? = null,
+        restockItemIds: List<String>? = null,
+        note: String? = null,
+        tipRefundCents: Int? = null,
+    ): Result<AssociatedRefundData> {
+        val venueId = secureStorage.venueId
+            ?: return Result.failure(Exception("No venue ID"))
+
+        return try {
+            val body = json.encodeToString(
+                AssociatedRefundRequest.serializer(),
+                AssociatedRefundRequest(
+                    amount = amountCents,
+                    items = items?.takeIf { it.isNotEmpty() },
+                    restockItemIds = restockItemIds?.takeIf { it.isNotEmpty() },
+                    reason = reason,
+                    note = note,
+                    tipRefundCents = tipRefundCents,
+                ),
+            )
+
+            val request = Request.Builder()
+                .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/payments/$paymentId/refund")
+                .post(body.toRequestBody("application/json".toMediaType()))
+                .build()
+
+            val (code, responseBody) = withContext(Dispatchers.IO) {
+                val response = client.newCall(request).execute()
+                response.code to (response.body?.string() ?: "")
+            }
+
+            if (code in 200..299) {
+                val parsed = runCatching {
+                    json.decodeFromString<AssociatedRefundResponse>(responseBody)
+                }.getOrNull()
+                val data = parsed?.data
+                if (data != null) {
+                    Log.d(TAG, "✅ Associated refund issued: $data")
+                    Result.success(data)
+                } else {
+                    Log.d(TAG, "✅ Refund returned 2xx but no data field; response: $responseBody")
+                    Result.failure(Exception("Respuesta inválida del servidor"))
+                }
+            } else {
+                Log.e(TAG, "❌ Associated refund failed: $code - $responseBody")
+                val message = runCatching {
+                    json.decodeFromString<AssociatedRefundResponse>(responseBody).message
+                }.getOrNull() ?: "Error $code"
+                Result.failure(RefundApiException(code, message))
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Associated refund error: ${e.message}")
+            Result.failure(e)
+        }
+    }
 
     /**
      * Create an unassociated refund (not tied to any existing order).

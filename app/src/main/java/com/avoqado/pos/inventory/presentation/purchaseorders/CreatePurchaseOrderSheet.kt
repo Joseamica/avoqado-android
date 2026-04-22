@@ -24,8 +24,8 @@ import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.DatePicker
 import androidx.compose.material3.DatePickerDialog
-import androidx.compose.material3.Divider
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -52,7 +52,6 @@ import com.avoqado.pos.designsystem.components.DateVisualTransformation
 import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.inventory.data.CreatePOItemRequest
-import com.avoqado.pos.inventory.data.model.StockItem
 import com.avoqado.pos.inventory.data.model.Supplier
 import com.avoqado.pos.inventory.presentation.InventoryViewModel
 import java.text.SimpleDateFormat
@@ -342,7 +341,7 @@ fun CreatePurchaseOrderSheet(
                         }
                     }
                     if (index < selectedItems.lastIndex) {
-                        Divider(
+                        HorizontalDivider(
                             color = MaterialTheme.colorScheme.outlineVariant,
                             modifier = Modifier.padding(vertical = 2.dp),
                         )

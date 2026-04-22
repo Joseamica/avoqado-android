@@ -3,6 +3,7 @@ package com.avoqado.pos.navigation
 import android.app.Activity
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -13,11 +14,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -36,6 +39,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -45,9 +49,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavDestination.Companion.hierarchy
@@ -59,6 +63,7 @@ import androidx.navigation.compose.rememberNavController
 import com.avoqado.pos.auth.presentation.AppState
 import com.avoqado.pos.auth.presentation.LandingScreen
 import com.avoqado.pos.core.domain.RoleManager
+import com.avoqado.pos.designsystem.components.ConnectivityBanner
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.inventory.presentation.InventoryScreen
 import com.avoqado.pos.notifications.presentation.NotificationsScreen
@@ -75,6 +80,7 @@ fun AvoqadoNavGraph(
 ) {
     val isLoggedIn by appState.isLoggedIn.collectAsState()
     val pendingPaymentCount by appState.pendingPaymentCount.collectAsState()
+    val showOfflineBanner by appState.showOfflineBanner.collectAsState()
     val isTablet = windowSizeClass.widthSizeClass >= WindowWidthSizeClass.Medium
 
     if (isLoggedIn) {
@@ -85,6 +91,7 @@ fun AvoqadoNavGraph(
             visibleTabs = appState.visibleTabs,
             roleManager = appState.roleManager,
             pendingPaymentCount = pendingPaymentCount,
+            showOfflineBanner = showOfflineBanner,
         )
     } else {
         LandingScreen(
@@ -101,12 +108,14 @@ private fun MainScaffold(
     visibleTabs: List<MainTab>,
     roleManager: RoleManager,
     pendingPaymentCount: Int = 0,
+    showOfflineBanner: Boolean = false,
 ) {
-    // Set dark status bar icons on light background (opposite of landing screen)
+    // Status bar icons: follow theme (light icons on dark, dark icons on light)
     val view = LocalView.current
+    val isDark = androidx.compose.foundation.isSystemInDarkTheme()
     SideEffect {
         val window = (view.context as Activity).window
-        WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = true
+        WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = !isDark
     }
 
     val navController = rememberNavController()
@@ -125,6 +134,7 @@ private fun MainScaffold(
     }
 
     var showTimeClock by remember { mutableStateOf(false) }
+    var moreTabReselectionTick by remember { mutableIntStateOf(0) }
 
     if (isTablet) {
         // iPad-style: custom capsule tab bar at bottom
@@ -132,11 +142,15 @@ private fun MainScaffold(
 
         Scaffold(
             contentWindowInsets = WindowInsets.statusBars,
+            topBar = { ConnectivityBanner(visible = showOfflineBanner) },
             bottomBar = {
                 TabletTabBar(
                     visibleTabs = visibleTabs,
                     selectedTab = selectedTab,
                     onTabSelected = { tab ->
+                        if (tab == MainTab.MORE && selectedTab == MainTab.MORE) {
+                            moreTabReselectionTick++
+                        }
                         selectedTab = tab
                         navigateToTab(tab)
                     },
@@ -154,25 +168,36 @@ private fun MainScaffold(
                     composable(MainTab.CHECKOUT.route) { CheckoutScreen(isTablet = true, roleManager = roleManager) }
                 }
                 if (roleManager.canAccessInventory) {
-                    composable(MainTab.INVENTORY.route) { InventoryScreen() }
+                    composable(MainTab.INVENTORY.route) { InventoryScreen(isTablet = true) }
                 }
                 if (roleManager.canAccessTransactions) {
                     composable(MainTab.TRANSACTIONS.route) { TransactionsScreen(isTablet = true) }
                 }
                 composable(MainTab.NOTIFICATIONS.route) { NotificationsScreen() }
-                composable(MainTab.MORE.route) { MoreMenuScreen(onLogout = onLogout) }
+                composable(MainTab.MORE.route) {
+                    MoreMenuScreen(
+                        onLogout = onLogout,
+                        moreTabReselectionTick = moreTabReselectionTick,
+                    )
+                }
             }
         }
     } else {
         // iPhone-style: standard NavigationBar
         Scaffold(
+            topBar = { ConnectivityBanner(visible = showOfflineBanner) },
             bottomBar = {
                 NavigationBar {
                     visibleTabs.forEach { tab ->
                         val selected = currentDestination?.hierarchy?.any { it.route == tab.route } == true
                         NavigationBarItem(
                             selected = selected,
-                            onClick = { navigateToTab(tab) },
+                            onClick = {
+                                if (tab == MainTab.MORE && selected) {
+                                    moreTabReselectionTick++
+                                }
+                                navigateToTab(tab)
+                            },
                             icon = {
                                 val icon = if (selected) tab.selectedIcon else tab.unselectedIcon
                                 when {
@@ -204,13 +229,18 @@ private fun MainScaffold(
                     composable(MainTab.CHECKOUT.route) { CheckoutScreen(isTablet = false, roleManager = roleManager) }
                 }
                 if (roleManager.canAccessInventory) {
-                    composable(MainTab.INVENTORY.route) { InventoryScreen() }
+                    composable(MainTab.INVENTORY.route) { InventoryScreen(isTablet = false) }
                 }
                 if (roleManager.canAccessTransactions) {
                     composable(MainTab.TRANSACTIONS.route) { TransactionsScreen() }
                 }
                 composable(MainTab.NOTIFICATIONS.route) { NotificationsScreen() }
-                composable(MainTab.MORE.route) { MoreMenuScreen(onLogout = onLogout) }
+                composable(MainTab.MORE.route) {
+                    MoreMenuScreen(
+                        onLogout = onLogout,
+                        moreTabReselectionTick = moreTabReselectionTick,
+                    )
+                }
             }
         }
     }
@@ -257,16 +287,17 @@ private fun TabletTabBar(
             // Clock button (left)
             Box(
                 modifier = Modifier
-                    .size(50.dp)
+                    .size(44.dp)
                     .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.surfaceContainerHigh)
                     .clickable(onClick = onClockTap),
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
                     Icons.Filled.Schedule,
                     contentDescription = "Reloj checador",
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.size(24.dp),
+                    tint = MaterialTheme.colorScheme.onSurface,
+                    modifier = Modifier.size(AvoqadoTheme.dimensions.iconLarge),
                 )
             }
 
@@ -276,11 +307,16 @@ private fun TabletTabBar(
             Row(
                 modifier = Modifier
                     .background(
-                        MaterialTheme.colorScheme.surfaceVariant,
+                        MaterialTheme.colorScheme.surfaceContainerLow,
                         RoundedCornerShape(50),
                     )
-                    .padding(4.dp),
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    .border(
+                        width = 1.dp,
+                        color = MaterialTheme.colorScheme.outlineVariant,
+                        shape = RoundedCornerShape(50),
+                    )
+                    .padding(AvoqadoTheme.spacing.xxs),
+                horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.xxs),
             ) {
                 visibleTabs.forEach { tab ->
                     val isSelected = selectedTab == tab
@@ -296,7 +332,7 @@ private fun TabletTabBar(
             Spacer(modifier = Modifier.weight(1f))
 
             // Balance spacer (right) - same size as clock button
-            Spacer(modifier = Modifier.size(50.dp))
+            Spacer(modifier = Modifier.size(44.dp))
         }
     }
 }
@@ -320,6 +356,8 @@ private fun TabBarItem(
     Row(
         modifier = Modifier
             .clip(RoundedCornerShape(50))
+            .defaultMinSize(minHeight = 44.dp)
+            .widthIn(min = 72.dp)
             .then(
                 if (isSelected) {
                     Modifier.shadow(1.dp, RoundedCornerShape(50))
@@ -329,7 +367,10 @@ private fun TabBarItem(
             )
             .background(bgColor, RoundedCornerShape(50))
             .clickable(onClick = onClick)
-            .padding(horizontal = if (isSelected) 12.dp else 10.dp, vertical = 8.dp),
+            .padding(
+                horizontal = AvoqadoTheme.spacing.md,
+                vertical = AvoqadoTheme.spacing.sm,
+            ),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.Center,
     ) {
@@ -339,7 +380,7 @@ private fun TabBarItem(
                     imageVector = if (isSelected) tab.selectedIcon else tab.unselectedIcon,
                     contentDescription = tab.label,
                     tint = contentColor,
-                    modifier = Modifier.size(18.dp),
+                    modifier = Modifier.size(AvoqadoTheme.dimensions.iconMedium),
                 )
             }
         } else {
@@ -347,18 +388,18 @@ private fun TabBarItem(
                 imageVector = if (isSelected) tab.selectedIcon else tab.unselectedIcon,
                 contentDescription = tab.label,
                 tint = contentColor,
-                modifier = Modifier.size(18.dp),
+                modifier = Modifier.size(AvoqadoTheme.dimensions.iconMedium),
             )
         }
 
-        if (isSelected) {
-            Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.xs))
-            Text(
-                text = tab.label,
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Medium,
-                color = contentColor,
-            )
-        }
+        Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.xs))
+        Text(
+            text = tab.shortLabel,
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
+            color = contentColor,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }

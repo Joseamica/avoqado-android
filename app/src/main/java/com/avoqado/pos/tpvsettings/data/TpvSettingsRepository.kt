@@ -1,12 +1,15 @@
 package com.avoqado.pos.tpvsettings.data
 
 import android.util.Log
+import com.avoqado.pos.core.data.local.PreferencesDataStore
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ApiConstants
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -31,6 +34,7 @@ data class TpvSettings(
     val kioskDefaultMerchantId: String? = null,
     val showQuickPayment: Boolean = true,
     val showOrderManagement: Boolean = true,
+    val includeTaxInTipBase: Boolean = false,
 ) {
     companion object {
         val DEFAULT = TpvSettings()
@@ -41,6 +45,7 @@ data class TpvSettings(
 class TpvSettingsRepository @Inject constructor(
     private val secureStorage: SecureStorage,
     private val client: OkHttpClient,
+    private val preferencesDataStore: PreferencesDataStore,
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -58,81 +63,92 @@ class TpvSettingsRepository @Inject constructor(
             refreshSettingsForVenue(venueId)
         } else {
             Log.d("📦", "No venue ID available, using defaults")
+            _settings.value = TpvSettings.DEFAULT
         }
     }
 
     suspend fun refreshSettingsForVenue(venueId: String) {
         _isLoading.value = true
-        Log.d("📦", "Fetching TPV settings for venue: $venueId")
+        Log.d("📦", "Fetching settings for venue: $venueId")
+        val localIncludeTaxOverride = loadIncludeTaxInTipBaseOverride(venueId)
 
         try {
-            // Step 1: Get terminals for venue
             val token = secureStorage.accessToken ?: return
-            val tpvsRequest = Request.Builder()
-                .url("${ApiConstants.BASE_URL}/dashboard/venues/$venueId/tpvs")
+            val request = Request.Builder()
+                .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/settings")
                 .header("Authorization", "Bearer $token")
                 .build()
 
-            val tpvsResponse = withContext(Dispatchers.IO) {
-                client.newCall(tpvsRequest).execute()
+            val response = withContext(Dispatchers.IO) {
+                client.newCall(request).execute()
             }
-            if (!tpvsResponse.isSuccessful) {
-                Log.e("📦", "❌ Failed to fetch terminals: ${tpvsResponse.code}")
+            if (!response.isSuccessful) {
+                Log.e("📦", "❌ Failed to fetch settings: ${response.code}")
                 return
             }
 
-            val tpvsBody = tpvsResponse.body?.string() ?: return
-            val tpvsData = json.decodeFromString<TpvsListResponse>(tpvsBody)
-            val firstTerminal = tpvsData.data.firstOrNull() ?: run {
-                Log.d("📦", "No terminals found for venue")
-                return
+            val body = response.body?.string() ?: return
+            val result = json.decodeFromString<VenueSettingsResponse>(body)
+            if (result.data?.settings != null) {
+                _settings.value = applyIncludeTaxOverride(
+                    base = result.data.settings,
+                    localOverride = localIncludeTaxOverride,
+                )
+                Log.d("📦", "✅ Settings loaded (terminal: ${result.data.activeTerminalId})")
+            } else {
+                Log.d("📦", "No active terminal, using defaults")
+                _settings.value = applyIncludeTaxOverride(
+                    base = TpvSettings.DEFAULT,
+                    localOverride = localIncludeTaxOverride,
+                )
             }
-
-            // Step 2: Get settings for terminal
-            val settingsRequest = Request.Builder()
-                .url("${ApiConstants.BASE_URL}/dashboard/tpv/${firstTerminal.id}/settings")
-                .header("Authorization", "Bearer $token")
-                .build()
-
-            val settingsResponse = withContext(Dispatchers.IO) {
-                client.newCall(settingsRequest).execute()
-            }
-            if (!settingsResponse.isSuccessful) {
-                Log.e("📦", "❌ Failed to fetch settings: ${settingsResponse.code}")
-                return
-            }
-
-            val settingsBody = settingsResponse.body?.string() ?: return
-            val settingsData = json.decodeFromString<TpvSettingsResponse>(settingsBody)
-            _settings.value = settingsData.data
-            Log.d("📦", "✅ TPV settings loaded")
         } catch (e: Exception) {
-            Log.e("📦", "❌ Error fetching TPV settings: ${e.message}")
+            Log.e("📦", "❌ Error fetching settings: ${e.message}")
+            _settings.value = applyIncludeTaxOverride(
+                base = TpvSettings.DEFAULT,
+                localOverride = localIncludeTaxOverride,
+            )
         } finally {
             _isLoading.value = false
         }
     }
 
+    suspend fun setIncludeTaxInTipBase(value: Boolean) {
+        val venueId = secureStorage.venueId ?: GLOBAL_VENUE_KEY
+        preferencesDataStore.setBoolean(includeTaxInTipBaseKey(venueId), value)
+        _settings.update { it.copy(includeTaxInTipBase = value) }
+    }
+
     fun clearCache() {
         _settings.value = TpvSettings.DEFAULT
+    }
+
+    private suspend fun loadIncludeTaxInTipBaseOverride(venueId: String): Boolean? {
+        return preferencesDataStore.getBooleanOrNull(includeTaxInTipBaseKey(venueId)).first()
+    }
+
+    private fun applyIncludeTaxOverride(base: TpvSettings, localOverride: Boolean?): TpvSettings {
+        return localOverride?.let { base.copy(includeTaxInTipBase = it) } ?: base
+    }
+
+    private fun includeTaxInTipBaseKey(venueId: String): String {
+        return "${KEY_INCLUDE_TAX_IN_TIP_BASE_PREFIX}_$venueId"
+    }
+
+    companion object {
+        private const val KEY_INCLUDE_TAX_IN_TIP_BASE_PREFIX = "include_tax_in_tip_base"
+        private const val GLOBAL_VENUE_KEY = "global"
     }
 }
 
 @Serializable
-private data class TpvsListResponse(
+private data class VenueSettingsResponse(
     val success: Boolean = true,
-    val data: List<TerminalData> = emptyList(),
+    val data: VenueSettingsData? = null,
 )
 
 @Serializable
-private data class TerminalData(
-    val id: String,
-    val name: String? = null,
-    val serialNumber: String? = null,
-)
-
-@Serializable
-private data class TpvSettingsResponse(
-    val success: Boolean = true,
-    val data: TpvSettings = TpvSettings.DEFAULT,
+private data class VenueSettingsData(
+    val settings: TpvSettings? = null,
+    val activeTerminalId: String? = null,
 )

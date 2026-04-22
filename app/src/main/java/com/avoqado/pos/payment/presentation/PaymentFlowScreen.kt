@@ -11,13 +11,14 @@ import com.avoqado.pos.pos.presentation.cart.CartState
 @Composable
 fun PaymentFlowScreen(
     cartState: CartState,
-    onComplete: () -> Unit,
+    onComplete: (PaymentCompletion) -> Unit,
     onCancel: () -> Unit,
     splitConfig: SplitConfig = SplitConfig(),
     viewModel: PaymentFlowViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsState()
     val terminals by viewModel.onlineTerminals.collectAsState()
+    val paymentContext = viewModel.buildPaymentContext()
 
     LaunchedEffect(cartState, splitConfig) {
         viewModel.setSplitConfig(
@@ -42,7 +43,7 @@ fun PaymentFlowScreen(
         is PaymentFlowState.CollectingTip -> {
             // Show payment method screen underneath with tip sheet overlay (matching iOS)
             PaymentMethodSelectionScreen(
-                amountCents = currentState.amount,
+                paymentContext = paymentContext.copy(totalCents = currentState.amount),
                 onMethodSelected = { viewModel.selectPaymentMethod(it) },
                 onCashPresetSelected = { viewModel.confirmCashPreset(it) },
                 onCashCustomSelected = { viewModel.confirmCashCustom(it) },
@@ -50,6 +51,7 @@ fun PaymentFlowScreen(
             )
             TipSelectionSheet(
                 amountCents = currentState.amount,
+                tipBaseCents = viewModel.currentTipPercentageBaseCents(),
                 tipSuggestions = viewModel.settings.tipSuggestions,
                 onTipSelected = { viewModel.submitTip(it) },
                 onSkip = { viewModel.submitTip(0) },
@@ -58,7 +60,7 @@ fun PaymentFlowScreen(
         }
         is PaymentFlowState.SelectingPaymentMethod -> {
             PaymentMethodSelectionScreen(
-                amountCents = currentState.amount,
+                paymentContext = paymentContext.copy(totalCents = currentState.amount),
                 onMethodSelected = { viewModel.selectPaymentMethod(it) },
                 onCashPresetSelected = { viewModel.confirmCashPreset(it) },
                 onCashCustomSelected = { viewModel.confirmCashCustom(it) },
@@ -112,6 +114,7 @@ fun PaymentFlowScreen(
                 changeCents = currentState.changeAmount,
                 isQueued = currentState.isQueued,
                 paymentId = currentState.paymentId,
+                canSendReceipt = !currentState.paymentId.isNullOrBlank() || !currentState.receiptAccessKey.isNullOrBlank(),
                 isSendingWhatsApp = whatsAppSending,
                 whatsAppResultMessage = whatsAppResult,
                 onSendWhatsApp = { phone -> viewModel.sendReceiptWhatsApp(phone) },
@@ -124,7 +127,7 @@ fun PaymentFlowScreen(
                 printResultMessage = printResult,
                 onPrintReceipt = { viewModel.reprintReceipt() },
                 onClearPrintResult = { viewModel.clearPrintResult() },
-                onDone = onComplete,
+                onDone = { onComplete(viewModel.buildCompletion()) },
             )
         }
         is PaymentFlowState.Error -> {

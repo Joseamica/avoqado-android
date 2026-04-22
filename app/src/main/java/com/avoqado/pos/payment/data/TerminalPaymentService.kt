@@ -120,6 +120,8 @@ class TerminalPaymentService @Inject constructor(
                         transactionId = response.transactionId,
                         cardLastFour = response.cardDetails?.lastFour,
                         cardBrand = response.cardDetails?.brand,
+                        paymentId = response.paymentId ?: response.transactionId,
+                        receiptAccessKey = response.receipt?.receiptAccessKey,
                     )
                 }
                 404 -> {
@@ -205,6 +207,8 @@ sealed class TerminalPaymentResult {
         val transactionId: String? = null,
         val cardLastFour: String? = null,
         val cardBrand: String? = null,
+        val paymentId: String? = null,
+        val receiptAccessKey: String? = null,
     ) : TerminalPaymentResult()
     data class Error(val message: String) : TerminalPaymentResult()
 }
@@ -239,6 +243,7 @@ data class TerminalPaymentResponse(
     val status: String? = null,
     val requestId: String? = null,
     val transactionId: String? = null,
+    val paymentId: String? = null,
     val cardDetails: CardDetails? = null,
     val errorMessage: String? = null,
     val message: String? = null,

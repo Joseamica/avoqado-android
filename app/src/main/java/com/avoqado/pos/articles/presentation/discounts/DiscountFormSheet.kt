@@ -6,22 +6,18 @@ import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -38,11 +34,12 @@ import com.avoqado.pos.articles.data.model.AdminDiscount
 import com.avoqado.pos.articles.data.model.DiscountScope
 import com.avoqado.pos.articles.data.model.DiscountType
 import com.avoqado.pos.articles.presentation.ArticlesViewModel
+import com.avoqado.pos.designsystem.components.AvoqadoFullScreenModal
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Info
 import com.avoqado.pos.designsystem.theme.Success
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun DiscountFormSheet(
     discount: AdminDiscount?,
@@ -72,7 +69,6 @@ fun DiscountFormSheet(
         mutableStateOf(discount?.targetCategoryIds?.toSet() ?: emptySet())
     }
 
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val isEditing = discount != null
 
     val formScopes = listOf(DiscountScope.ORDER, DiscountScope.ITEM, DiscountScope.CATEGORY)
@@ -87,24 +83,51 @@ fun DiscountFormSheet(
         viewModel.loadSectionData(ArticleSection.CATEGORIES)
     }
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
+    AvoqadoFullScreenModal(
+        title = if (isEditing) "Editar descuento" else "Nuevo descuento",
+        onDismiss = onDismiss,
+        primaryActionText = if (isEditing) "Guardar" else "Crear",
+        onPrimaryAction = {
+            val resolvedValue = if (type == DiscountType.COMP) {
+                100.0
+            } else {
+                value.toDoubleOrNull() ?: 0.0
+            }
+            if (isEditing) {
+                viewModel.updateDiscount(
+                    discountId = discount!!.id,
+                    name = name,
+                    type = type,
+                    value = resolvedValue,
+                    scope = scope,
+                    active = active,
+                    requiresApproval = requiresApproval,
+                    targetItemIds = selectedTargetItemIds.toList(),
+                    targetCategoryIds = selectedTargetCategoryIds.toList(),
+                )
+            } else {
+                viewModel.createDiscount(
+                    name = name,
+                    type = type,
+                    value = resolvedValue,
+                    scope = scope,
+                    active = active,
+                    requiresApproval = requiresApproval,
+                    targetItemIds = selectedTargetItemIds.toList(),
+                    targetCategoryIds = selectedTargetCategoryIds.toList(),
+                )
+            }
+            onDismiss()
+        },
+        primaryActionEnabled = name.isNotBlank() && !isSaving && hasValidTargets,
     ) {
         Column(
             modifier = Modifier
-                .fillMaxWidth()
+                .fillMaxSize()
                 .verticalScroll(rememberScrollState())
                 .padding(AvoqadoTheme.spacing.lg),
             verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.lg),
         ) {
-            // MARK: - Title
-            Text(
-                text = if (isEditing) "Editar descuento" else "Nuevo descuento",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-
             // MARK: - DETALLES
             OutlinedTextField(
                 value = name,
@@ -308,54 +331,6 @@ fun DiscountFormSheet(
                             checkedTrackColor = Info,
                         ),
                     )
-                }
-            }
-
-            // MARK: - Buttons
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                TextButton(onClick = onDismiss) {
-                    Text(text = "Cancelar")
-                }
-                Spacer(modifier = Modifier.weight(1f))
-                Button(
-                    onClick = {
-                        val resolvedValue = if (type == DiscountType.COMP) {
-                            100.0
-                        } else {
-                            value.toDoubleOrNull() ?: 0.0
-                        }
-                        if (isEditing) {
-                            viewModel.updateDiscount(
-                                discountId = discount!!.id,
-                                name = name,
-                                type = type,
-                                value = resolvedValue,
-                                scope = scope,
-                                active = active,
-                                requiresApproval = requiresApproval,
-                                targetItemIds = selectedTargetItemIds.toList(),
-                                targetCategoryIds = selectedTargetCategoryIds.toList(),
-                            )
-                        } else {
-                            viewModel.createDiscount(
-                                name = name,
-                                type = type,
-                                value = resolvedValue,
-                                scope = scope,
-                                active = active,
-                                requiresApproval = requiresApproval,
-                                targetItemIds = selectedTargetItemIds.toList(),
-                                targetCategoryIds = selectedTargetCategoryIds.toList(),
-                            )
-                        }
-                        onDismiss()
-                    },
-                    enabled = name.isNotBlank() && !isSaving && hasValidTargets,
-                ) {
-                    Text(text = if (isEditing) "Guardar" else "Crear")
                 }
             }
         }

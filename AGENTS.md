@@ -17,9 +17,34 @@ This file provides guidance to Codex when working with this repository.
 |------|-----|-------|
 | Back/dismiss button | Circle with chevron (match iOS `CircleBackButton`) | Plain text "Back" or raw Icon |
 | Primary button | `PrimaryButton` composable or `RoundedCornerShape(50)` | `RoundedCornerShape(12.dp)` |
+| Acción primaria en pantallas chicas | En formularios/full-screen modal: `Guardar/Crear` en header (derecha) y cierre circular `X` a la izquierda | Botón fijo abajo que se recorta/tapa contenido |
+| Header fullscreen modal | `X` circular izquierda + título centrado + acción pill derecha; acción invertida por tema (`dark`: fondo blanco/texto negro, `light`: fondo negro/texto blanco) | Header sin simetría o con título cargado a un lado |
 | Spacing | `Spacing.md`, `Spacing.lg` from design tokens | Hardcoded `12.dp`, `16.dp` |
 | Colors | `MaterialTheme.colorScheme.*` | Hardcoded `Color.Black`, `Color.White` |
 | Typography | `MaterialTheme.typography.*` | `fontSize = 14.sp` inline |
+| Confirmation / input dialog | `AvoqadoDialog` (X top-right, pill input, full-width primary) | Raw Material3 `AlertDialog` |
+| Form input inside dialog | `AvoqadoPillTextField` (48dp, rounded 50) | Raw `OutlinedTextField` |
+| Phone input (international) | `AvoqadoPhoneInput` (flag + dial code selector + pill digits) | Plain text field asking for "+52 …" |
+| Success feedback | `AvoqadoSuccessToast` (auto-dismiss green check overlay) | Silent state / native `Toast.makeText` / snackbar |
+| Text search field | `SearchPillField` (44dp, leading search icon) | Raw `TextField` with border |
+
+### `AvoqadoPhoneInput` — composing E.164
+The component emits raw digits only — caller composes `"+${country.dialCode}${digits}"` before
+hitting the API. Default country is MX; override via `Countries.byIso(venue.country)` when
+venue data is available. Backend `normalizePhone` already strips the leading `+`, so sending the
+fully-qualified E.164 string from the client avoids the backend's Mexico-fallback ambiguity.
+
+### `AvoqadoSuccessToast` — when to fire it
+Any user-initiated action that *succeeds silently today* should celebrate with this toast.
+Message = what the user did, in Spanish (e.g. "¡Cliente guardado!", "¡Stock recibido!", "¡Caja cerrada!").
+Use `subtitle` for a secondary detail only (channel, venue, amount).
+
+Fire it after: save customer/product/discount/coupon/category/modifier/credit-pack, close cash drawer,
+connect printer, change PIN, time clock in/out, send receipt (email/WhatsApp/print), change venue,
+create purchase order, receive stock, transfer inventory, issue refund, sync offline queue.
+
+Do **not** fire for: validation errors, network failures, or any non-success state — toast is
+green-check celebration only. Errors stay inline in the originating dialog/sheet.
 
 ## Build Commands
 

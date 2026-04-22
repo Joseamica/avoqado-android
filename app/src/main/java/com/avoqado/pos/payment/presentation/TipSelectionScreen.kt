@@ -44,12 +44,14 @@ import com.avoqado.pos.designsystem.theme.Success
 @Composable
 fun TipSelectionScreen(
     amountCents: Int,
+    tipBaseCents: Int = amountCents,
     tipSuggestions: List<Int>,
     onTipSelected: (Int) -> Unit,
     onSkip: () -> Unit,
 ) {
     TipSelectionSheet(
         amountCents = amountCents,
+        tipBaseCents = tipBaseCents,
         tipSuggestions = tipSuggestions,
         onTipSelected = onTipSelected,
         onSkip = onSkip,
@@ -61,6 +63,7 @@ fun TipSelectionScreen(
 @Composable
 fun TipSelectionSheet(
     amountCents: Int,
+    tipBaseCents: Int = amountCents,
     tipSuggestions: List<Int>,
     onTipSelected: (Int) -> Unit,
     onSkip: () -> Unit,
@@ -75,12 +78,12 @@ fun TipSelectionSheet(
     val tipCents = when {
         showCustomInput && customTipCents > 0 -> {
             if (isPercentageMode) {
-                (amountCents * customTipCents / 100.0).toInt()
+                (tipBaseCents * customTipCents / 100.0).toInt()
             } else {
                 customTipCents
             }
         }
-        selectedTipPercent > 0 -> (amountCents * selectedTipPercent / 100.0).toInt()
+        selectedTipPercent > 0 -> (tipBaseCents * selectedTipPercent / 100.0).toInt()
         else -> 0
     }
 
@@ -132,7 +135,7 @@ fun TipSelectionSheet(
             ) {
                 tipSuggestions.forEach { percent ->
                     val isSelected = selectedTipPercent == percent && !showCustomInput
-                    val tipAmount = (amountCents * percent / 100.0).toInt()
+                    val tipAmount = (tipBaseCents * percent / 100.0).toInt()
 
                     Box(
                         modifier = Modifier

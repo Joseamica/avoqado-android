@@ -120,13 +120,18 @@ fun ReceiveStockSheet(
 
             // Item rows
             order.items.forEach { item ->
+                val maxReceivable = (item.orderedQuantity - item.receivedQuantity).coerceAtLeast(0)
                 ReceiveItemRow(
                     item = item,
+                    maxReceivable = maxReceivable,
                     receivedText = receivedQuantities[item.id] ?: "0",
                     onReceivedChange = { text ->
                         // Only allow digits
                         val filtered = text.filter { it.isDigit() }
-                        receivedQuantities[item.id] = filtered
+                        val normalized = (filtered.toIntOrNull() ?: 0)
+                            .coerceAtMost(maxReceivable)
+                            .toString()
+                        receivedQuantities[item.id] = normalized
                     },
                 )
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -138,8 +143,14 @@ fun ReceiveStockSheet(
             PrimaryButton(
                 text = if (isSaving) "Enviando..." else "Confirmar recepcion",
                 onClick = {
+                    if (!order.canReceiveStock) {
+                        viewModel.showError("La orden debe estar enviada antes de recibir mercancía")
+                        return@PrimaryButton
+                    }
                     val receiveItems = order.items.mapNotNull { item ->
-                        val qty = receivedQuantities[item.id]?.toIntOrNull() ?: 0
+                        val maxReceivable = (item.orderedQuantity - item.receivedQuantity).coerceAtLeast(0)
+                        val qty = (receivedQuantities[item.id]?.toIntOrNull() ?: 0)
+                            .coerceAtMost(maxReceivable)
                         if (qty > 0) {
                             ReceiveItemRequest(
                                 purchaseOrderItemId = item.id,
@@ -159,8 +170,9 @@ fun ReceiveStockSheet(
                 },
                 enabled = !isSaving && receivedQuantities.values.any {
                     (it.toIntOrNull() ?: 0) > 0
-                },
+                } && order.canReceiveStock,
                 isLoading = isSaving,
+                fullWidth = true,
             )
 
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxxl))
@@ -173,6 +185,7 @@ fun ReceiveStockSheet(
 @Composable
 private fun ReceiveItemRow(
     item: PurchaseOrderItem,
+    maxReceivable: Int,
     receivedText: String,
     onReceivedChange: (String) -> Unit,
 ) {
@@ -199,6 +212,11 @@ private fun ReceiveItemRow(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+            Text(
+                text = "Por recibir: $maxReceivable",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
 
         // Ordered quantity

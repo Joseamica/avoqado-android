@@ -19,7 +19,7 @@ class MainActivity : FragmentActivity() {
         enableEdgeToEdge()
         setContent {
             val windowSizeClass = calculateWindowSizeClass(this)
-            AvoqadoTheme {
+            AvoqadoTheme(windowSizeClass = windowSizeClass) {
                 AvoqadoNavGraph(windowSizeClass = windowSizeClass)
             }
         }

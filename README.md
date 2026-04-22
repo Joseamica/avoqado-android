@@ -4,8 +4,17 @@ Aplicación Android de punto de venta (POS) para Avoqado.
 
 ## Requisitos de build
 
-- Usa JDK 17-23 para compilar. La combinación actual de Gradle 8.11.1 y AGP 8.7.3 no es compatible con Java 24.
-- Recomendado: JDK 21 o JDK 23.
+- El proyecto permite ejecutar Gradle con JDK 17-24.
+- Recomendado: JDK 24 para desarrollo local de este repo.
+- La app sigue compilando con target Java/Kotlin 17 (`sourceCompatibility`, `targetCompatibility`, `jvmTarget`).
+
+## JDK 24 sin afectar otros proyectos
+
+- Este repo incluye `.java-version` para usar JDK 24 solo dentro de este directorio (si usas `jenv`/`asdf`/herramienta compatible).
+- Si no usas gestor de versiones, puedes correr en una terminal local de este repo:
+  `export JAVA_HOME=$(/usr/libexec/java_home -v 24)`
+  y después:
+  `./gradlew testDebugUnitTest`
 
 ## Comandos
 

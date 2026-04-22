@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -32,7 +33,6 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CreditCard
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Payments
-import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.outlined.CheckBoxOutlineBlank
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -41,6 +41,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
@@ -66,9 +67,12 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.avoqado.pos.designsystem.components.SearchPillField
+import com.avoqado.pos.designsystem.theme.AvoqadoAdaptiveSizeClass
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.transactions.data.model.AmountOperator
 import com.avoqado.pos.transactions.data.model.Transaction
@@ -84,11 +88,17 @@ fun TransactionsScreen(
 ) {
     val activeFilter by viewModel.activeFilter.collectAsState()
     val showRefundSheet by viewModel.showRefundSheet.collectAsState()
+    val adaptive = AvoqadoTheme.adaptive
+    val denseTabletLandscape = !adaptive.isPortrait && adaptive.sizeClass != AvoqadoAdaptiveSizeClass.Compact
 
-    if (isTablet) {
-        TabletTransactionsLayout(viewModel = viewModel)
-    } else {
-        PhoneTransactionsLayout(viewModel = viewModel)
+    Scaffold(contentWindowInsets = WindowInsets(0, 0, 0, 0)) { innerPadding ->
+        Box(modifier = Modifier.padding(innerPadding)) {
+            if (isTablet) {
+                TabletTransactionsLayout(viewModel = viewModel, denseTabletLandscape = denseTabletLandscape)
+            } else {
+                PhoneTransactionsLayout(viewModel = viewModel, denseTabletLandscape = denseTabletLandscape)
+            }
+        }
     }
 
     // Filter bottom sheets
@@ -102,15 +112,19 @@ fun TransactionsScreen(
 // MARK: - Tablet Layout (40/60 split)
 
 @Composable
-private fun TabletTransactionsLayout(viewModel: TransactionsViewModel) {
+private fun TabletTransactionsLayout(
+    viewModel: TransactionsViewModel,
+    denseTabletLandscape: Boolean,
+) {
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
-        val listWidth = maxWidth * 0.4f
+        val listWidth = if (denseTabletLandscape) maxWidth * 0.37f else maxWidth * 0.4f
 
         Row(modifier = Modifier.fillMaxSize()) {
             // Left panel: transaction list (40%)
             TransactionListPanel(
                 viewModel = viewModel,
                 isTablet = true,
+                denseTabletLandscape = denseTabletLandscape,
                 modifier = Modifier
                     .width(listWidth)
                     .fillMaxHeight(),
@@ -138,7 +152,10 @@ private fun TabletTransactionsLayout(viewModel: TransactionsViewModel) {
 // MARK: - Phone Layout
 
 @Composable
-private fun PhoneTransactionsLayout(viewModel: TransactionsViewModel) {
+private fun PhoneTransactionsLayout(
+    viewModel: TransactionsViewModel,
+    denseTabletLandscape: Boolean,
+) {
     val selectedTransaction by viewModel.selectedTransaction.collectAsState()
 
     if (selectedTransaction != null) {
@@ -152,6 +169,7 @@ private fun PhoneTransactionsLayout(viewModel: TransactionsViewModel) {
         TransactionListPanel(
             viewModel = viewModel,
             isTablet = false,
+            denseTabletLandscape = denseTabletLandscape,
             modifier = Modifier.fillMaxSize(),
         )
     }
@@ -163,6 +181,7 @@ private fun PhoneTransactionsLayout(viewModel: TransactionsViewModel) {
 private fun TransactionListPanel(
     viewModel: TransactionsViewModel,
     isTablet: Boolean,
+    denseTabletLandscape: Boolean,
     modifier: Modifier = Modifier,
 ) {
     val transactions by viewModel.transactions.collectAsState()
@@ -195,6 +214,13 @@ private fun TransactionListPanel(
     val grouped = remember(filteredTransactions) {
         filteredTransactions.groupBy { it.dateGroup }.toList()
     }
+    val adaptive = AvoqadoTheme.adaptive
+    val denseList = adaptive.isAggressiveCompact || denseTabletLandscape
+    val horizontalPadding = if (denseList) AvoqadoTheme.spacing.md else AvoqadoTheme.spacing.lg
+    val searchHeight = if (denseList) 36.dp else adaptive.listSearchFieldHeight
+    val searchVerticalPadding = if (denseList) AvoqadoTheme.spacing.xs else AvoqadoTheme.spacing.sm
+    val dateHeaderTopPadding = if (denseList) AvoqadoTheme.spacing.md else AvoqadoTheme.spacing.xl
+    val dateHeaderBottomPadding = if (denseList) AvoqadoTheme.spacing.xxs else AvoqadoTheme.spacing.sm
 
     Column(
         modifier = modifier.background(MaterialTheme.colorScheme.surface),
@@ -203,12 +229,12 @@ private fun TransactionListPanel(
         if (isTablet) {
             Text(
                 text = "Transacciones",
-                style = MaterialTheme.typography.headlineLarge,
+                style = if (denseList) MaterialTheme.typography.headlineSmall else MaterialTheme.typography.headlineLarge,
                 modifier = Modifier.padding(
-                    start = AvoqadoTheme.spacing.xl,
-                    end = AvoqadoTheme.spacing.xl,
-                    top = AvoqadoTheme.spacing.xl,
-                    bottom = AvoqadoTheme.spacing.sm,
+                    start = horizontalPadding,
+                    end = horizontalPadding,
+                    top = if (denseList) AvoqadoTheme.spacing.md else AvoqadoTheme.spacing.xl,
+                    bottom = dateHeaderBottomPadding,
                 ),
             )
         }
@@ -296,15 +322,17 @@ private fun TransactionListPanel(
         SearchBar(
             value = searchText,
             onValueChange = { viewModel.setSearchText(it) },
+            height = searchHeight,
             modifier = Modifier.padding(
-                horizontal = AvoqadoTheme.spacing.lg,
-                vertical = AvoqadoTheme.spacing.sm,
+                horizontal = horizontalPadding,
+                vertical = searchVerticalPadding,
             ),
         )
 
         // Filter pills
         TransactionFilterBar(
             filters = filters,
+            dense = denseList,
             onFilterTap = { viewModel.setActiveFilter(it) },
             onFilterClear = { filter ->
                 val updated = when (filter) {
@@ -346,18 +374,18 @@ private fun TransactionListPanel(
 
                 LazyColumn(
                     state = listState,
-                    contentPadding = PaddingValues(horizontal = AvoqadoTheme.spacing.lg),
+                    contentPadding = PaddingValues(horizontal = horizontalPadding),
                     modifier = Modifier.fillMaxSize(),
                 ) {
                     grouped.forEach { (dateGroup, groupTransactions) ->
                         item(key = "header_$dateGroup") {
                             Text(
                                 text = dateGroup,
-                                style = MaterialTheme.typography.labelLarge,
+                                style = if (denseList) MaterialTheme.typography.labelMedium else MaterialTheme.typography.labelLarge,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.padding(
-                                    top = AvoqadoTheme.spacing.xl,
-                                    bottom = AvoqadoTheme.spacing.sm,
+                                    top = dateHeaderTopPadding,
+                                    bottom = dateHeaderBottomPadding,
                                 ),
                             )
                         }
@@ -367,6 +395,7 @@ private fun TransactionListPanel(
 
                             TransactionRow(
                                 transaction = transaction,
+                                dense = denseList,
                                 isSelected = isSelected,
                                 onClick = { viewModel.selectTransaction(transaction.id) },
                             )
@@ -384,7 +413,7 @@ private fun TransactionListPanel(
                             Box(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(AvoqadoTheme.spacing.lg),
+                                    .padding(if (denseList) AvoqadoTheme.spacing.md else AvoqadoTheme.spacing.lg),
                                 contentAlignment = Alignment.Center,
                             ) {
                                 CircularProgressIndicator(modifier = Modifier.size(24.dp))
@@ -403,57 +432,16 @@ private fun TransactionListPanel(
 private fun SearchBar(
     value: String,
     onValueChange: (String) -> Unit,
+    height: Dp,
     modifier: Modifier = Modifier,
 ) {
-    Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
-            .background(MaterialTheme.colorScheme.surfaceVariant)
-            .padding(horizontal = AvoqadoTheme.spacing.sm),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(
-            Icons.Filled.Search,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(20.dp),
-        )
-
-        TextField(
-            value = value,
-            onValueChange = onValueChange,
-            placeholder = {
-                Text(
-                    "Buscar transacciones...",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-            },
-            singleLine = true,
-            modifier = Modifier.weight(1f),
-            textStyle = MaterialTheme.typography.bodyMedium,
-            colors = TextFieldDefaults.colors(
-                unfocusedContainerColor = Color.Transparent,
-                focusedContainerColor = Color.Transparent,
-                unfocusedIndicatorColor = Color.Transparent,
-                focusedIndicatorColor = Color.Transparent,
-            ),
-        )
-
-        if (value.isNotEmpty()) {
-            IconButton(
-                onClick = { onValueChange("") },
-                modifier = Modifier.size(32.dp),
-            ) {
-                Icon(
-                    Icons.Filled.Close,
-                    contentDescription = "Limpiar",
-                    modifier = Modifier.size(16.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-    }
+    SearchPillField(
+        query = value,
+        onQueryChange = onValueChange,
+        placeholder = "Buscar transacciones...",
+        modifier = modifier.fillMaxWidth(),
+        height = height,
+    )
 }
 
 // MARK: - Transaction Row
@@ -461,9 +449,15 @@ private fun SearchBar(
 @Composable
 private fun TransactionRow(
     transaction: Transaction,
+    dense: Boolean = false,
     isSelected: Boolean = false,
     onClick: () -> Unit,
 ) {
+    val rowVerticalPadding = if (dense) AvoqadoTheme.spacing.xxs else AvoqadoTheme.spacing.xs
+    val iconBoxSize = if (dense) 34.dp else 40.dp
+    val paymentIconSize = if (dense) 14.dp else 16.dp
+    val rowGap = if (dense) AvoqadoTheme.spacing.sm else AvoqadoTheme.spacing.md
+
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -472,13 +466,13 @@ private fun TransactionRow(
                 else Color.Transparent,
             )
             .clickable(onClick = onClick)
-            .padding(vertical = AvoqadoTheme.spacing.xs),
+            .padding(vertical = rowVerticalPadding),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         // Icon box
         Box(
             modifier = Modifier
-                .size(40.dp)
+                .size(iconBoxSize)
                 .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.sm))
                 .background(MaterialTheme.colorScheme.surfaceVariant),
             contentAlignment = Alignment.Center,
@@ -486,24 +480,24 @@ private fun TransactionRow(
             Icon(
                 imageVector = paymentIcon(transaction.paymentMethod),
                 contentDescription = null,
-                modifier = Modifier.size(16.dp),
+                modifier = Modifier.size(paymentIconSize),
                 tint = MaterialTheme.colorScheme.onSurface,
             )
         }
 
-        Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.md))
+        Spacer(modifier = Modifier.width(rowGap))
 
         // Amount + method
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = transaction.totalDisplay,
-                style = MaterialTheme.typography.titleMedium,
+                style = if (dense) MaterialTheme.typography.titleSmall else MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurface,
             )
             Text(
                 text = transaction.methodDescription,
-                style = MaterialTheme.typography.bodySmall,
+                style = if (dense) MaterialTheme.typography.labelMedium else MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
@@ -512,7 +506,7 @@ private fun TransactionRow(
         transaction.timeDisplay?.let { time ->
             Text(
                 text = time,
-                style = MaterialTheme.typography.bodySmall,
+                style = if (dense) MaterialTheme.typography.labelSmall else MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
@@ -520,7 +514,7 @@ private fun TransactionRow(
 
     HorizontalDivider(
         color = MaterialTheme.colorScheme.outlineVariant,
-        modifier = Modifier.padding(start = 52.dp),
+        modifier = Modifier.padding(start = if (dense) 42.dp else 52.dp),
     )
 }
 
@@ -571,19 +565,24 @@ private fun EmptyState(
 @Composable
 private fun TransactionFilterBar(
     filters: TransactionFilters,
+    dense: Boolean = false,
     onFilterTap: (TransactionActiveFilter) -> Unit,
     onFilterClear: (TransactionActiveFilter) -> Unit,
     onClearAll: () -> Unit,
 ) {
+    val pillSpacing = if (dense) AvoqadoTheme.spacing.xs else AvoqadoTheme.spacing.sm
+    val verticalPadding = if (dense) AvoqadoTheme.spacing.xxs else AvoqadoTheme.spacing.xs
+
     LazyRow(
-        contentPadding = PaddingValues(horizontal = AvoqadoTheme.spacing.lg),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        modifier = Modifier.padding(vertical = 6.dp),
+        contentPadding = PaddingValues(horizontal = if (dense) AvoqadoTheme.spacing.md else AvoqadoTheme.spacing.lg),
+        horizontalArrangement = Arrangement.spacedBy(pillSpacing),
+        modifier = Modifier.padding(vertical = verticalPadding),
     ) {
         // Método
         item {
             FilterPill(
                 label = "Método",
+                dense = dense,
                 isActive = filters.methods.isNotEmpty(),
                 activeValue = if (filters.methods.isNotEmpty()) "${filters.methods.size}" else null,
                 onTap = { onFilterTap(TransactionActiveFilter.METHOD) },
@@ -594,6 +593,7 @@ private fun TransactionFilterBar(
         item {
             FilterPill(
                 label = "Mesero",
+                dense = dense,
                 isActive = filters.staffNames.isNotEmpty(),
                 activeValue = if (filters.staffNames.isNotEmpty()) "${filters.staffNames.size}" else null,
                 onTap = { onFilterTap(TransactionActiveFilter.STAFF) },
@@ -604,6 +604,7 @@ private fun TransactionFilterBar(
         item {
             FilterPill(
                 label = "Subtotal",
+                dense = dense,
                 isActive = filters.subtotalOperator != null,
                 activeValue = filters.subtotalOperator?.let { op ->
                     filters.subtotalValue1?.let { v1 -> op.summary(v1, filters.subtotalValue2) }
@@ -616,6 +617,7 @@ private fun TransactionFilterBar(
         item {
             FilterPill(
                 label = "Propina",
+                dense = dense,
                 isActive = filters.tipOperator != null,
                 activeValue = filters.tipOperator?.let { op ->
                     filters.tipValue1?.let { v1 -> op.summary(v1, filters.tipValue2) }
@@ -628,6 +630,7 @@ private fun TransactionFilterBar(
         item {
             FilterPill(
                 label = "Total",
+                dense = dense,
                 isActive = filters.totalOperator != null,
                 activeValue = filters.totalOperator?.let { op ->
                     filters.totalValue1?.let { v1 -> op.summary(v1, filters.totalValue2) }
@@ -641,12 +644,12 @@ private fun TransactionFilterBar(
             item {
                 IconButton(
                     onClick = onClearAll,
-                    modifier = Modifier.size(32.dp),
+                    modifier = Modifier.size(if (dense) 28.dp else 32.dp),
                 ) {
                     Icon(
                         Icons.Filled.Cancel,
                         contentDescription = "Limpiar filtros",
-                        modifier = Modifier.size(16.dp),
+                        modifier = Modifier.size(if (dense) 14.dp else 16.dp),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
@@ -660,6 +663,7 @@ private fun TransactionFilterBar(
 @Composable
 private fun FilterPill(
     label: String,
+    dense: Boolean,
     isActive: Boolean,
     activeValue: String?,
     onTap: () -> Unit,
@@ -671,7 +675,7 @@ private fun FilterPill(
 
     Row(
         modifier = Modifier
-            .clip(RoundedCornerShape(20.dp))
+            .clip(RoundedCornerShape(if (dense) 16.dp else 20.dp))
             .then(
                 if (isActive) {
                     Modifier.background(primaryColor)
@@ -692,27 +696,30 @@ private fun FilterPill(
                 },
             )
             .clickable(onClick = onTap)
-            .padding(horizontal = 12.dp, vertical = 7.dp),
+            .padding(
+                horizontal = if (dense) 10.dp else 12.dp,
+                vertical = if (dense) 5.dp else 7.dp,
+            ),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(if (dense) 3.dp else 4.dp),
     ) {
         if (isActive) {
             Text(
                 text = label,
-                fontSize = 14.sp,
+                fontSize = if (dense) 12.sp else 14.sp,
                 fontWeight = FontWeight.Medium,
                 color = onPrimaryColor,
             )
             activeValue?.let {
                 Text(
                     text = it,
-                    fontSize = 13.sp,
+                    fontSize = if (dense) 11.sp else 13.sp,
                     color = onPrimaryColor.copy(alpha = 0.8f),
                 )
             }
             Box(
                 modifier = Modifier
-                    .size(16.dp)
+                    .size(if (dense) 14.dp else 16.dp)
                     .clip(CircleShape)
                     .clickable(onClick = onClear),
                 contentAlignment = Alignment.Center,
@@ -720,7 +727,7 @@ private fun FilterPill(
                 Icon(
                     Icons.Filled.Close,
                     contentDescription = "Limpiar",
-                    modifier = Modifier.size(10.dp),
+                    modifier = Modifier.size(if (dense) 9.dp else 10.dp),
                     tint = onPrimaryColor.copy(alpha = 0.7f),
                 )
             }
@@ -728,12 +735,12 @@ private fun FilterPill(
             Icon(
                 Icons.Filled.Add,
                 contentDescription = null,
-                modifier = Modifier.size(11.dp),
+                modifier = Modifier.size(if (dense) 10.dp else 11.dp),
                 tint = primaryColor,
             )
             Text(
                 text = label,
-                fontSize = 14.sp,
+                fontSize = if (dense) 12.sp else 14.sp,
                 fontWeight = FontWeight.Medium,
                 color = primaryColor,
             )

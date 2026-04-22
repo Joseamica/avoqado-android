@@ -28,7 +28,6 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.LocalOffer
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.ShoppingCart
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -37,11 +36,13 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -55,11 +56,12 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import android.widget.Toast
 import coil.compose.AsyncImage
+import com.avoqado.pos.designsystem.components.AvoqadoDialog
+import com.avoqado.pos.designsystem.components.AvoqadoPillTextField
 import com.avoqado.pos.designsystem.components.PrimaryButton
+import com.avoqado.pos.designsystem.theme.AvoqadoAdaptiveSizeClass
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.DiscountText
 import com.avoqado.pos.pos.data.model.CartItem
@@ -73,11 +75,14 @@ fun CartPanelView(
     onSaveCart: () -> Unit = {},
     onAddCustomAmount: () -> Unit = {},
     onRemoveItem: (String) -> Unit = {},
+    onApplyTaxPercent: (Int?) -> Unit = {},
     customerName: String? = null,
     onCustomerTap: () -> Unit = {},
     onSplitPayment: () -> Unit = {},
 ) {
-    val context = LocalContext.current
+    val useDenseTabletLayout = AvoqadoTheme.adaptive.sizeClass != AvoqadoAdaptiveSizeClass.Compact
+    val sectionOuterPadding = if (useDenseTabletLayout) AvoqadoTheme.spacing.md else AvoqadoTheme.spacing.lg
+    val sectionInnerPadding = if (useDenseTabletLayout) AvoqadoTheme.spacing.md else AvoqadoTheme.spacing.lg
     var showCartOptions by remember { mutableStateOf(false) }
     var showSectionMenu by remember { mutableStateOf(false) }
     var showTaxDialog by remember { mutableStateOf(false) }
@@ -94,6 +99,7 @@ fun CartPanelView(
                 hasItems = !cartState.isEmpty,
                 customerName = customerName,
                 onCustomerTap = onCustomerTap,
+                useDenseTabletLayout = useDenseTabletLayout,
                 onMenuTap = { showCartOptions = true },
             )
 
@@ -133,7 +139,7 @@ fun CartPanelView(
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(AvoqadoTheme.spacing.lg)
+                            .padding(sectionOuterPadding)
                             .border(
                                 width = 1.dp,
                                 color = MaterialTheme.colorScheme.outlineVariant,
@@ -146,16 +152,20 @@ fun CartPanelView(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(
-                                    horizontal = AvoqadoTheme.spacing.lg,
-                                    vertical = AvoqadoTheme.spacing.lg,
+                                    horizontal = sectionInnerPadding,
+                                    vertical = sectionInnerPadding,
                                 ),
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
                             Text(
                                 text = "En tienda",
-                                style = MaterialTheme.typography.titleSmall,
-                                fontWeight = FontWeight.SemiBold,
+                                style = if (useDenseTabletLayout) {
+                                    MaterialTheme.typography.bodyMedium
+                                } else {
+                                    MaterialTheme.typography.titleSmall
+                                },
+                                fontWeight = if (useDenseTabletLayout) FontWeight.Medium else FontWeight.SemiBold,
                             )
                             Box {
                                 Icon(
@@ -177,28 +187,54 @@ fun CartPanelView(
                                             showTaxDialog = true
                                         },
                                     )
+                                    DropdownMenuItem(
+                                        text = { Text("Dividir cuenta") },
+                                        leadingIcon = {
+                                            Icon(
+                                                Icons.AutoMirrored.Filled.CallSplit,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(18.dp),
+                                            )
+                                        },
+                                        onClick = {
+                                            showSectionMenu = false
+                                            onSplitPayment()
+                                        },
+                                    )
                                 }
                             }
                         }
 
                         // Cart items
                         cartState.items.forEach { item ->
-                            CartItemRow(
-                                item = item,
-                                onClick = { onItemTap(item) },
-                            )
+                            key(item.id) {
+                                CartItemRow(
+                                    item = item,
+                                    onClick = { onItemTap(item) },
+                                    onDelete = { onRemoveItem(item.id) },
+                                    useDenseTabletLayout = useDenseTabletLayout,
+                                )
+                            }
                         }
 
                         // "Agregar impuesto" link
                         Text(
-                            text = "Agregar impuesto",
-                            style = MaterialTheme.typography.bodyMedium,
+                            text = if (cartState.orderTaxPercent != null) {
+                                "Impuesto (${cartState.orderTaxPercent}%)"
+                            } else {
+                                "Agregar impuesto"
+                            },
+                            style = if (useDenseTabletLayout) {
+                                MaterialTheme.typography.bodySmall
+                            } else {
+                                MaterialTheme.typography.bodyMedium
+                            },
                             color = MaterialTheme.colorScheme.onSurface,
                             modifier = Modifier
                                 .clickable { showTaxDialog = true }
                                 .padding(
-                                    horizontal = AvoqadoTheme.spacing.lg,
-                                    vertical = AvoqadoTheme.spacing.lg,
+                                    horizontal = sectionInnerPadding,
+                                    vertical = sectionInnerPadding,
                                 ),
                         )
                     }
@@ -209,38 +245,21 @@ fun CartPanelView(
                             name = cartState.orderDiscount.name,
                             displayValue = cartState.orderDiscount.displayValue,
                             amount = "-${cartState.discountDisplay}",
+                            useDenseTabletLayout = useDenseTabletLayout,
+                        )
+                    }
+
+                    if (cartState.orderTaxPercent != null) {
+                        SummaryAmountRow(
+                            name = "IVA (${cartState.orderTaxPercent}%)",
+                            amount = cartState.taxDisplay,
+                            useDenseTabletLayout = useDenseTabletLayout,
                         )
                     }
                 }
 
                 // Bottom action buttons
                 HorizontalDivider()
-
-                // "Dividir cuenta" row
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = AvoqadoTheme.spacing.xl)
-                        .padding(top = AvoqadoTheme.spacing.sm),
-                    horizontalArrangement = Arrangement.Center,
-                ) {
-                    OutlinedButton(
-                        onClick = onSplitPayment,
-                        modifier = Modifier.height(AvoqadoTheme.dimensions.buttonMedium),
-                        shape = RoundedCornerShape(50),
-                    ) {
-                        Icon(
-                            Icons.AutoMirrored.Filled.CallSplit,
-                            contentDescription = null,
-                            modifier = Modifier.size(16.dp),
-                        )
-                        Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.xxs))
-                        Text(
-                            text = "Dividir cuenta",
-                            style = MaterialTheme.typography.bodyMedium,
-                        )
-                    }
-                }
 
                 Row(
                     modifier = Modifier
@@ -259,13 +278,17 @@ fun CartPanelView(
                     ) {
                         Text(
                             text = "Guardar carrito",
-                            style = MaterialTheme.typography.titleSmall,
+                            style = if (useDenseTabletLayout) {
+                                MaterialTheme.typography.bodyMedium
+                            } else {
+                                MaterialTheme.typography.titleSmall
+                            },
                         )
                     }
 
                     // "Cobrar" button (filled)
                     PrimaryButton(
-                        text = "Cobrar ${if (cartState.discountCents > 0) cartState.totalDisplay else cartState.subtotalDisplay}",
+                        text = "Cobrar ${cartState.totalDisplay}",
                         onClick = onCharge,
                         modifier = Modifier.weight(1f),
                     )
@@ -275,64 +298,78 @@ fun CartPanelView(
 
         // Tax dialog
         if (showTaxDialog) {
-            var taxPercent by remember { mutableStateOf("16") }
-            AlertDialog(
-                onDismissRequest = { showTaxDialog = false },
-                title = { Text("Agregar impuesto") },
-                text = {
-                    Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md)) {
-                        Text(
-                            text = "Selecciona o ingresa el porcentaje de impuesto",
-                            style = MaterialTheme.typography.bodyMedium,
-                        )
-                        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
-                            listOf("8", "16").forEach { pct ->
-                                val isSelected = taxPercent == pct
-                                Box(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
-                                        .background(
-                                            if (isSelected) MaterialTheme.colorScheme.primary
-                                            else MaterialTheme.colorScheme.surfaceVariant,
-                                        )
-                                        .clickable { taxPercent = pct }
-                                        .padding(
-                                            horizontal = AvoqadoTheme.spacing.lg,
-                                            vertical = AvoqadoTheme.spacing.md,
-                                        ),
-                                ) {
-                                    Text(
-                                        text = "$pct%",
-                                        color = if (isSelected) MaterialTheme.colorScheme.onPrimary
-                                        else MaterialTheme.colorScheme.onSurfaceVariant,
-                                        fontWeight = FontWeight.SemiBold,
+            var taxPercent by remember {
+                mutableStateOf((cartState.orderTaxPercent ?: 16).toString())
+            }
+            var taxError by remember { mutableStateOf<String?>(null) }
+            AvoqadoDialog(
+                title = "Agregar impuesto",
+                description = "Selecciona o ingresa el porcentaje de impuesto",
+                onDismiss = { showTaxDialog = false },
+                actionButton = {
+                    PrimaryButton(
+                        text = "Aplicar",
+                        onClick = {
+                            val parsed = taxPercent.toIntOrNull()
+                            if (parsed == null || parsed !in 0..100) {
+                                taxError = "Ingresa un porcentaje válido (0-100)"
+                                return@PrimaryButton
+                            }
+                            onApplyTaxPercent(parsed.takeIf { it > 0 })
+                            showTaxDialog = false
+                        },
+                        fullWidth = true,
+                    )
+                },
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md)) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                        listOf("8", "16").forEach { pct ->
+                            val isSelected = taxPercent == pct
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
+                                    .background(
+                                        if (isSelected) MaterialTheme.colorScheme.primary
+                                        else MaterialTheme.colorScheme.surfaceVariant,
                                     )
-                                }
+                                    .clickable {
+                                        taxPercent = pct
+                                        taxError = null
+                                    }
+                                    .padding(
+                                        horizontal = AvoqadoTheme.spacing.lg,
+                                        vertical = AvoqadoTheme.spacing.md,
+                                    ),
+                            ) {
+                                Text(
+                                    text = "$pct%",
+                                    color = if (isSelected) MaterialTheme.colorScheme.onPrimary
+                                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    fontWeight = FontWeight.SemiBold,
+                                )
                             }
                         }
-                        OutlinedTextField(
-                            value = taxPercent,
-                            onValueChange = { taxPercent = it },
-                            label = { Text("Porcentaje (%)") },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true,
+                    }
+
+                    AvoqadoPillTextField(
+                        value = taxPercent,
+                        onValueChange = { input ->
+                            taxPercent = input.filter { it.isDigit() }.take(3)
+                            taxError = null
+                        },
+                        placeholder = "Porcentaje (%)",
+                    )
+
+                    taxError?.let { message ->
+                        Text(
+                            text = message,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
                         )
                     }
-                },
-                confirmButton = {
-                    TextButton(onClick = {
-                        showTaxDialog = false
-                        Toast.makeText(context, "Proximamente", Toast.LENGTH_SHORT).show()
-                    }) {
-                        Text("Aplicar")
-                    }
-                },
-                dismissButton = {
-                    TextButton(onClick = { showTaxDialog = false }) {
-                        Text("Cancelar")
-                    }
-                },
-            )
+                }
+            }
         }
 
         // Cart options overlay
@@ -361,19 +398,27 @@ private fun CustomerHeader(
     hasItems: Boolean,
     customerName: String? = null,
     onCustomerTap: () -> Unit,
+    useDenseTabletLayout: Boolean = false,
     onMenuTap: () -> Unit,
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = AvoqadoTheme.spacing.xl, vertical = AvoqadoTheme.spacing.lg),
+            .padding(
+                horizontal = AvoqadoTheme.spacing.xl,
+                vertical = if (useDenseTabletLayout) AvoqadoTheme.spacing.md else AvoqadoTheme.spacing.lg,
+            ),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(modifier = Modifier.weight(1f)) {
             // "Agregar cliente" underlined link or customer name (matching iOS)
             Text(
                 text = customerName ?: "Agregar cliente",
-                style = MaterialTheme.typography.titleMedium,
+                style = if (useDenseTabletLayout) {
+                    MaterialTheme.typography.titleSmall
+                } else {
+                    MaterialTheme.typography.titleMedium
+                },
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurface,
                 textDecoration = if (customerName == null) TextDecoration.Underline else null,
@@ -382,7 +427,11 @@ private fun CustomerHeader(
             if (hasItems) {
                 Text(
                     text = "$itemCount articulo${if (itemCount == 1) "" else "s"}",
-                    style = MaterialTheme.typography.bodyMedium,
+                    style = if (useDenseTabletLayout) {
+                        MaterialTheme.typography.bodySmall
+                    } else {
+                        MaterialTheme.typography.bodyMedium
+                    },
                     color = MaterialTheme.colorScheme.onSurface,
                 )
             }
@@ -391,7 +440,7 @@ private fun CustomerHeader(
         // Three dots menu button (matching iOS: circle with gray bg)
         Box(
             modifier = Modifier
-                .size(44.dp)
+                .size(if (useDenseTabletLayout) 40.dp else 44.dp)
                 .clip(CircleShape)
                 .background(MaterialTheme.colorScheme.surfaceVariant)
                 .clickable(onClick = onMenuTap),
@@ -408,16 +457,55 @@ private fun CustomerHeader(
 
 // MARK: - Cart Item Row (matching iOS: 60dp thumbnail, image, indicators, strikethrough)
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun CartItemRow(
     item: CartItem,
     onClick: () -> Unit,
+    onDelete: () -> Unit,
+    useDenseTabletLayout: Boolean = false,
 ) {
+    val dismissState = rememberSwipeToDismissBoxState(
+        confirmValueChange = { value ->
+            if (value == SwipeToDismissBoxValue.EndToStart) {
+                onDelete()
+                true
+            } else {
+                false
+            }
+        },
+    )
+    SwipeToDismissBox(
+        state = dismissState,
+        enableDismissFromStartToEnd = false,
+        enableDismissFromEndToStart = true,
+        backgroundContent = {
+            val progress = dismissState.progress.coerceIn(0f, 1f)
+            val bgAlpha = (progress * 1.4f).coerceIn(0.25f, 1f)
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color(0xFFE53935).copy(alpha = bgAlpha))
+                    .padding(horizontal = AvoqadoTheme.spacing.xl),
+                contentAlignment = Alignment.CenterEnd,
+            ) {
+                Icon(
+                    Icons.Filled.Delete,
+                    contentDescription = "Eliminar",
+                    tint = Color.White,
+                )
+            }
+        },
+    ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surface)
             .clickable(onClick = onClick)
-            .padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.md),
+            .padding(
+                horizontal = AvoqadoTheme.spacing.lg,
+                vertical = if (useDenseTabletLayout) AvoqadoTheme.spacing.sm else AvoqadoTheme.spacing.md,
+            ),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         // Product thumbnail (60dp matching iOS, with image or color bg + initials)
@@ -436,7 +524,7 @@ private fun CartItemRow(
 
         Box(
             modifier = Modifier
-                .size(60.dp)
+                .size(if (useDenseTabletLayout) 52.dp else 60.dp)
                 .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md)),
         ) {
             if (!item.imageUrl.isNullOrEmpty()) {
@@ -486,7 +574,11 @@ private fun CartItemRow(
             ) {
                 Text(
                     text = item.name,
-                    style = MaterialTheme.typography.titleSmall,
+                    style = if (useDenseTabletLayout) {
+                        MaterialTheme.typography.bodySmall
+                    } else {
+                        MaterialTheme.typography.titleSmall
+                    },
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f, fill = false),
@@ -553,7 +645,11 @@ private fun CartItemRow(
         if (item.quantity > 1) {
             Text(
                 text = "\u00D7 ${item.quantity}",
-                style = MaterialTheme.typography.bodyMedium,
+                style = if (useDenseTabletLayout) {
+                    MaterialTheme.typography.bodySmall
+                } else {
+                    MaterialTheme.typography.bodyMedium
+                },
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(horizontal = AvoqadoTheme.spacing.sm),
             )
@@ -563,7 +659,11 @@ private fun CartItemRow(
         Column(horizontalAlignment = Alignment.End) {
             Text(
                 text = "$${String.format("%.2f", item.totalPrice / 100.0)}",
-                style = MaterialTheme.typography.bodyMedium,
+                style = if (useDenseTabletLayout) {
+                    MaterialTheme.typography.bodySmall
+                } else {
+                    MaterialTheme.typography.bodyMedium
+                },
                 color = if (item.isCortesia) Color(0xFF34C759)
                 else MaterialTheme.colorScheme.onSurface,
                 textDecoration = if (item.isCortesia) TextDecoration.LineThrough else null,
@@ -578,6 +678,7 @@ private fun CartItemRow(
             }
         }
     }
+    }
 }
 
 // MARK: - Discount Item Row (matching iOS: icon box + info + amount)
@@ -587,18 +688,22 @@ private fun DiscountItemRow(
     name: String,
     displayValue: String,
     amount: String,
+    useDenseTabletLayout: Boolean = false,
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = AvoqadoTheme.spacing.xl, vertical = AvoqadoTheme.spacing.md),
+            .padding(
+                horizontal = AvoqadoTheme.spacing.xl,
+                vertical = if (useDenseTabletLayout) AvoqadoTheme.spacing.sm else AvoqadoTheme.spacing.md,
+            ),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
     ) {
         // Icon box (matching iOS: gray rounded rect with tag icon)
         Box(
             modifier = Modifier
-                .size(48.dp)
+                .size(if (useDenseTabletLayout) 44.dp else 48.dp)
                 .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
                 .background(MaterialTheme.colorScheme.outlineVariant),
             contentAlignment = Alignment.Center,
@@ -607,7 +712,7 @@ private fun DiscountItemRow(
                 Icons.Filled.LocalOffer,
                 contentDescription = null,
                 tint = Color.White,
-                modifier = Modifier.size(20.dp),
+                modifier = Modifier.size(if (useDenseTabletLayout) 18.dp else 20.dp),
             )
         }
 
@@ -615,7 +720,11 @@ private fun DiscountItemRow(
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = "$name ($displayValue)",
-                style = MaterialTheme.typography.bodyMedium,
+                style = if (useDenseTabletLayout) {
+                    MaterialTheme.typography.bodySmall
+                } else {
+                    MaterialTheme.typography.bodyMedium
+                },
                 color = MaterialTheme.colorScheme.onSurface,
             )
         }
@@ -623,8 +732,49 @@ private fun DiscountItemRow(
         // Discount amount
         Text(
             text = amount,
-            style = MaterialTheme.typography.bodyMedium,
+            style = if (useDenseTabletLayout) {
+                MaterialTheme.typography.bodySmall
+            } else {
+                MaterialTheme.typography.bodyMedium
+            },
             color = DiscountText,
+        )
+    }
+}
+
+@Composable
+private fun SummaryAmountRow(
+    name: String,
+    amount: String,
+    useDenseTabletLayout: Boolean = false,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(
+                horizontal = AvoqadoTheme.spacing.xl,
+                vertical = if (useDenseTabletLayout) AvoqadoTheme.spacing.xs else AvoqadoTheme.spacing.sm,
+            ),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = name,
+            style = if (useDenseTabletLayout) {
+                MaterialTheme.typography.bodySmall
+            } else {
+                MaterialTheme.typography.bodyMedium
+            },
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            text = amount,
+            style = if (useDenseTabletLayout) {
+                MaterialTheme.typography.bodySmall
+            } else {
+                MaterialTheme.typography.bodyMedium
+            },
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
 }

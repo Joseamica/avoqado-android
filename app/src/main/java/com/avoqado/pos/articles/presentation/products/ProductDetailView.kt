@@ -30,12 +30,10 @@ import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -55,6 +53,7 @@ import com.avoqado.pos.articles.data.model.MeasurementUnit
 import com.avoqado.pos.articles.data.model.PriceType
 import com.avoqado.pos.articles.data.model.ProductType
 import com.avoqado.pos.articles.presentation.ArticlesViewModel
+import com.avoqado.pos.designsystem.components.AvoqadoFullScreenModal
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Success
 
@@ -143,39 +142,17 @@ fun ProductDetailView(
         onDismiss()
     }
 
-    Scaffold(
-        topBar = {
-            CenterAlignedTopAppBar(
-                title = {
-                    Text(
-                        text = if (product == null) "Nuevo articulo" else "Editar articulo",
-                        style = MaterialTheme.typography.titleMedium,
-                    )
-                },
-                navigationIcon = {
-                    TextButton(onClick = onDismiss) {
-                        Text("Cancelar")
-                    }
-                },
-                actions = {
-                    TextButton(
-                        onClick = { onSave() },
-                        enabled = name.isNotBlank() && !isSaving,
-                    ) {
-                        Text(if (product == null) "Crear" else "Guardar")
-                    }
-                },
-                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surface,
-                ),
-            )
-        },
-    ) { innerPadding ->
+    AvoqadoFullScreenModal(
+        title = if (product == null) "Nuevo articulo" else "Editar articulo",
+        onDismiss = onDismiss,
+        primaryActionText = if (product == null) "Crear" else "Guardar",
+        onPrimaryAction = { onSave() },
+        primaryActionEnabled = name.isNotBlank() && !isSaving,
+    ) {
         LazyColumn(
             modifier = Modifier
                 .fillMaxSize()
                 .background(MaterialTheme.colorScheme.surfaceVariant)
-                .padding(innerPadding)
                 .padding(AvoqadoTheme.spacing.lg),
             verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.lg),
         ) {

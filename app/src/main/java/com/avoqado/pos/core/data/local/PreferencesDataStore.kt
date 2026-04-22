@@ -35,6 +35,13 @@ class PreferencesDataStore @Inject constructor(
     fun getBoolean(key: String, default: Boolean = false): Flow<Boolean> =
         dataStore.data.map { it[booleanPreferencesKey(key)] ?: default }
 
+    fun getBooleanOrNull(key: String): Flow<Boolean?> =
+        dataStore.data.map { it[booleanPreferencesKey(key)] }
+
+    suspend fun remove(key: String) {
+        dataStore.edit { it.remove(booleanPreferencesKey(key)) }
+    }
+
     suspend fun clear() {
         dataStore.edit { it.clear() }
     }

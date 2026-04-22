@@ -6,10 +6,20 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.util.Log
+import com.avoqado.pos.core.data.network.ApiConstants
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import java.net.HttpURLConnection
+import java.net.URL
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -19,6 +29,9 @@ class ConnectivityMonitor @Inject constructor(
 ) {
     private val connectivityManager =
         context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var retryJob: Job? = null
 
     private val _isConnected = MutableStateFlow(checkCurrentConnectivity())
     val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
@@ -41,6 +54,11 @@ class ConnectivityMonitor @Inject constructor(
                 _isConnected.value = true
                 if (wasDisconnected) {
                     Log.d("📡", "Network reconnected")
+                    // If server was marked down while offline, ping immediately
+                    // to confirm recovery instead of waiting for the 10s retry tick
+                    if (!_isServerReachable.value) {
+                        scope.launch { pingServer() }
+                    }
                 }
             }
 
@@ -54,7 +72,8 @@ class ConnectivityMonitor @Inject constructor(
     fun reportServerError() {
         if (_isServerReachable.value) {
             _isServerReachable.value = false
-            Log.d("📡", "Server marked unreachable")
+            Log.d("📡", "Server marked unreachable — starting retry pings")
+            startRetryTimer()
         }
     }
 
@@ -62,6 +81,51 @@ class ConnectivityMonitor @Inject constructor(
         if (!_isServerReachable.value) {
             _isServerReachable.value = true
             Log.d("📡", "Server marked reachable")
+            stopRetryTimer()
+        }
+    }
+
+    private fun startRetryTimer() {
+        retryJob?.cancel()
+        retryJob = scope.launch {
+            while (isActive) {
+                delay(RETRY_INTERVAL_MS)
+                if (_isConnected.value) {
+                    pingServer()
+                }
+            }
+        }
+    }
+
+    private fun stopRetryTimer() {
+        retryJob?.cancel()
+        retryJob = null
+    }
+
+    private fun pingServer() {
+        if (!_isConnected.value) return
+        var connection: HttpURLConnection? = null
+        try {
+            val url = URL(ApiConstants.BASE_URL)
+            connection = (url.openConnection() as HttpURLConnection).apply {
+                requestMethod = "HEAD"
+                connectTimeout = PING_TIMEOUT_MS
+                readTimeout = PING_TIMEOUT_MS
+                instanceFollowRedirects = true
+            }
+            val code = connection.responseCode
+            val ngrokError = connection.getHeaderField("ngrok-error-code")
+            // Matches iOS: any 200–499 means the server (or its proxy) is answering.
+            // 5xx and ngrok edge errors (tunnel offline) are still treated as down.
+            if (code in 200..499 && ngrokError == null) {
+                reportServerSuccess()
+            } else {
+                Log.d("📡", "Ping got $code (ngrok=$ngrokError) — server still down")
+            }
+        } catch (e: Exception) {
+            Log.d("📡", "Ping failed: ${e.message}")
+        } finally {
+            connection?.disconnect()
         }
     }
 
@@ -69,5 +133,10 @@ class ConnectivityMonitor @Inject constructor(
         val network = connectivityManager.activeNetwork ?: return false
         val capabilities = connectivityManager.getNetworkCapabilities(network) ?: return false
         return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+    }
+
+    companion object {
+        private const val RETRY_INTERVAL_MS = 10_000L
+        private const val PING_TIMEOUT_MS = 5_000
     }
 }

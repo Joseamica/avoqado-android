@@ -5,12 +5,13 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
+import androidx.compose.material3.windowsizeclass.WindowSizeClass
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 
 private val LightColorScheme = lightColorScheme(
@@ -74,6 +75,7 @@ private val DarkColorScheme = darkColorScheme(
 @Composable
 fun AvoqadoTheme(
     darkTheme: Boolean = isSystemInDarkTheme(),
+    windowSizeClass: WindowSizeClass? = null,
     content: @Composable () -> Unit,
 ) {
     val colorScheme = if (darkTheme) DarkColorScheme else LightColorScheme
@@ -88,32 +90,54 @@ fun AvoqadoTheme(
         }
     }
 
-    val screenWidth = LocalConfiguration.current.screenWidthDp
-    val isCompactScreen = screenWidth < 600
-
-    val dimensions = if (isCompactScreen) {
-        AvoqadoDimensions(
-            buttonSmall = 32.dp,
-            buttonMedium = 40.dp,
-            buttonLarge = 44.dp,
-            iconSmall = 14.dp,
-            iconMedium = 18.dp,
-            iconLarge = 22.dp,
-            iconXLarge = 36.dp,
-            touchTarget = 40.dp,
+    val configuration = LocalConfiguration.current
+    val screenWidth = configuration.screenWidthDp
+    val screenHeight = configuration.screenHeightDp
+    val smallestScreenWidth = configuration.smallestScreenWidthDp
+    val densityDpi = configuration.densityDpi
+    val adaptiveSizeClass = remember(windowSizeClass, screenWidth) {
+        resolveAdaptiveSizeClass(
+            windowSizeClass = windowSizeClass,
+            screenWidthDp = screenWidth,
         )
-    } else {
-        AvoqadoDimensions()
+    }
+    val dimensions = remember(adaptiveSizeClass, screenWidth, screenHeight, smallestScreenWidth, densityDpi) {
+        adaptiveDimensionsFor(
+            sizeClass = adaptiveSizeClass,
+            screenWidthDp = screenWidth,
+            screenHeightDp = screenHeight,
+            smallestScreenWidthDp = smallestScreenWidth,
+            densityDpi = densityDpi,
+        )
+    }
+    val adaptiveTokens = remember(adaptiveSizeClass, screenWidth, screenHeight, smallestScreenWidth, densityDpi) {
+        adaptiveTokensFor(
+            sizeClass = adaptiveSizeClass,
+            screenWidthDp = screenWidth,
+            screenHeightDp = screenHeight,
+            smallestScreenWidthDp = smallestScreenWidth,
+            densityDpi = densityDpi,
+        )
+    }
+    val typography = remember(adaptiveSizeClass, screenWidth, screenHeight, smallestScreenWidth, densityDpi) {
+        adaptiveTypographyFor(
+            sizeClass = adaptiveSizeClass,
+            screenWidthDp = screenWidth,
+            screenHeightDp = screenHeight,
+            smallestScreenWidthDp = smallestScreenWidth,
+            densityDpi = densityDpi,
+        )
     }
 
     CompositionLocalProvider(
         LocalSpacing provides AvoqadoSpacing(),
         LocalCornerRadius provides AvoqadoCornerRadius(),
         LocalDimensions provides dimensions,
+        LocalAdaptiveTokens provides adaptiveTokens,
     ) {
         MaterialTheme(
             colorScheme = colorScheme,
-            typography = AvoqadoTypography,
+            typography = typography,
             shapes = AvoqadoShapes,
             content = content,
         )
@@ -130,4 +154,7 @@ object AvoqadoTheme {
 
     val dimensions: AvoqadoDimensions
         @Composable get() = LocalDimensions.current
+
+    val adaptive: AvoqadoAdaptiveTokens
+        @Composable get() = LocalAdaptiveTokens.current
 }

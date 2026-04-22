@@ -55,6 +55,16 @@ class ArticlesViewModel @Inject constructor(
     private val _isSaving = MutableStateFlow(false)
     val isSaving: StateFlow<Boolean> = _isSaving.asStateFlow()
 
+    /**
+     * Emits a user-facing success message after a mutation completes.
+     * UI layers show `AvoqadoSuccessToast` and call [clearLastSaveSuccess] when
+     * the toast auto-dismisses so the next mutation can re-emit cleanly.
+     */
+    private val _lastSaveSuccess = MutableStateFlow<String?>(null)
+    val lastSaveSuccess: StateFlow<String?> = _lastSaveSuccess.asStateFlow()
+
+    fun clearLastSaveSuccess() { _lastSaveSuccess.value = null }
+
     private val _rawMaterialResults = MutableStateFlow<List<RawMaterial>>(emptyList())
     val rawMaterialResults: StateFlow<List<RawMaterial>> = _rawMaterialResults.asStateFlow()
 
@@ -171,6 +181,7 @@ class ArticlesViewModel @Inject constructor(
                 }.toString()
                 val success = repository.createProduct(payload)
                 Log.d(TAG, if (success) "✅ Product created" else "❌ Product creation failed")
+                if (success) _lastSaveSuccess.value = "¡Artículo creado!"
             } finally {
                 _isSaving.value = false
             }
@@ -215,6 +226,7 @@ class ArticlesViewModel @Inject constructor(
                 }.toString()
                 val success = repository.updateProduct(productId, payload)
                 Log.d(TAG, if (success) "✅ Product $productId updated" else "❌ Product update failed")
+                if (success) _lastSaveSuccess.value = "¡Artículo actualizado!"
             } finally {
                 _isSaving.value = false
             }
@@ -223,7 +235,8 @@ class ArticlesViewModel @Inject constructor(
 
     fun deleteProduct(productId: String) {
         viewModelScope.launch {
-            repository.deleteProduct(productId)
+            val success = repository.deleteProduct(productId)
+            if (success) _lastSaveSuccess.value = "¡Artículo eliminado!"
         }
     }
 

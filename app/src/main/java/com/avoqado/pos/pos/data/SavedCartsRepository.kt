@@ -47,6 +47,11 @@ class SavedCartsRepository @Inject constructor(
         persistCarts()
     }
 
+    fun clearCache() {
+        _savedCarts.value = emptyList()
+        prefs.edit().clear().apply()
+    }
+
     private fun persistCarts() {
         prefs.edit().putString("carts", json.encodeToString(_savedCarts.value)).apply()
     }

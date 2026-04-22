@@ -1,5 +1,6 @@
 package com.avoqado.pos.pos.presentation.product
 
+import android.os.SystemClock
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.slideInHorizontally
@@ -45,6 +46,7 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -144,8 +146,10 @@ private fun ProductDetailContent(
     onAddToCart: (Int, List<SelectedModifier>, String?, Boolean, String?, Int?) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val addToCartTapThrottleMs = 800L
     val selectedModifiers = remember { mutableStateListOf<SelectedModifier>() }
     var quantity by remember { mutableIntStateOf(1) }
+    var lastAddToCartTapAt by remember { mutableLongStateOf(0L) }
     var note by remember { mutableStateOf<String?>(null) }
     var priceAdjustment by remember { mutableStateOf<Int?>(null) }
     var isCortesia by remember { mutableStateOf(false) }
@@ -213,6 +217,11 @@ private fun ProductDetailContent(
                         },
                         onNavigate = { currentSubView = it },
                         onAddToCart = {
+                            val now = SystemClock.elapsedRealtime()
+                            if (now - lastAddToCartTapAt < addToCartTapThrottleMs) {
+                                return@MainDetailView
+                            }
+                            lastAddToCartTapAt = now
                             onAddToCart(
                                 quantity,
                                 selectedModifiers.toList(),

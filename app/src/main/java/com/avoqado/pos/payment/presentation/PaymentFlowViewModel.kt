@@ -18,9 +18,12 @@ import com.avoqado.pos.payment.data.TerminalPaymentService
 import com.avoqado.pos.payment.data.model.CreateOrderRequest
 import com.avoqado.pos.payment.data.model.OrderItemRequest
 import com.avoqado.pos.payment.data.model.OrderModifierRequest
+import com.avoqado.pos.payment.data.model.PaymentContext
 import com.avoqado.pos.payment.data.model.PaymentErrorSource
 import com.avoqado.pos.payment.data.model.PaymentFlowState
+import com.avoqado.pos.payment.data.model.PaymentItem
 import com.avoqado.pos.payment.data.model.PaymentMethod
+import com.avoqado.pos.pos.data.model.CartItemType
 import com.avoqado.pos.pos.presentation.cart.CartState
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.printing.data.PrinterService
@@ -36,6 +39,12 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+
+data class PaymentCompletion(
+    val splitType: String,
+    val remainingBalanceCents: Int,
+    val paidItemIds: Set<String> = emptySet(),
+)
 
 @HiltViewModel
 class PaymentFlowViewModel @Inject constructor(
@@ -64,6 +73,8 @@ class PaymentFlowViewModel @Inject constructor(
     private var createdOrderId: String? = null
     private var selectedTerminalId: String? = null
     private var lastPaymentId: String? = null
+    private var lastReceiptAccessKey: String? = null
+    private var lastCashTenderedCents: Int? = null
     private var splitSelectedItemIds: Set<String> = emptySet()
     private var splitNumberOfParts: Int? = null
     private var splitCustomAmountCents: Int? = null
@@ -159,6 +170,17 @@ class PaymentFlowViewModel @Inject constructor(
         splitBaseAmountOverride = resolveSplitBaseAmount(cart)
         val amount = currentBaseAmount()
 
+        // Reset transient state from any previous session.
+        selectedMethod = null
+        currentRating = null
+        currentTipCents = 0
+        createdOrderId = null
+        selectedTerminalId = null
+        lastPaymentId = null
+        lastReceiptAccessKey = null
+        lastCashTenderedCents = null
+        _onlineTerminals.value = emptyList()
+
         // Clear receipt sending state from previous payment
         _whatsAppResult.value = null
         _whatsAppSending.value = false
@@ -198,6 +220,10 @@ class PaymentFlowViewModel @Inject constructor(
         _state.value = PaymentFlowState.SelectingPaymentMethod(amount + tipCents)
     }
 
+    fun currentTipPercentageBaseCents(): Int {
+        return computeTipPercentageBaseAmount(currentBaseAmount())
+    }
+
     fun selectPaymentMethod(method: PaymentMethod) {
         selectedMethod = method
         val baseAmount = currentBaseAmount()
@@ -218,12 +244,14 @@ class PaymentFlowViewModel @Inject constructor(
     /** Cash preset tapped directly from payment method screen (iOS-style direct confirm) */
     fun confirmCashPreset(tenderedCents: Int) {
         selectedMethod = PaymentMethod.CASH
+        lastCashTenderedCents = tenderedCents
         processCashPayment(tenderedCents)
     }
 
     /** Custom cash amount confirmed from bottom sheet keypad */
     fun confirmCashCustom(tenderedCents: Int) {
         selectedMethod = PaymentMethod.CASH
+        lastCashTenderedCents = tenderedCents
         processCashPayment(tenderedCents)
     }
 
@@ -261,62 +289,72 @@ class PaymentFlowViewModel @Inject constructor(
 
         viewModelScope.launch {
             try {
-                // Check if cart has real products (not just custom amounts from keypad)
-                val hasRealProducts = cart.items.any {
-                    it.type is com.avoqado.pos.pos.data.model.CartItemType.ProductItem
-                }
+                val hasRealProducts = hasProductItems(cart)
 
                 if (hasRealProducts) {
-                    // Create order on server for real products
-                    val orderRequest = buildOrderRequest(cart)
-                    val orderResult = orderRepository.createOrder(orderRequest)
+                    if (createdOrderId == null) {
+                        // Create order only once per payment session.
+                        val orderRequest = buildOrderRequest(cart)
+                        val orderResult = orderRepository.createOrder(orderRequest)
 
-                    orderResult.fold(
-                        onSuccess = { response ->
-                            createdOrderId = response.data?.id
-                            processPaymentMethod(total, orderRequest = null, cashTenderedCents = null)
-                        },
-                        onFailure = { error ->
-                            // For CASH payments: queue offline if network/server error
-                            if (selectedMethod == PaymentMethod.CASH) {
-                                val isQueueable = OrderRepository.isQueueableError(error) ||
-                                    (error is OrderRepository.ServerException && OrderRepository.isQueueableHttpCode(error.code))
+                        orderResult.fold(
+                            onSuccess = { response ->
+                                val orderId = response.data?.id
+                                if (orderId.isNullOrBlank()) {
+                                    _state.value = PaymentFlowState.Error(
+                                        message = "No se pudo obtener la orden creada",
+                                        source = PaymentErrorSource.SERVER,
+                                    )
+                                    return@fold
+                                }
+                                createdOrderId = orderId
+                                processPaymentMethod(total)
+                            },
+                            onFailure = { error ->
+                                // For CASH payments: queue offline if network/server error
+                                if (selectedMethod == PaymentMethod.CASH) {
+                                    val isQueueable = OrderRepository.isQueueableError(error) ||
+                                        (error is OrderRepository.ServerException && OrderRepository.isQueueableHttpCode(error.code))
 
-                                if (isQueueable) {
-                                    cashPaymentRepository.queueCashPayment(
-                                        orderRequest = orderRequest,
-                                        cashTenderedCents = null,
-                                        changeCents = null,
-                                        rating = currentRating,
-                                        orderId = null,
-                                    )
-                                    // Record cash sale in drawer (defensive: same fix as B4)
-                                    recordCashSale(total, null)
-                                    _state.value = PaymentFlowState.Success(
-                                        totalAmount = total,
-                                        method = PaymentMethod.CASH,
-                                        changeAmount = 0,
-                                        isQueued = true,
-                                    )
-                                    createKDSOrderAndPrint(PaymentMethod.CASH)
+                                    if (isQueueable) {
+                                        cashPaymentRepository.queueCashPayment(
+                                            orderRequest = orderRequest,
+                                            cashTenderedCents = null,
+                                            changeCents = null,
+                                            rating = currentRating,
+                                            orderId = null,
+                                        )
+                                        // Record cash sale in drawer (defensive: same fix as B4)
+                                        recordCashSale(total, null)
+                                        _state.value = PaymentFlowState.Success(
+                                            totalAmount = total,
+                                            method = PaymentMethod.CASH,
+                                            changeAmount = 0,
+                                            isQueued = true,
+                                        )
+                                        createKDSOrderAndPrint(PaymentMethod.CASH)
+                                    } else {
+                                        _state.value = PaymentFlowState.Error(
+                                            message = error.message ?: "Error al crear la orden",
+                                            source = PaymentErrorSource.SERVER,
+                                        )
+                                    }
                                 } else {
                                     _state.value = PaymentFlowState.Error(
                                         message = error.message ?: "Error al crear la orden",
                                         source = PaymentErrorSource.SERVER,
                                     )
                                 }
-                            } else {
-                                _state.value = PaymentFlowState.Error(
-                                    message = error.message ?: "Error al crear la orden",
-                                    source = PaymentErrorSource.SERVER,
-                                )
-                            }
-                        },
-                    )
+                            },
+                        )
+                    } else {
+                        // Retry card flow: reuse existing order instead of creating a new one.
+                        processPaymentMethod(total)
+                    }
                 } else {
                     // Custom amount only — use Fast Payment endpoint
                     Log.d("💰", "Custom amount payment (fast) - total: $total")
-                    processPaymentMethod(total, orderRequest = null, cashTenderedCents = null)
+                    processPaymentMethod(total)
                 }
             } catch (e: Exception) {
                 Log.e("💰", "Payment error: ${e.message}")
@@ -328,11 +366,7 @@ class PaymentFlowViewModel @Inject constructor(
         }
     }
 
-    private suspend fun processPaymentMethod(
-        total: Int,
-        orderRequest: CreateOrderRequest?,
-        cashTenderedCents: Int?,
-    ) {
+    private suspend fun processPaymentMethod(total: Int) {
         when (selectedMethod) {
             PaymentMethod.CARD -> {
                 val terminalId = selectedTerminalId
@@ -354,9 +388,13 @@ class PaymentFlowViewModel @Inject constructor(
                 )
                 when (terminalResult) {
                     is TerminalPaymentResult.Success -> {
+                        lastPaymentId = terminalResult.paymentId
+                        lastReceiptAccessKey = terminalResult.receiptAccessKey
                         _state.value = PaymentFlowState.Success(
                             totalAmount = total,
                             method = PaymentMethod.CARD,
+                            paymentId = terminalResult.paymentId,
+                            receiptAccessKey = terminalResult.receiptAccessKey,
                         )
                         createKDSOrderAndPrint(PaymentMethod.CARD)
                     }
@@ -441,6 +479,7 @@ class PaymentFlowViewModel @Inject constructor(
     }
 
     fun processCashPayment(cashReceivedCents: Int) {
+        lastCashTenderedCents = cashReceivedCents
         val total = currentBaseAmount() + currentTipCents
 
         when (val result = cashPaymentRepository.processCashPayment(total, cashReceivedCents)) {
@@ -449,103 +488,71 @@ class PaymentFlowViewModel @Inject constructor(
                     _state.value = PaymentFlowState.Processing(total)
 
                     val cart = cartState
-                    val hasRealProducts = cart?.items?.any {
-                        it.type is com.avoqado.pos.pos.data.model.CartItemType.ProductItem
-                    } ?: false
+                    val hasRealProducts = cart?.let(::hasProductItems) ?: false
 
                     if (hasRealProducts) {
-                        // Order-based cash payment: create order then record payment
-                        val orderRequest = buildOrderRequest(cart!!)
-                        val orderResult = orderRepository.createOrder(orderRequest)
-                        orderResult.fold(
-                            onSuccess = { orderResponse ->
-                                createdOrderId = orderResponse.data?.id
-                                val orderId = createdOrderId
-                                if (orderId == null) {
-                                    _state.value = PaymentFlowState.Error(
-                                        message = "No se pudo obtener la orden creada",
-                                        source = PaymentErrorSource.SERVER,
+                        // Order-based cash payment: create order once, then reuse it across retries.
+                        val orderRequest = buildOrderRequest(cart)
+                        val existingOrderId = createdOrderId
+                        if (!existingOrderId.isNullOrBlank()) {
+                            recordCashPaymentForOrder(
+                                orderId = existingOrderId,
+                                total = total,
+                                cashReceivedCents = cashReceivedCents,
+                                changeCents = result.changeCents,
+                                orderRequest = orderRequest,
+                            )
+                        } else {
+                            val orderResult = orderRepository.createOrder(orderRequest)
+                            orderResult.fold(
+                                onSuccess = { orderResponse ->
+                                    val orderId = orderResponse.data?.id
+                                    if (orderId.isNullOrBlank()) {
+                                        _state.value = PaymentFlowState.Error(
+                                            message = "No se pudo obtener la orden creada",
+                                            source = PaymentErrorSource.SERVER,
+                                        )
+                                        return@fold
+                                    }
+                                    createdOrderId = orderId
+                                    recordCashPaymentForOrder(
+                                        orderId = orderId,
+                                        total = total,
+                                        cashReceivedCents = cashReceivedCents,
+                                        changeCents = result.changeCents,
+                                        orderRequest = orderRequest,
                                     )
-                                    return@fold
-                                }
-
-                                // Send amount WITHOUT tip, tip separately
-                                val subtotal = total - currentTipCents
-                                val payResult = orderRepository.recordCashPayment(
-                                    orderId = orderId,
-                                    amount = subtotal,
-                                    tip = currentTipCents,
-                                    splitType = _splitType.value,
-                                )
-                                payResult.fold(
-                                    onSuccess = { paymentId ->
-                                        lastPaymentId = paymentId
-                                        recordCashSale(total, orderId)
+                                },
+                                onFailure = { error ->
+                                    val isQueueable = OrderRepository.isQueueableError(error) ||
+                                        (error is OrderRepository.ServerException && OrderRepository.isQueueableHttpCode(error.code))
+                                    if (isQueueable) {
+                                        cashPaymentRepository.queueCashPayment(
+                                            orderRequest = orderRequest,
+                                            cashTenderedCents = cashReceivedCents,
+                                            changeCents = result.changeCents,
+                                            rating = currentRating,
+                                            orderId = null,
+                                        )
+                                        // FIX B4: Record cash sale in drawer even on offline queue
+                                        recordCashSale(total, null)
                                         _state.value = PaymentFlowState.Success(
                                             totalAmount = total,
                                             method = PaymentMethod.CASH,
                                             changeAmount = result.changeCents,
-                                            paymentId = paymentId,
+                                            isQueued = true,
                                         )
                                         createKDSOrderAndPrint(PaymentMethod.CASH, result.changeCents)
-                                    },
-                                    onFailure = { error ->
-                                        val isQueueable = OrderRepository.isQueueableError(error) ||
-                                            (error is OrderRepository.ServerException && OrderRepository.isQueueableHttpCode(error.code))
-                                        if (isQueueable) {
-                                            cashPaymentRepository.queueCashPayment(
-                                                orderRequest = orderRequest,
-                                                cashTenderedCents = cashReceivedCents,
-                                                changeCents = result.changeCents,
-                                                rating = currentRating,
-                                                orderId = orderId,
-                                            )
-                                            recordCashSale(total, orderId)
-                                            _state.value = PaymentFlowState.Success(
-                                                totalAmount = total,
-                                                method = PaymentMethod.CASH,
-                                                changeAmount = result.changeCents,
-                                                isQueued = true,
-                                            )
-                                            createKDSOrderAndPrint(PaymentMethod.CASH, result.changeCents)
-                                        } else {
-                                            _state.value = PaymentFlowState.Error(
-                                                message = "No se pudo registrar el pago: ${error.message ?: "error desconocido"}",
-                                                source = PaymentErrorSource.SERVER,
-                                            )
-                                        }
-                                    },
-                                )
-                            },
-                            onFailure = { error ->
-                                val isQueueable = OrderRepository.isQueueableError(error) ||
-                                    (error is OrderRepository.ServerException && OrderRepository.isQueueableHttpCode(error.code))
-                                if (isQueueable) {
-                                    cashPaymentRepository.queueCashPayment(
-                                        orderRequest = orderRequest,
-                                        cashTenderedCents = cashReceivedCents,
-                                        changeCents = result.changeCents,
-                                        rating = currentRating,
-                                        orderId = null,
-                                    )
-                                    // FIX B4: Record cash sale in drawer even on offline queue
-                                    recordCashSale(total, null)
-                                    _state.value = PaymentFlowState.Success(
-                                        totalAmount = total,
-                                        method = PaymentMethod.CASH,
-                                        changeAmount = result.changeCents,
-                                        isQueued = true,
-                                    )
-                                    createKDSOrderAndPrint(PaymentMethod.CASH, result.changeCents)
-                                } else {
-                                    // Non-queueable error (validation, auth, etc.)
-                                    _state.value = PaymentFlowState.Error(
-                                        message = error.message ?: "Error al crear la orden",
-                                        source = PaymentErrorSource.SERVER,
-                                    )
-                                }
-                            },
-                        )
+                                    } else {
+                                        // Non-queueable error (validation, auth, etc.)
+                                        _state.value = PaymentFlowState.Error(
+                                            message = error.message ?: "Error al crear la orden",
+                                            source = PaymentErrorSource.SERVER,
+                                        )
+                                    }
+                                },
+                            )
+                        }
                     } else {
                         // Fast payment (custom amount, no products)
                         // Send amount WITHOUT tip, tip separately
@@ -605,12 +612,77 @@ class PaymentFlowViewModel @Inject constructor(
         }
     }
 
+    private suspend fun recordCashPaymentForOrder(
+        orderId: String,
+        total: Int,
+        cashReceivedCents: Int,
+        changeCents: Int,
+        orderRequest: CreateOrderRequest,
+    ) {
+        // Send amount WITHOUT tip, tip separately
+        val subtotal = total - currentTipCents
+        val payResult = orderRepository.recordCashPayment(
+            orderId = orderId,
+            amount = subtotal,
+            tip = currentTipCents,
+            splitType = _splitType.value,
+        )
+        payResult.fold(
+            onSuccess = { paymentId ->
+                lastPaymentId = paymentId
+                recordCashSale(total, orderId)
+                _state.value = PaymentFlowState.Success(
+                    totalAmount = total,
+                    method = PaymentMethod.CASH,
+                    changeAmount = changeCents,
+                    paymentId = paymentId,
+                )
+                createKDSOrderAndPrint(PaymentMethod.CASH, changeCents)
+            },
+            onFailure = { error ->
+                val isQueueable = OrderRepository.isQueueableError(error) ||
+                    (error is OrderRepository.ServerException && OrderRepository.isQueueableHttpCode(error.code))
+                if (isQueueable) {
+                    cashPaymentRepository.queueCashPayment(
+                        orderRequest = orderRequest,
+                        cashTenderedCents = cashReceivedCents,
+                        changeCents = changeCents,
+                        rating = currentRating,
+                        orderId = orderId,
+                    )
+                    recordCashSale(total, orderId)
+                    _state.value = PaymentFlowState.Success(
+                        totalAmount = total,
+                        method = PaymentMethod.CASH,
+                        changeAmount = changeCents,
+                        isQueued = true,
+                    )
+                    createKDSOrderAndPrint(PaymentMethod.CASH, changeCents)
+                } else {
+                    _state.value = PaymentFlowState.Error(
+                        message = "No se pudo registrar el pago: ${error.message ?: "error desconocido"}",
+                        source = PaymentErrorSource.SERVER,
+                    )
+                }
+            },
+        )
+    }
+
     fun sendReceiptWhatsApp(phone: String) {
-        val paymentId = lastPaymentId ?: return
+        val paymentId = lastPaymentId
+        val receiptAccessKey = lastReceiptAccessKey
+        if (paymentId.isNullOrBlank() && receiptAccessKey.isNullOrBlank()) {
+            _whatsAppResult.value = "No se encontró identificador del recibo"
+            return
+        }
         viewModelScope.launch {
             _whatsAppSending.value = true
             _whatsAppResult.value = null
-            orderRepository.sendReceiptWhatsApp(paymentId, phone).fold(
+            orderRepository.sendReceiptWhatsApp(
+                paymentId = paymentId,
+                phone = phone,
+                receiptAccessKey = receiptAccessKey,
+            ).fold(
                 onSuccess = {
                     _whatsAppResult.value = "Recibo enviado por WhatsApp"
                 },
@@ -629,11 +701,20 @@ class PaymentFlowViewModel @Inject constructor(
     }
 
     fun sendReceiptEmail(email: String) {
-        val paymentId = lastPaymentId ?: return
+        val paymentId = lastPaymentId
+        val receiptAccessKey = lastReceiptAccessKey
+        if (paymentId.isNullOrBlank() && receiptAccessKey.isNullOrBlank()) {
+            _emailResult.value = "No se encontró identificador del recibo"
+            return
+        }
         viewModelScope.launch {
             _emailSending.value = true
             _emailResult.value = null
-            orderRepository.sendReceiptEmail(paymentId, email).fold(
+            orderRepository.sendReceiptEmail(
+                paymentId = paymentId,
+                email = email,
+                receiptAccessKey = receiptAccessKey,
+            ).fold(
                 onSuccess = {
                     _emailResult.value = "Recibo enviado por correo"
                 },
@@ -652,11 +733,21 @@ class PaymentFlowViewModel @Inject constructor(
     }
 
     fun retry() {
-        val baseAmount = currentBaseAmount()
-        val total = baseAmount + currentTipCents
-        // Go back to terminal selection instead of restarting the whole flow
-        _state.value = PaymentFlowState.SelectingTerminal(total)
-        fetchTerminals()
+        when (selectedMethod) {
+            PaymentMethod.CARD -> {
+                val total = currentBaseAmount() + currentTipCents
+                _state.value = PaymentFlowState.SelectingTerminal(total)
+                fetchTerminals()
+            }
+            PaymentMethod.CASH -> {
+                val tendered = lastCashTenderedCents ?: (currentBaseAmount() + currentTipCents)
+                processCashPayment(tendered)
+            }
+            null -> {
+                val total = currentBaseAmount() + currentTipCents
+                _state.value = PaymentFlowState.SelectingPaymentMethod(total)
+            }
+        }
     }
 
     fun cancel() {
@@ -690,7 +781,7 @@ class PaymentFlowViewModel @Inject constructor(
     private fun createKDSOrderIfNeeded() {
         val cart = cartState ?: return
         val realItems = cart.items.filter {
-            it.type is com.avoqado.pos.pos.data.model.CartItemType.ProductItem
+            it.type is CartItemType.ProductItem
         }
         if (realItems.isEmpty()) return
 
@@ -746,39 +837,69 @@ class PaymentFlowViewModel @Inject constructor(
     private fun autoPrintAfterPayment(method: PaymentMethod, changeCents: Int? = null) {
         val cart = cartState ?: return
         val realItems = cart.items.filter {
-            it.type is com.avoqado.pos.pos.data.model.CartItemType.ProductItem
+            it.type is CartItemType.ProductItem
         }
         if (realItems.isEmpty()) return
 
         val orderNumber = createdOrderId?.takeLast(4) ?: "---"
 
         viewModelScope.launch {
+            val splitTypeValue = _splitType.value
+            val baseAmount = currentBaseAmount()
+            fun com.avoqado.pos.pos.data.model.CartItem.toReceiptItem(): ReceiptItem {
+                val modifierUnitTotal = selectedModifiers.sumOf { it.priceInCents }
+                val effectiveUnitWithModifiers = effectiveUnitPrice + modifierUnitTotal
+                return ReceiptItem(
+                    name = name,
+                    quantity = quantity,
+                    unitPrice = effectiveUnitWithModifiers,
+                    totalPrice = totalPrice,
+                    modifiers = selectedModifiers.map { it.modifierName }.ifEmpty { null },
+                    note = itemNote,
+                    isCortesia = isCortesia,
+                )
+            }
+            val receiptItems = when (splitTypeValue) {
+                "BYPRODUCT" -> {
+                    val selected = cart.items.filter { splitSelectedItemIds.contains(it.id) }
+                    (if (selected.isEmpty()) cart.items else selected).map { it.toReceiptItem() }
+                }
+                "EQUALPARTS", "CUSTOMAMOUNT" -> {
+                    // Partial amount split is not tied to specific items.
+                    listOf(
+                        ReceiptItem(
+                            name = "Pago parcial",
+                            quantity = 1,
+                            unitPrice = baseAmount,
+                            totalPrice = baseAmount,
+                        ),
+                    )
+                }
+                else -> cart.items.map { it.toReceiptItem() }
+            }
+
+            val isFullPayment = splitTypeValue == "FULLPAYMENT"
+            val receiptSubtotal = if (isFullPayment) cart.subtotalCents else baseAmount
+            val receiptDiscount = if (isFullPayment && cart.discountCents > 0) cart.discountCents else 0
+            val receiptTax = if (isFullPayment) cart.taxCents else 0
+            val receiptTotal = baseAmount + currentTipCents
+
             // Auto-print receipt
             val receipt = ReceiptData(
                 orderNumber = orderNumber,
                 orderType = "En tienda",
-                items = realItems.map { item ->
-                    ReceiptItem(
-                        name = item.name,
-                        quantity = item.quantity,
-                        unitPrice = item.effectiveUnitPrice,
-                        totalPrice = item.effectiveUnitPrice * item.quantity,
-                        modifiers = item.selectedModifiers.map { it.modifierName }.ifEmpty { null },
-                        note = item.itemNote,
-                        isCortesia = item.isCortesia,
-                    )
-                },
-                subtotal = cart.subtotalCents,
-                taxAmount = 0, // Tax included in item prices
+                items = receiptItems,
+                subtotal = receiptSubtotal,
+                taxAmount = receiptTax,
                 tipAmount = if (currentTipCents > 0) currentTipCents else null,
-                discountAmount = if (cart.discountCents > 0) cart.discountCents else null,
-                total = cart.totalCents + currentTipCents,
+                discountAmount = if (receiptDiscount > 0) receiptDiscount else null,
+                total = receiptTotal,
                 paymentMethod = when (method) {
                     PaymentMethod.CASH -> "Efectivo"
                     PaymentMethod.CARD -> "Tarjeta"
                 },
                 venueName = secureStorage.venueName ?: "Avoqado",
-                cashTendered = if (method == PaymentMethod.CASH) changeCents?.let { cart.totalCents + currentTipCents + it } else null,
+                cashTendered = if (method == PaymentMethod.CASH) changeCents?.let { receiptTotal + it } else null,
                 changeAmount = changeCents,
             )
             // Cache for manual reprint from the success screen
@@ -804,26 +925,29 @@ class PaymentFlowViewModel @Inject constructor(
     }
 
     private fun buildOrderRequest(cart: CartState): CreateOrderRequest {
-        // Only include real products — custom amounts are handled separately
-        val items = cart.items
-            .filter { it.type is com.avoqado.pos.pos.data.model.CartItemType.ProductItem }
-            .map { item ->
-                OrderItemRequest(
-                    productId = (item.type as com.avoqado.pos.pos.data.model.CartItemType.ProductItem).productId,
-                    name = item.name,
-                    quantity = item.quantity,
-                    unitPrice = item.effectiveUnitPrice,
-                    modifiers = item.selectedModifiers.map {
-                        OrderModifierRequest(
-                            modifierId = it.modifierId,
-                            name = it.modifierName,
-                            price = it.priceInCents,
-                        )
-                    },
-                    note = item.itemNote,
-                    isCortesia = item.isCortesia,
-                )
-            }
+        // Keep full cart context here. OrderRepository strips non-product lines
+        // when building the backend /orders payload, but mixed carts still need
+        // full totals locally for payment and offline queue handling.
+        val items = cart.items.map { item ->
+            OrderItemRequest(
+                productId = when (val type = item.type) {
+                    is CartItemType.ProductItem -> type.productId
+                    CartItemType.CustomAmount -> null
+                },
+                name = item.name,
+                quantity = item.quantity,
+                unitPrice = item.effectiveUnitPrice,
+                modifiers = item.selectedModifiers.map {
+                    OrderModifierRequest(
+                        modifierId = it.modifierId,
+                        name = it.modifierName,
+                        price = it.priceInCents,
+                    )
+                },
+                note = item.itemNote,
+                isCortesia = item.isCortesia,
+            )
+        }
 
         return CreateOrderRequest(
             items = items,
@@ -838,8 +962,140 @@ class PaymentFlowViewModel @Inject constructor(
         )
     }
 
+    fun buildCompletion(): PaymentCompletion {
+        val cart = cartState
+        val splitTypeValue = _splitType.value
+        if (cart == null) {
+            return PaymentCompletion(
+                splitType = splitTypeValue,
+                remainingBalanceCents = 0,
+            )
+        }
+
+        return when (splitTypeValue) {
+            "BYPRODUCT" -> {
+                val validPaidIds = splitSelectedItemIds.intersect(cart.items.map { it.id }.toSet())
+                val remaining = cart.items
+                    .filterNot { validPaidIds.contains(it.id) }
+                    .sumOf { it.totalPrice }
+                    .coerceAtLeast(0)
+                PaymentCompletion(
+                    splitType = splitTypeValue,
+                    remainingBalanceCents = remaining,
+                    paidItemIds = validPaidIds,
+                )
+            }
+            "EQUALPARTS", "CUSTOMAMOUNT" -> {
+                val remaining = (cart.totalCents - currentBaseAmount()).coerceAtLeast(0)
+                PaymentCompletion(
+                    splitType = splitTypeValue,
+                    remainingBalanceCents = remaining,
+                )
+            }
+            else -> {
+                PaymentCompletion(
+                    splitType = splitTypeValue,
+                    remainingBalanceCents = 0,
+                )
+            }
+        }
+    }
+
+    fun buildPaymentContext(): PaymentContext {
+        val cart = cartState ?: return PaymentContext(
+            subtotalCents = currentBaseAmount(),
+            tipCents = currentTipCents,
+            totalCents = currentBaseAmount() + currentTipCents,
+            rating = currentRating,
+            splitType = _splitType.value,
+        )
+
+        val splitTypeValue = _splitType.value
+        val baseAmount = currentBaseAmount()
+        val visibleItems = visiblePaymentItems(cart)
+
+        return when (splitTypeValue) {
+            "FULLPAYMENT" -> PaymentContext(
+                subtotalCents = cart.subtotalCents,
+                discountCents = cart.discountCents,
+                taxCents = cart.taxCents,
+                tipCents = currentTipCents,
+                totalCents = cart.totalCents + currentTipCents,
+                rating = currentRating,
+                items = visibleItems,
+                splitType = splitTypeValue,
+            )
+            else -> PaymentContext(
+                subtotalCents = baseAmount,
+                discountCents = 0,
+                taxCents = 0,
+                tipCents = currentTipCents,
+                totalCents = baseAmount + currentTipCents,
+                rating = currentRating,
+                items = visibleItems,
+                splitType = splitTypeValue,
+            )
+        }
+    }
+
     private fun currentBaseAmount(): Int {
         return splitBaseAmountOverride ?: (cartState?.totalCents ?: 0)
+    }
+
+    private fun computeTipPercentageBaseAmount(baseAmount: Int): Int {
+        if (baseAmount <= 0) return 0
+        if (settings.includeTaxInTipBase) return baseAmount
+        val cart = cartState ?: return baseAmount
+        val taxComponent = estimateTaxComponentForTipBase(cart, baseAmount)
+        return (baseAmount - taxComponent).coerceAtLeast(0)
+    }
+
+    private fun estimateTaxComponentForTipBase(cart: CartState, baseAmount: Int): Int {
+        if (cart.taxCents <= 0 || baseAmount <= 0) return 0
+        return when (_splitType.value) {
+            "FULLPAYMENT" -> {
+                cart.taxCents.coerceAtMost(baseAmount)
+            }
+            "BYPRODUCT" -> {
+                // BYPRODUCT split amount currently comes from selected item totals,
+                // which are pre-tax values; avoid subtracting tax twice.
+                0
+            }
+            else -> {
+                val cartTotal = cart.totalCents
+                if (cartTotal <= 0) return 0
+                ((cart.taxCents.toLong() * baseAmount.toLong()) / cartTotal.toLong())
+                    .toInt()
+                    .coerceAtMost(baseAmount)
+            }
+        }
+    }
+
+    private fun hasProductItems(cart: CartState): Boolean {
+        return cart.items.any { it.type is CartItemType.ProductItem }
+    }
+
+    private fun visiblePaymentItems(cart: CartState): List<PaymentItem> {
+        val sourceItems = when (_splitType.value) {
+            "BYPRODUCT" -> {
+                val selected = cart.items.filter { splitSelectedItemIds.contains(it.id) }
+                if (selected.isEmpty()) cart.items else selected
+            }
+            else -> cart.items
+        }
+
+        return sourceItems.map { item ->
+            val modifierNames = item.selectedModifiers.map { it.modifierName }
+            PaymentItem(
+                name = item.name,
+                quantity = item.quantity,
+                unitPrice = item.effectiveUnitPrice + item.selectedModifiers.sumOf { it.priceInCents },
+                lineTotal = item.totalPrice,
+                modifiers = modifierNames,
+                note = item.itemNote,
+                isCortesia = item.isCortesia,
+            )
+        }
     }
 
     private fun resolveSplitBaseAmount(cart: CartState): Int? {

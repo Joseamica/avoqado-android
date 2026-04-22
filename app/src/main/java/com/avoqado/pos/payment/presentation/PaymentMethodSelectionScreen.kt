@@ -3,9 +3,11 @@ package com.avoqado.pos.payment.presentation
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -16,8 +18,11 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ReceiptLong
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -35,11 +40,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Success
+import com.avoqado.pos.payment.data.model.PaymentContext
+import com.avoqado.pos.payment.data.model.PaymentItem
 import com.avoqado.pos.payment.data.model.PaymentMethod
 import kotlin.math.ceil
 
@@ -49,14 +58,16 @@ import kotlin.math.ceil
  */
 @Composable
 fun PaymentMethodSelectionScreen(
-    amountCents: Int,
+    paymentContext: PaymentContext,
     onMethodSelected: (PaymentMethod) -> Unit,
     onCashPresetSelected: ((Int) -> Unit)? = null,
     onCashCustomSelected: ((Int) -> Unit)? = null,
     onCancel: () -> Unit,
 ) {
+    val amountCents = paymentContext.totalCents
     val suggestions = remember(amountCents) { calculateCashSuggestions(amountCents) }
     var showCustomCashSheet by remember { mutableStateOf(false) }
+    var showItemsSheet by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier.fillMaxSize(),
@@ -101,6 +112,17 @@ fun PaymentMethodSelectionScreen(
             text = "Envía el cobro a una terminal para procesar el pago",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xl))
+
+        PaymentBreakdownCard(
+            paymentContext = paymentContext,
+            onViewProducts = if (paymentContext.items.isNotEmpty()) {
+                { showItemsSheet = true }
+            } else {
+                null
+            },
         )
 
         Spacer(modifier = Modifier.weight(1f))
@@ -216,6 +238,13 @@ fun PaymentMethodSelectionScreen(
                 onCashCustomSelected?.invoke(amount)
             },
             onDismiss = { showCustomCashSheet = false },
+        )
+    }
+
+    if (showItemsSheet) {
+        PaymentItemsSheet(
+            paymentContext = paymentContext,
+            onDismiss = { showItemsSheet = false },
         )
     }
 }
@@ -384,6 +413,282 @@ private fun CustomCashSheet(
             }
         }
     }
+}
+
+@Composable
+private fun PaymentBreakdownCard(
+    paymentContext: PaymentContext,
+    onViewProducts: (() -> Unit)?,
+) {
+    Column(
+        modifier = Modifier
+            .widthIn(max = 500.dp)
+            .fillMaxWidth()
+            .padding(horizontal = AvoqadoTheme.spacing.xl)
+            .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.xl))
+            .background(MaterialTheme.colorScheme.surfaceContainerLow)
+            .border(
+                width = 1.dp,
+                color = MaterialTheme.colorScheme.outlineVariant,
+                shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.xl),
+            ),
+    ) {
+        Column(
+            modifier = Modifier.padding(
+                horizontal = AvoqadoTheme.spacing.lg,
+                vertical = AvoqadoTheme.spacing.md,
+            ),
+            verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
+        ) {
+            Text(
+                text = "Desglose",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            SummaryRow("Subtotal", paymentContext.subtotalCents)
+
+            if (paymentContext.discountCents > 0) {
+                SummaryRow(
+                    "Descuento",
+                    -paymentContext.discountCents,
+                    valueColor = MaterialTheme.colorScheme.onSurface,
+                )
+            }
+
+            if (paymentContext.taxCents > 0) {
+                SummaryRow("Impuestos", paymentContext.taxCents)
+            }
+
+            if (paymentContext.tipCents > 0) {
+                SummaryRow(
+                    "Propina",
+                    paymentContext.tipCents,
+                    valueColor = Success,
+                )
+            }
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            SummaryRow(
+                "Total",
+                paymentContext.totalCents,
+                labelStyle = MaterialTheme.typography.titleMedium,
+                valueStyle = MaterialTheme.typography.titleMedium,
+            )
+        }
+
+        if (onViewProducts != null) {
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onViewProducts)
+                    .padding(
+                        horizontal = AvoqadoTheme.spacing.lg,
+                        vertical = AvoqadoTheme.spacing.md,
+                    ),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    Icons.AutoMirrored.Filled.ReceiptLong,
+                    contentDescription = null,
+                    modifier = Modifier.size(AvoqadoTheme.dimensions.iconMedium),
+                    tint = MaterialTheme.colorScheme.onSurface,
+                )
+                Spacer(modifier = Modifier.widthIn(min = AvoqadoTheme.spacing.sm))
+                Text(
+                    text = "Ver productos (${paymentContext.items.sumOf { it.quantity }})",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Spacer(modifier = Modifier.weight(1f))
+                Icon(
+                    Icons.Filled.ChevronRight,
+                    contentDescription = null,
+                    modifier = Modifier.size(AvoqadoTheme.dimensions.iconMedium),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SummaryRow(
+    label: String,
+    cents: Int,
+    labelStyle: androidx.compose.ui.text.TextStyle = MaterialTheme.typography.bodyMedium,
+    valueStyle: androidx.compose.ui.text.TextStyle = MaterialTheme.typography.bodyMedium,
+    valueColor: Color = MaterialTheme.colorScheme.onSurface,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = label,
+            style = labelStyle,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            text = formatSignedAmount(cents),
+            style = valueStyle,
+            color = valueColor,
+            fontWeight = FontWeight.Medium,
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun PaymentItemsSheet(
+    paymentContext: PaymentContext,
+    onDismiss: () -> Unit,
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = AvoqadoTheme.spacing.xl),
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = AvoqadoTheme.spacing.lg),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.xxs)) {
+                    Text(
+                        text = "Productos",
+                        style = MaterialTheme.typography.headlineSmall,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Text(
+                        text = when (paymentContext.splitType) {
+                            "CUSTOMAMOUNT", "EQUALPARTS" -> "Pago parcial: los productos se muestran como referencia."
+                            else -> "Detalle de lo que se va a cobrar."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+
+                Box(
+                    modifier = Modifier
+                        .size(32.dp)
+                        .clip(RoundedCornerShape(50))
+                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                        .clickable(onClick = onDismiss),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Filled.Close,
+                        contentDescription = "Cerrar",
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
+
+            LazyColumn(
+                modifier = Modifier.fillMaxWidth(),
+                contentPadding = PaddingValues(
+                    horizontal = AvoqadoTheme.spacing.lg,
+                    vertical = AvoqadoTheme.spacing.xs,
+                ),
+                verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
+            ) {
+                items(paymentContext.items) { item ->
+                    PaymentItemCard(item = item)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PaymentItemCard(item: PaymentItem) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.lg))
+            .background(MaterialTheme.colorScheme.surfaceContainerLow)
+            .border(
+                width = 1.dp,
+                color = MaterialTheme.colorScheme.outlineVariant,
+                shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.lg),
+            )
+            .padding(AvoqadoTheme.spacing.md),
+        verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.xs),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.Top,
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.xxs),
+            ) {
+                Text(
+                    text = item.name,
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Text(
+                    text = "${item.quantity} x ${formatAmount(item.unitPrice)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Text(
+                text = formatAmount(item.lineTotal),
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
+
+        if (item.modifiers.isNotEmpty()) {
+            Text(
+                text = item.modifiers.joinToString(", "),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        if (!item.note.isNullOrBlank()) {
+            Text(
+                text = "Nota: ${item.note}",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+
+        if (item.isCortesia) {
+            Text(
+                text = "Cortesía",
+                style = MaterialTheme.typography.labelLarge,
+                color = Success,
+                textDecoration = TextDecoration.LineThrough,
+            )
+        }
+    }
+}
+
+private fun formatAmount(cents: Int): String {
+    return "$${String.format("%.2f", cents / 100.0)}"
+}
+
+private fun formatSignedAmount(cents: Int): String {
+    val prefix = if (cents < 0) "-" else ""
+    return prefix + formatAmount(kotlin.math.abs(cents))
 }
 
 // MARK: - Cash Suggestions (matching iOS algorithm)

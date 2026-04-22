@@ -34,11 +34,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import android.widget.Toast
 import com.avoqado.pos.articles.data.model.ProductOption
 import com.avoqado.pos.articles.presentation.ArticlesViewModel
+import com.avoqado.pos.designsystem.theme.AvoqadoAdaptiveSizeClass
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 
 // MARK: - Options List View
@@ -51,19 +53,28 @@ fun OptionsView(
     val isLoading by viewModel.isLoading.collectAsState()
     var showCreateSheet by remember { mutableStateOf(false) }
     val context = LocalContext.current
+    val configuration = LocalConfiguration.current
+    val adaptive = AvoqadoTheme.adaptive
+    val lowDensityTabletFallback = configuration.densityDpi in 1..220 &&
+        adaptive.sizeClass != AvoqadoAdaptiveSizeClass.Compact &&
+        (!adaptive.isPortrait || configuration.screenWidthDp <= 900)
+    val denseListMode = adaptive.isAggressiveCompact || lowDensityTabletFallback
+    val contentHorizontalPadding = if (denseListMode) AvoqadoTheme.spacing.md else AvoqadoTheme.spacing.lg
+    val headerVerticalPadding = if (denseListMode) AvoqadoTheme.spacing.xs else AvoqadoTheme.spacing.md
+    val rowVerticalPadding = if (denseListMode) 9.dp else AvoqadoTheme.spacing.md
 
     Column(modifier = Modifier.fillMaxSize()) {
         // Header with "+" button
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.md),
+                .padding(horizontal = contentHorizontalPadding, vertical = headerVerticalPadding),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceBetween,
         ) {
             Text(
                 text = "Opciones de producto",
-                style = MaterialTheme.typography.titleMedium,
+                style = if (denseListMode) MaterialTheme.typography.titleSmall else MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onSurface,
             )
@@ -127,6 +138,9 @@ fun OptionsView(
                 items(options, key = { it.id }) { option ->
                     OptionRow(
                         option = option,
+                        denseMode = denseListMode,
+                        horizontalPadding = contentHorizontalPadding,
+                        rowVerticalPadding = rowVerticalPadding,
                         onEdit = {
                             Toast.makeText(context, "Proximamente", Toast.LENGTH_SHORT).show()
                         },
@@ -150,26 +164,29 @@ fun OptionsView(
 @Composable
 private fun OptionRow(
     option: ProductOption,
+    denseMode: Boolean,
+    horizontalPadding: androidx.compose.ui.unit.Dp,
+    rowVerticalPadding: androidx.compose.ui.unit.Dp,
     onEdit: () -> Unit = {},
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clickable { onEdit() }
-            .padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.md),
+            .padding(horizontal = horizontalPadding, vertical = rowVerticalPadding),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = option.name,
-                style = MaterialTheme.typography.bodyLarge,
+                style = if (denseMode) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodyLarge,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurface,
             )
             if (option.valuesPreview.isNotEmpty()) {
                 Text(
                     text = option.valuesPreview,
-                    style = MaterialTheme.typography.bodySmall,
+                    style = if (denseMode) MaterialTheme.typography.labelSmall else MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
@@ -177,7 +194,7 @@ private fun OptionRow(
 
         Text(
             text = "${option.valueCount} valores",
-            style = MaterialTheme.typography.bodySmall,
+            style = if (denseMode) MaterialTheme.typography.labelSmall else MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }

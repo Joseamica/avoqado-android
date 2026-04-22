@@ -24,6 +24,14 @@ fun ModifierGroupSection(
     selectedModifiers: List<SelectedModifier>,
     onModifierToggled: (ProductModifier, Boolean) -> Unit,
 ) {
+    val requiredCount = if (group.required) {
+        (group.minSelections ?: 0).coerceAtLeast(1)
+    } else {
+        0
+    }
+    val selectedCount = selectedModifiers.count { it.groupId == group.id }
+    val remainingRequiredCount = (requiredCount - selectedCount).coerceAtLeast(0)
+
     Column(modifier = Modifier.fillMaxWidth().padding(horizontal = AvoqadoTheme.spacing.lg)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
@@ -32,11 +40,27 @@ fun ModifierGroupSection(
             )
             if (group.required) {
                 Text(
-                    text = " (Requerido)",
+                    text = " (Requerido $selectedCount/$requiredCount)",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.error,
                 )
             }
+        }
+
+        if (group.required) {
+            Text(
+                text = if (remainingRequiredCount > 0) {
+                    "Faltan $remainingRequiredCount por seleccionar"
+                } else {
+                    "Seleccion obligatoria completa"
+                },
+                style = MaterialTheme.typography.labelSmall,
+                color = if (remainingRequiredCount > 0) {
+                    MaterialTheme.colorScheme.error
+                } else {
+                    MaterialTheme.colorScheme.primary
+                },
+            )
         }
 
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))

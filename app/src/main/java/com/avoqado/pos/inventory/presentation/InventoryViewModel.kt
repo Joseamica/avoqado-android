@@ -123,6 +123,10 @@ class InventoryViewModel @Inject constructor(
         _errorMessage.value = null
     }
 
+    fun showError(message: String) {
+        _errorMessage.value = message
+    }
+
     init {
         refresh()
     }
@@ -236,6 +240,36 @@ class InventoryViewModel @Inject constructor(
                 }.onFailure { e ->
                     Log.e(TAG, "❌ Receive PO failed: ${e.message}")
                     _errorMessage.value = e.message ?: "Error al recibir mercancía"
+                }
+            } finally {
+                _isSaving.value = false
+            }
+        }
+    }
+
+    // MARK: - Update Purchase Order Status
+
+    fun updatePurchaseOrderStatus(
+        poId: String,
+        status: String,
+        onSuccess: () -> Unit = {},
+    ) {
+        viewModelScope.launch {
+            _isSaving.value = true
+            try {
+                val result = repository.updatePurchaseOrderStatus(poId, status)
+                result.onSuccess {
+                    Log.d(TAG, "✅ PO status updated: $poId -> $status")
+                    // Update the selected PO locally to reflect state changes immediately.
+                    _selectedPurchaseOrder.value?.let { current ->
+                        if (current.id == poId) {
+                            _selectedPurchaseOrder.value = current.copy(status = status)
+                        }
+                    }
+                    onSuccess()
+                }.onFailure { e ->
+                    Log.e(TAG, "❌ Update PO status failed: ${e.message}")
+                    _errorMessage.value = e.message ?: "Error al actualizar estado de la orden de compra"
                 }
             } finally {
                 _isSaving.value = false

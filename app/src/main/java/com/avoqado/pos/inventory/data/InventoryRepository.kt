@@ -114,6 +114,15 @@ class InventoryRepository @Inject constructor(
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
+    fun clearCache() {
+        _stockItems.value = emptyList()
+        _stockCounts.value = emptyList()
+        _purchaseOrders.value = emptyList()
+        _transfers.value = emptyList()
+        _suppliers.value = emptyList()
+        _isLoading.value = false
+    }
+
     private fun venueBaseUrl(): String? {
         val venueId = secureStorage.venueId ?: return null
         return "${ApiConstants.BASE_URL}/mobile/venues/$venueId"
@@ -359,14 +368,25 @@ class InventoryRepository @Inject constructor(
                 val jsonObj = org.json.JSONObject(body)
                 val dataObj = jsonObj.optJSONObject("data") ?: jsonObj
 
+                val notes = if (dataObj.has("notes") && !dataObj.isNull("notes")) {
+                    dataObj.getString("notes")
+                } else {
+                    null
+                }
+                val expectedDate = if (dataObj.has("expectedDeliveryDate") && !dataObj.isNull("expectedDeliveryDate")) {
+                    dataObj.getString("expectedDeliveryDate")
+                } else {
+                    null
+                }
+
                 val po = PurchaseOrder(
                     id = dataObj.getString("id"),
                     venueId = dataObj.getString("venueId"),
                     supplierName = dataObj.optJSONObject("supplier")?.optString("name")
                         ?: dataObj.optString("supplierName", ""),
                     status = dataObj.optString("status", "DRAFT"),
-                    notes = dataObj.optString("notes", null),
-                    expectedDate = dataObj.optString("expectedDeliveryDate", null),
+                    notes = notes,
+                    expectedDate = expectedDate,
                     createdAt = dataObj.optString("orderDate", dataObj.optString("createdAt", "")),
                     createdByName = dataObj.optString("createdByName", ""),
                 )
@@ -462,7 +482,11 @@ class InventoryRepository @Inject constructor(
                 Result.success(Unit)
             } else {
                 Log.e("📦", "❌ Receive PO failed: $code - $body")
-                Result.failure(Exception("Error al recibir items ($code)"))
+                val message = extractApiMessage(
+                    body = body,
+                    fallback = "Error al recibir mercancía ($code)",
+                )
+                Result.failure(Exception(message))
             }
         } catch (e: Exception) {
             Log.e("📦", "❌ Receive PO error: ${e.message}")
@@ -626,10 +650,12 @@ class InventoryRepository @Inject constructor(
 
     suspend fun fetchSuppliers() {
         val venueId = secureStorage.venueId ?: return
+        val token = secureStorage.accessToken ?: return
 
         try {
             val request = Request.Builder()
-                .url("${ApiConstants.BASE_URL}/dashboard/venues/$venueId/inventory/suppliers?active=true")
+                .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/suppliers?active=true")
+                .header("Authorization", "Bearer $token")
                 .build()
 
             val (responseCode, body) = withContext(Dispatchers.IO) {
@@ -637,13 +663,38 @@ class InventoryRepository @Inject constructor(
                 response.code to (response.body?.string() ?: "")
             }
             Log.d("📦", "Suppliers response: HTTP $responseCode, body length=${body.length}")
+            if (responseCode == 404) {
+                // Some venues/environments may not expose suppliers yet.
+                _suppliers.value = emptyList()
+                Log.d("📦", "ℹ️ Suppliers endpoint not available for this venue")
+                return
+            }
             if (responseCode in 200..299 && body.isNotEmpty()) {
-                val result = json.decodeFromString<SuppliersResponse>(body)
-                _suppliers.value = result.data
-                Log.d("📦", "✅ Loaded ${result.data.size} suppliers")
+                // Backend may return {"data": [...]} or bare array [...]
+                val suppliers = try {
+                    json.decodeFromString<SuppliersResponse>(body).data
+                } catch (_: Exception) {
+                    json.decodeFromString<List<Supplier>>(body)
+                }
+                _suppliers.value = suppliers
+                Log.d("📦", "✅ Loaded ${suppliers.size} suppliers")
+            } else if (responseCode !in 200..299) {
+                Log.w("📦", "⚠️ Suppliers fetch failed: HTTP $responseCode")
             }
         } catch (e: Exception) {
             Log.e("📦", "❌ Suppliers fetch error: ${e.message}")
+        }
+    }
+
+    private fun extractApiMessage(body: String, fallback: String): String {
+        if (body.isBlank()) return fallback
+        return try {
+            val obj = org.json.JSONObject(body)
+            obj.optString("message").takeIf { it.isNotBlank() }
+                ?: obj.optString("error").takeIf { it.isNotBlank() }
+                ?: fallback
+        } catch (_: Exception) {
+            fallback
         }
     }
 

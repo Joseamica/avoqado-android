@@ -58,14 +58,17 @@ import kotlinx.coroutines.launch
 @Composable
 fun CreateProductView(
     productsRepository: ProductsRepository,
+    initialName: String = "",
+    initialSku: String? = null,
+    initialGtin: String = "",
     onProductCreated: (Product) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    var name by remember { mutableStateOf("") }
+    var name by remember { mutableStateOf(initialName) }
     var price by remember { mutableStateOf("") }
     var selectedCategory by remember { mutableStateOf<ProductCategory?>(null) }
-    var sku by remember { mutableStateOf(generateRandomSku()) }
-    var gtin by remember { mutableStateOf("") }
+    var sku by remember { mutableStateOf(initialSku ?: generateRandomSku()) }
+    var gtin by remember { mutableStateOf(initialGtin) }
     var isSaving by remember { mutableStateOf(false) }
     var showCategoryPicker by remember { mutableStateOf(false) }
     var menuCategories by remember { mutableStateOf<List<ProductCategory>>(emptyList()) }

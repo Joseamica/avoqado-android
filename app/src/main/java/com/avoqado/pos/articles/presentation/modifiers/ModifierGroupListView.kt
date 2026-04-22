@@ -47,23 +47,35 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.avoqado.pos.articles.data.model.ArticleModifier
 import com.avoqado.pos.articles.data.model.ModifierGroup
 import com.avoqado.pos.articles.presentation.ArticlesViewModel
+import com.avoqado.pos.designsystem.components.AvoqadoLoadingState
+import com.avoqado.pos.designsystem.theme.AvoqadoAdaptiveSizeClass
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Info
 
 @Composable
 fun ModifierGroupListView(viewModel: ArticlesViewModel) {
     val modifierGroups by viewModel.modifierGroups.collectAsState()
+    val isLoading by viewModel.isLoading.collectAsState()
 
     var expandedGroupIds by remember { mutableStateOf(setOf<String>()) }
     var editingGroup by remember { mutableStateOf<ModifierGroup?>(null) }
     var showCreateForm by remember { mutableStateOf(false) }
     var editingModifier by remember { mutableStateOf<Pair<String, ArticleModifier>?>(null) }
     var deletingGroup by remember { mutableStateOf<ModifierGroup?>(null) }
+    val configuration = LocalConfiguration.current
+    val adaptive = AvoqadoTheme.adaptive
+    val lowDensityTabletFallback = configuration.densityDpi in 1..220 &&
+        adaptive.sizeClass != AvoqadoAdaptiveSizeClass.Compact &&
+        (!adaptive.isPortrait || configuration.screenWidthDp <= 900)
+    val denseListMode = adaptive.isAggressiveCompact || lowDensityTabletFallback
+    val contentHorizontalPadding = if (denseListMode) AvoqadoTheme.spacing.md else AvoqadoTheme.spacing.lg
+    val headerVerticalPadding = if (denseListMode) AvoqadoTheme.spacing.xs else AvoqadoTheme.spacing.md
 
     // MARK: - Sheets
 
@@ -98,20 +110,20 @@ fun ModifierGroupListView(viewModel: ArticlesViewModel) {
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(
-                    horizontal = AvoqadoTheme.spacing.lg,
-                    vertical = AvoqadoTheme.spacing.md,
+                    horizontal = contentHorizontalPadding,
+                    vertical = headerVerticalPadding,
                 ),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
                 text = "Modificadores",
-                style = MaterialTheme.typography.titleMedium,
+                style = if (denseListMode) MaterialTheme.typography.titleSmall else MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onSurface,
             )
             Spacer(modifier = Modifier.weight(1f))
             Box(
                 modifier = Modifier
-                    .size(36.dp)
+                    .size(if (denseListMode) 34.dp else 36.dp)
                     .background(
                         color = MaterialTheme.colorScheme.primary,
                         shape = CircleShape,
@@ -122,14 +134,19 @@ fun ModifierGroupListView(viewModel: ArticlesViewModel) {
                 Icon(
                     imageVector = Icons.Filled.Add,
                     contentDescription = "Nuevo grupo de modificadores",
-                    tint = Color.White,
-                    modifier = Modifier.size(20.dp),
+                    tint = MaterialTheme.colorScheme.onPrimary,
+                    modifier = Modifier.size(if (denseListMode) 18.dp else 20.dp),
                 )
             }
         }
 
         // MARK: - Content
-        if (modifierGroups.isEmpty()) {
+        if (isLoading && modifierGroups.isEmpty()) {
+            AvoqadoLoadingState(
+                message = "Cargando modificadores...",
+                compact = denseListMode,
+            )
+        } else if (modifierGroups.isEmpty()) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -164,13 +181,14 @@ fun ModifierGroupListView(viewModel: ArticlesViewModel) {
             LazyColumn(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(horizontal = AvoqadoTheme.spacing.lg),
-                verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
+                    .padding(horizontal = contentHorizontalPadding),
+                verticalArrangement = Arrangement.spacedBy(if (denseListMode) AvoqadoTheme.spacing.xs else AvoqadoTheme.spacing.sm),
             ) {
                 item { /* top padding */ }
                 items(modifierGroups, key = { it.id }) { group ->
                     ModifierGroupCard(
                         group = group,
+                        denseMode = denseListMode,
                         isExpanded = group.id in expandedGroupIds,
                         onToggleExpand = {
                             expandedGroupIds = if (group.id in expandedGroupIds) {
@@ -224,6 +242,7 @@ fun ModifierGroupListView(viewModel: ArticlesViewModel) {
 @Composable
 private fun ModifierGroupCard(
     group: ModifierGroup,
+    denseMode: Boolean,
     isExpanded: Boolean,
     onToggleExpand: () -> Unit,
     onEditGroup: () -> Unit,
@@ -257,8 +276,8 @@ private fun ModifierGroupCard(
                     .fillMaxWidth()
                     .padding(
                         start = AvoqadoTheme.spacing.xs,
-                        top = AvoqadoTheme.spacing.sm,
-                        bottom = AvoqadoTheme.spacing.sm,
+                        top = if (denseMode) AvoqadoTheme.spacing.xs else AvoqadoTheme.spacing.sm,
+                        bottom = if (denseMode) AvoqadoTheme.spacing.xs else AvoqadoTheme.spacing.sm,
                         end = AvoqadoTheme.spacing.sm,
                     ),
                 verticalAlignment = Alignment.CenterVertically,
@@ -267,13 +286,13 @@ private fun ModifierGroupCard(
                 // Expand/Collapse chevron
                 IconButton(
                     onClick = onToggleExpand,
-                    modifier = Modifier.size(32.dp),
+                    modifier = Modifier.size(if (denseMode) 30.dp else 32.dp),
                 ) {
                     Icon(
                         imageVector = if (isExpanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
                         contentDescription = if (isExpanded) "Colapsar" else "Expandir",
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(20.dp),
+                        modifier = Modifier.size(if (denseMode) 18.dp else 20.dp),
                     )
                 }
 
@@ -288,18 +307,18 @@ private fun ModifierGroupCard(
                     // Group name
                     Text(
                         text = group.name,
-                        style = MaterialTheme.typography.bodyMedium,
+                        style = if (denseMode) MaterialTheme.typography.bodySmall else MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurface,
                         modifier = Modifier.weight(1f, fill = false),
                     )
 
                     // Required / Optional badge
-                    RequiredBadge(required = group.required)
+                    RequiredBadge(required = group.required, denseMode = denseMode)
 
                     // Modifier count
                     Text(
                         text = "${group.modifierCount} opciones",
-                        style = MaterialTheme.typography.bodySmall,
+                        style = if (denseMode) MaterialTheme.typography.labelSmall else MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
 
@@ -309,7 +328,7 @@ private fun ModifierGroupCard(
                             imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
                             contentDescription = null,
                             tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.size(16.dp),
+                            modifier = Modifier.size(if (denseMode) 14.dp else 16.dp),
                         )
 
                         DropdownMenu(
@@ -365,6 +384,7 @@ private fun ModifierGroupCard(
                         modifiers.forEach { modifier ->
                             ModifierRow(
                                 modifier = modifier,
+                                denseMode = denseMode,
                                 onTap = { onModifierTap(modifier) },
                             )
                         }
@@ -378,7 +398,10 @@ private fun ModifierGroupCard(
 // MARK: - Required Badge
 
 @Composable
-private fun RequiredBadge(required: Boolean) {
+private fun RequiredBadge(
+    required: Boolean,
+    denseMode: Boolean,
+) {
     val bgColor = if (required) Info.copy(alpha = 0.15f) else MaterialTheme.colorScheme.outlineVariant
     val textColor = if (required) Info else MaterialTheme.colorScheme.onSurfaceVariant
     val label = if (required) "Requerido" else "Opcional"
@@ -389,7 +412,10 @@ private fun RequiredBadge(required: Boolean) {
                 color = bgColor,
                 shape = RoundedCornerShape(50),
             )
-            .padding(horizontal = AvoqadoTheme.spacing.sm, vertical = 2.dp),
+            .padding(
+                horizontal = AvoqadoTheme.spacing.sm,
+                vertical = if (denseMode) 1.dp else 2.dp,
+            ),
     ) {
         Text(
             text = label,
@@ -404,6 +430,7 @@ private fun RequiredBadge(required: Boolean) {
 @Composable
 private fun ModifierRow(
     modifier: ArticleModifier,
+    denseMode: Boolean,
     onTap: () -> Unit,
 ) {
     Row(
@@ -413,8 +440,8 @@ private fun ModifierRow(
             .padding(
                 start = 40.dp,
                 end = AvoqadoTheme.spacing.sm,
-                top = AvoqadoTheme.spacing.sm,
-                bottom = AvoqadoTheme.spacing.sm,
+                top = if (denseMode) AvoqadoTheme.spacing.xs else AvoqadoTheme.spacing.sm,
+                bottom = if (denseMode) AvoqadoTheme.spacing.xs else AvoqadoTheme.spacing.sm,
             ),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
@@ -422,7 +449,7 @@ private fun ModifierRow(
         // Modifier name
         Text(
             text = modifier.name,
-            style = MaterialTheme.typography.bodyMedium,
+            style = if (denseMode) MaterialTheme.typography.bodySmall else MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurface,
             modifier = Modifier.weight(1f),
         )
@@ -432,7 +459,7 @@ private fun ModifierRow(
         if (priceText.isNotEmpty()) {
             Text(
                 text = priceText,
-                style = MaterialTheme.typography.bodySmall,
+                style = if (denseMode) MaterialTheme.typography.labelSmall else MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
@@ -442,7 +469,7 @@ private fun ModifierRow(
             imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
             contentDescription = null,
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.size(16.dp),
+            modifier = Modifier.size(if (denseMode) 14.dp else 16.dp),
         )
     }
 }

@@ -196,18 +196,35 @@ fun PurchaseOrderDetailView(
             }
         }
 
-        // Receive stock button (only for non-completed/cancelled orders)
-        if (order.status != "RECEIVED" && order.status != "CANCELLED") {
+        // Action buttons (parity with iOS flow states)
+        if (order.canBeSent || order.canReceiveStock) {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(AvoqadoTheme.spacing.lg),
+                contentAlignment = Alignment.CenterEnd,
             ) {
-                PrimaryButton(
-                    text = "Recibir mercancía",
-                    onClick = { showReceiveSheet = true },
-                    isLoading = isSaving,
-                )
+                when {
+                    order.canBeSent -> {
+                        PrimaryButton(
+                            text = "Enviar orden",
+                            onClick = {
+                                viewModel.updatePurchaseOrderStatus(
+                                    poId = order.id,
+                                    status = "SENT",
+                                )
+                            },
+                            isLoading = isSaving,
+                        )
+                    }
+                    order.canReceiveStock -> {
+                        PrimaryButton(
+                            text = "Recibir mercancía",
+                            onClick = { showReceiveSheet = true },
+                            isLoading = isSaving,
+                        )
+                    }
+                }
             }
         }
     }

@@ -3,6 +3,12 @@ package com.avoqado.pos.pos.presentation.cart
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.avoqado.pos.auth.data.AuthRepository
+import com.avoqado.pos.payment.data.OrderRepository
+import com.avoqado.pos.payment.data.model.CreateOrderRequest
+import com.avoqado.pos.payment.data.model.OrderItemRequest
+import com.avoqado.pos.payment.data.model.OrderModifierRequest
+import com.avoqado.pos.pos.data.ActiveCartState
 import com.avoqado.pos.pos.data.DiscountsRepository
 import com.avoqado.pos.pos.data.ProductsRepository
 import com.avoqado.pos.pos.data.SavedCartsRepository
@@ -30,16 +36,34 @@ data class CartState(
     val items: List<CartItem> = emptyList(),
     val orderDiscount: Discount? = null,
     val orderNote: String? = null,
+    val orderTaxPercent: Int? = null,
 ) {
     val itemCount: Int get() = items.sumOf { it.quantity }
     val subtotalCents: Int get() = items.sumOf { it.totalPrice }
+    val taxableSubtotalCents: Int get() = items.filter { it.type is CartItemType.ProductItem }.sumOf { it.totalPrice }
     val discountCents: Int
         get() = orderDiscount?.calculateDiscount(subtotalCents) ?: 0
-    val totalCents: Int get() = (subtotalCents - discountCents).coerceAtLeast(0)
+    val taxableDiscountCents: Int
+        get() = if (subtotalCents <= 0 || discountCents <= 0 || taxableSubtotalCents <= 0) {
+            0
+        } else {
+            ((discountCents.toDouble() * taxableSubtotalCents.toDouble()) / subtotalCents.toDouble()).toInt()
+                .coerceAtMost(taxableSubtotalCents)
+        }
+    val taxableAmountAfterDiscountCents: Int
+        get() = (taxableSubtotalCents - taxableDiscountCents).coerceAtLeast(0)
+    val taxCents: Int
+        get() {
+            val percent = orderTaxPercent ?: return 0
+            if (percent <= 0 || taxableAmountAfterDiscountCents <= 0) return 0
+            return ((taxableAmountAfterDiscountCents * percent) / 100.0).toInt()
+        }
+    val totalCents: Int get() = (subtotalCents - discountCents + taxCents).coerceAtLeast(0)
     val isEmpty: Boolean get() = items.isEmpty()
 
     val subtotalDisplay: String get() = formatCents(subtotalCents)
     val discountDisplay: String get() = formatCents(discountCents)
+    val taxDisplay: String get() = formatCents(taxCents)
     val totalDisplay: String get() = formatCents(totalCents)
 }
 
@@ -52,10 +76,30 @@ class CartViewModel @Inject constructor(
     val productsRepository: ProductsRepository,
     val discountsRepository: DiscountsRepository,
     private val savedCartsRepository: SavedCartsRepository,
+    private val authRepository: AuthRepository,
+    private val activeCartState: ActiveCartState,
+    private val orderRepository: OrderRepository,
 ) : ViewModel() {
 
     private val _cartState = MutableStateFlow(CartState())
     val cartState: StateFlow<CartState> = _cartState.asStateFlow()
+
+    init {
+        // Clear cart when venue changes (like iOS)
+        viewModelScope.launch {
+            authRepository.venueSwitched.collect {
+                Log.d("🛒", "Venue switched — clearing cart")
+                clearCart()
+            }
+        }
+
+        // Keep ActiveCartState in sync so other screens can check if cart has items
+        viewModelScope.launch {
+            _cartState.collect { state ->
+                activeCartState.update(state.itemCount, state.totalDisplay)
+            }
+        }
+    }
 
     val products = productsRepository.products
     val categories = productsRepository.categories
@@ -230,6 +274,11 @@ class CartViewModel @Inject constructor(
         _cartState.update { it.copy(orderDiscount = discount) }
     }
 
+    fun applyOrderTaxPercent(taxPercent: Int?) {
+        val normalized = taxPercent?.coerceIn(0, 100)?.takeIf { it > 0 }
+        _cartState.update { it.copy(orderTaxPercent = normalized) }
+    }
+
     fun setOrderNote(note: String?) {
         _cartState.update { it.copy(orderNote = note) }
     }
@@ -312,6 +361,7 @@ class CartViewModel @Inject constructor(
             },
             orderDiscount = state.orderDiscount,
             orderNote = state.orderNote,
+            orderTaxPercent = state.orderTaxPercent,
         )
         savedCartsRepository.saveCart(savedCart)
         clearCart()
@@ -355,6 +405,7 @@ class CartViewModel @Inject constructor(
             items = items,
             orderDiscount = savedCart.orderDiscount,
             orderNote = savedCart.orderNote,
+            orderTaxPercent = savedCart.orderTaxPercent,
         )
         savedCartsRepository.deleteCart(savedCart.id)
         Log.d("🛒", "Restored saved cart: ${savedCart.name}")
@@ -363,6 +414,66 @@ class CartViewModel @Inject constructor(
     fun deleteSavedCart(cartId: String) {
         savedCartsRepository.deleteCart(cartId)
         Log.d("🛒", "Deleted saved cart: $cartId")
+    }
+
+    suspend fun createPayLaterOrder(customerId: String): Result<String> {
+        val currentCart = _cartState.value
+        if (currentCart.isEmpty) {
+            return Result.failure(Exception("No hay articulos en el carrito"))
+        }
+        if (customerId.isBlank()) {
+            return Result.failure(Exception("Selecciona un cliente para diferir el pago"))
+        }
+
+        val items = currentCart.items.map { item ->
+            OrderItemRequest(
+                productId = when (val type = item.type) {
+                    is CartItemType.ProductItem -> type.productId
+                    CartItemType.CustomAmount -> null
+                },
+                name = item.name,
+                quantity = item.quantity,
+                unitPrice = item.effectiveUnitPrice,
+                modifiers = item.selectedModifiers.map { modifier ->
+                    OrderModifierRequest(
+                        modifierId = modifier.modifierId,
+                        name = modifier.modifierName,
+                        price = modifier.priceInCents,
+                    )
+                },
+                note = item.itemNote,
+                isCortesia = item.isCortesia,
+            )
+        }
+
+        val orderRequest = CreateOrderRequest(
+            items = items,
+            subtotal = currentCart.subtotalCents,
+            discount = currentCart.discountCents,
+            tip = 0,
+            total = currentCart.totalCents,
+            paymentMethod = "PAY_LATER",
+            note = currentCart.orderNote,
+            splitType = "FULLPAYMENT",
+        )
+
+        return orderRepository
+            .createOrder(
+                request = orderRequest,
+                customerId = customerId,
+                orderType = "DINE_IN",
+            )
+            .fold(
+                onSuccess = { response ->
+                    val orderId = response.data?.id
+                    if (orderId.isNullOrBlank()) {
+                        Result.failure(Exception("No se pudo obtener la orden creada"))
+                    } else {
+                        Result.success(orderId)
+                    }
+                },
+                onFailure = { error -> Result.failure(error) },
+            )
     }
 
     fun getCartForPayment(): CartState = _cartState.value

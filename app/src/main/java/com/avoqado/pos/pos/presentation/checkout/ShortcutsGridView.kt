@@ -46,6 +46,7 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -62,6 +63,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.avoqado.pos.designsystem.components.AvoqadoDialog
+import com.avoqado.pos.designsystem.components.AvoqadoFullScreenModal
 import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.theme.ActionGreen
 import com.avoqado.pos.designsystem.theme.ActionOrange
@@ -125,6 +128,10 @@ fun ShortcutsGridView(
     cartViewModel: CartViewModel,
     discountsRepository: DiscountsRepository,
     onCustomerSearch: () -> Unit = {},
+    reopenPayLaterToken: Int = 0,
+    selectedPayLaterCustomerName: String? = null,
+    onConfirmPayLater: () -> Unit = {},
+    isConfirmingPayLater: Boolean = false,
     onCreateItem: () -> Unit = {},
     onProductTap: (Product) -> Unit = {},
     canCreateProducts: Boolean = true,
@@ -132,13 +139,26 @@ fun ShortcutsGridView(
     val cartState by cartViewModel.cartState.collectAsState()
     val allProducts by cartViewModel.products.collectAsState()
     var currentScreen by remember { mutableStateOf(ShortcutsScreen.MAIN) }
+    var showPayLaterModal by remember { mutableStateOf(false) }
+
+    LaunchedEffect(reopenPayLaterToken) {
+        if (reopenPayLaterToken > 0) {
+            showPayLaterModal = true
+        }
+    }
 
     when (currentScreen) {
         ShortcutsScreen.MAIN -> {
             ShortcutsMainGrid(
                 cartState = cartState,
                 allProducts = allProducts,
-                onNavigate = { currentScreen = it },
+                onNavigate = { screen ->
+                    if (screen == ShortcutsScreen.PAY_LATER) {
+                        showPayLaterModal = true
+                    } else {
+                        currentScreen = screen
+                    }
+                },
                 onProductTap = onProductTap,
                 canCreateProducts = canCreateProducts,
             )
@@ -170,11 +190,7 @@ fun ShortcutsGridView(
             )
         }
         ShortcutsScreen.PAY_LATER -> {
-            PayLaterSubView(
-                cartViewModel = cartViewModel,
-                onBack = { currentScreen = ShortcutsScreen.MAIN },
-                onCustomerSearch = onCustomerSearch,
-            )
+            currentScreen = ShortcutsScreen.MAIN
         }
         ShortcutsScreen.SAVED_CARTS -> {
             SavedCartsSubView(
@@ -188,6 +204,25 @@ fun ShortcutsGridView(
                 onCreateNew = onCreateItem,
             )
         }
+    }
+
+    if (showPayLaterModal) {
+        PayLaterFullScreenModal(
+            cartState = cartState,
+            selectedCustomerName = selectedPayLaterCustomerName,
+            isConfirmingPayLater = isConfirmingPayLater,
+            onDismiss = {
+                showPayLaterModal = false
+            },
+            onCustomerSearch = {
+                showPayLaterModal = false
+                onCustomerSearch()
+            },
+            onConfirmPayLater = {
+                onConfirmPayLater()
+                showPayLaterModal = false
+            },
+        )
     }
 }
 
@@ -1135,54 +1170,62 @@ private fun CortesiaSubView(
 
     // Confirmation dialog
     if (showConfirmation) {
-        androidx.compose.material3.AlertDialog(
-            onDismissRequest = { showConfirmation = false },
-            title = { Text("Confirmar cortesia?") },
-            text = {
-                Text("Se aplicara un descuento del 100% (${cartState.subtotalDisplay}) al pedido.")
+        AvoqadoDialog(
+            title = "Confirmar cortesía",
+            description = "Se aplicará un descuento del 100% (${cartState.subtotalDisplay}) al pedido.",
+            onDismiss = { showConfirmation = false },
+            actionButton = {
+                PrimaryButton(
+                    text = "Confirmar",
+                    onClick = {
+                        showConfirmation = false
+                        val discount = Discount(
+                            id = "cortesia_${System.currentTimeMillis()}",
+                            name = "Cortesia",
+                            value = 100.0,
+                            type = "PERCENTAGE",
+                            scope = "ORDER",
+                        )
+                        cartViewModel.applyOrderDiscount(discount)
+                        onBack()
+                    },
+                    fullWidth = true,
+                )
             },
-            confirmButton = {
-                androidx.compose.material3.TextButton(onClick = {
-                    showConfirmation = false
-                    val discount = Discount(
-                        id = "cortesia_${System.currentTimeMillis()}",
-                        name = "Cortesia",
-                        value = 100.0,
-                        type = "PERCENTAGE",
-                        scope = "ORDER",
-                    )
-                    cartViewModel.applyOrderDiscount(discount)
-                    onBack()
-                }) {
-                    Text("Confirmar")
-                }
-            },
-            dismissButton = {
-                androidx.compose.material3.TextButton(onClick = { showConfirmation = false }) {
-                    Text("Cancelar")
-                }
-            },
-        )
+        ) {
+            Text(
+                text = "Si no era tu intención, cierra con la X.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 
-// MARK: - Pay Later Sub View (matching iOS: show total + customer search)
+// MARK: - Pay Later Fullscreen Modal
 
 @Composable
-private fun PayLaterSubView(
-    cartViewModel: CartViewModel,
-    onBack: () -> Unit,
+private fun PayLaterFullScreenModal(
+    cartState: CartState,
+    onDismiss: () -> Unit,
     onCustomerSearch: () -> Unit,
+    selectedCustomerName: String?,
+    onConfirmPayLater: () -> Unit,
+    isConfirmingPayLater: Boolean,
 ) {
-    val cartState by cartViewModel.cartState.collectAsState()
-
-    Column(modifier = Modifier.fillMaxSize()) {
-        BreadcrumbHeader(title = "Pagar despues", onBack = onBack)
-
+    AvoqadoFullScreenModal(
+        title = "Pagar despues",
+        onDismiss = onDismiss,
+        primaryActionText = if (selectedCustomerName.isNullOrBlank()) null else {
+            if (isConfirmingPayLater) "Continuando..." else "Continuar"
+        },
+        onPrimaryAction = if (selectedCustomerName.isNullOrBlank()) null else onConfirmPayLater,
+        primaryActionEnabled = !isConfirmingPayLater,
+    ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .padding(AvoqadoTheme.spacing.lg),
+                .padding(horizontal = AvoqadoTheme.spacing.lg),
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
         ) {
@@ -1233,10 +1276,32 @@ private fun PayLaterSubView(
 
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xl))
 
-            PrimaryButton(
-                text = "Seleccionar cliente",
-                onClick = onCustomerSearch,
-            )
+            if (selectedCustomerName.isNullOrBlank()) {
+                PrimaryButton(
+                    text = "Seleccionar cliente",
+                    onClick = onCustomerSearch,
+                )
+            } else {
+                Text(
+                    text = "Cliente seleccionado",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xs))
+                Text(
+                    text = selectedCustomerName,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
+                OutlinedButton(
+                    onClick = onCustomerSearch,
+                    enabled = !isConfirmingPayLater,
+                    shape = RoundedCornerShape(50),
+                ) {
+                    Text("Cambiar cliente")
+                }
+            }
         }
     }
 }

@@ -11,9 +11,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.FormatListBulleted
 import androidx.compose.material.icons.filled.Checklist
 import androidx.compose.material.icons.filled.ChevronRight
-import androidx.compose.material.icons.filled.FormatListBulleted
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -56,7 +56,7 @@ fun StockCountTypeSheet(
 
         // Cycle count
         CountTypeRow(
-            icon = Icons.Filled.FormatListBulleted,
+            icon = Icons.AutoMirrored.Filled.FormatListBulleted,
             title = StockCountType.CYCLE.label,
             subtitle = StockCountType.CYCLE.description,
             enabled = !isSaving,

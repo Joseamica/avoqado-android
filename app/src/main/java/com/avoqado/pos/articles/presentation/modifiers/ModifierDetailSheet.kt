@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -21,7 +22,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenuItem
@@ -32,13 +32,11 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MenuAnchorType
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -56,6 +54,7 @@ import com.avoqado.pos.articles.data.model.MeasurementUnit
 import com.avoqado.pos.articles.data.model.ModifierInventoryMode
 import com.avoqado.pos.articles.data.model.RawMaterial
 import com.avoqado.pos.articles.presentation.ArticlesViewModel
+import com.avoqado.pos.designsystem.components.AvoqadoFullScreenModal
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 
 // MARK: - ModifierDetailSheet
@@ -94,26 +93,33 @@ fun ModifierDetailSheet(
     }
     var materialSearchQuery by remember { mutableStateOf("") }
 
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
+    AvoqadoFullScreenModal(
+        title = "Editar modificador",
+        onDismiss = onDismiss,
+        primaryActionText = "Guardar",
+        onPrimaryAction = {
+            viewModel.updateModifier(
+                groupId = groupId,
+                modifierId = modifier.id,
+                name = name,
+                price = price.toDoubleOrNull() ?: 0.0,
+                active = active,
+                rawMaterialId = if (trackInventory) selectedMaterial?.id else null,
+                inventoryMode = if (trackInventory) inventoryMode.name else null,
+                quantityPerUnit = if (trackInventory) quantityPerUnit.toDoubleOrNull() else null,
+                unit = if (trackInventory) selectedUnit?.name else null,
+            )
+            onDismiss()
+        },
+        primaryActionEnabled = name.isNotBlank() && !isSaving,
     ) {
         Column(
             modifier = Modifier
-                .fillMaxWidth()
+                .fillMaxSize()
                 .verticalScroll(rememberScrollState())
                 .padding(AvoqadoTheme.spacing.lg),
             verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.lg),
         ) {
-            // MARK: - Title
-            Text(
-                text = "Editar modificador",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-
             // MARK: - DETALLES section
             Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
                 Text(
@@ -347,38 +353,6 @@ fun ModifierDetailSheet(
                     }
                 }
             }
-
-            // MARK: - Action buttons
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                TextButton(onClick = onDismiss) {
-                    Text("Cancelar")
-                }
-                Spacer(modifier = Modifier.weight(1f))
-                Button(
-                    onClick = {
-                        viewModel.updateModifier(
-                            groupId = groupId,
-                            modifierId = modifier.id,
-                            name = name,
-                            price = price.toDoubleOrNull() ?: 0.0,
-                            active = active,
-                            rawMaterialId = if (trackInventory) selectedMaterial?.id else null,
-                            inventoryMode = if (trackInventory) inventoryMode.name else null,
-                            quantityPerUnit = if (trackInventory) quantityPerUnit.toDoubleOrNull() else null,
-                            unit = if (trackInventory) selectedUnit?.name else null,
-                        )
-                        onDismiss()
-                    },
-                    enabled = name.isNotBlank() && !isSaving,
-                ) {
-                    Text("Guardar")
-                }
-            }
-
-            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxxl))
         }
     }
 }

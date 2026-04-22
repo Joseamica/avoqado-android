@@ -15,6 +15,15 @@ data class PurchaseOrder(
     val createdAt: String,
     val createdByName: String,
 ) {
+    val canBeSent: Boolean
+        get() = status == "DRAFT"
+
+    val canReceiveStock: Boolean
+        get() = status == "SENT" || status == "PARTIALLY_RECEIVED"
+
+    val canBeCancelled: Boolean
+        get() = status != "RECEIVED" && status != "CANCELLED"
+
     val statusDisplay: String
         get() = when (status) {
             "DRAFT" -> "Borrador"

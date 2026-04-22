@@ -2,6 +2,7 @@ package com.avoqado.pos.articles.presentation.modifiers
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -14,17 +15,13 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -40,6 +37,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.avoqado.pos.articles.data.model.ModifierGroup
 import com.avoqado.pos.articles.presentation.ArticlesViewModel
+import com.avoqado.pos.designsystem.components.AvoqadoFullScreenModal
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 
 // MARK: - Local form state
@@ -54,7 +52,6 @@ private data class InlineModifierState(
 
 // MARK: - ModifierGroupFormSheet
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ModifierGroupFormSheet(
     group: ModifierGroup?,
@@ -86,8 +83,6 @@ fun ModifierGroupFormSheet(
     }
     var showDeleteModifierDialog by remember { mutableStateOf<Int?>(null) }
 
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-
     // MARK: - Delete modifier confirmation dialog
     if (showDeleteModifierDialog != null) {
         val index = showDeleteModifierDialog!!
@@ -117,24 +112,55 @@ fun ModifierGroupFormSheet(
     }
 
     // MARK: - Sheet
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
+    AvoqadoFullScreenModal(
+        title = if (isEditing) "Editar grupo" else "Nuevo grupo",
+        onDismiss = onDismiss,
+        primaryActionText = if (isEditing) "Guardar" else "Crear",
+        onPrimaryAction = {
+            if (isEditing) {
+                viewModel.updateModifierGroup(
+                    groupId = group!!.id,
+                    name = groupName,
+                    required = required,
+                    allowMultiple = allowMultiple,
+                    minSelections = if (allowMultiple) minSelections.toIntOrNull() else null,
+                    maxSelections = if (allowMultiple) maxSelections.toIntOrNull() else null,
+                    originalModifiers = group.modifiers ?: emptyList(),
+                    currentModifiers = modifiers.map {
+                        ArticlesViewModel.InlineModifier(
+                            id = it.id,
+                            name = it.name,
+                            price = it.price.toDoubleOrNull() ?: 0.0,
+                            isDeleted = it.isDeleted,
+                        )
+                    },
+                )
+            } else {
+                viewModel.createModifierGroup(
+                    name = groupName,
+                    required = required,
+                    allowMultiple = allowMultiple,
+                    minSelections = if (allowMultiple) minSelections.toIntOrNull() else null,
+                    maxSelections = if (allowMultiple) maxSelections.toIntOrNull() else null,
+                    modifiers = modifiers.filter { !it.isDeleted }.map {
+                        ArticlesViewModel.InlineModifier(
+                            name = it.name,
+                            price = it.price.toDoubleOrNull() ?: 0.0,
+                        )
+                    },
+                )
+            }
+            onDismiss()
+        },
+        primaryActionEnabled = groupName.isNotBlank() && !isSaving,
     ) {
         Column(
             modifier = Modifier
-                .fillMaxWidth()
+                .fillMaxSize()
                 .verticalScroll(rememberScrollState())
                 .padding(AvoqadoTheme.spacing.lg),
             verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.lg),
         ) {
-            // MARK: - Title
-            Text(
-                text = if (isEditing) "Editar grupo" else "Nuevo grupo",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-
             // MARK: - GROUP DETAILS section
             OutlinedTextField(
                 value = groupName,
@@ -247,58 +273,6 @@ fun ModifierGroupFormSheet(
                         contentDescription = null,
                     )
                     Text("Agregar")
-                }
-            }
-
-            // MARK: - Action buttons
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                TextButton(onClick = onDismiss) {
-                    Text("Cancelar")
-                }
-                Spacer(modifier = Modifier.weight(1f))
-                Button(
-                    onClick = {
-                        if (isEditing) {
-                            viewModel.updateModifierGroup(
-                                groupId = group!!.id,
-                                name = groupName,
-                                required = required,
-                                allowMultiple = allowMultiple,
-                                minSelections = if (allowMultiple) minSelections.toIntOrNull() else null,
-                                maxSelections = if (allowMultiple) maxSelections.toIntOrNull() else null,
-                                originalModifiers = group.modifiers ?: emptyList(),
-                                currentModifiers = modifiers.map {
-                                    ArticlesViewModel.InlineModifier(
-                                        id = it.id,
-                                        name = it.name,
-                                        price = it.price.toDoubleOrNull() ?: 0.0,
-                                        isDeleted = it.isDeleted,
-                                    )
-                                },
-                            )
-                        } else {
-                            viewModel.createModifierGroup(
-                                name = groupName,
-                                required = required,
-                                allowMultiple = allowMultiple,
-                                minSelections = if (allowMultiple) minSelections.toIntOrNull() else null,
-                                maxSelections = if (allowMultiple) maxSelections.toIntOrNull() else null,
-                                modifiers = modifiers.filter { !it.isDeleted }.map {
-                                    ArticlesViewModel.InlineModifier(
-                                        name = it.name,
-                                        price = it.price.toDoubleOrNull() ?: 0.0,
-                                    )
-                                },
-                            )
-                        }
-                        onDismiss()
-                    },
-                    enabled = groupName.isNotBlank() && !isSaving,
-                ) {
-                    Text(text = if (isEditing) "Guardar" else "Crear")
                 }
             }
         }

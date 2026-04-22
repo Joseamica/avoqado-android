@@ -37,10 +37,11 @@ fun NumericKeypadView(
     onAddToCart: () -> Unit,
     onNoteTap: () -> Unit = {},
     noteText: String = "",
+    useCompactSizing: Boolean = false,
 ) {
     val formattedAmount = String.format("$%.2f", amountCents / 100.0)
     val screenHeight = LocalConfiguration.current.screenHeightDp
-    val isCompact = screenHeight < 700
+    val isCompact = useCompactSizing || screenHeight < 700
 
     val amountFontSize = if (isCompact) 36.sp else 60.sp
     val keypadFontSize = if (isCompact) 24.sp else 36.sp

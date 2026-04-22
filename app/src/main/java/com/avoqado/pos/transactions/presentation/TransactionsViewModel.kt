@@ -4,6 +4,7 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
+import com.avoqado.pos.core.domain.RoleManager
 import com.avoqado.pos.payment.data.OrderRepository
 import com.avoqado.pos.transactions.data.RefundItem
 import com.avoqado.pos.transactions.data.RefundRepository
@@ -34,8 +35,9 @@ sealed interface RefundUiState {
 @HiltViewModel
 class TransactionsViewModel @Inject constructor(
     private val repository: TransactionRepository,
-    private val refundRepository: RefundRepository,
-    private val cashDrawerRepository: CashDrawerRepository,
+    val refundRepository: RefundRepository,
+    val cashDrawerRepository: CashDrawerRepository,
+    val roleManager: RoleManager,
     private val orderRepository: OrderRepository,
 ) : ViewModel() {
 

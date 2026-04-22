@@ -76,6 +76,10 @@ private fun TabletArticlesLayout(
     val selectedSection by viewModel.selectedSection.collectAsState()
     val errorMessage by viewModel.errorMessage.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
+    val visibleSections = remember {
+        // Próximamente: habilitar sección "Opciones" cuando esté lista para producción.
+        ArticleSection.entries.filterNot { it == ArticleSection.OPTIONS }
+    }
 
     LaunchedEffect(errorMessage) {
         errorMessage?.let {
@@ -105,7 +109,7 @@ private fun TabletArticlesLayout(
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
                 Text(
                     text = "Artículos",
-                    style = MaterialTheme.typography.titleLarge,
+                    style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurface,
                 )
@@ -117,7 +121,7 @@ private fun TabletArticlesLayout(
 
             // Section rows
             Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-                ArticleSection.entries.forEach { section ->
+                visibleSections.forEach { section ->
                     SectionRow(
                         section = section,
                         isSelected = section == selectedSection,
@@ -156,6 +160,10 @@ private fun PhoneArticlesLayout(
 ) {
     val errorMessage by viewModel.errorMessage.collectAsState()
     val snackbarHostState = remember { SnackbarHostState() }
+    val visibleSections = remember {
+        // Próximamente: habilitar sección "Opciones" cuando esté lista para producción.
+        ArticleSection.entries.filterNot { it == ArticleSection.OPTIONS }
+    }
 
     LaunchedEffect(errorMessage) {
         errorMessage?.let {
@@ -183,7 +191,7 @@ private fun PhoneArticlesLayout(
                 Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.md))
                 Text(
                     text = section.label,
-                    style = MaterialTheme.typography.titleLarge,
+                    style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurface,
                 )
@@ -212,7 +220,7 @@ private fun PhoneArticlesLayout(
                 Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.md))
                 Text(
                     text = "Artículos",
-                    style = MaterialTheme.typography.titleLarge,
+                    style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurface,
                 )
@@ -225,7 +233,7 @@ private fun PhoneArticlesLayout(
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState()),
             ) {
-                ArticleSection.entries.forEach { section ->
+                visibleSections.forEach { section ->
                     SectionRow(
                         section = section,
                         isSelected = false,
@@ -285,7 +293,7 @@ private fun SectionRow(
 
         Text(
             text = section.label,
-            style = MaterialTheme.typography.bodyLarge,
+            style = MaterialTheme.typography.bodyMedium,
             color = if (isSelected) {
                 MaterialTheme.colorScheme.onSurface
             } else {

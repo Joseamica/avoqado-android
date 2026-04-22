@@ -4,6 +4,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -14,26 +15,34 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.border
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.material.icons.Icons
+import com.avoqado.pos.designsystem.components.AvoqadoDialog
+import com.avoqado.pos.designsystem.components.AvoqadoPhoneInput
+import com.avoqado.pos.designsystem.components.AvoqadoPillTextField
+import com.avoqado.pos.designsystem.components.AvoqadoSuccessToast
 import com.avoqado.pos.designsystem.components.CircleBackButton
+import com.avoqado.pos.designsystem.components.Countries
+import com.avoqado.pos.designsystem.components.Country
+import com.avoqado.pos.designsystem.components.PrimaryButton
 import androidx.compose.material.icons.automirrored.filled.ReceiptLong
 import androidx.compose.material.icons.filled.CreditCard
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Payments
 import androidx.compose.material.icons.filled.Person
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -44,7 +53,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -52,6 +63,71 @@ import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.transactions.data.model.Transaction
+import com.avoqado.pos.transactions.data.model.TransactionRefund
+
+// MARK: - Responsive metrics
+//
+// The detail panel renders in two contexts: phone fullscreen (~360-400dp) and
+// tablet split (~500-700dp). Hardcoded 28sp/18sp/64dp values looked enormous
+// in both. Metrics scale based on the panel's actual width.
+
+private data class DetailMetrics(
+    val sectionTitleSize: TextUnit,
+    val bodySize: TextUnit,
+    val smallSize: TextUnit,
+    val totalBoldSize: TextUnit,
+    val actionButtonHeight: Dp,
+    val actionButtonTextSize: TextUnit,
+    val horizontalPadding: Dp,
+    val iconSize: Dp,
+    val iconRowVerticalPadding: Dp,
+    val sectionBottomSpacing: Dp,
+    val sectionTopSpacing: Dp,
+)
+
+private val CompactMetrics = DetailMetrics(
+    sectionTitleSize = 18.sp,
+    bodySize = 14.sp,
+    smallSize = 12.sp,
+    totalBoldSize = 16.sp,
+    actionButtonHeight = 44.dp,
+    actionButtonTextSize = 14.sp,
+    horizontalPadding = 16.dp,
+    iconSize = 20.dp,
+    iconRowVerticalPadding = 10.dp,
+    sectionBottomSpacing = 24.dp,
+    sectionTopSpacing = 24.dp,
+)
+
+private val RegularMetrics = DetailMetrics(
+    sectionTitleSize = 20.sp,
+    bodySize = 15.sp,
+    smallSize = 13.sp,
+    totalBoldSize = 17.sp,
+    actionButtonHeight = 48.dp,
+    actionButtonTextSize = 15.sp,
+    horizontalPadding = 24.dp,
+    iconSize = 22.dp,
+    iconRowVerticalPadding = 12.dp,
+    sectionBottomSpacing = 28.dp,
+    sectionTopSpacing = 28.dp,
+)
+
+private val SpaciousMetrics = DetailMetrics(
+    sectionTitleSize = 24.sp,
+    bodySize = 17.sp,
+    smallSize = 15.sp,
+    totalBoldSize = 19.sp,
+    actionButtonHeight = 56.dp,
+    actionButtonTextSize = 16.sp,
+    horizontalPadding = 32.dp,
+    iconSize = 26.dp,
+    iconRowVerticalPadding = 16.dp,
+    sectionBottomSpacing = 36.dp,
+    sectionTopSpacing = 36.dp,
+)
+
+private val LocalDetailMetrics = compositionLocalOf { RegularMetrics }
 
 // MARK: - Transaction Detail Panel (matching iOS TransactionDetailView)
 
@@ -65,41 +141,48 @@ fun TransactionDetailPanel(
     val transaction by viewModel.selectedTransaction.collectAsState()
     val isLoadingDetail by viewModel.isLoadingDetail.collectAsState()
 
-    Box(
+    BoxWithConstraints(
         modifier = modifier.background(MaterialTheme.colorScheme.surface),
     ) {
-        when {
-            isLoadingDetail -> {
-                CircularProgressIndicator(
-                    modifier = Modifier.align(Alignment.Center),
-                )
-            }
-            transaction != null -> {
-                LoadedDetailView(
-                    transaction = transaction!!,
-                    showBackButton = showBackButton,
-                    onBack = { viewModel.clearSelection() },
-                    viewModel = viewModel,
-                )
-            }
-            else -> {
-                // Empty state (iPad right panel)
-                Column(
-                    modifier = Modifier.align(Alignment.Center),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.lg),
-                ) {
-                    Icon(
-                        Icons.Filled.Description,
-                        contentDescription = null,
-                        modifier = Modifier.size(48.dp),
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        val metrics = when {
+            maxWidth < 500.dp -> CompactMetrics
+            maxWidth < 900.dp -> RegularMetrics
+            else -> SpaciousMetrics
+        }
+        CompositionLocalProvider(LocalDetailMetrics provides metrics) {
+            when {
+                isLoadingDetail -> {
+                    CircularProgressIndicator(
+                        modifier = Modifier.align(Alignment.Center),
                     )
-                    Text(
-                        text = "Selecciona una transacción",
-                        style = MaterialTheme.typography.headlineMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                }
+                transaction != null -> {
+                    LoadedDetailView(
+                        transaction = transaction!!,
+                        showBackButton = showBackButton,
+                        onBack = { viewModel.clearSelection() },
+                        viewModel = viewModel,
                     )
+                }
+                else -> {
+                    // Empty state (iPad right panel)
+                    Column(
+                        modifier = Modifier.align(Alignment.Center),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.lg),
+                    ) {
+                        Icon(
+                            Icons.Filled.Description,
+                            contentDescription = null,
+                            modifier = Modifier.size(48.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
+                            text = "Selecciona una transacción",
+                            style = MaterialTheme.typography.headlineMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             }
         }
@@ -117,13 +200,33 @@ private fun LoadedDetailView(
 ) {
     // Receipt dialog states
     var showReceiptMethodDialog by remember { mutableStateOf(false) }
+    var showRefundSheet by remember { mutableStateOf(false) }
     var showEmailInput by remember { mutableStateOf(false) }
     var showWhatsAppInput by remember { mutableStateOf(false) }
     var emailAddress by remember { mutableStateOf("") }
     var whatsAppPhone by remember { mutableStateOf("") }
+    var whatsAppCountry by remember { mutableStateOf<Country>(Countries.byIso("MX")) }
+    var successToastChannel by remember { mutableStateOf<String?>(null) }
 
     val isSendingReceipt by viewModel.isSendingReceipt.collectAsState()
     val receiptResultMessage by viewModel.receiptResultMessage.collectAsState()
+    val metrics = LocalDetailMetrics.current
+
+    // Success → dismiss input dialog + show celebratory toast.
+    androidx.compose.runtime.LaunchedEffect(receiptResultMessage) {
+        val msg = receiptResultMessage ?: return@LaunchedEffect
+        val channel = when (msg) {
+            "Recibo enviado por correo" -> "correo"
+            "Recibo enviado por WhatsApp" -> "WhatsApp"
+            else -> null
+        }
+        if (channel != null) {
+            showEmailInput = false
+            showWhatsAppInput = false
+            successToastChannel = channel
+            viewModel.clearReceiptResult()
+        }
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
         // Back button (phone only)
@@ -137,14 +240,28 @@ private fun LoadedDetailView(
         // Fixed header
         Text(
             text = "Venta de ${transaction.totalDisplay}",
-            fontSize = 20.sp,
+            fontSize = metrics.bodySize,
             fontWeight = FontWeight.SemiBold,
             color = MaterialTheme.colorScheme.onSurface,
             textAlign = TextAlign.Center,
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(top = if (showBackButton) 0.dp else 24.dp, bottom = 12.dp),
+                .padding(top = if (showBackButton) 0.dp else 20.dp, bottom = 10.dp),
         )
+
+        // Cortesía badge: $0 payment with items that have value = fully comped order
+        if (transaction.amount == 0.0 && transaction.items.any { it.amount > 0 }) {
+            Text(
+                text = "• Cortesía •",
+                fontSize = metrics.smallSize,
+                fontWeight = FontWeight.Medium,
+                color = Color(0xFF10B981),
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 10.dp),
+            )
+        }
 
         ThinDivider()
 
@@ -153,9 +270,9 @@ private fun LoadedDetailView(
             modifier = Modifier
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 56.dp),
+                .padding(horizontal = metrics.horizontalPadding),
         ) {
-            Spacer(modifier = Modifier.height(40.dp))
+            Spacer(modifier = Modifier.height(metrics.sectionTopSpacing))
 
             // Action buttons (text-only, tall, matching iOS)
             // TODO [HIGH RISK - DISABLED]: "Devolver o cambiar" button hidden.
@@ -166,7 +283,7 @@ private fun LoadedDetailView(
             // status='REFUNDED'. Re-enable only after the 5 server bugs are fixed.
             Row(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(16.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 ActionButton(
                     label = "Recibo nuevo",
@@ -176,9 +293,25 @@ private fun LoadedDetailView(
                         showReceiptMethodDialog = true
                     },
                 )
+                if (viewModel.roleManager.canIssueRefund) {
+                    ActionButton(
+                        label = "Emitir reembolso",
+                        modifier = Modifier.weight(1f),
+                        enabled = transaction.remainingRefundable > 0.001,
+                        onClick = { showRefundSheet = true },
+                    )
+                }
             }
 
-            Spacer(modifier = Modifier.height(48.dp))
+            Spacer(modifier = Modifier.height(metrics.sectionTopSpacing))
+
+            if (transaction.refunds.isNotEmpty()) {
+                RefundHistorySection(
+                    refunds = transaction.refunds,
+                    remainingRefundable = transaction.remainingRefundableDisplay,
+                )
+                Spacer(modifier = Modifier.height(metrics.sectionTopSpacing))
+            }
 
             // MARK: - Pago Section
             PaymentSection(transaction)
@@ -191,53 +324,44 @@ private fun LoadedDetailView(
             // MARK: - Total Section
             TotalSection(transaction)
 
-            Spacer(modifier = Modifier.height(60.dp))
+            Spacer(modifier = Modifier.height(metrics.sectionTopSpacing))
         }
     }
 
     // Receipt method chooser dialog
     if (showReceiptMethodDialog) {
-        AlertDialog(
-            onDismissRequest = { showReceiptMethodDialog = false },
-            title = { Text("Enviar recibo") },
-            text = {
-                Text(
-                    text = "Elige como enviar el recibo al cliente",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        showReceiptMethodDialog = false
-                        emailAddress = ""
-                        showEmailInput = true
-                    },
-                ) {
-                    Text("Correo")
-                }
-            },
-            dismissButton = {
-                TextButton(
-                    onClick = {
-                        showReceiptMethodDialog = false
-                        whatsAppPhone = ""
-                        showWhatsAppInput = true
-                    },
-                ) {
-                    Text("WhatsApp")
-                }
-            },
-        )
+        AvoqadoDialog(
+            title = "Enviar recibo",
+            description = "Elige como enviar el recibo al cliente",
+            onDismiss = { showReceiptMethodDialog = false },
+        ) {
+            PrimaryButton(
+                text = "Correo",
+                onClick = {
+                    showReceiptMethodDialog = false
+                    emailAddress = ""
+                    showEmailInput = true
+                },
+                fullWidth = true,
+            )
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+            PrimaryButton(
+                text = "WhatsApp",
+                onClick = {
+                    showReceiptMethodDialog = false
+                    whatsAppPhone = ""
+                    showWhatsAppInput = true
+                },
+                fullWidth = true,
+            )
+        }
     }
 
     // Email input dialog
     if (showEmailInput) {
         ReceiptInputDialog(
             title = "Enviar recibo por correo",
-            description = "Ingresa el correo electronico del cliente",
-            label = "Correo electronico",
+            description = "Ingresa el correo electrónico del cliente",
             placeholder = "cliente@ejemplo.com",
             value = emailAddress,
             onValueChange = { emailAddress = it },
@@ -261,21 +385,19 @@ private fun LoadedDetailView(
         )
     }
 
-    // WhatsApp phone input dialog
+    // WhatsApp phone input dialog (with country selector)
     if (showWhatsAppInput) {
-        ReceiptInputDialog(
-            title = "Enviar recibo por WhatsApp",
-            description = "Ingresa el numero de telefono del cliente",
-            label = "Telefono",
-            placeholder = "+52 10 digitos",
-            value = whatsAppPhone,
-            onValueChange = { whatsAppPhone = it.filter { c -> c.isDigit() || c == '+' } },
+        PhoneReceiptDialog(
+            country = whatsAppCountry,
+            onCountryChange = { whatsAppCountry = it },
+            digits = whatsAppPhone,
+            onDigitsChange = { whatsAppPhone = it },
             isSending = isSendingReceipt,
             resultMessage = receiptResultMessage,
             onConfirm = {
-                val phone = whatsAppPhone.trim()
-                if (phone.isNotEmpty()) {
-                    viewModel.sendReceiptWhatsApp(transaction.id, phone)
+                val digits = whatsAppPhone.trim()
+                if (digits.isNotEmpty()) {
+                    viewModel.sendReceiptWhatsApp(transaction.id, "+${whatsAppCountry.dialCode}$digits")
                 }
             },
             onDismiss = {
@@ -284,9 +406,32 @@ private fun LoadedDetailView(
                     viewModel.clearReceiptResult()
                 }
             },
-            confirmEnabled = whatsAppPhone.trim().isNotEmpty() && !isSendingReceipt && receiptResultMessage == null,
             dismissEnabled = !isSendingReceipt,
-            keyboardType = KeyboardType.Phone,
+        )
+    }
+
+    // Refund sheet (Square-style: items or amount)
+    if (showRefundSheet) {
+        IssueRefundSheet(
+            transaction = transaction,
+            maxRefundable = transaction.remainingRefundable,
+            refundRepository = viewModel.refundRepository,
+            cashDrawerRepository = viewModel.cashDrawerRepository,
+            onDismiss = { showRefundSheet = false },
+            onRefunded = {
+                showRefundSheet = false
+                viewModel.refresh()
+                viewModel.selectTransaction(transaction.id)
+            },
+        )
+    }
+
+    // Success celebration toast (auto-dismisses after ~1.6s)
+    successToastChannel?.let { channel ->
+        AvoqadoSuccessToast(
+            message = "¡Recibo enviado!",
+            subtitle = "Enviado por $channel",
+            onDismiss = { successToastChannel = null },
         )
     }
 }
@@ -297,22 +442,89 @@ private fun LoadedDetailView(
 private fun ActionButton(
     label: String,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
     onClick: () -> Unit,
 ) {
+    val metrics = LocalDetailMetrics.current
     Box(
         modifier = modifier
-            .height(64.dp)
+            .height(metrics.actionButtonHeight)
             .clip(RoundedCornerShape(10.dp))
-            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-            .clickable(onClick = onClick),
+            .background(
+                if (enabled) MaterialTheme.colorScheme.surfaceContainerHigh else MaterialTheme.colorScheme.surfaceContainer,
+            )
+            .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Text(
             text = label,
-            fontSize = 18.sp,
+            fontSize = metrics.actionButtonTextSize,
             fontWeight = FontWeight.Medium,
+            color = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun RefundHistorySection(
+    refunds: List<TransactionRefund>,
+    remainingRefundable: String,
+) {
+    val metrics = LocalDetailMetrics.current
+    Column(modifier = Modifier.padding(bottom = metrics.sectionBottomSpacing)) {
+        Text(
+            text = "Reembolsos",
+            fontSize = metrics.sectionTitleSize,
+            fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onSurface,
         )
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Text(
+            text = "Disponible para reembolsar: $remainingRefundable",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        refunds.forEach { refund ->
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
+                    .background(MaterialTheme.colorScheme.surfaceContainerLow)
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = refund.reasonDisplay,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        text = refund.formattedAmount,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+                refund.createdAt?.let {
+                    Text(
+                        text = it.replace("T", " ").take(16),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
+        }
     }
 }
 
@@ -320,7 +532,8 @@ private fun ActionButton(
 
 @Composable
 private fun PaymentSection(transaction: Transaction) {
-    Column(modifier = Modifier.padding(bottom = 44.dp)) {
+    val metrics = LocalDetailMetrics.current
+    Column(modifier = Modifier.padding(bottom = metrics.sectionBottomSpacing)) {
         // Section header with date
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -328,7 +541,7 @@ private fun PaymentSection(transaction: Transaction) {
         ) {
             Text(
                 text = "Pago",
-                fontSize = 28.sp,
+                fontSize = metrics.sectionTitleSize,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.weight(1f),
@@ -336,13 +549,13 @@ private fun PaymentSection(transaction: Transaction) {
             transaction.dateShortDisplay?.let {
                 Text(
                     text = it,
-                    fontSize = 17.sp,
+                    fontSize = metrics.smallSize,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
 
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(20.dp))
         ThinDivider()
 
         // Payment method row
@@ -385,36 +598,28 @@ private fun PaymentSection(transaction: Transaction) {
 
 @Composable
 private fun ItemsSection(transaction: Transaction) {
-    Column(modifier = Modifier.padding(bottom = 44.dp)) {
+    val metrics = LocalDetailMetrics.current
+    // Courtesy heuristic: $0 payment with items that had value = fully comped.
+    val isCourtesyTransaction = transaction.amount == 0.0 && transaction.items.any { it.amount > 0 }
+    Column(modifier = Modifier.padding(bottom = metrics.sectionBottomSpacing)) {
         Text(
             text = "Artículos",
-            fontSize = 28.sp,
+            fontSize = metrics.sectionTitleSize,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onSurface,
         )
 
-        Spacer(modifier = Modifier.height(16.dp))
-
-        // Gray sub-header
-        Text(
-            text = "Para comer aquí",
-            fontSize = 16.sp,
-            fontWeight = FontWeight.Medium,
-            color = MaterialTheme.colorScheme.onSurface,
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                .padding(horizontal = 14.dp, vertical = 10.dp),
-        )
+        Spacer(modifier = Modifier.height(12.dp))
 
         // Items
         transaction.items.forEach { item ->
+            val isItemComped = isCourtesyTransaction && item.amount > 0
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(vertical = 16.dp),
+                    .padding(vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 // Product image
                 item.productImageUrl?.let { url ->
@@ -423,7 +628,7 @@ private fun ItemsSection(transaction: Transaction) {
                         contentDescription = null,
                         contentScale = ContentScale.Crop,
                         modifier = Modifier
-                            .size(52.dp)
+                            .size(44.dp)
                             .clip(RoundedCornerShape(6.dp))
                             .background(MaterialTheme.colorScheme.surfaceContainerHigh),
                     )
@@ -434,26 +639,59 @@ private fun ItemsSection(transaction: Transaction) {
                     modifier = Modifier.weight(1f),
                     verticalArrangement = Arrangement.spacedBy(3.dp),
                 ) {
-                    Text(
-                        text = item.productName,
-                        fontSize = 18.sp,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Text(
+                            text = item.productName,
+                            fontSize = metrics.bodySize,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        if (isItemComped) {
+                            Text(
+                                text = "Cortesía",
+                                fontSize = metrics.smallSize,
+                                fontWeight = FontWeight.Medium,
+                                color = Color(0xFF10B981),
+                                modifier = Modifier
+                                    .border(1.dp, Color(0xFF10B981).copy(alpha = 0.4f), RoundedCornerShape(999.dp))
+                                    .padding(horizontal = 8.dp, vertical = 2.dp),
+                            )
+                        }
+                    }
                     if (item.modifiers.isNotEmpty()) {
                         Text(
                             text = item.modifiers.joinToString(", ") { it.name },
-                            fontSize = 15.sp,
+                            fontSize = metrics.smallSize,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 }
 
                 // Price
-                Text(
-                    text = item.formattedTotal,
-                    fontSize = 18.sp,
-                    color = MaterialTheme.colorScheme.onSurface,
-                )
+                if (isItemComped) {
+                    Column(horizontalAlignment = Alignment.End) {
+                        Text(
+                            text = item.formattedTotal,
+                            fontSize = metrics.smallSize,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            textDecoration = TextDecoration.LineThrough,
+                        )
+                        Text(
+                            text = "$0.00",
+                            fontSize = metrics.bodySize,
+                            fontWeight = FontWeight.Medium,
+                            color = Color(0xFF10B981),
+                        )
+                    }
+                } else {
+                    Text(
+                        text = item.formattedTotal,
+                        fontSize = metrics.bodySize,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                }
             }
 
             ThinDivider()
@@ -465,15 +703,16 @@ private fun ItemsSection(transaction: Transaction) {
 
 @Composable
 private fun TotalSection(transaction: Transaction) {
+    val metrics = LocalDetailMetrics.current
     Column {
         Text(
             text = "Total",
-            fontSize = 28.sp,
+            fontSize = metrics.sectionTitleSize,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onSurface,
         )
 
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(20.dp))
         ThinDivider()
 
         TotalRow(label = "Subtotal", value = transaction.formattedAmount)
@@ -496,22 +735,23 @@ private fun IconRow(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     text: String,
 ) {
+    val metrics = LocalDetailMetrics.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 18.dp),
+            .padding(vertical = metrics.iconRowVerticalPadding),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(18.dp),
+        horizontalArrangement = Arrangement.spacedBy(14.dp),
     ) {
         Icon(
             imageVector = icon,
             contentDescription = null,
-            modifier = Modifier.size(32.dp),
+            modifier = Modifier.size(metrics.iconSize),
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Text(
             text = text,
-            fontSize = 18.sp,
+            fontSize = metrics.bodySize,
             color = MaterialTheme.colorScheme.onSurface,
         )
     }
@@ -523,21 +763,22 @@ private fun TotalRow(
     value: String,
     isBold: Boolean = false,
 ) {
+    val metrics = LocalDetailMetrics.current
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 16.dp),
+            .padding(vertical = 12.dp),
     ) {
         Text(
             text = label,
-            fontSize = if (isBold) 20.sp else 18.sp,
+            fontSize = if (isBold) metrics.totalBoldSize else metrics.bodySize,
             fontWeight = if (isBold) FontWeight.Bold else FontWeight.Normal,
             color = MaterialTheme.colorScheme.onSurface,
             modifier = Modifier.weight(1f),
         )
         Text(
             text = value,
-            fontSize = if (isBold) 20.sp else 18.sp,
+            fontSize = if (isBold) metrics.totalBoldSize else metrics.bodySize,
             fontWeight = if (isBold) FontWeight.Bold else FontWeight.Normal,
             color = MaterialTheme.colorScheme.onSurface,
         )
@@ -555,7 +796,6 @@ private fun ThinDivider() {
 private fun ReceiptInputDialog(
     title: String,
     description: String,
-    label: String,
     placeholder: String,
     value: String,
     onValueChange: (String) -> Unit,
@@ -570,78 +810,98 @@ private fun ReceiptInputDialog(
     val isSuccess = resultMessage == "Recibo enviado por correo" ||
         resultMessage == "Recibo enviado por WhatsApp"
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(title) },
-        text = {
-            Column {
-                Text(
-                    text = description,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
-                OutlinedTextField(
-                    value = value,
-                    onValueChange = onValueChange,
-                    label = { Text(label) },
-                    placeholder = { Text(placeholder) },
-                    keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = !isSending && resultMessage == null,
-                )
-                if (isSending) {
-                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
-                    ) {
-                        CircularProgressIndicator(modifier = Modifier.size(16.dp))
-                        Text(
-                            text = "Enviando...",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-                if (resultMessage != null) {
-                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
-                    Text(
-                        text = resultMessage,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (isSuccess) {
-                            MaterialTheme.colorScheme.primary
-                        } else {
-                            MaterialTheme.colorScheme.error
-                        },
-                    )
-                }
-            }
+    AvoqadoDialog(
+        title = title,
+        description = description,
+        onDismiss = onDismiss,
+        dismissOnClickOutside = dismissEnabled,
+        actionButton = {
+            PrimaryButton(
+                text = when {
+                    isSuccess -> "Cerrar"
+                    isSending -> "Enviando..."
+                    else -> "Enviar"
+                },
+                onClick = if (isSuccess) onDismiss else onConfirm,
+                enabled = isSuccess || confirmEnabled,
+                isLoading = isSending,
+                fullWidth = true,
+            )
         },
-        confirmButton = {
-            if (isSuccess) {
-                TextButton(onClick = onDismiss) {
-                    Text("Cerrar")
-                }
-            } else {
-                TextButton(
-                    onClick = onConfirm,
-                    enabled = confirmEnabled,
-                ) {
-                    Text("Enviar")
-                }
-            }
+    ) {
+        AvoqadoPillTextField(
+            value = value,
+            onValueChange = onValueChange,
+            placeholder = placeholder,
+            enabled = !isSending && resultMessage == null,
+            keyboardType = keyboardType,
+        )
+
+        if (resultMessage != null) {
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+            Text(
+                text = resultMessage,
+                style = MaterialTheme.typography.bodySmall,
+                color = if (isSuccess) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.error
+                },
+            )
+        }
+    }
+}
+
+@Composable
+private fun PhoneReceiptDialog(
+    country: Country,
+    onCountryChange: (Country) -> Unit,
+    digits: String,
+    onDigitsChange: (String) -> Unit,
+    isSending: Boolean,
+    resultMessage: String?,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+    dismissEnabled: Boolean,
+) {
+    val isSuccess = resultMessage == "Recibo enviado por WhatsApp"
+    val confirmEnabled = digits.trim().isNotEmpty() && !isSending && resultMessage == null
+
+    AvoqadoDialog(
+        title = "Enviar recibo por WhatsApp",
+        description = "Selecciona el país y escribe el número",
+        onDismiss = onDismiss,
+        dismissOnClickOutside = dismissEnabled,
+        actionButton = {
+            PrimaryButton(
+                text = when {
+                    isSuccess -> "Cerrar"
+                    isSending -> "Enviando..."
+                    else -> "Enviar"
+                },
+                onClick = if (isSuccess) onDismiss else onConfirm,
+                enabled = isSuccess || confirmEnabled,
+                isLoading = isSending,
+                fullWidth = true,
+            )
         },
-        dismissButton = {
-            if (!isSuccess) {
-                TextButton(
-                    onClick = onDismiss,
-                    enabled = dismissEnabled,
-                ) {
-                    Text("Cancelar")
-                }
-            }
-        },
-    )
+    ) {
+        AvoqadoPhoneInput(
+            country = country,
+            onCountryChange = onCountryChange,
+            digits = digits,
+            onDigitsChange = onDigitsChange,
+            enabled = !isSending && resultMessage == null,
+            placeholder = "Número",
+        )
+
+        if (resultMessage != null && !isSuccess) {
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+            Text(
+                text = resultMessage,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+    }
 }

@@ -6,7 +6,6 @@ import com.avoqado.pos.core.data.local.database.PendingPaymentDao
 import com.avoqado.pos.core.data.local.database.PendingPaymentEntity
 import com.avoqado.pos.core.data.local.database.PaymentSyncStatus
 import com.avoqado.pos.payment.data.model.CreateOrderRequest
-import kotlinx.serialization.json.Json
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -16,8 +15,6 @@ class CashPaymentRepository @Inject constructor(
     private val secureStorage: SecureStorage,
     private val pendingPaymentDao: PendingPaymentDao,
 ) {
-    private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
-
     fun processCashPayment(
         totalCents: Int,
         cashReceivedCents: Int,
@@ -44,12 +41,13 @@ class CashPaymentRepository @Inject constructor(
         orderId: String? = null,
     ): String {
         val localId = UUID.randomUUID().toString()
-        val hasOrderItems = orderRequest.items.isNotEmpty()
+        val staffId = secureStorage.userId ?: ""
+        val hasOrderItems = OrderRepository.hasProductItems(orderRequest)
         val paymentType = if (orderId != null || hasOrderItems) "ORDER" else "FAST"
         val entity = PendingPaymentEntity(
             id = localId,
             venueId = secureStorage.venueId ?: "",
-            staffId = secureStorage.userId ?: "",
+            staffId = staffId,
             amountCents = orderRequest.total - orderRequest.tip,
             tipCents = orderRequest.tip,
             method = "CASH",
@@ -61,7 +59,7 @@ class CashPaymentRepository @Inject constructor(
             rating = rating,
             itemsJson = null,
             orderRequestJson = if (hasOrderItems) {
-                json.encodeToString(CreateOrderRequest.serializer(), orderRequest)
+                OrderRepository.buildCreateOrderPayload(orderRequest, staffId)
             } else {
                 null
             },

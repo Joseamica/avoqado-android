@@ -10,6 +10,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.ui.unit.dp
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 
@@ -20,8 +21,10 @@ fun PrimaryButton(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     isLoading: Boolean = false,
-    fullWidth: Boolean = true,
+    fullWidth: Boolean = false,
 ) {
+    val adaptive = AvoqadoTheme.adaptive
+
     Button(
         onClick = onClick,
         enabled = enabled && !isLoading,
@@ -29,6 +32,7 @@ fun PrimaryButton(
             .then(if (fullWidth) Modifier.fillMaxWidth() else Modifier)
             .height(AvoqadoTheme.dimensions.buttonLarge),
         shape = RoundedCornerShape(50),
+        contentPadding = PaddingValues(horizontal = adaptive.primaryButtonHorizontalPadding),
         colors = ButtonDefaults.buttonColors(
             containerColor = MaterialTheme.colorScheme.primary,
             contentColor = MaterialTheme.colorScheme.onPrimary,

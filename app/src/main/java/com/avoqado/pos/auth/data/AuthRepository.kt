@@ -9,9 +9,16 @@ import com.avoqado.pos.auth.data.model.VenueData
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.local.StoredVenue
 import com.avoqado.pos.core.data.network.ApiService
+import com.avoqado.pos.inventory.data.InventoryRepository
+import com.avoqado.pos.notifications.data.NotificationsRepository
 import com.avoqado.pos.pos.data.DiscountsRepository
 import com.avoqado.pos.pos.data.ProductsRepository
+import com.avoqado.pos.pos.data.SavedCartsRepository
+import com.avoqado.pos.transactions.data.TransactionRepository
 import com.avoqado.pos.tpvsettings.data.TpvSettingsRepository
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -22,7 +29,14 @@ class AuthRepository @Inject constructor(
     private val productsRepository: ProductsRepository,
     private val discountsRepository: DiscountsRepository,
     private val tpvSettingsRepository: TpvSettingsRepository,
+    private val savedCartsRepository: SavedCartsRepository,
+    private val inventoryRepository: InventoryRepository,
+    private val transactionRepository: TransactionRepository,
+    private val notificationsRepository: NotificationsRepository,
 ) {
+    // Event emitted when venue changes — CartViewModel observes this to clear the cart
+    private val _venueSwitched = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val venueSwitched: SharedFlow<Unit> = _venueSwitched.asSharedFlow()
 
     suspend fun loginWithEmail(
         email: String,
@@ -113,17 +127,22 @@ class AuthRepository @Inject constructor(
         // 1. Update SecureStorage with new venue
         secureStorage.switchVenue(venue)
 
-        // 2. Clear and refetch products for the new venue
+        // 2. Clear ALL venue-specific cached data
         productsRepository.clearCache()
-        productsRepository.fetchProducts()
-
-        // 3. Clear and refetch discounts
         discountsRepository.clearCache()
-        discountsRepository.fetchDiscounts()
-
-        // 4. Refresh TPV settings for new venue
         tpvSettingsRepository.clearCache()
+        savedCartsRepository.clearCache()
+        inventoryRepository.clearCache()
+        transactionRepository.clearCache()
+        notificationsRepository.clearCache()
+
+        // 3. Refetch essential data for the new venue
+        productsRepository.fetchProducts()
+        discountsRepository.fetchDiscounts()
         tpvSettingsRepository.refreshSettings()
+
+        // 4. Notify observers (CartViewModel) to clear cart
+        _venueSwitched.tryEmit(Unit)
 
         Log.d("🔄", "✅ Switched to venue: ${venue.name}")
     }

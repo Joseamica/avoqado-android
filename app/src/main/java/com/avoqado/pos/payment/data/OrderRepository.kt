@@ -9,9 +9,13 @@ import com.avoqado.pos.payment.data.model.OrderData
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -31,6 +35,9 @@ class OrderRepository @Inject constructor(
     class ServerException(val code: Int, message: String) : Exception(message)
 
     companion object {
+        private val idExtractorJson = Json { ignoreUnknownKeys = true }
+        private val errorParserJson = Json { ignoreUnknownKeys = true }
+
         fun isQueueableError(e: Throwable): Boolean {
             return e is java.net.UnknownHostException ||
                 e is java.net.ConnectException ||
@@ -41,17 +48,127 @@ class OrderRepository @Inject constructor(
         fun isQueueableHttpCode(code: Int): Boolean {
             return code >= 500
         }
+
+        /**
+         * Extracts paymentId from known mobile payment response shapes.
+         *
+         * Supported examples:
+         * - { "data": { "id": "cuid..." } }                 // /mobile/.../fast
+         * - { "payment": { "paymentId": "cuid..." } }       // /mobile/.../orders/:id/pay
+         * - { "data": { "paymentId": "cuid..." } }          // backward-compatible
+         */
+        fun extractPaymentIdFromResponse(responseBody: String): String? {
+            return try {
+                val root = idExtractorJson.parseToJsonElement(responseBody).jsonObject
+                val id = root["data"]?.jsonObject?.get("paymentId")?.jsonPrimitive?.contentOrNull
+                    ?: root["data"]?.jsonObject?.get("id")?.jsonPrimitive?.contentOrNull
+                    ?: root["data"]?.jsonObject?.get("payment")?.jsonObject?.get("paymentId")?.jsonPrimitive?.contentOrNull
+                    ?: root["payment"]?.jsonObject?.get("paymentId")?.jsonPrimitive?.contentOrNull
+                    ?: root["payment"]?.jsonObject?.get("id")?.jsonPrimitive?.contentOrNull
+                    ?: root["paymentId"]?.jsonPrimitive?.contentOrNull
+                id?.takeIf { it.isNotBlank() }
+            } catch (_: Exception) {
+                null
+            }
+        }
+
+        fun hasProductItems(request: CreateOrderRequest): Boolean {
+            return request.items.any { !it.productId.isNullOrBlank() }
+        }
+
+        internal fun buildCreateOrderPayload(
+            request: CreateOrderRequest,
+            staffId: String,
+            customerId: String? = null,
+            source: String = "AVOQADO_ANDROID",
+            orderType: String = "TAKEOUT",
+        ): String {
+            return buildJsonObject {
+                put(
+                    "items",
+                    buildJsonArray {
+                        request.items.forEach { item ->
+                            add(
+                                buildJsonObject {
+                                    val productId = item.productId?.takeIf { it.isNotBlank() }
+                                    if (productId != null) {
+                                        put("productId", productId)
+                                        put("quantity", item.quantity)
+
+                                        val modifierIds = item.modifiers
+                                            .map { it.modifierId }
+                                            .filter { it.isNotBlank() }
+                                        if (modifierIds.isNotEmpty()) {
+                                            put(
+                                                "modifierIds",
+                                                buildJsonArray {
+                                                    modifierIds.forEach { add(JsonPrimitive(it)) }
+                                                },
+                                            )
+                                        }
+                                    } else {
+                                        // Custom amount line item (e.g. "Otro importe")
+                                        put("name", item.name)
+                                        put("quantity", item.quantity)
+                                        put("unitPrice", item.unitPrice)
+                                    }
+
+                                    item.note
+                                        ?.trim()
+                                        ?.takeIf { it.isNotEmpty() }
+                                        ?.let { put("notes", it) }
+                                },
+                            )
+                        }
+                    },
+                )
+                put("staffId", staffId)
+                put("orderType", orderType)
+                put("source", source)
+                put("subtotal", request.subtotal)
+                put("tip", request.tip)
+                put("total", request.total)
+                if (request.discount > 0) put("discount", request.discount)
+                customerId?.takeIf { it.isNotBlank() }?.let { put("customerId", it) }
+                request.splitType?.let { put("splitType", it) }
+                request.note?.trim()?.takeIf { it.isNotEmpty() }?.let { put("note", it) }
+            }.toString()
+        }
+
+        private fun extractErrorMessage(responseBody: String): String? {
+            return try {
+                val root = errorParserJson.parseToJsonElement(responseBody).jsonObject
+                root["message"]?.jsonPrimitive?.contentOrNull
+                    ?.takeIf { it.isNotBlank() }
+            } catch (_: Exception) {
+                null
+            }
+        }
     }
 
-    suspend fun createOrder(request: CreateOrderRequest): Result<CreateOrderResponse> {
+    suspend fun createOrder(
+        request: CreateOrderRequest,
+        customerId: String? = null,
+        orderType: String = "TAKEOUT",
+    ): Result<CreateOrderResponse> {
         val venueId = secureStorage.venueId ?: return Result.failure(Exception("No venue selected"))
         val token = secureStorage.accessToken ?: return Result.failure(Exception("Not authenticated"))
+        val staffId = secureStorage.userId ?: return Result.failure(Exception("No staff"))
+
+        if (!hasProductItems(request)) {
+            return Result.failure(Exception("No hay productos válidos para crear la orden"))
+        }
 
         Log.d("📦", "Creating order for venue: $venueId, total: ${request.total}")
 
         return try {
-            val body = json.encodeToString(CreateOrderRequest.serializer(), request)
-                .toRequestBody("application/json".toMediaType())
+            val payload = buildCreateOrderPayload(
+                request = request,
+                staffId = staffId,
+                customerId = customerId,
+                orderType = orderType,
+            )
+            val body = payload.toRequestBody("application/json".toMediaType())
 
             val httpRequest = Request.Builder()
                 .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/orders")
@@ -70,7 +187,8 @@ class OrderRepository @Inject constructor(
                 Result.success(orderResponse)
             } else {
                 Log.e("📦", "❌ Order creation failed: $responseCode - $responseBody")
-                Result.failure(ServerException(responseCode, "Error al crear orden ($responseCode)"))
+                val message = extractErrorMessage(responseBody) ?: "Error al crear orden ($responseCode)"
+                Result.failure(ServerException(responseCode, message))
             }
         } catch (e: Exception) {
             Log.e("📦", "❌ Order creation error: ${e.message}")
@@ -158,19 +276,8 @@ class OrderRepository @Inject constructor(
 
             if (code in 200..299) {
                 Log.d("💵", "✅ Fast cash payment recorded: $amount cents, body: ${body.take(200)}")
-                // Extract paymentId from response
-                val paymentId = try {
-                    val jsonObj = json.parseToJsonElement(body).jsonObject
-                    val data = jsonObj["data"]?.jsonObject
-                    val id = data?.get("paymentId")?.jsonPrimitive?.contentOrNull
-                        ?: data?.get("id")?.jsonPrimitive?.contentOrNull
-                        ?: jsonObj["payment"]?.jsonObject?.get("paymentId")?.jsonPrimitive?.contentOrNull
-                    Log.d("💵", "Extracted paymentId: $id")
-                    id
-                } catch (e: Exception) {
-                    Log.e("💵", "Failed to parse paymentId: ${e.message}")
-                    null
-                }
+                val paymentId = extractPaymentIdFromResponse(body)
+                Log.d("💵", "Extracted paymentId: $paymentId")
                 Result.success(paymentId)
             } else {
                 Log.e("💵", "❌ Fast cash payment failed ($code): $body")
@@ -219,12 +326,7 @@ class OrderRepository @Inject constructor(
 
             if (code in 200..299) {
                 Log.d("💵", "✅ Cash payment recorded for order: $orderId")
-                // Extract paymentId from response if available
-                val paymentId = try {
-                    val responseJson = json.parseToJsonElement(body)
-                    responseJson.jsonObject["data"]?.jsonObject?.get("id")?.jsonPrimitive?.contentOrNull
-                        ?: responseJson.jsonObject["data"]?.jsonObject?.get("paymentId")?.jsonPrimitive?.contentOrNull
-                } catch (_: Exception) { null }
+                val paymentId = extractPaymentIdFromResponse(body)
                 Log.d("💵", "   paymentId: $paymentId")
                 Result.success(paymentId)
             } else {
@@ -239,12 +341,26 @@ class OrderRepository @Inject constructor(
 
     // MARK: - Send Receipt via Email
 
-    suspend fun sendReceiptEmail(paymentId: String, email: String): Result<Unit> {
+    suspend fun sendReceiptEmail(
+        paymentId: String?,
+        email: String,
+        receiptAccessKey: String? = null,
+    ): Result<Unit> {
         val venueId = secureStorage.venueId ?: return Result.failure(Exception("No venue selected"))
         val token = secureStorage.accessToken ?: return Result.failure(Exception("Not authenticated"))
+        val normalizedPaymentId = paymentId?.takeIf { it.isNotBlank() }
+        val normalizedReceiptAccessKey = receiptAccessKey?.takeIf { it.isNotBlank() }
+
+        if (normalizedPaymentId == null && normalizedReceiptAccessKey == null) {
+            return Result.failure(Exception("No receipt identifier"))
+        }
 
         return try {
-            val bodyJson = """{"paymentId":"$paymentId","email":"$email"}"""
+            val bodyJson = buildJsonObject {
+                put("email", email)
+                normalizedPaymentId?.let { put("paymentId", it) }
+                normalizedReceiptAccessKey?.let { put("receiptAccessKey", it) }
+            }.toString()
 
             val request = Request.Builder()
                 .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/receipts/send-email")
@@ -272,12 +388,26 @@ class OrderRepository @Inject constructor(
 
     // MARK: - Send Receipt via WhatsApp
 
-    suspend fun sendReceiptWhatsApp(paymentId: String, phone: String): Result<Unit> {
+    suspend fun sendReceiptWhatsApp(
+        paymentId: String?,
+        phone: String,
+        receiptAccessKey: String? = null,
+    ): Result<Unit> {
         val venueId = secureStorage.venueId ?: return Result.failure(Exception("No venue"))
         val token = secureStorage.accessToken ?: return Result.failure(Exception("Not authenticated"))
+        val normalizedPaymentId = paymentId?.takeIf { it.isNotBlank() }
+        val normalizedReceiptAccessKey = receiptAccessKey?.takeIf { it.isNotBlank() }
+
+        if (normalizedPaymentId == null && normalizedReceiptAccessKey == null) {
+            return Result.failure(Exception("No receipt identifier"))
+        }
 
         return try {
-            val bodyJson = """{"paymentId":"$paymentId","phone":"$phone"}"""
+            val bodyJson = buildJsonObject {
+                put("phone", phone)
+                normalizedPaymentId?.let { put("paymentId", it) }
+                normalizedReceiptAccessKey?.let { put("receiptAccessKey", it) }
+            }.toString()
 
             val request = Request.Builder()
                 .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/receipts/send-whatsapp")

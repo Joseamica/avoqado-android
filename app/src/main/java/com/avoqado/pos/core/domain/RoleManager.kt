@@ -40,4 +40,8 @@ class RoleManager @Inject constructor(
     /** Access reports: MANAGER, ADMIN, OWNER, SUPERADMIN */
     val canAccessReports: Boolean
         get() = role in setOf("MANAGER", "ADMIN", "OWNER", "SUPERADMIN")
+
+    /** Issue refund (payments:refund): MANAGER, ADMIN, OWNER, SUPERADMIN */
+    val canIssueRefund: Boolean
+        get() = role in setOf("MANAGER", "ADMIN", "OWNER", "SUPERADMIN")
 }

@@ -136,7 +136,6 @@ fun PurchaseOrdersView(viewModel: InventoryViewModel) {
                         PrimaryButton(
                             text = "Crear orden de compra",
                             onClick = { showCreateSheet = true },
-                            modifier = Modifier.padding(horizontal = AvoqadoTheme.spacing.xxxl),
                         )
                     }
                 }

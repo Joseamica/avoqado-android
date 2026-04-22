@@ -9,6 +9,7 @@ data class SavedCart(
     val items: List<SavedCartItem>,
     val orderDiscount: Discount? = null,
     val orderNote: String? = null,
+    val orderTaxPercent: Int? = null,
     val createdAt: Long = System.currentTimeMillis(),
 ) {
     val itemCount: Int get() = items.sumOf { it.quantity }
