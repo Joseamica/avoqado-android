@@ -45,9 +45,6 @@ import com.avoqado.pos.designsystem.components.CircleBackButton
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.kds.domain.KDSFilter
 import kotlinx.coroutines.delay
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 // MARK: - Entry Point
 
@@ -73,11 +70,13 @@ fun KDSScreen(
         }
     }
 
-    // Clock display
+    // Clock display (in venue timezone, not device local)
     var clockText by remember { mutableStateOf("") }
     LaunchedEffect(tick) {
-        val formatter = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
-        clockText = formatter.format(Date(tick))
+        val formatter = java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss")
+        clockText = java.time.Instant.ofEpochMilli(tick)
+            .atZone(com.avoqado.pos.core.util.VenueTimeZone.zoneId())
+            .format(formatter)
     }
 
     Column(

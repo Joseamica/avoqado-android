@@ -139,6 +139,7 @@ fun PaymentFlowScreen(
                 val emailResult by viewModel.emailResult.collectAsState()
                 val printSending by viewModel.printSending.collectAsState()
                 val printResult by viewModel.printResult.collectAsState()
+                val canPrintOnTerminal by viewModel.canPrintOnTerminal.collectAsState()
 
                 PaymentResultScreen(
                     totalCents = currentState.totalAmount,
@@ -158,6 +159,8 @@ fun PaymentFlowScreen(
                     isPrintingReceipt = printSending,
                     printResultMessage = printResult,
                     onPrintReceipt = { viewModel.reprintReceipt() },
+                    canPrintOnTerminal = canPrintOnTerminal,
+                    onPrintOnTerminalReceipt = { viewModel.printReceiptOnTerminal() },
                     onClearPrintResult = { viewModel.clearPrintResult() },
                     customerName = if (customerAttachSending) "Agregando..." else selectedPaymentCustomerName,
                     customerResultMessage = customerAttachResult,

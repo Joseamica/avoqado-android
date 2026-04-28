@@ -3,6 +3,7 @@ package com.avoqado.pos.payment.data
 import android.util.Log
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ApiConstants
+import com.avoqado.pos.printing.data.model.ReceiptData
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
@@ -11,6 +12,8 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import org.json.JSONArray
+import org.json.JSONObject
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -20,9 +23,9 @@ class TerminalPaymentService @Inject constructor(
     private val secureStorage: SecureStorage,
     baseClient: OkHttpClient,
 ) {
-    // Terminal payments need extended timeout (120s) since the server long-polls until terminal responds
+    // Terminal payments need extended timeout since the server waits through TPV retries.
     private val client = baseClient.newBuilder()
-        .readTimeout(120, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(310, java.util.concurrent.TimeUnit.SECONDS)
         .build()
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true; explicitNulls = false }
 
@@ -66,7 +69,7 @@ class TerminalPaymentService @Inject constructor(
 
     /**
      * POST /mobile/venues/{venueId}/terminal-payment
-     * Sends payment to a specific terminal. Server long-polls until terminal responds (60s).
+     * Sends payment to a specific terminal. Server long-polls until terminal succeeds, is cancelled, or times out.
      */
     suspend fun sendPaymentToTerminal(
         terminalId: String,
@@ -199,6 +202,85 @@ class TerminalPaymentService @Inject constructor(
 
         currentRequestId = null
         currentTerminalId = null
+    }
+
+    suspend fun printReceiptOnTerminal(
+        terminalId: String,
+        receipt: ReceiptData,
+        paymentId: String? = null,
+        receiptAccessKey: String? = null,
+    ): Result<Unit> {
+        val venueId = secureStorage.venueId ?: return Result.failure(Exception("No venue selected"))
+        val token = secureStorage.accessToken ?: return Result.failure(Exception("Not authenticated"))
+        val requestId = UUID.randomUUID().toString()
+
+        return try {
+            val receiptJson = JSONObject().apply {
+                put("orderNumber", receipt.orderNumber)
+                put("orderType", receipt.orderType)
+                put("items", JSONArray().apply {
+                    receipt.items.forEach { item ->
+                        put(JSONObject().apply {
+                            put("name", item.name)
+                            put("quantity", item.quantity)
+                            put("unitPrice", item.unitPrice)
+                            put("totalPrice", item.totalPrice)
+                            item.modifiers?.let { put("modifiers", JSONArray(it)) }
+                            item.note?.let { put("note", it) }
+                        })
+                    }
+                })
+                put("subtotal", receipt.subtotal)
+                put("taxAmount", receipt.taxAmount)
+                receipt.tipAmount?.let { put("tipAmount", it) }
+                receipt.discountAmount?.let { put("discountAmount", it) }
+                put("total", receipt.total)
+                receipt.paymentMethod?.let { put("paymentMethod", it) }
+                receipt.cardLastFour?.let { put("cardLastFour", it) }
+                put("venueName", receipt.venueName)
+                receipt.venueAddress?.let { put("venueAddress", it) }
+                receipt.venuePhone?.let { put("venuePhone", it) }
+                receipt.cashierName?.let { put("cashierName", it) }
+                receipt.customerName?.let { put("customerName", it) }
+                receipt.transactionId?.let { put("transactionId", it) }
+                receipt.cashTendered?.let { put("cashTendered", it) }
+                receipt.changeAmount?.let { put("changeAmount", it) }
+                paymentId?.takeIf { it.isNotBlank() }?.let { put("paymentId", it) }
+                receiptAccessKey?.takeIf { it.isNotBlank() }?.let { put("receiptAccessKey", it) }
+            }
+
+            val bodyJson = JSONObject()
+                .put("requestId", requestId)
+                .put("receipt", receiptJson)
+                .toString()
+                .toRequestBody("application/json".toMediaType())
+
+            val request = Request.Builder()
+                .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/terminals/$terminalId/print-receipt")
+                .header("Authorization", "Bearer $token")
+                .post(bodyJson)
+                .build()
+
+            val (code, body) = withContext(Dispatchers.IO) {
+                val response = client.newCall(request).execute()
+                response.code to (response.body?.string() ?: "")
+            }
+
+            if (code in 200..299) {
+                Log.d("🖨️", "✅ Receipt printed on TPV $terminalId")
+                Result.success(Unit)
+            } else {
+                Log.e("🖨️", "❌ TPV receipt print failed ($code): $body")
+                val message = runCatching {
+                    JSONObject(body).optString("errorMessage")
+                        .ifBlank { JSONObject(body).optString("message") }
+                }.getOrNull()?.takeIf { it.isNotBlank() }
+                Result.failure(Exception(message ?: "Error al imprimir en TPV ($code)"))
+            }
+        } catch (e: Exception) {
+            Log.e("🖨️", "❌ TPV receipt print error: ${e.message}")
+            Result.failure(e)
+        }
     }
 }
 

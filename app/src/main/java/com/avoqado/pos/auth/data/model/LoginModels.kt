@@ -34,6 +34,7 @@ data class VenueData(
     val slug: String? = null,
     val logo: String? = null,
     val role: String? = null,
+    val timezone: String? = null,
 )
 
 @Serializable

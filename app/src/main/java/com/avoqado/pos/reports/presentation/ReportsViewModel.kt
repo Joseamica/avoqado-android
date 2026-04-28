@@ -106,7 +106,9 @@ class ReportsViewModel @Inject constructor(
             )
         }
 
-        val calendar = Calendar.getInstance()
+        val calendar = Calendar.getInstance(
+            TimeZone.getTimeZone(com.avoqado.pos.core.util.VenueTimeZone.current),
+        )
         val endDate = formatISODate(calendar.timeInMillis)
 
         when (period) {

@@ -1,8 +1,11 @@
 package com.avoqado.pos.orders.data.model
 
+import com.avoqado.pos.core.util.VenueDateTimeFormatter
+import com.avoqado.pos.core.util.VenueTimeZone
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.Transient
-import java.text.SimpleDateFormat
+import java.time.LocalDate
+import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 // MARK: - Enums
@@ -194,43 +197,22 @@ data class OrderPage(
     val hasMore: Boolean get() = page < pageCount
 }
 
-// MARK: - Date Helpers
-
-private val isoFormats = listOf(
-    "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",
-    "yyyy-MM-dd'T'HH:mm:ss'Z'",
-    "yyyy-MM-dd'T'HH:mm:ssXXX",
-    "yyyy-MM-dd'T'HH:mm:ss.SSSXXX",
-)
-
-private fun parseDate(isoString: String): java.util.Date? {
-    for (fmt in isoFormats) {
-        try {
-            val sdf = SimpleDateFormat(fmt, Locale.US)
-            sdf.isLenient = false
-            return sdf.parse(isoString)
-        } catch (_: Exception) {
-            // try next format
-        }
-    }
-    return null
-}
+// MARK: - Date Helpers (parse UTC ISO -> render in venue timezone)
 
 private fun parseTimeDisplay(isoString: String): String {
-    val date = parseDate(isoString) ?: return ""
-    return SimpleDateFormat("HH:mm", Locale.US).format(date)
+    val instant = VenueDateTimeFormatter.parseIso(isoString) ?: return ""
+    return instant.atZone(VenueTimeZone.zoneId())
+        .format(DateTimeFormatter.ofPattern("HH:mm"))
 }
 
 private fun parseDateGroup(isoString: String): String {
-    val date = parseDate(isoString) ?: return ""
-    val today = java.util.Calendar.getInstance()
-    val cal = java.util.Calendar.getInstance().apply { time = date }
-
+    val instant = VenueDateTimeFormatter.parseIso(isoString) ?: return ""
+    val zone = VenueTimeZone.zoneId()
+    val date = instant.atZone(zone).toLocalDate()
+    val today = LocalDate.now(zone)
     return when {
-        cal.get(java.util.Calendar.YEAR) == today.get(java.util.Calendar.YEAR) &&
-            cal.get(java.util.Calendar.DAY_OF_YEAR) == today.get(java.util.Calendar.DAY_OF_YEAR) -> "Hoy"
-        cal.get(java.util.Calendar.YEAR) == today.get(java.util.Calendar.YEAR) &&
-            cal.get(java.util.Calendar.DAY_OF_YEAR) == today.get(java.util.Calendar.DAY_OF_YEAR) - 1 -> "Ayer"
-        else -> SimpleDateFormat("d 'de' MMMM", Locale("es", "MX")).format(date)
+        date == today -> "Hoy"
+        date == today.minusDays(1) -> "Ayer"
+        else -> date.format(DateTimeFormatter.ofPattern("d 'de' MMMM", Locale("es", "MX")))
     }
 }

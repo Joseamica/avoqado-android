@@ -72,7 +72,6 @@ import com.avoqado.pos.orders.data.model.OrderStatus
 import com.avoqado.pos.orders.data.model.OrderSummary
 import com.avoqado.pos.orders.data.model.PaymentStatus
 import androidx.compose.runtime.remember
-import java.text.SimpleDateFormat
 import java.util.Locale
 
 // MARK: - File-level constants
@@ -96,14 +95,8 @@ private val PaymentPartialBg = Info.copy(alpha = 0.15f)
 private val PaymentPaidBg = Success.copy(alpha = 0.15f)
 private val WarningSubtleBg = Warning.copy(alpha = 0.1f)
 
-// Pre-built SimpleDateFormat parsers for formatDetailDate
-private val detailDateOutputSdf = SimpleDateFormat("dd/MM/yyyy HH:mm", Locale.US)
-private val detailDateInputFormats = listOf(
-    "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",
-    "yyyy-MM-dd'T'HH:mm:ss'Z'",
-    "yyyy-MM-dd'T'HH:mm:ssXXX",
-    "yyyy-MM-dd'T'HH:mm:ss.SSSXXX",
-).map { SimpleDateFormat(it, Locale.US).also { sdf -> sdf.isLenient = false } }
+private val detailDateOutputFormatter = java.time.format.DateTimeFormatter
+    .ofPattern("dd/MM/yyyy HH:mm", Locale("es", "MX"))
 
 // MARK: - Main Entry Point
 
@@ -1097,13 +1090,7 @@ private fun paymentMethodIcon(method: String) = when (method.uppercase()) {
 }
 
 private fun formatDetailDate(isoString: String): String {
-    for (sdf in detailDateInputFormats) {
-        try {
-            val date = sdf.parse(isoString) ?: continue
-            return detailDateOutputSdf.format(date)
-        } catch (_: Exception) {
-            // try next
-        }
-    }
-    return ""
+    val instant = com.avoqado.pos.core.util.VenueDateTimeFormatter.parseIso(isoString) ?: return ""
+    return instant.atZone(com.avoqado.pos.core.util.VenueTimeZone.zoneId())
+        .format(detailDateOutputFormatter)
 }

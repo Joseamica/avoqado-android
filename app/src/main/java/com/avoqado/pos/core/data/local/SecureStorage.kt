@@ -66,6 +66,13 @@ class SecureStorage @Inject constructor(
         get() = prefs.getString(KEY_VENUE_SLUG, null)
         set(value) = prefs.edit().putString(KEY_VENUE_SLUG, value).apply()
 
+    var venueTimezone: String?
+        get() = prefs.getString(KEY_VENUE_TIMEZONE, null)
+        set(value) {
+            prefs.edit().putString(KEY_VENUE_TIMEZONE, value).apply()
+            com.avoqado.pos.core.util.VenueTimeZone.set(value)
+        }
+
     var accessToken: String?
         get() = prefs.getString(KEY_ACCESS_TOKEN, null)
         set(value) = prefs.edit().putString(KEY_ACCESS_TOKEN, value).apply()
@@ -182,6 +189,7 @@ class SecureStorage @Inject constructor(
         role: String?,
         accessToken: String,
         refreshToken: String,
+        venueTimezone: String? = null,
     ) {
         this.userId = userId
         this.userEmail = email
@@ -190,6 +198,7 @@ class SecureStorage @Inject constructor(
         this.venueId = venueId
         this.venueName = venueName
         this.venueSlug = venueSlug
+        this.venueTimezone = venueTimezone
         this.userRole = role
         this.accessToken = accessToken
         this.refreshToken = refreshToken
@@ -204,6 +213,7 @@ class SecureStorage @Inject constructor(
         this.venueId = venue.id
         this.venueName = venue.name
         this.venueSlug = venue.slug
+        this.venueTimezone = venue.timezone
         this.userRole = venue.role
     }
 
@@ -242,6 +252,7 @@ class SecureStorage @Inject constructor(
             .remove(KEY_VENUE_ID)
             .remove(KEY_VENUE_NAME)
             .remove(KEY_VENUE_SLUG)
+            .remove(KEY_VENUE_TIMEZONE)
             .remove(KEY_ACCESS_TOKEN)
             .remove(KEY_REFRESH_TOKEN)
             .remove(KEY_TERMINAL_ID)
@@ -278,6 +289,7 @@ class SecureStorage @Inject constructor(
         private const val KEY_VENUE_ID = "venueId"
         private const val KEY_VENUE_NAME = "venueName"
         private const val KEY_VENUE_SLUG = "venueSlug"
+        private const val KEY_VENUE_TIMEZONE = "venueTimezone"
         private const val KEY_ACCESS_TOKEN = "accessToken"
         private const val KEY_REFRESH_TOKEN = "refreshToken"
         // Biometric
@@ -312,6 +324,7 @@ data class StoredVenue(
     val slug: String? = null,
     val logo: String? = null,
     val role: String? = null,
+    val timezone: String? = null,
 ) {
     val displayRole: String
         get() = when (role?.uppercase()) {

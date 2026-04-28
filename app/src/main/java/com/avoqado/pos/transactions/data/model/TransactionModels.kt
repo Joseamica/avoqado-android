@@ -1,12 +1,12 @@
 package com.avoqado.pos.transactions.data.model
 
+import com.avoqado.pos.core.util.VenueDateTimeFormatter
+import com.avoqado.pos.core.util.VenueTimeZone
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.Transient
 import java.time.LocalDate
-import java.time.LocalDateTime
+import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
-import java.time.format.DateTimeParseException
 import java.util.Locale
 
 @Serializable
@@ -66,29 +66,16 @@ data class Transaction(
             else -> status
         }
 
-    // MARK: - Date parsing
+    // MARK: - Date parsing (UTC -> venue timezone)
 
-    @Transient
-    val parsedDateTime: LocalDateTime? = createdAt?.let {
-        try {
-            LocalDateTime.parse(it, DateTimeFormatter.ISO_DATE_TIME)
-        } catch (_: DateTimeParseException) {
-            try {
-                LocalDateTime.parse(it, DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"))
-            } catch (_: DateTimeParseException) {
-                try {
-                    LocalDate.parse(it, DateTimeFormatter.ISO_LOCAL_DATE).atStartOfDay()
-                } catch (_: DateTimeParseException) {
-                    null
-                }
-            }
-        }
-    }
+    /** Parsed [createdAt] as a [ZonedDateTime] in the active venue's timezone. */
+    val parsedDateTime: ZonedDateTime?
+        get() = VenueDateTimeFormatter.parseIso(createdAt)?.atZone(VenueTimeZone.zoneId())
 
     val dateGroup: String
         get() {
             val date = parsedDateTime?.toLocalDate() ?: return "Sin fecha"
-            val today = LocalDate.now()
+            val today = LocalDate.now(VenueTimeZone.zoneId())
             return when {
                 date == today -> "Hoy"
                 date == today.minusDays(1) -> "Ayer"

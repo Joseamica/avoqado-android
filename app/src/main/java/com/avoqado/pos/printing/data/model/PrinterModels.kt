@@ -1,7 +1,6 @@
 package com.avoqado.pos.printing.data.model
 
 import kotlinx.serialization.Serializable
-import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.UUID
@@ -172,10 +171,14 @@ data class ReceiptData(
         get() = paymentMethod == "Efectivo"
 
     val formattedDate: String
-        get() {
-            val sdf = SimpleDateFormat("dd/MM/yyyy HH:mm", Locale("es", "MX"))
-            return sdf.format(date)
-        }
+        get() = date.toInstant()
+            .atZone(com.avoqado.pos.core.util.VenueTimeZone.zoneId())
+            .format(
+                java.time.format.DateTimeFormatter.ofPattern(
+                    "dd/MM/yyyy HH:mm",
+                    Locale("es", "MX"),
+                ),
+            )
 
     fun formattedAmount(cents: Int): String {
         val amount = cents / 100.0
@@ -216,10 +219,11 @@ data class KitchenTicketData(
     val serverName: String? = null,
 ) {
     val formattedTime: String
-        get() {
-            val sdf = SimpleDateFormat("HH:mm", Locale("es", "MX"))
-            return sdf.format(timestamp)
-        }
+        get() = timestamp.toInstant()
+            .atZone(com.avoqado.pos.core.util.VenueTimeZone.zoneId())
+            .format(
+                java.time.format.DateTimeFormatter.ofPattern("HH:mm", Locale("es", "MX")),
+            )
 }
 
 // MARK: - Kitchen Item

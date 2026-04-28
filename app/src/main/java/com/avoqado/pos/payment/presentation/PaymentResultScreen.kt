@@ -76,6 +76,8 @@ fun PaymentResultScreen(
     isPrintingReceipt: Boolean = false,
     printResultMessage: String? = null,
     onPrintReceipt: (() -> Unit)? = null,
+    canPrintOnTerminal: Boolean = false,
+    onPrintOnTerminalReceipt: (() -> Unit)? = null,
     onClearPrintResult: (() -> Unit)? = null,
     customerName: String? = null,
     customerResultMessage: String? = null,
@@ -89,13 +91,22 @@ fun PaymentResultScreen(
     var showEmailInput by remember { mutableStateOf(false) }
     var emailAddress by remember { mutableStateOf("") }
     var showNoPrinterDialog by remember { mutableStateOf(false) }
+    var showTerminalPrintDialog by remember { mutableStateOf(false) }
 
     // Combine result messages for display (customer/whatsApp/email/print)
-    val resultMessage = customerResultMessage ?: whatsAppResultMessage ?: emailResultMessage ?: printResultMessage
+    val visiblePrintResult = printResultMessage?.takeUnless { it == LOCAL_PRINTER_UNAVAILABLE }
+    val resultMessage = customerResultMessage ?: whatsAppResultMessage ?: emailResultMessage ?: visiblePrintResult
     val isResultSuccess = resultMessage == "Recibo enviado por WhatsApp" ||
         resultMessage == "Recibo enviado por correo" ||
         resultMessage == "Recibo impreso" ||
+        resultMessage == "Recibo impreso en TPV" ||
         resultMessage?.startsWith("Cliente agregado") == true
+
+    androidx.compose.runtime.LaunchedEffect(printResultMessage, canPrintOnTerminal) {
+        if (printResultMessage == LOCAL_PRINTER_UNAVAILABLE && canPrintOnTerminal) {
+            showTerminalPrintDialog = true
+        }
+    }
 
     androidx.compose.material3.Scaffold(
         topBar = {
@@ -340,6 +351,36 @@ fun PaymentResultScreen(
                 PrimaryButton(
                     text = "Entendido",
                     onClick = { showNoPrinterDialog = false },
+                    fullWidth = true,
+                )
+            },
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Print,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(24.dp),
+            )
+        }
+    }
+
+    if (showTerminalPrintDialog) {
+        AvoqadoDialog(
+            title = "Sin impresora local",
+            description = "No hay una impresora de recibos disponible en este dispositivo.",
+            onDismiss = {
+                showTerminalPrintDialog = false
+                onClearPrintResult?.invoke()
+            },
+            actionButton = {
+                PrimaryButton(
+                    text = if (isPrintingReceipt) "Imprimiendo..." else "Imprimir en TPV",
+                    onClick = {
+                        showTerminalPrintDialog = false
+                        onClearPrintResult?.invoke()
+                        onPrintOnTerminalReceipt?.invoke()
+                    },
+                    enabled = !isPrintingReceipt && onPrintOnTerminalReceipt != null,
                     fullWidth = true,
                 )
             },

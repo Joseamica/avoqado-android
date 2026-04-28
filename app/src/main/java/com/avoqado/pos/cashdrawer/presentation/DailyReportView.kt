@@ -35,8 +35,6 @@ import com.avoqado.pos.designsystem.components.CircleBackButton
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Error
 import com.avoqado.pos.designsystem.theme.Success
-import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
 import kotlin.math.abs
 
@@ -50,8 +48,13 @@ fun DailyReportView(
     onDismiss: () -> Unit,
 ) {
     val context = LocalContext.current
-    val dateFormat = SimpleDateFormat("dd MMM yyyy", Locale("es", "MX"))
-    val timeFormat = SimpleDateFormat("HH:mm", Locale("es", "MX"))
+    val zone = com.avoqado.pos.core.util.VenueTimeZone.zoneId()
+    val datePattern = java.time.format.DateTimeFormatter.ofPattern("dd MMM yyyy", Locale("es", "MX"))
+    val timePattern = java.time.format.DateTimeFormatter.ofPattern("HH:mm", Locale("es", "MX"))
+    fun formatDate(epochMillis: Long): String =
+        java.time.Instant.ofEpochMilli(epochMillis).atZone(zone).format(datePattern)
+    fun formatTime(epochMillis: Long): String =
+        java.time.Instant.ofEpochMilli(epochMillis).atZone(zone).format(timePattern)
 
     // Compute totals from events
     val cashSalesCents = events
@@ -113,13 +116,13 @@ fun DailyReportView(
                 color = MaterialTheme.colorScheme.onSurface,
             )
             Text(
-                text = dateFormat.format(Date(session.openedAt)),
+                text = formatDate(session.openedAt),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Text(
-                text = "Apertura: ${timeFormat.format(Date(session.openedAt))} - Cierre: ${
-                    session.closedAt?.let { timeFormat.format(Date(it)) } ?: "--"
+                text = "Apertura: ${formatTime(session.openedAt)} - Cierre: ${
+                    session.closedAt?.let(::formatTime) ?: "--"
                 }",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,

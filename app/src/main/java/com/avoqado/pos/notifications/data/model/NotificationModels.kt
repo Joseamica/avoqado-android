@@ -1,11 +1,12 @@
 package com.avoqado.pos.notifications.data.model
 
+import com.avoqado.pos.core.util.VenueDateTimeFormatter
+import com.avoqado.pos.core.util.VenueTimeZone
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.Transient
-import java.time.LocalDateTime
+import java.time.Instant
 import java.time.format.DateTimeFormatter
-import java.time.format.DateTimeParseException
 import java.time.temporal.ChronoUnit
+import java.util.Locale
 
 @Serializable
 data class AppNotification(
@@ -35,33 +36,21 @@ data class AppNotification(
 
     // MARK: - Relative time display (matching iOS: "hace 5 min")
 
-    @Transient
-    private val parsedDateTime: LocalDateTime? = createdAt?.let {
-        try {
-            LocalDateTime.parse(it, DateTimeFormatter.ISO_DATE_TIME)
-        } catch (_: DateTimeParseException) {
-            try {
-                LocalDateTime.parse(it, DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"))
-            } catch (_: DateTimeParseException) {
-                null
-            }
-        }
-    }
-
     val timeAgo: String?
         get() {
-            val dateTime = parsedDateTime ?: return null
-            val now = LocalDateTime.now()
-            val minutes = ChronoUnit.MINUTES.between(dateTime, now)
-            val hours = ChronoUnit.HOURS.between(dateTime, now)
-            val days = ChronoUnit.DAYS.between(dateTime, now)
+            val instant: Instant = VenueDateTimeFormatter.parseIso(createdAt) ?: return null
+            val now = Instant.now()
+            val minutes = ChronoUnit.MINUTES.between(instant, now)
+            val hours = ChronoUnit.HOURS.between(instant, now)
+            val days = ChronoUnit.DAYS.between(instant, now)
 
             return when {
                 minutes < 1 -> "Ahora"
                 minutes < 60 -> "hace $minutes min"
                 hours < 24 -> "hace $hours h"
                 days < 7 -> "hace $days d"
-                else -> dateTime.format(DateTimeFormatter.ofPattern("d MMM"))
+                else -> instant.atZone(VenueTimeZone.zoneId())
+                    .format(DateTimeFormatter.ofPattern("d MMM", Locale("es", "MX")))
             }
         }
 }

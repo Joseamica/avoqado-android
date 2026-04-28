@@ -266,15 +266,9 @@ data class AdminCoupon(
     val isExpired: Boolean
         get() {
             val until = validUntil ?: return false
-            return try {
-                val expiry = java.time.LocalDateTime.parse(
-                    until,
-                    java.time.format.DateTimeFormatter.ISO_DATE_TIME,
-                )
-                expiry.isBefore(java.time.LocalDateTime.now())
-            } catch (_: Exception) {
-                false
-            }
+            val expiry = com.avoqado.pos.core.util.VenueDateTimeFormatter.parseIso(until)
+                ?: return false
+            return expiry.isBefore(java.time.Instant.now())
         }
 
     val usageText: String

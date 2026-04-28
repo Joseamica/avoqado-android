@@ -79,9 +79,7 @@ import com.avoqado.pos.reports.data.model.ReportPeriod
 import com.avoqado.pos.reports.data.model.SalesSummaryReport
 import com.avoqado.pos.reports.data.model.TopProduct
 import androidx.compose.runtime.remember
-import java.text.SimpleDateFormat
 import java.util.Calendar
-import java.util.Date
 import java.util.Locale
 
 // MARK: - File-level constants
@@ -327,7 +325,12 @@ private fun CustomDatePickerSection(
     val spacing = AvoqadoTheme.spacing
     val cornerRadius = AvoqadoTheme.cornerRadius
     val context = LocalContext.current
-    val dateFormatter = remember { SimpleDateFormat("dd/MM/yyyy", Locale.US) }
+    val zoneId = remember { com.avoqado.pos.core.util.VenueTimeZone.zoneId() }
+    val dateFormatter = remember {
+        java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy", Locale.US)
+    }
+    fun formatDate(epochMillis: Long): String =
+        java.time.Instant.ofEpochMilli(epochMillis).atZone(zoneId).format(dateFormatter)
 
     Surface(
         color = MaterialTheme.colorScheme.surface,
@@ -361,12 +364,15 @@ private fun CustomDatePickerSection(
                             shape = RoundedCornerShape(cornerRadius.md),
                         )
                         .clickable {
-                            val cal = Calendar.getInstance()
+                            val tz = java.util.TimeZone.getTimeZone(
+                                com.avoqado.pos.core.util.VenueTimeZone.current,
+                            )
+                            val cal = Calendar.getInstance(tz)
                             cal.timeInMillis = startDateMillis
                             DatePickerDialog(
                                 context,
                                 { _, year, month, day ->
-                                    val newCal = Calendar.getInstance()
+                                    val newCal = Calendar.getInstance(tz)
                                     newCal.set(year, month, day, 0, 0, 0)
                                     onStartDateChanged(newCal.timeInMillis)
                                 },
@@ -384,7 +390,7 @@ private fun CustomDatePickerSection(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         Text(
-                            text = dateFormatter.format(Date(startDateMillis)),
+                            text = formatDate(startDateMillis),
                             style = MaterialTheme.typography.bodyMedium,
                             fontWeight = FontWeight.Medium,
                             color = MaterialTheme.colorScheme.onSurface,
@@ -404,12 +410,15 @@ private fun CustomDatePickerSection(
                             shape = RoundedCornerShape(cornerRadius.md),
                         )
                         .clickable {
-                            val cal = Calendar.getInstance()
+                            val tz = java.util.TimeZone.getTimeZone(
+                                com.avoqado.pos.core.util.VenueTimeZone.current,
+                            )
+                            val cal = Calendar.getInstance(tz)
                             cal.timeInMillis = endDateMillis
                             DatePickerDialog(
                                 context,
                                 { _, year, month, day ->
-                                    val newCal = Calendar.getInstance()
+                                    val newCal = Calendar.getInstance(tz)
                                     newCal.set(year, month, day, 23, 59, 59)
                                     onEndDateChanged(newCal.timeInMillis)
                                 },
@@ -427,7 +436,7 @@ private fun CustomDatePickerSection(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         Text(
-                            text = dateFormatter.format(Date(endDateMillis)),
+                            text = formatDate(endDateMillis),
                             style = MaterialTheme.typography.bodyMedium,
                             fontWeight = FontWeight.Medium,
                             color = MaterialTheme.colorScheme.onSurface,

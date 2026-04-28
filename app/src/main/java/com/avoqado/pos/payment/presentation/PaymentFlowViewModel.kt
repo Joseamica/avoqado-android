@@ -46,6 +46,8 @@ data class PaymentCompletion(
     val paidItemIds: Set<String> = emptySet(),
 )
 
+const val LOCAL_PRINTER_UNAVAILABLE = "__LOCAL_PRINTER_UNAVAILABLE__"
+
 @HiltViewModel
 class PaymentFlowViewModel @Inject constructor(
     private val orderRepository: OrderRepository,
@@ -111,6 +113,9 @@ class PaymentFlowViewModel @Inject constructor(
     private val _printResult = MutableStateFlow<String?>(null)
     val printResult: StateFlow<String?> = _printResult.asStateFlow()
 
+    private val _canPrintOnTerminal = MutableStateFlow(false)
+    val canPrintOnTerminal: StateFlow<Boolean> = _canPrintOnTerminal.asStateFlow()
+
     fun clearPrintResult() {
         _printResult.value = null
     }
@@ -158,9 +163,13 @@ class PaymentFlowViewModel @Inject constructor(
     }
 
     fun reprintReceipt() {
-        val receipt = lastReceipt
+        val receipt = lastReceipt ?: buildReceiptSnapshot()?.also { lastReceipt = it }
         if (receipt == null) {
-            _printResult.value = "No hay recibo disponible para reimprimir"
+            if (!selectedTerminalId.isNullOrBlank()) {
+                _printResult.value = LOCAL_PRINTER_UNAVAILABLE
+            } else {
+                _printResult.value = "No hay recibo disponible para reimprimir"
+            }
             return
         }
         viewModelScope.launch {
@@ -170,6 +179,8 @@ class PaymentFlowViewModel @Inject constructor(
                 val count = printerService.manualPrintReceipt(receipt)
                 _printResult.value = if (count > 0) {
                     "Recibo impreso"
+                } else if (!selectedTerminalId.isNullOrBlank()) {
+                    LOCAL_PRINTER_UNAVAILABLE
                 } else {
                     "No hay impresora de recibos configurada"
                 }
@@ -178,6 +189,38 @@ class PaymentFlowViewModel @Inject constructor(
             } finally {
                 _printSending.value = false
             }
+        }
+    }
+
+    fun printReceiptOnTerminal() {
+        val receipt = lastReceipt ?: buildReceiptSnapshot()?.also { lastReceipt = it }
+        val terminalId = selectedTerminalId
+        if (receipt == null) {
+            _printResult.value = "No hay recibo disponible para imprimir"
+            return
+        }
+        if (terminalId.isNullOrBlank()) {
+            _printResult.value = "No hay TPV seleccionada para imprimir"
+            return
+        }
+
+        viewModelScope.launch {
+            _printSending.value = true
+            _printResult.value = null
+            terminalPaymentService.printReceiptOnTerminal(
+                terminalId = terminalId,
+                receipt = receipt,
+                paymentId = lastPaymentId,
+                receiptAccessKey = lastReceiptAccessKey,
+            ).fold(
+                onSuccess = {
+                    _printResult.value = "Recibo impreso en TPV"
+                },
+                onFailure = { error ->
+                    _printResult.value = error.message ?: "No se pudo imprimir en TPV"
+                },
+            )
+            _printSending.value = false
         }
     }
 
@@ -223,6 +266,7 @@ class PaymentFlowViewModel @Inject constructor(
         currentTipCents = 0
         createdOrderId = null
         selectedTerminalId = null
+        _canPrintOnTerminal.value = false
         lastPaymentId = null
         lastReceiptAccessKey = null
         lastCashTenderedCents = null
@@ -328,6 +372,7 @@ class PaymentFlowViewModel @Inject constructor(
 
     fun selectTerminalAndPay(terminalId: String) {
         selectedTerminalId = terminalId
+        _canPrintOnTerminal.value = true
         confirmPayment()
     }
 
@@ -897,76 +942,17 @@ class PaymentFlowViewModel @Inject constructor(
         val realItems = cart.items.filter {
             it.type is CartItemType.ProductItem
         }
-        if (realItems.isEmpty()) return
-
-        val orderNumber = createdOrderId?.takeLast(4) ?: "---"
 
         viewModelScope.launch {
-            val splitTypeValue = _splitType.value
-            val baseAmount = currentBaseAmount()
-            fun com.avoqado.pos.pos.data.model.CartItem.toReceiptItem(): ReceiptItem {
-                val modifierUnitTotal = selectedModifiers.sumOf { it.priceInCents }
-                val effectiveUnitWithModifiers = effectiveUnitPrice + modifierUnitTotal
-                return ReceiptItem(
-                    name = name,
-                    quantity = quantity,
-                    unitPrice = effectiveUnitWithModifiers,
-                    totalPrice = totalPrice,
-                    modifiers = selectedModifiers.map { it.modifierName }.ifEmpty { null },
-                    note = itemNote,
-                    isCortesia = isCortesia,
-                )
+            buildReceiptSnapshot(method, changeCents)?.let { receipt ->
+                lastReceipt = receipt
+                printerService.autoPrintReceipt(receipt)
             }
-            val receiptItems = when (splitTypeValue) {
-                "BYPRODUCT" -> {
-                    val selected = cart.items.filter { splitSelectedItemIds.contains(it.id) }
-                    (if (selected.isEmpty()) cart.items else selected).map { it.toReceiptItem() }
-                }
-                "EQUALPARTS", "CUSTOMAMOUNT" -> {
-                    // Partial amount split is not tied to specific items.
-                    listOf(
-                        ReceiptItem(
-                            name = "Pago parcial",
-                            quantity = 1,
-                            unitPrice = baseAmount,
-                            totalPrice = baseAmount,
-                        ),
-                    )
-                }
-                else -> cart.items.map { it.toReceiptItem() }
-            }
-
-            val isFullPayment = splitTypeValue == "FULLPAYMENT"
-            val receiptSubtotal = if (isFullPayment) cart.subtotalCents else baseAmount
-            val receiptDiscount = if (isFullPayment && cart.discountCents > 0) cart.discountCents else 0
-            val receiptTax = if (isFullPayment) cart.taxCents else 0
-            val receiptTotal = baseAmount + currentTipCents
-
-            // Auto-print receipt
-            val receipt = ReceiptData(
-                orderNumber = orderNumber,
-                orderType = "En tienda",
-                items = receiptItems,
-                subtotal = receiptSubtotal,
-                taxAmount = receiptTax,
-                tipAmount = if (currentTipCents > 0) currentTipCents else null,
-                discountAmount = if (receiptDiscount > 0) receiptDiscount else null,
-                total = receiptTotal,
-                paymentMethod = when (method) {
-                    PaymentMethod.CASH -> "Efectivo"
-                    PaymentMethod.CARD -> "Tarjeta"
-                },
-                venueName = secureStorage.venueName ?: "Avoqado",
-                cashTendered = if (method == PaymentMethod.CASH) changeCents?.let { receiptTotal + it } else null,
-                changeAmount = changeCents,
-            )
-            // Cache for manual reprint from the success screen
-            lastReceipt = receipt
-            printerService.autoPrintReceipt(receipt)
 
             // Auto-print kitchen ticket
+            if (realItems.isEmpty()) return@launch
             val kitchenTicket = KitchenTicketData(
-                orderNumber = orderNumber,
+                orderNumber = createdOrderId?.takeLast(4) ?: "Q-${(1000..9999).random()}",
                 orderType = "En tienda",
                 items = realItems.map { item ->
                     KitchenItem(
@@ -980,6 +966,79 @@ class PaymentFlowViewModel @Inject constructor(
             )
             printerService.autoPrintKitchenTicket(kitchenTicket)
         }
+    }
+
+    private fun buildReceiptSnapshot(method: PaymentMethod? = null, changeCents: Int? = null): ReceiptData? {
+        val cart = cartState
+        val successState = _state.value as? PaymentFlowState.Success
+        val resolvedMethod = method ?: successState?.method ?: selectedMethod
+        val baseAmount = currentBaseAmount()
+        val receiptTotal = successState?.totalAmount ?: (baseAmount + currentTipCents)
+
+        fun com.avoqado.pos.pos.data.model.CartItem.toReceiptItem(): ReceiptItem {
+            val modifierUnitTotal = selectedModifiers.sumOf { it.priceInCents }
+            val effectiveUnitWithModifiers = effectiveUnitPrice + modifierUnitTotal
+            return ReceiptItem(
+                name = name,
+                quantity = quantity,
+                unitPrice = effectiveUnitWithModifiers,
+                totalPrice = totalPrice,
+                modifiers = selectedModifiers.map { it.modifierName }.ifEmpty { null },
+                note = itemNote,
+                isCortesia = isCortesia,
+            )
+        }
+
+        val splitTypeValue = _splitType.value
+        val receiptItems = when {
+            cart == null || cart.items.isEmpty() -> listOf(
+                ReceiptItem(
+                    name = "Venta",
+                    quantity = 1,
+                    unitPrice = baseAmount,
+                    totalPrice = baseAmount,
+                ),
+            )
+            splitTypeValue == "BYPRODUCT" -> {
+                val selected = cart.items.filter { splitSelectedItemIds.contains(it.id) }
+                (if (selected.isEmpty()) cart.items else selected).map { it.toReceiptItem() }
+            }
+            splitTypeValue == "EQUALPARTS" || splitTypeValue == "CUSTOMAMOUNT" -> listOf(
+                ReceiptItem(
+                    name = "Pago parcial",
+                    quantity = 1,
+                    unitPrice = baseAmount,
+                    totalPrice = baseAmount,
+                ),
+            )
+            else -> cart.items.map { it.toReceiptItem() }
+        }
+
+        val isFullPayment = splitTypeValue == "FULLPAYMENT"
+        val receiptSubtotal = if (cart != null && isFullPayment) cart.subtotalCents else baseAmount
+        val receiptDiscount = if (cart != null && isFullPayment && cart.discountCents > 0) cart.discountCents else 0
+        val receiptTax = if (cart != null && isFullPayment) cart.taxCents else 0
+        val resolvedChange = changeCents ?: successState?.changeAmount
+
+        return ReceiptData(
+            orderNumber = createdOrderId?.takeLast(4) ?: "---",
+            orderType = "En tienda",
+            items = receiptItems,
+            subtotal = receiptSubtotal,
+            taxAmount = receiptTax,
+            tipAmount = if (currentTipCents > 0) currentTipCents else null,
+            discountAmount = if (receiptDiscount > 0) receiptDiscount else null,
+            total = receiptTotal,
+            paymentMethod = when (resolvedMethod) {
+                PaymentMethod.CASH -> "Efectivo"
+                PaymentMethod.CARD -> "Tarjeta"
+                null -> null
+            },
+            venueName = secureStorage.venueName ?: "Avoqado",
+            cashTendered = if (resolvedMethod == PaymentMethod.CASH) resolvedChange?.let { receiptTotal + it } else null,
+            changeAmount = resolvedChange,
+            transactionId = lastPaymentId,
+        )
     }
 
     private fun buildOrderRequest(cart: CartState): CreateOrderRequest {

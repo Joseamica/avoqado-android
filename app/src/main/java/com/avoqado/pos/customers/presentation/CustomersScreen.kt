@@ -820,20 +820,13 @@ private fun buildContactLine(customer: Customer): String? {
 }
 
 /**
- * Formats an ISO date string to a short display format
+ * Formats an ISO date string to a short display format in the active venue's timezone.
  */
 private fun formatDate(isoDate: String?): String {
-    if (isoDate == null) return ""
-    return try {
-        // Take just the date part (YYYY-MM-DD)
-        val datePart = isoDate.take(10)
-        val parts = datePart.split("-")
-        if (parts.size == 3) {
-            "${parts[2]}/${parts[1]}/${parts[0]}"
-        } else {
-            datePart
-        }
-    } catch (_: Exception) {
-        isoDate.take(10)
-    }
+    if (isoDate.isNullOrBlank()) return ""
+    val zoned = com.avoqado.pos.core.util.VenueDateTimeFormatter.parseIso(isoDate)
+        ?.atZone(com.avoqado.pos.core.util.VenueTimeZone.zoneId())
+    return zoned?.format(
+        java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy"),
+    ) ?: isoDate.take(10)
 }

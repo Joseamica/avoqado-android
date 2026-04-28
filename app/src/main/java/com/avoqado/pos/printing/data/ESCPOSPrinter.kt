@@ -4,8 +4,6 @@ import com.avoqado.pos.printing.data.model.KitchenTicketData
 import com.avoqado.pos.printing.data.model.PaperWidth
 import com.avoqado.pos.printing.data.model.ReceiptData
 import java.io.ByteArrayOutputStream
-import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
 
 /**
@@ -341,10 +339,17 @@ class ESCPOSPrinter(
 
         printDoubleDivider()
 
-        // Timestamp
+        // Timestamp (in venue timezone)
         setAlignment(TextAlignment.CENTER)
-        val sdf = SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale("es", "MX"))
-        printLine(sdf.format(ticket.timestamp))
+        val ticketTime = ticket.timestamp.toInstant()
+            .atZone(com.avoqado.pos.core.util.VenueTimeZone.zoneId())
+            .format(
+                java.time.format.DateTimeFormatter.ofPattern(
+                    "dd/MM/yyyy HH:mm:ss",
+                    Locale("es", "MX"),
+                ),
+            )
+        printLine(ticketTime)
 
         cut()
 
@@ -390,8 +395,14 @@ class ESCPOSPrinter(
         printLine("Impresora configurada!")
         printLine()
 
-        val sdf = SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale("es", "MX"))
-        printLine(sdf.format(Date()))
+        val nowFormatted = java.time.ZonedDateTime.now(com.avoqado.pos.core.util.VenueTimeZone.zoneId())
+            .format(
+                java.time.format.DateTimeFormatter.ofPattern(
+                    "dd/MM/yyyy HH:mm:ss",
+                    Locale("es", "MX"),
+                ),
+            )
+        printLine(nowFormatted)
 
         cut()
 

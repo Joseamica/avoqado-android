@@ -397,7 +397,10 @@ class CartViewModel @Inject constructor(
         val state = _cartState.value
         if (state.isEmpty) return false
 
-        val cartName = name ?: "Carrito ${java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date())}"
+        val cartName = name ?: "Carrito ${
+            java.time.ZonedDateTime.now(com.avoqado.pos.core.util.VenueTimeZone.zoneId())
+                .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"))
+        }"
         val savedCart = SavedCart(
             id = UUID.randomUUID().toString(),
             name = cartName,

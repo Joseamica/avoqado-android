@@ -90,11 +90,12 @@ fun TimeClockSheet(
         configuration.screenHeightDp < 740
     val clockFontSize = if (compactSheetLayout) 52.sp else 64.sp
 
-    // Live clock (matching iOS: ticks every second)
-    var currentTime by remember { mutableStateOf(LocalTime.now()) }
+    // Live clock in venue timezone (matching iOS: ticks every second)
+    val zoneId = remember { com.avoqado.pos.core.util.VenueTimeZone.zoneId() }
+    var currentTime by remember { mutableStateOf(LocalTime.now(zoneId)) }
     LaunchedEffect(Unit) {
         while (true) {
-            currentTime = LocalTime.now()
+            currentTime = LocalTime.now(zoneId)
             delay(1000)
         }
     }

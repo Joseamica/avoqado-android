@@ -52,8 +52,6 @@ import com.avoqado.pos.designsystem.components.CircleBackButton
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Error
 import com.avoqado.pos.designsystem.theme.Success
-import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
 
 // MARK: - Entry Point
@@ -612,9 +610,16 @@ private fun OpenDrawerContent(
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
 
         // Opened info
-        val dateFormat = SimpleDateFormat("dd MMM, HH:mm", Locale("es", "MX"))
+        val openedDisplay = remember(session.openedAt) {
+            com.avoqado.pos.core.util.VenueDateTimeFormatter.SPANISH_MX
+                .let { locale ->
+                    java.time.Instant.ofEpochMilli(session.openedAt)
+                        .atZone(com.avoqado.pos.core.util.VenueTimeZone.zoneId())
+                        .format(java.time.format.DateTimeFormatter.ofPattern("dd MMM, HH:mm", locale))
+                }
+        }
         Text(
-            text = "Abierta ${dateFormat.format(Date(session.openedAt))} por ${session.openedByName}",
+            text = "Abierta $openedDisplay por ${session.openedByName}",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -785,7 +790,11 @@ private fun SummaryCard(
 
 @Composable
 private fun EventRow(event: CashDrawerEventEntity) {
-    val timeFormat = SimpleDateFormat("HH:mm", Locale("es", "MX"))
+    val timeText = remember(event.createdAt) {
+        java.time.Instant.ofEpochMilli(event.createdAt)
+            .atZone(com.avoqado.pos.core.util.VenueTimeZone.zoneId())
+            .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm", Locale("es", "MX")))
+    }
 
     val (label, color, sign) = when (event.type) {
         CashDrawerEventType.CASH_SALE.name -> Triple("Venta en efectivo", Success, "+")
@@ -815,7 +824,7 @@ private fun EventRow(event: CashDrawerEventEntity) {
                 )
             }
             Text(
-                text = "${timeFormat.format(Date(event.createdAt))} - ${event.staffName}",
+                text = "$timeText - ${event.staffName}",
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -890,7 +899,12 @@ private fun ClosedSessionCard(
     session: CashDrawerSessionEntity,
     onClick: () -> Unit = {},
 ) {
-    val dateFormat = SimpleDateFormat("dd MMM yyyy, HH:mm", Locale("es", "MX"))
+    val closedAtMillis = session.closedAt ?: session.openedAt
+    val sessionDateText = remember(closedAtMillis) {
+        java.time.Instant.ofEpochMilli(closedAtMillis)
+            .atZone(com.avoqado.pos.core.util.VenueTimeZone.zoneId())
+            .format(java.time.format.DateTimeFormatter.ofPattern("dd MMM yyyy, HH:mm", Locale("es", "MX")))
+    }
 
     Card(
         modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
@@ -908,7 +922,7 @@ private fun ClosedSessionCard(
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
                 Text(
-                    text = dateFormat.format(Date(session.closedAt ?: session.openedAt)),
+                    text = sessionDateText,
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurface,

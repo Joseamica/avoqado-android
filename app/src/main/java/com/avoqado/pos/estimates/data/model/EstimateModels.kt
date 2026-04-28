@@ -53,18 +53,10 @@ data class Estimate(
 
     val displayDate: String
         get() {
-            val date = createdAt ?: return "—"
-            return try {
-                val datePart = date.take(10)
-                val parts = datePart.split("-")
-                if (parts.size == 3) {
-                    "${parts[2]}/${parts[1]}/${parts[0]}"
-                } else {
-                    datePart
-                }
-            } catch (_: Exception) {
-                date.take(10)
-            }
+            val instant = com.avoqado.pos.core.util.VenueDateTimeFormatter.parseIso(createdAt)
+                ?: return createdAt?.take(10) ?: "—"
+            return instant.atZone(com.avoqado.pos.core.util.VenueTimeZone.zoneId())
+                .format(java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy"))
         }
 
     val itemCount: Int
