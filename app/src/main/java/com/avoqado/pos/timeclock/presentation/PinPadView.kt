@@ -9,9 +9,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Backspace
 import androidx.compose.material3.Icon
@@ -19,7 +17,6 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -32,14 +29,21 @@ fun PinPadView(
     onPinChange: (String) -> Unit,
     maxLength: Int = 10,
     minLength: Int = 4,
+    compact: Boolean = false,
 ) {
+    val dotSize = if (compact) 12.dp else 14.dp
+    val dotSpacing = if (compact) AvoqadoTheme.spacing.sm else AvoqadoTheme.spacing.md
+    val keySize = if (compact) 56.dp else 64.dp
+    val rowWidth = if (compact) 0.82f else 0.7f
+    val rowGap = if (compact) AvoqadoTheme.spacing.xs else AvoqadoTheme.spacing.sm
+
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         // PIN dots — dynamic: show one filled dot per entered digit
         Row(
             modifier = Modifier.height(20.dp),
-            horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
+            horizontalArrangement = Arrangement.spacedBy(dotSpacing),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             if (pin.isEmpty()) {
@@ -47,7 +51,7 @@ fun PinPadView(
                 repeat(minLength) {
                     Box(
                         modifier = Modifier
-                            .size(14.dp)
+                            .size(dotSize)
                             .background(
                                 color = MaterialTheme.colorScheme.outline,
                                 shape = CircleShape,
@@ -59,7 +63,7 @@ fun PinPadView(
                 repeat(pin.length) {
                     Box(
                         modifier = Modifier
-                            .size(14.dp)
+                            .size(dotSize)
                             .background(
                                 color = MaterialTheme.colorScheme.primary,
                                 shape = CircleShape,
@@ -69,7 +73,7 @@ fun PinPadView(
             }
         }
 
-        Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
+        Spacer(modifier = Modifier.height(if (compact) AvoqadoTheme.spacing.xl else AvoqadoTheme.spacing.xxl))
 
         // Number pad
         val rows = listOf(
@@ -81,18 +85,18 @@ fun PinPadView(
 
         rows.forEach { row ->
             Row(
-                modifier = Modifier.fillMaxWidth(0.7f),
+                modifier = Modifier.fillMaxWidth(rowWidth),
                 horizontalArrangement = Arrangement.SpaceEvenly,
             ) {
                 row.forEach { key ->
                     when (key) {
-                        "" -> Spacer(modifier = Modifier.size(64.dp))
+                        "" -> Spacer(modifier = Modifier.size(keySize))
                         "del" -> {
                             IconButton(
                                 onClick = {
                                     if (pin.isNotEmpty()) onPinChange(pin.dropLast(1))
                                 },
-                                modifier = Modifier.size(64.dp),
+                                modifier = Modifier.size(keySize),
                             ) {
                                 Icon(
                                     Icons.AutoMirrored.Filled.Backspace,
@@ -105,14 +109,18 @@ fun PinPadView(
                                 onClick = {
                                     if (pin.length < maxLength) onPinChange(pin + key)
                                 },
-                                modifier = Modifier.size(64.dp),
+                                modifier = Modifier.size(keySize),
                                 shape = CircleShape,
                                 color = MaterialTheme.colorScheme.surfaceVariant,
                             ) {
                                 Box(contentAlignment = Alignment.Center) {
                                     Text(
                                         text = key,
-                                        style = MaterialTheme.typography.headlineMedium,
+                                        style = if (compact) {
+                                            MaterialTheme.typography.titleLarge
+                                        } else {
+                                            MaterialTheme.typography.headlineMedium
+                                        },
                                     )
                                 }
                             }
@@ -120,7 +128,7 @@ fun PinPadView(
                     }
                 }
             }
-            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+            Spacer(modifier = Modifier.height(rowGap))
         }
     }
 }

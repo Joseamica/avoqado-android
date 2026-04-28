@@ -25,7 +25,7 @@ fun configValue(key: String, defaultValue: String): String {
 }
 
 val releaseBaseUrl = "https://api.avoqado.io/api/v1"
-val defaultDebugBaseUrl = "https://humane-immortal-pika.ngrok-free.app/api/v1"
+val defaultDebugBaseUrl = "https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1"
 val debugBaseUrl = configValue("avoqado.devBaseUrl", defaultDebugBaseUrl).trim()
 
 check(debugBaseUrl != releaseBaseUrl) {
@@ -41,8 +41,8 @@ android {
         applicationId = "com.avoqado.pos"
         minSdk = 26
         targetSdk = 35
-        versionCode = 7
-        versionName = "2.0.0"
+        versionCode = 8
+        versionName = "2.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 

@@ -23,7 +23,7 @@ Aplicación Android de punto de venta (POS) para Avoqado.
 
 ## Backend debug
 
-- Si no defines `avoqado.devBaseUrl`, el build `debug` usa `https://humane-immortal-pika.ngrok-free.app/api/v1`.
+- Si no defines `avoqado.devBaseUrl`, el build `debug` usa `https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1`.
 - También puedes fijarlo en `local.properties`:
   `avoqado.devBaseUrl=https://tu-url/api/v1`
 - El build falla si `debug` apunta a la misma URL de producción.

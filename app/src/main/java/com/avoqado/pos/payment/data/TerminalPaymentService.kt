@@ -74,6 +74,7 @@ class TerminalPaymentService @Inject constructor(
         tipCents: Int = 0,
         rating: Int? = null,
         orderId: String? = null,
+        processedByStaffId: String? = null,
     ): TerminalPaymentResult {
         val venueId = secureStorage.venueId ?: return TerminalPaymentResult.Error("No venue selected")
         val token = secureStorage.accessToken ?: return TerminalPaymentResult.Error("Not authenticated")
@@ -94,6 +95,7 @@ class TerminalPaymentService @Inject constructor(
                     rating = rating,
                     skipReview = true, // Android already collected tip/rating
                     orderId = orderId,
+                    processedByStaffId = processedByStaffId,
                     requestId = requestId,
                 ),
             ).toRequestBody("application/json".toMediaType())
@@ -228,6 +230,7 @@ private data class TerminalPaymentRequest(
     val rating: Int? = null,
     val skipReview: Boolean = true,
     val orderId: String? = null,
+    val processedByStaffId: String? = null,
     val requestId: String,
 )
 

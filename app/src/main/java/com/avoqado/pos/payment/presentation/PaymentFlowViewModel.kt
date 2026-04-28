@@ -115,6 +115,48 @@ class PaymentFlowViewModel @Inject constructor(
         _printResult.value = null
     }
 
+    // Customer attachment state
+    private val _customerAttachSending = MutableStateFlow(false)
+    val customerAttachSending: StateFlow<Boolean> = _customerAttachSending.asStateFlow()
+
+    private val _customerAttachResult = MutableStateFlow<String?>(null)
+    val customerAttachResult: StateFlow<String?> = _customerAttachResult.asStateFlow()
+
+    fun clearCustomerAttachResult() {
+        _customerAttachResult.value = null
+    }
+
+    fun attachCustomerToCurrentPayment(customerId: String, customerName: String) {
+        val paymentId = lastPaymentId
+        val amountCents = currentBaseAmount()
+        val tipCents = currentTipCents
+
+        viewModelScope.launch {
+            _customerAttachSending.value = true
+            _customerAttachResult.value = null
+            val result = if (!paymentId.isNullOrBlank()) {
+                orderRepository.attachCustomerToPayment(paymentId, customerId)
+            } else {
+                orderRepository.attachCustomerToLatestPayment(
+                    customerId = customerId,
+                    amountCents = amountCents,
+                    tipCents = tipCents,
+                    staffId = selectedStaffId(),
+                )
+            }
+            result
+                .fold(
+                    onSuccess = {
+                        _customerAttachResult.value = "Cliente agregado: $customerName"
+                    },
+                    onFailure = { error ->
+                        _customerAttachResult.value = error.message ?: "No se pudo agregar cliente"
+                    },
+                )
+            _customerAttachSending.value = false
+        }
+    }
+
     fun reprintReceipt() {
         val receipt = lastReceipt
         if (receipt == null) {
@@ -165,6 +207,11 @@ class PaymentFlowViewModel @Inject constructor(
 
     val settings: TpvSettings get() = tpvSettingsRepository.getCurrentSettings()
 
+    private fun selectedStaffId(): String {
+        return cartState?.selectedStaffId?.takeIf { it.isNotBlank() }
+            ?: secureStorage.userId.orEmpty()
+    }
+
     fun startPaymentFlow(cart: CartState) {
         cartState = cart
         splitBaseAmountOverride = resolveSplitBaseAmount(cart)
@@ -188,6 +235,8 @@ class PaymentFlowViewModel @Inject constructor(
         _emailSending.value = false
         _printResult.value = null
         _printSending.value = false
+        _customerAttachResult.value = null
+        _customerAttachSending.value = false
         lastReceipt = null
 
         Log.d("💰", "Starting payment flow - amount: $amount")
@@ -295,7 +344,7 @@ class PaymentFlowViewModel @Inject constructor(
                     if (createdOrderId == null) {
                         // Create order only once per payment session.
                         val orderRequest = buildOrderRequest(cart)
-                        val orderResult = orderRepository.createOrder(orderRequest)
+                        val orderResult = orderRepository.createOrder(orderRequest, staffId = selectedStaffId())
 
                         orderResult.fold(
                             onSuccess = { response ->
@@ -319,6 +368,7 @@ class PaymentFlowViewModel @Inject constructor(
                                     if (isQueueable) {
                                         cashPaymentRepository.queueCashPayment(
                                             orderRequest = orderRequest,
+                                            staffId = selectedStaffId(),
                                             cashTenderedCents = null,
                                             changeCents = null,
                                             rating = currentRating,
@@ -385,6 +435,7 @@ class PaymentFlowViewModel @Inject constructor(
                     tipCents = currentTipCents,
                     rating = currentRating,
                     orderId = createdOrderId,
+                    processedByStaffId = selectedStaffId(),
                 )
                 when (terminalResult) {
                     is TerminalPaymentResult.Success -> {
@@ -414,6 +465,7 @@ class PaymentFlowViewModel @Inject constructor(
                     val payResult = orderRepository.recordCashPayment(
                         orderId = orderId,
                         amount = subtotal,
+                        staffId = selectedStaffId(),
                         tip = currentTipCents,
                         splitType = _splitType.value,
                     )
@@ -438,6 +490,7 @@ class PaymentFlowViewModel @Inject constructor(
                             if (isQueueable && cart != null) {
                                 cashPaymentRepository.queueCashPayment(
                                     orderRequest = buildOrderRequest(cart),
+                                    staffId = selectedStaffId(),
                                     cashTenderedCents = null,
                                     changeCents = null,
                                     rating = currentRating,
@@ -503,7 +556,7 @@ class PaymentFlowViewModel @Inject constructor(
                                 orderRequest = orderRequest,
                             )
                         } else {
-                            val orderResult = orderRepository.createOrder(orderRequest)
+                            val orderResult = orderRepository.createOrder(orderRequest, staffId = selectedStaffId())
                             orderResult.fold(
                                 onSuccess = { orderResponse ->
                                     val orderId = orderResponse.data?.id
@@ -529,6 +582,7 @@ class PaymentFlowViewModel @Inject constructor(
                                     if (isQueueable) {
                                         cashPaymentRepository.queueCashPayment(
                                             orderRequest = orderRequest,
+                                            staffId = selectedStaffId(),
                                             cashTenderedCents = cashReceivedCents,
                                             changeCents = result.changeCents,
                                             rating = currentRating,
@@ -559,6 +613,7 @@ class PaymentFlowViewModel @Inject constructor(
                         val subtotal = total - currentTipCents
                         val fastResult = orderRepository.recordFastCashPayment(
                             amount = subtotal,
+                            staffId = selectedStaffId(),
                             tip = currentTipCents,
                             splitType = _splitType.value,
                         )
@@ -582,6 +637,7 @@ class PaymentFlowViewModel @Inject constructor(
                                     if (cart != null) {
                                         cashPaymentRepository.queueCashPayment(
                                             orderRequest = buildOrderRequest(cart),
+                                            staffId = selectedStaffId(),
                                             cashTenderedCents = cashReceivedCents,
                                             changeCents = result.changeCents,
                                             rating = currentRating,
@@ -624,6 +680,7 @@ class PaymentFlowViewModel @Inject constructor(
         val payResult = orderRepository.recordCashPayment(
             orderId = orderId,
             amount = subtotal,
+            staffId = selectedStaffId(),
             tip = currentTipCents,
             splitType = _splitType.value,
         )
@@ -645,6 +702,7 @@ class PaymentFlowViewModel @Inject constructor(
                 if (isQueueable) {
                     cashPaymentRepository.queueCashPayment(
                         orderRequest = orderRequest,
+                        staffId = selectedStaffId(),
                         cashTenderedCents = cashReceivedCents,
                         changeCents = changeCents,
                         rating = currentRating,

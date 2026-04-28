@@ -91,7 +91,7 @@ class CashPaymentRepositoryTest {
             paymentMethod = "CASH",
         )
 
-        repository.queueCashPayment(orderRequest, 10000, 0, null)
+        repository.queueCashPayment(orderRequest, "user-456", 10000, 0, null)
 
         coVerify {
             dao.insert(
@@ -114,8 +114,8 @@ class CashPaymentRepositoryTest {
             paymentMethod = "CASH",
         )
 
-        val id1 = repository.queueCashPayment(orderRequest, 5000, 0, null)
-        val id2 = repository.queueCashPayment(orderRequest, 5000, 0, null)
+        val id1 = repository.queueCashPayment(orderRequest, "user-456", 5000, 0, null)
+        val id2 = repository.queueCashPayment(orderRequest, "user-456", 5000, 0, null)
 
         assertNotEquals(id1, id2)
     }
@@ -131,7 +131,7 @@ class CashPaymentRepositoryTest {
             paymentMethod = "CASH",
         )
 
-        repository.queueCashPayment(orderRequest, 12000, 500, 5)
+        repository.queueCashPayment(orderRequest, "user-456", 12000, 500, 5)
 
         coVerify {
             dao.insert(

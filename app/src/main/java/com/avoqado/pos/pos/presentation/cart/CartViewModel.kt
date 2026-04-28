@@ -4,6 +4,7 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.auth.data.AuthRepository
+import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.payment.data.OrderRepository
 import com.avoqado.pos.payment.data.model.CreateOrderRequest
 import com.avoqado.pos.payment.data.model.OrderItemRequest
@@ -12,6 +13,8 @@ import com.avoqado.pos.pos.data.ActiveCartState
 import com.avoqado.pos.pos.data.DiscountsRepository
 import com.avoqado.pos.pos.data.ProductsRepository
 import com.avoqado.pos.pos.data.SavedCartsRepository
+import com.avoqado.pos.pos.data.StaffMember
+import com.avoqado.pos.pos.data.StaffRepository
 import com.avoqado.pos.pos.data.model.CartItem
 import com.avoqado.pos.pos.data.model.CartItemType
 import com.avoqado.pos.pos.data.model.Discount
@@ -37,6 +40,8 @@ data class CartState(
     val orderDiscount: Discount? = null,
     val orderNote: String? = null,
     val orderTaxPercent: Int? = null,
+    val selectedStaffId: String = "",
+    val selectedStaffName: String = "Staff",
 ) {
     val itemCount: Int get() = items.sumOf { it.quantity }
     val subtotalCents: Int get() = items.sumOf { it.totalPrice }
@@ -77,12 +82,23 @@ class CartViewModel @Inject constructor(
     val discountsRepository: DiscountsRepository,
     private val savedCartsRepository: SavedCartsRepository,
     private val authRepository: AuthRepository,
+    private val secureStorage: SecureStorage,
     private val activeCartState: ActiveCartState,
     private val orderRepository: OrderRepository,
+    private val staffRepository: StaffRepository,
 ) : ViewModel() {
 
-    private val _cartState = MutableStateFlow(CartState())
+    private val _cartState = MutableStateFlow(defaultCartState())
     val cartState: StateFlow<CartState> = _cartState.asStateFlow()
+
+    private val _staffOptions = MutableStateFlow<List<StaffMember>>(emptyList())
+    val staffOptions: StateFlow<List<StaffMember>> = _staffOptions.asStateFlow()
+
+    private val _isStaffLoading = MutableStateFlow(false)
+    val isStaffLoading: StateFlow<Boolean> = _isStaffLoading.asStateFlow()
+
+    private val _staffError = MutableStateFlow<String?>(null)
+    val staffError: StateFlow<String?> = _staffError.asStateFlow()
 
     init {
         // Clear cart when venue changes (like iOS)
@@ -90,6 +106,7 @@ class CartViewModel @Inject constructor(
             authRepository.venueSwitched.collect {
                 Log.d("🛒", "Venue switched — clearing cart")
                 clearCart()
+                fetchStaff()
             }
         }
 
@@ -142,6 +159,56 @@ class CartViewModel @Inject constructor(
         viewModelScope.launch {
             productsRepository.fetchProducts()
             discountsRepository.fetchDiscounts()
+            fetchStaff()
+        }
+    }
+
+    private fun defaultCartState(): CartState {
+        val loggedInStaffName = listOfNotNull(secureStorage.userFirstName, secureStorage.userLastName)
+            .joinToString(" ")
+            .trim()
+            .ifEmpty { secureStorage.userEmail ?: "Staff" }
+        val storedStaffId = secureStorage.selectedStaffIdForCurrentVenue
+        val storedStaffName = secureStorage.selectedStaffNameForCurrentVenue
+
+        return CartState(
+            selectedStaffId = storedStaffId ?: secureStorage.userId.orEmpty(),
+            selectedStaffName = storedStaffName ?: loggedInStaffName,
+        )
+    }
+
+    fun fetchStaff() {
+        viewModelScope.launch {
+            _isStaffLoading.value = true
+            _staffError.value = null
+            staffRepository.getActiveStaff().fold(
+                onSuccess = { staff ->
+                    _staffOptions.value = staff
+                    val selectedId = _cartState.value.selectedStaffId
+                    val selected = staff.firstOrNull { it.id == selectedId }
+                    if (selected != null && selected.fullName != _cartState.value.selectedStaffName) {
+                        selectStaff(selected.id, selected.fullName)
+                    } else if (selectedId.isNotBlank() && selected == null) {
+                        secureStorage.clearSelectedStaffForCurrentVenue()
+                        _cartState.value = defaultCartState()
+                    }
+                },
+                onFailure = { error ->
+                    _staffError.value = error.message ?: "No se pudo cargar staff"
+                },
+            )
+            _isStaffLoading.value = false
+        }
+    }
+
+    fun selectStaff(staffId: String, staffName: String) {
+        val normalizedStaffName = staffName.ifBlank { "Staff" }
+        secureStorage.saveSelectedStaffForCurrentVenue(staffId, normalizedStaffName)
+        _cartState.update { state ->
+            state.copy(
+                selectedStaffId = staffId,
+                selectedStaffName = normalizedStaffName,
+            )
         }
     }
 
@@ -370,7 +437,7 @@ class CartViewModel @Inject constructor(
     }
 
     fun clearCart() {
-        _cartState.value = CartState()
+        _cartState.value = defaultCartState()
         Log.d("🛒", "Cart cleared")
     }
 
@@ -406,6 +473,8 @@ class CartViewModel @Inject constructor(
             orderDiscount = savedCart.orderDiscount,
             orderNote = savedCart.orderNote,
             orderTaxPercent = savedCart.orderTaxPercent,
+            selectedStaffId = _cartState.value.selectedStaffId,
+            selectedStaffName = _cartState.value.selectedStaffName,
         )
         savedCartsRepository.deleteCart(savedCart.id)
         Log.d("🛒", "Restored saved cart: ${savedCart.name}")
@@ -462,6 +531,7 @@ class CartViewModel @Inject constructor(
                 request = orderRequest,
                 customerId = customerId,
                 orderType = "DINE_IN",
+                staffId = currentCart.selectedStaffId,
             )
             .fold(
                 onSuccess = { response ->

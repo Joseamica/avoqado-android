@@ -6,6 +6,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -384,60 +385,70 @@ private fun ShortcutTile(
     shortcut: ShortcutItem,
     onClick: () -> Unit,
 ) {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(110.dp)
-            .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.lg))
-            .background(shortcut.color)
-            .then(
-                if (!shortcut.enabled) {
-                    Modifier.background(MaterialTheme.colorScheme.surface.copy(alpha = 0.55f))
-                } else {
-                    Modifier
-                },
-            )
-            .clickable(enabled = shortcut.enabled, onClick = onClick),
-    ) {
-        // Icon at top-left
-        Icon(
-            imageVector = shortcut.icon,
-            contentDescription = null,
-            tint = if (shortcut.enabled) Color.White.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier
-                .size(22.dp)
-                .align(Alignment.TopStart)
-                .padding(start = 14.dp, top = 14.dp),
-        )
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        val tileWidth = maxWidth
+        // Responsive height: ~40% of tile width, clamped so very narrow/very wide
+        // split-view columns still look proportional (small iPad ≈88dp, large ≈124dp).
+        val tileHeight = (tileWidth.value * 0.4f).dp.coerceIn(80.dp, 130.dp)
+        val isCompact = tileHeight < 100.dp
+        val innerPad = if (isCompact) 10.dp else 14.dp
+        val iconSize = if (isCompact) 18.dp else 22.dp
 
-        // Name at bottom-left
-        Text(
-            text = shortcut.name,
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.SemiBold,
-            color = if (shortcut.enabled) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
+        Box(
             modifier = Modifier
-                .align(Alignment.BottomStart)
-                .padding(start = 14.dp, bottom = 14.dp, end = 14.dp),
-        )
-
-        // Badge at top-right
-        shortcut.badge?.let { badge ->
-            Text(
-                text = badge,
-                style = MaterialTheme.typography.labelSmall,
-                color = Color.White.copy(alpha = 0.9f),
+                .fillMaxWidth()
+                .height(tileHeight)
+                .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.lg))
+                .background(shortcut.color)
+                .then(
+                    if (!shortcut.enabled) {
+                        Modifier.background(MaterialTheme.colorScheme.surface.copy(alpha = 0.55f))
+                    } else {
+                        Modifier
+                    },
+                )
+                .clickable(enabled = shortcut.enabled, onClick = onClick),
+        ) {
+            // Icon at top-left
+            Icon(
+                imageVector = shortcut.icon,
+                contentDescription = null,
+                tint = if (shortcut.enabled) Color.White.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .padding(10.dp)
-                    .background(
-                        Color.White.copy(alpha = 0.2f),
-                        RoundedCornerShape(AvoqadoTheme.cornerRadius.sm),
-                    )
-                    .padding(horizontal = 10.dp, vertical = 5.dp),
+                    .size(iconSize)
+                    .align(Alignment.TopStart)
+                    .padding(start = innerPad, top = innerPad),
             )
+
+            // Name at bottom-left
+            Text(
+                text = shortcut.name,
+                style = if (isCompact) MaterialTheme.typography.labelLarge else MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = if (shortcut.enabled) Color.White else MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(start = innerPad, bottom = innerPad, end = innerPad),
+            )
+
+            // Badge at top-right
+            shortcut.badge?.let { badge ->
+                Text(
+                    text = badge,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.White.copy(alpha = 0.9f),
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(innerPad - 4.dp)
+                        .background(
+                            Color.White.copy(alpha = 0.2f),
+                            RoundedCornerShape(AvoqadoTheme.cornerRadius.sm),
+                        )
+                        .padding(horizontal = 10.dp, vertical = 5.dp),
+                )
+            }
         }
     }
 }
@@ -449,54 +460,62 @@ private fun MosaicProductTile(
     product: Product,
     onClick: () -> Unit,
 ) {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(110.dp)
-            .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.lg))
-            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-            .clickable(onClick = onClick),
-    ) {
-        // Initials at top-left
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        val tileWidth = maxWidth
+        val tileHeight = (tileWidth.value * 0.4f).dp.coerceIn(80.dp, 130.dp)
+        val isCompact = tileHeight < 100.dp
+        val innerPad = if (isCompact) 10.dp else 14.dp
+        val chipSize = if (isCompact) 22.dp else 28.dp
+
         Box(
             modifier = Modifier
-                .padding(start = 14.dp, top = 14.dp)
-                .size(28.dp)
-                .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.sm))
-                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f))
-                .align(Alignment.TopStart),
-            contentAlignment = Alignment.Center,
+                .fillMaxWidth()
+                .height(tileHeight)
+                .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.lg))
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                .clickable(onClick = onClick),
         ) {
+            // Initials at top-left
+            Box(
+                modifier = Modifier
+                    .padding(start = innerPad, top = innerPad)
+                    .size(chipSize)
+                    .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.sm))
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f))
+                    .align(Alignment.TopStart),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = product.name.take(2).uppercase(),
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+
+            // Price at top-right
             Text(
-                text = product.name.take(2).uppercase(),
+                text = product.displayPrice,
                 style = MaterialTheme.typography.labelSmall,
-                fontWeight = FontWeight.Bold,
-                color = MaterialTheme.colorScheme.primary,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = innerPad, end = innerPad),
+            )
+
+            // Name at bottom-left
+            Text(
+                text = product.name,
+                style = if (isCompact) MaterialTheme.typography.labelLarge else MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(start = innerPad, bottom = innerPad, end = innerPad),
             )
         }
-
-        // Price at top-right
-        Text(
-            text = product.displayPrice,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(top = 14.dp, end = 14.dp),
-        )
-
-        // Name at bottom-left
-        Text(
-            text = product.name,
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.SemiBold,
-            color = MaterialTheme.colorScheme.onSurface,
-            maxLines = 2,
-            overflow = TextOverflow.Ellipsis,
-            modifier = Modifier
-                .align(Alignment.BottomStart)
-                .padding(start = 14.dp, bottom = 14.dp, end = 14.dp),
-        )
     }
 }
 

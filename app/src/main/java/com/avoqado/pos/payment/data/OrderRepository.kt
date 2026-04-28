@@ -148,12 +148,13 @@ class OrderRepository @Inject constructor(
 
     suspend fun createOrder(
         request: CreateOrderRequest,
+        staffId: String,
         customerId: String? = null,
         orderType: String = "TAKEOUT",
     ): Result<CreateOrderResponse> {
         val venueId = secureStorage.venueId ?: return Result.failure(Exception("No venue selected"))
         val token = secureStorage.accessToken ?: return Result.failure(Exception("Not authenticated"))
-        val staffId = secureStorage.userId ?: return Result.failure(Exception("No staff"))
+        if (staffId.isBlank()) return Result.failure(Exception("No staff"))
 
         if (!hasProductItems(request)) {
             return Result.failure(Exception("No hay productos válidos para crear la orden"))
@@ -244,11 +245,12 @@ class OrderRepository @Inject constructor(
 
     suspend fun recordFastCashPayment(
         amount: Int,
+        staffId: String,
         tip: Int = 0,
         splitType: String = "FULLPAYMENT",
     ): Result<String?> {
         val venueId = secureStorage.venueId ?: return Result.failure(Exception("No venue"))
-        val staffId = secureStorage.userId ?: return Result.failure(Exception("No staff"))
+        if (staffId.isBlank()) return Result.failure(Exception("No staff"))
 
         return try {
             val bodyJson = buildString {
@@ -294,11 +296,12 @@ class OrderRepository @Inject constructor(
     suspend fun recordCashPayment(
         orderId: String,
         amount: Int,
+        staffId: String,
         tip: Int = 0,
         splitType: String = "FULLPAYMENT",
     ): Result<String?> {
         val venueId = secureStorage.venueId ?: return Result.failure(Exception("No venue"))
-        val staffId = secureStorage.userId ?: return Result.failure(Exception("No staff"))
+        if (staffId.isBlank()) return Result.failure(Exception("No staff"))
 
         return try {
             val bodyJson = buildString {
@@ -335,6 +338,94 @@ class OrderRepository @Inject constructor(
             }
         } catch (e: Exception) {
             Log.e("💵", "❌ Cash payment error: ${e.message}")
+            Result.failure(e)
+        }
+    }
+
+    // MARK: - Attach customer to completed payment
+
+    suspend fun attachCustomerToPayment(
+        paymentId: String?,
+        customerId: String,
+    ): Result<Unit> {
+        val venueId = secureStorage.venueId ?: return Result.failure(Exception("No venue selected"))
+        val token = secureStorage.accessToken ?: return Result.failure(Exception("Not authenticated"))
+        val normalizedPaymentId = paymentId?.takeIf { it.isNotBlank() }
+            ?: return Result.failure(Exception("No payment selected"))
+        val normalizedCustomerId = customerId.takeIf { it.isNotBlank() }
+            ?: return Result.failure(Exception("No customer selected"))
+
+        return try {
+            val bodyJson = buildJsonObject {
+                put("customerId", normalizedCustomerId)
+            }.toString()
+
+            val request = Request.Builder()
+                .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/payments/$normalizedPaymentId/customer")
+                .header("Authorization", "Bearer $token")
+                .post(bodyJson.toRequestBody("application/json".toMediaType()))
+                .build()
+
+            val (code, body) = withContext(Dispatchers.IO) {
+                val response = client.newCall(request).execute()
+                response.code to (response.body?.string() ?: "")
+            }
+
+            if (code in 200..299) {
+                Log.d("👤", "✅ Customer attached to payment: $normalizedPaymentId")
+                Result.success(Unit)
+            } else {
+                Log.e("👤", "❌ Attach customer failed ($code): $body")
+                val message = extractErrorMessage(body) ?: "Error al agregar cliente ($code)"
+                Result.failure(ServerException(code, message))
+            }
+        } catch (e: Exception) {
+            Log.e("👤", "❌ Attach customer error: ${e.message}")
+            Result.failure(e)
+        }
+    }
+
+    suspend fun attachCustomerToLatestPayment(
+        customerId: String,
+        amountCents: Int,
+        tipCents: Int,
+        staffId: String,
+    ): Result<Unit> {
+        val venueId = secureStorage.venueId ?: return Result.failure(Exception("No venue selected"))
+        val token = secureStorage.accessToken ?: return Result.failure(Exception("Not authenticated"))
+        val normalizedCustomerId = customerId.takeIf { it.isNotBlank() }
+            ?: return Result.failure(Exception("No customer selected"))
+        if (amountCents <= 0) return Result.failure(Exception("No payment amount"))
+
+        return try {
+            val bodyJson = buildJsonObject {
+                put("customerId", normalizedCustomerId)
+                put("amountCents", amountCents)
+                put("tipCents", tipCents)
+                if (staffId.isNotBlank()) put("staffId", staffId)
+            }.toString()
+
+            val request = Request.Builder()
+                .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/payments/customer")
+                .header("Authorization", "Bearer $token")
+                .post(bodyJson.toRequestBody("application/json".toMediaType()))
+                .build()
+
+            val (code, body) = withContext(Dispatchers.IO) {
+                val response = client.newCall(request).execute()
+                response.code to (response.body?.string() ?: "")
+            }
+
+            if (code in 200..299) {
+                Log.d("👤", "✅ Customer attached to latest payment")
+                Result.success(Unit)
+            } else {
+                Log.e("👤", "❌ Attach customer to latest payment failed ($code): $body")
+                val message = extractErrorMessage(body) ?: "Error al agregar cliente ($code)"
+                Result.failure(ServerException(code, message))
+            }
+        } catch (e: Exception) {
+            Log.e("👤", "❌ Attach customer to latest payment error: ${e.message}")
             Result.failure(e)
         }
     }

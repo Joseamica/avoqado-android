@@ -24,6 +24,14 @@ class TokenRefreshAuthenticator @Inject constructor(
     private var isRefreshing = false
 
     override fun authenticate(route: Route?, response: Response): Request? {
+        val requestPath = response.request.url.encodedPath
+
+        // Time clock PIN endpoints can legitimately return 401 ("PIN inválido").
+        // Do not refresh/retry token for those responses.
+        if (requestPath.contains("/mobile/venues/") && requestPath.contains("/time-clock/")) {
+            return null
+        }
+
         // Avoid infinite refresh loops
         if (response.request.header("X-Retry-After-Refresh") != null) {
             Log.e("🔐", "Token refresh failed - logging out")

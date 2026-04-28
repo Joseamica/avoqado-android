@@ -6,8 +6,10 @@ import com.avoqado.pos.core.data.network.ApiConstants
 import com.avoqado.pos.timeclock.data.model.StaffData
 import com.avoqado.pos.timeclock.data.model.StaffIdentifyRequest
 import com.avoqado.pos.timeclock.data.model.StaffIdentifyResponse
+import com.avoqado.pos.timeclock.data.model.toStaffDataOrNull
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -24,12 +26,18 @@ class TimeEntryRepository @Inject constructor(
     private val client: OkHttpClient,
 ) {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+    private val pinRegex = Regex("^\\d{4,10}$")
 
     suspend fun identifyStaff(pin: String): Result<StaffData> {
         val venueId = secureStorage.venueId ?: return Result.failure(Exception("No venue"))
+        val normalizedPin = pin.trim()
+
+        if (!pinRegex.matches(normalizedPin)) {
+            return Result.failure(Exception("Ingresa un PIN valido de 4 a 10 digitos"))
+        }
 
         return try {
-            val body = json.encodeToString(StaffIdentifyRequest.serializer(), StaffIdentifyRequest(pin))
+            val body = json.encodeToString(StaffIdentifyRequest.serializer(), StaffIdentifyRequest(normalizedPin))
                 .toRequestBody("application/json".toMediaType())
 
             val request = Request.Builder()
@@ -44,13 +52,14 @@ class TimeEntryRepository @Inject constructor(
 
             if (responseCode in 200..299) {
                 val result = json.decodeFromString<StaffIdentifyResponse>(responseBody)
-                if (result.data != null) {
-                    Result.success(result.data)
+                val staffData = result.toStaffDataOrNull()
+                if (staffData != null) {
+                    Result.success(staffData)
                 } else {
-                    Result.failure(Exception(result.message ?: "PIN no válido"))
+                    Result.failure(Exception(result.message ?: "No se pudo identificar al usuario"))
                 }
             } else {
-                Result.failure(Exception("PIN incorrecto"))
+                Result.failure(Exception(parseErrorMessage(responseBody, "PIN incorrecto")))
             }
         } catch (e: Exception) {
             Log.e("⏰", "Identify staff error: ${e.message}")
@@ -74,10 +83,15 @@ class TimeEntryRepository @Inject constructor(
         note: String? = null,
     ): Result<Unit> {
         val venueId = secureStorage.venueId ?: return Result.failure(Exception("No venue"))
+        val normalizedPin = pin.trim()
+
+        if (!pinRegex.matches(normalizedPin)) {
+            return Result.failure(Exception("Ingresa un PIN valido de 4 a 10 digitos"))
+        }
 
         return try {
             val bodyJson = buildJsonObject {
-                put("pin", pin)
+                put("pin", normalizedPin)
                 if (breakType != null) put("breakType", breakType)
                 if (note != null) put("note", note)
             }.toString()
@@ -87,18 +101,39 @@ class TimeEntryRepository @Inject constructor(
                 .post(body)
                 .build()
 
-            val responseCode = withContext(Dispatchers.IO) {
-                client.newCall(request).execute().code
+            val (responseCode, responseBody) = withContext(Dispatchers.IO) {
+                val response = client.newCall(request).execute()
+                response.code to (response.body?.string() ?: "")
             }
             if (responseCode in 200..299) {
                 Log.d("⏰", "✅ Time clock action: $action")
                 Result.success(Unit)
             } else {
-                Result.failure(Exception("Error en acción: $action"))
+                Result.failure(Exception(parseErrorMessage(responseBody, "Error en accion: $action")))
             }
         } catch (e: Exception) {
             Log.e("⏰", "Time clock error: ${e.message}")
             Result.failure(e)
         }
     }
+}
+
+@Serializable
+private data class TimeClockErrorResponse(
+    val message: String? = null,
+)
+
+private val timeClockErrorJson = Json { ignoreUnknownKeys = true }
+
+private fun parseErrorMessage(responseBody: String, fallback: String): String {
+    if (responseBody.isBlank()) return fallback
+
+    return runCatching {
+        timeClockErrorJson
+            .decodeFromString<TimeClockErrorResponse>(responseBody)
+            .message
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
+            ?: fallback
+    }.getOrDefault(fallback)
 }

@@ -9,7 +9,24 @@ data class StaffIdentifyRequest(val pin: String)
 data class StaffIdentifyResponse(
     val success: Boolean = true,
     val data: StaffData? = null,
+    val staff: IdentifiedStaffPayload? = null,
+    val currentEntry: CurrentEntryPayload? = null,
     val message: String? = null,
+)
+
+@Serializable
+data class IdentifiedStaffPayload(
+    val id: String,
+    val firstName: String,
+    val lastName: String,
+    val role: String? = null,
+)
+
+@Serializable
+data class CurrentEntryPayload(
+    val id: String,
+    val status: String,
+    val isOnBreak: Boolean = false,
 )
 
 @Serializable
@@ -37,4 +54,20 @@ enum class TimeClockAction {
     CLOCK_OUT,
     BREAK_START,
     BREAK_END,
+}
+
+fun StaffIdentifyResponse.toStaffDataOrNull(): StaffData? {
+    data?.let { return it }
+
+    val staffPayload = staff ?: return null
+    val currentEntryPayload = currentEntry
+    val fullName = "${staffPayload.firstName} ${staffPayload.lastName}".trim()
+
+    return StaffData(
+        id = staffPayload.id,
+        name = fullName.ifBlank { staffPayload.firstName },
+        role = staffPayload.role,
+        clockedIn = currentEntryPayload != null,
+        onBreak = currentEntryPayload?.isOnBreak == true || currentEntryPayload?.status == "ON_BREAK",
+    )
 }

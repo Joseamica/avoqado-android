@@ -35,13 +35,13 @@ class CashPaymentRepository @Inject constructor(
      */
     suspend fun queueCashPayment(
         orderRequest: CreateOrderRequest,
+        staffId: String,
         cashTenderedCents: Int?,
         changeCents: Int?,
         rating: Int?,
         orderId: String? = null,
     ): String {
         val localId = UUID.randomUUID().toString()
-        val staffId = secureStorage.userId ?: ""
         val hasOrderItems = OrderRepository.hasProductItems(orderRequest)
         val paymentType = if (orderId != null || hasOrderItems) "ORDER" else "FAST"
         val entity = PendingPaymentEntity(

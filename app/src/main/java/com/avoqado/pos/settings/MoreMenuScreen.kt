@@ -3,6 +3,7 @@ package com.avoqado.pos.settings
 import android.content.pm.PackageManager
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -491,11 +492,17 @@ fun MoreMenuScreen(
 
     // Articles Fullscreen Overlay (inside Box, stacks over the Column)
     if (showArticles) {
+        val overlayInteraction = remember { MutableInteractionSource() }
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
                 .zIndex(10f)
-                .background(MaterialTheme.colorScheme.surface),
+                .background(MaterialTheme.colorScheme.surface)
+                .clickable(
+                    interactionSource = overlayInteraction,
+                    indication = null,
+                    onClick = {},
+                ),
         ) {
             val isTablet = maxWidth >= 600.dp
             ArticlesScreen(
@@ -507,11 +514,17 @@ fun MoreMenuScreen(
 
     // Customers Fullscreen Overlay
     if (showCustomers) {
+        val overlayInteraction = remember { MutableInteractionSource() }
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
                 .zIndex(10f)
-                .background(MaterialTheme.colorScheme.surface),
+                .background(MaterialTheme.colorScheme.surface)
+                .clickable(
+                    interactionSource = overlayInteraction,
+                    indication = null,
+                    onClick = {},
+                ),
         ) {
             val isTablet = maxWidth >= 600.dp
             CustomersScreen(
@@ -523,11 +536,17 @@ fun MoreMenuScreen(
 
     // Reports Fullscreen Overlay
     if (showReports) {
+        val overlayInteraction = remember { MutableInteractionSource() }
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .zIndex(10f)
-                .background(MaterialTheme.colorScheme.surface),
+                .background(MaterialTheme.colorScheme.surface)
+                .clickable(
+                    interactionSource = overlayInteraction,
+                    indication = null,
+                    onClick = {},
+                ),
         ) {
             ReportsScreen(onDismiss = { showReports = false })
         }
@@ -535,11 +554,17 @@ fun MoreMenuScreen(
 
     // Orders Fullscreen Overlay
     if (showOrders) {
+        val overlayInteraction = remember { MutableInteractionSource() }
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
                 .zIndex(10f)
-                .background(MaterialTheme.colorScheme.surface),
+                .background(MaterialTheme.colorScheme.surface)
+                .clickable(
+                    interactionSource = overlayInteraction,
+                    indication = null,
+                    onClick = {},
+                ),
         ) {
             val isTablet = maxWidth >= 600.dp
             OrdersScreen(isTablet = isTablet, onDismiss = { showOrders = false })
@@ -548,11 +573,17 @@ fun MoreMenuScreen(
 
     // Cash Drawer Fullscreen Overlay
     if (showCashDrawer) {
+        val overlayInteraction = remember { MutableInteractionSource() }
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
                 .zIndex(10f)
-                .background(MaterialTheme.colorScheme.surface),
+                .background(MaterialTheme.colorScheme.surface)
+                .clickable(
+                    interactionSource = overlayInteraction,
+                    indication = null,
+                    onClick = {},
+                ),
         ) {
             val isTablet = maxWidth >= 600.dp
             CashDrawerScreen(
@@ -563,11 +594,17 @@ fun MoreMenuScreen(
     }
     // Estimates Fullscreen Overlay
     if (showEstimates) {
+        val overlayInteraction = remember { MutableInteractionSource() }
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
                 .zIndex(10f)
-                .background(MaterialTheme.colorScheme.surface),
+                .background(MaterialTheme.colorScheme.surface)
+                .clickable(
+                    interactionSource = overlayInteraction,
+                    indication = null,
+                    onClick = {},
+                ),
         ) {
             val isTablet = maxWidth >= 600.dp
             EstimatesScreen(
@@ -579,11 +616,17 @@ fun MoreMenuScreen(
 
     // Setup Wizard Fullscreen Overlay
     if (showSetupWizard) {
+        val overlayInteraction = remember { MutableInteractionSource() }
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .zIndex(10f)
-                .background(MaterialTheme.colorScheme.surface),
+                .background(MaterialTheme.colorScheme.surface)
+                .clickable(
+                    interactionSource = overlayInteraction,
+                    indication = null,
+                    onClick = {},
+                ),
         ) {
             SetupWizardScreen(onDismiss = { showSetupWizard = false })
         }
@@ -591,11 +634,17 @@ fun MoreMenuScreen(
 
     // Support Fullscreen Overlay
     if (showSupport) {
+        val overlayInteraction = remember { MutableInteractionSource() }
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
                 .zIndex(10f)
-                .background(MaterialTheme.colorScheme.surface),
+                .background(MaterialTheme.colorScheme.surface)
+                .clickable(
+                    interactionSource = overlayInteraction,
+                    indication = null,
+                    onClick = {},
+                ),
         ) {
             val isTablet = maxWidth >= 600.dp
             SupportScreen(
@@ -607,11 +656,17 @@ fun MoreMenuScreen(
 
     // KDS Fullscreen Overlay
     if (showKDS) {
+        val overlayInteraction = remember { MutableInteractionSource() }
         Box(
             modifier = Modifier
                 .fillMaxSize()
                 .zIndex(10f)
-                .background(MaterialTheme.colorScheme.surface),
+                .background(MaterialTheme.colorScheme.surface)
+                .clickable(
+                    interactionSource = overlayInteraction,
+                    indication = null,
+                    onClick = {},
+                ),
         ) {
             KDSScreen(onDismiss = { showKDS = false })
         }
@@ -619,11 +674,17 @@ fun MoreMenuScreen(
 
     // Addons Fullscreen Overlay
     if (showAddons) {
+        val overlayInteraction = remember { MutableInteractionSource() }
         BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
                 .zIndex(10f)
-                .background(MaterialTheme.colorScheme.surface),
+                .background(MaterialTheme.colorScheme.surface)
+                .clickable(
+                    interactionSource = overlayInteraction,
+                    indication = null,
+                    onClick = {},
+                ),
         ) {
             val isTablet = maxWidth >= 600.dp
             AddonsScreen(

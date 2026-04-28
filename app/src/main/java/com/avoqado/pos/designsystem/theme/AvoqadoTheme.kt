@@ -2,6 +2,7 @@ package com.avoqado.pos.designsystem.theme
 
 import android.app.Activity
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
@@ -134,6 +135,10 @@ fun AvoqadoTheme(
         LocalCornerRadius provides AvoqadoCornerRadius(),
         LocalDimensions provides dimensions,
         LocalAdaptiveTokens provides adaptiveTokens,
+        // Material3's LocalContentColor defaults to Color.Black when no Surface
+        // wraps the content; without this override, Text composables without an
+        // explicit color render black on a dark background.
+        LocalContentColor provides colorScheme.onSurface,
     ) {
         MaterialTheme(
             colorScheme = colorScheme,

@@ -65,6 +65,7 @@ import com.avoqado.pos.pos.data.model.CartItem
 import com.avoqado.pos.pos.data.model.Product
 import com.avoqado.pos.pos.presentation.cart.CartPanelView
 import com.avoqado.pos.pos.presentation.cart.CartViewModel
+import com.avoqado.pos.pos.presentation.cart.StaffSelectorSheet
 import com.avoqado.pos.pos.presentation.product.CreateProductView
 import com.avoqado.pos.pos.presentation.product.ProductDetailPanel
 import com.avoqado.pos.pos.presentation.product.ProductGridView
@@ -93,6 +94,9 @@ fun CheckoutScreen(
 ) {
     val cartState by cartViewModel.cartState.collectAsState()
     val isLoading by cartViewModel.isLoading.collectAsState()
+    val staffOptions by cartViewModel.staffOptions.collectAsState()
+    val isStaffLoading by cartViewModel.isStaffLoading.collectAsState()
+    val staffError by cartViewModel.staffError.collectAsState()
     var selectedProduct by remember { mutableStateOf<Product?>(null) }
     var selectedTab by remember { mutableStateOf(InputTab.KEYPAD) }
     var showSearch by remember { mutableStateOf(false) }
@@ -113,6 +117,7 @@ fun CheckoutScreen(
     var createProductInitialGtin by remember { mutableStateOf("") }
     var unknownBarcode by remember { mutableStateOf<String?>(null) }
     var showSplitPayment by remember { mutableStateOf(false) }
+    var showStaffSelector by remember { mutableStateOf(false) }
     var pendingSplitConfig by remember { mutableStateOf(SplitConfig()) }
     var customerSelectionContext by remember { mutableStateOf(CustomerSelectionContext.GENERAL) }
     var isSubmittingPayLater by remember { mutableStateOf(false) }
@@ -288,6 +293,11 @@ fun CheckoutScreen(
                     onApplyTaxPercent = { cartViewModel.applyOrderTaxPercent(it) },
                     customerName = selectedCustomer?.fullName,
                     onCustomerTap = openGeneralCustomerPicker,
+                    staffName = cartState.selectedStaffName,
+                    onStaffTap = {
+                        cartViewModel.fetchStaff()
+                        showStaffSelector = true
+                    },
                     onSplitPayment = { showSplitPayment = true },
                 )
             }
@@ -473,7 +483,25 @@ fun CheckoutScreen(
             },
             onRemoveItem = { cartViewModel.removeItem(it) },
             onApplyTaxPercent = { cartViewModel.applyOrderTaxPercent(it) },
+            staffName = cartState.selectedStaffName,
+            onStaffTap = {
+                cartViewModel.fetchStaff()
+                showStaffSelector = true
+            },
             onDismiss = { showIPhoneCart = false },
+        )
+    }
+
+    if (showStaffSelector) {
+        StaffSelectorSheet(
+            staff = staffOptions,
+            selectedStaffId = cartState.selectedStaffId,
+            isLoading = isStaffLoading,
+            error = staffError,
+            onStaffSelected = { staff ->
+                cartViewModel.selectStaff(staff.id, staff.fullName)
+            },
+            onDismiss = { showStaffSelector = false },
         )
     }
 
@@ -749,6 +777,8 @@ private fun IPhoneCartSheet(
     onAddCustomAmount: () -> Unit,
     onRemoveItem: (String) -> Unit,
     onApplyTaxPercent: (Int?) -> Unit,
+    staffName: String,
+    onStaffTap: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     Box(
@@ -798,6 +828,8 @@ private fun IPhoneCartSheet(
                 onAddCustomAmount = onAddCustomAmount,
                 onRemoveItem = onRemoveItem,
                 onApplyTaxPercent = onApplyTaxPercent,
+                staffName = staffName,
+                onStaffTap = onStaffTap,
             )
         }
     }

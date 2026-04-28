@@ -27,6 +27,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.LocalOffer
 import androidx.compose.material.icons.filled.MoreHoriz
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.ShoppingCart
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -78,6 +79,8 @@ fun CartPanelView(
     onApplyTaxPercent: (Int?) -> Unit = {},
     customerName: String? = null,
     onCustomerTap: () -> Unit = {},
+    staffName: String = cartState.selectedStaffName,
+    onStaffTap: () -> Unit = {},
     onSplitPayment: () -> Unit = {},
 ) {
     val useDenseTabletLayout = AvoqadoTheme.adaptive.sizeClass != AvoqadoAdaptiveSizeClass.Compact
@@ -99,6 +102,8 @@ fun CartPanelView(
                 hasItems = !cartState.isEmpty,
                 customerName = customerName,
                 onCustomerTap = onCustomerTap,
+                staffName = staffName,
+                onStaffTap = onStaffTap,
                 useDenseTabletLayout = useDenseTabletLayout,
                 onMenuTap = { showCartOptions = true },
             )
@@ -398,6 +403,8 @@ private fun CustomerHeader(
     hasItems: Boolean,
     customerName: String? = null,
     onCustomerTap: () -> Unit,
+    staffName: String,
+    onStaffTap: () -> Unit,
     useDenseTabletLayout: Boolean = false,
     onMenuTap: () -> Unit,
 ) {
@@ -424,16 +431,44 @@ private fun CustomerHeader(
                 textDecoration = if (customerName == null) TextDecoration.Underline else null,
                 modifier = Modifier.clickable(onClick = onCustomerTap),
             )
-            if (hasItems) {
-                Text(
-                    text = "$itemCount articulo${if (itemCount == 1) "" else "s"}",
-                    style = if (useDenseTabletLayout) {
-                        MaterialTheme.typography.bodySmall
-                    } else {
-                        MaterialTheme.typography.bodyMedium
-                    },
-                    color = MaterialTheme.colorScheme.onSurface,
-                )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
+            ) {
+                if (hasItems) {
+                    Text(
+                        text = "$itemCount articulo${if (itemCount == 1) "" else "s"}",
+                        style = if (useDenseTabletLayout) {
+                            MaterialTheme.typography.bodySmall
+                        } else {
+                            MaterialTheme.typography.bodyMedium
+                        },
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                }
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(MaterialTheme.colorScheme.secondaryContainer)
+                        .clickable(onClick = onStaffTap)
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Icon(
+                        Icons.Filled.Person,
+                        contentDescription = null,
+                        modifier = Modifier.size(14.dp),
+                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                    )
+                    Text(
+                        text = "Vendiendo: $staffName",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSecondaryContainer,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
         }
 

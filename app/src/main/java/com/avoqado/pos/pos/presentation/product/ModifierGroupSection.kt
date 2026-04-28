@@ -30,37 +30,32 @@ fun ModifierGroupSection(
         0
     }
     val selectedCount = selectedModifiers.count { it.groupId == group.id }
-    val remainingRequiredCount = (requiredCount - selectedCount).coerceAtLeast(0)
 
-    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = AvoqadoTheme.spacing.lg)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(
+                start = AvoqadoTheme.spacing.lg,
+                end = AvoqadoTheme.spacing.lg,
+                top = AvoqadoTheme.spacing.lg,
+            ),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
             Text(
                 text = group.name,
                 style = MaterialTheme.typography.titleSmall,
+                modifier = Modifier.weight(1f),
             )
             if (group.required) {
                 Text(
-                    text = " (Requerido $selectedCount/$requiredCount)",
+                    text = "Requerido $selectedCount/$requiredCount",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.error,
                 )
             }
-        }
-
-        if (group.required) {
-            Text(
-                text = if (remainingRequiredCount > 0) {
-                    "Faltan $remainingRequiredCount por seleccionar"
-                } else {
-                    "Seleccion obligatoria completa"
-                },
-                style = MaterialTheme.typography.labelSmall,
-                color = if (remainingRequiredCount > 0) {
-                    MaterialTheme.colorScheme.error
-                } else {
-                    MaterialTheme.colorScheme.primary
-                },
-            )
         }
 
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))

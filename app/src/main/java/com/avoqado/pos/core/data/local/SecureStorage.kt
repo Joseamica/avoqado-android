@@ -116,6 +116,28 @@ class SecureStorage @Inject constructor(
         get() = prefs.getString(KEY_USER_PIN, null)
         set(value) = prefs.edit().putString(KEY_USER_PIN, value).apply()
 
+    val selectedStaffIdForCurrentVenue: String?
+        get() = plainPrefs.getString(selectedStaffIdKey(), null)
+
+    val selectedStaffNameForCurrentVenue: String?
+        get() = plainPrefs.getString(selectedStaffNameKey(), null)
+
+    fun saveSelectedStaffForCurrentVenue(staffId: String, staffName: String) {
+        val currentVenueId = venueId ?: return
+        plainPrefs.edit()
+            .putString(selectedStaffIdKey(currentVenueId), staffId)
+            .putString(selectedStaffNameKey(currentVenueId), staffName)
+            .apply()
+    }
+
+    fun clearSelectedStaffForCurrentVenue() {
+        val currentVenueId = venueId ?: return
+        plainPrefs.edit()
+            .remove(selectedStaffIdKey(currentVenueId))
+            .remove(selectedStaffNameKey(currentVenueId))
+            .apply()
+    }
+
     // MARK: - Venues List
 
     var venuesList: List<StoredVenue>
@@ -270,6 +292,16 @@ class SecureStorage @Inject constructor(
         private const val KEY_TERMINAL_ID = "terminalId"
         private const val KEY_USER_PIN = "userPin"
         private const val KEY_VENUES_LIST = "venuesList"
+        private const val KEY_SELECTED_STAFF_ID_PREFIX = "selectedStaffId"
+        private const val KEY_SELECTED_STAFF_NAME_PREFIX = "selectedStaffName"
+    }
+
+    private fun selectedStaffIdKey(currentVenueId: String? = venueId): String {
+        return "${KEY_SELECTED_STAFF_ID_PREFIX}_${currentVenueId ?: "global"}"
+    }
+
+    private fun selectedStaffNameKey(currentVenueId: String? = venueId): String {
+        return "${KEY_SELECTED_STAFF_NAME_PREFIX}_${currentVenueId ?: "global"}"
     }
 }
 

@@ -1,6 +1,7 @@
 package com.avoqado.pos.timeclock.presentation
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -8,15 +9,16 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -29,10 +31,12 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.avoqado.pos.designsystem.components.PrimaryButton
+import com.avoqado.pos.designsystem.theme.AvoqadoAdaptiveSizeClass
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Success
 import com.avoqado.pos.designsystem.theme.Warning
@@ -79,6 +83,12 @@ fun TimeClockSheet(
     var isLoading by remember { mutableStateOf(false) }
     var currentScreen by remember { mutableStateOf(TimeClockScreen.PIN_ENTRY) }
     var note by remember { mutableStateOf("") }
+    val configuration = LocalConfiguration.current
+    val adaptive = AvoqadoTheme.adaptive
+    val compactSheetLayout = adaptive.isAggressiveCompact ||
+        (adaptive.sizeClass == AvoqadoAdaptiveSizeClass.Compact && configuration.screenHeightDp < 860) ||
+        configuration.screenHeightDp < 740
+    val clockFontSize = if (compactSheetLayout) 52.sp else 64.sp
 
     // Live clock (matching iOS: ticks every second)
     var currentTime by remember { mutableStateOf(LocalTime.now()) }
@@ -104,19 +114,29 @@ fun TimeClockSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(AvoqadoTheme.spacing.lg),
+                .navigationBarsPadding()
+                .imePadding()
+                .verticalScroll(rememberScrollState())
+                .padding(
+                    horizontal = AvoqadoTheme.spacing.lg,
+                    vertical = if (compactSheetLayout) {
+                        AvoqadoTheme.spacing.md
+                    } else {
+                        AvoqadoTheme.spacing.lg
+                    },
+                ),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             // Live clock display (matching iOS: 72pt font)
             Text(
                 text = timeDisplay,
                 style = MaterialTheme.typography.displayLarge.copy(
-                    fontSize = 64.sp,
+                    fontSize = clockFontSize,
                     fontWeight = FontWeight.Light,
                 ),
             )
 
-            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
+            Spacer(modifier = Modifier.height(if (compactSheetLayout) AvoqadoTheme.spacing.md else AvoqadoTheme.spacing.lg))
 
             when (currentScreen) {
                 TimeClockScreen.PIN_ENTRY -> {
@@ -127,13 +147,22 @@ fun TimeClockSheet(
                         style = MaterialTheme.typography.headlineMedium,
                     )
 
-                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
+                    Spacer(modifier = Modifier.height(if (compactSheetLayout) AvoqadoTheme.spacing.lg else AvoqadoTheme.spacing.xxl))
 
                     PinPadView(
                         pin = pin,
                         onPinChange = { pin = it },
                         maxLength = 10,
                         minLength = 4,
+                        compact = compactSheetLayout,
+                    )
+
+                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xs))
+
+                    Text(
+                        text = "${pin.length} digitos (minimo 4)",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
 
                     error?.let {
@@ -158,13 +187,14 @@ fun TimeClockSheet(
                                         staffData = it
                                         currentScreen = TimeClockScreen.IDENTIFIED
                                     },
-                                    onFailure = { error = it.message },
+                                    onFailure = { error = it.message ?: "PIN incorrecto" },
                                 )
                                 isLoading = false
                             }
                         },
-                        enabled = pin.length >= 4,
+                        enabled = pin.length in 4..10,
                         isLoading = isLoading,
+                        fullWidth = true,
                     )
                 }
 
@@ -259,6 +289,7 @@ fun TimeClockSheet(
                                     }
                                 },
                                 isLoading = isLoading,
+                                fullWidth = true,
                             )
                         } else {
                             if (!staff.onBreak) {
@@ -267,6 +298,7 @@ fun TimeClockSheet(
                                     onClick = {
                                         currentScreen = TimeClockScreen.BREAK_SELECTION
                                     },
+                                    fullWidth = true,
                                 )
                             } else {
                                 PrimaryButton(
@@ -283,6 +315,7 @@ fun TimeClockSheet(
                                         }
                                     },
                                     isLoading = isLoading,
+                                    fullWidth = true,
                                 )
                             }
                             PrimaryButton(
@@ -299,6 +332,7 @@ fun TimeClockSheet(
                                     }
                                 },
                                 isLoading = isLoading,
+                                fullWidth = true,
                             )
                         }
                     }
@@ -346,6 +380,7 @@ fun TimeClockSheet(
                                     }
                                 },
                                 isLoading = isLoading,
+                                fullWidth = true,
                             )
                         }
                     }
@@ -369,7 +404,7 @@ fun TimeClockSheet(
                 }
             }
 
-            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxxl))
+            Spacer(modifier = Modifier.height(if (compactSheetLayout) AvoqadoTheme.spacing.lg else AvoqadoTheme.spacing.xxxl))
         }
     }
 }

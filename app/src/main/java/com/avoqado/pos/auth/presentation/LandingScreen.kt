@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -30,9 +31,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -80,20 +83,13 @@ fun LandingScreen(
                     modifier = Modifier.padding(top = 16.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    // Logo placeholder (TODO: add avoqado_logo.png to drawable)
-                    Box(
+                    Image(
+                        painter = painterResource(id = com.avoqado.pos.R.drawable.avoqado_logo),
+                        contentDescription = "Avoqado",
                         modifier = Modifier
                             .size(44.dp)
-                            .background(Color.White.copy(alpha = 0.15f), RoundedCornerShape(10.dp)),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            text = "A",
-                            fontSize = 22.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = Color.White,
-                        )
-                    }
+                            .clip(RoundedCornerShape(10.dp)),
+                    )
                 }
 
                 Spacer(modifier = Modifier.weight(1f))

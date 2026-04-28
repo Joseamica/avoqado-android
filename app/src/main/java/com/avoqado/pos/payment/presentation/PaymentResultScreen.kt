@@ -12,18 +12,17 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Error
 import androidx.compose.material.icons.filled.Print
-import androidx.compose.material.icons.filled.Sms
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -38,11 +37,16 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.graphics.vector.rememberVectorPainter
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
+import com.avoqado.pos.R
 import com.avoqado.pos.designsystem.components.AvoqadoDialog
+import com.avoqado.pos.designsystem.components.AvoqadoErrorToast
 import com.avoqado.pos.designsystem.components.AvoqadoPhoneInput
 import com.avoqado.pos.designsystem.components.AvoqadoPillTextField
 import com.avoqado.pos.designsystem.components.Countries
@@ -73,6 +77,10 @@ fun PaymentResultScreen(
     printResultMessage: String? = null,
     onPrintReceipt: (() -> Unit)? = null,
     onClearPrintResult: (() -> Unit)? = null,
+    customerName: String? = null,
+    customerResultMessage: String? = null,
+    onClearCustomerResult: (() -> Unit)? = null,
+    onAddCustomer: (() -> Unit)? = null,
     onDone: () -> Unit,
 ) {
     var showWhatsAppInput by remember { mutableStateOf(false) }
@@ -82,30 +90,46 @@ fun PaymentResultScreen(
     var emailAddress by remember { mutableStateOf("") }
     var showNoPrinterDialog by remember { mutableStateOf(false) }
 
-    // Combine result messages for display (whatsApp/email/print)
-    val resultMessage = whatsAppResultMessage ?: emailResultMessage ?: printResultMessage
+    // Combine result messages for display (customer/whatsApp/email/print)
+    val resultMessage = customerResultMessage ?: whatsAppResultMessage ?: emailResultMessage ?: printResultMessage
     val isResultSuccess = resultMessage == "Recibo enviado por WhatsApp" ||
         resultMessage == "Recibo enviado por correo" ||
-        resultMessage == "Recibo impreso"
+        resultMessage == "Recibo impreso" ||
+        resultMessage?.startsWith("Cliente agregado") == true
 
     androidx.compose.material3.Scaffold(
-        bottomBar = {
-            Box(
+        topBar = {
+            Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .navigationBarsPadding()
+                    .statusBarsPadding()
                     .padding(
                         horizontal = AvoqadoTheme.spacing.xl,
                         vertical = AvoqadoTheme.spacing.md,
                     ),
-                contentAlignment = Alignment.Center,
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                PrimaryButton(
+                Text(
                     text = "Venta nueva",
-                    onClick = onDone,
-                    fullWidth = true,
-                    modifier = Modifier.widthIn(max = 400.dp),
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    textDecoration = TextDecoration.Underline,
+                    modifier = Modifier
+                        .clickable(onClick = onDone)
+                        .padding(vertical = AvoqadoTheme.spacing.xs),
                 )
+                if (onAddCustomer != null) {
+                    Text(
+                        text = customerName ?: "Agregar cliente",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        textDecoration = TextDecoration.Underline,
+                        modifier = Modifier
+                            .clickable(onClick = onAddCustomer)
+                            .padding(vertical = AvoqadoTheme.spacing.xs),
+                    )
+                }
             }
         },
     ) { paddingValues ->
@@ -147,25 +171,12 @@ fun PaymentResultScreen(
                 }
             }
 
-            Icon(
-                Icons.Filled.CheckCircle,
-                contentDescription = "Exito",
-                tint = Success,
-                modifier = Modifier.size(80.dp),
-            )
-
-            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
-
-            Text(
-                text = "Pago exitoso",
-                style = MaterialTheme.typography.headlineLarge,
-            )
-
-            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xl))
 
             Text(
                 text = "$${String.format("%.2f", totalCents / 100.0)}",
                 style = MaterialTheme.typography.displayMedium,
+                fontWeight = FontWeight.SemiBold,
             )
 
             Text(
@@ -183,19 +194,20 @@ fun PaymentResultScreen(
                 )
             }
 
-            // Receipt result message (email or WhatsApp)
-            if (resultMessage != null) {
+            // Success receipt-send confirmation (errors are shown via AvoqadoErrorToast below)
+            if (resultMessage != null && isResultSuccess) {
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
                 Surface(
-                    color = if (isResultSuccess) Success.copy(alpha = 0.15f)
-                    else MaterialTheme.colorScheme.error.copy(alpha = 0.15f),
+                    color = Success.copy(alpha = 0.15f),
                     shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.md),
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .widthIn(max = 400.dp)
+                        .fillMaxWidth(),
                 ) {
                     Text(
                         text = resultMessage,
                         style = MaterialTheme.typography.bodySmall,
-                        color = if (isResultSuccess) Success else MaterialTheme.colorScheme.error,
+                        color = Success,
                         modifier = Modifier.padding(AvoqadoTheme.spacing.md),
                     )
                 }
@@ -205,15 +217,16 @@ fun PaymentResultScreen(
 
             Column(
                 modifier = Modifier
-                    .fillMaxWidth()
-                    .widthIn(max = 400.dp),
+                    .widthIn(max = 400.dp)
+                    .fillMaxWidth(),
             ) {
                 ReceiptOptionRow(
-                    icon = Icons.Filled.Print,
+                    icon = rememberVectorPainter(Icons.Filled.Print),
                     title = if (isPrintingReceipt) "Imprimiendo..." else "Imprimir recibo",
                     enabled = !isPrintingReceipt,
                     onClick = {
                         if (onPrintReceipt != null) {
+                            onClearCustomerResult?.invoke()
                             onClearPrintResult?.invoke()
                             onClearWhatsAppResult?.invoke()
                             onClearEmailResult?.invoke()
@@ -226,10 +239,11 @@ fun PaymentResultScreen(
                 HorizontalDivider(modifier = Modifier.padding(start = 48.dp))
 
                 ReceiptOptionRow(
-                    icon = Icons.Filled.Email,
+                    icon = rememberVectorPainter(Icons.Filled.Email),
                     title = "Enviar por correo",
                     enabled = canSendReceipt && onSendEmail != null,
                     onClick = {
+                        onClearCustomerResult?.invoke()
                         onClearEmailResult?.invoke()
                         onClearWhatsAppResult?.invoke()
                         emailAddress = ""
@@ -239,10 +253,11 @@ fun PaymentResultScreen(
                 HorizontalDivider(modifier = Modifier.padding(start = 48.dp))
 
                 ReceiptOptionRow(
-                    icon = Icons.Filled.Sms,
+                    icon = painterResource(R.drawable.ic_whatsapp),
                     title = "Enviar por WhatsApp",
                     enabled = canSendReceipt && onSendWhatsApp != null,
                     onClick = {
+                        onClearCustomerResult?.invoke()
                         onClearWhatsAppResult?.invoke()
                         onClearEmailResult?.invoke()
                         whatsAppPhoneDigits = ""
@@ -299,6 +314,19 @@ fun PaymentResultScreen(
             confirmEnabled = emailAddress.trim().isNotEmpty() && !isSendingEmail,
             dismissEnabled = !isSendingEmail,
             keyboardType = KeyboardType.Email,
+        )
+    }
+
+    // Error feedback (printer/email/WhatsApp failures) — reusable red toast
+    if (resultMessage != null && !isResultSuccess) {
+        AvoqadoErrorToast(
+            message = resultMessage,
+            onDismiss = {
+                onClearCustomerResult?.invoke()
+                onClearPrintResult?.invoke()
+                onClearEmailResult?.invoke()
+                onClearWhatsAppResult?.invoke()
+            },
         )
     }
 
@@ -411,7 +439,7 @@ private fun WhatsAppReceiptDialog(
 
 @Composable
 private fun ReceiptOptionRow(
-    icon: ImageVector,
+    icon: Painter,
     title: String,
     onClick: () -> Unit,
     enabled: Boolean = true,
@@ -435,7 +463,7 @@ private fun ReceiptOptionRow(
         horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
     ) {
         Icon(
-            imageVector = icon,
+            painter = icon,
             contentDescription = null,
             modifier = Modifier.size(24.dp),
             tint = contentColor,

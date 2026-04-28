@@ -83,7 +83,7 @@ class PaymentFlowViewModelTest {
         } returns CashPaymentResult.Success(changeCents = 0)
 
         coEvery {
-            orderRepository.recordFastCashPayment(any(), any(), any())
+            orderRepository.recordFastCashPayment(any(), any(), any(), any())
         } returns Result.success("fast-pay-1")
 
         coEvery {
@@ -99,6 +99,7 @@ class PaymentFlowViewModelTest {
         coEvery { printerService.autoPrintKitchenTicket(any()) } returns Unit
         coEvery { printerService.manualPrintReceipt(any()) } returns 1
         every { secureStorage.venueName } returns "Avoqado Test"
+        every { secureStorage.userId } returns "user-456"
 
         viewModel = PaymentFlowViewModel(
             orderRepository = orderRepository,
@@ -118,12 +119,12 @@ class PaymentFlowViewModelTest {
     fun `mixed cart includes custom amount in create order request`() = runTest {
         val requestSlot = slot<CreateOrderRequest>()
         coEvery {
-            orderRepository.createOrder(capture(requestSlot))
+            orderRepository.createOrder(capture(requestSlot), any(), any(), any())
         } returns Result.success(
             CreateOrderResponse(success = true, data = OrderData(id = "order-1")),
         )
         coEvery {
-            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any())
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any())
         } returns TerminalPaymentResult.Error("Terminal timeout")
 
         val productItem = CartItem(
@@ -156,12 +157,12 @@ class PaymentFlowViewModelTest {
     @Test
     fun `retry on card error reuses existing order and does not create a second one`() = runTest {
         coEvery {
-            orderRepository.createOrder(any())
+            orderRepository.createOrder(any(), any(), any(), any())
         } returns Result.success(
             CreateOrderResponse(success = true, data = OrderData(id = "order-1")),
         )
         coEvery {
-            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any())
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any())
         } returns TerminalPaymentResult.Error("Terminal offline")
 
         val cart = CartState(
@@ -184,7 +185,7 @@ class PaymentFlowViewModelTest {
         viewModel.selectTerminalAndPay("t1")
         advanceUntilIdle()
 
-        coVerify(exactly = 1) { orderRepository.createOrder(any()) }
+        coVerify(exactly = 1) { orderRepository.createOrder(any(), "user-456", any(), any()) }
         coVerify(exactly = 2) {
             terminalPaymentService.sendPaymentToTerminal(
                 terminalId = "t1",
@@ -192,6 +193,7 @@ class PaymentFlowViewModelTest {
                 tipCents = 0,
                 rating = null,
                 orderId = "order-1",
+                processedByStaffId = "user-456",
             )
         }
         assertTrue(viewModel.state.value is PaymentFlowState.Error)
@@ -200,7 +202,7 @@ class PaymentFlowViewModelTest {
     @Test
     fun `start payment flow resets previous tip before next custom payment`() = runTest {
         coEvery {
-            orderRepository.recordFastCashPayment(any(), any(), any())
+            orderRepository.recordFastCashPayment(any(), any(), any(), any())
         } returns Result.success("fast-pay-2")
 
         val firstCart = CartState(
@@ -232,7 +234,7 @@ class PaymentFlowViewModelTest {
         advanceUntilIdle()
 
         verify(exactly = 1) { cashPaymentRepository.processCashPayment(500, 500) }
-        coVerify(exactly = 1) { orderRepository.recordFastCashPayment(500, 0, "FULLPAYMENT") }
+        coVerify(exactly = 1) { orderRepository.recordFastCashPayment(500, "user-456", 0, "FULLPAYMENT") }
         assertTrue(viewModel.state.value is PaymentFlowState.Success)
     }
 
@@ -265,7 +267,7 @@ class PaymentFlowViewModelTest {
     @Test
     fun `send receipt email uses receiptAccessKey fallback when paymentId is null`() = runTest {
         coEvery {
-            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any())
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any())
         } returns TerminalPaymentResult.Success(
             transactionId = "tx-1",
             paymentId = null,
@@ -311,7 +313,7 @@ class PaymentFlowViewModelTest {
     @Test
     fun `send receipt whatsapp sends both paymentId and receiptAccessKey when available`() = runTest {
         coEvery {
-            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any())
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any())
         } returns TerminalPaymentResult.Success(
             transactionId = "tx-2",
             paymentId = "pay-2",
