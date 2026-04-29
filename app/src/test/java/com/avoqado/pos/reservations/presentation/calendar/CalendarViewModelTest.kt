@@ -1,6 +1,7 @@
 package com.avoqado.pos.reservations.presentation.calendar
 
 import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.reservations.data.ReservationRepository
 import com.avoqado.pos.reservations.data.model.Reservation
 import com.avoqado.pos.reservations.data.model.ReservationChannel
@@ -8,6 +9,7 @@ import com.avoqado.pos.reservations.data.model.ReservationStatus
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
@@ -38,11 +40,15 @@ class CalendarViewModelTest {
     @Test
     fun `initial fetch covers selected day`() = runTest(dispatcher) {
         val repo: ReservationRepository = mockk()
+        every { repo.pendingActionsCount } returns kotlinx.coroutines.flow.flowOf(0)
         val storage: SecureStorage = mockk()
         every { storage.venueTimezone } returns "America/Mexico_City"
         coEvery { repo.fetchCalendar(any(), any()) } returns Result.success(listOf(stub("r1", ReservationStatus.CONFIRMED)))
 
-        val vm = CalendarViewModel(repo, storage)
+        val connectivity: ConnectivityMonitor = mockk(relaxed = true)
+        every { connectivity.isConnected } returns MutableStateFlow(true)
+        every { connectivity.isServerReachable } returns MutableStateFlow(true)
+        val vm = CalendarViewModel(repo, storage, connectivity)
         advanceUntilIdle()
 
         assertEquals(1, vm.state.value.reservations.size)
@@ -52,6 +58,7 @@ class CalendarViewModelTest {
     @Test
     fun `setDate triggers re-fetch`() = runTest(dispatcher) {
         val repo: ReservationRepository = mockk()
+        every { repo.pendingActionsCount } returns kotlinx.coroutines.flow.flowOf(0)
         val storage: SecureStorage = mockk()
         every { storage.venueTimezone } returns "America/Mexico_City"
         coEvery { repo.fetchCalendar(any(), any()) } returnsMany listOf(
@@ -59,7 +66,10 @@ class CalendarViewModelTest {
             Result.success(listOf(stub("r1", ReservationStatus.PENDING))),
         )
 
-        val vm = CalendarViewModel(repo, storage)
+        val connectivity: ConnectivityMonitor = mockk(relaxed = true)
+        every { connectivity.isConnected } returns MutableStateFlow(true)
+        every { connectivity.isServerReachable } returns MutableStateFlow(true)
+        val vm = CalendarViewModel(repo, storage, connectivity)
         advanceUntilIdle()
         vm.setDate(LocalDate.now().plusDays(1))
         advanceUntilIdle()
