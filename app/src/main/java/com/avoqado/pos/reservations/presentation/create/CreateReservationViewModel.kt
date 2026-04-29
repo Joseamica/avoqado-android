@@ -7,11 +7,15 @@ import com.avoqado.pos.customers.data.CustomersRepository
 import com.avoqado.pos.customers.data.model.CreateCustomerRequest
 import com.avoqado.pos.customers.data.model.Customer
 import com.avoqado.pos.pos.data.ProductsRepository
+import com.avoqado.pos.pos.data.StaffMember
+import com.avoqado.pos.pos.data.StaffRepository
 import com.avoqado.pos.pos.data.model.Product
 import com.avoqado.pos.reservations.data.ReservationRepository
 import com.avoqado.pos.reservations.data.model.Reservation
 import com.avoqado.pos.reservations.domain.CreateReservationDraft
 import com.avoqado.pos.reservations.domain.CreateStep
+import com.avoqado.pos.tables.data.Table
+import com.avoqado.pos.tables.data.TablesRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -26,6 +30,8 @@ class CreateReservationViewModel @Inject constructor(
     private val repository: ReservationRepository,
     private val customersRepository: CustomersRepository,
     private val productsRepository: ProductsRepository,
+    private val tablesRepository: TablesRepository,
+    private val staffRepository: StaffRepository,
     private val secureStorage: SecureStorage,
 ) : ViewModel() {
 
@@ -54,9 +60,21 @@ class CreateReservationViewModel @Inject constructor(
 
     val products: StateFlow<List<Product>> = productsRepository.products
 
+    private val _tables = MutableStateFlow<List<Table>>(emptyList())
+    val tables: StateFlow<List<Table>> = _tables.asStateFlow()
+
+    private val _staff = MutableStateFlow<List<StaffMember>>(emptyList())
+    val staff: StateFlow<List<StaffMember>> = _staff.asStateFlow()
+
     init {
         loadCustomers()
         viewModelScope.launch { productsRepository.fetchProducts() }
+        viewModelScope.launch {
+            tablesRepository.fetchTables().onSuccess { _tables.value = it }
+        }
+        viewModelScope.launch {
+            staffRepository.getActiveStaff().onSuccess { _staff.value = it }
+        }
     }
 
     fun update(transform: (CreateReservationDraft) -> CreateReservationDraft) {
