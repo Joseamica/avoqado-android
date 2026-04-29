@@ -95,7 +95,7 @@ Lo MÍNIMO que entrega valor en producción para staff de piso. NO incluye crear
 | 1.2 | **Calendar Day View** | `reservations/presentation/calendar/CalendarDayView.kt` | Eje hora + week strip + grid + línea hora actual + reservaciones como bloques |
 | 1.3 | **Calendar Week View** | `reservations/presentation/calendar/CalendarWeekView.kt` | 7 columnas con bloques de reserva (más densas, sin titles largos) |
 | 1.4 | **Reservations List** | `reservations/presentation/list/ReservationsListScreen.kt` | Tab row (5 tabs) + filtros + DataList. Accesible desde ⋯ del calendario |
-| 1.5 | **Reservation Detail Sheet** | `reservations/presentation/detail/ReservationDetailSheet.kt` | Modal bottom sheet (phone) o side panel (tablet 40/60 split). Incluye 6 botones de acciones |
+| 1.5 | **Reservation Detail Screen** | `reservations/presentation/detail/ReservationDetailScreen.kt` | Full-screen modal (estilo Square: X close left + acciones en bottom action bar). Same layout en tablet y phone. Incluye 6 botones de acciones |
 | 1.6 | **Reschedule Sheet** | `reservations/presentation/detail/RescheduleSheet.kt` | Date+time picker + availability hint + Save pill |
 | 1.7 | **Cancel Confirmation Sheet** | `reservations/presentation/detail/CancelReservationSheet.kt` | Razón opcional + Confirmar (red pill) |
 | 1.8 | **Calendar Settings Sheet** | `reservations/presentation/calendar/CalendarSettingsSheet.kt` | Vista (Día/Semana/Lista) + status filters + color code |
@@ -270,16 +270,22 @@ Las acciones de transición de estado (confirm/check-in/complete/no-show/cancel)
 - Si hay 401 → renovar token y reintentar.
 - Mostrar `ConnectivityBanner` + contador de acciones pendientes.
 
-### 4.10 Adaptive layout
+### 4.10 Adaptive layout (Square-style, single-column centered)
+
+**Decisión**: NO usamos split view en Calendar (rompimos paridad con Transactions/Orders aquí intencionalmente, porque el calendario funciona mejor con todo el ancho disponible).
 
 Tablet (sw ≥ 600dp):
-- Lista 40% / Detalle 60% (split view tipo Transactions).
-- Calendar Day view en single column central (1024dp comfortable).
+- **Calendar Day view**: single-column centered con `max-width = 880dp` y `Modifier.padding(horizontal)` que crece con el ancho. Margen lateral grande en pantallas anchas.
+- **Calendar Week view**: full-width (las 7 columnas necesitan todo el espacio).
+- **Reservations List**: single-column centered con `max-width = 720dp`.
+- **Reservation Detail**: **full-screen modal** que cubre todo (estilo Square `Crear cita`). X close (top-left circular) + título centrado + acciones en bottom action bar.
 
 Phone:
-- Lista full screen.
-- Tap en reserva → `ReservationDetailSheet` como `ModalBottomSheet`.
-- Calendar Day view full screen.
+- Calendar Day y Week: full screen (sin max-width).
+- Reservations List: full screen.
+- Reservation Detail: full-screen Activity/Composable destination (no bottom sheet — consistencia con tablet).
+
+Razón del cambio vs propuesta inicial: Square POS Android lo hace así y se ve cleaner. Además, el detail screen necesita espacio para los 6 botones de acciones + customer info + special requests + deposit info — un bottom sheet phone se siente apretado.
 
 ### 4.11 Internationalization
 
@@ -351,17 +357,13 @@ Reusar copy del dashboard web (`public/locales/es/reservations.json`) — port d
 4. ✅ **Empty state hoy sin reservas**: calendario vacío con `+` en header. **No** mostramos CTA "walk-in" en Android (sería más relevante en dashboard web cuando un host está en computadora).
 5. ⏳ **Tablet split**: pendiente decisión final — propuesta default abajo.
 
-## 9.1 Open questions PENDIENTES (las únicas)
+## 9.1 Decisiones finales
 
-A) **Tablet adaptive layout** — Cuando se entra al tab Calendario en tablet (sw ≥ 600dp), ¿cuál prefieres?
+A) ✅ **Tablet layout = single-column centered** (estilo Square POS Android). Calendario con max-width 880dp, margen lateral creciente. Sin split view.
 
-   - **A1) 40/60 split (consistente con Transactions/Orders en Avoqado)**: panel izquierdo = lista del día (chronological list of today's reservations) / panel derecho = vista Día del calendario. Tap en lista hace scroll en calendario. Familiar para tu staff que ya conoce el patrón.
-   - **A2) Single-column centered (similar a Square POS Android)**: el calendario ocupa toda la pantalla con margen horizontal, sin lista lateral. Más limpio visualmente pero pierde la lista paralela.
-   - **A3) Day view single-column + tab independiente "Lista" en sub-nav**: como Square, agregamos un toggle Día / Semana / Lista en el header del Calendario.
+B) ✅ **Detalle de reserva = full-screen modal** (estilo Square Crear cita: X close left + acciones en bottom action bar). Mismo layout en tablet y phone para consistencia.
 
-B) **Detalle de reserva en tablet** — Cuando tapeas una reserva, ¿abre como (1) bottom sheet (igual que phone), (2) side panel reemplazando la lista, o (3) overlay modal centrado?
-
-C) **Walk-in (concepto, no CTA)** — En "Walk-in" me refiero a: cliente que llega al local SIN reserva previa y el staff necesita crear una reserva instantánea. Ejemplo: alguien entra a un gym sin cita y quiere tomar la clase de yoga de las 7. En **Fase 2** (cuando agreguemos crear reservas) tendré que diseñar el flujo. Mi pregunta NO era de Fase 1 — pero te confirmo: ¿quieres en Fase 2 un FAB grande "+ Walk-in" en el calendario, o el flow de creación normal sirve igual para walk-ins y reservas anticipadas?
+C) ✅ **Walk-in en Fase 2 = reusar flujo de "Crear cita" normal** con tiempo "ahora" pre-llenado (estilo Square). NO crear FAB walk-in dedicado.
 
 ## 10. Aprobación
 
