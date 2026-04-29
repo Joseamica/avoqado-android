@@ -11,22 +11,44 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.avoqado.pos.reservations.data.model.ReservationStatus
 
+val ReservationStatus.displayLabel: String
+    get() = when (this) {
+        ReservationStatus.PENDING -> "Pendiente"
+        ReservationStatus.CONFIRMED -> "Confirmada"
+        ReservationStatus.CHECKED_IN -> "En curso"
+        ReservationStatus.COMPLETED -> "Completada"
+        ReservationStatus.CANCELLED -> "Cancelada"
+        ReservationStatus.NO_SHOW -> "No-show"
+    }
+
+val ReservationStatus.accentColor: Color
+    get() = when (this) {
+        ReservationStatus.PENDING -> Color(0xFFB07000)
+        ReservationStatus.CONFIRMED -> Color(0xFF1565C0)
+        ReservationStatus.CHECKED_IN -> Color(0xFF2E7D32)
+        ReservationStatus.COMPLETED -> Color(0xFF424242)
+        ReservationStatus.CANCELLED -> Color(0xFFC62828)
+        ReservationStatus.NO_SHOW -> Color(0xFFE65100)
+    }
+
+val ReservationStatus.softColor: Color
+    get() = when (this) {
+        ReservationStatus.PENDING -> Color(0x33FFA000)
+        ReservationStatus.CONFIRMED -> Color(0x331E88E5)
+        ReservationStatus.CHECKED_IN -> Color(0x3343A047)
+        ReservationStatus.COMPLETED -> Color(0x33616161)
+        ReservationStatus.CANCELLED -> Color(0x33E53935)
+        ReservationStatus.NO_SHOW -> Color(0x33FB8C00)
+    }
+
 @Composable
 fun ReservationStatusBadge(status: ReservationStatus, modifier: Modifier = Modifier) {
-    val (bg, fg, label) = when (status) {
-        ReservationStatus.PENDING -> Triple(Color(0x33FFA000), Color(0xFFB07000), "Pendiente")
-        ReservationStatus.CONFIRMED -> Triple(Color(0x331E88E5), Color(0xFF1565C0), "Confirmada")
-        ReservationStatus.CHECKED_IN -> Triple(Color(0x3343A047), Color(0xFF2E7D32), "En curso")
-        ReservationStatus.COMPLETED -> Triple(Color(0x33616161), Color(0xFF424242), "Completada")
-        ReservationStatus.CANCELLED -> Triple(Color(0x33E53935), Color(0xFFC62828), "Cancelada")
-        ReservationStatus.NO_SHOW -> Triple(Color(0x33FB8C00), Color(0xFFE65100), "No-show")
-    }
     Text(
-        label,
+        status.displayLabel,
         modifier = modifier
-            .background(bg, RoundedCornerShape(50))
+            .background(status.softColor, RoundedCornerShape(50))
             .padding(horizontal = 10.dp, vertical = 4.dp),
-        style = MaterialTheme.typography.labelSmall.copy(color = fg),
+        style = MaterialTheme.typography.labelSmall.copy(color = status.accentColor),
     )
 }
 
