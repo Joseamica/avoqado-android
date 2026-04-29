@@ -57,10 +57,12 @@ import androidx.core.view.WindowCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.navigation.NavDestination.Companion.hierarchy
 import androidx.navigation.NavGraph.Companion.findStartDestination
+import androidx.navigation.NavType
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import androidx.navigation.navArgument
 import com.avoqado.pos.auth.presentation.AppState
 import com.avoqado.pos.auth.presentation.LandingScreen
 import com.avoqado.pos.core.domain.RoleManager
@@ -214,6 +216,18 @@ private fun MainScaffold(
                         formatter = formatter,
                     )
                 }
+                composable(
+                    "reservations/{reservationId}",
+                    arguments = listOf(navArgument("reservationId") { type = NavType.StringType }),
+                ) { backStackEntry ->
+                    val id = backStackEntry.arguments?.getString("reservationId") ?: return@composable
+                    com.avoqado.pos.reservations.presentation.detail.ReservationDetailScreen(
+                        onClose = { navController.popBackStack() },
+                        onReschedule = { navController.navigate("reservations/$id/reschedule") },
+                        onCancel = { navController.navigate("reservations/$id/cancel") },
+                        formatter = formatter,
+                    )
+                }
             }
         }
     } else {
@@ -286,6 +300,18 @@ private fun MainScaffold(
                 composable("reservations/list") {
                     ReservationsListScreen(
                         onOpenDetail = { id -> navController.navigate("reservations/$id") },
+                        formatter = formatter,
+                    )
+                }
+                composable(
+                    "reservations/{reservationId}",
+                    arguments = listOf(navArgument("reservationId") { type = NavType.StringType }),
+                ) { backStackEntry ->
+                    val id = backStackEntry.arguments?.getString("reservationId") ?: return@composable
+                    com.avoqado.pos.reservations.presentation.detail.ReservationDetailScreen(
+                        onClose = { navController.popBackStack() },
+                        onReschedule = { navController.navigate("reservations/$id/reschedule") },
+                        onCancel = { navController.navigate("reservations/$id/cancel") },
                         formatter = formatter,
                     )
                 }
