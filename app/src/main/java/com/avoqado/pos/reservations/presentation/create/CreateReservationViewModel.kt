@@ -13,6 +13,7 @@ import com.avoqado.pos.pos.data.StaffRepository
 import com.avoqado.pos.pos.data.model.Product
 import com.avoqado.pos.reservations.data.ReservationRepository
 import com.avoqado.pos.reservations.data.model.Reservation
+import com.avoqado.pos.reservations.data.model.ReservationChannel
 import com.avoqado.pos.reservations.domain.CreateReservationDraft
 import com.avoqado.pos.reservations.domain.CreateStep
 import com.avoqado.pos.tables.data.Table
@@ -85,14 +86,27 @@ class CreateReservationViewModel @Inject constructor(
     private fun seedFromNavArgs(handle: SavedStateHandle) {
         val date = handle.get<String>("date")?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
         val time = handle.get<String>("time")?.let { runCatching { LocalTime.parse(it) }.getOrNull() }
-        if (date != null || time != null) {
-            _draft.update { d ->
-                d.copy(
-                    date = date ?: d.date,
-                    time = time ?: d.time,
-                )
-            }
+        val isWalkIn = handle.get<String>("walkin")?.equals("true", ignoreCase = true) ?: false
+
+        if (date == null && time == null && !isWalkIn) return
+
+        _draft.update { d ->
+            d.copy(
+                date = date ?: d.date,
+                time = if (isWalkIn) nextQuarterHour(LocalTime.now(zone)) else (time ?: d.time),
+                isGuest = if (isWalkIn) true else d.isGuest,
+                guestName = if (isWalkIn) "Walk-in" else d.guestName,
+                channel = if (isWalkIn) ReservationChannel.WALK_IN else d.channel,
+                step = if (isWalkIn) CreateStep.SERVICE else d.step,
+            )
         }
+    }
+
+    private fun nextQuarterHour(t: LocalTime): LocalTime {
+        val minute = t.minute
+        val rounded = ((minute / 15) + 1) * 15
+        return if (rounded >= 60) t.plusHours(1).withMinute(0).withSecond(0).withNano(0)
+        else t.withMinute(rounded).withSecond(0).withNano(0)
     }
 
     fun update(transform: (CreateReservationDraft) -> CreateReservationDraft) {

@@ -43,7 +43,7 @@ import java.util.Locale
 fun CalendarTabHost(
     onOpenReservation: (String) -> Unit = {},
     onOpenSettings: () -> Unit = {},
-    onCreateReservation: (LocalDate, LocalTime) -> Unit = { _, _ -> },
+    onCreateReservation: (LocalDate, LocalTime, Boolean) -> Unit = { _, _, _ -> },
     viewModel: CalendarViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -132,9 +132,17 @@ fun CalendarTabHost(
                 ActionSheetItem(
                     label = "Crear cita",
                     onClick = {
-                        onCreateReservation(target.first, target.second)
+                        onCreateReservation(target.first, target.second, false)
                         pendingSlot = null
                         showSheetForNow = false
+                    },
+                ),
+                ActionSheetItem(
+                    label = "Registrar walk-in",
+                    onClick = {
+                        pendingSlot = null
+                        showSheetForNow = false
+                        onCreateReservation(LocalDate.now(venueZone), LocalTime.now(venueZone), true)
                     },
                 ),
                 ActionSheetItem(

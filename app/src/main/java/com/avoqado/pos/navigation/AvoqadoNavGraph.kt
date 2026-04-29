@@ -211,9 +211,10 @@ private fun MainScaffold(
                     com.avoqado.pos.reservations.presentation.calendar.CalendarTabHost(
                         onOpenReservation = { id -> navController.navigate("reservations/$id") },
                         onOpenSettings = { navController.navigate("calendar/settings") },
-                        onCreateReservation = { date, time ->
+                        onCreateReservation = { date, time, walkin ->
+                            val timeStr = time.format(DateTimeFormatter.ofPattern("HH:mm"))
                             navController.navigate(
-                                "reservations/create?date=${date}&time=${time.format(DateTimeFormatter.ofPattern("HH:mm"))}",
+                                "reservations/create?date=$date&time=$timeStr&walkin=$walkin",
                             )
                         },
                     )
@@ -243,7 +244,7 @@ private fun MainScaffold(
                     )
                 }
                 composable(
-                    route = "reservations/create?date={date}&time={time}",
+                    route = "reservations/create?date={date}&time={time}&walkin={walkin}",
                     arguments = listOf(
                         navArgument("date") {
                             type = NavType.StringType
@@ -254,6 +255,11 @@ private fun MainScaffold(
                             type = NavType.StringType
                             nullable = true
                             defaultValue = null
+                        },
+                        navArgument("walkin") {
+                            type = NavType.StringType
+                            nullable = true
+                            defaultValue = "false"
                         },
                     ),
                 ) {
@@ -358,9 +364,10 @@ private fun MainScaffold(
                     com.avoqado.pos.reservations.presentation.calendar.CalendarTabHost(
                         onOpenReservation = { id -> navController.navigate("reservations/$id") },
                         onOpenSettings = { navController.navigate("calendar/settings") },
-                        onCreateReservation = { date, time ->
+                        onCreateReservation = { date, time, walkin ->
+                            val timeStr = time.format(DateTimeFormatter.ofPattern("HH:mm"))
                             navController.navigate(
-                                "reservations/create?date=${date}&time=${time.format(DateTimeFormatter.ofPattern("HH:mm"))}",
+                                "reservations/create?date=$date&time=$timeStr&walkin=$walkin",
                             )
                         },
                     )
@@ -390,7 +397,7 @@ private fun MainScaffold(
                     )
                 }
                 composable(
-                    route = "reservations/create?date={date}&time={time}",
+                    route = "reservations/create?date={date}&time={time}&walkin={walkin}",
                     arguments = listOf(
                         navArgument("date") {
                             type = NavType.StringType
@@ -401,6 +408,11 @@ private fun MainScaffold(
                             type = NavType.StringType
                             nullable = true
                             defaultValue = null
+                        },
+                        navArgument("walkin") {
+                            type = NavType.StringType
+                            nullable = true
+                            defaultValue = "false"
                         },
                     ),
                 ) {
