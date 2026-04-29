@@ -23,6 +23,8 @@ fun CalendarTabHost(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val venueZone = remember(viewModel) { viewModel.venueZoneId }
+    val isOnline by viewModel.isOnline.collectAsStateWithLifecycle()
+    val pending by viewModel.pendingActionsCount.collectAsStateWithLifecycle()
 
     Scaffold(
         topBar = {
@@ -49,6 +51,19 @@ fun CalendarTabHost(
             Modifier.padding(padding).fillMaxSize(),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
+            if (!isOnline) {
+                Surface(color = MaterialTheme.colorScheme.errorContainer) {
+                    Text(
+                        text = if (pending > 0) "Sin conexión — $pending acciones pendientes" else "Sin conexión",
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(8.dp),
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                        style = MaterialTheme.typography.labelMedium,
+                        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                    )
+                }
+            }
             SegmentedRow(
                 view = state.view,
                 onViewChange = viewModel::setView,

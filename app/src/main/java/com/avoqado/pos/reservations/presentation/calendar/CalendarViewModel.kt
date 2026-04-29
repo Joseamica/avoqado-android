@@ -3,13 +3,17 @@ package com.avoqado.pos.reservations.presentation.calendar
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.reservations.data.ReservationRepository
 import com.avoqado.pos.reservations.data.model.Reservation
 import com.avoqado.pos.reservations.data.model.ReservationStatus
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.time.LocalDate
@@ -21,6 +25,7 @@ import javax.inject.Inject
 class CalendarViewModel @Inject constructor(
     private val repository: ReservationRepository,
     private val secureStorage: SecureStorage,
+    private val connectivityMonitor: ConnectivityMonitor,
 ) : ViewModel() {
 
     private val zone: ZoneId get() = ZoneId.of(secureStorage.venueTimezone ?: "America/Mexico_City")
@@ -28,6 +33,23 @@ class CalendarViewModel @Inject constructor(
 
     private val _state = MutableStateFlow(CalendarUiState(today = LocalDate.now(zone), selectedDate = LocalDate.now(zone)))
     val state: StateFlow<CalendarUiState> = _state.asStateFlow()
+
+    val isOnline: StateFlow<Boolean> = combine(
+        connectivityMonitor.isConnected,
+        connectivityMonitor.isServerReachable,
+    ) { connected, serverReachable -> connected && serverReachable }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000),
+            initialValue = true,
+        )
+
+    val pendingActionsCount: StateFlow<Int> = repository.pendingActionsCount
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000),
+            initialValue = 0,
+        )
 
     init { fetch() }
 
