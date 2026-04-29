@@ -54,7 +54,8 @@ class ReservationApi @Inject constructor(
         when (element) {
             is JsonArray -> json.decodeFromJsonElement(ListSerializer(Reservation.serializer()), element)
             is JsonObject -> {
-                val arr = element["data"] ?: error("Unexpected calendar response shape")
+                val arr = element["reservations"] ?: element["data"]
+                    ?: error("Unexpected calendar response shape")
                 json.decodeFromJsonElement(ListSerializer(Reservation.serializer()), arr)
             }
             else -> error("Unexpected calendar response shape: $body")

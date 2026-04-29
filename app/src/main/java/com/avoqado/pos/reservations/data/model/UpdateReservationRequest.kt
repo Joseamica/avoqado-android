@@ -9,6 +9,7 @@ data class UpdateReservationRequest(
     val guestPhone: String? = null,
     val guestEmail: String? = null,
     val partySize: Int? = null,
+    val duration: Int? = null,
     val productId: String? = null,
     val tableId: String? = null,
     val assignedStaffId: String? = null,

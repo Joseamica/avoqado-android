@@ -52,6 +52,7 @@ data class CreateReservationDraft(
             partySize = partySize,
             startsAt = iso.format(startLocal.toInstant()),
             endsAt = iso.format(endLocal.toInstant()),
+            duration = durationMinutes,
             productId = productId,
             tableId = tableId,
             assignedStaffId = assignedStaffId,

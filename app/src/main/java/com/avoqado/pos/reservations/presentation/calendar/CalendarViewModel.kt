@@ -71,6 +71,8 @@ class CalendarViewModel @Inject constructor(
         _state.update { it.copy(showCancelled = show) }
     }
 
+    fun refresh() = fetch()
+
     private fun fetch() {
         val s = _state.value
         val (from, to) = when (s.view) {

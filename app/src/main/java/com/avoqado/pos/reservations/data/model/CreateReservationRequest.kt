@@ -11,6 +11,7 @@ data class CreateReservationRequest(
     val partySize: Int,
     val startsAt: String, // ISO-8601 UTC
     val endsAt: String,
+    val duration: Int, // minutes — server requires this and validates against (endsAt - startsAt)
     val productId: String? = null,
     val classSessionId: String? = null,
     val tableId: String? = null,
