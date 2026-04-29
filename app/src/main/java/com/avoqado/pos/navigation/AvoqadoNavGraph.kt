@@ -228,6 +228,24 @@ private fun MainScaffold(
                         formatter = formatter,
                     )
                 }
+                composable(
+                    "reservations/{reservationId}/cancel",
+                    arguments = listOf(navArgument("reservationId") { type = NavType.StringType }),
+                ) {
+                    com.avoqado.pos.reservations.presentation.detail.CancelReservationSheet(
+                        onDismiss = { navController.popBackStack() },
+                    )
+                }
+                composable(
+                    "reservations/{reservationId}/reschedule",
+                    arguments = listOf(navArgument("reservationId") { type = NavType.StringType }),
+                ) {
+                    val tz = remember(formatter) { formatter.zoneId() }
+                    com.avoqado.pos.reservations.presentation.detail.RescheduleSheet(
+                        venueTimezone = tz,
+                        onDismiss = { navController.popBackStack() },
+                    )
+                }
             }
         }
     } else {
@@ -313,6 +331,24 @@ private fun MainScaffold(
                         onReschedule = { navController.navigate("reservations/$id/reschedule") },
                         onCancel = { navController.navigate("reservations/$id/cancel") },
                         formatter = formatter,
+                    )
+                }
+                composable(
+                    "reservations/{reservationId}/cancel",
+                    arguments = listOf(navArgument("reservationId") { type = NavType.StringType }),
+                ) {
+                    com.avoqado.pos.reservations.presentation.detail.CancelReservationSheet(
+                        onDismiss = { navController.popBackStack() },
+                    )
+                }
+                composable(
+                    "reservations/{reservationId}/reschedule",
+                    arguments = listOf(navArgument("reservationId") { type = NavType.StringType }),
+                ) {
+                    val tz = remember(formatter) { formatter.zoneId() }
+                    com.avoqado.pos.reservations.presentation.detail.RescheduleSheet(
+                        venueTimezone = tz,
+                        onDismiss = { navController.popBackStack() },
                     )
                 }
             }
