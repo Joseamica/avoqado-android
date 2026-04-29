@@ -49,23 +49,23 @@ Implementación: `MainTab` enum existente se mantiene; agregamos `MainTab.Calend
 
 ### 3.3 Activación condicional del modo Reservas
 
-Lógica de auto-activación al login/switch venue:
-1. Si `venue.type === 'SERVICE'` → modo Reservas auto-on.
-2. Si `venue.featureFlags.reservations === true` → modo Reservas disponible (no auto-on, pero ofrecible).
-3. Si nada de lo anterior → modo Estándar.
+**Importante**: Las reservas son **independientes del `venue.type`**. Un venue retail (ej. un gym que vende suplementos Y reserva clases) puede activarlas igual que un venue service. NO hay auto-activación basada en tipo.
 
-UI para cambiar manualmente: **Más → tarjeta "Modo: Estándar ▾"** → bottom sheet con radios:
-- ⚫ Estándar
-- ○ Reservas
-- ○ Restaurante (próximamente, deshabilitado)
+Lógica:
+1. Si `venue.featureFlags.reservations === true` → modo Reservas disponible en el switcher.
+2. Si `false` o ausente → el switcher sólo muestra Estándar (+ Restaurante futuro). Aparece el shortcut "Activar reservas" en Más.
+
+UI para cambiar manualmente: **Más → tarjeta "Modo: Estándar ▾"** → bottom sheet con radios. **Cualquier staff loggeado puede cambiar el modo** (sin permission gating). Es una preferencia local del dispositivo, no destructiva.
 
 ### 3.4 Onboarding "Activar reservas" desde Más
 
-Si `featureFlags.reservations !== true` y el venue NO es service, el modo Reservas no aparece en el sheet anterior. En su lugar, el grid de shortcuts en Más incluye:
+Si `featureFlags.reservations !== true`, el grid de shortcuts en Más incluye:
 
-> 🔓 **Activar reservas** — Permite a tu negocio recibir citas, manejar clases y administrar tu calendario desde Avoqado.
+> 🔓 **Activar reservas** — Permite a tu negocio recibir citas, manejar clases y administrar tu calendario desde Avoqado. **Gratis hoy.**
 
-Tap → pantalla informativa + CTA "Activar reservas" → llama `PUT /venues/:id` con `featureFlags.reservations = true` → recarga `MainTabHostViewModel`.
+Tap → pantalla informativa + CTA "Activar reservas" → llama `PUT /venues/:id` con `featureFlags.reservations = true` → recarga `MainTabHostViewModel` → modo Reservas ya disponible en el switcher.
+
+**Future-proof paywall**: el campo `featureFlags.reservations` permanece booleano, pero la pantalla de "Activar reservas" debe poder leer un flag remoto `reservations.requiresUpgrade` (default false hoy). Cuando lo activemos, el CTA cambia a "Suscribirse a Reservas" y abre flujo de billing. **Cero migration debt** — el cliente solo lee un campo más al render.
 
 ## 4. Fase 1 — Visualización + acciones de turno (implementable ahora)
 
@@ -343,13 +343,25 @@ Reusar copy del dashboard web (`public/locales/es/reservations.json`) — port d
 | Fase 4 — Settings | 2 | ~8-10 | ~20 | v2.5.0 |
 | Fase 5 — Personal Events | 1 | ~2-3 + schema | ~6 | v2.6.0 |
 
-## 9. Open questions (a resolver con user)
+## 9. Open questions — RESUELTAS
 
-1. **¿Confirmas la lista de tabs por modo del §3.2?** Específicamente que en modo Reservas el tab Pedidos sigue (vs ser reemplazado por algo más).
-2. **¿"Cambiar de modo" requiere ser admin?** Es decir, ¿cualquier staff loggeado puede cambiar modo de un dispositivo o sólo `OWNER/MANAGER`?
-3. **¿Onboarding "Activar reservas" requiere flujo de billing?** (Square cobra extra por Appointments). Avoqado: ¿es feature gratis o de paywall?
-4. **Estado inicial cuando no hay reservas hoy:** ¿mostrar empty state con CTA "Crear walk-in" o solo el calendario vacío con `+`?
-5. **Tablet split-view en Calendar Day**: ¿lista 40% / día 60% (similar a Transactions) o single-column centered (similar a Square)?
+1. ✅ **Tabs por modo**: en modo Reservas el bottom nav es **Calendario · Pedidos · Cobrar · Más**. Pedidos sigue visible para flujos retail concurrentes (un gym vende suplementos y reserva clases). Cobrar (`Take payment` de Square) también — el staff puede cobrar una reserva que terminó.
+2. ✅ **Cambiar modo**: sin permission gating. Cualquier staff loggeado.
+3. ✅ **Activar reservas**: gratis ahoy. Arquitectura ya considera flag remoto `reservations.requiresUpgrade` para futuro paywall sin re-trabajo.
+4. ✅ **Empty state hoy sin reservas**: calendario vacío con `+` en header. **No** mostramos CTA "walk-in" en Android (sería más relevante en dashboard web cuando un host está en computadora).
+5. ⏳ **Tablet split**: pendiente decisión final — propuesta default abajo.
+
+## 9.1 Open questions PENDIENTES (las únicas)
+
+A) **Tablet adaptive layout** — Cuando se entra al tab Calendario en tablet (sw ≥ 600dp), ¿cuál prefieres?
+
+   - **A1) 40/60 split (consistente con Transactions/Orders en Avoqado)**: panel izquierdo = lista del día (chronological list of today's reservations) / panel derecho = vista Día del calendario. Tap en lista hace scroll en calendario. Familiar para tu staff que ya conoce el patrón.
+   - **A2) Single-column centered (similar a Square POS Android)**: el calendario ocupa toda la pantalla con margen horizontal, sin lista lateral. Más limpio visualmente pero pierde la lista paralela.
+   - **A3) Day view single-column + tab independiente "Lista" en sub-nav**: como Square, agregamos un toggle Día / Semana / Lista en el header del Calendario.
+
+B) **Detalle de reserva en tablet** — Cuando tapeas una reserva, ¿abre como (1) bottom sheet (igual que phone), (2) side panel reemplazando la lista, o (3) overlay modal centrado?
+
+C) **Walk-in (concepto, no CTA)** — En "Walk-in" me refiero a: cliente que llega al local SIN reserva previa y el staff necesita crear una reserva instantánea. Ejemplo: alguien entra a un gym sin cita y quiere tomar la clase de yoga de las 7. En **Fase 2** (cuando agreguemos crear reservas) tendré que diseñar el flujo. Mi pregunta NO era de Fase 1 — pero te confirmo: ¿quieres en Fase 2 un FAB grande "+ Walk-in" en el calendario, o el flow de creación normal sirve igual para walk-ins y reservas anticipadas?
 
 ## 10. Aprobación
 
