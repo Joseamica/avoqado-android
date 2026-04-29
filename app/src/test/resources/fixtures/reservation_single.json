@@ -1,0 +1,70 @@
+{
+  "id": "res_01H8K2X9P",
+  "venueId": "ven_01",
+  "confirmationCode": "RES-A3X7K2",
+  "cancelSecret": "550e8400-e29b-41d4-a716-446655440000",
+  "status": "CONFIRMED",
+  "channel": "DASHBOARD",
+  "startsAt": "2026-04-29T16:00:00.000Z",
+  "endsAt": "2026-04-29T17:00:00.000Z",
+  "duration": 60,
+  "customerId": "cust_01",
+  "customer": {
+    "id": "cust_01",
+    "firstName": "Mar\u00eda",
+    "lastName": "L\u00f3pez",
+    "phone": "+5215551234567",
+    "email": "maria@example.com"
+  },
+  "guestName": null,
+  "guestPhone": null,
+  "guestEmail": null,
+  "partySize": 2,
+  "spotIds": [],
+  "tableId": "tbl_05",
+  "table": {
+    "id": "tbl_05",
+    "number": "5",
+    "capacity": 4
+  },
+  "productId": "prd_haircut",
+  "product": {
+    "id": "prd_haircut",
+    "name": "Corte de cabello",
+    "durationMinutes": 60,
+    "price": "350.00"
+  },
+  "classSessionId": null,
+  "classSession": null,
+  "assignedStaffId": "stf_03",
+  "assignedStaff": {
+    "id": "stf_03",
+    "firstName": "Carlos",
+    "lastName": "Mendez",
+    "avatarUrl": null
+  },
+  "depositAmount": "100.00",
+  "depositStatus": "PAID",
+  "depositPaidAt": "2026-04-28T10:00:00.000Z",
+  "depositRefundedAt": null,
+  "createdById": "stf_01",
+  "createdBy": {
+    "id": "stf_01",
+    "firstName": "Ana",
+    "lastName": "Garcia"
+  },
+  "confirmedAt": "2026-04-28T10:05:00.000Z",
+  "checkedInAt": null,
+  "completedAt": null,
+  "cancelledAt": null,
+  "noShowAt": null,
+  "cancelledBy": null,
+  "cancellationReason": null,
+  "specialRequests": "Por favor, llegar 10 min antes",
+  "internalNotes": null,
+  "tags": [
+    "VIP"
+  ],
+  "createdAt": "2026-04-28T10:00:00.000Z",
+  "updatedAt": "2026-04-28T10:05:00.000Z"
+}
