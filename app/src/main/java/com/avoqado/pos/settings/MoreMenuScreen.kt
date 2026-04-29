@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Extension
+import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.LocalOffer
 import androidx.compose.material.icons.filled.People
@@ -74,6 +75,8 @@ import com.avoqado.pos.kds.presentation.KDSScreen
 import com.avoqado.pos.orders.presentation.OrdersScreen
 import com.avoqado.pos.printing.presentation.PrinterSettingsSheet
 import com.avoqado.pos.reports.presentation.ReportsScreen
+import com.avoqado.pos.reservations.domain.VenueMode
+import com.avoqado.pos.reservations.presentation.onboarding.ModeSwitcherSheet
 import com.avoqado.pos.settings.presentation.ChangeModeSheet
 import com.avoqado.pos.settings.presentation.CustomizeMenuSheet
 import com.avoqado.pos.settings.presentation.SetupWizardScreen
@@ -84,6 +87,7 @@ import com.avoqado.pos.timeclock.presentation.TimeClockSheet
 fun MoreMenuScreen(
     onLogout: () -> Unit,
     moreTabReselectionTick: Int = 0,
+    onActivateReservations: () -> Unit = {},
     viewModel: MoreMenuViewModel = hiltViewModel(),
 ) {
     val venueName by viewModel.venueName.collectAsState()
@@ -106,6 +110,7 @@ fun MoreMenuScreen(
     var showChangeMode by remember { mutableStateOf(false) }
     var showAddons by remember { mutableStateOf(false) }
     var showKDS by remember { mutableStateOf(false) }
+    var showModeSwitcher by remember { mutableStateOf(false) }
     val closeAllOverlays = {
         showVenueSwitcher = false
         showTimeClock = false
@@ -124,6 +129,7 @@ fun MoreMenuScreen(
         showChangeMode = false
         showAddons = false
         showKDS = false
+        showModeSwitcher = false
     }
 
     LaunchedEffect(moreTabReselectionTick) {
@@ -192,6 +198,31 @@ fun MoreMenuScreen(
         )
 
         Spacer(modifier = Modifier.height(if (denseMenu) AvoqadoTheme.spacing.sm else AvoqadoTheme.spacing.lg))
+
+        // VenueMode Modo card — only visible when reservations feature is enabled
+        if (viewModel.reservationsEnabled) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { showModeSwitcher = true }
+                    .padding(vertical = modeRowPadding),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "Modo: ${viewModel.currentVenueMode.displayLabel}",
+                    style = modeStyle,
+                    fontWeight = FontWeight.Medium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Icon(
+                    Icons.Filled.KeyboardArrowDown,
+                    contentDescription = null,
+                    modifier = Modifier.size(AvoqadoTheme.dimensions.iconLarge),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(modifier = Modifier.height(if (denseMenu) AvoqadoTheme.spacing.xs else AvoqadoTheme.spacing.md))
+        }
 
         if (isSmallTablet) {
             Row(
@@ -361,6 +392,15 @@ fun MoreMenuScreen(
 
         // General Section
         SectionHeader("General", dense = denseMenu)
+        if (!viewModel.reservationsEnabled) {
+            MenuRow(
+                icon = Icons.Filled.CalendarMonth,
+                label = "Activar reservas",
+                subtitle = "Permite recibir citas. Gratis hoy.",
+                onClick = onActivateReservations,
+                dense = denseMenu,
+            )
+        }
         MenuRow(
             icon = Icons.Filled.Schedule,
             label = "Reloj de entrada",
@@ -762,6 +802,15 @@ fun MoreMenuScreen(
         )
     }
 
+    // Venue Mode Switcher Sheet (only when reservations enabled)
+    if (showModeSwitcher) {
+        ModeSwitcherSheet(
+            currentMode = viewModel.currentVenueMode,
+            onModeSelected = { viewModel.setVenueMode(it) },
+            onDismiss = { showModeSwitcher = false },
+        )
+    }
+
 }
 
 // MARK: - Placeholder Sheet (for unimplemented features)
@@ -823,6 +872,7 @@ private fun MenuRow(
     label: String,
     onClick: () -> Unit,
     dense: Boolean = false,
+    subtitle: String? = null,
 ) {
     val verticalPadding = if (dense) AvoqadoTheme.spacing.xs else AvoqadoTheme.spacing.md
     val rowTextStyle = if (dense) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodyLarge
@@ -842,13 +892,23 @@ private fun MenuRow(
             modifier = Modifier.size(iconSize),
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Text(
-            text = label,
-            style = rowTextStyle,
+        Column(
             modifier = Modifier
                 .weight(1f)
                 .padding(horizontal = if (dense) AvoqadoTheme.spacing.sm else AvoqadoTheme.spacing.md),
-        )
+        ) {
+            Text(
+                text = label,
+                style = rowTextStyle,
+            )
+            if (subtitle != null) {
+                Text(
+                    text = subtitle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
         Icon(
             Icons.Filled.ChevronRight,
             contentDescription = null,

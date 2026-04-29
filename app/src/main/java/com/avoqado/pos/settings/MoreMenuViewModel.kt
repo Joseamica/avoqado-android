@@ -55,6 +55,16 @@ class MoreMenuViewModel @Inject constructor(
     val canAccessReports: Boolean
         get() = roleManager.canAccessReports
 
+    val reservationsEnabled: Boolean
+        get() = secureStorage.reservationsEnabled
+
+    val currentVenueMode: com.avoqado.pos.reservations.domain.VenueMode
+        get() = com.avoqado.pos.reservations.domain.VenueMode.fromStorage(secureStorage.venueMode)
+
+    fun setVenueMode(mode: com.avoqado.pos.reservations.domain.VenueMode) {
+        secureStorage.venueMode = mode.storageValue
+    }
+
     fun switchVenue(venue: StoredVenue) {
         if (venue.id == secureStorage.venueId) return
 

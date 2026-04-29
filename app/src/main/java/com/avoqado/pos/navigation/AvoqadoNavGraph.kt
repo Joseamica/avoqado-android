@@ -179,9 +179,16 @@ private fun MainScaffold(
                     MoreMenuScreen(
                         onLogout = onLogout,
                         moreTabReselectionTick = moreTabReselectionTick,
+                        onActivateReservations = { navController.navigate("activate-reservations") },
                     )
                 }
                 composable(MainTab.CALENDAR.route) { CalendarTabHost() }
+                composable("activate-reservations") {
+                    com.avoqado.pos.reservations.presentation.onboarding.ActivateReservationsScreen(
+                        onActivated = { navController.popBackStack() },
+                        onBack = { navController.popBackStack() },
+                    )
+                }
             }
         }
     } else {
@@ -241,9 +248,16 @@ private fun MainScaffold(
                     MoreMenuScreen(
                         onLogout = onLogout,
                         moreTabReselectionTick = moreTabReselectionTick,
+                        onActivateReservations = { navController.navigate("activate-reservations") },
                     )
                 }
                 composable(MainTab.CALENDAR.route) { CalendarTabHost() }
+                composable("activate-reservations") {
+                    com.avoqado.pos.reservations.presentation.onboarding.ActivateReservationsScreen(
+                        onActivated = { navController.popBackStack() },
+                        onBack = { navController.popBackStack() },
+                    )
+                }
             }
         }
     }
