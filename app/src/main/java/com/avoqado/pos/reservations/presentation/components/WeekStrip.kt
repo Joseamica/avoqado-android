@@ -26,7 +26,7 @@ fun WeekStrip(
     // ISO Mon=1..Sun=7. We want Sunday-first column: dayOfWeek.value % 7 → Sun=0, Mon=1..Sat=6.
     val sunday = weekOf.minusDays((weekOf.dayOfWeek.value % 7).toLong())
     Row(
-        modifier = modifier.fillMaxWidth().padding(vertical = 8.dp),
+        modifier = modifier.fillMaxWidth().padding(vertical = 4.dp),
         horizontalArrangement = Arrangement.SpaceEvenly,
     ) {
         for (i in 0..6) {
@@ -37,17 +37,16 @@ fun WeekStrip(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = Modifier
                     .clickable { onDateSelected(date) }
-                    .padding(vertical = 4.dp),
+                    .padding(vertical = 2.dp),
             ) {
                 Text(
                     SPANISH_LETTERS[i],
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Spacer(Modifier.height(4.dp))
                 Box(
                     modifier = Modifier
-                        .size(36.dp)
+                        .size(34.dp)
                         .background(
                             when {
                                 isSelected -> MaterialTheme.colorScheme.onSurface

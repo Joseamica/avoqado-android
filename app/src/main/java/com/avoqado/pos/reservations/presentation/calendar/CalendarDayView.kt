@@ -1,10 +1,10 @@
 package com.avoqado.pos.reservations.presentation.calendar
 
-import androidx.compose.foundation.layout.*
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.runtime.Composable
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.avoqado.pos.reservations.data.model.Reservation
@@ -20,6 +20,7 @@ fun CalendarDayView(
     venueZone: ZoneId,
     onSelectDate: (LocalDate) -> Unit,
     onReservationClick: (Reservation) -> Unit,
+    onSlotTap: (LocalDate, LocalTime) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier.fillMaxSize().widthIn(max = 880.dp)) {
@@ -28,12 +29,8 @@ fun CalendarDayView(
             selectedDate = state.selectedDate,
             today = state.today,
             onDateSelected = onSelectDate,
+            modifier = Modifier.padding(horizontal = 4.dp),
         )
-        if (state.reservations.isEmpty() && !state.isLoading) {
-            Box(Modifier.fillMaxWidth().height(120.dp), contentAlignment = Alignment.Center) {
-                Text("Sin reservas hoy", color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-        }
         CalendarDayGrid(
             selectedDate = state.selectedDate,
             today = state.today,
@@ -41,6 +38,7 @@ fun CalendarDayView(
             venueZone = venueZone,
             nowTime = LocalTime.now(venueZone),
             onReservationClick = onReservationClick,
+            onSlotTap = { time -> onSlotTap(state.selectedDate, time) },
             modifier = Modifier.fillMaxSize(),
         )
     }
