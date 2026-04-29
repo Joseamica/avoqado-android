@@ -204,6 +204,7 @@ private fun MainScaffold(
                         onLogout = onLogout,
                         moreTabReselectionTick = moreTabReselectionTick,
                         onActivateReservations = { navController.navigate("activate-reservations") },
+                        onOpenWaitlist = { navController.navigate("waitlist") },
                         onTabsShouldRefresh = onTabsShouldRefresh,
                     )
                 }
@@ -237,6 +238,28 @@ private fun MainScaffold(
                         onBack = { navController.popBackStack() },
                     )
                 }
+                composable("waitlist") {
+                    com.avoqado.pos.reservations.presentation.waitlist.WaitlistScreen(
+                        onClose = { navController.popBackStack() },
+                        onPromote = { entry ->
+                            val params = buildString {
+                                append("reservations/create?promoteWaitlistId=").append(entry.id)
+                                if (entry.customerId != null) {
+                                    append("&prefillCustomerId=").append(entry.customerId)
+                                } else if (!entry.guestName.isNullOrBlank()) {
+                                    append("&prefillGuestName=").append(
+                                        java.net.URLEncoder.encode(entry.guestName, "UTF-8"),
+                                    )
+                                }
+                                append("&prefillPartySize=").append(entry.partySize)
+                                append("&prefillStart=").append(
+                                    java.net.URLEncoder.encode(entry.desiredStartAt, "UTF-8"),
+                                )
+                            }
+                            navController.navigate(params)
+                        },
+                    )
+                }
                 composable("reservations/list") {
                     ReservationsListScreen(
                         onOpenDetail = { id -> navController.navigate("reservations/$id") },
@@ -244,7 +267,7 @@ private fun MainScaffold(
                     )
                 }
                 composable(
-                    route = "reservations/create?date={date}&time={time}&walkin={walkin}",
+                    route = "reservations/create?date={date}&time={time}&walkin={walkin}&promoteWaitlistId={promoteWaitlistId}&prefillCustomerId={prefillCustomerId}&prefillGuestName={prefillGuestName}&prefillPartySize={prefillPartySize}&prefillStart={prefillStart}",
                     arguments = listOf(
                         navArgument("date") {
                             type = NavType.StringType
@@ -260,6 +283,31 @@ private fun MainScaffold(
                             type = NavType.StringType
                             nullable = true
                             defaultValue = "false"
+                        },
+                        navArgument("promoteWaitlistId") {
+                            type = NavType.StringType
+                            nullable = true
+                            defaultValue = null
+                        },
+                        navArgument("prefillCustomerId") {
+                            type = NavType.StringType
+                            nullable = true
+                            defaultValue = null
+                        },
+                        navArgument("prefillGuestName") {
+                            type = NavType.StringType
+                            nullable = true
+                            defaultValue = null
+                        },
+                        navArgument("prefillPartySize") {
+                            type = NavType.StringType
+                            nullable = true
+                            defaultValue = null
+                        },
+                        navArgument("prefillStart") {
+                            type = NavType.StringType
+                            nullable = true
+                            defaultValue = null
                         },
                     ),
                 ) {
@@ -366,6 +414,7 @@ private fun MainScaffold(
                         onLogout = onLogout,
                         moreTabReselectionTick = moreTabReselectionTick,
                         onActivateReservations = { navController.navigate("activate-reservations") },
+                        onOpenWaitlist = { navController.navigate("waitlist") },
                         onTabsShouldRefresh = onTabsShouldRefresh,
                     )
                 }
@@ -399,6 +448,28 @@ private fun MainScaffold(
                         onBack = { navController.popBackStack() },
                     )
                 }
+                composable("waitlist") {
+                    com.avoqado.pos.reservations.presentation.waitlist.WaitlistScreen(
+                        onClose = { navController.popBackStack() },
+                        onPromote = { entry ->
+                            val params = buildString {
+                                append("reservations/create?promoteWaitlistId=").append(entry.id)
+                                if (entry.customerId != null) {
+                                    append("&prefillCustomerId=").append(entry.customerId)
+                                } else if (!entry.guestName.isNullOrBlank()) {
+                                    append("&prefillGuestName=").append(
+                                        java.net.URLEncoder.encode(entry.guestName, "UTF-8"),
+                                    )
+                                }
+                                append("&prefillPartySize=").append(entry.partySize)
+                                append("&prefillStart=").append(
+                                    java.net.URLEncoder.encode(entry.desiredStartAt, "UTF-8"),
+                                )
+                            }
+                            navController.navigate(params)
+                        },
+                    )
+                }
                 composable("reservations/list") {
                     ReservationsListScreen(
                         onOpenDetail = { id -> navController.navigate("reservations/$id") },
@@ -406,7 +477,7 @@ private fun MainScaffold(
                     )
                 }
                 composable(
-                    route = "reservations/create?date={date}&time={time}&walkin={walkin}",
+                    route = "reservations/create?date={date}&time={time}&walkin={walkin}&promoteWaitlistId={promoteWaitlistId}&prefillCustomerId={prefillCustomerId}&prefillGuestName={prefillGuestName}&prefillPartySize={prefillPartySize}&prefillStart={prefillStart}",
                     arguments = listOf(
                         navArgument("date") {
                             type = NavType.StringType
@@ -422,6 +493,31 @@ private fun MainScaffold(
                             type = NavType.StringType
                             nullable = true
                             defaultValue = "false"
+                        },
+                        navArgument("promoteWaitlistId") {
+                            type = NavType.StringType
+                            nullable = true
+                            defaultValue = null
+                        },
+                        navArgument("prefillCustomerId") {
+                            type = NavType.StringType
+                            nullable = true
+                            defaultValue = null
+                        },
+                        navArgument("prefillGuestName") {
+                            type = NavType.StringType
+                            nullable = true
+                            defaultValue = null
+                        },
+                        navArgument("prefillPartySize") {
+                            type = NavType.StringType
+                            nullable = true
+                            defaultValue = null
+                        },
+                        navArgument("prefillStart") {
+                            type = NavType.StringType
+                            nullable = true
+                            defaultValue = null
                         },
                     ),
                 ) {

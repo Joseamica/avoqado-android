@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.Dashboard
 import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.HourglassEmpty
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.LocalOffer
 import androidx.compose.material.icons.filled.People
@@ -88,6 +89,7 @@ fun MoreMenuScreen(
     onLogout: () -> Unit,
     moreTabReselectionTick: Int = 0,
     onActivateReservations: () -> Unit = {},
+    onOpenWaitlist: () -> Unit = {},
     onTabsShouldRefresh: () -> Unit = {},
     viewModel: MoreMenuViewModel = hiltViewModel(),
 ) {
@@ -399,6 +401,14 @@ fun MoreMenuScreen(
                 label = "Activar reservas",
                 subtitle = "Permite recibir citas. Gratis hoy.",
                 onClick = onActivateReservations,
+                dense = denseMenu,
+            )
+        }
+        if (viewModel.reservationsEnabled) {
+            MenuRow(
+                icon = Icons.Filled.HourglassEmpty,
+                label = "Lista de espera",
+                onClick = onOpenWaitlist,
                 dense = denseMenu,
             )
         }

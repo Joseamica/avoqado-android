@@ -12,6 +12,7 @@ import com.avoqado.pos.pos.data.StaffMember
 import com.avoqado.pos.pos.data.StaffRepository
 import com.avoqado.pos.pos.data.model.Product
 import com.avoqado.pos.reservations.data.ReservationRepository
+import com.avoqado.pos.reservations.data.WaitlistRepository
 import com.avoqado.pos.reservations.data.model.Reservation
 import com.avoqado.pos.reservations.data.model.ReservationChannel
 import com.avoqado.pos.reservations.domain.CreateReservationDraft
@@ -36,6 +37,7 @@ class CreateReservationViewModel @Inject constructor(
     private val productsRepository: ProductsRepository,
     private val tablesRepository: TablesRepository,
     private val staffRepository: StaffRepository,
+    private val waitlistRepository: WaitlistRepository,
     private val secureStorage: SecureStorage,
     savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
@@ -55,6 +57,7 @@ class CreateReservationViewModel @Inject constructor(
     val isEditing: StateFlow<Boolean> = _isEditing.asStateFlow()
 
     private var editingId: String? = null
+    private var promoteWaitlistId: String? = null
 
     private val _customers = MutableStateFlow<List<Customer>>(emptyList())
     val customers: StateFlow<List<Customer>> = _customers.asStateFlow()
@@ -103,6 +106,31 @@ class CreateReservationViewModel @Inject constructor(
                 }
             }
             return  // skip walk-in / date / time seeding when editing
+        }
+
+        val promoteId = handle.get<String>("promoteWaitlistId")
+        if (promoteId != null) {
+            promoteWaitlistId = promoteId
+            val prefillCustomerId = handle.get<String>("prefillCustomerId")
+            val prefillGuestName = handle.get<String>("prefillGuestName")
+            val prefillPartySize = handle.get<String>("prefillPartySize")?.toIntOrNull()
+            val prefillStart = handle.get<String>("prefillStart")?.let {
+                runCatching { java.time.Instant.parse(it).atZone(zone) }.getOrNull()
+            }
+            _draft.update { d ->
+                d.copy(
+                    step = CreateStep.SERVICE,    // skip customer when promoting
+                    customerId = prefillCustomerId,
+                    customerName = if (prefillCustomerId == null) prefillGuestName else null,
+                    isGuest = prefillCustomerId == null,
+                    guestName = if (prefillCustomerId == null) prefillGuestName else null,
+                    partySize = prefillPartySize ?: d.partySize,
+                    date = prefillStart?.toLocalDate() ?: d.date,
+                    time = prefillStart?.toLocalTime() ?: d.time,
+                    channel = ReservationChannel.WALK_IN,  // promotion treated like walk-in
+                )
+            }
+            return
         }
 
         if (date == null && time == null && !isWalkIn) return
@@ -211,6 +239,13 @@ class CreateReservationViewModel @Inject constructor(
                 repository.updateReservation(editingId!!, _draft.value.toUpdateRequest())
             } else {
                 repository.createReservation(_draft.value.toRequest(zone))
+            }
+            // After successful create from waitlist, promote the entry
+            r.onSuccess { created ->
+                val pid = promoteWaitlistId
+                if (pid != null && created != null) {
+                    waitlistRepository.promoteEntry(pid, created.id)
+                }
             }
             _isSubmitting.value = false
             _result.value = r.map { it ?: error("Empty reservation") }
