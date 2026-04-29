@@ -3,6 +3,9 @@ package com.avoqado.pos.reservations.presentation.create
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.customers.data.CustomersRepository
+import com.avoqado.pos.customers.data.model.CreateCustomerRequest
+import com.avoqado.pos.customers.data.model.Customer
 import com.avoqado.pos.reservations.data.ReservationRepository
 import com.avoqado.pos.reservations.data.model.Reservation
 import com.avoqado.pos.reservations.domain.CreateReservationDraft
@@ -19,6 +22,7 @@ import javax.inject.Inject
 @HiltViewModel
 class CreateReservationViewModel @Inject constructor(
     private val repository: ReservationRepository,
+    private val customersRepository: CustomersRepository,
     private val secureStorage: SecureStorage,
 ) : ViewModel() {
 
@@ -33,6 +37,22 @@ class CreateReservationViewModel @Inject constructor(
     private val _result = MutableStateFlow<Result<Reservation>?>(null)
     val result: StateFlow<Result<Reservation>?> = _result.asStateFlow()
 
+    private val _customers = MutableStateFlow<List<Customer>>(emptyList())
+    val customers: StateFlow<List<Customer>> = _customers.asStateFlow()
+
+    private val _isLoadingCustomers = MutableStateFlow(false)
+    val isLoadingCustomers: StateFlow<Boolean> = _isLoadingCustomers.asStateFlow()
+
+    private val _customerError = MutableStateFlow<String?>(null)
+    val customerError: StateFlow<String?> = _customerError.asStateFlow()
+
+    private val _isCreatingCustomer = MutableStateFlow(false)
+    val isCreatingCustomer: StateFlow<Boolean> = _isCreatingCustomer.asStateFlow()
+
+    init {
+        loadCustomers()
+    }
+
     fun update(transform: (CreateReservationDraft) -> CreateReservationDraft) {
         _draft.update(transform)
     }
@@ -40,6 +60,49 @@ class CreateReservationViewModel @Inject constructor(
     fun next() = _draft.update { d -> d.copy(step = nextStepOf(d.step)) }
     fun back() = _draft.update { d -> d.copy(step = prevStepOf(d.step)) }
     fun goTo(step: CreateStep) = _draft.update { it.copy(step = step) }
+
+    private fun loadCustomers() {
+        viewModelScope.launch {
+            _isLoadingCustomers.value = true
+            customersRepository.fetchCustomers()
+                .onSuccess { _customers.value = it }
+            _isLoadingCustomers.value = false
+        }
+    }
+
+    fun createCustomer(
+        request: CreateCustomerRequest,
+        onSuccess: (Customer) -> Unit = {},
+    ) {
+        if (_isCreatingCustomer.value) return
+        _customerError.value = null
+        viewModelScope.launch {
+            _isCreatingCustomer.value = true
+            customersRepository.createCustomer(request)
+                .onSuccess { customer ->
+                    _customers.value = listOf(customer) + _customers.value
+                    update { d ->
+                        d.copy(
+                            customerId = customer.id,
+                            customerName = customer.fullName,
+                            isGuest = false,
+                            guestName = null,
+                            guestPhone = null,
+                            guestEmail = null,
+                        )
+                    }
+                    onSuccess(customer)
+                }
+                .onFailure {
+                    _customerError.value = it.message ?: "Error al crear cliente"
+                }
+            _isCreatingCustomer.value = false
+        }
+    }
+
+    fun clearCustomerError() {
+        _customerError.value = null
+    }
 
     fun submit() {
         if (_isSubmitting.value) return
