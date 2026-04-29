@@ -48,6 +48,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.font.FontWeight
@@ -63,16 +64,26 @@ import androidx.navigation.compose.rememberNavController
 import com.avoqado.pos.auth.presentation.AppState
 import com.avoqado.pos.auth.presentation.LandingScreen
 import com.avoqado.pos.core.domain.RoleManager
+import com.avoqado.pos.core.util.VenueDateTimeFormatter
 import com.avoqado.pos.designsystem.components.ConnectivityBanner
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.inventory.presentation.InventoryScreen
 import com.avoqado.pos.notifications.presentation.NotificationsScreen
 import com.avoqado.pos.pos.presentation.checkout.CheckoutScreen
 import com.avoqado.pos.reservations.presentation.calendar.CalendarTabHost
+import com.avoqado.pos.reservations.presentation.list.ReservationsListScreen
 import com.avoqado.pos.settings.MoreMenuScreen
 import com.avoqado.pos.timeclock.data.TimeEntryRepository
 import com.avoqado.pos.timeclock.presentation.TimeClockSheet
 import com.avoqado.pos.transactions.presentation.TransactionsScreen
+import dagger.hilt.android.EntryPointAccessors
+
+// MARK: - Hilt entry point for singleton dependencies needed in NavGraph composables
+@dagger.hilt.EntryPoint
+@dagger.hilt.InstallIn(dagger.hilt.components.SingletonComponent::class)
+interface FormatterEntryPoint {
+    fun formatter(): VenueDateTimeFormatter
+}
 
 @Composable
 fun AvoqadoNavGraph(
@@ -123,6 +134,14 @@ private fun MainScaffold(
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = navBackStackEntry?.destination
     val startTab = visibleTabs.firstOrNull() ?: MainTab.NOTIFICATIONS
+
+    val context = LocalContext.current
+    val formatter = remember {
+        EntryPointAccessors.fromApplication(
+            context.applicationContext,
+            FormatterEntryPoint::class.java,
+        ).formatter()
+    }
 
     fun navigateToTab(tab: MainTab) {
         navController.navigate(tab.route) {
@@ -187,6 +206,12 @@ private fun MainScaffold(
                     com.avoqado.pos.reservations.presentation.onboarding.ActivateReservationsScreen(
                         onActivated = { navController.popBackStack() },
                         onBack = { navController.popBackStack() },
+                    )
+                }
+                composable("reservations/list") {
+                    ReservationsListScreen(
+                        onOpenDetail = { id -> navController.navigate("reservations/$id") },
+                        formatter = formatter,
                     )
                 }
             }
@@ -256,6 +281,12 @@ private fun MainScaffold(
                     com.avoqado.pos.reservations.presentation.onboarding.ActivateReservationsScreen(
                         onActivated = { navController.popBackStack() },
                         onBack = { navController.popBackStack() },
+                    )
+                }
+                composable("reservations/list") {
+                    ReservationsListScreen(
+                        onOpenDetail = { id -> navController.navigate("reservations/$id") },
+                        formatter = formatter,
                     )
                 }
             }
