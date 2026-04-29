@@ -55,6 +55,7 @@ class AppState @Inject constructor(
                 MainTab.TRANSACTIONS -> roleManager.canAccessTransactions
                 MainTab.NOTIFICATIONS -> true
                 MainTab.MORE -> true
+                MainTab.CALENDAR -> false // controlled by MainTabHostViewModel
             }
         }
 

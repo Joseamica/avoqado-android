@@ -68,6 +68,7 @@ import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.inventory.presentation.InventoryScreen
 import com.avoqado.pos.notifications.presentation.NotificationsScreen
 import com.avoqado.pos.pos.presentation.checkout.CheckoutScreen
+import com.avoqado.pos.reservations.presentation.calendar.CalendarTabHost
 import com.avoqado.pos.settings.MoreMenuScreen
 import com.avoqado.pos.timeclock.data.TimeEntryRepository
 import com.avoqado.pos.timeclock.presentation.TimeClockSheet
@@ -180,6 +181,7 @@ private fun MainScaffold(
                         moreTabReselectionTick = moreTabReselectionTick,
                     )
                 }
+                composable(MainTab.CALENDAR.route) { CalendarTabHost() }
             }
         }
     } else {
@@ -241,6 +243,7 @@ private fun MainScaffold(
                         moreTabReselectionTick = moreTabReselectionTick,
                     )
                 }
+                composable(MainTab.CALENDAR.route) { CalendarTabHost() }
             }
         }
     }
