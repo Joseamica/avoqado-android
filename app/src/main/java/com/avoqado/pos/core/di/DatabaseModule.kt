@@ -8,6 +8,7 @@ import com.avoqado.pos.core.data.local.database.AvoqadoDatabaseMigrations
 import com.avoqado.pos.core.data.local.database.PendingPaymentDao
 import com.avoqado.pos.inventory.data.local.InventoryTransferDao
 import com.avoqado.pos.inventory.data.local.PurchaseOrderDao
+import com.avoqado.pos.reservations.data.PendingReservationActionDao
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -28,6 +29,7 @@ object DatabaseModule {
         ).addMigrations(
             AvoqadoDatabaseMigrations.MIGRATION_1_2,
             AvoqadoDatabaseMigrations.MIGRATION_2_3,
+            AvoqadoDatabaseMigrations.MIGRATION_3_4,
         )
             .build()
     }
@@ -50,5 +52,10 @@ object DatabaseModule {
     @Provides
     fun provideInventoryTransferDao(database: AvoqadoDatabase): InventoryTransferDao {
         return database.inventoryTransferDao()
+    }
+
+    @Provides
+    fun providePendingReservationActionDao(database: AvoqadoDatabase): PendingReservationActionDao {
+        return database.pendingReservationActionDao()
     }
 }

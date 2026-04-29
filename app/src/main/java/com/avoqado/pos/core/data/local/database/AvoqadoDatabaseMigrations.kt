@@ -49,6 +49,24 @@ object AvoqadoDatabaseMigrations {
         }
     }
 
+    // v4 added pending reservation action queue for offline state transitions.
+    val MIGRATION_3_4 = object : Migration(3, 4) {
+        override fun migrate(database: SupportSQLiteDatabase) {
+            database.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS `pending_reservation_action` (
+                    `rowId` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                    `reservationId` TEXT NOT NULL,
+                    `action` TEXT NOT NULL,
+                    `payloadJson` TEXT,
+                    `attemptCount` INTEGER NOT NULL DEFAULT 0,
+                    `createdAt` INTEGER NOT NULL
+                )
+                """.trimIndent(),
+            )
+        }
+    }
+
     // v3 added inventory purchase orders and transfer drafts for offline workflows.
     val MIGRATION_2_3 = object : Migration(2, 3) {
         override fun migrate(database: SupportSQLiteDatabase) {

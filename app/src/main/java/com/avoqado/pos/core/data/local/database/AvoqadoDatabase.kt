@@ -9,6 +9,8 @@ import com.avoqado.pos.inventory.data.local.InventoryTransferDao
 import com.avoqado.pos.inventory.data.local.InventoryTransferEntity
 import com.avoqado.pos.inventory.data.local.PurchaseOrderDao
 import com.avoqado.pos.inventory.data.local.PurchaseOrderEntity
+import com.avoqado.pos.reservations.data.PendingReservationActionDao
+import com.avoqado.pos.reservations.data.PendingReservationActionEntity
 
 @Database(
     entities = [
@@ -17,8 +19,9 @@ import com.avoqado.pos.inventory.data.local.PurchaseOrderEntity
         CashDrawerEventEntity::class,
         PurchaseOrderEntity::class,
         InventoryTransferEntity::class,
+        PendingReservationActionEntity::class,
     ],
-    version = 3,
+    version = 4,
     exportSchema = true,
 )
 abstract class AvoqadoDatabase : RoomDatabase() {
@@ -26,4 +29,5 @@ abstract class AvoqadoDatabase : RoomDatabase() {
     abstract fun cashDrawerDao(): CashDrawerDao
     abstract fun purchaseOrderDao(): PurchaseOrderDao
     abstract fun inventoryTransferDao(): InventoryTransferDao
+    abstract fun pendingReservationActionDao(): PendingReservationActionDao
 }

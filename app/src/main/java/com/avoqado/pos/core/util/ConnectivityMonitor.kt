@@ -43,6 +43,12 @@ class ConnectivityMonitor @Inject constructor(
     // Combined connectivity: device has network AND server is reachable
     val isFullyConnected: Boolean get() = _isConnected.value && _isServerReachable.value
 
+    // Synchronous check used by offline-queue logic (e.g. ReservationRepository)
+    fun isOnline(): Boolean = isFullyConnected
+
+    // Flow alias consumed by Tasks 25+ (offline sync worker)
+    val isOnlineFlow: StateFlow<Boolean> get() = isConnected
+
     init {
         val request = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
