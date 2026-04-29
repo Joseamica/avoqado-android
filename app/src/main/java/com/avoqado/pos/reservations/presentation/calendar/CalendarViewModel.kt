@@ -24,6 +24,7 @@ class CalendarViewModel @Inject constructor(
 ) : ViewModel() {
 
     private val zone: ZoneId get() = ZoneId.of(secureStorage.venueTimezone ?: "America/Mexico_City")
+    val venueZoneId: ZoneId get() = zone
 
     private val _state = MutableStateFlow(CalendarUiState(today = LocalDate.now(zone), selectedDate = LocalDate.now(zone)))
     val state: StateFlow<CalendarUiState> = _state.asStateFlow()

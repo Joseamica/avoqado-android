@@ -72,7 +72,6 @@ import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.inventory.presentation.InventoryScreen
 import com.avoqado.pos.notifications.presentation.NotificationsScreen
 import com.avoqado.pos.pos.presentation.checkout.CheckoutScreen
-import com.avoqado.pos.reservations.presentation.calendar.CalendarTabHost
 import com.avoqado.pos.reservations.presentation.list.ReservationsListScreen
 import com.avoqado.pos.settings.MoreMenuScreen
 import com.avoqado.pos.timeclock.data.TimeEntryRepository
@@ -203,7 +202,17 @@ private fun MainScaffold(
                         onActivateReservations = { navController.navigate("activate-reservations") },
                     )
                 }
-                composable(MainTab.CALENDAR.route) { CalendarTabHost() }
+                composable(MainTab.CALENDAR.route) {
+                    com.avoqado.pos.reservations.presentation.calendar.CalendarTabHost(
+                        onOpenReservation = { id -> navController.navigate("reservations/$id") },
+                        onOpenSettings = { navController.navigate("calendar/settings") },
+                    )
+                }
+                composable("calendar/settings") {
+                    com.avoqado.pos.reservations.presentation.calendar.CalendarSettingsSheet(
+                        onClose = { navController.popBackStack() },
+                    )
+                }
                 composable("activate-reservations") {
                     com.avoqado.pos.reservations.presentation.onboarding.ActivateReservationsScreen(
                         onActivated = { navController.popBackStack() },
@@ -308,7 +317,17 @@ private fun MainScaffold(
                         onActivateReservations = { navController.navigate("activate-reservations") },
                     )
                 }
-                composable(MainTab.CALENDAR.route) { CalendarTabHost() }
+                composable(MainTab.CALENDAR.route) {
+                    com.avoqado.pos.reservations.presentation.calendar.CalendarTabHost(
+                        onOpenReservation = { id -> navController.navigate("reservations/$id") },
+                        onOpenSettings = { navController.navigate("calendar/settings") },
+                    )
+                }
+                composable("calendar/settings") {
+                    com.avoqado.pos.reservations.presentation.calendar.CalendarSettingsSheet(
+                        onClose = { navController.popBackStack() },
+                    )
+                }
                 composable("activate-reservations") {
                     com.avoqado.pos.reservations.presentation.onboarding.ActivateReservationsScreen(
                         onActivated = { navController.popBackStack() },
