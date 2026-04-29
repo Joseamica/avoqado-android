@@ -1,5 +1,6 @@
 package com.avoqado.pos.reservations.presentation.create
 
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.core.data.local.SecureStorage
@@ -22,6 +23,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.time.LocalDate
+import java.time.LocalTime
 import java.time.ZoneId
 import javax.inject.Inject
 
@@ -33,6 +36,7 @@ class CreateReservationViewModel @Inject constructor(
     private val tablesRepository: TablesRepository,
     private val staffRepository: StaffRepository,
     private val secureStorage: SecureStorage,
+    savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
 
     val zone: ZoneId get() = ZoneId.of(secureStorage.venueTimezone ?: "America/Mexico_City")
@@ -67,6 +71,7 @@ class CreateReservationViewModel @Inject constructor(
     val staff: StateFlow<List<StaffMember>> = _staff.asStateFlow()
 
     init {
+        seedFromNavArgs(savedStateHandle)
         loadCustomers()
         viewModelScope.launch { productsRepository.fetchProducts() }
         viewModelScope.launch {
@@ -74,6 +79,19 @@ class CreateReservationViewModel @Inject constructor(
         }
         viewModelScope.launch {
             staffRepository.getActiveStaff().onSuccess { _staff.value = it }
+        }
+    }
+
+    private fun seedFromNavArgs(handle: SavedStateHandle) {
+        val date = handle.get<String>("date")?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
+        val time = handle.get<String>("time")?.let { runCatching { LocalTime.parse(it) }.getOrNull() }
+        if (date != null || time != null) {
+            _draft.update { d ->
+                d.copy(
+                    date = date ?: d.date,
+                    time = time ?: d.time,
+                )
+            }
         }
     }
 

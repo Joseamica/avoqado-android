@@ -43,6 +43,7 @@ import java.util.Locale
 fun CalendarTabHost(
     onOpenReservation: (String) -> Unit = {},
     onOpenSettings: () -> Unit = {},
+    onCreateReservation: (LocalDate, LocalTime) -> Unit = { _, _ -> },
     viewModel: CalendarViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -130,15 +131,19 @@ fun CalendarTabHost(
             actions = listOf(
                 ActionSheetItem(
                     label = "Crear cita",
-                    onClick = { showComingSoon(scope, snackbar, "Crear cita", target) },
+                    onClick = {
+                        onCreateReservation(target.first, target.second)
+                        pendingSlot = null
+                        showSheetForNow = false
+                    },
                 ),
                 ActionSheetItem(
                     label = "Crear clase",
-                    onClick = { showComingSoon(scope, snackbar, "Crear clase", target) },
+                    onClick = { showComingSoon(scope, snackbar, "Crear clase", 3) },
                 ),
                 ActionSheetItem(
                     label = "Crear evento personal",
-                    onClick = { showComingSoon(scope, snackbar, "Crear evento personal", target) },
+                    onClick = { showComingSoon(scope, snackbar, "Crear evento personal", 5) },
                 ),
                 ActionSheetItem(
                     label = "Cancelar",
@@ -154,13 +159,10 @@ private fun showComingSoon(
     scope: kotlinx.coroutines.CoroutineScope,
     snackbar: SnackbarHostState,
     action: String,
-    slot: Pair<LocalDate, LocalTime>,
+    phase: Int,
 ) {
-    val (date, time) = slot
-    val niceTime = time.format(DateTimeFormatter.ofPattern("HH:mm"))
-    val niceDate = date.format(DateTimeFormatter.ofPattern("dd MMM", Locale("es")))
     scope.launch {
-        snackbar.showSnackbar("$action — $niceDate $niceTime · próximamente en Phase 2")
+        snackbar.showSnackbar("$action — disponible en Fase $phase")
     }
 }
 

@@ -78,6 +78,7 @@ import com.avoqado.pos.timeclock.data.TimeEntryRepository
 import com.avoqado.pos.timeclock.presentation.TimeClockSheet
 import com.avoqado.pos.transactions.presentation.TransactionsScreen
 import dagger.hilt.android.EntryPointAccessors
+import java.time.format.DateTimeFormatter
 
 // MARK: - Hilt entry point for singleton dependencies needed in NavGraph composables
 @dagger.hilt.EntryPoint
@@ -210,6 +211,11 @@ private fun MainScaffold(
                     com.avoqado.pos.reservations.presentation.calendar.CalendarTabHost(
                         onOpenReservation = { id -> navController.navigate("reservations/$id") },
                         onOpenSettings = { navController.navigate("calendar/settings") },
+                        onCreateReservation = { date, time ->
+                            navController.navigate(
+                                "reservations/create?date=${date}&time=${time.format(DateTimeFormatter.ofPattern("HH:mm"))}",
+                            )
+                        },
                     )
                 }
                 composable("calendar/settings") {
@@ -234,6 +240,25 @@ private fun MainScaffold(
                     ReservationsListScreen(
                         onOpenDetail = { id -> navController.navigate("reservations/$id") },
                         formatter = formatter,
+                    )
+                }
+                composable(
+                    route = "reservations/create?date={date}&time={time}",
+                    arguments = listOf(
+                        navArgument("date") {
+                            type = NavType.StringType
+                            nullable = true
+                            defaultValue = null
+                        },
+                        navArgument("time") {
+                            type = NavType.StringType
+                            nullable = true
+                            defaultValue = null
+                        },
+                    ),
+                ) {
+                    com.avoqado.pos.reservations.presentation.create.CreateReservationScreen(
+                        onClose = { navController.popBackStack() },
                     )
                 }
                 composable(
@@ -333,6 +358,11 @@ private fun MainScaffold(
                     com.avoqado.pos.reservations.presentation.calendar.CalendarTabHost(
                         onOpenReservation = { id -> navController.navigate("reservations/$id") },
                         onOpenSettings = { navController.navigate("calendar/settings") },
+                        onCreateReservation = { date, time ->
+                            navController.navigate(
+                                "reservations/create?date=${date}&time=${time.format(DateTimeFormatter.ofPattern("HH:mm"))}",
+                            )
+                        },
                     )
                 }
                 composable("calendar/settings") {
@@ -357,6 +387,25 @@ private fun MainScaffold(
                     ReservationsListScreen(
                         onOpenDetail = { id -> navController.navigate("reservations/$id") },
                         formatter = formatter,
+                    )
+                }
+                composable(
+                    route = "reservations/create?date={date}&time={time}",
+                    arguments = listOf(
+                        navArgument("date") {
+                            type = NavType.StringType
+                            nullable = true
+                            defaultValue = null
+                        },
+                        navArgument("time") {
+                            type = NavType.StringType
+                            nullable = true
+                            defaultValue = null
+                        },
+                    ),
+                ) {
+                    com.avoqado.pos.reservations.presentation.create.CreateReservationScreen(
+                        onClose = { navController.popBackStack() },
                     )
                 }
                 composable(
