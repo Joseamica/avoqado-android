@@ -88,6 +88,7 @@ fun MoreMenuScreen(
     onLogout: () -> Unit,
     moreTabReselectionTick: Int = 0,
     onActivateReservations: () -> Unit = {},
+    onTabsShouldRefresh: () -> Unit = {},
     viewModel: MoreMenuViewModel = hiltViewModel(),
 ) {
     val venueName by viewModel.venueName.collectAsState()
@@ -806,7 +807,10 @@ fun MoreMenuScreen(
     if (showModeSwitcher) {
         ModeSwitcherSheet(
             currentMode = viewModel.currentVenueMode,
-            onModeSelected = { viewModel.setVenueMode(it) },
+            onModeSelected = {
+                viewModel.setVenueMode(it)
+                onTabsShouldRefresh()
+            },
             onDismiss = { showModeSwitcher = false },
         )
     }

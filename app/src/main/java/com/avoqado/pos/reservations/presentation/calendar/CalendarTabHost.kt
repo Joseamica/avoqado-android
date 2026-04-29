@@ -12,16 +12,12 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -101,11 +97,6 @@ fun CalendarTabHost(
                     )
                 }
             }
-            SegmentedRow(
-                view = state.view,
-                onViewChange = viewModel::setView,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-            )
             when (state.view) {
                 CalendarView.DAY -> CalendarDayView(
                     state = state,
@@ -170,22 +161,3 @@ private fun showComingSoon(
     }
 }
 
-@Composable
-private fun SegmentedRow(
-    view: CalendarView,
-    onViewChange: (CalendarView) -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    SingleChoiceSegmentedButtonRow(modifier) {
-        SegmentedButton(
-            selected = view == CalendarView.DAY,
-            onClick = { onViewChange(CalendarView.DAY) },
-            shape = SegmentedButtonDefaults.itemShape(0, 2),
-        ) { Text("Día") }
-        SegmentedButton(
-            selected = view == CalendarView.WEEK,
-            onClick = { onViewChange(CalendarView.WEEK) },
-            shape = SegmentedButtonDefaults.itemShape(1, 2),
-        ) { Text("Semana") }
-    }
-}

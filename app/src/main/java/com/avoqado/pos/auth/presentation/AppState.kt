@@ -48,31 +48,64 @@ class AppState @Inject constructor(
             initialValue = false,
         )
 
-    val visibleTabs: List<MainTab>
-        get() {
-            val inReservationsMode =
-                secureStorage.reservationsEnabled &&
-                    VenueMode.fromStorage(secureStorage.venueMode) == VenueMode.RESERVATIONS
-            val ordered = if (inReservationsMode) {
-                listOf(MainTab.CALENDAR, MainTab.CHECKOUT, MainTab.TRANSACTIONS, MainTab.NOTIFICATIONS, MainTab.MORE)
-            } else {
-                listOf(MainTab.CHECKOUT, MainTab.INVENTORY, MainTab.TRANSACTIONS, MainTab.NOTIFICATIONS, MainTab.MORE)
-            }
-            return ordered.filter { tab ->
-                when (tab) {
-                    MainTab.CHECKOUT -> roleManager.canAccessPOS
-                    MainTab.INVENTORY -> roleManager.canAccessInventory
-                    MainTab.TRANSACTIONS -> roleManager.canAccessTransactions
-                    MainTab.NOTIFICATIONS -> true
-                    MainTab.MORE -> true
-                    MainTab.CALENDAR -> true
-                }
+    private val _reservationsEnabled = MutableStateFlow(secureStorage.reservationsEnabled)
+    private val _venueMode = MutableStateFlow(VenueMode.fromStorage(secureStorage.venueMode))
+
+    val visibleTabs: StateFlow<List<MainTab>> = combine(
+        _reservationsEnabled,
+        _venueMode,
+    ) { enabled, mode -> computeVisibleTabs(enabled, mode) }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.Eagerly,
+            initialValue = computeVisibleTabs(_reservationsEnabled.value, _venueMode.value),
+        )
+
+    private fun computeVisibleTabs(
+        reservationsEnabled: Boolean,
+        venueMode: VenueMode,
+    ): List<MainTab> {
+        val inReservationsMode = reservationsEnabled && venueMode == VenueMode.RESERVATIONS
+        val ordered = if (inReservationsMode) {
+            // Calendar leads, but Inventory is preserved alongside.
+            listOf(
+                MainTab.CALENDAR,
+                MainTab.CHECKOUT,
+                MainTab.INVENTORY,
+                MainTab.TRANSACTIONS,
+                MainTab.NOTIFICATIONS,
+                MainTab.MORE,
+            )
+        } else {
+            listOf(
+                MainTab.CHECKOUT,
+                MainTab.INVENTORY,
+                MainTab.TRANSACTIONS,
+                MainTab.NOTIFICATIONS,
+                MainTab.MORE,
+            )
+        }
+        return ordered.filter { tab ->
+            when (tab) {
+                MainTab.CHECKOUT -> roleManager.canAccessPOS
+                MainTab.INVENTORY -> roleManager.canAccessInventory
+                MainTab.TRANSACTIONS -> roleManager.canAccessTransactions
+                MainTab.NOTIFICATIONS -> true
+                MainTab.MORE -> true
+                MainTab.CALENDAR -> true
             }
         }
+    }
+
+    fun refreshTabs() {
+        _reservationsEnabled.value = secureStorage.reservationsEnabled
+        _venueMode.value = VenueMode.fromStorage(secureStorage.venueMode)
+    }
 
     fun onLoginSuccess() {
         _isLoggedIn.value = true
         paymentSyncService.start()
+        refreshTabs()
     }
 
     fun onLogout() {

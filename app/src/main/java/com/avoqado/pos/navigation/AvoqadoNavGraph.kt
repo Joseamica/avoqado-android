@@ -94,6 +94,7 @@ fun AvoqadoNavGraph(
     val isLoggedIn by appState.isLoggedIn.collectAsState()
     val pendingPaymentCount by appState.pendingPaymentCount.collectAsState()
     val showOfflineBanner by appState.showOfflineBanner.collectAsState()
+    val visibleTabs by appState.visibleTabs.collectAsState()
     val isTablet = windowSizeClass.widthSizeClass >= WindowWidthSizeClass.Medium
 
     if (isLoggedIn) {
@@ -101,10 +102,11 @@ fun AvoqadoNavGraph(
             isTablet = isTablet,
             onLogout = { appState.onLogout() },
             timeEntryRepository = appState.timeEntryRepository,
-            visibleTabs = appState.visibleTabs,
+            visibleTabs = visibleTabs,
             roleManager = appState.roleManager,
             pendingPaymentCount = pendingPaymentCount,
             showOfflineBanner = showOfflineBanner,
+            onTabsShouldRefresh = { appState.refreshTabs() },
         )
     } else {
         LandingScreen(
@@ -122,6 +124,7 @@ private fun MainScaffold(
     roleManager: RoleManager,
     pendingPaymentCount: Int = 0,
     showOfflineBanner: Boolean = false,
+    onTabsShouldRefresh: () -> Unit = {},
 ) {
     // Status bar icons: follow theme (light icons on dark, dark icons on light)
     val view = LocalView.current
@@ -200,6 +203,7 @@ private fun MainScaffold(
                         onLogout = onLogout,
                         moreTabReselectionTick = moreTabReselectionTick,
                         onActivateReservations = { navController.navigate("activate-reservations") },
+                        onTabsShouldRefresh = onTabsShouldRefresh,
                     )
                 }
                 composable(MainTab.CALENDAR.route) {
@@ -209,13 +213,20 @@ private fun MainScaffold(
                     )
                 }
                 composable("calendar/settings") {
+                    val parentEntry = remember(it) {
+                        navController.getBackStackEntry(MainTab.CALENDAR.route)
+                    }
                     com.avoqado.pos.reservations.presentation.calendar.CalendarSettingsSheet(
                         onClose = { navController.popBackStack() },
+                        viewModel = hiltViewModel(parentEntry),
                     )
                 }
                 composable("activate-reservations") {
                     com.avoqado.pos.reservations.presentation.onboarding.ActivateReservationsScreen(
-                        onActivated = { navController.popBackStack() },
+                        onActivated = {
+                            onTabsShouldRefresh()
+                            navController.popBackStack()
+                        },
                         onBack = { navController.popBackStack() },
                     )
                 }
@@ -315,6 +326,7 @@ private fun MainScaffold(
                         onLogout = onLogout,
                         moreTabReselectionTick = moreTabReselectionTick,
                         onActivateReservations = { navController.navigate("activate-reservations") },
+                        onTabsShouldRefresh = onTabsShouldRefresh,
                     )
                 }
                 composable(MainTab.CALENDAR.route) {
@@ -324,13 +336,20 @@ private fun MainScaffold(
                     )
                 }
                 composable("calendar/settings") {
+                    val parentEntry = remember(it) {
+                        navController.getBackStackEntry(MainTab.CALENDAR.route)
+                    }
                     com.avoqado.pos.reservations.presentation.calendar.CalendarSettingsSheet(
                         onClose = { navController.popBackStack() },
+                        viewModel = hiltViewModel(parentEntry),
                     )
                 }
                 composable("activate-reservations") {
                     com.avoqado.pos.reservations.presentation.onboarding.ActivateReservationsScreen(
-                        onActivated = { navController.popBackStack() },
+                        onActivated = {
+                            onTabsShouldRefresh()
+                            navController.popBackStack()
+                        },
                         onBack = { navController.popBackStack() },
                     )
                 }

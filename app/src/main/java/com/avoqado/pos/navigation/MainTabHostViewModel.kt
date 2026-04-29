@@ -39,7 +39,14 @@ class MainTabHostViewModel @Inject constructor(
 
     private fun computeTabs(mode: VenueMode, reservationsEnabled: Boolean): List<MainTab> = when {
         reservationsEnabled && mode == VenueMode.RESERVATIONS ->
-            listOf(MainTab.CALENDAR, MainTab.CHECKOUT, MainTab.TRANSACTIONS, MainTab.NOTIFICATIONS, MainTab.MORE)
+            listOf(
+                MainTab.CALENDAR,
+                MainTab.CHECKOUT,
+                MainTab.INVENTORY,
+                MainTab.TRANSACTIONS,
+                MainTab.NOTIFICATIONS,
+                MainTab.MORE,
+            )
         else ->
             listOf(MainTab.CHECKOUT, MainTab.INVENTORY, MainTab.TRANSACTIONS, MainTab.NOTIFICATIONS, MainTab.MORE)
     }
