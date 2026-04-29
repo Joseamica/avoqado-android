@@ -2,10 +2,12 @@ package com.avoqado.pos.reservations.data
 
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.reservations.data.model.CancelReservationRequest
+import com.avoqado.pos.reservations.data.model.CreateReservationRequest
 import com.avoqado.pos.reservations.data.model.Reservation
 import com.avoqado.pos.reservations.data.model.ReservationFilters
 import com.avoqado.pos.reservations.data.model.ReservationListResponse
 import com.avoqado.pos.reservations.data.model.RescheduleRequest
+import com.avoqado.pos.reservations.data.model.UpdateReservationRequest
 import com.avoqado.pos.reservations.domain.ReservationAction
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -67,7 +69,37 @@ class ReservationRepository @Inject constructor(
                 reservationId,
                 (payload as ActionPayload.Reschedule).toRequest(),
             ).map { it as Reservation? }
+            ReservationAction.CREATE -> error("CREATE is not a runAction transition; call createReservation()")
+            ReservationAction.UPDATE -> error("UPDATE is not a runAction transition; call updateReservation()")
         }
+    }
+
+    suspend fun createReservation(request: CreateReservationRequest): Result<Reservation?> {
+        if (!connectivity.isOnline()) {
+            pendingDao.enqueue(
+                PendingReservationActionEntity(
+                    reservationId = "PENDING_NEW",
+                    action = ReservationAction.CREATE.name,
+                    payloadJson = ActionPayload.Create(request).toJson(json),
+                ),
+            )
+            return Result.failure(OfflineEnqueuedException(ReservationAction.CREATE))
+        }
+        return api.create(request).map { it as Reservation? }
+    }
+
+    suspend fun updateReservation(id: String, request: UpdateReservationRequest): Result<Reservation?> {
+        if (!connectivity.isOnline()) {
+            pendingDao.enqueue(
+                PendingReservationActionEntity(
+                    reservationId = id,
+                    action = ReservationAction.UPDATE.name,
+                    payloadJson = ActionPayload.Update(request).toJson(json),
+                ),
+            )
+            return Result.failure(OfflineEnqueuedException(ReservationAction.UPDATE))
+        }
+        return api.update(id, request).map { it as Reservation? }
     }
 
     sealed interface ActionPayload {
@@ -83,6 +115,16 @@ class ReservationRepository @Inject constructor(
             fun toRequest() = RescheduleRequest(startsAt, endsAt)
             override fun toJson(json: Json): String =
                 json.encodeToString(RescheduleRequest.serializer(), RescheduleRequest(startsAt, endsAt))
+        }
+
+        data class Create(val request: CreateReservationRequest) : ActionPayload {
+            override fun toJson(json: Json): String =
+                json.encodeToString(CreateReservationRequest.serializer(), request)
+        }
+
+        data class Update(val request: UpdateReservationRequest) : ActionPayload {
+            override fun toJson(json: Json): String =
+                json.encodeToString(UpdateReservationRequest.serializer(), request)
         }
     }
 

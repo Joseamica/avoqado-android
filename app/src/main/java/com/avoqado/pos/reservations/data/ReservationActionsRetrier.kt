@@ -2,7 +2,9 @@ package com.avoqado.pos.reservations.data
 
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.reservations.data.model.CancelReservationRequest
+import com.avoqado.pos.reservations.data.model.CreateReservationRequest
 import com.avoqado.pos.reservations.data.model.RescheduleRequest
+import com.avoqado.pos.reservations.data.model.UpdateReservationRequest
 import com.avoqado.pos.reservations.domain.ReservationAction
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -60,6 +62,20 @@ class ReservationActionsRetrier @Inject constructor(
                         entry.payloadJson ?: error("Missing reschedule payload for ${entry.rowId}"),
                     )
                     api.reschedule(entry.reservationId, req).map { Unit }
+                }
+                ReservationAction.CREATE -> {
+                    val req = json.decodeFromString(
+                        CreateReservationRequest.serializer(),
+                        entry.payloadJson ?: error("Missing create payload for ${entry.rowId}"),
+                    )
+                    api.create(req).map { Unit }
+                }
+                ReservationAction.UPDATE -> {
+                    val req = json.decodeFromString(
+                        UpdateReservationRequest.serializer(),
+                        entry.payloadJson ?: error("Missing update payload for ${entry.rowId}"),
+                    )
+                    api.update(entry.reservationId, req).map { Unit }
                 }
             }
             if (result.isSuccess) pendingDao.delete(entry.rowId)

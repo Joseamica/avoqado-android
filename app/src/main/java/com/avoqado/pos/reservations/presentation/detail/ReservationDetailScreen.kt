@@ -145,6 +145,8 @@ private fun successCopy(action: ReservationAction): String = when (action) {
     ReservationAction.NO_SHOW -> "Marcada como no-show"
     ReservationAction.CANCEL -> "Reserva cancelada"
     ReservationAction.RESCHEDULE -> "¡Reserva reagendada!"
+    ReservationAction.CREATE -> "¡Reserva creada!"
+    ReservationAction.UPDATE -> "¡Reserva actualizada!"
 }
 
 @Composable

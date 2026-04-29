@@ -3,7 +3,7 @@ package com.avoqado.pos.reservations.domain
 import com.avoqado.pos.reservations.data.model.ReservationStatus
 import com.avoqado.pos.reservations.data.model.ReservationStatus.*
 
-enum class ReservationAction { CONFIRM, CHECK_IN, COMPLETE, NO_SHOW, CANCEL, RESCHEDULE }
+enum class ReservationAction { CONFIRM, CHECK_IN, COMPLETE, NO_SHOW, CANCEL, RESCHEDULE, CREATE, UPDATE }
 
 object ReservationStateMachine {
 
@@ -26,5 +26,7 @@ object ReservationStateMachine {
         ReservationAction.CANCEL -> CANCELLED
         ReservationAction.NO_SHOW -> NO_SHOW
         ReservationAction.RESCHEDULE -> current  // reschedule keeps status
+        ReservationAction.CREATE -> current      // not a transition; callers won't invoke this
+        ReservationAction.UPDATE -> current      // update keeps existing status
     }
 }
