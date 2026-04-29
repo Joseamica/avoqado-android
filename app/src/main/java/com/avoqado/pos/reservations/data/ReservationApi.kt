@@ -3,10 +3,12 @@ package com.avoqado.pos.reservations.data
 import android.util.Log
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.reservations.data.model.CancelReservationRequest
+import com.avoqado.pos.reservations.data.model.CreateReservationRequest
 import com.avoqado.pos.reservations.data.model.Reservation
 import com.avoqado.pos.reservations.data.model.ReservationFilters
 import com.avoqado.pos.reservations.data.model.ReservationListResponse
 import com.avoqado.pos.reservations.data.model.RescheduleRequest
+import com.avoqado.pos.reservations.data.model.UpdateReservationRequest
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.builtins.ListSerializer
@@ -77,6 +79,16 @@ class ReservationApi @Inject constructor(
         val payload = json.encodeToString(CancelReservationRequest.serializer(), body).toRequestBody(jsonMedia)
         Request.Builder().url("${base() ?: error("No venue")}/$id").delete(payload).build()
     }.map { Unit }
+
+    suspend fun create(body: CreateReservationRequest): Result<Reservation> = call {
+        val payload = json.encodeToString(CreateReservationRequest.serializer(), body).toRequestBody(jsonMedia)
+        Request.Builder().url(base() ?: error("No venue")).post(payload).build()
+    }.mapCatching { json.decodeFromString(Reservation.serializer(), it) }
+
+    suspend fun update(id: String, body: UpdateReservationRequest): Result<Reservation> = call {
+        val payload = json.encodeToString(UpdateReservationRequest.serializer(), body).toRequestBody(jsonMedia)
+        Request.Builder().url("${base() ?: error("No venue")}/$id").put(payload).build()
+    }.mapCatching { json.decodeFromString(Reservation.serializer(), it) }
 
     private suspend fun stateTransition(id: String, action: String): Result<Reservation> = call {
         Request.Builder().url("${base() ?: error("No venue")}/$id/$action").post(ByteArray(0).toRequestBody(jsonMedia)).build()
