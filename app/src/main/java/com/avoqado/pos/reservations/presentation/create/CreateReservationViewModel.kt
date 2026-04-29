@@ -6,6 +6,8 @@ import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.customers.data.CustomersRepository
 import com.avoqado.pos.customers.data.model.CreateCustomerRequest
 import com.avoqado.pos.customers.data.model.Customer
+import com.avoqado.pos.pos.data.ProductsRepository
+import com.avoqado.pos.pos.data.model.Product
 import com.avoqado.pos.reservations.data.ReservationRepository
 import com.avoqado.pos.reservations.data.model.Reservation
 import com.avoqado.pos.reservations.domain.CreateReservationDraft
@@ -23,6 +25,7 @@ import javax.inject.Inject
 class CreateReservationViewModel @Inject constructor(
     private val repository: ReservationRepository,
     private val customersRepository: CustomersRepository,
+    private val productsRepository: ProductsRepository,
     private val secureStorage: SecureStorage,
 ) : ViewModel() {
 
@@ -49,8 +52,11 @@ class CreateReservationViewModel @Inject constructor(
     private val _isCreatingCustomer = MutableStateFlow(false)
     val isCreatingCustomer: StateFlow<Boolean> = _isCreatingCustomer.asStateFlow()
 
+    val products: StateFlow<List<Product>> = productsRepository.products
+
     init {
         loadCustomers()
+        viewModelScope.launch { productsRepository.fetchProducts() }
     }
 
     fun update(transform: (CreateReservationDraft) -> CreateReservationDraft) {
