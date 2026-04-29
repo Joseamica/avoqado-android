@@ -274,9 +274,18 @@ private fun MainScaffold(
                     val id = backStackEntry.arguments?.getString("reservationId") ?: return@composable
                     com.avoqado.pos.reservations.presentation.detail.ReservationDetailScreen(
                         onClose = { navController.popBackStack() },
+                        onEdit = { navController.navigate("reservations/edit/$id") },
                         onReschedule = { navController.navigate("reservations/$id/reschedule") },
                         onCancel = { navController.navigate("reservations/$id/cancel") },
                         formatter = formatter,
+                    )
+                }
+                composable(
+                    route = "reservations/edit/{editingId}",
+                    arguments = listOf(navArgument("editingId") { type = NavType.StringType }),
+                ) {
+                    com.avoqado.pos.reservations.presentation.create.CreateReservationScreen(
+                        onClose = { navController.popBackStack() },
                     )
                 }
                 composable(
@@ -427,9 +436,18 @@ private fun MainScaffold(
                     val id = backStackEntry.arguments?.getString("reservationId") ?: return@composable
                     com.avoqado.pos.reservations.presentation.detail.ReservationDetailScreen(
                         onClose = { navController.popBackStack() },
+                        onEdit = { navController.navigate("reservations/edit/$id") },
                         onReschedule = { navController.navigate("reservations/$id/reschedule") },
                         onCancel = { navController.navigate("reservations/$id/cancel") },
                         formatter = formatter,
+                    )
+                }
+                composable(
+                    route = "reservations/edit/{editingId}",
+                    arguments = listOf(navArgument("editingId") { type = NavType.StringType }),
+                ) {
+                    com.avoqado.pos.reservations.presentation.create.CreateReservationScreen(
+                        onClose = { navController.popBackStack() },
                     )
                 }
                 composable(

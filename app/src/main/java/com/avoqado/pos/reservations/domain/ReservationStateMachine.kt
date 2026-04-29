@@ -14,6 +14,7 @@ object ReservationStateMachine {
         ReservationAction.NO_SHOW to setOf(PENDING, CONFIRMED),
         ReservationAction.CANCEL to setOf(PENDING, CONFIRMED, CHECKED_IN),
         ReservationAction.RESCHEDULE to setOf(PENDING, CONFIRMED),
+        ReservationAction.UPDATE to setOf(PENDING, CONFIRMED, CHECKED_IN),  // can edit before completion
     )
 
     fun canExecute(current: ReservationStatus, action: ReservationAction): Boolean =

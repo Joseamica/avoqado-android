@@ -47,6 +47,7 @@ import com.avoqado.pos.reservations.presentation.components.ReservationStatusBad
 @Composable
 fun ReservationDetailScreen(
     onClose: () -> Unit,
+    onEdit: () -> Unit = {},
     onReschedule: () -> Unit,
     onCancel: () -> Unit,
     formatter: VenueDateTimeFormatter,
@@ -79,6 +80,7 @@ fun ReservationDetailScreen(
                     onComplete = { viewModel.runAction(ReservationAction.COMPLETE) },
                     onNoShow = { viewModel.runAction(ReservationAction.NO_SHOW) },
                     onReschedule = onReschedule,
+                    onEdit = onEdit,
                     onCancel = onCancel,
                 )
             }
@@ -157,6 +159,7 @@ private fun ActionBar(
     onComplete: () -> Unit,
     onNoShow: () -> Unit,
     onReschedule: () -> Unit,
+    onEdit: () -> Unit,
     onCancel: () -> Unit,
 ) {
     Surface(tonalElevation = 4.dp) {
@@ -170,6 +173,7 @@ private fun ActionBar(
             ActionPill("Completar", state.isAllowed(ReservationAction.COMPLETE), pending == ReservationAction.COMPLETE, onComplete, Modifier.weight(1f))
             ActionPill("No-show", state.isAllowed(ReservationAction.NO_SHOW), pending == ReservationAction.NO_SHOW, onNoShow, Modifier.weight(1f))
             ActionPill("Reagendar", state.isAllowed(ReservationAction.RESCHEDULE), false, onReschedule, Modifier.weight(1f))
+            ActionPill("Editar", state.isAllowed(ReservationAction.UPDATE), false, onEdit, Modifier.weight(1f))
             ActionPill("Cancelar", state.isAllowed(ReservationAction.CANCEL), false, onCancel, Modifier.weight(1f), destructive = true)
         }
     }

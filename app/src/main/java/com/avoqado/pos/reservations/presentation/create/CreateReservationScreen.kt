@@ -31,6 +31,7 @@ fun CreateReservationScreen(
     val draft by viewModel.draft.collectAsStateWithLifecycle()
     val isSubmitting by viewModel.isSubmitting.collectAsStateWithLifecycle()
     val result by viewModel.result.collectAsStateWithLifecycle()
+    val isEditing by viewModel.isEditing.collectAsStateWithLifecycle()
 
     var showSuccess by remember { mutableStateOf(false) }
     LaunchedEffect(result) {
@@ -45,16 +46,24 @@ fun CreateReservationScreen(
         CreateStep.CONFIRM -> draft.canSubmit
     }
 
+    val isFirstVisibleStep = when {
+        isEditing -> draft.step == CreateStep.SERVICE
+        else -> draft.step == CreateStep.CUSTOMER
+    }
+
     Scaffold(
         contentWindowInsets = WindowInsets(0),
         topBar = {
             StepperHeader(
                 step = draft.step,
                 canContinue = canContinue,
-                isFirstStep = draft.step == CreateStep.CUSTOMER,
+                isFirstStep = isFirstVisibleStep,
                 isLastStep = draft.step == CreateStep.CONFIRM,
                 isSubmitting = isSubmitting,
-                onBack = viewModel::back,
+                onBack = {
+                    if (isEditing && draft.step == CreateStep.SERVICE) onClose()
+                    else viewModel.back()
+                },
                 onClose = onClose,
                 onContinue = {
                     if (draft.step == CreateStep.CONFIRM) viewModel.submit()
@@ -76,7 +85,7 @@ fun CreateReservationScreen(
 
     if (showSuccess) {
         AvoqadoSuccessToast(
-            message = "¡Reserva creada!",
+            message = if (isEditing) "¡Reserva actualizada!" else "¡Reserva creada!",
             onDismiss = {
                 showSuccess = false
                 onClose()

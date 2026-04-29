@@ -51,6 +51,11 @@ class CreateReservationViewModel @Inject constructor(
     private val _result = MutableStateFlow<Result<Reservation>?>(null)
     val result: StateFlow<Result<Reservation>?> = _result.asStateFlow()
 
+    private val _isEditing = MutableStateFlow(false)
+    val isEditing: StateFlow<Boolean> = _isEditing.asStateFlow()
+
+    private var editingId: String? = null
+
     private val _customers = MutableStateFlow<List<Customer>>(emptyList())
     val customers: StateFlow<List<Customer>> = _customers.asStateFlow()
 
@@ -87,6 +92,18 @@ class CreateReservationViewModel @Inject constructor(
         val date = handle.get<String>("date")?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
         val time = handle.get<String>("time")?.let { runCatching { LocalTime.parse(it) }.getOrNull() }
         val isWalkIn = handle.get<String>("walkin")?.equals("true", ignoreCase = true) ?: false
+        val editId = handle.get<String>("editingId")
+
+        if (editId != null) {
+            editingId = editId
+            _isEditing.value = true
+            viewModelScope.launch {
+                repository.fetchOne(editId).onSuccess { r ->
+                    _draft.update { d -> seedFromReservation(d, r) }
+                }
+            }
+            return  // skip walk-in / date / time seeding when editing
+        }
 
         if (date == null && time == null && !isWalkIn) return
 
@@ -100,6 +117,32 @@ class CreateReservationViewModel @Inject constructor(
                 step = if (isWalkIn) CreateStep.SERVICE else d.step,
             )
         }
+    }
+
+    private fun seedFromReservation(d: CreateReservationDraft, r: Reservation): CreateReservationDraft {
+        val startInstant = java.time.Instant.parse(r.startsAt)
+        val zoned = startInstant.atZone(zone)
+        return d.copy(
+            step = CreateStep.SERVICE,                  // skip customer in edit mode
+            customerId = r.customerId,
+            customerName = r.customer?.fullName,
+            guestName = r.guestName,
+            guestPhone = r.guestPhone,
+            guestEmail = r.guestEmail,
+            isGuest = r.customerId == null && !r.guestName.isNullOrBlank(),
+            productId = r.productId,
+            productName = r.product?.name,
+            durationMinutes = r.duration,
+            date = zoned.toLocalDate(),
+            time = zoned.toLocalTime(),
+            partySize = r.partySize,
+            tableId = r.tableId,
+            tableNumber = r.table?.number,
+            assignedStaffId = r.assignedStaffId,
+            assignedStaffName = r.assignedStaff?.displayName,
+            specialRequests = r.specialRequests,
+            internalNotes = r.internalNotes,
+        )
     }
 
     private fun nextQuarterHour(t: LocalTime): LocalTime {
@@ -164,7 +207,11 @@ class CreateReservationViewModel @Inject constructor(
         if (_isSubmitting.value) return
         viewModelScope.launch {
             _isSubmitting.value = true
-            val r = repository.createReservation(_draft.value.toRequest(zone))
+            val r = if (_isEditing.value && editingId != null) {
+                repository.updateReservation(editingId!!, _draft.value.toUpdateRequest())
+            } else {
+                repository.createReservation(_draft.value.toRequest(zone))
+            }
             _isSubmitting.value = false
             _result.value = r.map { it ?: error("Empty reservation") }
         }

@@ -2,6 +2,7 @@ package com.avoqado.pos.reservations.domain
 
 import com.avoqado.pos.reservations.data.model.CreateReservationRequest
 import com.avoqado.pos.reservations.data.model.ReservationChannel
+import com.avoqado.pos.reservations.data.model.UpdateReservationRequest
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.ZoneId
@@ -59,4 +60,21 @@ data class CreateReservationDraft(
             internalNotes = internalNotes,
         )
     }
+
+    // Note: UpdateReservationRequest does not include date/time fields — those go through
+    // the dedicated reschedule endpoint. Edit mode in Phase 2 does NOT change date/time;
+    // the user can still navigate the DateTime step but the values in the draft are not sent.
+    fun toUpdateRequest(): UpdateReservationRequest =
+        UpdateReservationRequest(
+            customerId = customerId.takeUnless { isGuest },
+            guestName = if (isGuest) guestName else null,
+            guestPhone = if (isGuest) guestPhone else null,
+            guestEmail = if (isGuest) guestEmail else null,
+            partySize = partySize,
+            productId = productId,
+            tableId = tableId,
+            assignedStaffId = assignedStaffId,
+            specialRequests = specialRequests,
+            internalNotes = internalNotes,
+        )
 }
