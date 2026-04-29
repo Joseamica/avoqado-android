@@ -1,6 +1,7 @@
 package com.avoqado.pos.reservations.presentation.calendar
 
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -59,6 +60,7 @@ fun CalendarTabHost(
     }
 
     Scaffold(
+        contentWindowInsets = WindowInsets(0),
         topBar = {
             TopAppBar(
                 title = {
@@ -76,6 +78,7 @@ fun CalendarTabHost(
                         Icon(Icons.Filled.MoreHoriz, "Ajustes")
                     }
                 },
+                windowInsets = WindowInsets(0),
             )
         },
         snackbarHost = { SnackbarHost(snackbar) },

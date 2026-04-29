@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
@@ -45,6 +46,7 @@ fun CalendarSettingsSheet(
     var cancelled by remember(state.showCancelled) { mutableStateOf(state.showCancelled) }
 
     Scaffold(
+        contentWindowInsets = WindowInsets(0),
         topBar = {
             TopAppBar(
                 title = { Text("Ajustes del calendario") },
@@ -61,6 +63,7 @@ fun CalendarSettingsSheet(
                         onClose()
                     }) { Text("Guardar") }
                 },
+                windowInsets = WindowInsets(0),
             )
         },
     ) { padding ->
