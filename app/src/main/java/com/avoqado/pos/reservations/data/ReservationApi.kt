@@ -78,12 +78,6 @@ class ReservationApi @Inject constructor(
         Request.Builder().url("${base() ?: error("No venue")}/$id").delete(payload).build()
     }.map { Unit }
 
-    suspend fun enableForVenue(): Result<Unit> = call {
-        val v = secureStorage.venueId ?: error("No venue")
-        val payload = """{"featureFlags":{"reservations":true}}""".toRequestBody(jsonMedia)
-        Request.Builder().url("${baseUrlProvider()}/dashboard/venues/$v").patch(payload).build()
-    }.map { Unit }
-
     private suspend fun stateTransition(id: String, action: String): Result<Reservation> = call {
         Request.Builder().url("${base() ?: error("No venue")}/$id/$action").post(ByteArray(0).toRequestBody(jsonMedia)).build()
     }.mapCatching { json.decodeFromString(Reservation.serializer(), it) }

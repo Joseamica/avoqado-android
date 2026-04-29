@@ -1,14 +1,13 @@
 package com.avoqado.pos.reservations.presentation.onboarding
 
-import app.cash.turbine.test
 import com.avoqado.pos.core.data.local.SecureStorage
-import com.avoqado.pos.reservations.data.ReservationApi
-import io.mockk.coEvery
+import com.avoqado.pos.reservations.domain.VenueMode
 import io.mockk.mockk
 import io.mockk.verify
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
@@ -21,41 +20,35 @@ import org.junit.Test
 @OptIn(ExperimentalCoroutinesApi::class)
 class ActivateReservationsViewModelTest {
 
-    @Before fun setup() { Dispatchers.setMain(UnconfinedTestDispatcher()) }
+    private val dispatcher = StandardTestDispatcher()
+
+    @Before fun setup() { Dispatchers.setMain(dispatcher) }
     @After fun tearDown() { Dispatchers.resetMain() }
 
     @Test
-    fun `successful activate persists flag and emits success`() = runTest {
-        val api: ReservationApi = mockk()
+    fun `activate persists reservationsEnabled and switches to RESERVATIONS mode`() = runTest(dispatcher) {
         val storage: SecureStorage = mockk(relaxed = true)
-        coEvery { api.enableForVenue() } returns Result.success(Unit)
+        val vm = ActivateReservationsViewModel(storage)
 
-        val vm = ActivateReservationsViewModel(api, storage)
         vm.activate()
+        advanceUntilIdle()
 
-        vm.state.test {
-            val s = awaitItem()
-            assertTrue(s.didSucceed)
-            assertEquals(false, s.isActivating)
-            cancelAndIgnoreRemainingEvents()
-        }
+        val s = vm.state.value
+        assertTrue(s.didSucceed)
+        assertEquals(false, s.isActivating)
         verify { storage.reservationsEnabled = true }
+        verify { storage.venueMode = VenueMode.RESERVATIONS.storageValue }
     }
 
     @Test
-    fun `failure surfaces error message`() = runTest {
-        val api: ReservationApi = mockk()
+    fun `activate ignored after success`() = runTest(dispatcher) {
         val storage: SecureStorage = mockk(relaxed = true)
-        coEvery { api.enableForVenue() } returns Result.failure(RuntimeException("HTTP 500: Server error"))
+        val vm = ActivateReservationsViewModel(storage)
 
-        val vm = ActivateReservationsViewModel(api, storage)
-        vm.activate()
+        vm.activate(); advanceUntilIdle()
+        vm.activate(); advanceUntilIdle()
 
-        vm.state.test {
-            val s = awaitItem()
-            assertEquals(false, s.didSucceed)
-            assertTrue(s.error!!.contains("Server error") || s.error!!.contains("HTTP 500"))
-            cancelAndIgnoreRemainingEvents()
-        }
+        // setter only called once for each prop
+        verify(exactly = 1) { storage.reservationsEnabled = true }
     }
 }
