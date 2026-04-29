@@ -73,6 +73,14 @@ class SecureStorage @Inject constructor(
             com.avoqado.pos.core.util.VenueTimeZone.set(value)
         }
 
+    var venueMode: String?
+        get() = prefs.getString(KEY_VENUE_MODE, null)
+        set(value) { prefs.edit().putString(KEY_VENUE_MODE, value).apply() }
+
+    var reservationsEnabled: Boolean
+        get() = prefs.getBoolean(KEY_RESERVATIONS_ENABLED, false)
+        set(value) { prefs.edit().putBoolean(KEY_RESERVATIONS_ENABLED, value).apply() }
+
     var accessToken: String?
         get() = prefs.getString(KEY_ACCESS_TOKEN, null)
         set(value) = prefs.edit().putString(KEY_ACCESS_TOKEN, value).apply()
@@ -253,6 +261,8 @@ class SecureStorage @Inject constructor(
             .remove(KEY_VENUE_NAME)
             .remove(KEY_VENUE_SLUG)
             .remove(KEY_VENUE_TIMEZONE)
+            .remove(KEY_VENUE_MODE)
+            .remove(KEY_RESERVATIONS_ENABLED)
             .remove(KEY_ACCESS_TOKEN)
             .remove(KEY_REFRESH_TOKEN)
             .remove(KEY_TERMINAL_ID)
@@ -290,6 +300,8 @@ class SecureStorage @Inject constructor(
         private const val KEY_VENUE_NAME = "venueName"
         private const val KEY_VENUE_SLUG = "venueSlug"
         private const val KEY_VENUE_TIMEZONE = "venueTimezone"
+        private const val KEY_VENUE_MODE = "venueMode"
+        private const val KEY_RESERVATIONS_ENABLED = "reservationsEnabled"
         private const val KEY_ACCESS_TOKEN = "accessToken"
         private const val KEY_REFRESH_TOKEN = "refreshToken"
         // Biometric
