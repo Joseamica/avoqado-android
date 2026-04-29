@@ -7,6 +7,7 @@ import com.avoqado.pos.core.domain.RoleManager
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.navigation.MainTab
 import com.avoqado.pos.payment.data.PaymentSyncService
+import com.avoqado.pos.reservations.domain.VenueMode
 import com.avoqado.pos.timeclock.data.TimeEntryRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -48,14 +49,24 @@ class AppState @Inject constructor(
         )
 
     val visibleTabs: List<MainTab>
-        get() = MainTab.entries.filter { tab ->
-            when (tab) {
-                MainTab.CHECKOUT -> roleManager.canAccessPOS
-                MainTab.INVENTORY -> roleManager.canAccessInventory
-                MainTab.TRANSACTIONS -> roleManager.canAccessTransactions
-                MainTab.NOTIFICATIONS -> true
-                MainTab.MORE -> true
-                MainTab.CALENDAR -> false // controlled by MainTabHostViewModel
+        get() {
+            val inReservationsMode =
+                secureStorage.reservationsEnabled &&
+                    VenueMode.fromStorage(secureStorage.venueMode) == VenueMode.RESERVATIONS
+            val ordered = if (inReservationsMode) {
+                listOf(MainTab.CALENDAR, MainTab.CHECKOUT, MainTab.TRANSACTIONS, MainTab.NOTIFICATIONS, MainTab.MORE)
+            } else {
+                listOf(MainTab.CHECKOUT, MainTab.INVENTORY, MainTab.TRANSACTIONS, MainTab.NOTIFICATIONS, MainTab.MORE)
+            }
+            return ordered.filter { tab ->
+                when (tab) {
+                    MainTab.CHECKOUT -> roleManager.canAccessPOS
+                    MainTab.INVENTORY -> roleManager.canAccessInventory
+                    MainTab.TRANSACTIONS -> roleManager.canAccessTransactions
+                    MainTab.NOTIFICATIONS -> true
+                    MainTab.MORE -> true
+                    MainTab.CALENDAR -> true
+                }
             }
         }
 
