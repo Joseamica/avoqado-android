@@ -35,6 +35,7 @@ fun StepperHeader(
     isFirstStep: Boolean,
     isLastStep: Boolean,
     isSubmitting: Boolean,
+    isEditing: Boolean,
     onBack: () -> Unit,
     onClose: () -> Unit,
     onContinue: () -> Unit,
@@ -63,7 +64,8 @@ fun StepperHeader(
                     enabled = canContinue && !isSubmitting,
                     shape = RoundedCornerShape(50),
                 ) {
-                    Text(if (isLastStep) "Crear" else "Continuar")
+                    val finalLabel = if (isEditing) "Guardar" else "Crear"
+                    Text(if (isLastStep) finalLabel else "Continuar")
                 }
                 Spacer(Modifier.width(8.dp))
             },

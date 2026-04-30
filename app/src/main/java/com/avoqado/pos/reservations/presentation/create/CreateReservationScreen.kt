@@ -60,6 +60,7 @@ fun CreateReservationScreen(
                 isFirstStep = isFirstVisibleStep,
                 isLastStep = draft.step == CreateStep.CONFIRM,
                 isSubmitting = isSubmitting,
+                isEditing = isEditing,
                 onBack = {
                     if (isEditing && draft.step == CreateStep.SERVICE) onClose()
                     else viewModel.back()
