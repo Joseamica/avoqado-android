@@ -81,6 +81,24 @@ class SecureStorage @Inject constructor(
         get() = prefs.getBoolean(KEY_RESERVATIONS_ENABLED, false)
         set(value) { prefs.edit().putBoolean(KEY_RESERVATIONS_ENABLED, value).apply() }
 
+    /**
+     * Permissions for the active venue (e.g. "reservations:create", "menu:read").
+     * Server resolves these per-venue from role + custom overrides; client mirrors them
+     * to gate UI affordances. See server lib/permissions.ts DEFAULT_PERMISSIONS.
+     */
+    var venuePermissions: List<String>
+        get() {
+            val raw = prefs.getString(KEY_VENUE_PERMISSIONS, null) ?: return emptyList()
+            return try {
+                json.decodeFromString(raw)
+            } catch (_: Exception) {
+                emptyList()
+            }
+        }
+        set(value) {
+            prefs.edit().putString(KEY_VENUE_PERMISSIONS, json.encodeToString(value)).apply()
+        }
+
     var accessToken: String?
         get() = prefs.getString(KEY_ACCESS_TOKEN, null)
         set(value) = prefs.edit().putString(KEY_ACCESS_TOKEN, value).apply()
@@ -198,6 +216,7 @@ class SecureStorage @Inject constructor(
         accessToken: String,
         refreshToken: String,
         venueTimezone: String? = null,
+        venuePermissions: List<String> = emptyList(),
     ) {
         this.userId = userId
         this.userEmail = email
@@ -210,6 +229,7 @@ class SecureStorage @Inject constructor(
         this.userRole = role
         this.accessToken = accessToken
         this.refreshToken = refreshToken
+        this.venuePermissions = venuePermissions
     }
 
     fun updateTokens(accessToken: String, refreshToken: String) {
@@ -223,6 +243,7 @@ class SecureStorage @Inject constructor(
         this.venueSlug = venue.slug
         this.venueTimezone = venue.timezone
         this.userRole = venue.role
+        this.venuePermissions = venue.permissions
     }
 
     fun saveBiometricCredentials(
@@ -263,6 +284,7 @@ class SecureStorage @Inject constructor(
             .remove(KEY_VENUE_TIMEZONE)
             .remove(KEY_VENUE_MODE)
             .remove(KEY_RESERVATIONS_ENABLED)
+            .remove(KEY_VENUE_PERMISSIONS)
             .remove(KEY_ACCESS_TOKEN)
             .remove(KEY_REFRESH_TOKEN)
             .remove(KEY_TERMINAL_ID)
@@ -302,6 +324,7 @@ class SecureStorage @Inject constructor(
         private const val KEY_VENUE_TIMEZONE = "venueTimezone"
         private const val KEY_VENUE_MODE = "venueMode"
         private const val KEY_RESERVATIONS_ENABLED = "reservationsEnabled"
+        private const val KEY_VENUE_PERMISSIONS = "venuePermissions"
         private const val KEY_ACCESS_TOKEN = "accessToken"
         private const val KEY_REFRESH_TOKEN = "refreshToken"
         // Biometric
@@ -337,6 +360,7 @@ data class StoredVenue(
     val logo: String? = null,
     val role: String? = null,
     val timezone: String? = null,
+    val permissions: List<String> = emptyList(),
 ) {
     val displayRole: String
         get() = when (role?.uppercase()) {

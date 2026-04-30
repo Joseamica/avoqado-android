@@ -35,6 +35,7 @@ data class VenueData(
     val logo: String? = null,
     val role: String? = null,
     val timezone: String? = null,
+    val permissions: List<String> = emptyList(),
 )
 
 @Serializable

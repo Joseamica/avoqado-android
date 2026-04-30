@@ -77,6 +77,7 @@ class AuthRepository @Inject constructor(
                     accessToken = response.accessToken,
                     refreshToken = response.refreshToken ?: "",
                     venueTimezone = primaryVenue.timezone,
+                    venuePermissions = primaryVenue.permissions,
                 )
 
                 // Save all venues for switching
@@ -180,4 +181,5 @@ private fun VenueData.toStoredVenue() = StoredVenue(
     logo = logo,
     role = role,
     timezone = timezone,
+    permissions = permissions,
 )
