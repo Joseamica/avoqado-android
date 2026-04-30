@@ -74,7 +74,10 @@ class WaitlistApi @Inject constructor(
             body
         } else {
             Log.e(tag, "${req.method} ${req.url} -> $code: ${body.take(300)}")
-            error("HTTP $code: ${body.take(200)}")
+            when (code) {
+                404 -> error("No se encontró el recurso")
+                else -> error("HTTP $code: ${body.take(200)}")
+            }
         }
     }
 }

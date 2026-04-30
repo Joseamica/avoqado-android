@@ -33,8 +33,12 @@ class ConnectivityInterceptor(
         // 5xx — upstream proxy / server failure
         if (response.code in 500..599) return true
 
-        // HTML error pages from proxies/CDNs when backend is down
+        // HTML error pages from proxies/CDNs when backend is down — only treat as "down" when
+        // the status code is also non-success. A working backend can return HTML 4xx pages
+        // (e.g. Express's default 404 handler when a route is misconfigured); those are routing
+        // bugs, not connectivity failures, and shouldn't flip the offline banner to "Sin
+        // conexión". Mirrors the 200..499 = "server is answering" rule used by pingServer().
         val contentType = response.header("content-type")?.lowercase().orEmpty()
-        return contentType.startsWith("text/html")
+        return contentType.startsWith("text/html") && response.code !in 200..499
     }
 }
