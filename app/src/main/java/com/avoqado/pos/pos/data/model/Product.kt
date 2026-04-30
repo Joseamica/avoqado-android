@@ -21,6 +21,12 @@ data class Product(
     val barcode: String? = null,
     val gtin: String? = null,
     val type: String? = null,
+    /**
+     * Service duration in minutes, populated by the server for SERVICE / APPOINTMENTS_SERVICE /
+     * CLASS products. Used by the reservations flow to seed the booking length; null on
+     * non-bookable products like RETAIL.
+     */
+    val duration: Int? = null,
     val modifierGroups: List<ProductModifierGroupEntry>? = null,
     val trackInventory: Boolean? = null,
     val availableQuantity: Int? = null,

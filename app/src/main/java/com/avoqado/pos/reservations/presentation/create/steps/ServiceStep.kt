@@ -50,16 +50,18 @@ import com.avoqado.pos.reservations.presentation.create.CreateReservationViewMod
  *  - Horizontal `LazyRow` of [FilterChip]s for category filter (always shows "Todos").
  *  - [SearchPillField] for textual filter on product name.
  *  - [LazyColumn] of products: avatar (color from product, fallback initials) + name +
- *    "60 min · $price" + selected check.
+ *    "<duration> min · $price" + selected check.
  *
  * Empty states:
  *  - When no products at all: friendly empty state with a hint to add products in the dashboard.
  *  - When category/search filter yields nothing: "Sin resultados" placeholder.
  *
- * Phase 2 default: every product is treated as a 60-minute service. Per-product duration is a
- * Phase 3 backend feature.
+ * Only bookable product types — `SERVICE`, `APPOINTMENTS_SERVICE`, `CLASS` — are shown so
+ * retail items (hats, drinks) don't surface in the reservations picker. Per-product duration
+ * comes from `Product.duration` with a 60-minute fallback for products that haven't been
+ * configured.
  *
- * Selection writes `productId`, `productName`, and `durationMinutes = 60` into the draft. The
+ * Selection writes `productId`, `productName`, and `durationMinutes` into the draft. The
  * "Continuar" pill in the StepperHeader is gated on `draft.canContinueFromService`.
  */
 @Composable
@@ -70,18 +72,25 @@ fun ServiceStep(viewModel: CreateReservationViewModel) {
     var query by remember { mutableStateOf("") }
     var selectedCategoryId: String? by remember { mutableStateOf(null) }
 
-    // Active products filtered by selected category and current search query.
-    val visibleProducts = remember(products, query, selectedCategoryId) {
+    // Bookable types — exclude RETAIL / FOOD_AND_BEV / OTHER so the picker doesn't list "Gorra
+    // Navy" hats next to actual services. Server uses uppercase enums.
+    val bookableTypes = remember { setOf("SERVICE", "APPOINTMENTS_SERVICE", "CLASS") }
+
+    // Active, bookable products filtered by selected category and current search query.
+    val visibleProducts = remember(products, query, selectedCategoryId, bookableTypes) {
         products
             .filter { it.active != false }
+            .filter { it.type in bookableTypes }
             .filter { selectedCategoryId == null || it.categoryId == selectedCategoryId }
             .filter { query.isBlank() || it.name.contains(query.trim(), ignoreCase = true) }
     }
 
-    // Categories derived from the active product list.
-    val categories = remember(products) {
+    // Categories derived from the active, bookable product list (matches the visible products
+    // so the chip row never shows a category whose only members were filtered out).
+    val categories = remember(products, bookableTypes) {
         products
             .filter { it.active != false }
+            .filter { it.type in bookableTypes }
             .mapNotNull { it.category }
             .distinctBy { it.id }
     }
@@ -153,8 +162,9 @@ fun ServiceStep(viewModel: CreateReservationViewModel) {
                                 it.copy(
                                     productId = product.id,
                                     productName = product.name,
-                                    // Default until per-product duration ships in Phase 3.
-                                    durationMinutes = 60,
+                                    // Use server-provided per-product duration; fall back to 60
+                                    // when the product hasn't been configured with one yet.
+                                    durationMinutes = product.duration ?: 60,
                                 )
                             }
                         },
@@ -214,7 +224,7 @@ private fun ProductRow(
                 maxLines = 1,
             )
             Text(
-                text = "60 min · ${product.displayPrice}",
+                text = "${product.duration ?: 60} min · ${product.displayPrice}",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 maxLines = 1,
