@@ -27,7 +27,12 @@ class ReservationDetailViewModel @Inject constructor(
     private val _state = MutableStateFlow(ReservationDetailUiState(capability = capabilityProvider.get()))
     val state: StateFlow<ReservationDetailUiState> = _state.asStateFlow()
 
-    init { reload() }
+    init {
+        reload()
+        viewModelScope.launch {
+            repository.changes.collect { silentRefresh() }
+        }
+    }
 
     fun reload() {
         _state.update { it.copy(isLoading = true, error = null) }
@@ -36,6 +41,15 @@ class ReservationDetailViewModel @Inject constructor(
             _state.update {
                 if (r.isSuccess) it.copy(isLoading = false, reservation = r.getOrNull())
                 else it.copy(isLoading = false, error = r.exceptionOrNull()?.message ?: "Error cargando reserva")
+            }
+        }
+    }
+
+    private fun silentRefresh() {
+        viewModelScope.launch {
+            val r = repository.fetchOne(reservationId)
+            if (r.isSuccess) {
+                _state.update { it.copy(reservation = r.getOrNull()) }
             }
         }
     }
