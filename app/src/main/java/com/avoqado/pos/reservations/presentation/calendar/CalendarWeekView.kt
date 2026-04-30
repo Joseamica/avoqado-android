@@ -6,6 +6,7 @@ import androidx.compose.ui.Modifier
 import com.avoqado.pos.reservations.data.model.Reservation
 import com.avoqado.pos.reservations.presentation.components.CalendarWeekGrid
 import java.time.LocalDate
+import java.time.LocalTime
 import java.time.ZoneId
 
 @Composable
@@ -14,6 +15,7 @@ fun CalendarWeekView(
     venueZone: ZoneId,
     onSelectDate: (LocalDate) -> Unit,
     onReservationClick: (Reservation) -> Unit,
+    onSlotTap: (LocalDate, LocalTime) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val weekStart = state.selectedDate.minusDays((state.selectedDate.dayOfWeek.value % 7).toLong())
@@ -23,6 +25,7 @@ fun CalendarWeekView(
         reservations = state.reservations,
         venueZone = venueZone,
         onReservationClick = onReservationClick,
+        onSlotTap = onSlotTap,
         modifier = modifier.fillMaxSize(),
     )
 }

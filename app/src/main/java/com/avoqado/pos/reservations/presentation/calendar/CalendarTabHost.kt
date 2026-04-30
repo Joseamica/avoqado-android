@@ -127,6 +127,7 @@ fun CalendarTabHost(
                     venueZone = venueZone,
                     onSelectDate = viewModel::setDate,
                     onReservationClick = { onOpenReservation(it.id) },
+                    onSlotTap = ::openSheetAtSlot,
                 )
             }
         }
