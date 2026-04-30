@@ -31,7 +31,17 @@ class CalendarViewModel @Inject constructor(
     private val zone: ZoneId get() = ZoneId.of(secureStorage.venueTimezone ?: "America/Mexico_City")
     val venueZoneId: ZoneId get() = zone
 
-    private val _state = MutableStateFlow(CalendarUiState(today = LocalDate.now(zone), selectedDate = LocalDate.now(zone)))
+    private val initialView: CalendarView = secureStorage.calendarViewForCurrentVenue
+        ?.let { runCatching { CalendarView.valueOf(it) }.getOrNull() }
+        ?: CalendarView.DAY
+
+    private val _state = MutableStateFlow(
+        CalendarUiState(
+            today = LocalDate.now(zone),
+            selectedDate = LocalDate.now(zone),
+            view = initialView,
+        ),
+    )
     val state: StateFlow<CalendarUiState> = _state.asStateFlow()
 
     val isOnline: StateFlow<Boolean> = combine(
@@ -68,6 +78,7 @@ class CalendarViewModel @Inject constructor(
 
     fun setView(view: CalendarView) {
         _state.update { it.copy(view = view) }
+        secureStorage.calendarViewForCurrentVenue = view.name
         fetch()
     }
 
