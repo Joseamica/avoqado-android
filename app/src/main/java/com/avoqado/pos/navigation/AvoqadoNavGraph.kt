@@ -248,12 +248,12 @@ private fun MainScaffold(
                                     append("&prefillCustomerId=").append(entry.customerId)
                                 } else if (!entry.guestName.isNullOrBlank()) {
                                     append("&prefillGuestName=").append(
-                                        java.net.URLEncoder.encode(entry.guestName, "UTF-8"),
+                                        encodeNavArg(entry.guestName),
                                     )
                                 }
                                 append("&prefillPartySize=").append(entry.partySize)
                                 append("&prefillStart=").append(
-                                    java.net.URLEncoder.encode(entry.desiredStartAt, "UTF-8"),
+                                    encodeNavArg(entry.desiredStartAt),
                                 )
                             }
                             navController.navigate(params)
@@ -458,12 +458,12 @@ private fun MainScaffold(
                                     append("&prefillCustomerId=").append(entry.customerId)
                                 } else if (!entry.guestName.isNullOrBlank()) {
                                     append("&prefillGuestName=").append(
-                                        java.net.URLEncoder.encode(entry.guestName, "UTF-8"),
+                                        encodeNavArg(entry.guestName),
                                     )
                                 }
                                 append("&prefillPartySize=").append(entry.partySize)
                                 append("&prefillStart=").append(
-                                    java.net.URLEncoder.encode(entry.desiredStartAt, "UTF-8"),
+                                    encodeNavArg(entry.desiredStartAt),
                                 )
                             }
                             navController.navigate(params)
@@ -726,3 +726,17 @@ private fun TabBarItem(
         )
     }
 }
+
+/**
+ * Encodes a value for use as a Compose Navigation query argument.
+ *
+ * Java's [java.net.URLEncoder] is form-urlencoded (`application/x-www-form-urlencoded`) and
+ * encodes spaces as `+`, but Compose Navigation parses query strings per RFC 3986 — meaning a
+ * literal `+` is preserved verbatim instead of being decoded back to a space. The result was
+ * names like "Test+Waitlist+Fix" leaking into the create flow when promoting waitlist entries.
+ *
+ * Replacing `+` with `%20` after URLEncoder gives RFC 3986–compliant percent-encoding so the
+ * receiver decodes spaces back to spaces.
+ */
+private fun encodeNavArg(value: String): String =
+    java.net.URLEncoder.encode(value, "UTF-8").replace("+", "%20")
