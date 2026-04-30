@@ -5,29 +5,18 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilledTonalButton
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.avoqado.pos.designsystem.components.AvoqadoFullscreenHeader
+import com.avoqado.pos.designsystem.components.FullscreenHeaderNav
 import com.avoqado.pos.reservations.domain.CreateStep
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun StepperHeader(
     step: CreateStep,
@@ -47,28 +36,17 @@ fun StepperHeader(
         CreateStep.DETAILS -> "Detalles"
         CreateStep.CONFIRM -> "Confirmar"
     }
+    val finalLabel = if (isEditing) "Guardar" else "Crear"
+    val actionLabel = if (isLastStep) finalLabel else "Continuar"
+
     Column {
-        TopAppBar(
-            title = { Text(title) },
-            navigationIcon = {
-                IconButton(onClick = if (isFirstStep) onClose else onBack) {
-                    Icon(
-                        if (isFirstStep) Icons.Filled.Close else Icons.AutoMirrored.Filled.ArrowBack,
-                        contentDescription = if (isFirstStep) "Cerrar" else "Atrás",
-                    )
-                }
-            },
-            actions = {
-                FilledTonalButton(
-                    onClick = onContinue,
-                    enabled = canContinue && !isSubmitting,
-                    shape = RoundedCornerShape(50),
-                ) {
-                    val finalLabel = if (isEditing) "Guardar" else "Crear"
-                    Text(if (isLastStep) finalLabel else "Continuar")
-                }
-                Spacer(Modifier.width(8.dp))
-            },
+        AvoqadoFullscreenHeader(
+            title = title,
+            onNav = if (isFirstStep) onClose else onBack,
+            navStyle = if (isFirstStep) FullscreenHeaderNav.CLOSE else FullscreenHeaderNav.BACK,
+            primaryActionText = actionLabel,
+            onPrimaryAction = onContinue,
+            primaryActionEnabled = canContinue && !isSubmitting,
         )
         StepDots(current = step.ordinal, total = CreateStep.entries.size)
     }

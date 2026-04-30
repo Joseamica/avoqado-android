@@ -6,9 +6,10 @@ This file provides guidance to Claude Code when working with this repository.
 
 **Before creating or modifying ANY Composable, you MUST:**
 
-1. **Read the Design System** — `designsystem/` package contains theme, colors, typography, and reusable components. Use these instead of hardcoded values.
-2. **Check `../square-ui-reference/`** — 174 screenshots + notes from Square POS (v6.99sw) on iPad. Use as design baseline when implementing features that Square already has.
-3. **Reference iOS** — `../avoqado-ios/ui-patterns-ios.md` has mandatory component patterns. Match parity with iOS app.
+1. **Read the Design System** — `designsystem/` package contains theme, colors, typography, and reusable components. Use these instead of hardcoded values. This is the primary reference for ALL UI work.
+2. **Check `../square-ui-reference/`** — 174 screenshots + notes from Square POS (v6.99sw) on iPad. Use as design baseline when implementing features that Square already has on iPad.
+3. **Live Square comparison via physical Android device** — when Square has the feature on Android (reservations, appointments, etc.) and the iPad screenshots don't cover it, connect a physical device running the Square Android app: `adb devices` shows emulator + device; target the device with `adb -s <device-serial> shell screencap -p /sdcard/sq.png` and `adb -s <device-serial> shell uiautomator dump` to capture the live reference, then compare against the Avoqado Composable.
+4. **Reference iOS ONLY if iOS has the feature** — `../avoqado-ios/ui-patterns-ios.md` has mandatory component patterns for shared features. As of v2.3.x, Android has modules iOS doesn't (reservations, etc.). Don't open iOS to look for something that isn't there — verify the feature exists in `../avoqado-ios/POS/` first.
 
 **If you skip these steps and create inconsistent UI, it will need to be redone.**
 
@@ -18,7 +19,7 @@ This file provides guidance to Claude Code when working with this repository.
 | Back/dismiss button | Circle with chevron (match iOS `CircleBackButton`) | Plain text "Back" or raw Icon |
 | Primary button | `PrimaryButton` composable or `RoundedCornerShape(50)` | `RoundedCornerShape(12.dp)` |
 | Acción primaria en pantallas chicas | En formularios/full-screen modal: `Guardar/Crear` en header (derecha) y cierre circular `X` a la izquierda | Botón fijo abajo que se recorta/tapa contenido |
-| Header fullscreen modal | `X` circular izquierda + título centrado + acción pill derecha; acción invertida por tema (`dark`: fondo blanco/texto negro, `light`: fondo negro/texto blanco) | Header sin simetría o con título cargado a un lado |
+| Header fullscreen modal | `AvoqadoFullscreenHeader` — botón circular izquierda (`X` para entrada / cerrar flujo, `←` para pasos 2-N de wizard multi-paso) + título centrado + acción pill o icon derecha; acción invertida por tema (`dark`: fondo blanco/texto negro, `light`: fondo negro/texto blanco) | Header sin simetría, título a un lado, o `TopAppBar` crudo de Material3 |
 | Spacing | `Spacing.md`, `Spacing.lg` from design tokens | Hardcoded `12.dp`, `16.dp` |
 | Colors | `MaterialTheme.colorScheme.*` | Hardcoded `Color.Black`, `Color.White` |
 | Typography | `MaterialTheme.typography.*` | `fontSize = 14.sp` inline |
@@ -217,17 +218,23 @@ Uses `Modifier.width(IntrinsicSize.Max)` on each tab Column to constrain width t
 - **Navigation**: Compose Navigation with `NavHost`
 - **Async**: `viewModelScope.launch` for coroutines
 
-## iOS Reference
+## iOS Reference (conditional)
 
-The iOS source code is at: `/Users/amieva/Documents/Programming/Avoqado/avoqado-ios/`
+**As of v2.3.x, Android has surpassed iOS feature-wise.** Android-only modules include reservations (calendar/list/detail/wizard/waitlist) and may grow further. iOS is NOT the parity reference for these — the Android Design System and Square (where applicable) are.
 
-When porting features or fixing parity issues, always reference the iOS implementation:
+iOS source: `/Users/amieva/Documents/Programming/Avoqado/avoqado-ios/`. Consult only when:
+1. The feature exists on iOS (verify with a quick `find ../avoqado-ios -iname "*Feature*"` first), AND
+2. You are porting it to Android or fixing a parity bug between the two.
+
+When iOS has the feature, the canonical references are:
 - `avoqado-ios/POS/Views/CheckoutView.swift` - Main checkout (864 lines)
 - `avoqado-ios/POS/Components/ShortcutsGridView.swift` - Shortcuts grid (1575 lines)
 - `avoqado-ios/POS/Components/CartPanelView.swift` - Cart panel (791 lines)
 - `avoqado-ios/POS/Views/NumericKeypad.swift` - Numeric keypad
 - `avoqado-ios/POS/Views/ProductGridView.swift` - Product grid
 - `avoqado-ios/DesignSystem/DesignSystem.swift` - Design tokens
+
+For Android-only features, the references in priority order are: (1) internal `designsystem/` package, (2) sibling Avoqado Composables in this app, (3) live Square Android app captured via `adb -s <device-serial>` (see UI/UX Rules section above).
 
 ## Known Issues & TODOs
 

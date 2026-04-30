@@ -12,21 +12,16 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -39,6 +34,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.avoqado.pos.core.util.VenueDateTimeFormatter
+import com.avoqado.pos.designsystem.components.AvoqadoFullscreenHeader
 import com.avoqado.pos.designsystem.components.AvoqadoSuccessToast
 import com.avoqado.pos.reservations.domain.ReservationAction
 import com.avoqado.pos.reservations.presentation.components.ReservationStatusBadge
@@ -65,9 +61,9 @@ fun ReservationDetailScreen(
 
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text(state.reservation?.confirmationCode ?: "") },
-                navigationIcon = { IconButton(onClick = onClose) { Icon(Icons.Filled.Close, "Cerrar") } },
+            AvoqadoFullscreenHeader(
+                title = state.reservation?.confirmationCode ?: "",
+                onNav = onClose,
             )
         },
         snackbarHost = { SnackbarHost(snack) },
