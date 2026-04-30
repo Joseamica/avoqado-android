@@ -45,6 +45,12 @@ class WaitlistViewModel @Inject constructor(
         viewModelScope.launch {
             customersRepository.fetchCustomers().onSuccess { _customers.value = it }
         }
+        // Reload whenever a waitlist mutation happens elsewhere — e.g. a promote that finishes
+        // through the create-reservation flow — so the row leaves the "Esperando" filter
+        // without requiring a manual filter toggle.
+        viewModelScope.launch {
+            repository.changes.collect { load() }
+        }
     }
 
     fun setFilter(status: WaitlistStatus?) {
