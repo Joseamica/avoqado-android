@@ -191,7 +191,7 @@ fun MoreMenuScreen(
     ) {
         // Header (matching iOS: "Más" title + venue subtitle)
         Text(
-            text = "Mas",
+            text = "Más",
             style = headerTitleStyle,
         )
         Text(

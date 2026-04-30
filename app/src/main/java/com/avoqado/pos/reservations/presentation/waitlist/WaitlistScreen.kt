@@ -280,7 +280,7 @@ private fun EmptyState(onAdd: () -> Unit) {
         )
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xs))
         Text(
-            text = "Agrega solicitudes desde el boton + de arriba",
+            text = "Agrega solicitudes desde el botón + de arriba",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
