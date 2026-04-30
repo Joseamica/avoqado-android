@@ -34,11 +34,15 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.avoqado.pos.designsystem.components.AvoqadoSuccessToast
+import com.avoqado.pos.reservations.data.model.Reservation
 import com.avoqado.pos.reservations.presentation.components.ActionSheetCenter
 import com.avoqado.pos.reservations.presentation.components.ActionSheetItem
+import com.avoqado.pos.reservations.presentation.detail.RescheduleConfirmSheet
 import kotlinx.coroutines.launch
 import java.time.LocalDate
 import java.time.LocalTime
+import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
@@ -57,6 +61,11 @@ fun CalendarTabHost(
 
     var pendingSlot by remember { mutableStateOf<Pair<LocalDate, LocalTime>?>(null) }
     var showSheetForNow by remember { mutableStateOf(false) }
+    var pendingReschedule by remember {
+        mutableStateOf<Triple<Reservation, ZonedDateTime, ZonedDateTime>?>(null)
+    }
+    var rescheduleSuccessLabel by remember { mutableStateOf<String?>(null) }
+    val rescheduleSubmitting by viewModel.rescheduleSubmitting.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
 
@@ -114,6 +123,9 @@ fun CalendarTabHost(
                     )
                 }
             }
+            val openReschedule: (Reservation, ZonedDateTime, ZonedDateTime) -> Unit = { r, s, e ->
+                pendingReschedule = Triple(r, s, e)
+            }
             when (state.view) {
                 CalendarView.DAY -> CalendarDayView(
                     state = state,
@@ -121,6 +133,7 @@ fun CalendarTabHost(
                     onSelectDate = viewModel::setDate,
                     onReservationClick = { onOpenReservation(it.id) },
                     onSlotTap = ::openSheetAtSlot,
+                    onReservationReschedule = openReschedule,
                 )
                 CalendarView.WEEK -> CalendarWeekView(
                     state = state,
@@ -128,9 +141,41 @@ fun CalendarTabHost(
                     onSelectDate = viewModel::setDate,
                     onReservationClick = { onOpenReservation(it.id) },
                     onSlotTap = ::openSheetAtSlot,
+                    onReservationReschedule = openReschedule,
                 )
             }
         }
+    }
+
+    pendingReschedule?.let { (reservation, newStarts, newEnds) ->
+        RescheduleConfirmSheet(
+            reservation = reservation,
+            newStarts = newStarts,
+            newEnds = newEnds,
+            venueZone = venueZone,
+            isSubmitting = rescheduleSubmitting,
+            onConfirm = { channel, message ->
+                viewModel.reschedule(
+                    reservationId = reservation.id,
+                    newStarts = newStarts,
+                    newEnds = newEnds,
+                    channel = channel,
+                    customMessage = message,
+                ) { success, error ->
+                    pendingReschedule = null
+                    if (success) {
+                        rescheduleSuccessLabel = "¡Reserva reagendada!"
+                    } else if (error != null) {
+                        scope.launch { snackbar.showSnackbar(error) }
+                    }
+                }
+            },
+            onDismiss = { if (!rescheduleSubmitting) pendingReschedule = null },
+        )
+    }
+
+    rescheduleSuccessLabel?.let { label ->
+        AvoqadoSuccessToast(message = label, onDismiss = { rescheduleSuccessLabel = null })
     }
 
     val sheetSlot = pendingSlot

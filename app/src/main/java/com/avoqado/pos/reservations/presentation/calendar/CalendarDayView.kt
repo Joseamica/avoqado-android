@@ -13,6 +13,7 @@ import com.avoqado.pos.reservations.presentation.components.WeekStrip
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.ZoneId
+import java.time.ZonedDateTime
 
 @Composable
 fun CalendarDayView(
@@ -21,6 +22,7 @@ fun CalendarDayView(
     onSelectDate: (LocalDate) -> Unit,
     onReservationClick: (Reservation) -> Unit,
     onSlotTap: (LocalDate, LocalTime) -> Unit,
+    onReservationReschedule: ((Reservation, ZonedDateTime, ZonedDateTime) -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     Column(modifier.fillMaxSize().widthIn(max = 880.dp)) {
@@ -39,6 +41,7 @@ fun CalendarDayView(
             nowTime = LocalTime.now(venueZone),
             onReservationClick = onReservationClick,
             onSlotTap = { time -> onSlotTap(state.selectedDate, time) },
+            onReservationReschedule = onReservationReschedule,
             modifier = Modifier.fillMaxSize(),
         )
     }

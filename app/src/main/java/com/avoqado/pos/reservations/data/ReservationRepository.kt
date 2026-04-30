@@ -133,10 +133,15 @@ class ReservationRepository @Inject constructor(
                 json.encodeToString(CancelReservationRequest.serializer(), CancelReservationRequest(reason))
         }
 
-        data class Reschedule(val startsAt: String, val endsAt: String) : ActionPayload {
-            fun toRequest() = RescheduleRequest(startsAt, endsAt)
+        data class Reschedule(
+            val startsAt: String,
+            val endsAt: String,
+            val notificationChannel: com.avoqado.pos.reservations.data.model.RescheduleNotificationChannel? = null,
+            val customMessage: String? = null,
+        ) : ActionPayload {
+            fun toRequest() = RescheduleRequest(startsAt, endsAt, notificationChannel, customMessage)
             override fun toJson(json: Json): String =
-                json.encodeToString(RescheduleRequest.serializer(), RescheduleRequest(startsAt, endsAt))
+                json.encodeToString(RescheduleRequest.serializer(), toRequest())
         }
 
         data class Create(val request: CreateReservationRequest) : ActionPayload {

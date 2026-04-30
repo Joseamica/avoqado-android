@@ -24,6 +24,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import com.avoqado.pos.reservations.data.model.Reservation
 import java.time.LocalDate
@@ -31,6 +32,7 @@ import java.time.LocalTime
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
+import kotlin.math.roundToInt
 
 private val HOUR_HEIGHT_DP = 56.dp
 private const val HOUR_AXIS_WIDTH = 44
@@ -46,10 +48,13 @@ fun CalendarDayGrid(
     endHour: Int = 23,
     onReservationClick: (Reservation) -> Unit,
     onSlotTap: (LocalTime) -> Unit,
+    onReservationReschedule: ((Reservation, ZonedDateTime, ZonedDateTime) -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val hours = remember(startHour, endHour) { (startHour..endHour).toList() }
     val scrollState = rememberScrollState()
+    val density = LocalDensity.current
+    val hourHeightPx = with(density) { HOUR_HEIGHT_DP.toPx() }
 
     // Auto-scroll to current hour (or selected day's first reservation) on first composition.
     LaunchedEffect(selectedDate) {
@@ -112,6 +117,20 @@ fun CalendarDayGrid(
                     reservation = r,
                     onClick = { onReservationClick(r) },
                     modifier = Modifier.fillMaxSize(),
+                    onDragRescheduleRequested = onReservationReschedule?.let { cb ->
+                        { _, dyPx ->
+                            val deltaMin = ((dyPx / hourHeightPx) * 60f / 15f).roundToInt() * 15
+                            if (deltaMin != 0) {
+                                val origStarts = ZonedDateTime.parse(r.startsAt).withZoneSameInstant(venueZone)
+                                val origEnds = ZonedDateTime.parse(r.endsAt).withZoneSameInstant(venueZone)
+                                cb(
+                                    r,
+                                    origStarts.plusMinutes(deltaMin.toLong()),
+                                    origEnds.plusMinutes(deltaMin.toLong()),
+                                )
+                            }
+                        }
+                    },
                 )
             }
         }

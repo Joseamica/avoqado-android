@@ -49,6 +49,7 @@ fun RescheduleSheet(
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val state by viewModel.state.collectAsState()
+    val reservation = state.reservation
 
     var date by remember { mutableStateOf(LocalDate.now(venueTimezone)) }
     var startTime by remember { mutableStateOf(LocalTime.of(10, 0)) }
@@ -57,6 +58,9 @@ fun RescheduleSheet(
 
     var showDatePicker by remember { mutableStateOf(false) }
     var pickingTime by remember { mutableStateOf<TimeSlot?>(null) }
+    var pendingConfirm by remember {
+        mutableStateOf<Pair<ZonedDateTime, ZonedDateTime>?>(null)
+    }
 
     LaunchedEffect(state.justCompletedAction) {
         if (state.justCompletedAction == ReservationAction.RESCHEDULE) onDismiss()
@@ -104,6 +108,30 @@ fun RescheduleSheet(
         )
     }
 
+    pendingConfirm?.let { (newStarts, newEnds) ->
+        if (reservation != null) {
+            RescheduleConfirmSheet(
+                reservation = reservation,
+                newStarts = newStarts,
+                newEnds = newEnds,
+                venueZone = venueTimezone,
+                isSubmitting = state.pendingAction == ReservationAction.RESCHEDULE,
+                onConfirm = { channel, message ->
+                    viewModel.runAction(
+                        ReservationAction.RESCHEDULE,
+                        ReservationRepository.ActionPayload.Reschedule(
+                            startsAt = newStarts.withZoneSameInstant(java.time.ZoneOffset.UTC).format(DateTimeFormatter.ISO_INSTANT),
+                            endsAt = newEnds.withZoneSameInstant(java.time.ZoneOffset.UTC).format(DateTimeFormatter.ISO_INSTANT),
+                            notificationChannel = channel,
+                            customMessage = message,
+                        ),
+                    )
+                },
+                onDismiss = { if (state.pendingAction != ReservationAction.RESCHEDULE) pendingConfirm = null },
+            )
+        }
+    }
+
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
         Column(
             modifier = Modifier
@@ -147,22 +175,14 @@ fun RescheduleSheet(
             Button(
                 onClick = {
                     val starts = ZonedDateTime.of(date, startTime, venueTimezone)
-                        .withZoneSameInstant(ZoneId.of("UTC"))
                     val ends = ZonedDateTime.of(date, endTime, venueTimezone)
-                        .withZoneSameInstant(ZoneId.of("UTC"))
-                    viewModel.runAction(
-                        ReservationAction.RESCHEDULE,
-                        ReservationRepository.ActionPayload.Reschedule(
-                            startsAt = starts.format(DateTimeFormatter.ISO_INSTANT),
-                            endsAt = ends.format(DateTimeFormatter.ISO_INSTANT),
-                        ),
-                    )
+                    pendingConfirm = starts to ends
                 },
-                enabled = isValid && state.pendingAction != ReservationAction.RESCHEDULE,
+                enabled = isValid && state.pendingAction != ReservationAction.RESCHEDULE && reservation != null,
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(50),
             ) {
-                Text(if (state.pendingAction == ReservationAction.RESCHEDULE) "Reagendando..." else "Reagendar")
+                Text("Continuar")
             }
             Spacer(Modifier.padding(8.dp))
         }

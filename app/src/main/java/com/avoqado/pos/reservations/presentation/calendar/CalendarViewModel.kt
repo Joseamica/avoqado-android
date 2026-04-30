@@ -7,6 +7,8 @@ import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.reservations.data.ReservationRepository
 import com.avoqado.pos.reservations.data.model.Reservation
 import com.avoqado.pos.reservations.data.model.ReservationStatus
+import com.avoqado.pos.reservations.data.model.RescheduleNotificationChannel
+import com.avoqado.pos.reservations.domain.ReservationAction
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -18,6 +20,8 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.time.LocalDate
 import java.time.ZoneId
+import java.time.ZoneOffset
+import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 import javax.inject.Inject
 
@@ -91,6 +95,34 @@ class CalendarViewModel @Inject constructor(
     }
 
     fun refresh() = fetch()
+
+    private val _rescheduleSubmitting = MutableStateFlow(false)
+    val rescheduleSubmitting: StateFlow<Boolean> = _rescheduleSubmitting.asStateFlow()
+
+    fun reschedule(
+        reservationId: String,
+        newStarts: ZonedDateTime,
+        newEnds: ZonedDateTime,
+        channel: RescheduleNotificationChannel?,
+        customMessage: String?,
+        onResult: (Boolean, String?) -> Unit,
+    ) {
+        _rescheduleSubmitting.value = true
+        viewModelScope.launch {
+            val result = repository.runAction(
+                reservationId = reservationId,
+                action = ReservationAction.RESCHEDULE,
+                payload = ReservationRepository.ActionPayload.Reschedule(
+                    startsAt = newStarts.withZoneSameInstant(ZoneOffset.UTC).format(DateTimeFormatter.ISO_INSTANT),
+                    endsAt = newEnds.withZoneSameInstant(ZoneOffset.UTC).format(DateTimeFormatter.ISO_INSTANT),
+                    notificationChannel = channel,
+                    customMessage = customMessage,
+                ),
+            )
+            _rescheduleSubmitting.value = false
+            onResult(result.isSuccess, result.exceptionOrNull()?.message)
+        }
+    }
 
     private fun fetch() {
         val s = _state.value

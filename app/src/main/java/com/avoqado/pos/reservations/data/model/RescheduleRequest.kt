@@ -3,7 +3,15 @@ package com.avoqado.pos.reservations.data.model
 import kotlinx.serialization.Serializable
 
 @Serializable
-data class RescheduleRequest(val startsAt: String, val endsAt: String)
+enum class RescheduleNotificationChannel { push, whatsapp, email, sms, none }
+
+@Serializable
+data class RescheduleRequest(
+    val startsAt: String,
+    val endsAt: String,
+    val notificationChannel: RescheduleNotificationChannel? = null,
+    val customMessage: String? = null,
+)
 
 @Serializable
 data class CancelReservationRequest(val reason: String? = null)
