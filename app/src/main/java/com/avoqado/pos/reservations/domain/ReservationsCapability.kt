@@ -11,7 +11,9 @@ data class ReservationsCapability(
     companion object {
         fun fromPermissions(perms: List<String>): ReservationsCapability {
             val set = perms.toSet()
-            val wildcard = "*" in set || "reservations:*" in set
+            // Server emits "*:*" for SUPERADMIN; legacy clients also accept bare "*".
+            // "reservations:*" is the resource-scoped wildcard.
+            val wildcard = "*:*" in set || "*" in set || "reservations:*" in set
             return ReservationsCapability(
                 canRead = wildcard || "reservations:read" in set,
                 canCreate = wildcard || "reservations:create" in set,
