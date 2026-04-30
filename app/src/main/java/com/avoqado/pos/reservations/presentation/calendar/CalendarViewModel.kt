@@ -51,7 +51,15 @@ class CalendarViewModel @Inject constructor(
             initialValue = 0,
         )
 
-    init { fetch() }
+    init {
+        fetch()
+        // Refetch whenever a reservation mutation happens elsewhere (cancel, reschedule, edit,
+        // create, state transition) so the calendar stays in sync without depending on
+        // ON_RESUME, which doesn't fire when nested sheets close on top of this screen.
+        viewModelScope.launch {
+            repository.changes.collect { fetch() }
+        }
+    }
 
     fun setDate(date: LocalDate) {
         _state.update { it.copy(selectedDate = date) }

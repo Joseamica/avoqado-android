@@ -9,9 +9,13 @@ import com.avoqado.pos.reservations.data.model.ReservationListResponse
 import com.avoqado.pos.reservations.data.model.RescheduleRequest
 import com.avoqado.pos.reservations.data.model.UpdateReservationRequest
 import com.avoqado.pos.reservations.domain.ReservationAction
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.serialization.json.Json
 import javax.inject.Inject
@@ -27,6 +31,18 @@ class ReservationRepository @Inject constructor(
 
     private val _lastList = MutableStateFlow<ReservationListResponse?>(null)
     val lastList: StateFlow<ReservationListResponse?> = _lastList.asStateFlow()
+
+    /**
+     * Emits after every successful mutation (create, update, runAction). Consumers (calendar /
+     * list view models) collect this to refetch their data so the UI stays consistent with
+     * server state without each screen polling on resume. `extraBufferCapacity = 1` +
+     * `DROP_OLDEST` makes emits lossless from the producer side even when no one is collecting.
+     */
+    private val _changes = MutableSharedFlow<Unit>(
+        extraBufferCapacity = 1,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST,
+    )
+    val changes: SharedFlow<Unit> = _changes.asSharedFlow()
 
     val pendingActionsCount: Flow<Int> = pendingDao.pendingCount()
 
@@ -56,7 +72,7 @@ class ReservationRepository @Inject constructor(
             )
             return Result.failure(OfflineEnqueuedException(action))
         }
-        return when (action) {
+        val result = when (action) {
             ReservationAction.CONFIRM -> api.confirm(reservationId).map { it as Reservation? }
             ReservationAction.CHECK_IN -> api.checkIn(reservationId).map { it as Reservation? }
             ReservationAction.COMPLETE -> api.complete(reservationId).map { it as Reservation? }
@@ -72,6 +88,8 @@ class ReservationRepository @Inject constructor(
             ReservationAction.CREATE -> error("CREATE is not a runAction transition; call createReservation()")
             ReservationAction.UPDATE -> error("UPDATE is not a runAction transition; call updateReservation()")
         }
+        if (result.isSuccess) _changes.tryEmit(Unit)
+        return result
     }
 
     suspend fun createReservation(request: CreateReservationRequest): Result<Reservation?> {
@@ -85,7 +103,9 @@ class ReservationRepository @Inject constructor(
             )
             return Result.failure(OfflineEnqueuedException(ReservationAction.CREATE))
         }
-        return api.create(request).map { it as Reservation? }
+        val result = api.create(request).map { it as Reservation? }
+        if (result.isSuccess) _changes.tryEmit(Unit)
+        return result
     }
 
     suspend fun updateReservation(id: String, request: UpdateReservationRequest): Result<Reservation?> {
@@ -99,7 +119,9 @@ class ReservationRepository @Inject constructor(
             )
             return Result.failure(OfflineEnqueuedException(ReservationAction.UPDATE))
         }
-        return api.update(id, request).map { it as Reservation? }
+        val result = api.update(id, request).map { it as Reservation? }
+        if (result.isSuccess) _changes.tryEmit(Unit)
+        return result
     }
 
     sealed interface ActionPayload {

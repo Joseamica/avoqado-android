@@ -21,7 +21,13 @@ class ReservationsListViewModel @Inject constructor(
     private val _state = MutableStateFlow(ReservationsListUiState(isLoading = true))
     val state: StateFlow<ReservationsListUiState> = _state.asStateFlow()
 
-    init { refresh() }
+    init {
+        refresh()
+        // Refetch whenever a reservation mutation happens elsewhere so the list stays in sync.
+        viewModelScope.launch {
+            repository.changes.collect { refresh() }
+        }
+    }
 
     fun setTab(tab: ReservationListTab) {
         _state.update { it.copy(tab = tab) }
