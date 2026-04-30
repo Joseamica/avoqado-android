@@ -32,7 +32,7 @@ class WaitlistApi @Inject constructor(
 
     private fun base(): String? {
         val v = secureStorage.venueId ?: return null
-        return "${baseUrlProvider()}/dashboard/venues/$v/waitlist"
+        return "${baseUrlProvider()}/dashboard/venues/$v/reservations/waitlist"
     }
 
     suspend fun list(status: WaitlistStatus? = null): Result<List<WaitlistEntry>> = call {
