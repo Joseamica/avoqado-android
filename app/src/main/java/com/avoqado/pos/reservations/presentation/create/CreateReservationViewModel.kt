@@ -138,7 +138,9 @@ class CreateReservationViewModel @Inject constructor(
         _draft.update { d ->
             d.copy(
                 date = date ?: d.date,
-                time = if (isWalkIn) nextQuarterHour(LocalTime.now(zone)) else (time ?: d.time),
+                // Walk-ins seeded from a calendar slot keep that slot's `time`; only fall back
+                // to "now rounded up" when no time arg was passed (e.g. + button from header).
+                time = time ?: if (isWalkIn) nextQuarterHour(LocalTime.now(zone)) else d.time,
                 isGuest = if (isWalkIn) true else d.isGuest,
                 guestName = if (isWalkIn) "Walk-in" else d.guestName,
                 channel = if (isWalkIn) ReservationChannel.WALK_IN else d.channel,
