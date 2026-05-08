@@ -128,4 +128,6 @@ data class CreateProductRequest(
     val categoryId: String,
     val sku: String? = null,
     val gtin: String? = null,
+    val duration: Int? = null,
+    val maxParticipants: Int? = null,
 )

@@ -9,10 +9,7 @@ import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 
-enum class CreateStep { CUSTOMER, SERVICE, DATETIME, DETAILS, CONFIRM }
-
 data class CreateReservationDraft(
-    val step: CreateStep = CreateStep.CUSTOMER,
     val customerId: String? = null,
     val customerName: String? = null,    // display
     val guestName: String? = null,
@@ -33,12 +30,12 @@ data class CreateReservationDraft(
     val internalNotes: String? = null,
     val channel: ReservationChannel = ReservationChannel.DASHBOARD,
 ) {
-    val canContinueFromCustomer: Boolean
-        get() = customerId != null || (isGuest && !guestName.isNullOrBlank())
-    val canContinueFromService: Boolean
-        get() = productId != null
     val canSubmit: Boolean
-        get() = canContinueFromCustomer && canContinueFromService
+        get() {
+            val hasCustomer = customerId != null || (isGuest && !guestName.isNullOrBlank())
+            val hasProduct = productId != null
+            return hasCustomer && hasProduct
+        }
 
     fun toRequest(zone: ZoneId): CreateReservationRequest {
         val startLocal = ZonedDateTime.of(date, time, zone)
@@ -63,8 +60,7 @@ data class CreateReservationDraft(
     }
 
     // Note: UpdateReservationRequest does not include date/time fields — those go through
-    // the dedicated reschedule endpoint. Edit mode in Phase 2 does NOT change date/time;
-    // the user can still navigate the DateTime step but the values in the draft are not sent.
+    // the dedicated reschedule endpoint.
     fun toUpdateRequest(): UpdateReservationRequest =
         UpdateReservationRequest(
             customerId = customerId.takeUnless { isGuest },

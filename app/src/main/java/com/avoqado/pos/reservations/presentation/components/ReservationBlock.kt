@@ -85,11 +85,14 @@ fun ReservationBlock(
     }
 }
 
+// Background uses 0xE6 (~90%) instead of 0x33 (~20%) so calendar hour grid lines
+// don't bleed through the event card. Foreground (text + border) stays full
+// opacity in the brand-dark variant.
 private fun colorsFor(status: ReservationStatus): Pair<Color, Color> = when (status) {
-    ReservationStatus.PENDING -> Color(0x33FFA000) to Color(0xFFB07000)
-    ReservationStatus.CONFIRMED -> Color(0x331E88E5) to Color(0xFF1565C0)
-    ReservationStatus.CHECKED_IN -> Color(0x3343A047) to Color(0xFF2E7D32)
-    ReservationStatus.COMPLETED -> Color(0x33616161) to Color(0xFF424242)
-    ReservationStatus.CANCELLED -> Color(0x33E53935) to Color(0xFFC62828)
-    ReservationStatus.NO_SHOW -> Color(0x33FB8C00) to Color(0xFFE65100)
+    ReservationStatus.PENDING -> Color(0xE6FFA000) to Color(0xFF6B3D00)
+    ReservationStatus.CONFIRMED -> Color(0xE61E88E5) to Color(0xFF0D3D6B)
+    ReservationStatus.CHECKED_IN -> Color(0xE643A047) to Color(0xFF14401A)
+    ReservationStatus.COMPLETED -> Color(0xE6757575) to Color(0xFF1F1F1F)
+    ReservationStatus.CANCELLED -> Color(0xE6E53935) to Color(0xFF5C0F0E)
+    ReservationStatus.NO_SHOW -> Color(0xE6FB8C00) to Color(0xFF5A2E00)
 }

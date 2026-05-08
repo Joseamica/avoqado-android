@@ -61,6 +61,7 @@ fun CreateProductView(
     initialName: String = "",
     initialSku: String? = null,
     initialGtin: String = "",
+    productType: String = "FOOD_AND_BEV",
     onProductCreated: (Product) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -69,12 +70,18 @@ fun CreateProductView(
     var selectedCategory by remember { mutableStateOf<ProductCategory?>(null) }
     var sku by remember { mutableStateOf(initialSku ?: generateRandomSku()) }
     var gtin by remember { mutableStateOf(initialGtin) }
+    var durationMinutes by remember { mutableStateOf(if (productType == "CLASS") "60" else "") }
+    var maxParticipants by remember { mutableStateOf(if (productType == "CLASS") "10" else "") }
     var isSaving by remember { mutableStateOf(false) }
     var showCategoryPicker by remember { mutableStateOf(false) }
     var menuCategories by remember { mutableStateOf<List<ProductCategory>>(emptyList()) }
 
     val coroutineScope = rememberCoroutineScope()
-    val canSave = name.isNotBlank() && price.isNotBlank() && selectedCategory != null
+    val canSave = name.isNotBlank() &&
+        price.isNotBlank() &&
+        selectedCategory != null &&
+        (productType != "CLASS" || (durationMinutes.toIntOrNull() ?: 0) > 0) &&
+        (productType != "CLASS" || (maxParticipants.toIntOrNull() ?: 0) > 0)
 
     // Fetch menu categories on appear
     LaunchedEffect(Unit) {
@@ -120,10 +127,12 @@ fun CreateProductView(
                             val request = CreateProductRequest(
                                 name = name,
                                 price = priceDouble,
-                                type = "FOOD_AND_BEV",
+                                type = productType,
                                 categoryId = category.id,
                                 sku = sku.ifBlank { null },
                                 gtin = gtin.ifBlank { null },
+                                duration = durationMinutes.toIntOrNull(),
+                                maxParticipants = maxParticipants.toIntOrNull(),
                             )
                             val result = productsRepository.createProduct(request)
                             result.fold(
@@ -139,7 +148,7 @@ fun CreateProductView(
                         }
                     },
                     enabled = canSave && !isSaving,
-                    shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.xl),
+                    shape = RoundedCornerShape(50),
                     colors = ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.primary,
                         disabledContainerColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f),
@@ -171,7 +180,7 @@ fun CreateProductView(
                 verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.lg),
             ) {
                 Text(
-                    text = "Crear articulo nuevo",
+                    text = if (productType == "CLASS") "Crear clase nueva" else "Crear articulo nuevo",
                     style = MaterialTheme.typography.headlineMedium,
                     fontWeight = FontWeight.Bold,
                 )
@@ -237,22 +246,44 @@ fun CreateProductView(
                 )
 
                 // GTIN + SKU side by side
-                Row(modifier = Modifier.fillMaxWidth()) {
-                    OutlinedTextField(
-                        value = gtin,
-                        onValueChange = { gtin = it },
-                        label = { Text("GTIN") },
-                        modifier = Modifier.weight(1f),
-                        singleLine = true,
-                    )
-                    Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.md))
-                    OutlinedTextField(
-                        value = sku,
-                        onValueChange = { sku = it },
-                        label = { Text("SKU") },
-                        modifier = Modifier.weight(1f),
-                        singleLine = true,
-                    )
+                if (productType == "CLASS") {
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        OutlinedTextField(
+                            value = durationMinutes,
+                            onValueChange = { durationMinutes = it.filter(Char::isDigit) },
+                            label = { Text("Duración (min)") },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        )
+                        Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.md))
+                        OutlinedTextField(
+                            value = maxParticipants,
+                            onValueChange = { maxParticipants = it.filter(Char::isDigit) },
+                            label = { Text("Capacidad") },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                        )
+                    }
+                } else {
+                    Row(modifier = Modifier.fillMaxWidth()) {
+                        OutlinedTextField(
+                            value = gtin,
+                            onValueChange = { gtin = it },
+                            label = { Text("GTIN") },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                        )
+                        Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.md))
+                        OutlinedTextField(
+                            value = sku,
+                            onValueChange = { sku = it },
+                            label = { Text("SKU") },
+                            modifier = Modifier.weight(1f),
+                            singleLine = true,
+                        )
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxxl))

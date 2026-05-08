@@ -1,20 +1,17 @@
-package com.avoqado.pos.reservations.presentation.create.steps
+package com.avoqado.pos.reservations.presentation.create.sections
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -45,27 +42,14 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 /**
- * DateTimeStep — date + time picker for the new reservation flow.
- *
- * Layout:
- *  - "FECHA" section: card showing the formatted date ("vie 1 de may") with a
- *    "Cambiar" TextButton that opens a Material3 [DatePickerDialog].
- *  - "HORA" section: 4-column [LazyVerticalGrid] of 15-min time slots from
- *    09:00 through 21:45 (52 slots). Selected slot uses the primary container;
- *    unselected slots are surface with an outlineVariant border.
- *
- * Note: Availability hint per slot (green/amber dot computed from existing
- * reservations) is deferred to Phase 3 — it requires extra calendar fetch
- * logic that doesn't ship value yet.
- *
- * Date display uses Spanish locale ("EEE d 'de' MMM"). The DatePicker uses
- * `ZoneId.systemDefault()` for the millis<->LocalDate conversion since the
- * user is selecting a calendar day, not an instant; the venue zone is only
- * applied at submit time via `draft.toRequest(zone)`.
+ * DateTimeSection — embedded date + 15-min slot picker for the create-reservation
+ * flow. Lives inside a [ModalBottomSheet] (PickerSheet) — owns its own scroll
+ * via LazyColumn. Time slots are emitted as `items` of 4-pill rows so only the
+ * currently visible rows are composed.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun DateTimeStep(viewModel: CreateReservationViewModel) {
+fun DateTimeSection(viewModel: CreateReservationViewModel) {
     val draft by viewModel.draft.collectAsStateWithLifecycle()
 
     var showDatePicker by remember { mutableStateOf(false) }
@@ -87,63 +71,74 @@ fun DateTimeStep(viewModel: CreateReservationViewModel) {
             }
         }
     }
+    val slotRows = remember(slots) { slots.chunked(4) }
 
-    Column(
+    LazyColumn(
         modifier = Modifier
             .fillMaxSize()
-            .padding(
-                horizontal = AvoqadoTheme.spacing.lg,
-                vertical = AvoqadoTheme.spacing.md,
-            ),
+            .padding(horizontal = AvoqadoTheme.spacing.lg),
     ) {
-        SectionHeader("FECHA")
-        Card(
-            shape = RoundedCornerShape(12.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surface,
-            ),
-            elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = AvoqadoTheme.spacing.lg),
-        ) {
-            Row(
+        item("date-header") {
+            Spacer(Modifier.height(AvoqadoTheme.spacing.md))
+            SectionHeader("FECHA")
+        }
+        item("date-card") {
+            Card(
+                shape = RoundedCornerShape(12.dp),
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                ),
+                elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(AvoqadoTheme.spacing.md),
-                verticalAlignment = Alignment.CenterVertically,
+                    .padding(bottom = AvoqadoTheme.spacing.lg),
             ) {
-                Text(
-                    text = dateLabel,
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.weight(1f),
-                )
-                TextButton(onClick = { showDatePicker = true }) {
-                    Text("Cambiar")
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(AvoqadoTheme.spacing.md),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = dateLabel,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.weight(1f),
+                    )
+                    TextButton(onClick = { showDatePicker = true }) {
+                        Text("Cambiar")
+                    }
                 }
             }
         }
 
-        SectionHeader("HORA")
-        // Availability hint per slot deferred to Phase 3.
-        LazyVerticalGrid(
-            columns = GridCells.Fixed(4),
-            modifier = Modifier.weight(1f),
-            contentPadding = PaddingValues(
-                horizontal = 0.dp,
-                vertical = AvoqadoTheme.spacing.sm,
-            ),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            items(slots, key = { it.toString() }) { slot ->
-                TimeSlotPill(
-                    time = slot,
-                    selected = slot == draft.time,
-                    onClick = { viewModel.update { it.copy(time = slot) } },
-                )
+        item("time-header") {
+            SectionHeader("HORA")
+            Spacer(Modifier.height(AvoqadoTheme.spacing.sm))
+        }
+
+        items(slotRows.size) { index ->
+            val rowSlots = slotRows[index]
+            Row(
+                modifier = Modifier.padding(bottom = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                rowSlots.forEach { slot ->
+                    TimeSlotPill(
+                        time = slot,
+                        selected = slot == draft.time,
+                        onClick = { viewModel.update { it.copy(time = slot) } },
+                        modifier = Modifier.weight(1f),
+                    )
+                }
+                repeat(4 - rowSlots.size) {
+                    Box(modifier = Modifier.weight(1f))
+                }
             }
+        }
+
+        item("bottom-spacer") {
+            Spacer(Modifier.height(AvoqadoTheme.spacing.xxl))
         }
     }
 
@@ -195,6 +190,7 @@ private fun TimeSlotPill(
     time: LocalTime,
     selected: Boolean,
     onClick: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val containerColor = if (selected) {
         MaterialTheme.colorScheme.primary
@@ -212,8 +208,7 @@ private fun TimeSlotPill(
         MaterialTheme.colorScheme.outlineVariant
     }
     Box(
-        modifier = Modifier
-            .fillMaxWidth()
+        modifier = modifier
             .height(56.dp)
             .clip(RoundedCornerShape(12.dp))
             .background(containerColor)
@@ -228,3 +223,4 @@ private fun TimeSlotPill(
         )
     }
 }
+

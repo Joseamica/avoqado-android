@@ -57,6 +57,7 @@ fun CalendarSettingsSheet(
     var view by remember(state.view) { mutableStateOf(state.view) }
     var visible by remember(state.visibleStatuses) { mutableStateOf(state.visibleStatuses) }
     var cancelled by remember(state.showCancelled) { mutableStateOf(state.showCancelled) }
+    var showClasses by remember(state.showClassSessions) { mutableStateOf(state.showClassSessions) }
 
     Scaffold(
         contentWindowInsets = WindowInsets(0),
@@ -73,6 +74,7 @@ fun CalendarSettingsSheet(
                         viewModel.setView(view)
                         viewModel.setVisibleStatuses(visible)
                         viewModel.setShowCancelled(cancelled)
+                        viewModel.setShowClassSessions(showClasses)
                         onClose()
                     }) { Text("Guardar") }
                 },
@@ -148,6 +150,13 @@ fun CalendarSettingsSheet(
                     label = "Mostrar reservas canceladas",
                     checked = cancelled,
                     onCheckedChange = { cancelled = it },
+                )
+                RowDivider()
+                StatusToggleRow(
+                    leadingDotColor = com.avoqado.pos.designsystem.theme.ClassSessionContainerLight,
+                    label = "Mostrar clases",
+                    checked = showClasses,
+                    onCheckedChange = { showClasses = it },
                 )
             }
         }

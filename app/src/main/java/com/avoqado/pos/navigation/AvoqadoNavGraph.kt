@@ -211,12 +211,17 @@ private fun MainScaffold(
                 composable(MainTab.CALENDAR.route) {
                     com.avoqado.pos.reservations.presentation.calendar.CalendarTabHost(
                         onOpenReservation = { id -> navController.navigate("reservations/$id") },
+                        onOpenClassSession = { id -> navController.navigate("class-sessions/$id") },
                         onOpenSettings = { navController.navigate("calendar/settings") },
                         onCreateReservation = { date, time, walkin ->
                             val timeStr = time.format(DateTimeFormatter.ofPattern("HH:mm"))
                             navController.navigate(
                                 "reservations/create?date=$date&time=$timeStr&walkin=$walkin",
                             )
+                        },
+                        onCreateClassSession = { date, time ->
+                            val timeStr = time.format(DateTimeFormatter.ofPattern("HH:mm"))
+                            navController.navigate("class-sessions/create?date=$date&time=$timeStr")
                         },
                     )
                 }
@@ -312,6 +317,43 @@ private fun MainScaffold(
                     ),
                 ) {
                     com.avoqado.pos.reservations.presentation.create.CreateReservationScreen(
+                        onClose = { navController.popBackStack() },
+                    )
+                }
+                composable(
+                    route = "class-sessions/create?date={date}&time={time}",
+                    arguments = listOf(
+                        navArgument("date") {
+                            type = NavType.StringType
+                            nullable = true
+                            defaultValue = null
+                        },
+                        navArgument("time") {
+                            type = NavType.StringType
+                            nullable = true
+                            defaultValue = null
+                        },
+                    ),
+                ) {
+                    com.avoqado.pos.reservations.presentation.classsessions.CreateClassSessionScreen(
+                        onClose = { navController.popBackStack() },
+                    )
+                }
+                composable(
+                    "class-sessions/{sessionId}",
+                    arguments = listOf(navArgument("sessionId") { type = NavType.StringType }),
+                ) { backStackEntry ->
+                    val id = backStackEntry.arguments?.getString("sessionId") ?: return@composable
+                    com.avoqado.pos.reservations.presentation.classsessions.ClassSessionDetailScreen(
+                        onClose = { navController.popBackStack() },
+                        onEdit = { navController.navigate("class-sessions/$id/edit") },
+                    )
+                }
+                composable(
+                    "class-sessions/{sessionId}/edit",
+                    arguments = listOf(navArgument("sessionId") { type = NavType.StringType }),
+                ) {
+                    com.avoqado.pos.reservations.presentation.classsessions.ClassSessionEditScreen(
                         onClose = { navController.popBackStack() },
                     )
                 }
@@ -421,12 +463,17 @@ private fun MainScaffold(
                 composable(MainTab.CALENDAR.route) {
                     com.avoqado.pos.reservations.presentation.calendar.CalendarTabHost(
                         onOpenReservation = { id -> navController.navigate("reservations/$id") },
+                        onOpenClassSession = { id -> navController.navigate("class-sessions/$id") },
                         onOpenSettings = { navController.navigate("calendar/settings") },
                         onCreateReservation = { date, time, walkin ->
                             val timeStr = time.format(DateTimeFormatter.ofPattern("HH:mm"))
                             navController.navigate(
                                 "reservations/create?date=$date&time=$timeStr&walkin=$walkin",
                             )
+                        },
+                        onCreateClassSession = { date, time ->
+                            val timeStr = time.format(DateTimeFormatter.ofPattern("HH:mm"))
+                            navController.navigate("class-sessions/create?date=$date&time=$timeStr")
                         },
                     )
                 }
@@ -522,6 +569,43 @@ private fun MainScaffold(
                     ),
                 ) {
                     com.avoqado.pos.reservations.presentation.create.CreateReservationScreen(
+                        onClose = { navController.popBackStack() },
+                    )
+                }
+                composable(
+                    route = "class-sessions/create?date={date}&time={time}",
+                    arguments = listOf(
+                        navArgument("date") {
+                            type = NavType.StringType
+                            nullable = true
+                            defaultValue = null
+                        },
+                        navArgument("time") {
+                            type = NavType.StringType
+                            nullable = true
+                            defaultValue = null
+                        },
+                    ),
+                ) {
+                    com.avoqado.pos.reservations.presentation.classsessions.CreateClassSessionScreen(
+                        onClose = { navController.popBackStack() },
+                    )
+                }
+                composable(
+                    "class-sessions/{sessionId}",
+                    arguments = listOf(navArgument("sessionId") { type = NavType.StringType }),
+                ) { backStackEntry ->
+                    val id = backStackEntry.arguments?.getString("sessionId") ?: return@composable
+                    com.avoqado.pos.reservations.presentation.classsessions.ClassSessionDetailScreen(
+                        onClose = { navController.popBackStack() },
+                        onEdit = { navController.navigate("class-sessions/$id/edit") },
+                    )
+                }
+                composable(
+                    "class-sessions/{sessionId}/edit",
+                    arguments = listOf(navArgument("sessionId") { type = NavType.StringType }),
+                ) {
+                    com.avoqado.pos.reservations.presentation.classsessions.ClassSessionEditScreen(
                         onClose = { navController.popBackStack() },
                     )
                 }

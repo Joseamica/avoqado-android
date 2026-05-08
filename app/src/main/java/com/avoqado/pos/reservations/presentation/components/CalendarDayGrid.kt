@@ -2,6 +2,9 @@ package com.avoqado.pos.reservations.presentation.components
 
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -19,6 +22,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -27,6 +31,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import com.avoqado.pos.reservations.data.model.Reservation
+import com.avoqado.pos.reservations.data.model.ClassSession
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.ZoneId
@@ -42,19 +47,31 @@ fun CalendarDayGrid(
     selectedDate: LocalDate,
     today: LocalDate,
     reservations: List<Reservation>,
+    classSessions: List<ClassSession> = emptyList(),
     venueZone: ZoneId,
     nowTime: LocalTime,
     startHour: Int = 6,
     endHour: Int = 23,
     onReservationClick: (Reservation) -> Unit,
+    onClassSessionClick: (ClassSession) -> Unit = {},
     onSlotTap: (LocalTime) -> Unit,
     onReservationReschedule: ((Reservation, ZonedDateTime, ZonedDateTime) -> Unit)? = null,
+    onSwipeDay: ((Int) -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val hours = remember(startHour, endHour) { (startHour..endHour).toList() }
     val scrollState = rememberScrollState()
     val density = LocalDensity.current
     val hourHeightPx = with(density) { HOUR_HEIGHT_DP.toPx() }
+    val swipeThresholdPx = with(density) { 80.dp.toPx() }
+
+    // Horizontal-swipe-to-change-day: accumulated drag delta on horizontal axis.
+    // verticalScroll handles vertical drags; draggable(Horizontal) only consumes
+    // horizontal drags, so the two coexist without conflict.
+    val accumulated = remember { mutableFloatStateOf(0f) }
+    val draggableState = rememberDraggableState { delta ->
+        accumulated.floatValue += delta
+    }
 
     // Auto-scroll to current hour (or selected day's first reservation) on first composition.
     LaunchedEffect(selectedDate) {
@@ -64,7 +81,30 @@ fun CalendarDayGrid(
         scrollState.scrollTo((targetPx - 100f).coerceAtLeast(0f).toInt())
     }
 
-    Box(modifier = modifier.fillMaxSize().verticalScroll(scrollState)) {
+    val swipeModifier = if (onSwipeDay != null) {
+        Modifier.draggable(
+            state = draggableState,
+            orientation = Orientation.Horizontal,
+            onDragStarted = { accumulated.floatValue = 0f },
+            onDragStopped = {
+                val drag = accumulated.floatValue
+                accumulated.floatValue = 0f
+                when {
+                    drag > swipeThresholdPx -> onSwipeDay(-1)  // dragged right → previous day
+                    drag < -swipeThresholdPx -> onSwipeDay(1)  // dragged left → next day
+                }
+            },
+        )
+    } else {
+        Modifier
+    }
+
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .then(swipeModifier)
+            .verticalScroll(scrollState),
+    ) {
         // Hour rows — each tappable
         Column(Modifier.fillMaxWidth()) {
             hours.forEach { hour ->
@@ -131,6 +171,30 @@ fun CalendarDayGrid(
                             }
                         }
                     },
+                )
+            }
+        }
+
+        classSessions.forEach { session ->
+            val start = ZonedDateTime.parse(session.startsAt).withZoneSameInstant(venueZone)
+            if (start.toLocalDate() != selectedDate) return@forEach
+            val topMin = (start.hour - startHour) * 60 + start.minute
+            val durMin = session.duration.coerceAtLeast(15)
+            if (topMin < 0) return@forEach
+            val topDp = (topMin / 60f) * HOUR_HEIGHT_DP.value
+            val heightDp = (durMin / 60f) * HOUR_HEIGHT_DP.value
+
+            Box(
+                Modifier
+                    .padding(start = (HOUR_AXIS_WIDTH + 4).dp, end = 8.dp)
+                    .offset(y = topDp.dp)
+                    .height(heightDp.dp)
+                    .fillMaxWidth(),
+            ) {
+                ClassSessionBlock(
+                    session = session,
+                    onClick = { onClassSessionClick(session) },
+                    modifier = Modifier.fillMaxSize(),
                 )
             }
         }

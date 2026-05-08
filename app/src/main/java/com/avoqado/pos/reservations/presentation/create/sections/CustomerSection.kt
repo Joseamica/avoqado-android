@@ -1,11 +1,10 @@
-package com.avoqado.pos.reservations.presentation.create.steps
+package com.avoqado.pos.reservations.presentation.create.sections
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -47,17 +46,24 @@ import com.avoqado.pos.reservations.presentation.create.CreateReservationViewMod
 import com.avoqado.pos.reservations.presentation.create.components.CustomerQuickCreateSheet
 
 /**
- * CustomerStep — three modes the user can switch between:
+ * CustomerSection — embedded customer picker for the create-reservation flow.
  *
- *  A) Search and tap an existing customer
- *  B) Toggle "Continuar como invitado" + fill inline guest fields
- *  C) Tap "+ Crear cliente" to open [CustomerQuickCreateSheet]
+ * Lives inside a [ModalBottomSheet] (PickerSheet) — owns its own scroll via
+ * LazyColumn so the customer list stays performant for venues with hundreds of
+ * customers. Three modes are visible at once:
+ *   A) Search and tap an existing customer
+ *   B) Toggle "Continuar como invitado" + fill inline guest fields
+ *   C) Tap "+ Crear cliente" to open [CustomerQuickCreateSheet]
  *
- * The "Continuar" pill in [com.avoqado.pos.reservations.presentation.create.components.StepperHeader]
- * is gated on `draft.canContinueFromCustomer`.
+ * Picking an existing customer fires [onCustomerPicked] so the caller can close
+ * the sheet automatically. Other actions (guest toggle, quick-create) keep the
+ * sheet open.
  */
 @Composable
-fun CustomerStep(viewModel: CreateReservationViewModel) {
+fun CustomerSection(
+    viewModel: CreateReservationViewModel,
+    onCustomerPicked: (() -> Unit)? = null,
+) {
     val draft by viewModel.draft.collectAsStateWithLifecycle()
     val customers by viewModel.customers.collectAsStateWithLifecycle()
     val isLoading by viewModel.isLoadingCustomers.collectAsStateWithLifecycle()
@@ -78,35 +84,28 @@ fun CustomerStep(viewModel: CreateReservationViewModel) {
         }
     }
 
-    Column(modifier = Modifier.fillMaxSize()) {
-        // Search bar
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(
-                    horizontal = AvoqadoTheme.spacing.lg,
-                    vertical = AvoqadoTheme.spacing.sm,
-                ),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            SearchPillField(
-                query = query,
-                onQueryChange = { query = it },
-                placeholder = "Buscar cliente",
-                modifier = Modifier.fillMaxWidth(),
-            )
+    LazyColumn(modifier = Modifier.fillMaxSize()) {
+        item("search") {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(
+                        horizontal = AvoqadoTheme.spacing.lg,
+                        vertical = AvoqadoTheme.spacing.sm,
+                    ),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                SearchPillField(
+                    query = query,
+                    onQueryChange = { query = it },
+                    placeholder = "Buscar cliente",
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
         }
 
-        LazyColumn(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f),
-            contentPadding = PaddingValues(
-                bottom = AvoqadoTheme.spacing.xxl,
-            ),
-        ) {
-            // Customer list
-            if (isLoading && customers.isEmpty()) {
+        when {
+            isLoading && customers.isEmpty() -> {
                 item("loading") {
                     Box(
                         modifier = Modifier
@@ -117,7 +116,8 @@ fun CustomerStep(viewModel: CreateReservationViewModel) {
                         CircularProgressIndicator()
                     }
                 }
-            } else if (filtered.isEmpty()) {
+            }
+            filtered.isEmpty() -> {
                 item("empty") {
                     Box(
                         modifier = Modifier
@@ -136,7 +136,8 @@ fun CustomerStep(viewModel: CreateReservationViewModel) {
                         )
                     }
                 }
-            } else {
+            }
+            else -> {
                 items(filtered, key = { it.id }) { customer ->
                     CustomerRow(
                         customer = customer,
@@ -152,6 +153,7 @@ fun CustomerStep(viewModel: CreateReservationViewModel) {
                                     guestEmail = null,
                                 )
                             }
+                            onCustomerPicked?.invoke()
                         },
                     )
                     HorizontalDivider(
@@ -160,109 +162,108 @@ fun CustomerStep(viewModel: CreateReservationViewModel) {
                     )
                 }
             }
+        }
 
-            // + Crear cliente CTA
-            item("create-cta") {
-                Row(
+        item("create-cta") {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { showQuickCreate = true }
+                    .padding(
+                        horizontal = AvoqadoTheme.spacing.lg,
+                        vertical = AvoqadoTheme.spacing.md,
+                    ),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
+            ) {
+                Box(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { showQuickCreate = true }
-                        .padding(
-                            horizontal = AvoqadoTheme.spacing.lg,
-                            vertical = AvoqadoTheme.spacing.md,
-                        ),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
+                    contentAlignment = Alignment.Center,
                 ) {
-                    Box(
-                        modifier = Modifier
-                            .size(40.dp)
-                            .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(
-                            imageVector = Icons.Filled.Add,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(20.dp),
-                        )
-                    }
-                    Text(
-                        text = "Crear cliente",
-                        style = MaterialTheme.typography.bodyLarge,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.primary,
+                    Icon(
+                        imageVector = Icons.Filled.Add,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(20.dp),
                     )
                 }
-            }
-
-            // Divider with "o"
-            item("or-divider") {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(
-                            horizontal = AvoqadoTheme.spacing.lg,
-                            vertical = AvoqadoTheme.spacing.md,
-                        ),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
-                ) {
-                    HorizontalDivider(
-                        modifier = Modifier.weight(1f),
-                        color = MaterialTheme.colorScheme.outlineVariant,
-                    )
-                    Text(
-                        text = "o",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    HorizontalDivider(
-                        modifier = Modifier.weight(1f),
-                        color = MaterialTheme.colorScheme.outlineVariant,
-                    )
-                }
-            }
-
-            // Continuar como invitado toggle + inline form
-            item("guest-section") {
-                GuestSection(
-                    isGuest = draft.isGuest,
-                    guestName = draft.guestName.orEmpty(),
-                    guestPhone = draft.guestPhone.orEmpty(),
-                    guestEmail = draft.guestEmail.orEmpty(),
-                    onGuestToggle = { isOn ->
-                        viewModel.update {
-                            if (isOn) {
-                                // Switch to guest mode → clear customer selection
-                                it.copy(
-                                    isGuest = true,
-                                    customerId = null,
-                                    customerName = null,
-                                )
-                            } else {
-                                // Leave guest mode → clear guest fields
-                                it.copy(
-                                    isGuest = false,
-                                    guestName = null,
-                                    guestPhone = null,
-                                    guestEmail = null,
-                                )
-                            }
-                        }
-                    },
-                    onGuestNameChange = { value ->
-                        viewModel.update { it.copy(guestName = value.ifBlank { null }) }
-                    },
-                    onGuestPhoneChange = { value ->
-                        viewModel.update { it.copy(guestPhone = value.ifBlank { null }) }
-                    },
-                    onGuestEmailChange = { value ->
-                        viewModel.update { it.copy(guestEmail = value.ifBlank { null }) }
-                    },
+                Text(
+                    text = "Crear cliente",
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary,
                 )
             }
+        }
+
+        item("or-divider") {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(
+                        horizontal = AvoqadoTheme.spacing.lg,
+                        vertical = AvoqadoTheme.spacing.md,
+                    ),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
+            ) {
+                HorizontalDivider(
+                    modifier = Modifier.weight(1f),
+                    color = MaterialTheme.colorScheme.outlineVariant,
+                )
+                Text(
+                    text = "o",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                HorizontalDivider(
+                    modifier = Modifier.weight(1f),
+                    color = MaterialTheme.colorScheme.outlineVariant,
+                )
+            }
+        }
+
+        item("guest") {
+            GuestSection(
+                isGuest = draft.isGuest,
+                guestName = draft.guestName.orEmpty(),
+                guestPhone = draft.guestPhone.orEmpty(),
+                guestEmail = draft.guestEmail.orEmpty(),
+                onGuestToggle = { isOn ->
+                    viewModel.update {
+                        if (isOn) {
+                            it.copy(
+                                isGuest = true,
+                                customerId = null,
+                                customerName = null,
+                            )
+                        } else {
+                            it.copy(
+                                isGuest = false,
+                                guestName = null,
+                                guestPhone = null,
+                                guestEmail = null,
+                            )
+                        }
+                    }
+                },
+                onGuestNameChange = { value ->
+                    viewModel.update { it.copy(guestName = value.ifBlank { null }) }
+                },
+                onGuestPhoneChange = { value ->
+                    viewModel.update { it.copy(guestPhone = value.ifBlank { null }) }
+                },
+                onGuestEmailChange = { value ->
+                    viewModel.update { it.copy(guestEmail = value.ifBlank { null }) }
+                },
+            )
+        }
+
+        item("bottom-spacer") {
+            Spacer(Modifier.height(AvoqadoTheme.spacing.xxl))
         }
     }
 
@@ -292,7 +293,6 @@ private fun CustomerRow(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
     ) {
-        // Avatar with initials
         Box(
             modifier = Modifier
                 .size(40.dp)
@@ -308,7 +308,6 @@ private fun CustomerRow(
             )
         }
 
-        // Name + contact
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = customer.fullName,
@@ -327,7 +326,6 @@ private fun CustomerRow(
             }
         }
 
-        // Selected check
         if (isSelected) {
             Icon(
                 imageVector = Icons.Filled.Check,
@@ -359,7 +357,6 @@ private fun GuestSection(
             ),
         verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
     ) {
-        // Toggle row
         Row(
             modifier = Modifier
                 .fillMaxWidth()

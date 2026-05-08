@@ -5,9 +5,12 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.MoreHoriz
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -20,6 +23,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -39,6 +43,7 @@ import com.avoqado.pos.reservations.data.model.Reservation
 import com.avoqado.pos.reservations.presentation.components.ActionSheetCenter
 import com.avoqado.pos.reservations.presentation.components.ActionSheetItem
 import com.avoqado.pos.reservations.presentation.detail.RescheduleConfirmSheet
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.time.LocalDate
 import java.time.LocalTime
@@ -52,6 +57,8 @@ fun CalendarTabHost(
     onOpenReservation: (String) -> Unit = {},
     onOpenSettings: () -> Unit = {},
     onCreateReservation: (LocalDate, LocalTime, Boolean) -> Unit = { _, _, _ -> },
+    onCreateClassSession: (LocalDate, LocalTime) -> Unit = { _, _ -> },
+    onOpenClassSession: (String) -> Unit = {},
     viewModel: CalendarViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -78,6 +85,13 @@ fun CalendarTabHost(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
+    LaunchedEffect(isOnline) {
+        while (isOnline) {
+            delay(30_000)
+            viewModel.refresh(showLoading = false)
+        }
+    }
+
     fun openSheetAtSlot(date: LocalDate, time: LocalTime) {
         pendingSlot = date to time
     }
@@ -94,6 +108,20 @@ fun CalendarTabHost(
                     )
                 },
                 actions = {
+                    IconButton(
+                        onClick = { viewModel.refresh() },
+                        enabled = !state.isLoading,
+                    ) {
+                        if (state.isLoading) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                        } else {
+                            Icon(Icons.Filled.Refresh, "Actualizar")
+                        }
+                    }
                     IconButton(onClick = { showSheetForNow = true }) {
                         Icon(Icons.Filled.Add, "Crear")
                     }
@@ -132,6 +160,7 @@ fun CalendarTabHost(
                     venueZone = venueZone,
                     onSelectDate = viewModel::setDate,
                     onReservationClick = { onOpenReservation(it.id) },
+                    onClassSessionClick = { onOpenClassSession(it.id) },
                     onSlotTap = ::openSheetAtSlot,
                     onReservationReschedule = openReschedule,
                 )
@@ -140,6 +169,7 @@ fun CalendarTabHost(
                     venueZone = venueZone,
                     onSelectDate = viewModel::setDate,
                     onReservationClick = { onOpenReservation(it.id) },
+                    onClassSessionClick = { onOpenClassSession(it.id) },
                     onSlotTap = ::openSheetAtSlot,
                     onReservationReschedule = openReschedule,
                 )
@@ -206,7 +236,11 @@ fun CalendarTabHost(
                 ),
                 ActionSheetItem(
                     label = "Crear clase",
-                    onClick = { showComingSoon(scope, snackbar, "Crear clase", 3) },
+                    onClick = {
+                        onCreateClassSession(target.first, target.second)
+                        pendingSlot = null
+                        showSheetForNow = false
+                    },
                 ),
                 ActionSheetItem(
                     label = "Crear evento personal",
@@ -232,4 +266,3 @@ private fun showComingSoon(
         snackbar.showSnackbar("$action — disponible en Fase $phase")
     }
 }
-

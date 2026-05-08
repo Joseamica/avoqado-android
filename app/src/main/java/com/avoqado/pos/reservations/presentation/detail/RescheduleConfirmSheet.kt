@@ -67,9 +67,8 @@ private data class ChannelOption(
 
 private val CHANNEL_OPTIONS = listOf(
     ChannelOption(RescheduleNotificationChannel.push, "Notificación push", enabled = true),
-    ChannelOption(RescheduleNotificationChannel.whatsapp, "WhatsApp", enabled = false, helper = "Próximamente"),
-    ChannelOption(RescheduleNotificationChannel.email, "Correo electrónico", enabled = false, helper = "Próximamente"),
-    ChannelOption(RescheduleNotificationChannel.sms, "SMS", enabled = false, helper = "Próximamente"),
+    ChannelOption(RescheduleNotificationChannel.whatsapp, "WhatsApp", enabled = true),
+    ChannelOption(RescheduleNotificationChannel.email, "Correo electrónico", enabled = true),
     ChannelOption(RescheduleNotificationChannel.none, "Sin notificación", enabled = true),
 )
 

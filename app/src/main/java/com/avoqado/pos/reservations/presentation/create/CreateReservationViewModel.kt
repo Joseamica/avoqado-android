@@ -16,7 +16,6 @@ import com.avoqado.pos.reservations.data.WaitlistRepository
 import com.avoqado.pos.reservations.data.model.Reservation
 import com.avoqado.pos.reservations.data.model.ReservationChannel
 import com.avoqado.pos.reservations.domain.CreateReservationDraft
-import com.avoqado.pos.reservations.domain.CreateStep
 import com.avoqado.pos.tables.data.Table
 import com.avoqado.pos.tables.data.TablesRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -105,7 +104,7 @@ class CreateReservationViewModel @Inject constructor(
                     _draft.update { d -> seedFromReservation(d, r) }
                 }
             }
-            return  // skip walk-in / date / time seeding when editing
+            return
         }
 
         val promoteId = handle.get<String>("promoteWaitlistId")
@@ -119,7 +118,6 @@ class CreateReservationViewModel @Inject constructor(
             }
             _draft.update { d ->
                 d.copy(
-                    step = CreateStep.SERVICE,    // skip customer when promoting
                     customerId = prefillCustomerId,
                     customerName = if (prefillCustomerId == null) prefillGuestName else null,
                     isGuest = prefillCustomerId == null,
@@ -127,7 +125,7 @@ class CreateReservationViewModel @Inject constructor(
                     partySize = prefillPartySize ?: d.partySize,
                     date = prefillStart?.toLocalDate() ?: d.date,
                     time = prefillStart?.toLocalTime() ?: d.time,
-                    channel = ReservationChannel.WALK_IN,  // promotion treated like walk-in
+                    channel = ReservationChannel.WALK_IN,
                 )
             }
             return
@@ -138,13 +136,10 @@ class CreateReservationViewModel @Inject constructor(
         _draft.update { d ->
             d.copy(
                 date = date ?: d.date,
-                // Walk-ins seeded from a calendar slot keep that slot's `time`; only fall back
-                // to "now rounded up" when no time arg was passed (e.g. + button from header).
                 time = time ?: if (isWalkIn) nextQuarterHour(LocalTime.now(zone)) else d.time,
                 isGuest = if (isWalkIn) true else d.isGuest,
                 guestName = if (isWalkIn) "Walk-in" else d.guestName,
                 channel = if (isWalkIn) ReservationChannel.WALK_IN else d.channel,
-                step = if (isWalkIn) CreateStep.SERVICE else d.step,
             )
         }
     }
@@ -153,7 +148,6 @@ class CreateReservationViewModel @Inject constructor(
         val startInstant = java.time.Instant.parse(r.startsAt)
         val zoned = startInstant.atZone(zone)
         return d.copy(
-            step = CreateStep.SERVICE,                  // skip customer in edit mode
             customerId = r.customerId,
             customerName = r.customer?.fullName,
             guestName = r.guestName,
@@ -185,10 +179,6 @@ class CreateReservationViewModel @Inject constructor(
     fun update(transform: (CreateReservationDraft) -> CreateReservationDraft) {
         _draft.update(transform)
     }
-
-    fun next() = _draft.update { d -> d.copy(step = nextStepOf(d.step)) }
-    fun back() = _draft.update { d -> d.copy(step = prevStepOf(d.step)) }
-    fun goTo(step: CreateStep) = _draft.update { it.copy(step = step) }
 
     private fun loadCustomers() {
         viewModelScope.launch {
@@ -242,7 +232,6 @@ class CreateReservationViewModel @Inject constructor(
             } else {
                 repository.createReservation(_draft.value.toRequest(zone))
             }
-            // After successful create from waitlist, promote the entry
             r.onSuccess { created ->
                 val pid = promoteWaitlistId
                 if (pid != null && created != null) {
@@ -252,21 +241,5 @@ class CreateReservationViewModel @Inject constructor(
             _isSubmitting.value = false
             _result.value = r.map { it ?: error("Empty reservation") }
         }
-    }
-
-    private fun nextStepOf(s: CreateStep): CreateStep = when (s) {
-        CreateStep.CUSTOMER -> CreateStep.SERVICE
-        CreateStep.SERVICE -> CreateStep.DATETIME
-        CreateStep.DATETIME -> CreateStep.DETAILS
-        CreateStep.DETAILS -> CreateStep.CONFIRM
-        CreateStep.CONFIRM -> CreateStep.CONFIRM
-    }
-
-    private fun prevStepOf(s: CreateStep): CreateStep = when (s) {
-        CreateStep.CUSTOMER -> CreateStep.CUSTOMER
-        CreateStep.SERVICE -> CreateStep.CUSTOMER
-        CreateStep.DATETIME -> CreateStep.SERVICE
-        CreateStep.DETAILS -> CreateStep.DATETIME
-        CreateStep.CONFIRM -> CreateStep.DETAILS
     }
 }

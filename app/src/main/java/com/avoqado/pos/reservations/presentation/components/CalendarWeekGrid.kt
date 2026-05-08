@@ -13,6 +13,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
+import com.avoqado.pos.reservations.data.model.ClassSession
 import com.avoqado.pos.reservations.data.model.Reservation
 import java.time.LocalDate
 import java.time.LocalTime
@@ -29,8 +30,10 @@ fun CalendarWeekGrid(
     weekStart: LocalDate,
     today: LocalDate,
     reservations: List<Reservation>,
+    classSessions: List<ClassSession> = emptyList(),
     venueZone: ZoneId,
     onReservationClick: (Reservation) -> Unit,
+    onClassSessionClick: (ClassSession) -> Unit = {},
     onSlotTap: (LocalDate, LocalTime) -> Unit,
     onReservationReschedule: ((Reservation, ZonedDateTime, ZonedDateTime) -> Unit)? = null,
     startHour: Int = 6,
@@ -74,8 +77,13 @@ fun CalendarWeekGrid(
                                 val starts = ZonedDateTime.parse(it.startsAt).withZoneSameInstant(venueZone)
                                 starts.toLocalDate() == d && starts.hour == hour
                             },
+                            classSessions = classSessions.filter {
+                                val starts = ZonedDateTime.parse(it.startsAt).withZoneSameInstant(venueZone)
+                                starts.toLocalDate() == d && starts.hour == hour
+                            },
                             venueZone = venueZone,
                             onReservationClick = onReservationClick,
+                            onClassSessionClick = onClassSessionClick,
                             onSlotTap = onSlotTap,
                             onReservationReschedule = onReservationReschedule,
                             hourHeightPx = hourHeightPx,
@@ -96,8 +104,10 @@ private fun DayHourCell(
     date: LocalDate,
     hour: Int,
     reservations: List<Reservation>,
+    classSessions: List<ClassSession>,
     venueZone: ZoneId,
     onReservationClick: (Reservation) -> Unit,
+    onClassSessionClick: (ClassSession) -> Unit,
     onSlotTap: (LocalDate, LocalTime) -> Unit,
     onReservationReschedule: ((Reservation, ZonedDateTime, ZonedDateTime) -> Unit)?,
     hourHeightPx: Float,
@@ -124,6 +134,13 @@ private fun DayHourCell(
             }
         }
         Column(Modifier.padding(2.dp)) {
+            classSessions.forEach { session ->
+                ClassSessionBlock(
+                    session = session,
+                    onClick = { onClassSessionClick(session) },
+                    modifier = Modifier.fillMaxWidth().padding(bottom = 2.dp),
+                )
+            }
             reservations.forEach { r ->
                 ReservationBlock(
                     reservation = r,

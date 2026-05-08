@@ -133,7 +133,7 @@ fun LandingScreen(
                     val context = LocalContext.current
                     OutlinedButton(
                         onClick = {
-                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://dashboardv2.avoqado.io/signup"))
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://dashboard.avoqado.io/signup"))
                             context.startActivity(intent)
                         },
                         modifier = Modifier.height(52.dp),

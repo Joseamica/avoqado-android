@@ -85,3 +85,8 @@ Thumbs.db
 # QA / debugging screenshots dropped at repo root
 /[0-9][0-9]-*.png
 /snapshot-*.md
+
+# Superpowers research artifacts (one-off screenshots, scratch findings, spec drafts)
+docs/superpowers/research/
+docs/superpowers/specs/images/
+.gstack/

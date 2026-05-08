@@ -161,6 +161,12 @@ class SecureStorage @Inject constructor(
             plainPrefs.edit().putString(calendarViewKey(), value).apply()
         }
 
+    var showClassSessionsForCurrentVenue: Boolean
+        get() = plainPrefs.getBoolean(showClassSessionsKey(), true)
+        set(value) {
+            plainPrefs.edit().putBoolean(showClassSessionsKey(), value).apply()
+        }
+
     fun saveSelectedStaffForCurrentVenue(staffId: String, staffName: String) {
         val currentVenueId = venueId ?: return
         plainPrefs.edit()
@@ -348,6 +354,7 @@ class SecureStorage @Inject constructor(
         private const val KEY_SELECTED_STAFF_ID_PREFIX = "selectedStaffId"
         private const val KEY_SELECTED_STAFF_NAME_PREFIX = "selectedStaffName"
         private const val KEY_CALENDAR_VIEW_PREFIX = "calendarView"
+        private const val KEY_SHOW_CLASS_SESSIONS_PREFIX = "showClassSessions"
     }
 
     private fun selectedStaffIdKey(currentVenueId: String? = venueId): String {
@@ -360,6 +367,10 @@ class SecureStorage @Inject constructor(
 
     private fun calendarViewKey(currentVenueId: String? = venueId): String {
         return "${KEY_CALENDAR_VIEW_PREFIX}_${currentVenueId ?: "global"}"
+    }
+
+    private fun showClassSessionsKey(currentVenueId: String? = venueId): String {
+        return "${KEY_SHOW_CLASS_SESSIONS_PREFIX}_${currentVenueId ?: "global"}"
     }
 }
 

@@ -2,6 +2,7 @@ package com.avoqado.pos.pos.data.model
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonElement
 
 @Serializable
 data class Product(
@@ -27,6 +28,8 @@ data class Product(
      * non-bookable products like RETAIL.
      */
     val duration: Int? = null,
+    val maxParticipants: Int? = null,
+    val layoutConfig: JsonElement? = null,
     val modifierGroups: List<ProductModifierGroupEntry>? = null,
     val trackInventory: Boolean? = null,
     val availableQuantity: Int? = null,

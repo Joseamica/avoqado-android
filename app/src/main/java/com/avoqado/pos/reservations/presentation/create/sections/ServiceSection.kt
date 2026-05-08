@@ -1,4 +1,4 @@
-package com.avoqado.pos.reservations.presentation.create.steps
+package com.avoqado.pos.reservations.presentation.create.sections
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -44,39 +44,25 @@ import com.avoqado.pos.pos.data.model.Product
 import com.avoqado.pos.reservations.presentation.create.CreateReservationViewModel
 
 /**
- * ServiceStep — product/service picker for the new reservation flow.
+ * ServiceSection — embedded service picker for the create-reservation flow.
  *
- * Layout:
- *  - Horizontal `LazyRow` of [FilterChip]s for category filter (always shows "Todos").
- *  - [SearchPillField] for textual filter on product name.
- *  - [LazyColumn] of products: avatar (color from product, fallback initials) + name +
- *    "<duration> min · $price" + selected check.
- *
- * Empty states:
- *  - When no products at all: friendly empty state with a hint to add products in the dashboard.
- *  - When category/search filter yields nothing: "Sin resultados" placeholder.
- *
- * Only bookable product types — `SERVICE`, `APPOINTMENTS_SERVICE`, `CLASS` — are shown so
- * retail items (hats, drinks) don't surface in the reservations picker. Per-product duration
- * comes from `Product.duration` with a 60-minute fallback for products that haven't been
- * configured.
- *
- * Selection writes `productId`, `productName`, and `durationMinutes` into the draft. The
- * "Continuar" pill in the StepperHeader is gated on `draft.canContinueFromService`.
+ * Lives inside a [ModalBottomSheet] (PickerSheet) — owns its own scroll via
+ * LazyColumn so venues with hundreds of services stay performant. Only bookable
+ * product types (`SERVICE`, `APPOINTMENTS_SERVICE`, `CLASS`) surface here.
  */
 @Composable
-fun ServiceStep(viewModel: CreateReservationViewModel) {
+fun ServiceSection(
+    viewModel: CreateReservationViewModel,
+    onServicePicked: (() -> Unit)? = null,
+) {
     val draft by viewModel.draft.collectAsStateWithLifecycle()
     val products by viewModel.products.collectAsStateWithLifecycle()
 
     var query by remember { mutableStateOf("") }
     var selectedCategoryId: String? by remember { mutableStateOf(null) }
 
-    // Bookable types — exclude RETAIL / FOOD_AND_BEV / OTHER so the picker doesn't list "Gorra
-    // Navy" hats next to actual services. Server uses uppercase enums.
     val bookableTypes = remember { setOf("SERVICE", "APPOINTMENTS_SERVICE", "CLASS") }
 
-    // Active, bookable products filtered by selected category and current search query.
     val visibleProducts = remember(products, query, selectedCategoryId, bookableTypes) {
         products
             .filter { it.active != false }
@@ -85,8 +71,6 @@ fun ServiceStep(viewModel: CreateReservationViewModel) {
             .filter { query.isBlank() || it.name.contains(query.trim(), ignoreCase = true) }
     }
 
-    // Categories derived from the active, bookable product list (matches the visible products
-    // so the chip row never shows a category whose only members were filtered out).
     val categories = remember(products, bookableTypes) {
         products
             .filter { it.active != false }
@@ -95,86 +79,86 @@ fun ServiceStep(viewModel: CreateReservationViewModel) {
             .distinctBy { it.id }
     }
 
-    Column(modifier = Modifier.fillMaxSize()) {
+    LazyColumn(modifier = Modifier.fillMaxSize()) {
         if (categories.isNotEmpty()) {
-            LazyRow(
-                contentPadding = PaddingValues(
-                    horizontal = AvoqadoTheme.spacing.lg,
-                    vertical = AvoqadoTheme.spacing.sm,
-                ),
-                horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
-            ) {
-                item("all") {
-                    FilterChip(
-                        selected = selectedCategoryId == null,
-                        onClick = { selectedCategoryId = null },
-                        label = { Text("Todos") },
-                    )
-                }
-                items(categories, key = { it.id }) { category ->
-                    FilterChip(
-                        selected = selectedCategoryId == category.id,
-                        onClick = {
-                            selectedCategoryId = if (selectedCategoryId == category.id) {
-                                null
-                            } else {
-                                category.id
-                            }
-                        },
-                        label = { Text(category.name) },
-                    )
+            item("categories") {
+                LazyRow(
+                    contentPadding = PaddingValues(
+                        horizontal = AvoqadoTheme.spacing.lg,
+                        vertical = AvoqadoTheme.spacing.sm,
+                    ),
+                    horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
+                ) {
+                    item("all") {
+                        FilterChip(
+                            selected = selectedCategoryId == null,
+                            onClick = { selectedCategoryId = null },
+                            label = { Text("Todos") },
+                        )
+                    }
+                    items(categories, key = { it.id }) { category ->
+                        FilterChip(
+                            selected = selectedCategoryId == category.id,
+                            onClick = {
+                                selectedCategoryId = if (selectedCategoryId == category.id) {
+                                    null
+                                } else {
+                                    category.id
+                                }
+                            },
+                            label = { Text(category.name) },
+                        )
+                    }
                 }
             }
         }
 
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(
-                    horizontal = AvoqadoTheme.spacing.lg,
-                    vertical = AvoqadoTheme.spacing.sm,
-                ),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            SearchPillField(
-                query = query,
-                onQueryChange = { query = it },
-                placeholder = "Buscar servicio",
-                modifier = Modifier.weight(1f),
-            )
+        item("search") {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(
+                        horizontal = AvoqadoTheme.spacing.lg,
+                        vertical = AvoqadoTheme.spacing.sm,
+                    ),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                SearchPillField(
+                    query = query,
+                    onQueryChange = { query = it },
+                    placeholder = "Buscar servicio",
+                    modifier = Modifier.weight(1f),
+                )
+            }
         }
 
         when {
-            products.isEmpty() -> EmptyProductsState()
-            visibleProducts.isEmpty() -> NoResultsState()
-            else -> LazyColumn(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-                contentPadding = PaddingValues(bottom = AvoqadoTheme.spacing.xxl),
-            ) {
-                items(visibleProducts, key = { it.id }) { product ->
-                    ProductRow(
-                        product = product,
-                        isSelected = draft.productId == product.id,
-                        onClick = {
-                            viewModel.update {
-                                it.copy(
-                                    productId = product.id,
-                                    productName = product.name,
-                                    // Use server-provided per-product duration; fall back to 60
-                                    // when the product hasn't been configured with one yet.
-                                    durationMinutes = product.duration ?: 60,
-                                )
-                            }
-                        },
-                    )
-                    HorizontalDivider(
-                        color = MaterialTheme.colorScheme.outlineVariant,
-                        modifier = Modifier.padding(start = 72.dp),
-                    )
-                }
+            products.isEmpty() -> item("empty-products") { EmptyProductsState() }
+            visibleProducts.isEmpty() -> item("no-results") { NoResultsState() }
+            else -> items(visibleProducts, key = { it.id }) { product ->
+                ProductRow(
+                    product = product,
+                    isSelected = draft.productId == product.id,
+                    onClick = {
+                        viewModel.update {
+                            it.copy(
+                                productId = product.id,
+                                productName = product.name,
+                                durationMinutes = product.duration ?: 60,
+                            )
+                        }
+                        onServicePicked?.invoke()
+                    },
+                )
+                HorizontalDivider(
+                    color = MaterialTheme.colorScheme.outlineVariant,
+                    modifier = Modifier.padding(start = 72.dp),
+                )
             }
+        }
+
+        item("bottom-spacer") {
+            Spacer(Modifier.height(AvoqadoTheme.spacing.xxl))
         }
     }
 }
@@ -239,7 +223,6 @@ private fun ProductRow(
                 modifier = Modifier.size(20.dp),
             )
         } else {
-            // Reserve trailing space so rows don't shift when selection toggles.
             Spacer(modifier = Modifier.width(20.dp))
         }
     }
@@ -249,10 +232,9 @@ private fun ProductRow(
 private fun EmptyProductsState() {
     Column(
         modifier = Modifier
-            .fillMaxSize()
+            .fillMaxWidth()
             .padding(AvoqadoTheme.spacing.xl),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
     ) {
         Icon(
             imageVector = Icons.Filled.Inventory2,
@@ -280,7 +262,7 @@ private fun EmptyProductsState() {
 private fun NoResultsState() {
     Box(
         modifier = Modifier
-            .fillMaxSize()
+            .fillMaxWidth()
             .padding(AvoqadoTheme.spacing.xl),
         contentAlignment = Alignment.Center,
     ) {

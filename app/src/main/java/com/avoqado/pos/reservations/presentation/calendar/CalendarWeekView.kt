@@ -3,6 +3,7 @@ package com.avoqado.pos.reservations.presentation.calendar
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
+import com.avoqado.pos.reservations.data.model.ClassSession
 import com.avoqado.pos.reservations.data.model.Reservation
 import com.avoqado.pos.reservations.presentation.components.CalendarWeekGrid
 import java.time.LocalDate
@@ -16,6 +17,7 @@ fun CalendarWeekView(
     venueZone: ZoneId,
     onSelectDate: (LocalDate) -> Unit,
     onReservationClick: (Reservation) -> Unit,
+    onClassSessionClick: (ClassSession) -> Unit = {},
     onSlotTap: (LocalDate, LocalTime) -> Unit,
     onReservationReschedule: ((Reservation, ZonedDateTime, ZonedDateTime) -> Unit)? = null,
     modifier: Modifier = Modifier,
@@ -24,9 +26,11 @@ fun CalendarWeekView(
     CalendarWeekGrid(
         weekStart = weekStart,
         today = state.today,
-        reservations = state.reservations,
+        reservations = state.visibleReservations,
+        classSessions = state.visibleClassSessions,
         venueZone = venueZone,
         onReservationClick = onReservationClick,
+        onClassSessionClick = onClassSessionClick,
         onSlotTap = onSlotTap,
         onReservationReschedule = onReservationReschedule,
         modifier = modifier.fillMaxSize(),
