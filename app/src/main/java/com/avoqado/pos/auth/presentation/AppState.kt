@@ -51,10 +51,15 @@ class AppState @Inject constructor(
     private val _reservationsEnabled = MutableStateFlow(secureStorage.reservationsEnabled)
     private val _venueMode = MutableStateFlow(VenueMode.fromStorage(secureStorage.venueMode))
 
+    // Bumped on login/logout/venue-switch so the visibleTabs combine re-emits
+    // even when reservations/venueMode didn't change but the role did.
+    private val _roleVersion = MutableStateFlow(0)
+
     val visibleTabs: StateFlow<List<MainTab>> = combine(
         _reservationsEnabled,
         _venueMode,
-    ) { enabled, mode -> computeVisibleTabs(enabled, mode) }
+        _roleVersion,
+    ) { enabled, mode, _ -> computeVisibleTabs(enabled, mode) }
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.Eagerly,
@@ -100,6 +105,7 @@ class AppState @Inject constructor(
     fun refreshTabs() {
         _reservationsEnabled.value = secureStorage.reservationsEnabled
         _venueMode.value = VenueMode.fromStorage(secureStorage.venueMode)
+        _roleVersion.value += 1
     }
 
     fun onLoginSuccess() {

@@ -764,7 +764,7 @@ fun MoreMenuScreen(
             cartItemCount = cartItemCount,
             cartTotal = cartTotal,
             onVenueSelected = { venue ->
-                viewModel.switchVenue(venue)
+                viewModel.switchVenue(venue, onSwitched = onTabsShouldRefresh)
                 showVenueSwitcher = false
             },
             onDismiss = { showVenueSwitcher = false },

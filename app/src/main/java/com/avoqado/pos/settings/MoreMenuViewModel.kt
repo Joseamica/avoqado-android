@@ -65,7 +65,7 @@ class MoreMenuViewModel @Inject constructor(
         secureStorage.venueMode = mode.storageValue
     }
 
-    fun switchVenue(venue: StoredVenue) {
+    fun switchVenue(venue: StoredVenue, onSwitched: () -> Unit = {}) {
         if (venue.id == secureStorage.venueId) return
 
         _isSwitching.value = true
@@ -81,6 +81,8 @@ class MoreMenuViewModel @Inject constructor(
                 addonsManager.reloadForCurrentVenue()
 
                 Log.d("🔄", "✅ Venue switch complete: ${venue.name}")
+                // Notify so AppState.visibleTabs recomputes against the new role.
+                onSwitched()
             } catch (e: Exception) {
                 Log.e("🔄", "❌ Venue switch error: ${e.message}")
             } finally {
