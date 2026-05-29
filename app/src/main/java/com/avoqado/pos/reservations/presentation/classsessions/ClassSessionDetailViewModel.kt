@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.customers.data.CustomersRepository
 import com.avoqado.pos.customers.data.model.Customer
+import com.avoqado.pos.pos.data.ClassCheckoutSeed
 import com.avoqado.pos.pos.data.StaffMember
 import com.avoqado.pos.pos.data.StaffRepository
 import com.avoqado.pos.reservations.data.ClassSessionRepository
@@ -13,8 +14,11 @@ import com.avoqado.pos.reservations.data.model.AddAttendeeRequest
 import com.avoqado.pos.reservations.data.model.ClassSession
 import com.avoqado.pos.reservations.data.model.UpdateClassSessionRequest
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import java.time.ZoneId
@@ -26,6 +30,7 @@ class ClassSessionDetailViewModel @Inject constructor(
     private val customersRepository: CustomersRepository,
     private val staffRepository: StaffRepository,
     private val secureStorage: SecureStorage,
+    private val classCheckoutSeed: ClassCheckoutSeed,
     savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
     private val sessionId: String = savedStateHandle.get<String>("sessionId").orEmpty()
@@ -45,6 +50,11 @@ class ClassSessionDetailViewModel @Inject constructor(
 
     private val _message = MutableStateFlow<Result<String>?>(null)
     val message: StateFlow<Result<String>?> = _message.asStateFlow()
+
+    /** One-shot signal: a seat was reserved and the cart was seeded — the
+     *  screen should navigate to the Checkout tab so the cashier can charge. */
+    private val _navigateToCheckout = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val navigateToCheckout: SharedFlow<Unit> = _navigateToCheckout.asSharedFlow()
 
     init {
         refresh()
@@ -81,6 +91,71 @@ class ClassSessionDetailViewModel @Inject constructor(
             ),
             "¡Asistente agregado!",
         )
+    }
+
+    // ── Walk-in "Inscribir y cobrar" (Square-style: reserve seat → seed cart → go to register) ──
+
+    fun addCustomerAndCharge(customer: Customer, partySize: Int) {
+        addAttendeeAndCharge(
+            AddAttendeeRequest(
+                customerId = customer.id,
+                guestName = customer.fullName,
+                guestPhone = customer.phone,
+                guestEmail = customer.email,
+                partySize = partySize,
+            ),
+        )
+    }
+
+    fun addGuestAndCharge(name: String, phone: String?, email: String?, partySize: Int) {
+        addAttendeeAndCharge(
+            AddAttendeeRequest(
+                guestName = name,
+                guestPhone = phone?.takeIf { it.isNotBlank() },
+                guestEmail = email?.takeIf { it.isNotBlank() },
+                partySize = partySize,
+            ),
+        )
+    }
+
+    /**
+     * Reserves the seat(s) (server re-checks capacity atomically via FOR UPDATE
+     * — this is the no-oversell guarantee), then drops the class product into
+     * the cross-screen seed and signals the screen to jump to the Checkout tab.
+     * The actual charge happens in the normal register flow.
+     */
+    private fun addAttendeeAndCharge(request: AddAttendeeRequest) {
+        val s = _session.value
+        if (s == null) {
+            _message.value = Result.failure(Exception("Clase no disponible"))
+            return
+        }
+        // Local fast-fail; the server still re-checks capacity under a row lock.
+        if (s.enrolled + request.partySize > s.capacity) {
+            _message.value = Result.failure(Exception("Sesión llena (${s.enrolled}/${s.capacity})"))
+            return
+        }
+        if (_isSubmitting.value) return
+        viewModelScope.launch {
+            _isSubmitting.value = true
+            repository.addAttendee(sessionId, request).fold(
+                onSuccess = { attendee ->
+                    classCheckoutSeed.put(
+                        ClassCheckoutSeed.Seed(
+                            productId = s.productId,
+                            quantity = request.partySize,
+                            reservationId = attendee.id,
+                        ),
+                    )
+                    refresh()
+                    _navigateToCheckout.tryEmit(Unit)
+                },
+                onFailure = { error ->
+                    _message.value = Result.failure(error)
+                },
+            )
+            _isSubmitting.value = false
+        }
     }
 
     fun removeAttendee(reservationId: String) {

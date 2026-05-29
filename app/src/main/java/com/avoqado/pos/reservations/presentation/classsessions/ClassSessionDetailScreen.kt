@@ -25,6 +25,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.Group
+import androidx.compose.material.icons.filled.Payments
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
@@ -73,6 +74,7 @@ import java.util.Locale
 fun ClassSessionDetailScreen(
     onClose: () -> Unit,
     onEdit: () -> Unit,
+    onChargeSeeded: () -> Unit = {},
     viewModel: ClassSessionDetailViewModel = hiltViewModel(),
 ) {
     val session by viewModel.session.collectAsStateWithLifecycle()
@@ -92,6 +94,14 @@ fun ClassSessionDetailScreen(
             },
             onFailure = { scope.launch { snackbar.showSnackbar(it.message ?: "No se pudo completar la acción") } },
         )
+    }
+
+    // Walk-in "Inscribir y cobrar": seat reserved + cart seeded → jump to register.
+    LaunchedEffect(Unit) {
+        viewModel.navigateToCheckout.collect {
+            showAdd = false
+            onChargeSeeded()
+        }
     }
 
     Scaffold(
@@ -244,11 +254,16 @@ private fun AddAttendeeSheet(
     onDone: () -> Unit,
 ) {
     val customers by viewModel.customers.collectAsStateWithLifecycle()
+    val session by viewModel.session.collectAsStateWithLifecycle()
+    // Cap "Lugares" at the seats actually left; the server still re-checks.
+    val available = session?.let { (it.capacity - it.enrolled).coerceAtLeast(1) } ?: 1
     var tab by remember { mutableIntStateOf(0) }
     var query by remember { mutableStateOf("") }
     var guestName by remember { mutableStateOf("") }
     var guestPhone by remember { mutableStateOf("") }
     var guestEmail by remember { mutableStateOf("") }
+    var partySize by remember { mutableIntStateOf(1) }
+    if (partySize > available) partySize = available
     val filtered = remember(customers, query) {
         if (query.isBlank()) customers else customers.filter {
             it.fullName.contains(query, ignoreCase = true) ||
@@ -268,20 +283,54 @@ private fun AddAttendeeSheet(
             Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("Cliente existente") })
             Tab(selected = tab == 1, onClick = { tab = 1 }, text = { Text("Invitado") })
         }
+
+        // Shared "Lugares" stepper — applies to whichever attendee is added.
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.md),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Lugares", modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
+            FilterChip(selected = false, onClick = { if (partySize > 1) partySize-- }, label = { Text("–") })
+            Text(
+                "$partySize",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(horizontal = AvoqadoTheme.spacing.md),
+            )
+            FilterChip(selected = false, onClick = { if (partySize < available) partySize++ }, label = { Text("+") })
+        }
+
         if (tab == 0) {
             Column(Modifier.padding(AvoqadoTheme.spacing.lg)) {
                 SearchPillField(query = query, onQueryChange = { query = it }, placeholder = "Buscar cliente", modifier = Modifier.fillMaxWidth())
                 Spacer(Modifier.height(AvoqadoTheme.spacing.md))
                 filtered.take(8).forEach { customer ->
                     Row(
-                        modifier = Modifier.fillMaxWidth().clickable {
-                            viewModel.addCustomer(customer)
-                            onDone()
-                        }.padding(vertical = AvoqadoTheme.spacing.md),
+                        modifier = Modifier.fillMaxWidth().padding(vertical = AvoqadoTheme.spacing.md),
                         verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
                     ) {
                         Text(customer.fullName, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
-                        Icon(Icons.Filled.Add, contentDescription = null)
+                        // Solo inscribir (reserva el lugar, no cobra)
+                        Icon(
+                            Icons.Filled.Add,
+                            contentDescription = "Solo inscribir",
+                            modifier = Modifier.clickable {
+                                viewModel.addCustomer(customer)
+                                onDone()
+                            },
+                        )
+                        // Inscribir y cobrar (reserva + siembra carrito + va a la caja; el VM dispara la navegación)
+                        Icon(
+                            Icons.Filled.Payments,
+                            contentDescription = "Inscribir y cobrar",
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.clickable {
+                                viewModel.addCustomerAndCharge(customer, partySize)
+                            },
+                        )
                     }
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 }
@@ -295,14 +344,21 @@ private fun AddAttendeeSheet(
                 OutlinedTextField(guestPhone, { guestPhone = it }, label = { Text("Teléfono") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                 OutlinedTextField(guestEmail, { guestEmail = it }, label = { Text("Email") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                 PrimaryButton(
-                    text = "Agregar",
+                    text = "Inscribir y cobrar",
+                    onClick = { viewModel.addGuestAndCharge(guestName, guestPhone, guestEmail, partySize) },
+                    enabled = guestName.isNotBlank(),
+                    fullWidth = true,
+                )
+                TextButton(
                     onClick = {
                         viewModel.addGuest(guestName, guestPhone, guestEmail)
                         onDone()
                     },
                     enabled = guestName.isNotBlank(),
-                    fullWidth = true,
-                )
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("Solo inscribir")
+                }
             }
         }
     }

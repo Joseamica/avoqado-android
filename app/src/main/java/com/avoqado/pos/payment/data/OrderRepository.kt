@@ -132,6 +132,7 @@ class OrderRepository @Inject constructor(
                 customerId?.takeIf { it.isNotBlank() }?.let { put("customerId", it) }
                 request.splitType?.let { put("splitType", it) }
                 request.note?.trim()?.takeIf { it.isNotEmpty() }?.let { put("note", it) }
+                request.reservationId?.takeIf { it.isNotBlank() }?.let { put("reservationId", it) }
             }.toString()
         }
 

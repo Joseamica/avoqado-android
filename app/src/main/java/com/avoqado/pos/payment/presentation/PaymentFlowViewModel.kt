@@ -1076,6 +1076,7 @@ class PaymentFlowViewModel @Inject constructor(
             rating = currentRating,
             note = cart.orderNote,
             splitType = _splitType.value,
+            reservationId = cart.reservationId,
         )
     }
 

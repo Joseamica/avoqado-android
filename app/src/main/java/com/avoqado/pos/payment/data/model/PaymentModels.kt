@@ -68,6 +68,9 @@ data class CreateOrderRequest(
     val rating: Int? = null,
     val note: String? = null,
     val splitType: String? = null,
+    /** Links the resulting sale to a class/appointment reservation (walk-in flow).
+     *  Null for ordinary sales. */
+    val reservationId: String? = null,
 )
 
 @Serializable

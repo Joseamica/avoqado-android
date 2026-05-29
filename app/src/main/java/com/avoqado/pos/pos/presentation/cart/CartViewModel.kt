@@ -10,6 +10,7 @@ import com.avoqado.pos.payment.data.model.CreateOrderRequest
 import com.avoqado.pos.payment.data.model.OrderItemRequest
 import com.avoqado.pos.payment.data.model.OrderModifierRequest
 import com.avoqado.pos.pos.data.ActiveCartState
+import com.avoqado.pos.pos.data.ClassCheckoutSeed
 import com.avoqado.pos.pos.data.DiscountsRepository
 import com.avoqado.pos.pos.data.ProductsRepository
 import com.avoqado.pos.pos.data.SavedCartsRepository
@@ -42,6 +43,9 @@ data class CartState(
     val orderTaxPercent: Int? = null,
     val selectedStaffId: String = "",
     val selectedStaffName: String = "Staff",
+    /** Set when the cart was seeded from a walk-in class reservation; flows
+     *  through to the order so the sale links back to the reservation. */
+    val reservationId: String? = null,
 ) {
     val itemCount: Int get() = items.sumOf { it.quantity }
     val subtotalCents: Int get() = items.sumOf { it.totalPrice }
@@ -86,6 +90,7 @@ class CartViewModel @Inject constructor(
     private val activeCartState: ActiveCartState,
     private val orderRepository: OrderRepository,
     private val staffRepository: StaffRepository,
+    private val classCheckoutSeed: ClassCheckoutSeed,
 ) : ViewModel() {
 
     private val _cartState = MutableStateFlow(defaultCartState())
@@ -222,6 +227,37 @@ class CartViewModel @Inject constructor(
 
     fun updateSearchQuery(query: String) {
         _searchQuery.value = query
+    }
+
+    // MARK: - Walk-in class seed
+
+    /**
+     * Consumes a pending walk-in class seed (set by ClassSessionDetailViewModel)
+     * and drops the class product into the current sale — mirroring how Square's
+     * register loads a service into the open sale.
+     *
+     * One-shot (the seed clears itself on read), so it's safe to call on every
+     * Checkout entry. Adds to the existing cart rather than clearing it, like
+     * Square adds a service to the current sale. The reservationId is stored on
+     * the cart so the resulting order links back to the reservation.
+     */
+    fun consumePendingClassSeed() {
+        val seed = classCheckoutSeed.consume() ?: return
+        viewModelScope.launch {
+            if (productsRepository.products.value.isEmpty()) {
+                productsRepository.fetchProducts()
+            }
+            val product = productsRepository.products.value.firstOrNull { it.id == seed.productId }
+            if (product == null) {
+                Log.w("🛒", "Class seed product ${seed.productId} not in catalog — cannot seed cart")
+                return@launch
+            }
+            addProductWithModifiers(product, quantity = seed.quantity, modifiers = emptyList())
+            seed.reservationId?.let { resId ->
+                _cartState.update { it.copy(reservationId = resId) }
+            }
+            Log.d("🛒", "Seeded class ${product.name} x${seed.quantity} from walk-in flow")
+        }
     }
 
     // MARK: - Cart Operations

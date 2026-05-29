@@ -35,6 +35,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -98,6 +99,10 @@ fun CheckoutScreen(
     val staffOptions by cartViewModel.staffOptions.collectAsState()
     val isStaffLoading by cartViewModel.isStaffLoading.collectAsState()
     val staffError by cartViewModel.staffError.collectAsState()
+
+    // Walk-in class flow: if a class was just reserved on the class screen,
+    // drop it into the cart on arrival (Square-style: service enters the sale).
+    LaunchedEffect(Unit) { cartViewModel.consumePendingClassSeed() }
     var selectedProduct by remember { mutableStateOf<Product?>(null) }
     var selectedTab by remember { mutableStateOf(InputTab.KEYPAD) }
     var showSearch by remember { mutableStateOf(false) }

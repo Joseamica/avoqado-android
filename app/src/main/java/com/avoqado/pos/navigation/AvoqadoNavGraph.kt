@@ -347,6 +347,7 @@ private fun MainScaffold(
                     com.avoqado.pos.reservations.presentation.classsessions.ClassSessionDetailScreen(
                         onClose = { navController.popBackStack() },
                         onEdit = { navController.navigate("class-sessions/$id/edit") },
+                        onChargeSeeded = { navigateToTab(MainTab.CHECKOUT) },
                     )
                 }
                 composable(
@@ -599,6 +600,7 @@ private fun MainScaffold(
                     com.avoqado.pos.reservations.presentation.classsessions.ClassSessionDetailScreen(
                         onClose = { navController.popBackStack() },
                         onEdit = { navController.navigate("class-sessions/$id/edit") },
+                        onChargeSeeded = { navigateToTab(MainTab.CHECKOUT) },
                     )
                 }
                 composable(
