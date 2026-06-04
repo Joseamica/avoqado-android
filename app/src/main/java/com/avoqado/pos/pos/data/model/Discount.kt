@@ -24,6 +24,15 @@ data class Discount(
     val active: Boolean = true,
     val targetItemIds: List<String>? = null,
     val targetCategoryIds: List<String>? = null,
+    /**
+     * Provenance tag used by the cart to tell apart discounts the cashier
+     * picked manually from those applied automatically by a feature flow
+     * (e.g. `REFERRAL_NEW_CUSTOMER` from the referrals capture section).
+     *
+     * Optional / nullable + default null — purely a client-side hint, the
+     * backend doesn't consume this column; safe for all serialization paths.
+     */
+    val source: String? = null,
 ) {
     val discountScope: DiscountScope
         get() = when (scope.uppercase()) {

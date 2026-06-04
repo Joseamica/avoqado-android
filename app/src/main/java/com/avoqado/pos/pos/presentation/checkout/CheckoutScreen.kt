@@ -99,6 +99,8 @@ fun CheckoutScreen(
     val staffOptions by cartViewModel.staffOptions.collectAsState()
     val isStaffLoading by cartViewModel.isStaffLoading.collectAsState()
     val staffError by cartViewModel.staffError.collectAsState()
+    val referralCodeState by cartViewModel.referralCode.collectAsState()
+    val referralUiState by cartViewModel.referralValidation.collectAsState()
 
     // Walk-in class flow: if a class was just reserved on the class screen,
     // drop it into the cart on arrival (Square-style: service enters the sale).
@@ -132,6 +134,12 @@ fun CheckoutScreen(
     var reopenPayLaterToken by remember { mutableIntStateOf(0) }
     val checkoutScope = rememberCoroutineScope()
     val customersViewModel: CustomersViewModel = hiltViewModel()
+
+    // Sync customer selection to the CartViewModel so the referral flow can
+    // read it and reset on switch (Plan 5B).
+    LaunchedEffect(selectedCustomer?.id) {
+        cartViewModel.setSelectedCustomer(selectedCustomer?.id)
+    }
 
     val openGeneralCustomerPicker: () -> Unit = {
         customerSelectionContext = CustomerSelectionContext.GENERAL
@@ -285,6 +293,12 @@ fun CheckoutScreen(
                     cartState = cartState,
                     onItemTap = { item -> selectedCartItem = item },
                     onCharge = {
+                        // Persist any cached referral (Plan 5B) — fire-and-forget
+                        // before the PaymentFlow takes over. The capture is best
+                        // effort: the cashier already saw the Valid banner and
+                        // the discount was visible, so a transport failure must
+                        // not block charging.
+                        checkoutScope.launch { cartViewModel.captureReferralOnPayment(orderId = null) }
                         pendingSplitConfig = SplitConfig()
                         showPaymentFlow = true
                     },
@@ -305,6 +319,17 @@ fun CheckoutScreen(
                         showStaffSelector = true
                     },
                     onSplitPayment = { showSplitPayment = true },
+                    referralCode = referralCodeState,
+                    referralUiState = referralUiState,
+                    customerSelectedForReferral = selectedCustomer != null,
+                    onReferralCodeChange = { cartViewModel.onReferralCodeChange(it) },
+                    onValidateReferral = { cartViewModel.validateReferralCode() },
+                    onClearReferral = { cartViewModel.clearReferral() },
+                    onForceOverrideReferral = {
+                        // v1: placeholder hook — the manager-PIN dialog lands in v2.
+                        // Disabled at the button level, but keep the lambda wired
+                        // so future work just flips the `enabled` flag.
+                    },
                 )
             }
         }
@@ -473,6 +498,7 @@ fun CheckoutScreen(
             cartState = cartState,
             onItemTap = { item -> selectedCartItem = item },
             onCharge = {
+                checkoutScope.launch { cartViewModel.captureReferralOnPayment(orderId = null) }
                 showIPhoneCart = false
                 pendingSplitConfig = SplitConfig()
                 showPaymentFlow = true
@@ -494,6 +520,15 @@ fun CheckoutScreen(
                 cartViewModel.fetchStaff()
                 showStaffSelector = true
             },
+            customerName = selectedCustomer?.fullName,
+            onCustomerTap = openGeneralCustomerPicker,
+            referralCode = referralCodeState,
+            referralUiState = referralUiState,
+            customerSelectedForReferral = selectedCustomer != null,
+            onReferralCodeChange = { cartViewModel.onReferralCodeChange(it) },
+            onValidateReferral = { cartViewModel.validateReferralCode() },
+            onClearReferral = { cartViewModel.clearReferral() },
+            onForceOverrideReferral = { /* v1 placeholder */ },
             onDismiss = { showIPhoneCart = false },
         )
     }
@@ -812,6 +847,16 @@ private fun IPhoneCartSheet(
     onApplyTaxPercent: (Int?) -> Unit,
     staffName: String,
     onStaffTap: () -> Unit,
+    customerName: String? = null,
+    onCustomerTap: () -> Unit = {},
+    referralCode: String = "",
+    referralUiState: com.avoqado.pos.referrals.presentation.ReferralCaptureUiState =
+        com.avoqado.pos.referrals.presentation.ReferralCaptureUiState.Idle,
+    customerSelectedForReferral: Boolean = customerName != null,
+    onReferralCodeChange: (String) -> Unit = {},
+    onValidateReferral: () -> Unit = {},
+    onClearReferral: () -> Unit = {},
+    onForceOverrideReferral: () -> Unit = {},
     onDismiss: () -> Unit,
 ) {
     Box(
@@ -866,8 +911,17 @@ private fun IPhoneCartSheet(
                 onAddCustomAmount = onAddCustomAmount,
                 onRemoveItem = onRemoveItem,
                 onApplyTaxPercent = onApplyTaxPercent,
+                customerName = customerName,
+                onCustomerTap = onCustomerTap,
                 staffName = staffName,
                 onStaffTap = onStaffTap,
+                referralCode = referralCode,
+                referralUiState = referralUiState,
+                customerSelectedForReferral = customerSelectedForReferral,
+                onReferralCodeChange = onReferralCodeChange,
+                onValidateReferral = onValidateReferral,
+                onClearReferral = onClearReferral,
+                onForceOverrideReferral = onForceOverrideReferral,
             )
         }
     }

@@ -66,6 +66,8 @@ import com.avoqado.pos.designsystem.theme.AvoqadoAdaptiveSizeClass
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.DiscountText
 import com.avoqado.pos.pos.data.model.CartItem
+import com.avoqado.pos.referrals.presentation.ReferralCaptureSection
+import com.avoqado.pos.referrals.presentation.ReferralCaptureUiState
 
 @Composable
 fun CartPanelView(
@@ -82,6 +84,14 @@ fun CartPanelView(
     staffName: String = cartState.selectedStaffName,
     onStaffTap: () -> Unit = {},
     onSplitPayment: () -> Unit = {},
+    // Referral capture (Plan 5B) — optional, the cart still works without it.
+    referralCode: String = "",
+    referralUiState: ReferralCaptureUiState = ReferralCaptureUiState.Idle,
+    customerSelectedForReferral: Boolean = customerName != null,
+    onReferralCodeChange: (String) -> Unit = {},
+    onValidateReferral: () -> Unit = {},
+    onClearReferral: () -> Unit = {},
+    onForceOverrideReferral: () -> Unit = {},
 ) {
     val useDenseTabletLayout = AvoqadoTheme.adaptive.sizeClass != AvoqadoAdaptiveSizeClass.Compact
     val sectionOuterPadding = if (useDenseTabletLayout) AvoqadoTheme.spacing.md else AvoqadoTheme.spacing.lg
@@ -261,6 +271,23 @@ fun CartPanelView(
                             useDenseTabletLayout = useDenseTabletLayout,
                         )
                     }
+
+                    // Referral capture (Plan 5B) — placed after the discount/tax
+                    // rows so it sits visually between the line items and the
+                    // total / Cobrar action.
+                    ReferralCaptureSection(
+                        code = referralCode,
+                        uiState = referralUiState,
+                        customerSelected = customerSelectedForReferral,
+                        onCodeChange = onReferralCodeChange,
+                        onValidate = onValidateReferral,
+                        onClear = onClearReferral,
+                        onForceOverride = onForceOverrideReferral,
+                        modifier = Modifier.padding(
+                            horizontal = AvoqadoTheme.spacing.xl,
+                            vertical = AvoqadoTheme.spacing.md,
+                        ),
+                    )
                 }
 
                 // Bottom action buttons
