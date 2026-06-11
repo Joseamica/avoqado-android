@@ -43,7 +43,7 @@ import com.avoqado.pos.articles.presentation.options.OptionsView
 import com.avoqado.pos.articles.presentation.products.ProductListView
 import com.avoqado.pos.articles.presentation.units.UnitsView
 import com.avoqado.pos.designsystem.components.CircleBackButton
-import com.avoqado.pos.designsystem.components.PlanGateScreen
+import com.avoqado.pos.designsystem.components.PlanGate
 import com.avoqado.pos.designsystem.components.TierBadge
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 
@@ -344,25 +344,24 @@ private fun SectionContent(
     section: ArticleSection,
     viewModel: ArticlesViewModel,
 ) {
-    // Visible teaser: gated sections stay discoverable in the sidebar but
-    // render the upsell instead of the management UI. Checkout discount
-    // application is untouched — only management is gated.
-    if (section in promotionsGatedSections && !viewModel.hasPromotions) {
-        PlanGateScreen(
-            featureName = section.label,
-            requiredTierLabel = viewModel.promotionsTierLabel,
-        )
-        return
-    }
-
-    when (section) {
-        ArticleSection.PRODUCTS -> ProductListView(viewModel = viewModel)
-        ArticleSection.CATEGORIES -> CategoryListView(viewModel = viewModel)
-        ArticleSection.MODIFIERS -> ModifierGroupListView(viewModel = viewModel)
-        ArticleSection.OPTIONS -> OptionsView(viewModel = viewModel)
-        ArticleSection.DISCOUNTS -> DiscountListView(viewModel = viewModel)
-        ArticleSection.COUPONS -> CouponListView(viewModel = viewModel)
-        ArticleSection.CREDIT_PACKS -> CreditPackListView(viewModel = viewModel)
-        ArticleSection.UNITS -> UnitsView(viewModel = viewModel)
+    // Blur-preview paywall: gated sections stay discoverable in the sidebar
+    // and PREVIEW the real management UI (blurred + inert) behind the upsell
+    // card. Checkout discount application is untouched — only management is
+    // gated; the entitlement decision (PlanManager, fail-open) is unchanged.
+    PlanGate(
+        locked = section in promotionsGatedSections && !viewModel.hasPromotions,
+        featureName = section.label,
+        requiredTierLabel = viewModel.promotionsTierLabel,
+    ) {
+        when (section) {
+            ArticleSection.PRODUCTS -> ProductListView(viewModel = viewModel)
+            ArticleSection.CATEGORIES -> CategoryListView(viewModel = viewModel)
+            ArticleSection.MODIFIERS -> ModifierGroupListView(viewModel = viewModel)
+            ArticleSection.OPTIONS -> OptionsView(viewModel = viewModel)
+            ArticleSection.DISCOUNTS -> DiscountListView(viewModel = viewModel)
+            ArticleSection.COUPONS -> CouponListView(viewModel = viewModel)
+            ArticleSection.CREDIT_PACKS -> CreditPackListView(viewModel = viewModel)
+            ArticleSection.UNITS -> UnitsView(viewModel = viewModel)
+        }
     }
 }

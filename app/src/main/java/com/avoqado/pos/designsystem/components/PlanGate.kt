@@ -1,5 +1,7 @@
 package com.avoqado.pos.designsystem.components
 
+import android.os.Build
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -20,17 +22,24 @@ import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.WorkspacePremium
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 
 // Tier accent colors (mirror the dashboard: Pro = emerald star, Premium = amber crown).
@@ -85,32 +94,110 @@ fun TierBadge(
 }
 
 /**
- * Full upsell teaser shown IN PLACE of a gated feature's content
- * (mirrors the dashboard FeatureGate: "Incluido en el Plan Pro").
+ * Blur-preview paywall WRAPPER (mirrors the dashboard FeatureGate).
  *
- * Instructional CTA only — no purchase links or in-app payment
- * (store compliance): the plan is activated from the web dashboard.
+ * Unlocked → renders [content] untouched. Locked → renders [content] as a
+ * blurred (API 31+; dimmed fallback below), NON-INTERACTIVE preview hidden
+ * from accessibility, with the upsell card centered on top. The user sees
+ * WHAT they are missing instead of a replacement screen.
+ *
+ * Presentation-only: the entitlement decision ([locked]) stays at the call
+ * site (ViewModel + PlanManager — fail-open / exempt behavior untouched).
+ * Instructional CTA only — no purchase links or in-app payment (store
+ * compliance): the plan is activated from the web dashboard.
+ *
+ * Use for FULL SCREENS / section panes. For small inline surfaces keep the
+ * compact teasers ([PlanGateInlineNote], [TierBadge]).
  */
 @Composable
-fun PlanGateScreen(
+fun PlanGate(
+    locked: Boolean,
+    featureName: String,
+    requiredTierLabel: String,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) {
+    if (!locked) {
+        content()
+        return
+    }
+
+    val supportsBlur = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+    Box(modifier = modifier.fillMaxSize()) {
+        // Real content as backdrop: blurred on API 31+ (RenderEffect),
+        // alpha-dimmed below. Hidden from TalkBack/accessibility.
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .then(
+                    if (supportsBlur) {
+                        Modifier.blur(8.dp)
+                    } else {
+                        Modifier.graphicsLayer { alpha = 0.4f }
+                    },
+                )
+                .clearAndSetSemantics { },
+        ) {
+            content()
+        }
+        // Scrim: dims the preview AND consumes every pointer event on the
+        // Initial pass so the content underneath is fully inert (no clicks,
+        // no scroll). Heavier dim when blur isn't available.
+        Box(
+            modifier = Modifier
+                .matchParentSize()
+                .pointerInput(Unit) {
+                    awaitPointerEventScope {
+                        while (true) {
+                            awaitPointerEvent(PointerEventPass.Initial)
+                                .changes
+                                .forEach { it.consume() }
+                        }
+                    }
+                }
+                .background(
+                    MaterialTheme.colorScheme.surface.copy(
+                        alpha = if (supportsBlur) 0.45f else 0.7f,
+                    ),
+                ),
+        )
+        // Upsell card centered on top of the preview.
+        PlanGateCard(
+            featureName = featureName,
+            requiredTierLabel = requiredTierLabel,
+            modifier = Modifier
+                .align(Alignment.Center)
+                .padding(AvoqadoTheme.spacing.xl),
+        )
+    }
+}
+
+/**
+ * The centered upsell card (mirrors the dashboard FeatureGate card:
+ * accent icon circle + "INCLUIDO EN PRO/PREMIUM" eyebrow + instructional
+ * body — no purchase links, store compliance).
+ */
+@Composable
+private fun PlanGateCard(
     featureName: String,
     requiredTierLabel: String,
     modifier: Modifier = Modifier,
 ) {
     val style = styleForTier(requiredTierLabel)
-    Box(
-        modifier = modifier
-            .fillMaxSize()
-            .padding(AvoqadoTheme.spacing.xxl),
-        contentAlignment = Alignment.Center,
+    Surface(
+        modifier = modifier.widthIn(max = 380.dp),
+        shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.xl),
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        shadowElevation = 8.dp,
     ) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
-            modifier = Modifier.widthIn(max = 420.dp),
+            modifier = Modifier.padding(AvoqadoTheme.spacing.xxl),
         ) {
             Box(
                 modifier = Modifier
-                    .size(72.dp)
+                    .size(56.dp)
                     .clip(CircleShape)
                     .background(style.accent.copy(alpha = 0.14f)),
                 contentAlignment = Alignment.Center,
@@ -119,28 +206,27 @@ fun PlanGateScreen(
                     imageVector = style.icon,
                     contentDescription = null,
                     tint = style.accent,
-                    modifier = Modifier.size(36.dp),
+                    modifier = Modifier.size(28.dp),
                 )
             }
-            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+            Text(
+                text = "INCLUIDO EN ${requiredTierLabel.uppercase()}",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                letterSpacing = 1.sp,
+                color = style.accent,
+                textAlign = TextAlign.Center,
+            )
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xs))
             Text(
                 text = featureName,
-                style = MaterialTheme.typography.titleLarge,
+                style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onSurface,
                 textAlign = TextAlign.Center,
             )
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
-            TierBadge(tierLabel = requiredTierLabel)
-            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
-            Text(
-                text = "Incluido en el Plan $requiredTierLabel",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurface,
-                textAlign = TextAlign.Center,
-            )
-            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xs))
             Text(
                 text = "Esta función es parte del plan $requiredTierLabel. " +
                     "Actívala desde tu dashboard web (Configuración → Plan).",
@@ -149,6 +235,30 @@ fun PlanGateScreen(
                 textAlign = TextAlign.Center,
             )
         }
+    }
+}
+
+/**
+ * Standalone upsell teaser for gated surfaces that have NO real content to
+ * preview behind the card. Prefer the [PlanGate] wrapper (blur-preview)
+ * whenever the screen naturally renders something.
+ */
+@Composable
+fun PlanGateScreen(
+    featureName: String,
+    requiredTierLabel: String,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .fillMaxSize()
+            .padding(AvoqadoTheme.spacing.xxl),
+        contentAlignment = Alignment.Center,
+    ) {
+        PlanGateCard(
+            featureName = featureName,
+            requiredTierLabel = requiredTierLabel,
+        )
     }
 }
 
@@ -181,13 +291,23 @@ fun PlanGateInlineNote(
 // Previews
 // ──────────────────────────────────────────────────────────────────────────
 
-@Preview(name = "PlanGate - Pro", showBackground = true)
+@Preview(name = "PlanGate wrapper - locked (Pro)", showBackground = true)
 @Composable
-private fun PreviewPlanGatePro() {
-    PlanGateScreen(featureName = "Reservas", requiredTierLabel = "Pro")
+private fun PreviewPlanGateLockedPro() {
+    PlanGate(locked = true, featureName = "Descuentos", requiredTierLabel = "Pro") {
+        Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+            repeat(8) {
+                Text(
+                    text = "Descuento de ejemplo #$it — 10% en bebidas",
+                    style = MaterialTheme.typography.bodyLarge,
+                    modifier = Modifier.padding(vertical = 12.dp),
+                )
+            }
+        }
+    }
 }
 
-@Preview(name = "PlanGate - Premium", showBackground = true)
+@Preview(name = "PlanGateScreen - Premium", showBackground = true)
 @Composable
 private fun PreviewPlanGatePremium() {
     PlanGateScreen(featureName = "Inventario avanzado", requiredTierLabel = "Premium")

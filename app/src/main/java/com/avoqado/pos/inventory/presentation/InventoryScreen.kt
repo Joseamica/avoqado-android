@@ -57,7 +57,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
-import com.avoqado.pos.designsystem.components.PlanGateScreen
+import com.avoqado.pos.designsystem.components.PlanGate
 import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.components.SearchPillField
 import com.avoqado.pos.designsystem.components.TierBadge
@@ -470,41 +470,40 @@ private fun SectionContent(
     section: InventorySection,
     viewModel: InventoryViewModel,
 ) {
-    // Visible teaser: gated sections stay discoverable but render the
-    // Premium upsell instead of the advanced-inventory UI.
-    if (section in inventoryGatedSections && !viewModel.hasInventoryTracking) {
-        PlanGateScreen(
-            featureName = section.label,
-            requiredTierLabel = viewModel.inventoryTierLabel,
-        )
-        return
-    }
-
-    when (section) {
-        InventorySection.OVERVIEW -> {
-            val stockItems by viewModel.stockItems.collectAsState()
-            val searchQuery by viewModel.searchQuery.collectAsState()
-            val sortOption by viewModel.sortOption.collectAsState()
-            StockOverviewContent(
-                items = stockItems,
-                searchQuery = searchQuery,
-                sortOption = sortOption,
-                onSearchChange = { viewModel.updateSearch(it) },
-                onSortChange = { viewModel.updateSort(it) },
-            )
-        }
-        InventorySection.COUNTS -> {
-            val stockCounts by viewModel.stockCounts.collectAsState()
-            StockCountsContent(counts = stockCounts, viewModel = viewModel)
-        }
-        InventorySection.PURCHASE_ORDERS -> {
-            PurchaseOrdersView(viewModel = viewModel)
-        }
-        InventorySection.TRANSFERS -> {
-            TransfersView(viewModel = viewModel)
-        }
-        InventorySection.METRICS -> {
-            InventoryMetricsView(viewModel = viewModel)
+    // Blur-preview paywall: gated sections stay discoverable and PREVIEW the
+    // real advanced-inventory UI (blurred + inert) behind the Premium upsell
+    // card; the entitlement decision (PlanManager, fail-open) is unchanged.
+    PlanGate(
+        locked = section in inventoryGatedSections && !viewModel.hasInventoryTracking,
+        featureName = section.label,
+        requiredTierLabel = viewModel.inventoryTierLabel,
+    ) {
+        when (section) {
+            InventorySection.OVERVIEW -> {
+                val stockItems by viewModel.stockItems.collectAsState()
+                val searchQuery by viewModel.searchQuery.collectAsState()
+                val sortOption by viewModel.sortOption.collectAsState()
+                StockOverviewContent(
+                    items = stockItems,
+                    searchQuery = searchQuery,
+                    sortOption = sortOption,
+                    onSearchChange = { viewModel.updateSearch(it) },
+                    onSortChange = { viewModel.updateSort(it) },
+                )
+            }
+            InventorySection.COUNTS -> {
+                val stockCounts by viewModel.stockCounts.collectAsState()
+                StockCountsContent(counts = stockCounts, viewModel = viewModel)
+            }
+            InventorySection.PURCHASE_ORDERS -> {
+                PurchaseOrdersView(viewModel = viewModel)
+            }
+            InventorySection.TRANSFERS -> {
+                TransfersView(viewModel = viewModel)
+            }
+            InventorySection.METRICS -> {
+                InventoryMetricsView(viewModel = viewModel)
+            }
         }
     }
 }

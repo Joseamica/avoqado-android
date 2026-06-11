@@ -31,7 +31,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.avoqado.pos.designsystem.components.PlanGateScreen
+import com.avoqado.pos.designsystem.components.PlanGate
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -59,56 +59,55 @@ fun ActivateReservationsScreen(
             )
         },
     ) { padding ->
-        // Plan gate (Pro): show the upsell teaser instead of the activation
-        // toggle when this venue's plan doesn't include reservations.
-        if (!viewModel.hasReservationsFeature) {
-            PlanGateScreen(
-                featureName = "Reservas",
-                requiredTierLabel = viewModel.requiredTierLabel,
-                modifier = Modifier.padding(padding),
-            )
-            return@Scaffold
-        }
-
-        Column(
-            Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .padding(24.dp),
-            verticalArrangement = Arrangement.spacedBy(20.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
+        // Plan gate (Pro), blur-preview: when this venue's plan doesn't
+        // include reservations, the real activation UI renders blurred and
+        // inert behind the upsell card (entitlement decision unchanged —
+        // the scaffold's back button stays usable above the gate overlay).
+        PlanGate(
+            locked = !viewModel.hasReservationsFeature,
+            featureName = "Reservas",
+            requiredTierLabel = viewModel.requiredTierLabel,
         ) {
-            Icon(
-                Icons.Filled.CalendarMonth,
-                contentDescription = null,
-                modifier = Modifier
-                    .padding(top = 32.dp)
-                    .size(96.dp),
-                tint = MaterialTheme.colorScheme.primary,
-            )
-            Text(
-                "Permite a tu negocio recibir citas, manejar clases y administrar tu calendario desde Avoqado.",
-                style = MaterialTheme.typography.bodyLarge,
-            )
-            Text(
-                "Gratis hoy.",
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.primary,
-            )
-            state.error?.let {
-                Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-            }
-            Spacer(Modifier.weight(1f))
-            Button(
-                onClick = { viewModel.activate() },
-                enabled = !state.isActivating,
-                colors = ButtonDefaults.buttonColors(containerColor = Color.Black),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(56.dp),
-                shape = RoundedCornerShape(50),
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .padding(padding)
+                    .padding(24.dp),
+                verticalArrangement = Arrangement.spacedBy(20.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                Text(if (state.isActivating) "Activando..." else "Activar reservas")
+                Icon(
+                    Icons.Filled.CalendarMonth,
+                    contentDescription = null,
+                    modifier = Modifier
+                        .padding(top = 32.dp)
+                        .size(96.dp),
+                    tint = MaterialTheme.colorScheme.primary,
+                )
+                Text(
+                    "Permite a tu negocio recibir citas, manejar clases y administrar tu calendario desde Avoqado.",
+                    style = MaterialTheme.typography.bodyLarge,
+                )
+                Text(
+                    "Gratis hoy.",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                state.error?.let {
+                    Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                }
+                Spacer(Modifier.weight(1f))
+                Button(
+                    onClick = { viewModel.activate() },
+                    enabled = !state.isActivating,
+                    colors = ButtonDefaults.buttonColors(containerColor = Color.Black),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(56.dp),
+                    shape = RoundedCornerShape(50),
+                ) {
+                    Text(if (state.isActivating) "Activando..." else "Activar reservas")
+                }
             }
         }
     }
