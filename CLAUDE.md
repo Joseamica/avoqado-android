@@ -2,6 +2,24 @@
 
 This file provides guidance to Claude Code when working with this repository.
 
+## 🔴 CRITICAL — Ask which payment tier BEFORE building or changing anything
+
+Avoqado is a tier-gated SaaS (**FREE · PRO · PREMIUM · ENTERPRISE**). Whenever you add a new
+feature, modify existing behavior, or expose a new capability, **STOP and ask the founder which
+paid tier it falls under** — then wire the gating to match. A change shipped without a tier
+decision is unfinished: it either leaks paid value into a lower tier or hides a free capability
+behind a paywall.
+
+- **Backend (authoritative):** `avoqado-server/src/services/access/basePlan.service.ts` +
+  `avoqado-server/src/middlewares/checkFeatureAccess.middleware.ts`. Obligatory gating questions:
+  `avoqado-server/.claude/rules/feature-gating.md`. PREMIUM-only codes today: `CFDI`, `INVENTORY_TRACKING`.
+- **Dashboard display/CTA map:** `avoqado-web-dashboard/src/config/plan-catalog.ts`
+  (`TierId`, `PLAN_TIERS`, `getTierForFeature()` → FeatureGate upsell).
+- **Enforcement status:** ✅ only **avoqado-web-dashboard** enforces tiers today.
+  ⚠️ **avoqado-android** (THIS repo) and **avoqado-ios** have NO tier gating yet — **start adding it
+  now**, mirroring the backend feature codes by exact name. Treat tier codes like permissions:
+  mirrored across backend + every client by exact name — a mismatch fails silently.
+
 ## UI/UX Rules (BLOCKING — read before ANY UI work)
 
 **Before creating or modifying ANY Composable, you MUST:**
@@ -267,3 +285,16 @@ capability the MCP should expose, you MUST add or update the matching MCP tool i
 `avoqado-server/scripts/mcp/` as part of the SAME change — never "later".** A capability that
 exists but isn't reachable through the MCP is unfinished. Treat the MCP like permissions: kept
 in lockstep, never an afterthought.
+
+## 🔴 CRITICAL — Keep the sales presentation in sync
+
+The partner sales presentation (`~/Documents/Programming/Avoqado-HQ/operations/marketing/platform-presentation/`)
+is the canonical "what Avoqado does" document — third parties sell from it. It must never fall
+behind the platform.
+
+**Whenever you add, change, or remove a customer-visible capability (feature, module, product,
+payment method, supported sector, tier packaging), you MUST update BOTH deliverables as part of
+the SAME change — never "later":** the full deck (`avoqado-presentacion.html`) AND the one-pager
+(`avoqado-one-pager.html`), then regenerate both PDFs following that folder's `README.md`.
+Updating only one of the two is an incomplete change. Internal refactors and bugfixes with no
+customer-visible impact are exempt.
