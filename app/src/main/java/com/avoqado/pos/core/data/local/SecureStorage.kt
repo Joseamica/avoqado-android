@@ -82,6 +82,21 @@ class SecureStorage @Inject constructor(
         set(value) { prefs.edit().putBoolean(KEY_RESERVATIONS_ENABLED, value).apply() }
 
     /**
+     * Plan tier for the active venue ("FREE"|"PRO"|"PREMIUM"|"ENTERPRISE"),
+     * parsed from the venue-settings response. Null = unknown (old server or
+     * not fetched yet) → PlanManager fails OPEN (no gates), matching today's
+     * behavior exactly.
+     */
+    var planTier: String?
+        get() = prefs.getString(KEY_PLAN_TIER, null)
+        set(value) = prefs.edit().putString(KEY_PLAN_TIER, value).apply()
+
+    /** Exempt venues (grandfathered legacy / demo) bypass all plan gates. */
+    var planExempt: Boolean
+        get() = prefs.getBoolean(KEY_PLAN_EXEMPT, false)
+        set(value) { prefs.edit().putBoolean(KEY_PLAN_EXEMPT, value).apply() }
+
+    /**
      * Permissions for the active venue (e.g. "reservations:create", "menu:read").
      * Server resolves these per-venue from role + custom overrides; client mirrors them
      * to gate UI affordances. See server lib/permissions.ts DEFAULT_PERMISSIONS.
@@ -256,6 +271,10 @@ class SecureStorage @Inject constructor(
         this.venueTimezone = venue.timezone
         this.userRole = venue.role
         this.venuePermissions = venue.permissions
+        // Plan is per-venue: clear stale plan from the previous venue so we
+        // fail OPEN until the new venue's settings (with plan) are fetched.
+        this.planTier = null
+        this.planExempt = false
     }
 
     fun saveBiometricCredentials(
@@ -296,6 +315,8 @@ class SecureStorage @Inject constructor(
             .remove(KEY_VENUE_TIMEZONE)
             .remove(KEY_VENUE_MODE)
             .remove(KEY_RESERVATIONS_ENABLED)
+            .remove(KEY_PLAN_TIER)
+            .remove(KEY_PLAN_EXEMPT)
             .remove(KEY_VENUE_PERMISSIONS)
             .remove(KEY_ACCESS_TOKEN)
             .remove(KEY_REFRESH_TOKEN)
@@ -336,6 +357,8 @@ class SecureStorage @Inject constructor(
         private const val KEY_VENUE_TIMEZONE = "venueTimezone"
         private const val KEY_VENUE_MODE = "venueMode"
         private const val KEY_RESERVATIONS_ENABLED = "reservationsEnabled"
+        private const val KEY_PLAN_TIER = "planTier"
+        private const val KEY_PLAN_EXEMPT = "planExempt"
         private const val KEY_VENUE_PERMISSIONS = "venuePermissions"
         private const val KEY_ACCESS_TOKEN = "accessToken"
         private const val KEY_REFRESH_TOKEN = "refreshToken"

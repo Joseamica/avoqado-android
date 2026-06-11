@@ -1,6 +1,8 @@
 package com.avoqado.pos.reports
 
 import com.avoqado.pos.MainDispatcherRule
+import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.core.domain.PlanManager
 import com.avoqado.pos.reports.data.ReportsRepository
 import com.avoqado.pos.reports.data.model.ReportPeriod
 import com.avoqado.pos.reports.presentation.ReportsViewModel
@@ -32,7 +34,13 @@ class ReportsViewModelTest {
         every { repository.errorMessage } returns MutableStateFlow(null)
     }
 
-    private fun createViewModel() = ReportsViewModel(repository)
+    /** Default: plan unknown → fail-open (full history, today's behavior). */
+    private fun createViewModel(planTier: String? = null, planExempt: Boolean = false): ReportsViewModel {
+        val storage = mockk<SecureStorage>()
+        every { storage.planTier } returns planTier
+        every { storage.planExempt } returns planExempt
+        return ReportsViewModel(repository, PlanManager(storage))
+    }
 
     // MARK: - Initial State
 
@@ -190,5 +198,59 @@ class ReportsViewModelTest {
         viewModel.selectPeriod(ReportPeriod.THIS_WEEK)
         // THIS_WEEK has chartReportType = "days"
         coVerify(atLeast = 1) { repository.loadReport(any(), any(), "days") }
+    }
+
+    // MARK: - Plan gating (ADVANCED_REPORTS, Pro): Free is clamped to TODAY
+
+    @Test
+    fun `FREE plan ignores historical period selection`() {
+        val viewModel = createViewModel(planTier = "FREE")
+        assertFalse(viewModel.hasAdvancedReports)
+
+        viewModel.selectPeriod(ReportPeriod.THIS_WEEK)
+        assertEquals(ReportPeriod.TODAY, viewModel.selectedPeriod.value)
+
+        viewModel.selectPeriod(ReportPeriod.THIS_YEAR)
+        assertEquals(ReportPeriod.TODAY, viewModel.selectedPeriod.value)
+    }
+
+    @Test
+    fun `FREE plan ignores CUSTOM period and never opens date picker`() {
+        val viewModel = createViewModel(planTier = "FREE")
+        viewModel.selectPeriod(ReportPeriod.CUSTOM)
+        assertEquals(ReportPeriod.TODAY, viewModel.selectedPeriod.value)
+        assertFalse(viewModel.showCustomDatePicker.value)
+    }
+
+    @Test
+    fun `FREE plan still allows TODAY`() = runTest {
+        val viewModel = createViewModel(planTier = "FREE")
+        viewModel.selectPeriod(ReportPeriod.TODAY)
+        assertEquals(ReportPeriod.TODAY, viewModel.selectedPeriod.value)
+        coVerify(atLeast = 1) { repository.loadReport(any(), any(), any()) }
+    }
+
+    @Test
+    fun `PRO plan selects historical periods normally`() {
+        val viewModel = createViewModel(planTier = "PRO")
+        assertTrue(viewModel.hasAdvancedReports)
+        viewModel.selectPeriod(ReportPeriod.THIS_MONTH)
+        assertEquals(ReportPeriod.THIS_MONTH, viewModel.selectedPeriod.value)
+    }
+
+    @Test
+    fun `exempt FREE venue keeps full history (grandfathered)`() {
+        val viewModel = createViewModel(planTier = "FREE", planExempt = true)
+        assertTrue(viewModel.hasAdvancedReports)
+        viewModel.selectPeriod(ReportPeriod.THIS_WEEK)
+        assertEquals(ReportPeriod.THIS_WEEK, viewModel.selectedPeriod.value)
+    }
+
+    @Test
+    fun `absent plan fails open - full history available`() {
+        val viewModel = createViewModel(planTier = null)
+        assertTrue(viewModel.hasAdvancedReports)
+        viewModel.selectPeriod(ReportPeriod.THREE_MONTHS)
+        assertEquals(ReportPeriod.THREE_MONTHS, viewModel.selectedPeriod.value)
     }
 }

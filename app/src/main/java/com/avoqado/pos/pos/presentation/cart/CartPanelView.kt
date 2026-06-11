@@ -92,6 +92,8 @@ fun CartPanelView(
     onValidateReferral: () -> Unit = {},
     onClearReferral: () -> Unit = {},
     onForceOverrideReferral: () -> Unit = {},
+    // Plan gate (REFERRAL_PROGRAM, Pro). Default true = fail-open.
+    referralPlanAllowed: Boolean = true,
 ) {
     val useDenseTabletLayout = AvoqadoTheme.adaptive.sizeClass != AvoqadoAdaptiveSizeClass.Compact
     val sectionOuterPadding = if (useDenseTabletLayout) AvoqadoTheme.spacing.md else AvoqadoTheme.spacing.lg
@@ -283,6 +285,7 @@ fun CartPanelView(
                         onValidate = onValidateReferral,
                         onClear = onClearReferral,
                         onForceOverride = onForceOverrideReferral,
+                        planAllowsReferrals = referralPlanAllowed,
                         modifier = Modifier.padding(
                             horizontal = AvoqadoTheme.spacing.xl,
                             vertical = AvoqadoTheme.spacing.md,

@@ -7,6 +7,7 @@ import com.avoqado.pos.reservations.data.model.ReservationListResponse
 import com.avoqado.pos.reservations.data.model.ReservationStatus
 import com.avoqado.pos.reservations.domain.ReservationAction
 import io.mockk.coEvery
+import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -39,6 +40,7 @@ class ReservationsListViewModelTest {
     @Test
     fun `initial load filters by HOY tab statuses`() = runTest {
         val repo: ReservationRepository = mockk()
+        every { repo.changes } returns kotlinx.coroutines.flow.MutableSharedFlow<Unit>()
         coEvery { repo.fetchList(match { it.statuses.containsAll(listOf(ReservationStatus.PENDING, ReservationStatus.CONFIRMED, ReservationStatus.CHECKED_IN)) }) } returns
             Result.success(ReservationListResponse(data = listOf(stub("r1", ReservationStatus.CONFIRMED))))
 
@@ -54,6 +56,7 @@ class ReservationsListViewModelTest {
     @Test
     fun `runTransition optimistically removes when terminal`() = runTest {
         val repo: ReservationRepository = mockk()
+        every { repo.changes } returns kotlinx.coroutines.flow.MutableSharedFlow<Unit>()
         coEvery { repo.fetchList(any()) } returns Result.success(ReservationListResponse(data = listOf(stub("r1", ReservationStatus.PENDING))))
         coEvery { repo.runAction("r1", ReservationAction.NO_SHOW, null) } returns Result.success(stub("r1", ReservationStatus.NO_SHOW))
 
@@ -73,6 +76,7 @@ class ReservationsListViewModelTest {
     @Test
     fun `runTransition rolls back on failure with error`() = runTest {
         val repo: ReservationRepository = mockk()
+        every { repo.changes } returns kotlinx.coroutines.flow.MutableSharedFlow<Unit>()
         coEvery { repo.fetchList(any()) } returns Result.success(ReservationListResponse(data = listOf(stub("r1", ReservationStatus.PENDING))))
         coEvery { repo.runAction("r1", ReservationAction.CONFIRM, null) } returns Result.failure(RuntimeException("HTTP 409"))
 

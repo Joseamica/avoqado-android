@@ -40,6 +40,7 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import com.avoqado.pos.designsystem.components.TierBadge
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.referrals.domain.model.ValidationResult
 
@@ -74,6 +75,9 @@ sealed class ReferralCaptureUiState {
  *
  * @param customerSelected required for validation. When false, the section
  *   shows a hint to pick a customer first and disables the input.
+ * @param planAllowsReferrals plan gate (REFERRAL_PROGRAM, Pro). When false the
+ *   section stays visible as a compact teaser with the tier badge instead of
+ *   the capture input (visible-teaser pattern; defaults to true = fail-open).
  */
 @Composable
 fun ReferralCaptureSection(
@@ -85,6 +89,7 @@ fun ReferralCaptureSection(
     onClear: () -> Unit,
     onForceOverride: () -> Unit,
     modifier: Modifier = Modifier,
+    planAllowsReferrals: Boolean = true,
 ) {
     val keyboard = LocalSoftwareKeyboardController.current
 
@@ -96,7 +101,7 @@ fun ReferralCaptureSection(
             .padding(horizontal = AvoqadoTheme.spacing.md, vertical = AvoqadoTheme.spacing.md),
         verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
     ) {
-        // Header — gift icon + label
+        // Header — gift icon + label (+ tier badge when plan-gated)
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(
                 imageVector = Icons.Filled.CardGiftcard,
@@ -111,6 +116,22 @@ fun ReferralCaptureSection(
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurface,
             )
+            if (!planAllowsReferrals) {
+                Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
+                TierBadge(tierLabel = "Pro")
+            }
+        }
+
+        // Plan gate (Pro): compact teaser instead of the capture input —
+        // the surface is small, so a full-screen gate would be overkill.
+        if (!planAllowsReferrals) {
+            Text(
+                text = "Esta función es parte del plan Pro. " +
+                    "Actívala desde tu dashboard web (Configuración → Plan).",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            return@Column
         }
 
         if (!customerSelected) {

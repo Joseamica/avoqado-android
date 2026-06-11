@@ -8,6 +8,7 @@ import com.avoqado.pos.reservations.data.model.ReservationStatus
 import com.avoqado.pos.reservations.domain.ReservationAction
 import com.avoqado.pos.reservations.domain.ReservationsCapability
 import io.mockk.coEvery
+import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -42,6 +43,7 @@ class ReservationDetailViewModelTest {
     @Test
     fun `loads reservation on init`() = runTest(dispatcher) {
         val repo: ReservationRepository = mockk()
+        every { repo.changes } returns kotlinx.coroutines.flow.MutableSharedFlow<Unit>()
         coEvery { repo.fetchOne("r1") } returns Result.success(stub())
 
         val vm = ReservationDetailViewModel(repo, capProvider, SavedStateHandle(mapOf("reservationId" to "r1")))
@@ -55,6 +57,7 @@ class ReservationDetailViewModelTest {
     @Test
     fun `runAction confirm transitions optimistically`() = runTest(dispatcher) {
         val repo: ReservationRepository = mockk()
+        every { repo.changes } returns kotlinx.coroutines.flow.MutableSharedFlow<Unit>()
         coEvery { repo.fetchOne("r1") } returns Result.success(stub(ReservationStatus.PENDING))
         coEvery { repo.runAction("r1", ReservationAction.CONFIRM, null) } returns Result.success(stub(ReservationStatus.CONFIRMED))
 
@@ -72,6 +75,7 @@ class ReservationDetailViewModelTest {
     @Test
     fun `runAction failure rolls back`() = runTest(dispatcher) {
         val repo: ReservationRepository = mockk()
+        every { repo.changes } returns kotlinx.coroutines.flow.MutableSharedFlow<Unit>()
         coEvery { repo.fetchOne("r1") } returns Result.success(stub(ReservationStatus.PENDING))
         coEvery { repo.runAction("r1", ReservationAction.NO_SHOW, null) } returns Result.failure(RuntimeException("HTTP 409"))
 

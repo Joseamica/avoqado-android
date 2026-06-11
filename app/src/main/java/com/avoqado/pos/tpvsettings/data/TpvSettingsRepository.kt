@@ -89,6 +89,15 @@ class TpvSettingsRepository @Inject constructor(
 
             val body = response.body?.string() ?: return
             val result = json.decodeFromString<VenueSettingsResponse>(body)
+
+            // Plan gating (Phase ①): persist the OPTIONAL plan block. Absent
+            // field (old server) → null tier → PlanManager fails OPEN. Only
+            // written on a successful response so a transient error never
+            // wipes a previously-known plan.
+            secureStorage.planTier = result.data?.plan?.tier
+            secureStorage.planExempt = result.data?.plan?.exempt == true
+            Log.d("📦", "Plan: tier=${result.data?.plan?.tier ?: "none"} exempt=${result.data?.plan?.exempt == true}")
+
             if (result.data?.settings != null) {
                 _settings.value = applyIncludeTaxOverride(
                     base = result.data.settings,
@@ -151,4 +160,16 @@ private data class VenueSettingsResponse(
 private data class VenueSettingsData(
     val settings: TpvSettings? = null,
     val activeTerminalId: String? = null,
+    val plan: VenuePlanDto? = null,
+)
+
+/**
+ * Optional plan block in the venue-settings response. Every field defaults so
+ * old servers (field absent) and partial payloads parse fine → fail-open.
+ */
+@Serializable
+private data class VenuePlanDto(
+    val tier: String? = null,
+    val grandfathered: Boolean = false,
+    val exempt: Boolean = false,
 )

@@ -4,6 +4,8 @@ import com.avoqado.pos.MainDispatcherRule
 import com.avoqado.pos.articles.data.ArticlesRepository
 import com.avoqado.pos.articles.data.model.ArticleSection
 import com.avoqado.pos.articles.presentation.ArticlesViewModel
+import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.core.domain.PlanManager
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
@@ -35,7 +37,13 @@ class ArticlesViewModelTest {
         every { repository.errorMessage } returns MutableStateFlow(null)
     }
 
-    private fun createViewModel() = ArticlesViewModel(repository)
+    /** Default: plan unknown → fail-open (promotions management available). */
+    private fun createViewModel(planTier: String? = null): ArticlesViewModel {
+        val storage = mockk<SecureStorage>()
+        every { storage.planTier } returns planTier
+        every { storage.planExempt } returns false
+        return ArticlesViewModel(repository, PlanManager(storage))
+    }
 
     // MARK: - Initial State
 
@@ -251,5 +259,26 @@ class ArticlesViewModelTest {
         viewModel.refresh()
 
         coVerify(atLeast = 2) { repository.fetchModifierGroups() }
+    }
+
+    // MARK: - Plan gating (PROMOTIONS, Pro)
+
+    @Test
+    fun `FREE plan gates promotions management`() {
+        val viewModel = createViewModel(planTier = "FREE")
+        assertEquals(false, viewModel.hasPromotions)
+        assertEquals("Pro", viewModel.promotionsTierLabel)
+    }
+
+    @Test
+    fun `PRO plan has promotions management`() {
+        val viewModel = createViewModel(planTier = "PRO")
+        assertEquals(true, viewModel.hasPromotions)
+    }
+
+    @Test
+    fun `absent plan fails open - promotions available`() {
+        val viewModel = createViewModel(planTier = null)
+        assertEquals(true, viewModel.hasPromotions)
     }
 }

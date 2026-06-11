@@ -57,8 +57,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.avoqado.pos.designsystem.components.PlanGateScreen
 import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.components.SearchPillField
+import com.avoqado.pos.designsystem.components.TierBadge
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Success
 import com.avoqado.pos.designsystem.theme.Warning
@@ -231,6 +233,7 @@ private fun TabletInventoryLayout(
                         section = section,
                         isSelected = section == selectedSection,
                         onClick = { onSectionSelected(section) },
+                        tierBadgeLabel = sectionTierBadge(section, viewModel),
                     )
                 }
             }
@@ -295,6 +298,7 @@ private fun PhoneInventoryLayout(
                     section = section,
                     isSelected = section == selectedSection,
                     onClick = { onSectionSelected(section) },
+                    tierBadgeLabel = sectionTierBadge(section, viewModel),
                 )
             }
         }
@@ -322,6 +326,7 @@ private fun PhoneSectionChip(
     section: InventorySection,
     isSelected: Boolean,
     onClick: () -> Unit,
+    tierBadgeLabel: String? = null,
 ) {
     val backgroundColor = if (isSelected) {
         MaterialTheme.colorScheme.primary
@@ -334,7 +339,7 @@ private fun PhoneSectionChip(
         MaterialTheme.colorScheme.onSurface
     }
 
-    Box(
+    Row(
         modifier = Modifier
             .clip(RoundedCornerShape(50))
             .background(backgroundColor)
@@ -343,6 +348,8 @@ private fun PhoneSectionChip(
                 horizontal = AvoqadoTheme.spacing.md,
                 vertical = AvoqadoTheme.spacing.sm,
             ),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.xs),
     ) {
         Text(
             text = section.label,
@@ -350,6 +357,9 @@ private fun PhoneSectionChip(
             color = contentColor,
             fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
         )
+        if (tierBadgeLabel != null) {
+            TierBadge(tierLabel = tierBadgeLabel)
+        }
     }
 }
 
@@ -383,6 +393,7 @@ private fun SectionRow(
     section: InventorySection,
     isSelected: Boolean,
     onClick: () -> Unit,
+    tierBadgeLabel: String? = null,
 ) {
     val bgColor = if (isSelected) {
         MaterialTheme.colorScheme.surfaceContainerLow
@@ -423,8 +434,34 @@ private fun SectionRow(
                     vertical = AvoqadoTheme.spacing.md,
                 ),
         )
+        if (tierBadgeLabel != null) {
+            TierBadge(
+                tierLabel = tierBadgeLabel,
+                modifier = Modifier.padding(end = AvoqadoTheme.spacing.md),
+            )
+        }
     }
 }
+
+// MARK: - Plan gating (INVENTORY_TRACKING, Premium)
+
+/**
+ * Advanced inventory sections gated by INVENTORY_TRACKING. The basic stock
+ * OVERVIEW (and metrics over it) stays free.
+ */
+private val inventoryGatedSections = setOf(
+    InventorySection.COUNTS,
+    InventorySection.PURCHASE_ORDERS,
+    InventorySection.TRANSFERS,
+)
+
+/** Tier badge label for a section, or null when the section is available. */
+private fun sectionTierBadge(section: InventorySection, viewModel: InventoryViewModel): String? =
+    if (section in inventoryGatedSections && !viewModel.hasInventoryTracking) {
+        viewModel.inventoryTierLabel
+    } else {
+        null
+    }
 
 // MARK: - Section Content Dispatcher
 
@@ -433,6 +470,16 @@ private fun SectionContent(
     section: InventorySection,
     viewModel: InventoryViewModel,
 ) {
+    // Visible teaser: gated sections stay discoverable but render the
+    // Premium upsell instead of the advanced-inventory UI.
+    if (section in inventoryGatedSections && !viewModel.hasInventoryTracking) {
+        PlanGateScreen(
+            featureName = section.label,
+            requiredTierLabel = viewModel.inventoryTierLabel,
+        )
+        return
+    }
+
     when (section) {
         InventorySection.OVERVIEW -> {
             val stockItems by viewModel.stockItems.collectAsState()

@@ -3,6 +3,7 @@ package com.avoqado.pos.reservations.presentation.onboarding
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.core.domain.PlanManager
 import com.avoqado.pos.reservations.domain.VenueMode
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.delay
@@ -19,28 +20,50 @@ data class ActivateReservationsUiState(
 )
 
 /**
- * "Activar reservas" is a purely local UI-surfacing toggle in v2.2.0.
+ * "Activar reservas" surfaces the Calendar tab via a local toggle, but the
+ * toggle is now gated by the venue's PLAN: reservations are a Pro feature.
  *
- * Why no server call?
- * - The server's reservation endpoints already gate access via `checkPermission('reservations:read|create|...')`.
- *   Whether the staff can use them is decided by their JWT permissions, not by a Venue-level flag set here.
- * - VenueFeature/Feature is for billing (Stripe-driven, superadmin-managed). When paywall arrives
- *   in a future release, the source of truth shifts to a remote `featureFlags.reservations` field
- *   that this client simply reads instead of writes.
+ * - Plan allows RESERVATIONS (or plan unknown/exempt → fail-open): the screen
+ *   shows the activation flow and persists `reservationsEnabled = true` locally
+ *   so the bottom-nav surfaces the Calendar tab.
+ * - Plan lacks RESERVATIONS: the screen shows the Pro upsell teaser instead of
+ *   the toggle, and [activate] refuses to flip the local flag — so the gate
+ *   can't be bypassed even by stale UI. The tab computation also ANDs the plan
+ *   check so a stale local toggle can't expose the tab.
  *
- * Effect today: the device persists `reservationsEnabled = true` so the bottom-nav can surface
- * the Calendar tab. The fake delay gives the user the perception of work being done.
+ * Server-side: the reservation endpoints gate access via staff permissions;
+ * plan enforcement (403 PLAN_REQUIRED) lands in a later phase. This client
+ * reads `plan` from the venue-settings response (PlanManager).
  */
 @HiltViewModel
 class ActivateReservationsViewModel @Inject constructor(
     private val secureStorage: SecureStorage,
+    private val planManager: PlanManager,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(ActivateReservationsUiState())
     val state: StateFlow<ActivateReservationsUiState> = _state.asStateFlow()
 
+    /** Pro gate. Fail-open: unknown plan or exempt venue behaves as before. */
+    val hasReservationsFeature: Boolean
+        get() = planManager.hasFeature(RESERVATIONS_FEATURE_CODE)
+
+    /** Label of the plan required for reservations (for the upsell copy). */
+    val requiredTierLabel: String
+        get() = planManager.requiredTierLabel(RESERVATIONS_FEATURE_CODE) ?: "Pro"
+
     fun activate() {
         if (_state.value.isActivating || _state.value.didSucceed) return
+        if (!hasReservationsFeature) {
+            // Plan gate: never flip the local toggle on a plan without
+            // RESERVATIONS (the screen shows the upsell instead of the CTA,
+            // this guard covers any stale UI path).
+            _state.value = _state.value.copy(
+                error = "Las reservas son parte del plan $requiredTierLabel. " +
+                    "Actívalo desde tu dashboard web (Configuración → Plan).",
+            )
+            return
+        }
         _state.value = _state.value.copy(isActivating = true, error = null)
         viewModelScope.launch {
             delay(400)
@@ -48,5 +71,9 @@ class ActivateReservationsViewModel @Inject constructor(
             secureStorage.venueMode = VenueMode.RESERVATIONS.storageValue
             _state.value = ActivateReservationsUiState(didSucceed = true)
         }
+    }
+
+    companion object {
+        private const val RESERVATIONS_FEATURE_CODE = "RESERVATIONS"
     }
 }

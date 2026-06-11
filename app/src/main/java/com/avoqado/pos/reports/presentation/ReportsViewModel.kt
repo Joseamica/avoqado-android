@@ -2,6 +2,7 @@ package com.avoqado.pos.reports.presentation
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.avoqado.pos.core.domain.PlanManager
 import com.avoqado.pos.reports.data.ReportsRepository
 import com.avoqado.pos.reports.data.model.ReportPeriod
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -19,6 +20,7 @@ import javax.inject.Inject
 @HiltViewModel
 class ReportsViewModel @Inject constructor(
     private val repository: ReportsRepository,
+    private val planManager: PlanManager,
 ) : ViewModel() {
 
     // MARK: - Repository State (forwarded)
@@ -26,6 +28,19 @@ class ReportsViewModel @Inject constructor(
     val reportData = repository.reportData
     val isLoading = repository.isLoading
     val errorMessage = repository.errorMessage
+
+    // MARK: - Plan gating (ADVANCED_REPORTS, Pro)
+
+    /**
+     * Free venues see a TODAY-only summary (mirrors the dashboard rule);
+     * Pro+ unlocks the full date range. Fail-open when the plan is unknown.
+     */
+    val hasAdvancedReports: Boolean
+        get() = planManager.hasFeature("ADVANCED_REPORTS")
+
+    /** Tier label required for historical reports ("Pro"). */
+    val reportsTierLabel: String
+        get() = planManager.requiredTierLabel("ADVANCED_REPORTS") ?: "Pro"
 
     // MARK: - Period Selection
 
@@ -57,6 +72,12 @@ class ReportsViewModel @Inject constructor(
     // MARK: - Public Actions
 
     fun selectPeriod(period: ReportPeriod) {
+        // Plan gate: Free venues are clamped to TODAY — historical ranges are
+        // part of the Pro plan. The UI shows the locked pills as a teaser, and
+        // this guard makes the clamp authoritative even for stale UI.
+        if (!hasAdvancedReports && period != ReportPeriod.TODAY) {
+            return
+        }
         _selectedPeriod.value = period
         if (period == ReportPeriod.CUSTOM) {
             _showCustomDatePicker.value = true

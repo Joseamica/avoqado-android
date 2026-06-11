@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -69,6 +70,7 @@ import com.avoqado.pos.articles.presentation.ArticlesScreen
 import com.avoqado.pos.auth.presentation.VenueSwitcherSheet
 import com.avoqado.pos.cashdrawer.presentation.CashDrawerScreen
 import com.avoqado.pos.customers.presentation.CustomersScreen
+import com.avoqado.pos.designsystem.components.TierBadge
 import com.avoqado.pos.designsystem.theme.AvoqadoAdaptiveSizeClass
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.estimates.presentation.EstimatesScreen
@@ -396,10 +398,21 @@ fun MoreMenuScreen(
         // General Section
         SectionHeader("General", dense = denseMenu)
         if (!viewModel.reservationsEnabled) {
+            // Visible teaser: the entry stays discoverable with a tier badge
+            // when the plan lacks RESERVATIONS; tapping opens the Pro upsell.
             MenuRow(
                 icon = Icons.Filled.CalendarMonth,
                 label = "Activar reservas",
-                subtitle = "Permite recibir citas. Gratis hoy.",
+                subtitle = if (viewModel.reservationsRequireUpgrade) {
+                    "Incluido en el Plan ${viewModel.reservationsTierLabel}"
+                } else {
+                    "Permite recibir citas. Gratis hoy."
+                },
+                tierBadgeLabel = if (viewModel.reservationsRequireUpgrade) {
+                    viewModel.reservationsTierLabel
+                } else {
+                    null
+                },
                 onClick = onActivateReservations,
                 dense = denseMenu,
             )
@@ -887,6 +900,7 @@ private fun MenuRow(
     onClick: () -> Unit,
     dense: Boolean = false,
     subtitle: String? = null,
+    tierBadgeLabel: String? = null,
 ) {
     val verticalPadding = if (dense) AvoqadoTheme.spacing.xs else AvoqadoTheme.spacing.md
     val rowTextStyle = if (dense) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodyLarge
@@ -911,10 +925,16 @@ private fun MenuRow(
                 .weight(1f)
                 .padding(horizontal = if (dense) AvoqadoTheme.spacing.sm else AvoqadoTheme.spacing.md),
         ) {
-            Text(
-                text = label,
-                style = rowTextStyle,
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = label,
+                    style = rowTextStyle,
+                )
+                if (tierBadgeLabel != null) {
+                    Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
+                    TierBadge(tierLabel = tierBadgeLabel)
+                }
+            }
             if (subtitle != null) {
                 Text(
                     text = subtitle,

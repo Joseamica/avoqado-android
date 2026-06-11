@@ -43,6 +43,8 @@ import com.avoqado.pos.articles.presentation.options.OptionsView
 import com.avoqado.pos.articles.presentation.products.ProductListView
 import com.avoqado.pos.articles.presentation.units.UnitsView
 import com.avoqado.pos.designsystem.components.CircleBackButton
+import com.avoqado.pos.designsystem.components.PlanGateScreen
+import com.avoqado.pos.designsystem.components.TierBadge
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 
 // MARK: - Entry Point
@@ -126,6 +128,7 @@ private fun TabletArticlesLayout(
                         section = section,
                         isSelected = section == selectedSection,
                         onClick = { viewModel.selectSection(section) },
+                        tierBadgeLabel = sectionTierBadge(section, viewModel),
                     )
                 }
             }
@@ -241,6 +244,7 @@ private fun PhoneArticlesLayout(
                             viewModel.selectSection(section)
                             showingSection = section
                         },
+                        tierBadgeLabel = sectionTierBadge(section, viewModel),
                     )
                 }
             }
@@ -261,6 +265,7 @@ private fun SectionRow(
     section: ArticleSection,
     isSelected: Boolean,
     onClick: () -> Unit,
+    tierBadgeLabel: String? = null,
 ) {
     val bgColor = if (isSelected) {
         MaterialTheme.colorScheme.surfaceContainerLow
@@ -307,8 +312,30 @@ private fun SectionRow(
                     vertical = AvoqadoTheme.spacing.md,
                 ),
         )
+        if (tierBadgeLabel != null) {
+            TierBadge(
+                tierLabel = tierBadgeLabel,
+                modifier = Modifier.padding(end = AvoqadoTheme.spacing.md),
+            )
+        }
     }
 }
+
+// MARK: - Plan gating (PROMOTIONS, Pro)
+
+/** Sections gated by the PROMOTIONS feature (discounts/coupons MANAGEMENT). */
+private val promotionsGatedSections = setOf(
+    ArticleSection.DISCOUNTS,
+    ArticleSection.COUPONS,
+)
+
+/** Tier badge label for a section row, or null when the section is available. */
+private fun sectionTierBadge(section: ArticleSection, viewModel: ArticlesViewModel): String? =
+    if (section in promotionsGatedSections && !viewModel.hasPromotions) {
+        viewModel.promotionsTierLabel
+    } else {
+        null
+    }
 
 // MARK: - Section Content Dispatcher
 
@@ -317,6 +344,17 @@ private fun SectionContent(
     section: ArticleSection,
     viewModel: ArticlesViewModel,
 ) {
+    // Visible teaser: gated sections stay discoverable in the sidebar but
+    // render the upsell instead of the management UI. Checkout discount
+    // application is untouched — only management is gated.
+    if (section in promotionsGatedSections && !viewModel.hasPromotions) {
+        PlanGateScreen(
+            featureName = section.label,
+            requiredTierLabel = viewModel.promotionsTierLabel,
+        )
+        return
+    }
+
     when (section) {
         ArticleSection.PRODUCTS -> ProductListView(viewModel = viewModel)
         ArticleSection.CATEGORIES -> CategoryListView(viewModel = viewModel)

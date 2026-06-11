@@ -330,6 +330,7 @@ fun CheckoutScreen(
                         // Disabled at the button level, but keep the lambda wired
                         // so future work just flips the `enabled` flag.
                     },
+                    referralPlanAllowed = cartViewModel.referralPlanAllowed,
                 )
             }
         }
@@ -529,6 +530,7 @@ fun CheckoutScreen(
             onValidateReferral = { cartViewModel.validateReferralCode() },
             onClearReferral = { cartViewModel.clearReferral() },
             onForceOverrideReferral = { /* v1 placeholder */ },
+            referralPlanAllowed = cartViewModel.referralPlanAllowed,
             onDismiss = { showIPhoneCart = false },
         )
     }
@@ -857,6 +859,7 @@ private fun IPhoneCartSheet(
     onValidateReferral: () -> Unit = {},
     onClearReferral: () -> Unit = {},
     onForceOverrideReferral: () -> Unit = {},
+    referralPlanAllowed: Boolean = true,
     onDismiss: () -> Unit,
 ) {
     Box(
@@ -922,6 +925,7 @@ private fun IPhoneCartSheet(
                 onValidateReferral = onValidateReferral,
                 onClearReferral = onClearReferral,
                 onForceOverrideReferral = onForceOverrideReferral,
+                referralPlanAllowed = referralPlanAllowed,
             )
         }
     }

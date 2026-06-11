@@ -29,6 +29,7 @@ import androidx.compose.material.icons.filled.CreditCard
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.LocalOffer
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Payments
 import androidx.compose.material.icons.filled.Percent
 import androidx.compose.material.icons.filled.Receipt
@@ -65,6 +66,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.avoqado.pos.designsystem.components.TierBadge
 import com.avoqado.pos.designsystem.theme.ActionPurple
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Info
@@ -128,11 +130,13 @@ fun ReportsScreen(
                         .background(MaterialTheme.colorScheme.surfaceVariant),
                     verticalArrangement = Arrangement.spacedBy(spacing.md),
                 ) {
-                    // Period Selector
+                    // Period Selector (history locked to TODAY on the Free plan)
                     item {
                         PeriodSelectorSection(
                             selectedPeriod = selectedPeriod,
                             onPeriodSelected = viewModel::selectPeriod,
+                            historyLocked = !viewModel.hasAdvancedReports,
+                            lockedTierLabel = viewModel.reportsTierLabel,
                         )
                     }
 
@@ -248,6 +252,8 @@ private fun ReportsTopBar(onDismiss: () -> Unit) {
 private fun PeriodSelectorSection(
     selectedPeriod: ReportPeriod,
     onPeriodSelected: (ReportPeriod) -> Unit,
+    historyLocked: Boolean = false,
+    lockedTierLabel: String = "Pro",
 ) {
     val spacing = AvoqadoTheme.spacing
     val cornerRadius = AvoqadoTheme.cornerRadius
@@ -256,6 +262,7 @@ private fun PeriodSelectorSection(
         color = MaterialTheme.colorScheme.surface,
         modifier = Modifier.fillMaxWidth(),
     ) {
+        Column {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -266,28 +273,43 @@ private fun PeriodSelectorSection(
         ) {
             reportPeriods.forEach { period ->
                 val isSelected = selectedPeriod == period
-                Box(
+                // Visible teaser: historical pills stay discoverable but
+                // locked on the Free plan (clamp is enforced in the VM too).
+                val isLocked = historyLocked && period != ReportPeriod.TODAY
+                Row(
                     modifier = Modifier
                         .clip(RoundedCornerShape(50))
                         .background(
                             if (isSelected) MaterialTheme.colorScheme.primary
                             else MaterialTheme.colorScheme.surfaceVariant,
                         )
-                        .clickable { onPeriodSelected(period) }
+                        .clickable(enabled = !isLocked) { onPeriodSelected(period) }
                         .padding(horizontal = spacing.md, vertical = spacing.xs),
-                    contentAlignment = Alignment.Center,
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(spacing.xxs),
                 ) {
+                    if (isLocked) {
+                        Icon(
+                            imageVector = Icons.Filled.Lock,
+                            contentDescription = "Disponible en $lockedTierLabel",
+                            modifier = Modifier.size(12.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     Text(
                         text = period.shortLabel,
                         style = MaterialTheme.typography.labelLarge,
                         fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
-                        color = if (isSelected) MaterialTheme.colorScheme.onPrimary
-                        else MaterialTheme.colorScheme.onSurface,
+                        color = when {
+                            isSelected -> MaterialTheme.colorScheme.onPrimary
+                            isLocked -> MaterialTheme.colorScheme.onSurfaceVariant
+                            else -> MaterialTheme.colorScheme.onSurface
+                        },
                     )
                 }
             }
 
-            // Calendar icon button for custom range
+            // Calendar icon button for custom range (Pro: locked on Free)
             val isCustomSelected = selectedPeriod == ReportPeriod.CUSTOM
             Box(
                 modifier = Modifier
@@ -296,18 +318,42 @@ private fun PeriodSelectorSection(
                         if (isCustomSelected) MaterialTheme.colorScheme.primary
                         else MaterialTheme.colorScheme.surfaceVariant,
                     )
-                    .clickable { onPeriodSelected(ReportPeriod.CUSTOM) }
+                    .clickable(enabled = !historyLocked) { onPeriodSelected(ReportPeriod.CUSTOM) }
                     .padding(horizontal = spacing.sm, vertical = spacing.xs),
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
-                    imageVector = Icons.Filled.CalendarMonth,
+                    imageVector = if (historyLocked) Icons.Filled.Lock else Icons.Filled.CalendarMonth,
                     contentDescription = "Personalizado",
                     modifier = Modifier.size(18.dp),
-                    tint = if (isCustomSelected) MaterialTheme.colorScheme.onPrimary
-                    else MaterialTheme.colorScheme.onSurface,
+                    tint = when {
+                        isCustomSelected -> MaterialTheme.colorScheme.onPrimary
+                        historyLocked -> MaterialTheme.colorScheme.onSurfaceVariant
+                        else -> MaterialTheme.colorScheme.onSurface
+                    },
                 )
             }
+        }
+
+        // Upsell note (instructional only — no purchase links)
+        if (historyLocked) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(start = spacing.lg, end = spacing.lg, bottom = spacing.md),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                TierBadge(tierLabel = lockedTierLabel)
+                Spacer(modifier = Modifier.width(spacing.sm))
+                Text(
+                    text = "El histórico está disponible en $lockedTierLabel. " +
+                        "Actívalo desde tu dashboard web (Configuración → Plan).",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
         }
     }
 }

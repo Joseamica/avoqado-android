@@ -14,6 +14,7 @@ import com.avoqado.pos.inventory.data.model.StockCountItem
 import com.avoqado.pos.inventory.data.model.StockCountType
 import com.avoqado.pos.inventory.data.model.StockItem
 import com.avoqado.pos.inventory.data.model.StockSortOption
+import com.avoqado.pos.core.domain.PlanManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -42,7 +43,22 @@ enum class InventoryTab(val label: String) {
 @HiltViewModel
 class InventoryViewModel @Inject constructor(
     private val repository: InventoryRepository,
+    private val planManager: PlanManager,
 ) : ViewModel() {
+
+    // MARK: - Plan gating (Phase ① — UI teaser only)
+
+    /**
+     * INVENTORY_TRACKING (Premium) gates the ADVANCED inventory sections
+     * (counts, purchase orders, transfers). The basic stock overview stays
+     * free. Fail-open when the plan is unknown.
+     */
+    val hasInventoryTracking: Boolean
+        get() = planManager.hasFeature("INVENTORY_TRACKING")
+
+    /** Tier label required for advanced inventory ("Premium"). */
+    val inventoryTierLabel: String
+        get() = planManager.requiredTierLabel("INVENTORY_TRACKING") ?: "Premium"
 
     val stockItems = repository.stockItems
     val stockCounts = repository.stockCounts

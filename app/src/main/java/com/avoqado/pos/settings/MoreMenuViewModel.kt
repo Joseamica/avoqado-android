@@ -7,6 +7,7 @@ import com.avoqado.pos.addons.domain.AddonsManager
 import com.avoqado.pos.auth.data.AuthRepository
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.local.StoredVenue
+import com.avoqado.pos.core.domain.PlanManager
 import com.avoqado.pos.core.domain.RoleManager
 import com.avoqado.pos.pos.data.ActiveCartState
 import com.avoqado.pos.printing.data.PrinterService
@@ -26,6 +27,7 @@ class MoreMenuViewModel @Inject constructor(
     val timeEntryRepository: TimeEntryRepository,
     val printerService: PrinterService,
     private val roleManager: RoleManager,
+    private val planManager: PlanManager,
     val posModeManager: PosModeManager,
     val addonsManager: AddonsManager,
     val activeCartState: ActiveCartState,
@@ -55,8 +57,21 @@ class MoreMenuViewModel @Inject constructor(
     val canAccessReports: Boolean
         get() = roleManager.canAccessReports
 
+    /**
+     * Effective reservations availability: local toggle AND plan gate, so a
+     * stale local toggle can't surface reservation entries (waitlist, mode
+     * card) on a plan without RESERVATIONS. Fail-open when plan is unknown.
+     */
     val reservationsEnabled: Boolean
-        get() = secureStorage.reservationsEnabled
+        get() = secureStorage.reservationsEnabled && planManager.hasFeature("RESERVATIONS")
+
+    /** True → show the Pro tier badge on the "Activar reservas" entry (visible teaser). */
+    val reservationsRequireUpgrade: Boolean
+        get() = planManager.requiresUpgrade("RESERVATIONS")
+
+    /** Tier label required for reservations ("Pro") for badges/upsell copy. */
+    val reservationsTierLabel: String
+        get() = planManager.requiredTierLabel("RESERVATIONS") ?: "Pro"
 
     val currentVenueMode: com.avoqado.pos.reservations.domain.VenueMode
         get() = com.avoqado.pos.reservations.domain.VenueMode.fromStorage(secureStorage.venueMode)

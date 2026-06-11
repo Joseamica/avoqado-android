@@ -3,6 +3,7 @@ package com.avoqado.pos.referrals
 import com.avoqado.pos.MainDispatcherRule
 import com.avoqado.pos.auth.data.AuthRepository
 import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.core.domain.PlanManager
 import com.avoqado.pos.payment.data.OrderRepository
 import com.avoqado.pos.pos.data.ActiveCartState
 import com.avoqado.pos.pos.data.ClassCheckoutSeed
@@ -121,6 +122,8 @@ class CartViewModelReferralTest {
         classCheckoutSeed = classCheckoutSeed,
         validateReferralUseCase = validateReferralUseCase,
         captureReferralUseCase = captureReferralUseCase,
+        // Relaxed SecureStorage mock → planTier null → fail-open (allowed).
+        planManager = PlanManager(secureStorage),
     )
 
     private suspend fun selectCustomer(viewModel: CartViewModel, id: String = "cust-7") {
@@ -461,4 +464,30 @@ class CartViewModelReferralTest {
         name = "Item",
         unitPrice = 100,
     )
+
+    // MARK: - Plan gating (REFERRAL_PROGRAM, Pro)
+
+    @Test
+    fun `referralPlanAllowed is false on FREE plan`() = runTest {
+        every { secureStorage.planTier } returns "FREE"
+        every { secureStorage.planExempt } returns false
+        val viewModel = createViewModel()
+        assertFalse(viewModel.referralPlanAllowed)
+    }
+
+    @Test
+    fun `referralPlanAllowed is true on PRO plan`() = runTest {
+        every { secureStorage.planTier } returns "PRO"
+        every { secureStorage.planExempt } returns false
+        val viewModel = createViewModel()
+        assertTrue(viewModel.referralPlanAllowed)
+    }
+
+    @Test
+    fun `referralPlanAllowed fails open when plan absent`() = runTest {
+        every { secureStorage.planTier } returns null
+        every { secureStorage.planExempt } returns false
+        val viewModel = createViewModel()
+        assertTrue(viewModel.referralPlanAllowed)
+    }
 }

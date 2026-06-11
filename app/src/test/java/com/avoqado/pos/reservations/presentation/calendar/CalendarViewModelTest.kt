@@ -2,6 +2,7 @@ package com.avoqado.pos.reservations.presentation.calendar
 
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.util.ConnectivityMonitor
+import com.avoqado.pos.reservations.data.ClassSessionRepository
 import com.avoqado.pos.reservations.data.ReservationRepository
 import com.avoqado.pos.reservations.data.model.Reservation
 import com.avoqado.pos.reservations.data.model.ReservationChannel
@@ -41,14 +42,21 @@ class CalendarViewModelTest {
     fun `initial fetch covers selected day`() = runTest(dispatcher) {
         val repo: ReservationRepository = mockk()
         every { repo.pendingActionsCount } returns kotlinx.coroutines.flow.flowOf(0)
+        every { repo.changes } returns kotlinx.coroutines.flow.MutableSharedFlow<Unit>()
         val storage: SecureStorage = mockk()
         every { storage.venueTimezone } returns "America/Mexico_City"
+        every { storage.calendarViewForCurrentVenue } returns null
+        every { storage.showClassSessionsForCurrentVenue } returns false
         coEvery { repo.fetchCalendar(any(), any()) } returns Result.success(listOf(stub("r1", ReservationStatus.CONFIRMED)))
 
         val connectivity: ConnectivityMonitor = mockk(relaxed = true)
         every { connectivity.isConnected } returns MutableStateFlow(true)
         every { connectivity.isServerReachable } returns MutableStateFlow(true)
-        val vm = CalendarViewModel(repo, storage, connectivity)
+        // v2.3.2 added classSessionRepository to the VM constructor; this test was never updated.
+        val classRepo: ClassSessionRepository = mockk(relaxed = true)
+        every { classRepo.changes } returns kotlinx.coroutines.flow.MutableSharedFlow()
+        coEvery { classRepo.fetchList(any(), any()) } returns Result.success(emptyList())
+        val vm = CalendarViewModel(repo, classRepo, storage, connectivity)
         advanceUntilIdle()
 
         assertEquals(1, vm.state.value.reservations.size)
@@ -59,8 +67,11 @@ class CalendarViewModelTest {
     fun `setDate triggers re-fetch`() = runTest(dispatcher) {
         val repo: ReservationRepository = mockk()
         every { repo.pendingActionsCount } returns kotlinx.coroutines.flow.flowOf(0)
+        every { repo.changes } returns kotlinx.coroutines.flow.MutableSharedFlow<Unit>()
         val storage: SecureStorage = mockk()
         every { storage.venueTimezone } returns "America/Mexico_City"
+        every { storage.calendarViewForCurrentVenue } returns null
+        every { storage.showClassSessionsForCurrentVenue } returns false
         coEvery { repo.fetchCalendar(any(), any()) } returnsMany listOf(
             Result.success(emptyList()),
             Result.success(listOf(stub("r1", ReservationStatus.PENDING))),
@@ -69,7 +80,10 @@ class CalendarViewModelTest {
         val connectivity: ConnectivityMonitor = mockk(relaxed = true)
         every { connectivity.isConnected } returns MutableStateFlow(true)
         every { connectivity.isServerReachable } returns MutableStateFlow(true)
-        val vm = CalendarViewModel(repo, storage, connectivity)
+        val classRepo: ClassSessionRepository = mockk(relaxed = true)
+        every { classRepo.changes } returns kotlinx.coroutines.flow.MutableSharedFlow()
+        coEvery { classRepo.fetchList(any(), any()) } returns Result.success(emptyList())
+        val vm = CalendarViewModel(repo, classRepo, storage, connectivity)
         advanceUntilIdle()
         vm.setDate(LocalDate.now().plusDays(1))
         advanceUntilIdle()

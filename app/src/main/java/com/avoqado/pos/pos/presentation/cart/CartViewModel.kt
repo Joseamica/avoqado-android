@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.auth.data.AuthRepository
 import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.core.domain.PlanManager
 import com.avoqado.pos.payment.data.OrderRepository
 import com.avoqado.pos.payment.data.model.CreateOrderRequest
 import com.avoqado.pos.payment.data.model.OrderItemRequest
@@ -98,6 +99,7 @@ class CartViewModel @Inject constructor(
     private val classCheckoutSeed: ClassCheckoutSeed,
     private val validateReferralUseCase: ValidateReferralUseCase,
     private val captureReferralUseCase: CaptureReferralUseCase,
+    private val planManager: PlanManager,
 ) : ViewModel() {
 
     private val _cartState = MutableStateFlow(defaultCartState())
@@ -113,6 +115,14 @@ class CartViewModel @Inject constructor(
     val staffError: StateFlow<String?> = _staffError.asStateFlow()
 
     // MARK: - Referral capture (Plan 5B)
+
+    /**
+     * Plan gate (REFERRAL_PROGRAM, Pro): when false the cart's referral
+     * section renders a compact teaser instead of the capture input.
+     * Fail-open when the plan is unknown.
+     */
+    val referralPlanAllowed: Boolean
+        get() = planManager.hasFeature("REFERRAL_PROGRAM")
 
     /**
      * Currently selected customer id, mirrored from the CheckoutScreen so

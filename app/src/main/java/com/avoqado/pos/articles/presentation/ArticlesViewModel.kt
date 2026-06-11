@@ -12,6 +12,7 @@ import com.avoqado.pos.articles.data.model.PriceType
 import com.avoqado.pos.articles.data.model.ProductOption
 import com.avoqado.pos.articles.data.model.ProductType
 import com.avoqado.pos.articles.data.model.RawMaterial
+import com.avoqado.pos.core.domain.PlanManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -30,7 +31,22 @@ private const val TAG = "🗂️ ArticlesVM"
 @HiltViewModel
 class ArticlesViewModel @Inject constructor(
     private val repository: ArticlesRepository,
+    private val planManager: PlanManager,
 ) : ViewModel() {
+
+    // MARK: - Plan gating (Phase ① — UI teaser only)
+
+    /**
+     * PROMOTIONS (Pro) gates the discounts + coupons MANAGEMENT screens.
+     * Applying an existing discount in the checkout flow is NOT gated — the
+     * order flow always works. Fail-open when the plan is unknown.
+     */
+    val hasPromotions: Boolean
+        get() = planManager.hasFeature("PROMOTIONS")
+
+    /** Tier label required for promotions ("Pro") for badges/upsell copy. */
+    val promotionsTierLabel: String
+        get() = planManager.requiredTierLabel("PROMOTIONS") ?: "Pro"
 
     // MARK: - Expose repository flows
 

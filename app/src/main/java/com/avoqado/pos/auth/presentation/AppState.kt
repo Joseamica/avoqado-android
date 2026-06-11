@@ -3,12 +3,14 @@ package com.avoqado.pos.auth.presentation
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.core.domain.PlanManager
 import com.avoqado.pos.core.domain.RoleManager
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.navigation.MainTab
 import com.avoqado.pos.payment.data.PaymentSyncService
 import com.avoqado.pos.reservations.domain.VenueMode
 import com.avoqado.pos.timeclock.data.TimeEntryRepository
+import com.avoqado.pos.tpvsettings.data.TpvSettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -16,6 +18,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @HiltViewModel
@@ -23,6 +26,8 @@ class AppState @Inject constructor(
     private val secureStorage: SecureStorage,
     val timeEntryRepository: TimeEntryRepository,
     val roleManager: RoleManager,
+    private val planManager: PlanManager,
+    private val tpvSettingsRepository: TpvSettingsRepository,
     private val paymentSyncService: PaymentSyncService,
     connectivityMonitor: ConnectivityMonitor,
 ) : ViewModel() {
@@ -30,6 +35,19 @@ class AppState @Inject constructor(
     init {
         if (secureStorage.isLoggedIn) {
             paymentSyncService.start()
+            refreshPlanAndSettings()
+        }
+    }
+
+    /**
+     * Fire-and-forget settings refresh (carries the venue's plan block) +
+     * tab recompute once it lands. Never blocks login/startup; errors are
+     * swallowed inside the repository → plan stays as-is → fail-open.
+     */
+    private fun refreshPlanAndSettings() {
+        viewModelScope.launch {
+            tpvSettingsRepository.refreshSettings()
+            refreshTabs()
         }
     }
 
@@ -70,7 +88,13 @@ class AppState @Inject constructor(
         reservationsEnabled: Boolean,
         venueMode: VenueMode,
     ): List<MainTab> {
-        val inReservationsMode = reservationsEnabled && venueMode == VenueMode.RESERVATIONS
+        // Plan gate ANDed with the local toggle: a stale local
+        // `reservationsEnabled` can never expose the Calendar tab on a plan
+        // without RESERVATIONS. Fail-open when the plan is unknown.
+        val planAllowsReservations = planManager.hasFeature("RESERVATIONS")
+        val inReservationsMode = reservationsEnabled &&
+            planAllowsReservations &&
+            venueMode == VenueMode.RESERVATIONS
         val ordered = if (inReservationsMode) {
             // Calendar leads, but Inventory is preserved alongside.
             listOf(
@@ -112,6 +136,9 @@ class AppState @Inject constructor(
         _isLoggedIn.value = true
         paymentSyncService.start()
         refreshTabs()
+        // Pull venue settings (incl. the plan block) right after login so
+        // plan gates apply without waiting for a venue switch.
+        refreshPlanAndSettings()
     }
 
     fun onLogout() {

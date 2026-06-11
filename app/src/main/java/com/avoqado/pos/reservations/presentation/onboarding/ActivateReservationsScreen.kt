@@ -31,6 +31,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.avoqado.pos.designsystem.components.PlanGateScreen
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -58,6 +59,17 @@ fun ActivateReservationsScreen(
             )
         },
     ) { padding ->
+        // Plan gate (Pro): show the upsell teaser instead of the activation
+        // toggle when this venue's plan doesn't include reservations.
+        if (!viewModel.hasReservationsFeature) {
+            PlanGateScreen(
+                featureName = "Reservas",
+                requiredTierLabel = viewModel.requiredTierLabel,
+                modifier = Modifier.padding(padding),
+            )
+            return@Scaffold
+        }
+
         Column(
             Modifier
                 .fillMaxSize()
