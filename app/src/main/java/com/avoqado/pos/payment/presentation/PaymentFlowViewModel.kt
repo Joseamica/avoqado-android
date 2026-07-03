@@ -1063,6 +1063,7 @@ class PaymentFlowViewModel @Inject constructor(
                 },
                 note = item.itemNote,
                 isCortesia = item.isCortesia,
+                discountId = item.itemDiscountId,
             )
         }
 

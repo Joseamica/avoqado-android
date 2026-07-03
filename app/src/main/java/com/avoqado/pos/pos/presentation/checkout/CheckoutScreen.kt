@@ -447,7 +447,7 @@ fun CheckoutScreen(
             product = product,
             isTablet = isTablet,
             discounts = discounts,
-            onAddToCart = { quantity, modifiers, note, isCortesia, cortesiaReason, priceAdj ->
+            onAddToCart = { quantity, modifiers, note, isCortesia, cortesiaReason, priceAdj, discountId ->
                 cartViewModel.addProductWithModifiers(
                     product = product,
                     quantity = quantity,
@@ -456,6 +456,7 @@ fun CheckoutScreen(
                     isCortesia = isCortesia,
                     cortesiaReason = cortesiaReason,
                     priceAdjustment = priceAdj,
+                    discountId = discountId,
                 )
                 selectedProduct = null
             },

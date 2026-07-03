@@ -333,6 +333,7 @@ class CartViewModel @Inject constructor(
         isCortesia: Boolean = false,
         cortesiaReason: String? = null,
         priceAdjustment: Int? = null,
+        discountId: String? = null,
     ) {
         val newItem = CartItem(
             type = CartItemType.ProductItem(product.id),
@@ -347,6 +348,7 @@ class CartViewModel @Inject constructor(
             isCortesia = isCortesia,
             cortesiaReason = cortesiaReason,
             priceAdjustment = priceAdjustment,
+            itemDiscountId = discountId,
         )
         _cartState.update { it.copy(items = it.items + newItem) }
         Log.d("🛒", "Added product with modifiers: ${product.name} x$quantity (${modifiers.size} mods)")
@@ -771,6 +773,7 @@ class CartViewModel @Inject constructor(
                 },
                 note = item.itemNote,
                 isCortesia = item.isCortesia,
+                discountId = item.itemDiscountId,
             )
         }
 

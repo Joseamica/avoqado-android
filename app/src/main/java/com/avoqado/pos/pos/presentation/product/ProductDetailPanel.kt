@@ -29,6 +29,7 @@ import com.avoqado.pos.designsystem.components.CircleBackButton
 import androidx.compose.material.icons.automirrored.filled.NoteAdd
 import androidx.compose.material.icons.filled.AttachMoney
 import androidx.compose.material.icons.filled.CardGiftcard
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.LocalOffer
@@ -86,6 +87,7 @@ fun ProductDetailPanel(
         isCortesia: Boolean,
         cortesiaReason: String?,
         priceAdjustment: Int?,
+        discountId: String?,
     ) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -143,7 +145,7 @@ private enum class DetailSubView {
 private fun ProductDetailContent(
     product: Product,
     discounts: List<Discount>,
-    onAddToCart: (Int, List<SelectedModifier>, String?, Boolean, String?, Int?) -> Unit,
+    onAddToCart: (Int, List<SelectedModifier>, String?, Boolean, String?, Int?, String?) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val addToCartTapThrottleMs = 800L
@@ -154,6 +156,7 @@ private fun ProductDetailContent(
     var priceAdjustment by remember { mutableStateOf<Int?>(null) }
     var isCortesia by remember { mutableStateOf(false) }
     var cortesiaReason by remember { mutableStateOf<String?>(null) }
+    var selectedDiscountId by remember { mutableStateOf<String?>(null) }
     var currentSubView by remember { mutableStateOf(DetailSubView.MAIN) }
 
     // Calculate display price
@@ -191,6 +194,7 @@ private fun ProductDetailContent(
                         priceAdjustment = priceAdjustment,
                         isCortesia = isCortesia,
                         cortesiaReason = cortesiaReason,
+                        selectedDiscountId = selectedDiscountId,
                         displayPrice = displayPrice,
                         canAddToCart = canAddToCart,
                         onDismiss = onDismiss,
@@ -229,6 +233,7 @@ private fun ProductDetailContent(
                                 isCortesia,
                                 cortesiaReason,
                                 priceAdjustment,
+                                selectedDiscountId,
                             )
                         },
                     )
@@ -286,6 +291,10 @@ private fun ProductDetailContent(
                                 categoryId = product.categoryId,
                             )
                         },
+                        selectedDiscountId = selectedDiscountId,
+                        onSelect = { discountId ->
+                            selectedDiscountId = if (selectedDiscountId == discountId) null else discountId
+                        },
                         onBack = { currentSubView = DetailSubView.MAIN },
                     )
                 }
@@ -305,6 +314,7 @@ private fun MainDetailView(
     priceAdjustment: Int?,
     isCortesia: Boolean,
     cortesiaReason: String?,
+    selectedDiscountId: String?,
     displayPrice: String,
     canAddToCart: Boolean,
     onDismiss: () -> Unit,
@@ -446,7 +456,7 @@ private fun MainDetailView(
             ToggleOptionRow(
                 icon = Icons.Filled.LocalOffer,
                 title = "Descuentos",
-                subtitle = null,
+                subtitle = if (selectedDiscountId != null) "1 descuento aplicado" else null,
                 onClick = { onNavigate(DetailSubView.DISCOUNTS) },
             )
             HorizontalDivider(modifier = Modifier.padding(start = 56.dp))
@@ -1009,6 +1019,8 @@ private fun PriceAdjustSubView(
 @Composable
 private fun DiscountsSubView(
     discounts: List<Discount>,
+    selectedDiscountId: String?,
+    onSelect: (String) -> Unit,
     onBack: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
@@ -1039,12 +1051,54 @@ private fun DiscountsSubView(
             ) {
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
                 discounts.forEach { discount ->
+                    val isSelected = selectedDiscountId == discount.id
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
+                            .clickable { onSelect(discount.id) }
                             .padding(vertical = AvoqadoTheme.spacing.md),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
+                        // Checkbox (tap to select, tap again to deselect — single-select)
+                        Box(
+                            modifier = Modifier
+                                .size(24.dp)
+                                .background(
+                                    if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent,
+                                    RoundedCornerShape(AvoqadoTheme.cornerRadius.sm),
+                                )
+                                .then(
+                                    if (!isSelected) {
+                                        Modifier.background(
+                                            MaterialTheme.colorScheme.surface,
+                                            RoundedCornerShape(AvoqadoTheme.cornerRadius.sm),
+                                        )
+                                    } else {
+                                        Modifier
+                                    },
+                                ),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            if (isSelected) {
+                                Icon(
+                                    imageVector = Icons.Filled.Check,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onPrimary,
+                                    modifier = Modifier.size(14.dp),
+                                )
+                            } else {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxSize()
+                                        .background(
+                                            Color.Transparent,
+                                            RoundedCornerShape(AvoqadoTheme.cornerRadius.sm),
+                                        ),
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.md))
                         Text(text = "🏷️", style = MaterialTheme.typography.titleMedium)
                         Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.md))
                         Column(modifier = Modifier.weight(1f)) {

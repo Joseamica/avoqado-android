@@ -82,6 +82,10 @@ data class OrderItemRequest(
     val modifiers: List<OrderModifierRequest> = emptyList(),
     val note: String? = null,
     val isCortesia: Boolean = false,
+    /** ITEM/CATEGORY-scoped discount selected from the product panel — mirrors
+     * iOS's `PaymentItem.discountId` (PaymentModels.swift), sent as-is on the
+     * `/mobile/venues/:venueId/orders` payload. */
+    val discountId: String? = null,
 )
 
 @Serializable
