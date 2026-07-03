@@ -1153,6 +1153,8 @@ private fun paymentIcon(method: String?): ImageVector {
     return when (method) {
         "CASH" -> Icons.Filled.Payments
         "CARD", "CREDIT_CARD", "DEBIT_CARD" -> Icons.Filled.CreditCard
+        "BANK_TRANSFER", "TRANSFER" -> Icons.AutoMirrored.Filled.CompareArrows
+        // DIGITAL_WALLET, CRYPTOCURRENCY, OTHER, and unknown future codes.
         else -> Icons.Filled.Description
     }
 }

@@ -9,6 +9,38 @@ import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
+/**
+ * Single source of truth for turning a backend `PaymentMethod` code into a
+ * Spanish label. Mirrors backend enum (avoqado-server `prisma/schema.prisma`
+ * `PaymentMethod`): CASH, CREDIT_CARD, DEBIT_CARD, DIGITAL_WALLET,
+ * BANK_TRANSFER, CRYPTOCURRENCY, OTHER. "CARD" and legacy "TRANSFER" are kept
+ * as harmless aliases (older payment rows). Matches iOS's
+ * `PaymentMethodDisplay` by exact label text.
+ */
+object PaymentMethodDisplay {
+    fun label(method: String?, cardBrand: String? = null, maskedPan: String? = null): String =
+        when (method) {
+            "CASH" -> "Efectivo"
+            "CARD" -> {
+                val brand = cardBrand ?: ""
+                if (!maskedPan.isNullOrEmpty() && maskedPan.length >= 4) {
+                    val last4 = maskedPan.takeLast(4)
+                    "$brand ****$last4".trim()
+                } else {
+                    brand.ifEmpty { "Tarjeta" }
+                }
+            }
+            "CREDIT_CARD" -> "Tarjeta de crédito"
+            "DEBIT_CARD" -> "Tarjeta de débito"
+            "DIGITAL_WALLET" -> "Cartera digital"
+            "BANK_TRANSFER", "TRANSFER" -> "Transferencia"
+            "CRYPTOCURRENCY" -> "Criptomoneda"
+            "OTHER" -> "Otro"
+            null -> "—"
+            else -> method.replace("_", " ").replaceFirstChar { it.uppercase() }
+        }
+}
+
 @Serializable
 data class Transaction(
     val id: String,
@@ -39,23 +71,7 @@ data class Transaction(
 
     /** Smart description: "Visa ****1234", "Efectivo", "Tarjeta", etc. */
     val methodDescription: String
-        get() = when (method) {
-            "CASH" -> "Efectivo"
-            "CARD" -> {
-                val brand = cardBrand ?: ""
-                if (!maskedPan.isNullOrEmpty() && maskedPan.length >= 4) {
-                    val last4 = maskedPan.takeLast(4)
-                    "$brand ****$last4".trim()
-                } else {
-                    brand.ifEmpty { "Tarjeta" }
-                }
-            }
-            "CREDIT_CARD" -> "Tarjeta de crédito"
-            "DEBIT_CARD" -> "Tarjeta de débito"
-            "TRANSFER" -> "Transferencia"
-            else -> method?.replace("_", " ")
-                ?.replaceFirstChar { it.uppercase() } ?: "—"
-        }
+        get() = PaymentMethodDisplay.label(method, cardBrand, maskedPan)
 
     val statusDisplay: String
         get() = when (status) {
