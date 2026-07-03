@@ -44,6 +44,14 @@ class ReservationRepository @Inject constructor(
     )
     val changes: SharedFlow<Unit> = _changes.asSharedFlow()
 
+    /**
+     * Lets external callers (e.g. [ReservationActionsRetrier] after an offline-queue drain)
+     * signal that server state changed without going through a mutation method here.
+     */
+    fun notifyChanged() {
+        _changes.tryEmit(Unit)
+    }
+
     val pendingActionsCount: Flow<Int> = pendingDao.pendingCount()
 
     suspend fun fetchList(filters: ReservationFilters): Result<ReservationListResponse> {

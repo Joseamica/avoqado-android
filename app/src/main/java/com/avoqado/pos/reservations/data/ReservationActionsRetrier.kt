@@ -19,6 +19,7 @@ class ReservationActionsRetrier @Inject constructor(
     private val pendingDao: PendingReservationActionDao,
     private val api: ReservationApi,
     private val connectivity: ConnectivityMonitor,
+    private val reservationRepository: ReservationRepository,
 ) {
     private val json = Json { ignoreUnknownKeys = true }
     private var job: Job? = null
@@ -35,6 +36,7 @@ class ReservationActionsRetrier @Inject constructor(
 
     internal suspend fun drain() {
         val pending = pendingDao.all()
+        var anySuccess = false
         for (entry in pending) {
             if (entry.attemptCount >= maxAttempts) {
                 pendingDao.delete(entry.rowId)
@@ -78,8 +80,16 @@ class ReservationActionsRetrier @Inject constructor(
                     api.update(entry.reservationId, req).map { Unit }
                 }
             }
-            if (result.isSuccess) pendingDao.delete(entry.rowId)
-            else pendingDao.incrementAttempt(entry.rowId)
+            if (result.isSuccess) {
+                pendingDao.delete(entry.rowId)
+                anySuccess = true
+            } else {
+                pendingDao.incrementAttempt(entry.rowId)
+            }
         }
+        // Coalesce into a single change signal per drain — mirrors iOS's
+        // ReservationActionsRetrier (post once per drain with >=1 success; an
+        // all-failure drain posts nothing) so stale screens refresh exactly once.
+        if (anySuccess) reservationRepository.notifyChanged()
     }
 }
