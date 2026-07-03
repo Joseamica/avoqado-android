@@ -25,7 +25,11 @@ class TablesRepository @Inject constructor(
 
     suspend fun fetchTables(): Result<List<Table>> = runCatching {
         val venue = secureStorage.venueId ?: error("No venue")
-        val url = "${baseUrlProvider()}/dashboard/venues/$venue/tables"
+        // Was /dashboard/venues/{id}/tables — that route doesn't exist on the
+        // server (dashboard.routes has no such mount), so this 404'd silently
+        // (hidden by the tables.isNotEmpty() guard downstream). The backend now
+        // exposes this same table-picker data via a mobile-authed route.
+        val url = "${baseUrlProvider()}/mobile/venues/$venue/tables"
         val req = Request.Builder().url(url).get().build()
         val (code, body) = withContext(Dispatchers.IO) {
             client.newCall(req).execute().use { it.code to (it.body?.string() ?: "") }
