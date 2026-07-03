@@ -36,6 +36,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.avoqado.pos.core.util.VenueDateTimeFormatter
 import com.avoqado.pos.designsystem.components.AvoqadoFullscreenHeader
 import com.avoqado.pos.designsystem.components.AvoqadoSuccessToast
+import com.avoqado.pos.reservations.data.model.displayLabel
 import com.avoqado.pos.reservations.domain.ReservationAction
 import com.avoqado.pos.reservations.presentation.components.ReservationStatusBadge
 
@@ -122,7 +123,7 @@ fun ReservationDetailScreen(
                         if (r.depositAmount != null) {
                             InfoSection("Depósito") {
                                 InfoRow("Monto", r.depositAmount)
-                                InfoRow("Estado", r.depositStatus?.name)
+                                InfoRow("Estado", r.depositStatus?.displayLabel)
                             }
                         }
                     }
