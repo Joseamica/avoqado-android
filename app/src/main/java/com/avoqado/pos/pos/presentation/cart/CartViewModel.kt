@@ -365,7 +365,15 @@ class CartViewModel @Inject constructor(
 
     fun removeItem(itemId: String) {
         _cartState.update { state ->
-            state.copy(items = state.items.filter { it.id != itemId })
+            val updatedItems = state.items.filter { it.id != itemId }
+            // When an item removal leaves the cart empty, clear the reservationId.
+            // The cart doesn't track which line was the seeded class, so clearing
+            // on empty prevents a stale link to an unrelated order; a partially-emptied
+            // cart preserves the link.
+            state.copy(
+                items = updatedItems,
+                reservationId = if (updatedItems.isEmpty()) null else state.reservationId
+            )
         }
     }
 
@@ -397,7 +405,15 @@ class CartViewModel @Inject constructor(
         _cartState.update { state ->
             val item = state.items.find { it.id == itemId } ?: return@update state
             if (item.quantity <= 1) {
-                state.copy(items = state.items.filter { it.id != itemId })
+                val updatedItems = state.items.filter { it.id != itemId }
+                // When an item removal leaves the cart empty, clear the reservationId.
+                // The cart doesn't track which line was the seeded class, so clearing
+                // on empty prevents a stale link to an unrelated order; a partially-emptied
+                // cart preserves the link.
+                state.copy(
+                    items = updatedItems,
+                    reservationId = if (updatedItems.isEmpty()) null else state.reservationId
+                )
             } else {
                 state.copy(
                     items = state.items.map {
