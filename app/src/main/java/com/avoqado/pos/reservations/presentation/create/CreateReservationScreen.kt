@@ -134,6 +134,8 @@ fun CreateReservationScreen(
                 icon = Icons.Filled.Schedule,
                 primaryText = dateTimeSummary(draft),
                 placeholder = dateTimeSummary(draft),
+                enabled = !isEditing,
+                hint = "Para cambiar fecha u hora usa Reprogramar".takeIf { isEditing },
                 onClick = { activeSheet = CreateSheet.DATE_TIME },
             )
 
@@ -189,6 +191,8 @@ private fun PickerRow(
     primaryText: String?,
     placeholder: String,
     secondaryText: String? = null,
+    enabled: Boolean = true,
+    hint: String? = null,
     onClick: () -> Unit,
 ) {
     val isSet = primaryText != null && primaryText.isNotBlank()
@@ -205,7 +209,7 @@ private fun PickerRow(
             shape = RoundedCornerShape(12.dp),
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable(onClick = onClick),
+                .let { if (enabled) it.clickable(onClick = onClick) else it },
         ) {
             Row(
                 modifier = Modifier
@@ -244,12 +248,22 @@ private fun PickerRow(
                         )
                     }
                 }
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                if (enabled) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
+        }
+        hint?.takeIf { it.isNotBlank() }?.let {
+            Text(
+                text = it,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 4.dp, top = 6.dp),
+            )
         }
     }
 }
