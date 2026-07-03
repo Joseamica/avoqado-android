@@ -447,12 +447,16 @@ private fun SectionRow(
 
 /**
  * Advanced inventory sections gated by INVENTORY_TRACKING. The basic stock
- * OVERVIEW (and metrics over it) stays free.
+ * OVERVIEW stays free; METRICS is derived from the gated advanced data and
+ * must be gated too (matches backend: the entire inventory suite behind
+ * INVENTORY_TRACKING is a Premium-only differentiator — see
+ * avoqado-server/src/routes/dashboard/inventory.routes.ts).
  */
 private val inventoryGatedSections = setOf(
     InventorySection.COUNTS,
     InventorySection.PURCHASE_ORDERS,
     InventorySection.TRANSFERS,
+    InventorySection.METRICS,
 )
 
 /** Tier badge label for a section, or null when the section is available. */

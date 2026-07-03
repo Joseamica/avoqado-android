@@ -50,8 +50,8 @@ class InventoryViewModel @Inject constructor(
 
     /**
      * INVENTORY_TRACKING (Premium) gates the ADVANCED inventory sections
-     * (counts, purchase orders, transfers). The basic stock overview stays
-     * free. Fail-open when the plan is unknown.
+     * (counts, purchase orders, transfers, metrics). The basic stock overview
+     * stays free. Fail-open when the plan is unknown.
      */
     val hasInventoryTracking: Boolean
         get() = planManager.hasFeature("INVENTORY_TRACKING")
