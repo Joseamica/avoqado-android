@@ -93,6 +93,22 @@ When the user asks to build for production, release, or to upload to Google Play
    - **Nombre de la versión**: `<versionCode> (<versionName>)`
    - **Notas de la versión**: wrapped in `<es-419>...</es-419>` tags, with a bullet list summarizing the changes in this release (in Spanish). Ready to copy-paste into Google Play Console.
 
+### Deploy a Producción (Google Play) — todo por CLI
+
+Cuando el usuario pida "deploy a producción" / "sube a Play Store": los pasos 1-5 de arriba
+(bump, bundleRelease/assembleRelease con **JDK 17** vía `JAVA_HOME=$(/usr/libexec/java_home -v 17)`,
+carpeta de iCloud + CAPTION.md) siguen aplicando como archivo/ceremonia local, y además:
+
+6. **Subida y publicación por API**: 
+   ```
+   scripts/play_release.py app/build/outputs/bundle/release/app-release.aab <versionCode> --notes notas.txt
+   ```
+   Sube el AAB al track `production` con notas `es-419` y confirma el edit — Google lo pasa a su
+   revisión (horas). Credenciales: la cuenta de servicio de Firebase
+   (`avoqado-server/firebase-service-account.json`), invitada en Play Console con permisos de
+   Versiones desde 2026-07. Si responde 403, revisar Play Console → Usuarios y permisos.
+7. Igual que iOS: si la versión depende de endpoints nuevos del backend, ese deploy va primero.
+
 ## Architecture Overview
 
 Avoqado Android is a **Point of Sale (POS) system** for Android tablets and phones, ported from the iOS app (`avoqado-ios`). Built with Kotlin + Jetpack Compose + Material3.
@@ -298,3 +314,17 @@ the SAME change — never "later":** the full deck (`avoqado-presentacion.html`)
 (`avoqado-one-pager.html`), then regenerate both PDFs following that folder's `README.md`.
 Updating only one of the two is an incomplete change. Internal refactors and bugfixes with no
 customer-visible impact are exempt.
+
+---
+
+## Fetching Asana task attachments / screenshots
+
+When given an Asana task URL, you **can** see its screenshots and attachments — don't claim you can't.
+
+- `mcp__asana__*` reads task text/comments but **not** files; the `mcp__claude_ai_Asana__` connector is often unauthorized. Don't stop there — use the Asana Personal Access Token directly (it's what powers the `asana` MCP server):
+  1. Read the token (use it, **never print or commit the value**): key `ASANA_ACCESS_TOKEN` under `mcpServers.asana.env` in `~/.claude.json`. Example:
+     `TOKEN=$(python3 -c "import json,os; print(json.load(open(os.path.expanduser('~/.claude.json')))['mcpServers']['asana']['env']['ASANA_ACCESS_TOKEN'])")`
+  2. List attachments + signed URLs (task GID = the long number after `/task/` in the URL):
+     `curl -s -H "Authorization: Bearer $TOKEN" "https://app.asana.com/api/1.0/tasks/<GID>/attachments?opt_fields=name,download_url,created_at"`
+  3. `curl` each `download_url` (pre-signed, needs no auth) to a temp file in the scratchpad, then Read the image. Inline description images are attachments too, so this returns all of them — not just the ones embedded in the text.
+- If slide/screenshot text is unreadable after Read downscales a large image, crop it into regions with PIL and upscale (LANCZOS) before re-reading.
