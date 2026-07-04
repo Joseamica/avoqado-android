@@ -20,6 +20,7 @@ import kotlinx.coroutines.launch
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import com.avoqado.pos.core.util.VenueTimeZone
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.ZoneId
@@ -33,7 +34,7 @@ data class CreateClassSessionDraft(
     val productId: String? = null,
     val productName: String? = null,
     val productDuration: Int? = null,
-    val date: LocalDate = LocalDate.now(),
+    val date: LocalDate = LocalDate.now(VenueTimeZone.zoneId()),
     val startTime: LocalTime = LocalTime.of(9, 0),
     val endTime: LocalTime = LocalTime.of(10, 0),
     val capacity: Int = 10,

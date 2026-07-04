@@ -37,6 +37,7 @@ import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.reservations.presentation.create.CreateReservationViewModel
 import java.time.Instant
 import java.time.LocalTime
+import com.avoqado.pos.core.util.VenueTimeZone
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -54,7 +55,9 @@ fun DateTimeSection(viewModel: CreateReservationViewModel) {
 
     var showDatePicker by remember { mutableStateOf(false) }
 
-    val zone = ZoneId.systemDefault()
+    // Venue timezone, not the device's — the appointment's wall-clock date/time must be
+    // interpreted in the venue's local zone (backend stores UTC). Same rule as iOS.
+    val zone = VenueTimeZone.zoneId()
     val dateLabel = remember(draft.date) {
         draft.date
             .format(DateTimeFormatter.ofPattern("EEE d 'de' MMM", Locale("es")))

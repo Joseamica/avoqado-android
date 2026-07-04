@@ -3,6 +3,7 @@ package com.avoqado.pos.reservations.domain
 import com.avoqado.pos.reservations.data.model.CreateReservationRequest
 import com.avoqado.pos.reservations.data.model.ReservationChannel
 import com.avoqado.pos.reservations.data.model.UpdateReservationRequest
+import com.avoqado.pos.core.util.VenueTimeZone
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.ZoneId
@@ -19,7 +20,7 @@ data class CreateReservationDraft(
     val productId: String? = null,
     val productName: String? = null,
     val durationMinutes: Int = 60,
-    val date: LocalDate = LocalDate.now(),
+    val date: LocalDate = LocalDate.now(VenueTimeZone.zoneId()),
     val time: LocalTime = LocalTime.of(9, 0),
     val partySize: Int = 1,
     val tableId: String? = null,
