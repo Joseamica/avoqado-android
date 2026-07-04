@@ -53,11 +53,32 @@ data class Discount(
             DiscountType.FIXED -> "$${String.format("%.2f", value)}"
         }
 
+    /**
+     * Per-item applicability check used by the cart's item-level discount
+     * picker. Mirrors iOS's `Discount.appliesToProduct` (CartModels.swift)
+     * exactly:
+     * - ITEM: applies if `targetItemIds` is empty/null (wildcard — applies
+     *   to every product) OR contains `productId`.
+     * - CATEGORY: same wildcard rule against `targetCategoryIds`.
+     * - ORDER: always false — ORDER-scoped discounts belong to the
+     *   checkout's order-level discount flow (see ShortcutsGridView.kt,
+     *   which filters ORDER scope out before building the per-item picker),
+     *   never to a single line item. The backend's
+     *   `validateDiscountScopeForItem` now rejects the whole order if an
+     *   ORDER-scoped discount is sent as a per-item discountId, so this
+     *   picker must never offer one.
+     */
     fun appliesTo(productId: String?, categoryId: String?): Boolean {
         return when (discountScope) {
-            DiscountScope.ORDER -> true
-            DiscountScope.ITEM -> productId != null && targetItemIds?.contains(productId) == true
-            DiscountScope.CATEGORY -> categoryId != null && targetCategoryIds?.contains(categoryId) == true
+            DiscountScope.ORDER -> false
+            DiscountScope.ITEM -> {
+                val targetIds = targetItemIds
+                targetIds.isNullOrEmpty() || (productId != null && targetIds.contains(productId))
+            }
+            DiscountScope.CATEGORY -> {
+                val targetIds = targetCategoryIds
+                targetIds.isNullOrEmpty() || (categoryId != null && targetIds.contains(categoryId))
+            }
         }
     }
 
