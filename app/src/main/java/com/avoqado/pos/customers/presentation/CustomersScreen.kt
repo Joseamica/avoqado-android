@@ -704,6 +704,11 @@ private fun CustomerDetailPanel(
                 )
             }
         }
+
+        Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
+
+        // Prepaid credit packs / memberships (sell in person + redeem)
+        CustomerCreditsSection(customer = customer)
     }
 }
 

@@ -6,6 +6,7 @@ import com.avoqado.pos.articles.data.model.AdminDiscount
 import com.avoqado.pos.articles.data.model.ArticleCategory
 import com.avoqado.pos.articles.data.model.ArticleProduct
 import com.avoqado.pos.articles.data.model.CreditPack
+import com.avoqado.pos.articles.data.model.CreditPurchaseBalance
 import com.avoqado.pos.articles.data.model.ModifierGroup
 import com.avoqado.pos.articles.data.model.ProductOption
 import com.avoqado.pos.articles.data.model.ProductOptionsListResponse
@@ -36,6 +37,13 @@ private val JSON_MEDIA = "application/json".toMediaType()
  */
 @Serializable
 private data class ApiEnvelope<T>(val success: Boolean = true, val data: T)
+
+/** Response of GET /mobile/venues/:id/customers/:cid/credit-balance. */
+@Serializable
+private data class CustomerBalanceEnvelope(
+    val success: Boolean = true,
+    val purchases: List<CreditPurchaseBalance> = emptyList(),
+)
 
 @Singleton
 class ArticlesRepository @Inject constructor(
@@ -832,6 +840,80 @@ class ArticlesRepository @Inject constructor(
         } catch (e: Exception) {
             Log.e(TAG, "❌ deleteCreditPack exception: ${e.message}", e)
             _errorMessage.value = "Error al eliminar paquete de crédito"
+            false
+        }
+    }
+
+    // MARK: - Customer credit balance / sell in person / redeem (mobile routes)
+
+    /** A customer's active, non-expired credit balances. */
+    suspend fun fetchCustomerCredits(customerId: String): List<CreditPurchaseBalance> {
+        val url = baseUrl() ?: return emptyList()
+        return try {
+            val request = Request.Builder()
+                .url("$url/customers/$customerId/credit-balance")
+                .get()
+                .build()
+            val (code, body) = executeRequest(request)
+            if (code in 200..299 && body.isNotEmpty()) {
+                json.decodeFromString(CustomerBalanceEnvelope.serializer(), body).purchases
+            } else {
+                Log.e(TAG, "❌ fetchCustomerCredits error: HTTP $code")
+                emptyList()
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ fetchCustomerCredits exception: ${e.message}", e)
+            emptyList()
+        }
+    }
+
+    /** Sell a pack to a customer in person (paid through the POS, not Stripe). */
+    suspend fun sellPackToCustomer(packId: String, customerId: String): Boolean {
+        val url = baseUrl() ?: return false
+        return try {
+            val payload = kotlinx.serialization.json.buildJsonObject {
+                put("customerId", kotlinx.serialization.json.JsonPrimitive(customerId))
+            }.toString()
+            val request = Request.Builder()
+                .url("$url/credit-packs/$packId/sell")
+                .post(payload.toRequestBody(JSON_MEDIA))
+                .build()
+            val (code, _) = executeRequest(request)
+            if (code in 200..299) {
+                Log.d(TAG, "✅ Pack $packId sold to $customerId")
+                true
+            } else {
+                Log.e(TAG, "❌ sellPackToCustomer error: HTTP $code")
+                _errorMessage.value = "Error al vender el paquete"
+                false
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ sellPackToCustomer exception: ${e.message}", e)
+            _errorMessage.value = "Error al vender el paquete"
+            false
+        }
+    }
+
+    /** Redeem one credit from a balance. */
+    suspend fun redeemCredit(balanceId: String): Boolean {
+        val url = baseUrl() ?: return false
+        return try {
+            val request = Request.Builder()
+                .url("$url/credit-balances/$balanceId/redeem")
+                .post("{}".toRequestBody(JSON_MEDIA))
+                .build()
+            val (code, _) = executeRequest(request)
+            if (code in 200..299) {
+                Log.d(TAG, "✅ Credit $balanceId redeemed")
+                true
+            } else {
+                Log.e(TAG, "❌ redeemCredit error: HTTP $code")
+                _errorMessage.value = "Error al canjear el crédito"
+                false
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ redeemCredit exception: ${e.message}", e)
+            _errorMessage.value = "Error al canjear el crédito"
             false
         }
     }

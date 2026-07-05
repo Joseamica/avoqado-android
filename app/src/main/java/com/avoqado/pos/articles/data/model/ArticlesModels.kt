@@ -318,6 +318,40 @@ data class CreditPackItemProduct(
     val name: String = "",
 )
 
+// MARK: - Customer credit balance (staff POS: sell in person / redeem)
+
+@Serializable
+data class CreditPurchaseBalance(
+    val id: String,
+    val expiresAt: String? = null,
+    val creditPack: CreditPackName? = null,
+    val itemBalances: List<CreditBalanceItem> = emptyList(),
+) {
+    val packName: String get() = creditPack?.name ?: "Paquete"
+}
+
+@Serializable
+data class CreditPackName(val name: String = "")
+
+@Serializable
+data class CreditBalanceItem(
+    val id: String,
+    val productId: String? = null,
+    val originalQuantity: Int = 0,
+    val remainingQuantity: Int = 0,
+    val product: CreditBalanceProduct? = null,
+) {
+    val productName: String get() = product?.name ?: "Servicio"
+}
+
+@Serializable
+data class CreditBalanceProduct(
+    val id: String = "",
+    val name: String = "",
+    val type: String? = null,
+    val imageUrl: String? = null,
+)
+
 // MARK: - Raw Material & Recipe Models
 
 @Serializable
