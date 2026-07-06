@@ -199,7 +199,7 @@ private fun SellPackDialog(
                                     color = MaterialTheme.colorScheme.onSurface,
                                 )
                                 Text(
-                                    text = "${pack.itemCount} créditos · ${pack.displayPrice}",
+                                    text = "${pack.creditCount} créditos · ${pack.displayPrice}",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
@@ -233,7 +233,7 @@ private fun SellPackDialog(
             onDismissRequest = { pendingPack = null },
             title = { Text("Vender paquete") },
             text = {
-                Text("Se otorgarán ${pack.itemCount} créditos a ${customer.fullName}. Cobra el pago antes de confirmar.")
+                Text("Se otorgarán ${pack.creditCount} créditos a ${customer.fullName}. Cobra el pago antes de confirmar.")
             },
             confirmButton = {
                 TextButton(onClick = {

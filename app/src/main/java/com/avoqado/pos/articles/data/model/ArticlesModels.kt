@@ -300,8 +300,13 @@ data class CreditPack(
     val displayPrice: String
         get() = "$${String.format(Locale.US, "%.2f", price)}"
 
+    /** Number of distinct products in the pack. */
     val itemCount: Int
         get() = items?.size ?: 0
+
+    /** Total prepaid credits across all items (sum of quantities). */
+    val creditCount: Int
+        get() = items?.sumOf { it.quantity } ?: 0
 }
 
 @Serializable
