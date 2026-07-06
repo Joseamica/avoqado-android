@@ -1050,6 +1050,7 @@ class PaymentFlowViewModel @Inject constructor(
                 productId = when (val type = item.type) {
                     is CartItemType.ProductItem -> type.productId
                     CartItemType.CustomAmount -> null
+                    is CartItemType.CreditPack -> null // not a product line; credits granted separately
                 },
                 name = item.name,
                 quantity = item.quantity,

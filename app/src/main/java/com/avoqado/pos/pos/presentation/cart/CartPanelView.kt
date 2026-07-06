@@ -80,6 +80,7 @@ fun CartPanelView(
     onRemoveItem: (String) -> Unit = {},
     onApplyTaxPercent: (Int?) -> Unit = {},
     customerName: String? = null,
+    customerId: String? = null,
     onCustomerTap: () -> Unit = {},
     staffName: String = cartState.selectedStaffName,
     onStaffTap: () -> Unit = {},
@@ -121,6 +122,11 @@ fun CartPanelView(
             )
 
             HorizontalDivider()
+
+            // Membresías: redeem a prepaid credit at checkout (only shows if any)
+            if (customerId != null) {
+                CartCreditsCard(customerId = customerId)
+            }
 
             // Cart Content
             if (cartState.isEmpty) {

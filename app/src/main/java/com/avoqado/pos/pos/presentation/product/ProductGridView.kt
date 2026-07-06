@@ -25,6 +25,7 @@ import androidx.compose.material.icons.Icons
 import com.avoqado.pos.designsystem.components.CircleBackButton
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
@@ -65,10 +66,19 @@ import com.avoqado.pos.pos.presentation.cart.CartViewModel
 fun ProductGridView(
     viewModel: CartViewModel,
     onProductTap: (Product) -> Unit,
+    onPackTap: ((com.avoqado.pos.articles.data.model.CreditPack) -> Unit)? = null,
 ) {
     val allProducts by viewModel.products.collectAsState()
     val categories by viewModel.categories.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
+
+    // Prepaid credit packs (membresías), shown as tiles when onPackTap is set.
+    val creditsVM: com.avoqado.pos.customers.presentation.CustomerCreditsViewModel =
+        androidx.hilt.navigation.compose.hiltViewModel()
+    val packs by creditsVM.packs.collectAsState()
+    androidx.compose.runtime.LaunchedEffect(onPackTap != null) {
+        if (onPackTap != null) creditsVM.loadPacks()
+    }
 
     var selectedCategory by remember { mutableStateOf<ProductCategory?>(null) }
 
@@ -122,6 +132,8 @@ fun ProductGridView(
                         uncategorizedProducts = uncategorized,
                         onCategoryTap = { selectedCategory = it },
                         onProductTap = onProductTap,
+                        packs = if (onPackTap != null) packs else emptyList(),
+                        onPackTap = onPackTap,
                     )
                 }
             }
@@ -219,6 +231,8 @@ private fun CategoriesGrid(
     uncategorizedProducts: List<Product>,
     onCategoryTap: (ProductCategory) -> Unit,
     onProductTap: (Product) -> Unit,
+    packs: List<com.avoqado.pos.articles.data.model.CreditPack> = emptyList(),
+    onPackTap: ((com.avoqado.pos.articles.data.model.CreditPack) -> Unit)? = null,
 ) {
     LazyVerticalGrid(
         columns = GridCells.Fixed(3),
@@ -240,6 +254,13 @@ private fun CategoriesGrid(
                 product = product,
                 onClick = { onProductTap(product) },
             )
+        }
+
+        // Prepaid credit packs (membresías) — sellable straight from the grid
+        if (onPackTap != null) {
+            items(packs, key = { "pack_${it.id}" }) { pack ->
+                CreditPackTile(pack = pack, onClick = { onPackTap(pack) })
+            }
         }
     }
 }
@@ -267,6 +288,54 @@ private fun ProductsGrid(
 }
 
 // MARK: - Category Tile
+
+@Composable
+private fun CreditPackTile(
+    pack: com.avoqado.pos.articles.data.model.CreditPack,
+    onClick: () -> Unit,
+) {
+    val bg = MaterialTheme.colorScheme.primary
+    val fg = MaterialTheme.colorScheme.onPrimary
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .aspectRatio(1f)
+            .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
+            .background(bg)
+            .clickable(onClick = onClick),
+    ) {
+        Icon(
+            imageVector = Icons.Default.Star,
+            contentDescription = null,
+            modifier = Modifier
+                .padding(AvoqadoTheme.spacing.md)
+                .size(24.dp)
+                .align(Alignment.TopStart),
+            tint = fg.copy(alpha = 0.9f),
+        )
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .padding(AvoqadoTheme.spacing.md),
+        ) {
+            Text(
+                text = pack.name,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold,
+                color = fg,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                text = "${pack.itemCount} créditos · ${pack.displayPrice}",
+                style = MaterialTheme.typography.labelSmall,
+                color = fg.copy(alpha = 0.85f),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
 
 @Composable
 private fun CategoryTile(

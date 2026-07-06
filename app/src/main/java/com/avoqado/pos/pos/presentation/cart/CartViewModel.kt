@@ -363,6 +363,22 @@ class CartViewModel @Inject constructor(
         _cartState.update { it.copy(items = it.items + item) }
     }
 
+    /** Add a prepaid credit pack (membresía) to the cart. Charges like a line item; on
+     *  payment success the credits are granted to the attached customer. A customer is
+     *  required to complete the charge (enforced at checkout). */
+    fun addCreditPack(pack: com.avoqado.pos.articles.data.model.CreditPack) {
+        val item = CartItem(
+            type = CartItemType.CreditPack(pack.id),
+            name = pack.name,
+            subtitle = if (pack.itemCount > 0) "${pack.itemCount} créditos" else "Membresía",
+            unitPrice = (pack.price * 100).toInt(),
+        )
+        _cartState.update { it.copy(items = it.items + item) }
+    }
+
+    /** True when the cart contains a credit-pack line (needs a customer to charge). */
+    val hasCreditPack: Boolean get() = _cartState.value.items.any { it.type is CartItemType.CreditPack }
+
     fun removeItem(itemId: String) {
         _cartState.update { state ->
             val updatedItems = state.items.filter { it.id != itemId }
@@ -496,6 +512,7 @@ class CartViewModel @Inject constructor(
                     productId = when (val type = item.type) {
                         is CartItemType.ProductItem -> type.productId
                         is CartItemType.CustomAmount -> null
+                        is CartItemType.CreditPack -> null
                     },
                     name = item.name,
                     unitPrice = item.unitPrice,
@@ -776,6 +793,7 @@ class CartViewModel @Inject constructor(
                 productId = when (val type = item.type) {
                     is CartItemType.ProductItem -> type.productId
                     CartItemType.CustomAmount -> null
+                    is CartItemType.CreditPack -> null
                 },
                 name = item.name,
                 quantity = item.quantity,

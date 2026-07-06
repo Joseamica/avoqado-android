@@ -5,6 +5,11 @@ import java.util.UUID
 sealed class CartItemType {
     data class ProductItem(val productId: String) : CartItemType()
     data object CustomAmount : CartItemType()
+
+    /** A prepaid credit pack (membresía) sold from the grid. Behaves like a custom
+     *  amount for money/order purposes; the packId is carried so the credits can be
+     *  granted to the attached customer on payment success. */
+    data class CreditPack(val packId: String) : CartItemType()
 }
 
 data class CartItem(

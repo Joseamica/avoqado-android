@@ -64,6 +64,7 @@ import com.avoqado.pos.payment.presentation.PaymentFlowScreen
 import com.avoqado.pos.payment.presentation.SplitConfig
 import com.avoqado.pos.payment.presentation.SplitPaymentSheet
 import com.avoqado.pos.pos.data.model.CartItem
+import com.avoqado.pos.pos.data.model.CartItemType
 import com.avoqado.pos.pos.data.model.Product
 import com.avoqado.pos.pos.presentation.cart.CartPanelView
 import com.avoqado.pos.pos.presentation.cart.CartViewModel
@@ -94,6 +95,7 @@ fun CheckoutScreen(
     roleManager: RoleManager? = null,
     cartViewModel: CartViewModel = hiltViewModel(),
 ) {
+    val creditsViewModel: com.avoqado.pos.customers.presentation.CustomerCreditsViewModel = hiltViewModel()
     val cartState by cartViewModel.cartState.collectAsState()
     val isLoading by cartViewModel.isLoading.collectAsState()
     val staffOptions by cartViewModel.staffOptions.collectAsState()
@@ -115,6 +117,9 @@ fun CheckoutScreen(
     var showIPhoneCart by remember { mutableStateOf(false) }
     var selectedCartItem by remember { mutableStateOf<CartItem?>(null) }
     var selectedCustomer by remember { mutableStateOf<Customer?>(null) }
+    // Membresías: a credit-pack sale needs a customer; grant captured at charge time.
+    var showPackCustomerRequired by remember { mutableStateOf(false) }
+    var pendingPackGrant by remember { mutableStateOf<Pair<String, List<String>>?>(null) }
     var showCustomersSheet by remember { mutableStateOf(false) }
     var showCreateCustomer by remember { mutableStateOf(false) }
     var createCustomerSearchText by remember { mutableStateOf("") }
@@ -263,6 +268,7 @@ fun CheckoutScreen(
                                             { selectedProduct = it },
                                         )
                                     },
+                                    onPackTap = { cartViewModel.addCreditPack(it) },
                                 )
                             }
                             InputTab.MOSAIC -> {
@@ -293,14 +299,19 @@ fun CheckoutScreen(
                     cartState = cartState,
                     onItemTap = { item -> selectedCartItem = item },
                     onCharge = {
-                        // Persist any cached referral (Plan 5B) — fire-and-forget
-                        // before the PaymentFlow takes over. The capture is best
-                        // effort: the cashier already saw the Valid banner and
-                        // the discount was visible, so a transport failure must
-                        // not block charging.
-                        checkoutScope.launch { cartViewModel.captureReferralOnPayment(orderId = null) }
-                        pendingSplitConfig = SplitConfig()
-                        showPaymentFlow = true
+                        if (cartViewModel.hasCreditPack && selectedCustomer == null) {
+                            showPackCustomerRequired = true
+                        } else {
+                            pendingPackGrant = selectedCustomer?.id?.let { cid ->
+                                val ids = cartState.items.mapNotNull { (it.type as? CartItemType.CreditPack)?.packId }
+                                if (ids.isEmpty()) null else cid to ids
+                            }
+                            // Persist any cached referral (Plan 5B) — fire-and-forget
+                            // before the PaymentFlow takes over.
+                            checkoutScope.launch { cartViewModel.captureReferralOnPayment(orderId = null) }
+                            pendingSplitConfig = SplitConfig()
+                            showPaymentFlow = true
+                        }
                     },
                     onClearCart = { cartViewModel.clearCart() },
                     onSaveCart = {
@@ -312,6 +323,7 @@ fun CheckoutScreen(
                     onRemoveItem = { cartViewModel.removeItem(it) },
                     onApplyTaxPercent = { cartViewModel.applyOrderTaxPercent(it) },
                     customerName = selectedCustomer?.fullName,
+                    customerId = selectedCustomer?.id,
                     onCustomerTap = openGeneralCustomerPicker,
                     staffName = cartState.selectedStaffName,
                     onStaffTap = {
@@ -417,6 +429,7 @@ fun CheckoutScreen(
                                             { selectedProduct = it },
                                         )
                                     },
+                                    onPackTap = { cartViewModel.addCreditPack(it) },
                                 )
                             }
                             InputTab.MOSAIC -> {
@@ -500,10 +513,18 @@ fun CheckoutScreen(
             cartState = cartState,
             onItemTap = { item -> selectedCartItem = item },
             onCharge = {
-                checkoutScope.launch { cartViewModel.captureReferralOnPayment(orderId = null) }
-                showIPhoneCart = false
-                pendingSplitConfig = SplitConfig()
-                showPaymentFlow = true
+                if (cartViewModel.hasCreditPack && selectedCustomer == null) {
+                    showPackCustomerRequired = true
+                } else {
+                    pendingPackGrant = selectedCustomer?.id?.let { cid ->
+                        val ids = cartState.items.mapNotNull { (it.type as? CartItemType.CreditPack)?.packId }
+                        if (ids.isEmpty()) null else cid to ids
+                    }
+                    checkoutScope.launch { cartViewModel.captureReferralOnPayment(orderId = null) }
+                    showIPhoneCart = false
+                    pendingSplitConfig = SplitConfig()
+                    showPaymentFlow = true
+                }
             },
             onClearCart = { cartViewModel.clearCart() },
             onSaveCart = {
@@ -523,6 +544,7 @@ fun CheckoutScreen(
                 showStaffSelector = true
             },
             customerName = selectedCustomer?.fullName,
+            customerId = selectedCustomer?.id,
             onCustomerTap = openGeneralCustomerPicker,
             referralCode = referralCodeState,
             referralUiState = referralUiState,
@@ -663,6 +685,9 @@ fun CheckoutScreen(
                             )
                         }
                         else -> {
+                            // Full payment — grant any captured membership credits.
+                            pendingPackGrant?.let { creditsViewModel.grantPacks(it.second, it.first) }
+                            pendingPackGrant = null
                             cartViewModel.clearCart()
                         }
                     }
@@ -786,6 +811,21 @@ fun CheckoutScreen(
     }
 
     // Note dialog for keypad custom amount
+    if (showPackCustomerRequired) {
+        AvoqadoDialog(
+            title = "Asigna un cliente",
+            description = "Este cobro incluye una membresía. Asigna un cliente al carrito para poder otorgarle los créditos.",
+            onDismiss = { showPackCustomerRequired = false },
+            actionButton = {
+                PrimaryButton(
+                    text = "Entendido",
+                    onClick = { showPackCustomerRequired = false },
+                )
+            },
+            content = {},
+        )
+    }
+
     if (showNoteDialog) {
         var noteInput by remember { mutableStateOf(currentNote) }
         AvoqadoDialog(
@@ -851,6 +891,7 @@ private fun IPhoneCartSheet(
     staffName: String,
     onStaffTap: () -> Unit,
     customerName: String? = null,
+    customerId: String? = null,
     onCustomerTap: () -> Unit = {},
     referralCode: String = "",
     referralUiState: com.avoqado.pos.referrals.presentation.ReferralCaptureUiState =
@@ -916,6 +957,7 @@ private fun IPhoneCartSheet(
                 onRemoveItem = onRemoveItem,
                 onApplyTaxPercent = onApplyTaxPercent,
                 customerName = customerName,
+                customerId = customerId,
                 onCustomerTap = onCustomerTap,
                 staffName = staffName,
                 onStaffTap = onStaffTap,

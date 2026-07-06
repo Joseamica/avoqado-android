@@ -60,6 +60,14 @@ class CustomerCreditsViewModel @Inject constructor(
         }
     }
 
+    /** Grant one or more packs to a customer after an in-person sale (used by the
+     *  sell-from-grid flow: charge goes through the cart, credits granted on success). */
+    fun grantPacks(packIds: List<String>, customerId: String) {
+        viewModelScope.launch {
+            packIds.forEach { articlesRepository.sellPackToCustomer(it, customerId) }
+        }
+    }
+
     fun redeem(balanceId: String, customerId: String) {
         viewModelScope.launch {
             _busyBalanceId.value = balanceId
