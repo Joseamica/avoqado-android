@@ -303,6 +303,8 @@ class PaymentFlowViewModel @Inject constructor(
         val amount = currentBaseAmount()
 
         // Reset transient state from any previous session.
+        isProcessingPayment = false
+        paymentIdempotencyKey = null
         selectedMethod = null
         currentRating = null
         currentTipCents = 0
