@@ -19,6 +19,7 @@ import javax.inject.Inject
 @HiltViewModel
 class CustomerCreditsViewModel @Inject constructor(
     private val articlesRepository: ArticlesRepository,
+    private val pendingGrantQueue: com.avoqado.pos.customers.data.PendingGrantQueue,
 ) : ViewModel() {
 
     private val _balances = MutableStateFlow<List<CreditPurchaseBalance>>(emptyList())
@@ -64,7 +65,14 @@ class CustomerCreditsViewModel @Inject constructor(
      *  sell-from-grid flow: charge goes through the cart, credits granted on success). */
     fun grantPacks(packIds: List<String>, customerId: String) {
         viewModelScope.launch {
-            packIds.forEach { articlesRepository.sellPackToCustomer(it, customerId) }
+            packIds.forEach { packId ->
+                val ok = articlesRepository.sellPackToCustomer(packId, customerId)
+                if (!ok) {
+                    // The customer already PAID — never drop the grant. Queue it
+                    // durably; the queue retries on next app start / drain.
+                    pendingGrantQueue.enqueue(packId, customerId)
+                }
+            }
         }
     }
 

@@ -514,6 +514,7 @@ class CartViewModel @Inject constructor(
                         is CartItemType.CustomAmount -> null
                         is CartItemType.CreditPack -> null
                     },
+                    packId = (item.type as? CartItemType.CreditPack)?.packId,
                     name = item.name,
                     unitPrice = item.unitPrice,
                     quantity = item.quantity,
@@ -536,6 +537,8 @@ class CartViewModel @Inject constructor(
             orderDiscount = state.orderDiscount,
             orderNote = state.orderNote,
             orderTaxPercent = state.orderTaxPercent,
+            reservationId = state.reservationId,
+            attachedCustomerId = _selectedCustomerId.value,
         )
         savedCartsRepository.saveCart(savedCart)
         clearCart()
@@ -738,10 +741,10 @@ class CartViewModel @Inject constructor(
     fun restoreSavedCart(savedCart: SavedCart) {
         val items = savedCart.items.map { savedItem ->
             CartItem(
-                type = if (savedItem.productId != null) {
-                    CartItemType.ProductItem(savedItem.productId)
-                } else {
-                    CartItemType.CustomAmount
+                type = when {
+                    savedItem.packId != null -> CartItemType.CreditPack(savedItem.packId)
+                    savedItem.productId != null -> CartItemType.ProductItem(savedItem.productId)
+                    else -> CartItemType.CustomAmount
                 },
                 name = savedItem.name,
                 unitPrice = savedItem.unitPrice,
@@ -762,14 +765,20 @@ class CartViewModel @Inject constructor(
                 itemDiscountId = savedItem.itemDiscountId,
             )
         }
+        // Referral-sourced discounts must NOT survive a restore without a live
+        // validation — the referrer would never be credited for the new sale.
+        val restoredDiscount = savedCart.orderDiscount?.takeIf { it.source != REFERRAL_DISCOUNT_SOURCE }
+        clearReferral()
         _cartState.value = CartState(
             items = items,
-            orderDiscount = savedCart.orderDiscount,
+            orderDiscount = restoredDiscount,
             orderNote = savedCart.orderNote,
             orderTaxPercent = savedCart.orderTaxPercent,
+            reservationId = savedCart.reservationId,
             selectedStaffId = _cartState.value.selectedStaffId,
             selectedStaffName = _cartState.value.selectedStaffName,
         )
+        _selectedCustomerId.value = savedCart.attachedCustomerId
         savedCartsRepository.deleteCart(savedCart.id)
         Log.d("🛒", "Restored saved cart: ${savedCart.name}")
     }

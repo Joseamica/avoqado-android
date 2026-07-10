@@ -10,6 +10,10 @@ data class SavedCart(
     val orderDiscount: Discount? = null,
     val orderNote: String? = null,
     val orderTaxPercent: Int? = null,
+    /// Walk-in class link + attached customer — dropped on save before, so a
+    /// restored cart lost its reservation link and its customer.
+    val reservationId: String? = null,
+    val attachedCustomerId: String? = null,
     val createdAt: Long = System.currentTimeMillis(),
 ) {
     val itemCount: Int get() = items.sumOf { it.quantity }
@@ -27,6 +31,9 @@ data class SavedCartItem(
     val cortesiaReason: String? = null,
     val priceAdjustment: Int? = null,
     val itemDiscountId: String? = null,
+    /// Credit-pack (membresía) identity — before, a saved pack line restored
+    /// as a plain CustomAmount: charged, never granted, gate bypassed.
+    val packId: String? = null,
 )
 
 @Serializable

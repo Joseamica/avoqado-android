@@ -119,6 +119,7 @@ fun CheckoutScreen(
     var selectedCustomer by remember { mutableStateOf<Customer?>(null) }
     // Membresías: a credit-pack sale needs a customer; grant captured at charge time.
     var showPackCustomerRequired by remember { mutableStateOf(false) }
+    var showPackNoSplitAlert by remember { mutableStateOf(false) }
     var pendingPackGrant by remember { mutableStateOf<Pair<String, List<String>>?>(null) }
     var showCustomersSheet by remember { mutableStateOf(false) }
     var showCreateCustomer by remember { mutableStateOf(false) }
@@ -330,7 +331,12 @@ fun CheckoutScreen(
                         cartViewModel.fetchStaff()
                         showStaffSelector = true
                     },
-                    onSplitPayment = { showSplitPayment = true },
+                    onSplitPayment = {
+                        // Membresías grant only on FULL payment — a split sale
+                        // charged the pack without ever granting credits.
+                        if (cartViewModel.hasCreditPack) showPackNoSplitAlert = true
+                        else showSplitPayment = true
+                    },
                     referralCode = referralCodeState,
                     referralUiState = referralUiState,
                     customerSelectedForReferral = selectedCustomer != null,
@@ -811,6 +817,21 @@ fun CheckoutScreen(
     }
 
     // Note dialog for keypad custom amount
+    if (showPackNoSplitAlert) {
+        AvoqadoDialog(
+            title = "Membresía en el carrito",
+            description = "Las membresías se cobran en un solo pago. Cobra la membresía por separado o quítala del carrito para dividir el pago.",
+            onDismiss = { showPackNoSplitAlert = false },
+            actionButton = {
+                PrimaryButton(
+                    text = "Entendido",
+                    onClick = { showPackNoSplitAlert = false },
+                )
+            },
+            content = {},
+        )
+    }
+
     if (showPackCustomerRequired) {
         AvoqadoDialog(
             title = "Asigna un cliente",

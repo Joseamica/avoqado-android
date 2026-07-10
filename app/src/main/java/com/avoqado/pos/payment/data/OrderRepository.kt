@@ -249,6 +249,7 @@ class OrderRepository @Inject constructor(
         staffId: String,
         tip: Int = 0,
         splitType: String = "FULLPAYMENT",
+        idempotencyKey: String = java.util.UUID.randomUUID().toString(),
     ): Result<String?> {
         val venueId = secureStorage.venueId ?: return Result.failure(Exception("No venue"))
         if (staffId.isBlank()) return Result.failure(Exception("No staff"))
@@ -263,7 +264,8 @@ class OrderRepository @Inject constructor(
                 append("\"method\":\"CASH\",")
                 append("\"splitType\":\"$splitType\",")
                 append("\"staffId\":\"$staffId\",")
-                append("\"source\":\"AVOQADO_ANDROID\"")
+                append("\"source\":\"AVOQADO_ANDROID\",")
+                append("\"idempotencyKey\":\"$idempotencyKey\"")
                 append("}")
             }
 
@@ -300,6 +302,7 @@ class OrderRepository @Inject constructor(
         staffId: String,
         tip: Int = 0,
         splitType: String = "FULLPAYMENT",
+        idempotencyKey: String = java.util.UUID.randomUUID().toString(),
     ): Result<String?> {
         val venueId = secureStorage.venueId ?: return Result.failure(Exception("No venue"))
         if (staffId.isBlank()) return Result.failure(Exception("No staff"))
@@ -314,7 +317,8 @@ class OrderRepository @Inject constructor(
                 append("\"method\":\"CASH\",")
                 append("\"splitType\":\"$splitType\",")
                 append("\"staffId\":\"$staffId\",")
-                append("\"source\":\"AVOQADO_ANDROID\"")
+                append("\"source\":\"AVOQADO_ANDROID\",")
+                append("\"idempotencyKey\":\"$idempotencyKey\"")
                 append("}")
             }
 

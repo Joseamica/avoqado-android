@@ -73,6 +73,40 @@ class PaymentFlowViewModel @Inject constructor(
     private var currentRating: Int? = null
     private var currentTipCents: Int = 0
     private var createdOrderId: String? = null
+
+    /// Re-entrancy guard: a fast double-tap on a cash preset or a terminal row
+    /// used to enter processCashPayment/confirmPayment TWICE — both saw
+    /// createdOrderId == null and created two orders + recorded two payments.
+    /// Set synchronously at entry, cleared centrally when the flow reaches a
+    /// terminal state (Success/Error) — see the collector in startFlowGuard().
+    private var isProcessingPayment = false
+
+    /// One idempotency key per payment SESSION (not per attempt): a retry after
+    /// a network-error-but-server-recorded response reuses the key so the
+    /// backend can dedupe instead of recording a SECOND payment. Cleared on
+    /// Success (same collector as the processing flag) and on cancel/reset.
+    private var paymentIdempotencyKey: String? = null
+
+    private fun sessionIdempotencyKey(): String =
+        paymentIdempotencyKey ?: java.util.UUID.randomUUID().toString().also { paymentIdempotencyKey = it }
+
+    /// Invalidates in-flight terminal sends: cancel() bumps it, and a late
+    /// result from a cancelled send is ignored instead of overwriting the
+    /// screen, marking Success and PRINTING a receipt for a cancelled payment.
+    private var paymentGeneration = 0
+
+    init {
+        viewModelScope.launch {
+            _state.collect { st ->
+                if (st is PaymentFlowState.Success || st is PaymentFlowState.Error) {
+                    isProcessingPayment = false
+                }
+                if (st is PaymentFlowState.Success) {
+                    paymentIdempotencyKey = null
+                }
+            }
+        }
+    }
     private var selectedTerminalId: String? = null
     private var lastPaymentId: String? = null
     private var lastReceiptAccessKey: String? = null
@@ -377,7 +411,9 @@ class PaymentFlowViewModel @Inject constructor(
     }
 
     fun confirmPayment() {
+        if (isProcessingPayment) return
         val cart = cartState ?: return
+        isProcessingPayment = true
         val total = currentBaseAmount() + currentTipCents
         _state.value = PaymentFlowState.Processing(total)
 
@@ -474,6 +510,7 @@ class PaymentFlowViewModel @Inject constructor(
                 }
 
                 _state.value = PaymentFlowState.SentToTerminal(total)
+                val generation = paymentGeneration
                 val terminalResult = terminalPaymentService.sendPaymentToTerminal(
                     terminalId = terminalId,
                     amountCents = currentBaseAmount(),
@@ -482,6 +519,12 @@ class PaymentFlowViewModel @Inject constructor(
                     orderId = createdOrderId,
                     processedByStaffId = selectedStaffId(),
                 )
+                if (generation != paymentGeneration) {
+                    // User cancelled while the send was in flight (up to 310s):
+                    // do NOT mark Success/Error nor print for a dead attempt.
+                    Log.d("PaymentFlow", "⏭️ Ignoring stale terminal result (cancelled)")
+                    return
+                }
                 when (terminalResult) {
                     is TerminalPaymentResult.Success -> {
                         lastPaymentId = terminalResult.paymentId
@@ -513,6 +556,7 @@ class PaymentFlowViewModel @Inject constructor(
                         staffId = selectedStaffId(),
                         tip = currentTipCents,
                         splitType = _splitType.value,
+                        idempotencyKey = sessionIdempotencyKey(),
                     )
                     payResult.fold(
                         onSuccess = { paymentId ->
@@ -577,6 +621,8 @@ class PaymentFlowViewModel @Inject constructor(
     }
 
     fun processCashPayment(cashReceivedCents: Int) {
+        if (isProcessingPayment) return
+        isProcessingPayment = true
         lastCashTenderedCents = cashReceivedCents
         val total = currentBaseAmount() + currentTipCents
 
@@ -661,6 +707,7 @@ class PaymentFlowViewModel @Inject constructor(
                             staffId = selectedStaffId(),
                             tip = currentTipCents,
                             splitType = _splitType.value,
+                            idempotencyKey = sessionIdempotencyKey(),
                         )
                         fastResult.fold(
                             onSuccess = { paymentId ->
@@ -728,6 +775,7 @@ class PaymentFlowViewModel @Inject constructor(
             staffId = selectedStaffId(),
             tip = currentTipCents,
             splitType = _splitType.value,
+            idempotencyKey = sessionIdempotencyKey(),
         )
         payResult.fold(
             onSuccess = { paymentId ->
@@ -854,6 +902,9 @@ class PaymentFlowViewModel @Inject constructor(
     }
 
     fun cancel() {
+        isProcessingPayment = false
+        paymentGeneration++
+        paymentIdempotencyKey = null
         // Cancel pending terminal payment if in progress
         terminalPaymentService.cancelCurrentPayment()
 
