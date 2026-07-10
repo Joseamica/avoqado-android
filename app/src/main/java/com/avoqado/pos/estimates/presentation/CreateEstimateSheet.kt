@@ -1,6 +1,8 @@
 package com.avoqado.pos.estimates.presentation
 
 import androidx.compose.foundation.layout.Arrangement
+import com.avoqado.pos.designsystem.components.PrimaryButton
+import com.avoqado.pos.designsystem.components.AvoqadoDialog
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -49,6 +51,7 @@ fun CreateEstimateSheet(
     val isSaving by viewModel.isSaving.collectAsState()
 
     var customerName by remember { mutableStateOf("") }
+    var createError by remember { mutableStateOf<String?>(null) }
     var customerEmail by remember { mutableStateOf("") }
     var customerPhone by remember { mutableStateOf("") }
     var notes by remember { mutableStateOf("") }
@@ -89,6 +92,19 @@ fun CreateEstimateSheet(
             notes = notes.ifBlank { null },
             items = estimateItems,
             onSuccess = { onDismiss() },
+            onError = { createError = it },
+        )
+    }
+
+    if (createError != null) {
+        AvoqadoDialog(
+            title = "No se pudo crear",
+            description = createError ?: "",
+            onDismiss = { createError = null },
+            actionButton = {
+                PrimaryButton(text = "Entendido", onClick = { createError = null })
+            },
+            content = {},
         )
     }
 

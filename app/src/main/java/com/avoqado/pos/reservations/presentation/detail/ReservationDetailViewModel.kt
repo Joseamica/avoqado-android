@@ -56,6 +56,10 @@ class ReservationDetailViewModel @Inject constructor(
 
     fun runAction(action: ReservationAction, payload: ReservationRepository.ActionPayload? = null) {
         if (!_state.value.isAllowed(action)) return
+        // Global in-flight lock: PENDING allows CONFIRM+CHECK_IN+NO_SHOW+CANCEL
+        // simultaneously; without this a 2nd tap fired two concurrent mutations
+        // on the same reservation (e.g. confirm + no-show racing).
+        if (_state.value.pendingAction != null) return
         val before = _state.value.reservation
         _state.update { it.copy(pendingAction = action, error = null, justCompletedAction = null) }
         viewModelScope.launch {

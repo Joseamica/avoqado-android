@@ -77,6 +77,7 @@ class EstimatesViewModel @Inject constructor(
         validUntil: String? = null,
         items: List<EstimateItemInput>,
         onSuccess: () -> Unit = {},
+        onError: (String) -> Unit = {},
     ) {
         viewModelScope.launch {
             _isSaving.value = true
@@ -113,6 +114,7 @@ class EstimatesViewModel @Inject constructor(
                     onSuccess()
                 } else {
                     Log.e(TAG, "❌ Estimate creation failed")
+                    onError("No se pudo crear el presupuesto. Intenta de nuevo.")
                 }
             } finally {
                 _isSaving.value = false

@@ -60,6 +60,16 @@ fun CancelReservationSheet(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(50),
             )
+            // A failed cancel used to be invisible: state.error was set on this
+            // sheet's VM instance but never rendered — the button just reverted.
+            state.error?.let { err ->
+                Text(
+                    err,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+            }
             Spacer(Modifier.padding(12.dp))
             Button(
                 onClick = {

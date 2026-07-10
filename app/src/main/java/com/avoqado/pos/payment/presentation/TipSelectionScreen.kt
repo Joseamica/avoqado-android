@@ -69,7 +69,12 @@ fun TipSelectionSheet(
     onSkip: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+    // Swipe-to-dismiss used to silently commit tip=0 (and lose a partially
+    // entered custom tip). Require an explicit "Sin propina" / tip choice.
+    val sheetState = rememberModalBottomSheetState(
+        skipPartiallyExpanded = true,
+        confirmValueChange = { it != androidx.compose.material3.SheetValue.Hidden },
+    )
     var selectedTipPercent by remember { mutableIntStateOf(-1) }
     var showCustomInput by remember { mutableStateOf(false) }
     var customTipCents by remember { mutableIntStateOf(0) }
@@ -90,7 +95,7 @@ fun TipSelectionSheet(
     val hasSelection = selectedTipPercent > 0 || (showCustomInput && customTipCents > 0)
 
     ModalBottomSheet(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { /* explicit choice required — see confirmValueChange */ },
         sheetState = sheetState,
     ) {
         Column(

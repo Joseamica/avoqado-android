@@ -910,7 +910,12 @@ class PaymentFlowViewModel @Inject constructor(
 
         createdOrderId?.let { orderId ->
             viewModelScope.launch {
-                orderRepository.cancelOrder(orderId)
+                // A failed cancel leaves the order OPEN server-side with nobody
+                // aware. Log it (was fully discarded) so orphaned orders are
+                // diagnosable; the order screen reconciliation can pick them up.
+                orderRepository.cancelOrder(orderId).onFailure { e ->
+                    Log.e("PaymentFlow", "⚠️ Failed to cancel order $orderId (may be left OPEN): ${e.message}")
+                }
             }
         }
     }
@@ -918,9 +923,13 @@ class PaymentFlowViewModel @Inject constructor(
     private fun recordCashSale(amountCents: Int, orderId: String? = null) {
         viewModelScope.launch {
             try {
+                // addCashSale returns null gracefully when no drawer is open
+                // (normal — not every venue runs one). A thrown exception is a
+                // REAL insert failure: the drawer total will drift from recorded
+                // sales, so log at error level instead of a silent Log.d.
                 cashDrawerRepository.addCashSale(amountCents, orderId)
             } catch (e: Exception) {
-                Log.d("💰", "Cash drawer not active or error: ${e.message}")
+                Log.e("💰", "Cash drawer insert FAILED (drawer total will drift): ${e.message}", e)
             }
         }
     }

@@ -16,7 +16,12 @@ import javax.inject.Inject
 @HiltViewModel
 class CustomersViewModel @Inject constructor(
     private val repository: CustomersRepository,
+    private val roleManager: com.avoqado.pos.core.domain.RoleManager,
 ) : ViewModel() {
+
+    /// Role gate for money-adjacent customer actions (create, sell/redeem
+    /// prepaid credits). WAITER can VIEW customers but must not manage them.
+    val canManageCustomers: Boolean get() = roleManager.canManageCustomers
 
     private val _customers = MutableStateFlow<List<Customer>>(emptyList())
     val customers: StateFlow<List<Customer>> = _customers.asStateFlow()

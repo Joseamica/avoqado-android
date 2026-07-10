@@ -172,13 +172,15 @@ private fun TabletCustomersLayout(
                         expanded = showMenu,
                         onDismissRequest = { showMenu = false },
                     ) {
-                        DropdownMenuItem(
-                            text = { Text("Crear cliente") },
-                            onClick = {
-                                showMenu = false
-                                showCreateCustomer = true
-                            },
-                        )
+                        if (viewModel.canManageCustomers) {
+                            DropdownMenuItem(
+                                text = { Text("Crear cliente") },
+                                onClick = {
+                                    showMenu = false
+                                    showCreateCustomer = true
+                                },
+                            )
+                        }
                     }
                 }
             }
@@ -414,13 +416,15 @@ private fun PhoneCustomersLayout(
                     expanded = showMenu,
                     onDismissRequest = { showMenu = false },
                 ) {
-                    DropdownMenuItem(
-                        text = { Text("Crear cliente") },
-                        onClick = {
-                            showMenu = false
-                            showCreateCustomer = true
-                        },
-                    )
+                    if (viewModel.canManageCustomers) {
+                        DropdownMenuItem(
+                            text = { Text("Crear cliente") },
+                            onClick = {
+                                showMenu = false
+                                showCreateCustomer = true
+                            },
+                        )
+                    }
                 }
             }
         }

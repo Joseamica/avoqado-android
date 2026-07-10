@@ -1,6 +1,7 @@
 package com.avoqado.pos.navigation
 
 import android.app.Activity
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -85,6 +86,7 @@ import java.time.format.DateTimeFormatter
 @dagger.hilt.InstallIn(dagger.hilt.components.SingletonComponent::class)
 interface FormatterEntryPoint {
     fun formatter(): VenueDateTimeFormatter
+    fun errorNotifier(): com.avoqado.pos.core.data.network.ErrorNotifier
 }
 
 @Composable
@@ -141,11 +143,22 @@ private fun MainScaffold(
     val startTab = visibleTabs.firstOrNull() ?: MainTab.NOTIFICATIONS
 
     val context = LocalContext.current
-    val formatter = remember {
+    val entryPoint = remember {
         EntryPointAccessors.fromApplication(
             context.applicationContext,
             FormatterEntryPoint::class.java,
-        ).formatter()
+        )
+    }
+    val formatter = remember { entryPoint.formatter() }
+    // 403/RBAC denials used to be invisible (the button just no-op'd). Surface
+    // them as a toast at the app root.
+    val errorNotifier = remember { entryPoint.errorNotifier() }
+    val forbiddenError by errorNotifier.forbiddenError.collectAsState()
+    LaunchedEffect(forbiddenError) {
+        forbiddenError?.let {
+            android.widget.Toast.makeText(context, it, android.widget.Toast.LENGTH_LONG).show()
+            errorNotifier.clear()
+        }
     }
 
     fun navigateToTab(tab: MainTab) {

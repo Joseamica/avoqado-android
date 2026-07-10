@@ -139,6 +139,15 @@ fun RescheduleSheet(
                 .padding(20.dp),
         ) {
             Text("Reagendar reserva", style = MaterialTheme.typography.headlineSmall)
+            // Failed reschedule was invisible (state.error set, never rendered).
+            state.error?.let { err ->
+                Text(
+                    err,
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(top = 8.dp),
+                )
+            }
             Spacer(Modifier.padding(8.dp))
             OutlinedButton(
                 onClick = { showDatePicker = true },

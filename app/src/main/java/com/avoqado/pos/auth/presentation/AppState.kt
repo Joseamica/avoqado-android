@@ -54,6 +54,16 @@ class AppState @Inject constructor(
     private val _isLoggedIn = MutableStateFlow(secureStorage.isLoggedIn)
     val isLoggedIn: StateFlow<Boolean> = _isLoggedIn.asStateFlow()
 
+    init {
+        // Reactive logout: a wiped session (failed refresh) now routes the user
+        // to Landing instead of leaving a zombie session behind.
+        viewModelScope.launch {
+            secureStorage.sessionInvalidated.collect {
+                _isLoggedIn.value = false
+            }
+        }
+    }
+
     val pendingPaymentCount: StateFlow<Int> = paymentSyncService.pendingCount
 
     val showOfflineBanner: StateFlow<Boolean> = combine(

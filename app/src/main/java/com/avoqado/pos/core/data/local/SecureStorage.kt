@@ -17,6 +17,13 @@ class SecureStorage @Inject constructor(
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
+    /// Emitted when the session is wiped (e.g. a failed token refresh in the
+    /// authenticator). Before, nothing observed this, so the UI stayed in the
+    /// main scaffold with every request silently 401ing until a force-restart
+    /// (zombie session). AppState collects this and flips isLoggedIn=false.
+    private val _sessionInvalidated = kotlinx.coroutines.flow.MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+    val sessionInvalidated: kotlinx.coroutines.flow.SharedFlow<Unit> = _sessionInvalidated
+
     private val masterKey = MasterKey.Builder(context)
         .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
         .build()
@@ -303,6 +310,7 @@ class SecureStorage @Inject constructor(
     }
 
     fun clearSession() {
+        _sessionInvalidated.tryEmit(Unit)
         prefs.edit()
             .remove(KEY_USER_ID)
             .remove(KEY_USER_EMAIL)

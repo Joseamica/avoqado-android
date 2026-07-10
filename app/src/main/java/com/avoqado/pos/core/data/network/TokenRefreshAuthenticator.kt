@@ -20,6 +20,8 @@ class TokenRefreshAuthenticator @Inject constructor(
 
     private val json = Json { ignoreUnknownKeys = true }
 
+    private val refreshLock = Any()
+
     @Volatile
     private var isRefreshing = false
 
@@ -39,8 +41,31 @@ class TokenRefreshAuthenticator @Inject constructor(
             return null
         }
 
-        synchronized(this) {
-            if (isRefreshing) return null
+        // Concurrent 401s no longer get dropped: if a refresh is already
+        // running, wait for it and retry with the token it stored (before,
+        // every concurrent request but one surfaced a spurious 401).
+        synchronized(refreshLock) {
+            if (isRefreshing) {
+                // Another thread is refreshing — block until it finishes.
+                while (isRefreshing) {
+                    try {
+                        (refreshLock as Object).wait(10_000)
+                    } catch (e: InterruptedException) {
+                        Thread.currentThread().interrupt()
+                        return null
+                    }
+                }
+                val freshToken = secureStorage.accessToken ?: return null
+                // Only retry if the refresh actually produced a usable token.
+                return if (secureStorage.isLoggedIn) {
+                    response.request.newBuilder()
+                        .header("Authorization", "Bearer $freshToken")
+                        .header("X-Retry-After-Refresh", "true")
+                        .build()
+                } else {
+                    null
+                }
+            }
             isRefreshing = true
         }
 
@@ -68,8 +93,9 @@ class TokenRefreshAuthenticator @Inject constructor(
                 null
             }
         } finally {
-            synchronized(this) {
+            synchronized(refreshLock) {
                 isRefreshing = false
+                (refreshLock as Object).notifyAll()
             }
         }
     }

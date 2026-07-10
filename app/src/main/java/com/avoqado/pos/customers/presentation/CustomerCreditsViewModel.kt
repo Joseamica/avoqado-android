@@ -20,7 +20,12 @@ import javax.inject.Inject
 class CustomerCreditsViewModel @Inject constructor(
     private val articlesRepository: ArticlesRepository,
     private val pendingGrantQueue: com.avoqado.pos.customers.data.PendingGrantQueue,
+    private val roleManager: com.avoqado.pos.core.domain.RoleManager,
 ) : ViewModel() {
+
+    /// Role gate for selling/redeeming paid credit packs (WAITER can view a
+    /// customer but must not move their money).
+    val canManageCustomers: Boolean get() = roleManager.canManageCustomers
 
     private val _balances = MutableStateFlow<List<CreditPurchaseBalance>>(emptyList())
     val balances: StateFlow<List<CreditPurchaseBalance>> = _balances.asStateFlow()

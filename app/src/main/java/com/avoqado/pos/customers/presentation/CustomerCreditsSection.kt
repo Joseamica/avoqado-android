@@ -1,6 +1,8 @@
 package com.avoqado.pos.customers.presentation
 
 import androidx.compose.foundation.background
+import com.avoqado.pos.designsystem.components.PrimaryButton
+import com.avoqado.pos.designsystem.components.AvoqadoDialog
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -33,6 +35,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.avoqado.pos.articles.data.model.CreditBalanceItem
 import com.avoqado.pos.articles.data.model.CreditPack
 import com.avoqado.pos.customers.data.model.Customer
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
@@ -46,6 +49,10 @@ fun CustomerCreditsSection(
     val isLoading by viewModel.isLoading.collectAsStateWithLifecycle()
     val busyId by viewModel.busyBalanceId.collectAsStateWithLifecycle()
     var showSell by remember { mutableStateOf(false) }
+    // Sell/redeem move paid credits — gate them (a WAITER could view a customer
+    // and trigger a sell/redeem the backend would then 403).
+    val canManage = viewModel.canManageCustomers
+    var showRedeemConfirm by remember { mutableStateOf<CreditBalanceItem?>(null) }
 
     LaunchedEffect(customer.id) { viewModel.load(customer.id) }
 
@@ -61,7 +68,9 @@ fun CustomerCreditsSection(
                 color = MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.weight(1f),
             )
-            TextButton(onClick = { showSell = true }) { Text("Vender paquete") }
+            if (canManage) {
+                TextButton(onClick = { showSell = true }) { Text("Vender paquete") }
+            }
         }
 
         when {
@@ -109,9 +118,9 @@ fun CustomerCreditsSection(
                                     )
                                 }
                                 RedeemChip(
-                                    enabled = item.remainingQuantity > 0 && busyId == null,
+                                    enabled = canManage && item.remainingQuantity > 0 && busyId == null,
                                     busy = busyId == item.id,
-                                    onClick = { viewModel.redeem(item.id, customer.id) },
+                                    onClick = { showRedeemConfirm = item },
                                 )
                             }
                         }
@@ -119,6 +128,21 @@ fun CustomerCreditsSection(
                 }
             }
         }
+    }
+
+    showRedeemConfirm?.let { item ->
+        AvoqadoDialog(
+            title = "Canjear crédito",
+            description = "Se descontará 1 de ${item.productName}. Esta acción no se puede deshacer.",
+            onDismiss = { showRedeemConfirm = null },
+            actionButton = {
+                PrimaryButton(text = "Canjear", onClick = {
+                    viewModel.redeem(item.id, customer.id)
+                    showRedeemConfirm = null
+                })
+            },
+            content = {},
+        )
     }
 
     if (showSell) {
