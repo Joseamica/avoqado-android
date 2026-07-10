@@ -57,6 +57,12 @@ class MoreMenuViewModel @Inject constructor(
     val canAccessReports: Boolean
         get() = roleManager.canAccessReports
 
+    val canManageCashDrawer: Boolean
+        get() = roleManager.canManageCashDrawer
+
+    val canAccessKDS: Boolean
+        get() = roleManager.canAccessKDS
+
     /**
      * Effective reservations availability: local toggle AND plan gate, so a
      * stale local toggle can't surface reservation entries (waitlist, mode

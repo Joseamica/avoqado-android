@@ -417,6 +417,7 @@ class InventoryViewModel @Inject constructor(
                 expected = stock.onHand,
                 counted = 0.0,
                 difference = 0.0,
+                unit = stock.unit,
             )
         }
 

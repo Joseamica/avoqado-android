@@ -445,18 +445,22 @@ fun MoreMenuScreen(
             onClick = { showOrders = true },
             dense = denseMenu,
         )
-        MenuRow(
-            icon = Icons.Filled.PointOfSale,
-            label = "Caja",
-            onClick = { showCashDrawer = true },
-            dense = denseMenu,
-        )
-        MenuRow(
-            icon = Icons.Filled.Restaurant,
-            label = "Pantalla de cocina",
-            onClick = { showKDS = true },
-            dense = denseMenu,
-        )
+        if (viewModel.canManageCashDrawer) {
+            MenuRow(
+                icon = Icons.Filled.PointOfSale,
+                label = "Caja",
+                onClick = { showCashDrawer = true },
+                dense = denseMenu,
+            )
+        }
+        if (viewModel.canAccessKDS) {
+            MenuRow(
+                icon = Icons.Filled.Restaurant,
+                label = "Pantalla de cocina",
+                onClick = { showKDS = true },
+                dense = denseMenu,
+            )
+        }
         if (viewModel.canCreateProducts) {
             MenuRow(
                 icon = Icons.Filled.LocalOffer,

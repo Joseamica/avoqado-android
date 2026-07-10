@@ -135,6 +135,7 @@ fun CheckoutScreen(
     // Membresías: a credit-pack sale needs a customer; grant captured at charge time.
     var showPackCustomerRequired by remember { mutableStateOf(false) }
     var showPackNoSplitAlert by remember { mutableStateOf(false) }
+    var showClearCartConfirm by remember { mutableStateOf(false) }
     var pendingPackGrant by remember { mutableStateOf<Pair<String, List<String>>?>(null) }
     var showCustomersSheet by remember { mutableStateOf(false) }
     var showCreateCustomer by remember { mutableStateOf(false) }
@@ -330,7 +331,7 @@ fun CheckoutScreen(
                             showPaymentFlow = true
                         }
                     },
-                    onClearCart = { cartViewModel.clearCart() },
+                    onClearCart = { showClearCartConfirm = true },
                     onSaveCart = {
                         if (cartViewModel.saveCurrentCart()) {
                             showSavedSnackbar = true
@@ -548,7 +549,7 @@ fun CheckoutScreen(
                     showPaymentFlow = true
                 }
             },
-            onClearCart = { cartViewModel.clearCart() },
+            onClearCart = { showClearCartConfirm = true },
             onSaveCart = {
                 if (cartViewModel.saveCurrentCart()) {
                     showSavedSnackbar = true
@@ -836,6 +837,23 @@ fun CheckoutScreen(
     }
 
     // Note dialog for keypad custom amount
+    if (showClearCartConfirm) {
+        AvoqadoDialog(
+            title = "¿Vaciar carrito?",
+            description = if (cartState.reservationId != null)
+                "Este carrito tiene una clase con inscripción activa. Al vaciarlo, la inscripción se mantiene SIN cobro — cóbrala después o cancélala desde el calendario."
+            else "Se quitarán todos los artículos del carrito.",
+            onDismiss = { showClearCartConfirm = false },
+            actionButton = {
+                PrimaryButton(text = "Vaciar", onClick = {
+                    cartViewModel.clearCart()
+                    showClearCartConfirm = false
+                })
+            },
+            content = {},
+        )
+    }
+
     if (showPackNoSplitAlert) {
         AvoqadoDialog(
             title = "Membresía en el carrito",

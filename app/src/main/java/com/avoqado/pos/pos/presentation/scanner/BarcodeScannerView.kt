@@ -25,6 +25,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.FlashOff
+import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -58,6 +60,8 @@ fun BarcodeScannerView(
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
+    var camera by remember { mutableStateOf<androidx.camera.core.Camera?>(null) }
+    var torchOn by remember { mutableStateOf(false) }
     var hasCameraPermission by remember {
         mutableStateOf(
             ContextCompat.checkSelfPermission(
@@ -136,7 +140,7 @@ fun BarcodeScannerView(
 
                         try {
                             cameraProvider.unbindAll()
-                            cameraProvider.bindToLifecycle(
+                            camera = cameraProvider.bindToLifecycle(
                                 lifecycleOwner,
                                 CameraSelector.DEFAULT_BACK_CAMERA,
                                 preview,
@@ -156,6 +160,31 @@ fun BarcodeScannerView(
             Box(
                 modifier = Modifier.fillMaxSize(),
             ) {
+                // Torch toggle (top-left) — low-light barcode scanning was
+                // impossible before (no flashlight control existed).
+                if (camera?.cameraInfo?.hasFlashUnit() == true) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopStart)
+                            .padding(AvoqadoTheme.spacing.xl)
+                            .size(44.dp)
+                            .clip(RoundedCornerShape(50))
+                            .background(Color.Black.copy(alpha = 0.5f))
+                            .clickable {
+                                torchOn = !torchOn
+                                camera?.cameraControl?.enableTorch(torchOn)
+                            },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(
+                            if (torchOn) Icons.Filled.FlashOn else Icons.Filled.FlashOff,
+                            contentDescription = "Linterna",
+                            tint = Color.White,
+                            modifier = Modifier.size(24.dp),
+                        )
+                    }
+                }
+
                 // Close button (top-right)
                 Box(
                     modifier = Modifier

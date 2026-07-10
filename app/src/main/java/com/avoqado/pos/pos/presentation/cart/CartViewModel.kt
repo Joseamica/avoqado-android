@@ -382,7 +382,16 @@ class CartViewModel @Inject constructor(
     /** Add a prepaid credit pack (membresía) to the cart. Charges like a line item; on
      *  payment success the credits are granted to the attached customer. A customer is
      *  required to complete the charge (enforced at checkout). */
+    private var lastPackAddId: String? = null
+    private var lastPackAddAt: Long = 0
+
     fun addCreditPack(pack: com.avoqado.pos.articles.data.model.CreditPack) {
+        // Debounce accidental double-taps on the grid tile: two identical pack
+        // lines within 1.5s is a mis-tap (and would double-charge + double-grant).
+        val now = System.currentTimeMillis()
+        if (lastPackAddId == pack.id && now - lastPackAddAt < 1500) return
+        lastPackAddId = pack.id
+        lastPackAddAt = now
         val item = CartItem(
             type = CartItemType.CreditPack(pack.id),
             name = pack.name,

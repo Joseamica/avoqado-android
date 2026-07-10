@@ -1,6 +1,7 @@
 package com.avoqado.pos.inventory.presentation
 
 import androidx.compose.foundation.background
+import com.avoqado.pos.inventory.data.model.onHandDisplay
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -670,7 +671,7 @@ private fun SelectedItemInfo(item: StockCountItem) {
         }
 
         Text(
-            text = "Esperado: ${item.expected.toInt()}",
+            text = "Esperado: ${item.expectedDisplay}",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -916,7 +917,7 @@ private fun AddItemsPopup(
                         }
 
                         Text(
-                            text = "En mano: ${item.onHand.toInt()}",
+                            text = "En mano: ${item.onHandDisplay}",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

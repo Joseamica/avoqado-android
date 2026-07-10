@@ -231,7 +231,11 @@ class KDSViewModel @Inject constructor(
         val order = _orders.value.find { it.id == orderId }
         if (order != null) {
             viewModelScope.launch {
-                kdsRepository.updateStatus(orderId, order.status.name)
+                kdsRepository.updateStatus(orderId, order.status.name).onFailure {
+                    // Optimistic local mutation failed server-side: resync so the
+                    // board self-corrects instead of silently diverging.
+                    fetchOrders()
+                }
             }
         }
 
@@ -252,7 +256,7 @@ class KDSViewModel @Inject constructor(
 
         // Sync to server
         viewModelScope.launch {
-            kdsRepository.bumpOrder(orderId)
+            kdsRepository.bumpOrder(orderId).onFailure { fetchOrders() }
         }
 
         Log.d(TAG, "Pedido completado (bump): $orderId")

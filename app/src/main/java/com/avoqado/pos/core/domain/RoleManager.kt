@@ -44,4 +44,12 @@ class RoleManager @Inject constructor(
     /** Issue refund (payments:refund): MANAGER, ADMIN, OWNER, SUPERADMIN */
     val canIssueRefund: Boolean
         get() = role in setOf("MANAGER", "ADMIN", "OWNER", "SUPERADMIN")
+
+    /** Cash-drawer ops (open/close/pay-in-out): CASHIER, MANAGER, ADMIN, OWNER, SUPERADMIN */
+    val canManageCashDrawer: Boolean
+        get() = role in setOf("CASHIER", "MANAGER", "ADMIN", "OWNER", "SUPERADMIN")
+
+    /** Kitchen display: WAITER, CASHIER, MANAGER, ADMIN, OWNER, SUPERADMIN */
+    val canAccessKDS: Boolean
+        get() = role in setOf("WAITER", "CASHIER", "MANAGER", "ADMIN", "OWNER", "SUPERADMIN")
 }

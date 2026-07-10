@@ -77,7 +77,13 @@ data class StockCountItem(
     val expected: Double = 0.0,
     var counted: Double = 0.0,
     var difference: Double = 0.0,
-)
+    /// Measurement unit — was dropped when building count items, so quantities
+    /// rendered as bare numbers ("5") ambiguous between kg/L/piezas.
+    val unit: String? = null,
+) {
+    val expectedDisplay: String get() = formatInvQty(expected) + unitSuffixOf(unit)
+    val countedDisplay: String get() = formatInvQty(counted) + unitSuffixOf(unit)
+}
 
 enum class StockSortOption(val label: String) {
     NAME_ASC("Nombre A-Z"),
@@ -117,3 +123,24 @@ data class PaginationInfo(
     val pageSize: Int = 20,
     val pageCount: Int = 1,
 )
+
+
+/** "2.5"/"5" formatting: decimals only when needed. */
+fun formatInvQty(value: Double): String =
+    if (value == value.toLong().toDouble()) value.toLong().toString()
+    else String.format(java.util.Locale.US, "%.2f", value)
+
+/** Short Spanish unit suffix ("kg","g","L"…). Empty for count/piece units. */
+fun unitSuffixOf(unit: String?): String = when (unit?.uppercase()) {
+    "KILOGRAM" -> " kg"
+    "GRAM" -> " g"
+    "LITER", "LITRE" -> " L"
+    "MILLILITER", "MILLILITRE" -> " ml"
+    "METER", "METRE" -> " m"
+    "POUND" -> " lb"
+    "OUNCE" -> " oz"
+    else -> ""
+}
+
+/** StockItem on-hand with unit, no truncation ("2.5 kg" not "2"). */
+val StockItem.onHandDisplay: String get() = formatInvQty(onHand) + unitSuffixOf(unit)

@@ -1,6 +1,7 @@
 package com.avoqado.pos.inventory.presentation.transfers
 
 import androidx.compose.foundation.background
+import com.avoqado.pos.inventory.data.model.onHandDisplay
 import androidx.compose.runtime.LaunchedEffect
 import com.avoqado.pos.designsystem.components.AvoqadoDialog
 import androidx.compose.foundation.clickable
@@ -462,7 +463,7 @@ private fun ItemPickerSheet(
                             }
                         }
                         Text(
-                            text = "En mano: ${item.onHand.toInt()}",
+                            text = "En mano: ${item.onHandDisplay}",
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
