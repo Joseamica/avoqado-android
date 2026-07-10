@@ -1,6 +1,7 @@
 package com.avoqado.pos.inventory.presentation.purchaseorders
 
 import androidx.compose.foundation.background
+import com.avoqado.pos.designsystem.components.AvoqadoDialog
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -50,6 +51,8 @@ fun ReceiveStockSheet(
 
     // Local state: map of item.id -> received quantity text
     // Default each item's received quantity to the remaining (ordered - already received)
+    val invSheetError by viewModel.errorMessage.collectAsState()
+    androidx.compose.runtime.LaunchedEffect(Unit) { viewModel.clearErrorMessage() }
     val receivedQuantities = remember {
         mutableStateMapOf<String, String>().apply {
             order.items.forEach { item ->
@@ -57,6 +60,18 @@ fun ReceiveStockSheet(
                 put(item.id, remaining.toString())
             }
         }
+    }
+
+    if (invSheetError != null) {
+        AvoqadoDialog(
+            title = "No se pudo completar",
+            description = invSheetError ?: "",
+            onDismiss = { viewModel.clearErrorMessage() },
+            actionButton = {
+                PrimaryButton(text = "Entendido", onClick = { viewModel.clearErrorMessage() })
+            },
+            content = {},
+        )
     }
 
     ModalBottomSheet(

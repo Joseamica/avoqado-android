@@ -1,6 +1,8 @@
 package com.avoqado.pos.pos.presentation.product
 
 import android.util.Log
+import com.avoqado.pos.designsystem.components.PrimaryButton
+import com.avoqado.pos.designsystem.components.AvoqadoDialog
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -66,6 +68,7 @@ fun CreateProductView(
     onDismiss: () -> Unit,
 ) {
     var name by remember { mutableStateOf(initialName) }
+    var createError by remember { mutableStateOf<String?>(null) }
     var price by remember { mutableStateOf("") }
     var selectedCategory by remember { mutableStateOf<ProductCategory?>(null) }
     var sku by remember { mutableStateOf(initialSku ?: generateRandomSku()) }
@@ -86,6 +89,18 @@ fun CreateProductView(
     // Fetch menu categories on appear
     LaunchedEffect(Unit) {
         menuCategories = productsRepository.fetchMenuCategories()
+    }
+
+    if (createError != null) {
+        AvoqadoDialog(
+            title = "No se pudo crear",
+            description = createError ?: "",
+            onDismiss = { createError = null },
+            actionButton = {
+                PrimaryButton(text = "Entendido", onClick = { createError = null })
+            },
+            content = {},
+        )
     }
 
     Box(
@@ -143,6 +158,7 @@ fun CreateProductView(
                                 onFailure = { error ->
                                     Log.e("📦", "Create failed: ${error.message}")
                                     isSaving = false
+                                    createError = error.message ?: "No se pudo crear el artículo. Intenta de nuevo."
                                 },
                             )
                         }

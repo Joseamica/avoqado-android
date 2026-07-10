@@ -1,6 +1,8 @@
 package com.avoqado.pos.articles.presentation.creditpacks
 
 import androidx.compose.foundation.layout.Arrangement
+import com.avoqado.pos.designsystem.components.PrimaryButton
+import com.avoqado.pos.designsystem.components.AvoqadoDialog
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.Row
@@ -66,6 +68,7 @@ fun CreditPackFormSheet(
 
     // MARK: - Form state
     var name by remember { mutableStateOf(pack?.name ?: "") }
+    var saveError by remember { mutableStateOf<String?>(null) }
     var description by remember { mutableStateOf(pack?.description ?: "") }
     var price by remember { mutableStateOf(pack?.price?.let {
         if (it == it.toLong().toDouble()) it.toLong().toString() else it.toString()
@@ -88,11 +91,26 @@ fun CreditPackFormSheet(
 
     val isEditing = pack != null
 
+    if (saveError != null) {
+        AvoqadoDialog(
+            title = "No se pudo guardar",
+            description = saveError ?: "",
+            onDismiss = { saveError = null },
+            actionButton = {
+                PrimaryButton(text = "Entendido", onClick = { saveError = null })
+            },
+            content = {},
+        )
+    }
+
     AvoqadoFullScreenModal(
         title = if (isEditing) "Editar paquete" else "Nuevo paquete",
         onDismiss = onDismiss,
         primaryActionText = if (isEditing) "Guardar" else "Crear",
         onPrimaryAction = {
+            val handle: (Boolean) -> Unit = { ok ->
+                if (ok) onDismiss() else saveError = "No se pudo guardar. Intenta de nuevo."
+            }
             val packItems = items
                 .filter { it.productId.isNotBlank() }
                 .map {
@@ -111,6 +129,7 @@ fun CreditPackFormSheet(
                     maxPerCustomer = maxPerCustomer.toIntOrNull(),
                     active = active,
                     items = packItems,
+                    onResult = handle,
                 )
             } else {
                 viewModel.createCreditPack(
@@ -121,9 +140,9 @@ fun CreditPackFormSheet(
                     maxPerCustomer = maxPerCustomer.toIntOrNull(),
                     active = active,
                     items = packItems,
+                    onResult = handle,
                 )
             }
-            onDismiss()
         },
         primaryActionEnabled = name.isNotBlank() && !isSaving,
     ) {

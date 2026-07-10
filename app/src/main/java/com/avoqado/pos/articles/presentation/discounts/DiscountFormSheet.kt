@@ -1,6 +1,8 @@
 package com.avoqado.pos.articles.presentation.discounts
 
 import androidx.compose.foundation.layout.Arrangement
+import com.avoqado.pos.designsystem.components.PrimaryButton
+import com.avoqado.pos.designsystem.components.AvoqadoDialog
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -51,6 +53,7 @@ fun DiscountFormSheet(
     val categories by viewModel.categories.collectAsState()
 
     var name by remember { mutableStateOf(discount?.name ?: "") }
+    var saveError by remember { mutableStateOf<String?>(null) }
     var type by remember { mutableStateOf(discount?.discountType ?: DiscountType.PERCENTAGE) }
     var value by remember {
         mutableStateOf(
@@ -83,11 +86,26 @@ fun DiscountFormSheet(
         viewModel.loadSectionData(ArticleSection.CATEGORIES)
     }
 
+    if (saveError != null) {
+        AvoqadoDialog(
+            title = "No se pudo guardar",
+            description = saveError ?: "",
+            onDismiss = { saveError = null },
+            actionButton = {
+                PrimaryButton(text = "Entendido", onClick = { saveError = null })
+            },
+            content = {},
+        )
+    }
+
     AvoqadoFullScreenModal(
         title = if (isEditing) "Editar descuento" else "Nuevo descuento",
         onDismiss = onDismiss,
         primaryActionText = if (isEditing) "Guardar" else "Crear",
         onPrimaryAction = {
+            val handle: (Boolean) -> Unit = { ok ->
+                if (ok) onDismiss() else saveError = "No se pudo guardar. Intenta de nuevo."
+            }
             val resolvedValue = if (type == DiscountType.COMP) {
                 100.0
             } else {
@@ -104,6 +122,7 @@ fun DiscountFormSheet(
                     requiresApproval = requiresApproval,
                     targetItemIds = selectedTargetItemIds.toList(),
                     targetCategoryIds = selectedTargetCategoryIds.toList(),
+                    onResult = handle,
                 )
             } else {
                 viewModel.createDiscount(
@@ -115,9 +134,9 @@ fun DiscountFormSheet(
                     requiresApproval = requiresApproval,
                     targetItemIds = selectedTargetItemIds.toList(),
                     targetCategoryIds = selectedTargetCategoryIds.toList(),
+                    onResult = handle,
                 )
             }
-            onDismiss()
         },
         primaryActionEnabled = name.isNotBlank() && !isSaving && hasValidTargets,
     ) {

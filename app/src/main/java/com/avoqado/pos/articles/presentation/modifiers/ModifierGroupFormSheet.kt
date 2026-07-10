@@ -1,6 +1,8 @@
 package com.avoqado.pos.articles.presentation.modifiers
 
 import androidx.compose.foundation.layout.Arrangement
+import com.avoqado.pos.designsystem.components.PrimaryButton
+import com.avoqado.pos.designsystem.components.AvoqadoDialog
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.Row
@@ -63,6 +65,7 @@ fun ModifierGroupFormSheet(
 
     // MARK: - Form state
     var groupName by remember { mutableStateOf(group?.name ?: "") }
+    var saveError by remember { mutableStateOf<String?>(null) }
     var required by remember { mutableStateOf(group?.required ?: false) }
     var allowMultiple by remember { mutableStateOf(group?.allowMultiple ?: false) }
     var minSelections by remember { mutableStateOf(group?.minSelections?.toString() ?: "") }
@@ -112,11 +115,26 @@ fun ModifierGroupFormSheet(
     }
 
     // MARK: - Sheet
+    if (saveError != null) {
+        AvoqadoDialog(
+            title = "No se pudo guardar",
+            description = saveError ?: "",
+            onDismiss = { saveError = null },
+            actionButton = {
+                PrimaryButton(text = "Entendido", onClick = { saveError = null })
+            },
+            content = {},
+        )
+    }
+
     AvoqadoFullScreenModal(
         title = if (isEditing) "Editar grupo" else "Nuevo grupo",
         onDismiss = onDismiss,
         primaryActionText = if (isEditing) "Guardar" else "Crear",
         onPrimaryAction = {
+            val handle: (Boolean) -> Unit = { ok ->
+                if (ok) onDismiss() else saveError = "No se pudo guardar. Intenta de nuevo."
+            }
             if (isEditing) {
                 viewModel.updateModifierGroup(
                     groupId = group!!.id,
@@ -134,6 +152,7 @@ fun ModifierGroupFormSheet(
                             isDeleted = it.isDeleted,
                         )
                     },
+                    onResult = handle,
                 )
             } else {
                 viewModel.createModifierGroup(
@@ -148,9 +167,9 @@ fun ModifierGroupFormSheet(
                             price = it.price.toDoubleOrNull() ?: 0.0,
                         )
                     },
+                    onResult = handle,
                 )
             }
-            onDismiss()
         },
         primaryActionEnabled = groupName.isNotBlank() && !isSaving,
     ) {

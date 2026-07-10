@@ -99,6 +99,11 @@ class ArticlesRepository @Inject constructor(
     private val _errorMessage = MutableStateFlow<String?>(null)
     val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
 
+    fun setError(message: String) { _errorMessage.value = message }
+    /** Item 15: errorMessage was never reset, so a 2nd identical failure never
+     *  re-triggered the snackbar (LaunchedEffect only fires on value change). */
+    fun clearError() { _errorMessage.value = null }
+
     // MARK: - Helpers
 
     private fun baseUrl(): String? {

@@ -1,6 +1,8 @@
 package com.avoqado.pos.inventory.presentation.transfers
 
 import androidx.compose.foundation.background
+import androidx.compose.runtime.LaunchedEffect
+import com.avoqado.pos.designsystem.components.AvoqadoDialog
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -65,10 +67,24 @@ fun CreateTransferSheet(
     val isSaving by viewModel.isSaving.collectAsState()
     val stockItems by viewModel.stockItems.collectAsState()
     var fromLocation by remember { mutableStateOf("") }
+    val invSheetError by viewModel.errorMessage.collectAsState()
+    LaunchedEffect(Unit) { viewModel.clearErrorMessage() }
     var toLocation by remember { mutableStateOf("") }
     var notes by remember { mutableStateOf("") }
     val selectedItems = remember { mutableStateListOf<TransferItemDraft>() }
     var showItemPicker by remember { mutableStateOf(false) }
+
+    if (invSheetError != null) {
+        AvoqadoDialog(
+            title = "No se pudo completar",
+            description = invSheetError ?: "",
+            onDismiss = { viewModel.clearErrorMessage() },
+            actionButton = {
+                PrimaryButton(text = "Entendido", onClick = { viewModel.clearErrorMessage() })
+            },
+            content = {},
+        )
+    }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,

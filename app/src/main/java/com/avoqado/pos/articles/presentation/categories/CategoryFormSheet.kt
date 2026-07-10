@@ -1,6 +1,8 @@
 package com.avoqado.pos.articles.presentation.categories
 
 import androidx.compose.foundation.background
+import com.avoqado.pos.designsystem.components.PrimaryButton
+import com.avoqado.pos.designsystem.components.AvoqadoDialog
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -53,31 +55,48 @@ fun CategoryFormSheet(
     val isSaving by viewModel.isSaving.collectAsState()
 
     var name by remember { mutableStateOf(category?.name ?: "") }
+    var saveError by remember { mutableStateOf<String?>(null) }
     var description by remember { mutableStateOf(category?.description ?: "") }
     var selectedColor by remember { mutableStateOf(category?.color) }
 
     val isEditing = category != null
+
+    if (saveError != null) {
+        AvoqadoDialog(
+            title = "No se pudo guardar",
+            description = saveError ?: "",
+            onDismiss = { saveError = null },
+            actionButton = {
+                PrimaryButton(text = "Entendido", onClick = { saveError = null })
+            },
+            content = {},
+        )
+    }
 
     AvoqadoFullScreenModal(
         title = if (isEditing) "Editar categoria" else "Nueva categoria",
         onDismiss = onDismiss,
         primaryActionText = if (isEditing) "Guardar" else "Crear",
         onPrimaryAction = {
+            val handle: (Boolean) -> Unit = { ok ->
+                if (ok) onDismiss() else saveError = "No se pudo guardar. Intenta de nuevo."
+            }
             if (isEditing) {
                 viewModel.updateCategory(
                     categoryId = category!!.id,
                     name = name,
                     description = description.ifBlank { null },
                     color = selectedColor,
+                    onResult = handle,
                 )
             } else {
                 viewModel.createCategory(
                     name = name,
                     description = description.ifBlank { null },
                     color = selectedColor,
+                    onResult = handle,
                 )
             }
-            onDismiss()
         },
         primaryActionEnabled = name.isNotBlank() && !isSaving,
     ) {

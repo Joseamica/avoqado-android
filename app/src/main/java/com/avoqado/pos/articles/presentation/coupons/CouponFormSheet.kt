@@ -1,6 +1,8 @@
 package com.avoqado.pos.articles.presentation.coupons
 
 import androidx.compose.foundation.layout.Arrangement
+import com.avoqado.pos.designsystem.components.PrimaryButton
+import com.avoqado.pos.designsystem.components.AvoqadoDialog
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -48,6 +50,7 @@ fun CouponFormSheet(
     val discounts by viewModel.discounts.collectAsState()
 
     var code by remember { mutableStateOf(coupon?.code ?: "") }
+    var saveError by remember { mutableStateOf<String?>(null) }
     var selectedDiscountId by remember { mutableStateOf(coupon?.discountId ?: "") }
     var maxUses by remember { mutableStateOf(coupon?.maxUses?.toString() ?: "") }
     var maxUsesPerCustomer by remember { mutableStateOf(coupon?.maxUsesPerCustomer?.toString() ?: "") }
@@ -61,11 +64,26 @@ fun CouponFormSheet(
         discounts.firstOrNull { it.id == selectedDiscountId }
     }
 
+    if (saveError != null) {
+        AvoqadoDialog(
+            title = "No se pudo guardar",
+            description = saveError ?: "",
+            onDismiss = { saveError = null },
+            actionButton = {
+                PrimaryButton(text = "Entendido", onClick = { saveError = null })
+            },
+            content = {},
+        )
+    }
+
     AvoqadoFullScreenModal(
         title = if (isEditing) "Editar cupon" else "Nuevo cupon",
         onDismiss = onDismiss,
         primaryActionText = if (isEditing) "Guardar" else "Crear",
         onPrimaryAction = {
+            val handle: (Boolean) -> Unit = { ok ->
+                if (ok) onDismiss() else saveError = "No se pudo guardar. Intenta de nuevo."
+            }
             if (isEditing) {
                 viewModel.updateCoupon(
                     couponId = coupon!!.id,
@@ -74,6 +92,7 @@ fun CouponFormSheet(
                     maxUses = maxUses.toIntOrNull(),
                     maxUsesPerCustomer = maxUsesPerCustomer.toIntOrNull(),
                     active = active,
+                    onResult = handle,
                 )
             } else {
                 viewModel.createCoupon(
@@ -82,9 +101,9 @@ fun CouponFormSheet(
                     maxUses = maxUses.toIntOrNull(),
                     maxUsesPerCustomer = maxUsesPerCustomer.toIntOrNull(),
                     active = active,
+                    onResult = handle,
                 )
             }
-            onDismiss()
         },
         primaryActionEnabled = code.isNotBlank() && selectedDiscountId.isNotBlank() && !isSaving,
     ) {

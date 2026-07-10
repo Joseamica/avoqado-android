@@ -1,6 +1,8 @@
 package com.avoqado.pos.articles.presentation.products
 
 import androidx.compose.foundation.background
+import com.avoqado.pos.designsystem.components.PrimaryButton
+import com.avoqado.pos.designsystem.components.AvoqadoDialog
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -71,6 +73,7 @@ fun ProductDetailView(
 
     // MARK: - Form State
     var name by remember { mutableStateOf(product?.name ?: "") }
+    var saveError by remember { mutableStateOf<String?>(null) }
     var description by remember { mutableStateOf(product?.description ?: "") }
     var type by remember { mutableStateOf(product?.productType ?: ProductType.REGULAR) }
     var categoryId by remember { mutableStateOf(product?.categoryId) }
@@ -103,6 +106,9 @@ fun ProductDetailView(
 
     // MARK: - Save action
     fun onSave() {
+        val handle: (Boolean) -> Unit = { ok ->
+            if (ok) onDismiss() else saveError = "No se pudo guardar. Intenta de nuevo."
+        }
         if (product == null) {
             viewModel.createProduct(
                 name = name,
@@ -119,6 +125,7 @@ fun ProductDetailView(
                 trackInventory = trackInventory,
                 inventoryMethod = if (trackInventory) inventoryMethod.name else null,
                 unit = if (trackInventory) unit.name else null,
+                onResult = handle,
             )
         } else {
             viewModel.updateProduct(
@@ -137,9 +144,21 @@ fun ProductDetailView(
                 trackInventory = trackInventory,
                 inventoryMethod = if (trackInventory) inventoryMethod.name else null,
                 unit = if (trackInventory) unit.name else null,
+                onResult = handle,
             )
         }
-        onDismiss()
+    }
+
+    if (saveError != null) {
+        AvoqadoDialog(
+            title = "No se pudo guardar",
+            description = saveError ?: "",
+            onDismiss = { saveError = null },
+            actionButton = {
+                PrimaryButton(text = "Entendido", onClick = { saveError = null })
+            },
+            content = {},
+        )
     }
 
     AvoqadoFullScreenModal(

@@ -86,6 +86,9 @@ private fun TabletArticlesLayout(
     LaunchedEffect(errorMessage) {
         errorMessage?.let {
             snackbarHostState.showSnackbar(it)
+            // Reset so a 2nd identical failure re-triggers the effect (before,
+            // errorMessage was never cleared → repeat errors showed nothing).
+            viewModel.clearError()
         }
     }
 

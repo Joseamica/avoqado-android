@@ -80,6 +80,7 @@ class ArticlesViewModel @Inject constructor(
     val lastSaveSuccess: StateFlow<String?> = _lastSaveSuccess.asStateFlow()
 
     fun clearLastSaveSuccess() { _lastSaveSuccess.value = null }
+    fun clearError() { repository.clearError() }
 
     private val _rawMaterialResults = MutableStateFlow<List<RawMaterial>>(emptyList())
     val rawMaterialResults: StateFlow<List<RawMaterial>> = _rawMaterialResults.asStateFlow()
@@ -173,6 +174,7 @@ class ArticlesViewModel @Inject constructor(
         trackInventory: Boolean,
         inventoryMethod: String? = null,
         unit: String? = null,
+        onResult: (Boolean) -> Unit = {},
     ) {
         viewModelScope.launch {
             _isSaving.value = true
@@ -198,6 +200,8 @@ class ArticlesViewModel @Inject constructor(
                 val success = repository.createProduct(payload)
                 Log.d(TAG, if (success) "✅ Product created" else "❌ Product creation failed")
                 if (success) _lastSaveSuccess.value = "¡Artículo creado!"
+                onResult(success)
+                if (!success) repository.setError("No se pudo guardar. Intenta de nuevo.")
             } finally {
                 _isSaving.value = false
             }
@@ -220,6 +224,7 @@ class ArticlesViewModel @Inject constructor(
         trackInventory: Boolean,
         inventoryMethod: String? = null,
         unit: String? = null,
+        onResult: (Boolean) -> Unit = {},
     ) {
         viewModelScope.launch {
             _isSaving.value = true
@@ -243,6 +248,8 @@ class ArticlesViewModel @Inject constructor(
                 val success = repository.updateProduct(productId, payload)
                 Log.d(TAG, if (success) "✅ Product $productId updated" else "❌ Product update failed")
                 if (success) _lastSaveSuccess.value = "¡Artículo actualizado!"
+                onResult(success)
+                if (!success) repository.setError("No se pudo guardar. Intenta de nuevo.")
             } finally {
                 _isSaving.value = false
             }
@@ -262,6 +269,7 @@ class ArticlesViewModel @Inject constructor(
         name: String,
         description: String? = null,
         color: String? = null,
+        onResult: (Boolean) -> Unit = {},
     ) {
         viewModelScope.launch {
             _isSaving.value = true
@@ -273,6 +281,7 @@ class ArticlesViewModel @Inject constructor(
                 }.toString()
                 val success = repository.createCategory(payload)
                 Log.d(TAG, if (success) "✅ Category created" else "❌ Category creation failed")
+                onResult(success)
             } finally {
                 _isSaving.value = false
             }
@@ -284,6 +293,7 @@ class ArticlesViewModel @Inject constructor(
         name: String,
         description: String? = null,
         color: String? = null,
+        onResult: (Boolean) -> Unit = {},
     ) {
         viewModelScope.launch {
             _isSaving.value = true
@@ -295,6 +305,7 @@ class ArticlesViewModel @Inject constructor(
                 }.toString()
                 val success = repository.updateCategory(categoryId, payload)
                 Log.d(TAG, if (success) "✅ Category $categoryId updated" else "❌ Category update failed")
+                onResult(success)
             } finally {
                 _isSaving.value = false
             }
@@ -316,6 +327,7 @@ class ArticlesViewModel @Inject constructor(
         minSelections: Int? = null,
         maxSelections: Int? = null,
         modifiers: List<InlineModifier>,
+        onResult: (Boolean) -> Unit = {},
     ) {
         viewModelScope.launch {
             _isSaving.value = true
@@ -337,6 +349,7 @@ class ArticlesViewModel @Inject constructor(
                 }.toString()
                 val success = repository.createModifierGroup(payload)
                 Log.d(TAG, if (success) "✅ Modifier group created" else "❌ Modifier group creation failed")
+                onResult(success)
             } finally {
                 _isSaving.value = false
             }
@@ -352,6 +365,7 @@ class ArticlesViewModel @Inject constructor(
         maxSelections: Int? = null,
         originalModifiers: List<ArticleModifier>,
         currentModifiers: List<InlineModifier>,
+        onResult: (Boolean) -> Unit = {},
     ) {
         viewModelScope.launch {
             _isSaving.value = true
@@ -395,6 +409,11 @@ class ArticlesViewModel @Inject constructor(
                 }
 
                 Log.d(TAG, "✅ Modifier group $groupId fully updated")
+                onResult(true)
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Modifier group update failed: ${e.message}")
+                repository.setError("No se pudo guardar el grupo de modificadores. Intenta de nuevo.")
+                onResult(false)
             } finally {
                 _isSaving.value = false
             }
@@ -472,6 +491,7 @@ class ArticlesViewModel @Inject constructor(
         requiresApproval: Boolean,
         targetItemIds: List<String> = emptyList(),
         targetCategoryIds: List<String> = emptyList(),
+        onResult: (Boolean) -> Unit = {},
     ) {
         viewModelScope.launch {
             _isSaving.value = true
@@ -502,6 +522,7 @@ class ArticlesViewModel @Inject constructor(
                 }.toString()
                 val success = repository.createDiscount(payload)
                 Log.d(TAG, if (success) "✅ Discount created" else "❌ Discount creation failed")
+                onResult(success)
             } finally {
                 _isSaving.value = false
             }
@@ -518,6 +539,7 @@ class ArticlesViewModel @Inject constructor(
         requiresApproval: Boolean,
         targetItemIds: List<String> = emptyList(),
         targetCategoryIds: List<String> = emptyList(),
+        onResult: (Boolean) -> Unit = {},
     ) {
         viewModelScope.launch {
             _isSaving.value = true
@@ -548,6 +570,7 @@ class ArticlesViewModel @Inject constructor(
                 }.toString()
                 val success = repository.updateDiscount(discountId, payload)
                 Log.d(TAG, if (success) "✅ Discount $discountId updated" else "❌ Discount update failed")
+                onResult(success)
             } finally {
                 _isSaving.value = false
             }
@@ -568,6 +591,7 @@ class ArticlesViewModel @Inject constructor(
         maxUses: Int? = null,
         maxUsesPerCustomer: Int? = null,
         active: Boolean,
+        onResult: (Boolean) -> Unit = {},
     ) {
         viewModelScope.launch {
             _isSaving.value = true
@@ -581,6 +605,7 @@ class ArticlesViewModel @Inject constructor(
                 }.toString()
                 val success = repository.createCoupon(payload)
                 Log.d(TAG, if (success) "✅ Coupon created" else "❌ Coupon creation failed")
+                onResult(success)
             } finally {
                 _isSaving.value = false
             }
@@ -594,6 +619,7 @@ class ArticlesViewModel @Inject constructor(
         maxUses: Int? = null,
         maxUsesPerCustomer: Int? = null,
         active: Boolean,
+        onResult: (Boolean) -> Unit = {},
     ) {
         viewModelScope.launch {
             _isSaving.value = true
@@ -607,6 +633,7 @@ class ArticlesViewModel @Inject constructor(
                 }.toString()
                 val success = repository.updateCoupon(couponId, payload)
                 Log.d(TAG, if (success) "✅ Coupon $couponId updated" else "❌ Coupon update failed")
+                onResult(success)
             } finally {
                 _isSaving.value = false
             }
@@ -629,6 +656,7 @@ class ArticlesViewModel @Inject constructor(
         maxPerCustomer: Int? = null,
         active: Boolean,
         items: List<CreditPackItemInput>,
+        onResult: (Boolean) -> Unit = {},
     ) {
         viewModelScope.launch {
             _isSaving.value = true
@@ -652,6 +680,7 @@ class ArticlesViewModel @Inject constructor(
                 }.toString()
                 val success = repository.createCreditPack(payload)
                 Log.d(TAG, if (success) "✅ Credit pack created" else "❌ Credit pack creation failed")
+                onResult(success)
             } finally {
                 _isSaving.value = false
             }
@@ -667,6 +696,7 @@ class ArticlesViewModel @Inject constructor(
         maxPerCustomer: Int? = null,
         active: Boolean,
         items: List<CreditPackItemInput>,
+        onResult: (Boolean) -> Unit = {},
     ) {
         viewModelScope.launch {
             _isSaving.value = true
@@ -690,6 +720,7 @@ class ArticlesViewModel @Inject constructor(
                 }.toString()
                 val success = repository.updateCreditPack(packId, payload)
                 Log.d(TAG, if (success) "✅ Credit pack $packId updated" else "❌ Credit pack update failed")
+                onResult(success)
             } finally {
                 _isSaving.value = false
             }
