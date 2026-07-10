@@ -235,11 +235,21 @@ class CreateReservationViewModel @Inject constructor(
             r.onSuccess { created ->
                 val pid = promoteWaitlistId
                 if (pid != null && created != null) {
-                    waitlistRepository.promoteEntry(pid, created.id)
+                    // Promote failure used to be swallowed: the reservation
+                    // exists but the entry stays "Esperando" — re-promoting it
+                    // creates a DOUBLE booking. Surface it so staff resolve
+                    // the stuck entry instead of re-promoting blindly.
+                    waitlistRepository.promoteEntry(pid, created.id).onFailure {
+                        _result.value = Result.failure(
+                            Exception("Reserva creada, pero la entrada de lista de espera no se marcó como promovida. NO la vuelvas a promover: revisa la lista de espera."),
+                        )
+                    }
                 }
             }
             _isSubmitting.value = false
-            _result.value = r.map { it ?: error("Empty reservation") }
+            if (_result.value?.isFailure != true) {
+                _result.value = r.map { it ?: error("Empty reservation") }
+            }
         }
     }
 }

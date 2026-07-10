@@ -37,10 +37,15 @@ class CustomerCreditsViewModel @Inject constructor(
     /** Packs available to sell (reuses the existing list load). */
     val packs: StateFlow<List<CreditPack>> = articlesRepository.creditPacks
 
+    private val _loadError = MutableStateFlow(false)
+    val loadError: StateFlow<Boolean> = _loadError.asStateFlow()
+
     fun load(customerId: String) {
         viewModelScope.launch {
             _isLoading.value = true
-            _balances.value = articlesRepository.fetchCustomerCredits(customerId)
+            val result = articlesRepository.fetchCustomerCredits(customerId)
+            _loadError.value = result == null
+            _balances.value = result ?: emptyList()
             _isLoading.value = false
         }
     }

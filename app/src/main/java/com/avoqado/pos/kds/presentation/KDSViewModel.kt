@@ -82,7 +82,9 @@ class KDSViewModel @Inject constructor(
 
     init {
         collectBusOrders()
-        loadMockOrders()
+        // NEVER seed mock orders in production: staff saw fabricated tickets as
+        // real, a failed fetch kept them forever, and advance/bump fired REAL
+        // API calls against the fake IDs. Start empty; polling fills real data.
         startPolling()
     }
 

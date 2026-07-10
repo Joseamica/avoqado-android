@@ -847,8 +847,11 @@ class ArticlesRepository @Inject constructor(
     // MARK: - Customer credit balance / sell in person / redeem (mobile routes)
 
     /** A customer's active, non-expired credit balances. */
-    suspend fun fetchCustomerCredits(customerId: String): List<CreditPurchaseBalance> {
-        val url = baseUrl() ?: return emptyList()
+    /** null = fetch FAILED (network/HTTP) — distinct from "customer has no
+     *  credits". Collapsing both into emptyList made a fetch failure look like
+     *  no membership, risking a re-charge. */
+    suspend fun fetchCustomerCredits(customerId: String): List<CreditPurchaseBalance>? {
+        val url = baseUrl() ?: return null
         return try {
             val request = Request.Builder()
                 .url("$url/customers/$customerId/credit-balance")
@@ -859,11 +862,11 @@ class ArticlesRepository @Inject constructor(
                 json.decodeFromString(CustomerBalanceEnvelope.serializer(), body).purchases
             } else {
                 Log.e(TAG, "❌ fetchCustomerCredits error: HTTP $code")
-                emptyList()
+                null
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ fetchCustomerCredits exception: ${e.message}", e)
-            emptyList()
+            null
         }
     }
 

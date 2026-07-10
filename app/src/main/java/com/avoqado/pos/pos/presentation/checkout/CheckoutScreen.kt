@@ -307,9 +307,10 @@ fun CheckoutScreen(
                                 val ids = cartState.items.mapNotNull { (it.type as? CartItemType.CreditPack)?.packId }
                                 if (ids.isEmpty()) null else cid to ids
                             }
-                            // Persist any cached referral (Plan 5B) — fire-and-forget
-                            // before the PaymentFlow takes over.
-                            checkoutScope.launch { cartViewModel.captureReferralOnPayment(orderId = null) }
+                            // Referral capture moved to payment SUCCESS (onComplete):
+                            // capturing on charge-INTENT persisted a PENDING referral
+                            // + applied the discount even when the payment was then
+                            // cancelled.
                             pendingSplitConfig = SplitConfig()
                             showPaymentFlow = true
                         }
@@ -526,7 +527,7 @@ fun CheckoutScreen(
                         val ids = cartState.items.mapNotNull { (it.type as? CartItemType.CreditPack)?.packId }
                         if (ids.isEmpty()) null else cid to ids
                     }
-                    checkoutScope.launch { cartViewModel.captureReferralOnPayment(orderId = null) }
+                    // (referral capture moved to payment success — see onComplete)
                     showIPhoneCart = false
                     pendingSplitConfig = SplitConfig()
                     showPaymentFlow = true
@@ -697,6 +698,9 @@ fun CheckoutScreen(
                             cartViewModel.clearCart()
                         }
                     }
+                    // Referral is real now: capture on actual payment success
+                    // (a cancelled payment no longer leaves a dangling referral).
+                    checkoutScope.launch { cartViewModel.captureReferralOnPayment(orderId = null) }
                     showPaymentFlow = false
                     pendingSplitConfig = SplitConfig()
                 },

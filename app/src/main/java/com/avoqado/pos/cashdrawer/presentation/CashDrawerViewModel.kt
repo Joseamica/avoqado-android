@@ -118,6 +118,10 @@ class CashDrawerViewModel @Inject constructor(
         }
     }
 
+    /// Drawer-op failures were Log.e-only — the VM had NO error channel at
+    /// all, so a failed pay-out/close looked identical to success.
+    val errorMessage = kotlinx.coroutines.flow.MutableStateFlow<String?>(null)
+
     // MARK: - Actions
 
     fun openSession(startingAmountCents: Int) {
@@ -130,6 +134,7 @@ class CashDrawerViewModel @Inject constructor(
                 Log.d(TAG, "✅ Session opened")
             } catch (e: Exception) {
                 Log.e(TAG, "❌ Error opening session: ${e.message}")
+                errorMessage.value = "No se pudo abrir la caja. Intenta de nuevo."
             }
         }
     }
@@ -142,6 +147,7 @@ class CashDrawerViewModel @Inject constructor(
                 Log.d(TAG, "✅ Pay-in added: $amountCents")
             } catch (e: Exception) {
                 Log.e(TAG, "❌ Error adding pay-in: ${e.message}")
+                errorMessage.value = "No se pudo registrar la entrada de efectivo."
             }
         }
     }
@@ -154,21 +160,26 @@ class CashDrawerViewModel @Inject constructor(
                 Log.d(TAG, "✅ Pay-out added: $amountCents")
             } catch (e: Exception) {
                 Log.e(TAG, "❌ Error adding pay-out: ${e.message}")
+                errorMessage.value = "No se pudo registrar la salida de efectivo."
             }
         }
     }
 
-    fun closeSession(actualAmountCents: Int, note: String?) {
-        viewModelScope.launch {
-            try {
+    /// Returns true only when the close actually succeeded — callers must gate
+    /// the daily report on this (before, the report was FABRICATED client-side
+    /// and shown even when the close failed).
+    suspend fun closeSession(actualAmountCents: Int, note: String?): Boolean {
+        return try {
                 repository.closeSession(actualAmountCents, note)
                 _currentSession.value = null
                 _events.value = emptyList()
                 _expectedAmountCents.value = 0
                 Log.d(TAG, "✅ Session closed")
-            } catch (e: Exception) {
-                Log.e(TAG, "❌ Error closing session: ${e.message}")
-            }
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Error closing session: ${e.message}")
+            errorMessage.value = "No se pudo cerrar la caja. Intenta de nuevo."
+            false
         }
     }
 

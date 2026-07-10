@@ -39,10 +39,30 @@ fun CartCreditsCard(
 ) {
     val balances by viewModel.balances.collectAsStateWithLifecycle()
     val busyId by viewModel.busyBalanceId.collectAsStateWithLifecycle()
+    val loadError by viewModel.loadError.collectAsStateWithLifecycle()
 
     LaunchedEffect(customerId) { viewModel.load(customerId) }
 
     val items = balances.flatMap { it.itemBalances }
+    if (items.isEmpty() && loadError) {
+        // Fetch failed: without this the card vanished, making "network error"
+        // identical to "customer has no credits".
+        Card(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.sm)
+                .clickable { viewModel.load(customerId) },
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
+        ) {
+            Text(
+                text = "No se pudieron cargar los créditos del cliente. Toca para reintentar.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(AvoqadoTheme.spacing.md),
+            )
+        }
+        return
+    }
     if (items.isEmpty()) return
 
     Card(

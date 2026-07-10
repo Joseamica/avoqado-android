@@ -501,6 +501,11 @@ class InventoryViewModel @Inject constructor(
                 val items = _countItems.value
                 val note = _countNote.value.ifBlank { null }
 
+                // Every step's Result is now checked: before, a failed
+                // update/confirm STILL closed the review as a success and
+                // discarded the whole count with no error.
+                var confirmed = false
+
                 if (_activeCountType.value == StockCountType.CYCLE) {
                     // Cycle: create on backend first, then update and confirm
                     val productIds = items.map { it.productId }
@@ -515,7 +520,12 @@ class InventoryViewModel @Inject constructor(
                             }
                             val updateResult = repository.updateStockCount(count.id, serverItems, note)
                             if (updateResult.isSuccess) {
-                                repository.confirmStockCount(count.id)
+                                confirmed = repository.confirmStockCount(count.id).isSuccess
+                                if (!confirmed) {
+                                    _errorMessage.value = "No se pudo confirmar el conteo. Intenta de nuevo."
+                                }
+                            } else {
+                                _errorMessage.value = "No se pudo guardar el conteo. Intenta de nuevo."
                             }
                         },
                         onFailure = { e ->
@@ -527,17 +537,24 @@ class InventoryViewModel @Inject constructor(
                     val countId = _activeCount.value?.id ?: return@launch
                     val updateResult = repository.updateStockCount(countId, items, note)
                     if (updateResult.isSuccess) {
-                        repository.confirmStockCount(countId)
+                        confirmed = repository.confirmStockCount(countId).isSuccess
+                        if (!confirmed) {
+                            _errorMessage.value = "No se pudo confirmar el conteo. Intenta de nuevo."
+                        }
+                    } else {
+                        _errorMessage.value = "No se pudo guardar el conteo. Intenta de nuevo."
                     }
                 }
 
-                // Success - close and refresh
-                _showReview.value = false
-                _showCounting.value = false
-                _activeCount.value = null
-                _countItems.value = emptyList()
-                repository.fetchStockCounts()
-                Log.d(TAG, "✅ Stock count confirmed")
+                if (confirmed) {
+                    // Success - close and refresh (data preserved on failure)
+                    _showReview.value = false
+                    _showCounting.value = false
+                    _activeCount.value = null
+                    _countItems.value = emptyList()
+                    repository.fetchStockCounts()
+                    Log.d(TAG, "✅ Stock count confirmed")
+                }
             } catch (e: Exception) {
                 _errorMessage.value = e.message ?: "Error al confirmar conteo"
                 Log.e(TAG, "❌ Confirm count error: ${e.message}")

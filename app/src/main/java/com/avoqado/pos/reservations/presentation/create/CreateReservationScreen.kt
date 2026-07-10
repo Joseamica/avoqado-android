@@ -1,6 +1,8 @@
 package com.avoqado.pos.reservations.presentation.create
 
 import androidx.compose.foundation.clickable
+import com.avoqado.pos.designsystem.components.PrimaryButton
+import com.avoqado.pos.designsystem.components.AvoqadoDialog
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -80,8 +82,12 @@ fun CreateReservationScreen(
     val isEditing by viewModel.isEditing.collectAsStateWithLifecycle()
 
     var showSuccess by remember { mutableStateOf(false) }
+    var submitError by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(result) {
         result?.onSuccess { showSuccess = true }
+        // Failure branch was silently dropped: the button just re-enabled
+        // and nothing happened (fields ARE preserved in the VM's draft).
+        result?.onFailure { submitError = it.message ?: "No se pudo guardar la reserva. Intenta de nuevo." }
     }
 
     var activeSheet by remember { mutableStateOf<CreateSheet?>(null) }
@@ -164,6 +170,18 @@ fun CreateReservationScreen(
                 CreateSheet.DETAILS -> DetailsSection(viewModel)
             }
         }
+    }
+
+    if (submitError != null) {
+        AvoqadoDialog(
+            title = "No se pudo guardar",
+            description = submitError ?: "",
+            onDismiss = { submitError = null },
+            actionButton = {
+                PrimaryButton(text = "Entendido", onClick = { submitError = null })
+            },
+            content = {},
+        )
     }
 
     if (showSuccess) {

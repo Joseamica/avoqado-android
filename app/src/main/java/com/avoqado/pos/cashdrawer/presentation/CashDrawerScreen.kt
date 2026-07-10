@@ -37,6 +37,10 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import com.avoqado.pos.designsystem.components.PrimaryButton
+import com.avoqado.pos.designsystem.components.AvoqadoDialog
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -89,6 +93,8 @@ private fun TabletCashDrawerLayout(
     var showPayOutSheet by remember { mutableStateOf(false) }
     var showCloseSheet by remember { mutableStateOf(false) }
     var showDailyReport by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val drawerError by viewModel.errorMessage.collectAsState()
     var reportSession by remember { mutableStateOf<CashDrawerSessionEntity?>(null) }
     var reportEvents by remember { mutableStateOf<List<CashDrawerEventEntity>>(emptyList()) }
 
@@ -209,6 +215,18 @@ private fun TabletCashDrawerLayout(
         )
     }
 
+    if (drawerError != null) {
+        AvoqadoDialog(
+            title = "Caja",
+            description = drawerError ?: "",
+            onDismiss = { viewModel.errorMessage.value = null },
+            actionButton = {
+                PrimaryButton(text = "Entendido", onClick = { viewModel.errorMessage.value = null })
+            },
+            content = {},
+        )
+    }
+
     if (showCloseSheet) {
         val expectedCents by viewModel.expectedAmountCents.collectAsState()
         val sessionForReport = viewModel.currentSession.collectAsState().value
@@ -224,13 +242,19 @@ private fun TabletCashDrawerLayout(
                     closingNote = note,
                 )
                 val closedEvents = eventsForReport.toList()
-                viewModel.closeSession(actualCents, note)
-                showCloseSheet = false
-                // Show report after close
-                if (closedSession != null) {
-                    reportSession = closedSession
-                    reportEvents = closedEvents
-                    showDailyReport = true
+                scope.launch {
+                    // Report ONLY on confirmed success: before, a fabricated
+                    // client-side "cierre" report was shown even when the
+                    // close failed and the drawer stayed open.
+                    val ok = viewModel.closeSession(actualCents, note)
+                    if (ok) {
+                        showCloseSheet = false
+                        if (closedSession != null) {
+                            reportSession = closedSession
+                            reportEvents = closedEvents
+                            showDailyReport = true
+                        }
+                    }
                 }
             },
             onDismiss = { showCloseSheet = false },
@@ -251,6 +275,8 @@ private fun PhoneCashDrawerLayout(
     var showPayOutSheet by remember { mutableStateOf(false) }
     var showCloseSheet by remember { mutableStateOf(false) }
     var showDailyReport by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+    val drawerError by viewModel.errorMessage.collectAsState()
     var reportSession by remember { mutableStateOf<CashDrawerSessionEntity?>(null) }
     var reportEvents by remember { mutableStateOf<List<CashDrawerEventEntity>>(emptyList()) }
 
@@ -388,6 +414,18 @@ private fun PhoneCashDrawerLayout(
         )
     }
 
+    if (drawerError != null) {
+        AvoqadoDialog(
+            title = "Caja",
+            description = drawerError ?: "",
+            onDismiss = { viewModel.errorMessage.value = null },
+            actionButton = {
+                PrimaryButton(text = "Entendido", onClick = { viewModel.errorMessage.value = null })
+            },
+            content = {},
+        )
+    }
+
     if (showCloseSheet) {
         val expectedCents by viewModel.expectedAmountCents.collectAsState()
         val sessionForReport = viewModel.currentSession.collectAsState().value
@@ -402,12 +440,16 @@ private fun PhoneCashDrawerLayout(
                     closingNote = note,
                 )
                 val closedEvents = eventsForReport.toList()
-                viewModel.closeSession(actualCents, note)
-                showCloseSheet = false
-                if (closedSession != null) {
-                    reportSession = closedSession
-                    reportEvents = closedEvents
-                    showDailyReport = true
+                scope.launch {
+                    val ok = viewModel.closeSession(actualCents, note)
+                    if (ok) {
+                        showCloseSheet = false
+                        if (closedSession != null) {
+                            reportSession = closedSession
+                            reportEvents = closedEvents
+                            showDailyReport = true
+                        }
+                    }
                 }
             },
             onDismiss = { showCloseSheet = false },
