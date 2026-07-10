@@ -243,7 +243,8 @@ fun CreateTransferSheet(
                         onSuccess = { onDismiss() },
                     )
                 },
-                enabled = fromLocation.isNotBlank() && toLocation.isNotBlank() && !isSaving,
+                enabled = fromLocation.isNotBlank() && toLocation.isNotBlank() &&
+                    fromLocation.trim().lowercase() != toLocation.trim().lowercase() && !isSaving,
                 fullWidth = true,
             )
 

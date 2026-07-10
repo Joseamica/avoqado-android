@@ -130,6 +130,13 @@ class CartViewModel @Inject constructor(
      * [setSelectedCustomer] when the cashier picks/clears a customer.
      */
     private val _selectedCustomerId = MutableStateFlow<String?>(null)
+
+    /// True when a class-seed was skipped because the cart already links a
+    /// different reservation — the UI shows a message so the class isn't
+    /// silently dropped.
+    private val _seedConflict = MutableStateFlow(false)
+    val seedConflict: StateFlow<Boolean> = _seedConflict.asStateFlow()
+    fun clearSeedConflict() { _seedConflict.value = false }
     val selectedCustomerId: StateFlow<String?> = _selectedCustomerId.asStateFlow()
 
     private val _referralCode = MutableStateFlow("")
@@ -283,6 +290,15 @@ class CartViewModel @Inject constructor(
             val product = productsRepository.products.value.firstOrNull { it.id == seed.productId }
             if (product == null) {
                 Log.w("🛒", "Class seed product ${seed.productId} not in catalog — cannot seed cart")
+                return@launch
+            }
+            // Don't clobber a different reservation already linked to the cart:
+            // seeding class B into a cart that already carries class A's
+            // reservationId would leave the sale linked to only one of them.
+            val existingResId = _cartState.value.reservationId
+            if (existingResId != null && seed.reservationId != null && existingResId != seed.reservationId) {
+                Log.w("🛒", "Cart already linked to reservation $existingResId — skipping seed for ${seed.reservationId}")
+                _seedConflict.value = true
                 return@launch
             }
             addProductWithModifiers(product, quantity = seed.quantity, modifiers = emptyList())

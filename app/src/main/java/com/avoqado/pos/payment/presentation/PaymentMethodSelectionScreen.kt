@@ -63,6 +63,8 @@ fun PaymentMethodSelectionScreen(
     onCashPresetSelected: ((Int) -> Unit)? = null,
     onCashCustomSelected: ((Int) -> Unit)? = null,
     onCancel: () -> Unit,
+    terminalsUnavailable: Boolean = false,
+    onRetryTerminals: () -> Unit = {},
 ) {
     val amountCents = paymentContext.totalCents
     val suggestions = remember(amountCents) { calculateCashSuggestions(amountCents) }
@@ -201,21 +203,45 @@ fun PaymentMethodSelectionScreen(
 
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
-            // Cobrar con terminal row
+            // Cobrar con terminal row — disabled up-front when no terminals are
+            // online (don't let the operator walk through tip+rating toward a
+            // send that can't happen).
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clickable { onMethodSelected(PaymentMethod.CARD) }
+                    .then(
+                        if (terminalsUnavailable) Modifier
+                        else Modifier.clickable { onMethodSelected(PaymentMethod.CARD) },
+                    )
                     .padding(vertical = AvoqadoTheme.spacing.md),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    text = "Cobrar con terminal",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Medium,
-                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Cobrar con terminal",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Medium,
+                        color = if (terminalsUnavailable) MaterialTheme.colorScheme.onSurfaceVariant
+                        else MaterialTheme.colorScheme.onSurface,
+                    )
+                    if (terminalsUnavailable) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text(
+                                text = "No hay terminales conectadas · ",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Text(
+                                text = "Reintentar",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.clickable { onRetryTerminals() },
+                            )
+                        }
+                    }
+                }
 
-                Spacer(modifier = Modifier.weight(1f))
 
                 Icon(
                     Icons.Filled.ChevronRight,

@@ -68,6 +68,14 @@ class PaymentFlowViewModel @Inject constructor(
     private val _onlineTerminals = MutableStateFlow<List<OnlineTerminal>>(emptyList())
     val onlineTerminals: StateFlow<List<OnlineTerminal>> = _onlineTerminals.asStateFlow()
 
+    /// Terminal availability, probed UP-FRONT at flow start (the audit's
+    /// flagship late-validation fix). Before, availability was only checked
+    /// AFTER tip+rating when the user picked CARD — a venue with zero online
+    /// terminals walked the whole flow only to dead-end at "No hay terminales".
+    enum class TerminalAvailability { CHECKING, AVAILABLE, NONE, ERROR }
+    private val _terminalAvailability = MutableStateFlow(TerminalAvailability.CHECKING)
+    val terminalAvailability: StateFlow<TerminalAvailability> = _terminalAvailability.asStateFlow()
+
     private var cartState: CartState? = null
     private var selectedMethod: PaymentMethod? = null
     private var currentRating: Int? = null
@@ -319,6 +327,10 @@ class PaymentFlowViewModel @Inject constructor(
 
         Log.d("💰", "Starting payment flow - amount: $amount")
 
+        // Probe terminal availability up-front so the CARD option can disable
+        // itself before we collect tip/rating.
+        probeTerminalAvailability()
+
         // Determine first step based on TPV settings
         if (settings.showReviewScreen) {
             _state.value = PaymentFlowState.CollectingRating(amount)
@@ -382,11 +394,34 @@ class PaymentFlowViewModel @Inject constructor(
         processCashPayment(tenderedCents)
     }
 
+    fun probeTerminalAvailability() {
+        _terminalAvailability.value = TerminalAvailability.CHECKING
+        viewModelScope.launch {
+            when (val result = terminalPaymentService.fetchOnlineTerminals()) {
+                is TerminalListResult.Success -> {
+                    _onlineTerminals.value = result.terminals
+                    _terminalAvailability.value =
+                        if (result.terminals.isEmpty()) TerminalAvailability.NONE
+                        else TerminalAvailability.AVAILABLE
+                }
+                is TerminalListResult.Error -> {
+                    // Fail OPEN: can't verify (network) shouldn't block a working
+                    // terminal — keep the option enabled and let the send-step
+                    // surface any real error.
+                    _terminalAvailability.value = TerminalAvailability.ERROR
+                }
+            }
+        }
+    }
+
     private fun fetchTerminals() {
         viewModelScope.launch {
             when (val result = terminalPaymentService.fetchOnlineTerminals()) {
                 is TerminalListResult.Success -> {
                     _onlineTerminals.value = result.terminals
+                    _terminalAvailability.value =
+                        if (result.terminals.isEmpty()) TerminalAvailability.NONE
+                        else TerminalAvailability.AVAILABLE
                     if (result.terminals.isEmpty()) {
                         _state.value = PaymentFlowState.Error(
                             message = "No hay terminales conectadas",

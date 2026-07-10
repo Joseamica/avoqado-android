@@ -31,6 +31,7 @@ fun PaymentFlowScreen(
     viewModel: PaymentFlowViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsState()
+    val terminalAvailability by viewModel.terminalAvailability.collectAsState()
     val terminals by viewModel.onlineTerminals.collectAsState()
     val paymentContext = viewModel.buildPaymentContext()
     val customersViewModel: CustomersViewModel = hiltViewModel()
@@ -86,6 +87,8 @@ fun PaymentFlowScreen(
                     onCashPresetSelected = { viewModel.confirmCashPreset(it) },
                     onCashCustomSelected = { viewModel.confirmCashCustom(it) },
                     onCancel = onCancel,
+                    terminalsUnavailable = terminalAvailability == PaymentFlowViewModel.TerminalAvailability.NONE,
+                    onRetryTerminals = { viewModel.probeTerminalAvailability() },
                 )
                 TipSelectionSheet(
                     amountCents = currentState.amount,
@@ -103,6 +106,8 @@ fun PaymentFlowScreen(
                     onCashPresetSelected = { viewModel.confirmCashPreset(it) },
                     onCashCustomSelected = { viewModel.confirmCashCustom(it) },
                     onCancel = onCancel,
+                    terminalsUnavailable = terminalAvailability == PaymentFlowViewModel.TerminalAvailability.NONE,
+                    onRetryTerminals = { viewModel.probeTerminalAvailability() },
                 )
             }
             is PaymentFlowState.CollectingCashAmount -> {

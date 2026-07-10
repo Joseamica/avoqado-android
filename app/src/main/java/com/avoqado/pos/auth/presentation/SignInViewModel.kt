@@ -29,7 +29,9 @@ data class SignInUiState(
     val biometricEmail: String? = null,
 ) {
     val isEmailValid: Boolean
-        get() = email.isNotBlank() && email.contains("@")
+        // Real format check — "a@" used to advance to the password step and
+        // only fail as a server 401 after the user also typed a password.
+        get() = android.util.Patterns.EMAIL_ADDRESS.matcher(email.trim()).matches()
 }
 
 @HiltViewModel

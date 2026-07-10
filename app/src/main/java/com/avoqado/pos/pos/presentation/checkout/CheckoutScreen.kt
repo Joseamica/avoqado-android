@@ -107,6 +107,21 @@ fun CheckoutScreen(
     // Walk-in class flow: if a class was just reserved on the class screen,
     // drop it into the cart on arrival (Square-style: service enters the sale).
     LaunchedEffect(Unit) { cartViewModel.consumePendingClassSeed() }
+    // Class-seed conflict: the walk-in class wasn't added because the cart
+    // already links a different reservation — tell the cashier instead of
+    // silently dropping it.
+    val seedConflict by cartViewModel.seedConflict.collectAsState()
+    val seedCtx = androidx.compose.ui.platform.LocalContext.current
+    LaunchedEffect(seedConflict) {
+        if (seedConflict) {
+            android.widget.Toast.makeText(
+                seedCtx,
+                "El carrito ya está ligado a otra reserva. Cobra o vacía el carrito antes de inscribir otra clase.",
+                android.widget.Toast.LENGTH_LONG,
+            ).show()
+            cartViewModel.clearSeedConflict()
+        }
+    }
     var selectedProduct by remember { mutableStateOf<Product?>(null) }
     var selectedTab by remember { mutableStateOf(InputTab.KEYPAD) }
     var showSearch by remember { mutableStateOf(false) }
