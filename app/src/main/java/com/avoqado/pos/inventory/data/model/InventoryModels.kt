@@ -80,7 +80,14 @@ data class StockCountItem(
     /// Measurement unit — was dropped when building count items, so quantities
     /// rendered as bare numbers ("5") ambiguous between kg/L/piezas.
     val unit: String? = null,
+    // Ingredient (raw material) lines — null on product lines and on servers
+    // older than the ingredient-counting rollout. `productId` carries the raw
+    // material id as compat fallback, so switch on itemType, not on productId.
+    val rawMaterialId: String? = null,
+    val itemType: String? = null,
 ) {
+    val isIngredient: Boolean get() = itemType == "RAW_MATERIAL"
+
     val expectedDisplay: String get() = formatInvQty(expected) + unitSuffixOf(unit)
     val countedDisplay: String get() = formatInvQty(counted) + unitSuffixOf(unit)
 }

@@ -270,9 +270,11 @@ private fun ReviewRowTablet(
             textAlign = TextAlign.End,
         )
 
-        // Counted
+        // Counted — untouched lines show a dash: they are NOT sent on
+        // confirm, so stock stays as-is (never a misleading "0 / -98").
+        val touched = viewModel.touchedItemIds.collectAsState().value.contains(item.id)
         Text(
-            text = viewModel.formatQuantity(item.counted),
+            text = if (touched) viewModel.formatQuantity(item.counted) else "—",
             style = MaterialTheme.typography.bodyMedium,
             fontWeight = FontWeight.SemiBold,
             modifier = Modifier.weight(1f),
@@ -281,11 +283,14 @@ private fun ReviewRowTablet(
 
         // Difference
         Text(
-            text = if (diff > 0) "+${viewModel.formatQuantity(diff)}"
-            else viewModel.formatQuantity(diff),
+            text = when {
+                !touched -> "Sin contar"
+                diff > 0 -> "+${viewModel.formatQuantity(diff)}"
+                else -> viewModel.formatQuantity(diff)
+            },
             style = MaterialTheme.typography.bodyMedium,
-            fontWeight = FontWeight.SemiBold,
-            color = diffColor,
+            fontWeight = if (touched) FontWeight.SemiBold else FontWeight.Normal,
+            color = if (touched) diffColor else MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.weight(1f),
             textAlign = TextAlign.End,
         )
@@ -341,8 +346,9 @@ private fun ReviewRowPhone(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                val touched = viewModel.touchedItemIds.collectAsState().value.contains(item.id)
                 Text(
-                    text = "Contado: ${viewModel.formatQuantity(item.counted)}",
+                    text = "Contado: " + if (touched) viewModel.formatQuantity(item.counted) else "—",
                     style = MaterialTheme.typography.bodySmall,
                     fontWeight = FontWeight.SemiBold,
                 )
@@ -350,12 +356,16 @@ private fun ReviewRowPhone(
         }
 
         // Difference
+        val touchedRow = viewModel.touchedItemIds.collectAsState().value.contains(item.id)
         Text(
-            text = if (diff > 0) "+${viewModel.formatQuantity(diff)}"
-            else viewModel.formatQuantity(diff),
+            text = when {
+                !touchedRow -> "Sin contar"
+                diff > 0 -> "+${viewModel.formatQuantity(diff)}"
+                else -> viewModel.formatQuantity(diff)
+            },
             style = MaterialTheme.typography.bodyMedium,
-            fontWeight = FontWeight.Bold,
-            color = diffColor,
+            fontWeight = if (touchedRow) FontWeight.Bold else FontWeight.Normal,
+            color = if (touchedRow) diffColor else MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
 }

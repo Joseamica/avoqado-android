@@ -61,6 +61,7 @@ import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.inventory.data.model.StockCountItem
 import com.avoqado.pos.inventory.data.model.StockCountType
 import com.avoqado.pos.inventory.data.model.StockItem
+import com.avoqado.pos.inventory.data.model.unitSuffixOf
 
 // MARK: - Main Counting View
 
@@ -662,7 +663,13 @@ private fun SelectedItemInfo(item: StockCountItem) {
             textAlign = TextAlign.Center,
         )
 
-        if (item.sku != null) {
+        if (item.isIngredient) {
+            Text(
+                text = "Insumo" + unitSuffixOf(item.unit).let { if (it.isNotEmpty()) " ·${it}" else "" },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else if (item.sku != null) {
             Text(
                 text = "SKU: ${item.sku}",
                 style = MaterialTheme.typography.bodySmall,

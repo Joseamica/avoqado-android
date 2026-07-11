@@ -190,6 +190,11 @@ class InventoryRepository @Inject constructor(
                 if (productIds != null && productIds.isNotEmpty()) {
                     append(",\"productIds\":[${productIds.joinToString(",") { "\"$it\"" }}]")
                 }
+                // Opt-in: FULL counts also list ingredients (raw materials).
+                // Old servers ignore the flag.
+                if (type == StockCountType.FULL) {
+                    append(",\"includeRawMaterials\":true")
+                }
                 append("}")
             }
 

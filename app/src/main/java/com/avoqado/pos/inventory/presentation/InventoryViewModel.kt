@@ -366,6 +366,12 @@ class InventoryViewModel @Inject constructor(
         _showCountTypeSheet.value = false
     }
 
+    /** Ids of lines the cashier actually recorded (typing "0" counts; never
+     *  touching the line does not). Only these are sent on confirm — the
+     *  server zeroes whatever it receives as counted. */
+    private val _touchedItemIds = MutableStateFlow<Set<String>>(emptySet())
+    val touchedItemIds: StateFlow<Set<String>> = _touchedItemIds.asStateFlow()
+
     fun startCycleCount() {
         _activeCountType.value = StockCountType.CYCLE
         _activeCount.value = null
@@ -373,6 +379,7 @@ class InventoryViewModel @Inject constructor(
         _selectedItemIndex.value = -1
         _countedText.value = ""
         _countNote.value = ""
+        _touchedItemIds.value = emptySet()
         _showCountTypeSheet.value = false
         _showCounting.value = true
     }
@@ -386,8 +393,9 @@ class InventoryViewModel @Inject constructor(
                     _activeCount.value = count
                     _countItems.value = count.items.toMutableList()
                     _selectedItemIndex.value = if (count.items.isNotEmpty()) 0 else -1
-                    _countedText.value = if (count.items.isNotEmpty()) "" else ""
+                    _countedText.value = ""
                     _countNote.value = ""
+                    _touchedItemIds.value = emptySet()
                     _showCountTypeSheet.value = false
                     _showCounting.value = true
                     Log.d(TAG, "✅ Full count started with ${count.items.size} items")
@@ -435,7 +443,7 @@ class InventoryViewModel @Inject constructor(
         saveCurrentCount()
         _selectedItemIndex.value = index
         val item = _countItems.value.getOrNull(index)
-        _countedText.value = if (item != null && item.counted > 0) {
+        _countedText.value = if (item != null && _touchedItemIds.value.contains(item.id)) {
             formatQuantity(item.counted)
         } else {
             ""
@@ -474,6 +482,8 @@ class InventoryViewModel @Inject constructor(
     private fun saveCurrentCount() {
         val index = _selectedItemIndex.value
         val text = _countedText.value
+        // Empty field = the line was never counted; "0" = counted as zero.
+        if (text.isBlank()) return
         if (index >= 0 && index < _countItems.value.size) {
             val counted = text.toDoubleOrNull() ?: 0.0
             val updated = _countItems.value.toMutableList()
@@ -483,6 +493,7 @@ class InventoryViewModel @Inject constructor(
                 difference = counted - item.expected,
             )
             _countItems.value = updated
+            _touchedItemIds.value = _touchedItemIds.value + item.id
         }
     }
 
@@ -517,9 +528,13 @@ class InventoryViewModel @Inject constructor(
                         onSuccess = { count ->
                             _activeCount.value = count
                             // Map local items to server items with IDs
-                            val serverItems = count.items.map { serverItem ->
+                            val touched = _touchedItemIds.value
+                            val serverItems = count.items.mapNotNull { serverItem ->
                                 val localItem = items.find { it.productId == serverItem.productId }
-                                serverItem.copy(counted = localItem?.counted ?: 0.0)
+                                // Skip lines the cashier never counted — sending
+                                // them as counted=0 would zero real stock.
+                                if (localItem == null || !touched.contains(localItem.id)) return@mapNotNull null
+                                serverItem.copy(counted = localItem.counted)
                             }
                             val updateResult = repository.updateStockCount(count.id, serverItems, note)
                             if (updateResult.isSuccess) {
@@ -536,9 +551,14 @@ class InventoryViewModel @Inject constructor(
                         },
                     )
                 } else {
-                    // Full: already created, just update and confirm
+                    // Full: already created, just update and confirm.
+                    // Only lines the cashier actually counted: the server
+                    // stamps countedAt on every received item and applies
+                    // exactly those on confirm.
                     val countId = _activeCount.value?.id ?: return@launch
-                    val updateResult = repository.updateStockCount(countId, items, note)
+                    val touched = _touchedItemIds.value
+                    val countedOnly = items.filter { touched.contains(it.id) }
+                    val updateResult = repository.updateStockCount(countId, countedOnly, note)
                     if (updateResult.isSuccess) {
                         confirmed = repository.confirmStockCount(countId).isSuccess
                         if (!confirmed) {
