@@ -51,7 +51,8 @@ fun UnitsView(
 ) {
     val customUnits by viewModel.customUnits.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
-    var showCreateSheet by remember { mutableStateOf(false) }
+    // NOTE: crear unidades personalizadas se retiró — nada (Product, RawMaterial,
+    // Recipe) puede referenciarlas; las unidades reales son el enum del backend.
     var editingUnitIndex by remember { mutableStateOf<Int?>(null) }
     val configuration = LocalConfiguration.current
     val adaptive = AvoqadoTheme.adaptive
@@ -81,15 +82,6 @@ fun UnitsView(
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onSurface,
             )
-            TextButton(onClick = { showCreateSheet = true }) {
-                Icon(
-                    Icons.Filled.Add,
-                    contentDescription = null,
-                    modifier = Modifier.size(AvoqadoTheme.dimensions.iconMedium),
-                )
-                Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.xxs))
-                Text("Crear")
-            }
         }
 
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -126,7 +118,7 @@ fun UnitsView(
                 )
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
                 Text(
-                    text = "Crea unidades que puedan aplicarse a cualquier articulo",
+                    text = "Las unidades disponibles son las predefinidas del sistema",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(horizontal = AvoqadoTheme.spacing.xxl),
@@ -192,10 +184,6 @@ fun UnitsView(
         }
     }
 
-    if (showCreateSheet) {
-        CreateUnitSheet(onDismiss = { showCreateSheet = false }, viewModel = viewModel)
-    }
-
     editingUnitIndex?.let { index ->
         val unit = customUnits.getOrNull(index)
         if (unit != null) {
@@ -242,54 +230,6 @@ private fun UnitRow(
             style = if (denseMode) MaterialTheme.typography.bodySmall else MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-    }
-}
-
-// MARK: - Create Unit Sheet
-
-@Composable
-private fun CreateUnitSheet(
-    viewModel: ArticlesViewModel,
-    onDismiss: () -> Unit,
-) {
-    var unitName by remember { mutableStateOf("") }
-    var abbreviation by remember { mutableStateOf("") }
-
-    AvoqadoFullScreenModal(
-        title = "Nueva unidad",
-        onDismiss = onDismiss,
-        primaryActionText = "Crear",
-        onPrimaryAction = {
-            viewModel.addCustomUnit(unitName, abbreviation)
-            onDismiss()
-        },
-        primaryActionEnabled = unitName.isNotBlank() && abbreviation.isNotBlank(),
-    ) {
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(AvoqadoTheme.spacing.lg),
-        ) {
-            OutlinedTextField(
-                value = unitName,
-                onValueChange = { unitName = it },
-                label = { Text("Nombre") },
-                placeholder = { Text("Ej: Metro, Galones") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-            )
-
-            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
-
-            OutlinedTextField(
-                value = abbreviation,
-                onValueChange = { abbreviation = it },
-                label = { Text("Abreviacion") },
-                placeholder = { Text("Ej: m, gal") },
-                modifier = Modifier.fillMaxWidth(),
-                singleLine = true,
-            )
-        }
     }
 }
 
