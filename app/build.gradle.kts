@@ -48,6 +48,9 @@ android {
 
         buildConfigField("String", "BASE_URL", "\"$releaseBaseUrl\"")
         buildConfigField("String", "ENVIRONMENT_NAME", "\"production\"")
+
+        // App label per environment (overridden in debug below). Manifest reads ${appLabel}.
+        manifestPlaceholders["appLabel"] = "Avoqado"
     }
 
     signingConfigs {
@@ -61,6 +64,10 @@ android {
 
     buildTypes {
         debug {
+            // Distinct package so DEV (ngrok) and PROD (api.avoqado.io) coexist on the same device.
+            applicationIdSuffix = ".dev"
+            versionNameSuffix = "-dev"
+            manifestPlaceholders["appLabel"] = "Avoqado DEV"
             isMinifyEnabled = false
             buildConfigField("String", "BASE_URL", "\"$debugBaseUrl\"")
             buildConfigField("String", "ENVIRONMENT_NAME", "\"development\"")

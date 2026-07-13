@@ -90,3 +90,6 @@ Thumbs.db
 docs/superpowers/research/
 docs/superpowers/specs/images/
 .gstack/
+
+# graphify knowledge graph output
+graphify-out/
