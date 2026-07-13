@@ -61,6 +61,7 @@ class InventoryViewModel @Inject constructor(
         get() = planManager.requiredTierLabel("INVENTORY_TRACKING") ?: "Premium"
 
     val stockItems = repository.stockItems
+    val countableRawMaterials = repository.countableRawMaterials
     val stockCounts = repository.stockCounts
     val purchaseOrders = repository.purchaseOrders
     val transfers = repository.transfers
@@ -191,6 +192,7 @@ class InventoryViewModel @Inject constructor(
     fun refresh() {
         viewModelScope.launch {
             repository.fetchStockOverview()
+            repository.fetchRawMaterials()
             repository.fetchStockCounts()
         }
     }
@@ -415,6 +417,9 @@ class InventoryViewModel @Inject constructor(
 
         val existingIds = _countItems.value.map { it.productId }.toSet()
         val newItems = items.filter { it.id !in existingIds }.map { stock ->
+            // Ingredient lines mirror the server's compat shape: productId
+            // carries the raw material id, itemType switches the display.
+            val isRaw = repository.isRawMaterial(stock.id)
             StockCountItem(
                 id = "",
                 productId = stock.id,
@@ -426,6 +431,8 @@ class InventoryViewModel @Inject constructor(
                 counted = 0.0,
                 difference = 0.0,
                 unit = stock.unit,
+                rawMaterialId = if (isRaw) stock.id else null,
+                itemType = if (isRaw) "RAW_MATERIAL" else null,
             )
         }
 
@@ -522,8 +529,9 @@ class InventoryViewModel @Inject constructor(
 
                 if (_activeCountType.value == StockCountType.CYCLE) {
                     // Cycle: create on backend first, then update and confirm
-                    val productIds = items.map { it.productId }
-                    val createResult = repository.createStockCount(StockCountType.CYCLE, productIds)
+                    val productIds = items.filter { !it.isIngredient }.map { it.productId }
+                    val rawMaterialIds = items.filter { it.isIngredient }.mapNotNull { it.rawMaterialId }
+                    val createResult = repository.createStockCount(StockCountType.CYCLE, productIds, rawMaterialIds)
                     createResult.fold(
                         onSuccess = { count ->
                             _activeCount.value = count

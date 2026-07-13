@@ -155,6 +155,53 @@ class InventoryRepository @Inject constructor(
         }
     }
 
+    // Ingredients (raw materials) in StockItem shape so the cycle-count picker
+    // and barcode matching reuse the product UI unchanged. Kept SEPARATE from
+    // stockItems: the general stock overview must not change.
+    private val _countableRawMaterials = MutableStateFlow<List<StockItem>>(emptyList())
+    val countableRawMaterials: StateFlow<List<StockItem>> = _countableRawMaterials.asStateFlow()
+    private var rawMaterialIdSet: Set<String> = emptySet()
+
+    fun isRawMaterial(id: String): Boolean = rawMaterialIdSet.contains(id)
+
+    @kotlinx.serialization.Serializable
+    private data class RawMaterialLite(
+        val id: String,
+        val name: String = "",
+        val sku: String? = null,
+        val gtin: String? = null,
+        val unit: String? = null,
+        val onHand: Double = 0.0,
+    )
+
+    @kotlinx.serialization.Serializable
+    private data class RawMaterialsResponse(val success: Boolean = false, val rawMaterials: List<RawMaterialLite> = emptyList())
+
+    suspend fun fetchRawMaterials() {
+        val base = venueBaseUrl() ?: return
+        try {
+            val request = Request.Builder().url("$base/inventory/raw-materials").build()
+            val (code, body) = withContext(Dispatchers.IO) {
+                val response = client.newCall(request).execute()
+                response.code to (response.body?.string() ?: "")
+            }
+            if (code in 200..299 && body.isNotEmpty()) {
+                val result = json.decodeFromString<RawMaterialsResponse>(body)
+                _countableRawMaterials.value = result.rawMaterials.map {
+                    StockItem(
+                        id = it.id, name = it.name, sku = it.sku, gtin = it.gtin,
+                        imageUrl = null, onHand = it.onHand, available = it.onHand,
+                        onOrder = 0.0, categoryName = "Insumo", unit = it.unit,
+                    )
+                }
+                rawMaterialIdSet = result.rawMaterials.map { it.id }.toSet()
+                Log.d("📦", "✅ Loaded ${rawMaterialIdSet.size} raw materials")
+            }
+        } catch (e: Exception) {
+            Log.e("📦", "❌ Raw materials fetch error: ${e.message}")
+        }
+    }
+
     // MARK: - Stock Counts
 
     suspend fun fetchStockCounts() {
@@ -181,7 +228,7 @@ class InventoryRepository @Inject constructor(
 
     // MARK: - Create Stock Count
 
-    suspend fun createStockCount(type: StockCountType, productIds: List<String>? = null): Result<StockCount> {
+    suspend fun createStockCount(type: StockCountType, productIds: List<String>? = null, rawMaterialIds: List<String>? = null): Result<StockCount> {
         val base = venueBaseUrl() ?: return Result.failure(Exception("No venue"))
 
         return try {
@@ -194,6 +241,9 @@ class InventoryRepository @Inject constructor(
                 // Old servers ignore the flag.
                 if (type == StockCountType.FULL) {
                     append(",\"includeRawMaterials\":true")
+                }
+                if (rawMaterialIds != null && rawMaterialIds.isNotEmpty()) {
+                    append(",\"rawMaterialIds\":[${rawMaterialIds.joinToString(",") { "\"$it\"" }}]")
                 }
                 append("}")
             }

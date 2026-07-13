@@ -75,6 +75,7 @@ fun StockCountingView(
     val countedText by viewModel.countedText.collectAsState()
     val activeCountType by viewModel.activeCountType.collectAsState()
     val stockItems by viewModel.stockItems.collectAsState()
+    val countableRawMaterials by viewModel.countableRawMaterials.collectAsState()
 
     var searchText by remember { mutableStateOf("") }
     var showAddPopup by remember { mutableStateOf(false) }
@@ -118,7 +119,7 @@ fun StockCountingView(
                         onAddItems = { showAddPopup = true },
                         isCycle = activeCountType == StockCountType.CYCLE,
                         stockSuggestions = if (searchText.isBlank()) emptyList()
-                        else stockItems.filter { stock ->
+                        else (stockItems + countableRawMaterials).filter { stock ->
                             stock.id !in countItems.map { it.productId } && (
                                 stock.name.contains(searchText, ignoreCase = true) ||
                                     (stock.sku?.contains(searchText, ignoreCase = true) == true)
@@ -282,7 +283,7 @@ fun StockCountingView(
     // Add Items Popup
     if (showAddPopup) {
         AddItemsPopup(
-            stockItems = stockItems,
+            stockItems = stockItems + countableRawMaterials,
             existingIds = countItems.map { it.productId }.toSet(),
             onAdd = { selected ->
                 viewModel.addItemsToCycleCount(selected)
