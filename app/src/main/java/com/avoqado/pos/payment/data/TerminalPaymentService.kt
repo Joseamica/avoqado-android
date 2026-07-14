@@ -5,6 +5,7 @@ import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ApiConstants
 import com.avoqado.pos.printing.data.model.ReceiptData
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -146,8 +147,10 @@ class TerminalPaymentService @Inject constructor(
                     TerminalPaymentResult.Error(errorMsg ?: "La terminal no tiene conexión activa")
                 }
                 504 -> {
-                    Log.e("💳", "❌ Terminal payment timeout: $body")
-                    TerminalPaymentResult.Error("El terminal no respondió a tiempo (60s)")
+                    // Server-side timeout: the charge may still have completed. Verify the
+                    // durable status before surfacing a failure (never blind-fail money).
+                    Log.e("💳", "⏳ Terminal payment server timeout (504): recovering via durable status")
+                    resolveViaStatus(requestId)
                 }
                 else -> {
                     val errorMsg = try {
@@ -161,9 +164,88 @@ class TerminalPaymentService @Inject constructor(
         } catch (e: Exception) {
             currentRequestId = null
             currentTerminalId = null
-            Log.e("💳", "❌ Terminal payment error: ${e.message}")
-            TerminalPaymentResult.Error("Error de conexión con la terminal")
+            // Network drop / client timeout / 5xx = UNKNOWN outcome. Ask the server what
+            // actually happened before giving up — prevents a false "failed" (and the double
+            // charge a blind retry would cause). A definitive 409 busy is an HTTP response,
+            // not an exception, so it never reaches here — it stays in the `else` arm above.
+            Log.e("💳", "⚠️ Terminal payment connection error: recovering via durable status: ${e.message}")
+            resolveViaStatus(requestId)
         }
+    }
+
+    // MARK: - Status Recovery
+
+    /**
+     * GET /mobile/venues/{venueId}/terminal-payment/{requestId}
+     * Durable status of a charge request — used to recover the real outcome after a dropped
+     * long-poll / server timeout / network error (never blind-fail money). Returns null on
+     * 404 NOT_FOUND (never persisted → safe to retry) or on any other error (best-effort).
+     */
+    suspend fun getPaymentStatus(requestId: String): TerminalPaymentStatusDto? {
+        val venueId = secureStorage.venueId ?: return null
+        val token = secureStorage.accessToken ?: return null
+
+        return try {
+            val request = Request.Builder()
+                .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/terminal-payment/$requestId")
+                .header("Authorization", "Bearer $token")
+                .get()
+                .build()
+
+            val (responseCode, body) = withContext(Dispatchers.IO) {
+                val response = client.newCall(request).execute()
+                response.code to (response.body?.string() ?: "")
+            }
+
+            if (responseCode in 200..299) {
+                val dto = json.decodeFromString(TerminalPaymentStatusDto.serializer(), body)
+                Log.d("💳", "Payment status $requestId → ${dto.status} (inProgress=${dto.inProgress})")
+                dto
+            } else {
+                // 404 NOT_FOUND → never persisted (safe to retry); any other code → best-effort null.
+                Log.d("💳", "Payment status $requestId → $responseCode (no durable status)")
+                null
+            }
+        } catch (e: Exception) {
+            Log.e("💳", "Error fetching payment status: ${e.message}")
+            null
+        }
+    }
+
+    /**
+     * Resolve an unknown outcome (dropped long-poll / server timeout / network error) by polling
+     * the durable status up to 3 times. Terminal COMPLETED → success; FAILED/CANCELLED → surface;
+     * TIMED_OUT/UNKNOWN, still-in-progress, or NOT_FOUND → "verify on the terminal" (never a silent
+     * success — that's how false failures and double charges happen).
+     */
+    private suspend fun resolveViaStatus(requestId: String): TerminalPaymentResult {
+        val unresolved = TerminalPaymentResult.Error(
+            "El terminal no respondió a tiempo. Verifica el estado en la terminal.",
+        )
+        repeat(3) { attempt ->
+            // Back off between polls (500ms → 2s) — give the terminal a beat to settle.
+            if (attempt > 0) delay(if (attempt == 1) 500L else 2000L)
+
+            val status = getPaymentStatus(requestId)
+                ?: return unresolved // 404 NOT_FOUND → never processed → safe
+
+            if (!status.inProgress) {
+                return when (status.status) {
+                    "COMPLETED" -> TerminalPaymentResult.Success(
+                        transactionId = null,
+                        cardLastFour = null,
+                        cardBrand = null,
+                        paymentId = status.paymentId,
+                        receiptAccessKey = null,
+                    )
+                    "FAILED" -> TerminalPaymentResult.Error("El cobro falló")
+                    "CANCELLED" -> TerminalPaymentResult.Error("Cobro cancelado")
+                    else -> unresolved // TIMED_OUT / UNKNOWN — outcome not confirmed
+                }
+            }
+            // still in progress → poll again
+        }
+        return unresolved // stayed in progress after 3 polls
     }
 
     /**
@@ -346,6 +428,18 @@ data class CardDetails(
 data class ReceiptInfo(
     val receiptUrl: String? = null,
     val receiptAccessKey: String? = null,
+)
+
+/**
+ * Response of GET /mobile/venues/:venueId/terminal-payment/:requestId — the durable status of a
+ * charge request, used to recover the real outcome after a dropped long-poll / timeout / network
+ * error. `inProgress` is true for PENDING/SENT/CANCEL_REQUESTED; terminal (final) otherwise.
+ */
+@Serializable
+data class TerminalPaymentStatusDto(
+    val status: String = "",
+    val inProgress: Boolean = false,
+    val paymentId: String? = null,
 )
 
 @Serializable
