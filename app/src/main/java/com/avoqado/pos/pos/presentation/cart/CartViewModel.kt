@@ -47,6 +47,9 @@ data class CartState(
     val orderDiscount: Discount? = null,
     val orderNote: String? = null,
     val orderTaxPercent: Int? = null,
+    /** Cumplimiento (Square): DINE_IN | TAKEOUT | DELIVERY | PICKUP. La venta
+     *  rápida siempre fue "En tienda" en la UI — ahora el dato lo respeta. */
+    val orderType: String = "DINE_IN",
     val selectedStaffId: String = "",
     val selectedStaffName: String = "Staff",
     /** Set when the cart was seeded from a walk-in class reservation; flows
@@ -393,6 +396,11 @@ class CartViewModel @Inject constructor(
         )
         _cartState.update { it.copy(items = it.items + newItem) }
         Log.d("🛒", "Added product with modifiers: ${product.name} x$quantity (${modifiers.size} mods)")
+    }
+
+    /** Cumplimiento de la venta rápida (selector en el header del carrito). */
+    fun setOrderType(orderType: String) {
+        _cartState.update { it.copy(orderType = orderType) }
     }
 
     fun addCustomAmount(name: String, amountCents: Int) {

@@ -334,6 +334,7 @@ fun CheckoutScreen(
                 CartPanelView(
                     cartState = cartState,
                     onItemTap = { item -> selectedCartItem = item },
+                    onOrderTypeChange = { cartViewModel.setOrderType(it) },
                     onCharge = {
                         if (cartViewModel.hasCreditPack && selectedCustomer == null) {
                             showPackCustomerRequired = true
@@ -554,6 +555,7 @@ fun CheckoutScreen(
         IPhoneCartSheet(
             cartState = cartState,
             onItemTap = { item -> selectedCartItem = item },
+            onOrderTypeChange = { cartViewModel.setOrderType(it) },
             onCharge = {
                 if (cartViewModel.hasCreditPack && selectedCustomer == null) {
                     showPackCustomerRequired = true
@@ -971,6 +973,7 @@ private fun IPhoneCartSheet(
     cartState: com.avoqado.pos.pos.presentation.cart.CartState,
     onItemTap: (CartItem) -> Unit,
     onCharge: () -> Unit,
+    onOrderTypeChange: (String) -> Unit = {},
     onClearCart: () -> Unit,
     onSaveCart: () -> Unit,
     onAddCustomAmount: () -> Unit,
@@ -1039,6 +1042,7 @@ private fun IPhoneCartSheet(
                 cartState = cartState,
                 onItemTap = onItemTap,
                 onCharge = onCharge,
+                onOrderTypeChange = onOrderTypeChange,
                 onClearCart = onClearCart,
                 onSaveCart = onSaveCart,
                 onAddCustomAmount = onAddCustomAmount,

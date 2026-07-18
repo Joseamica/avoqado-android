@@ -145,12 +145,14 @@ class TableOrderViewModel @Inject constructor(
         }
     }
 
-    /** Detail-panel add (modifiers/notes). Always its own line. */
+    /** Detail-panel add (modifiers/notes/cortesía). Always its own line. */
     fun addProductWithModifiers(
         product: Product,
         quantity: Int,
         modifiers: List<SelectedModifier>,
         note: String?,
+        isCortesia: Boolean = false,
+        cortesiaReason: String? = null,
     ) {
         _pending.value = _pending.value + PendingLine(
             item = CartItem(
@@ -163,6 +165,8 @@ class TableOrderViewModel @Inject constructor(
                 categoryId = product.categoryId,
                 selectedModifiers = modifiers,
                 itemNote = note,
+                isCortesia = isCortesia,
+                cortesiaReason = cortesiaReason,
             ),
             course = _selectedCourse.value,
         )
@@ -231,6 +235,8 @@ class TableOrderViewModel @Inject constructor(
                         notes = line.item.itemNote,
                         modifierIds = line.item.selectedModifiers.map { it.modifierId }.ifEmpty { null },
                         course = line.course,
+                        isCortesia = line.item.isCortesia.takeIf { it },
+                        cortesiaReason = line.item.cortesiaReason?.takeIf { line.item.isCortesia },
                     )
                     // Custom-amount line: server keys on customName + cents.
                     else -> AddOrderItemRequest(
@@ -240,6 +246,8 @@ class TableOrderViewModel @Inject constructor(
                         course = line.course,
                         customName = line.item.name,
                         customUnitPriceCents = line.item.effectiveUnitPrice,
+                        isCortesia = line.item.isCortesia.takeIf { it },
+                        cortesiaReason = line.item.cortesiaReason?.takeIf { line.item.isCortesia },
                     )
                 }
             }
@@ -377,14 +385,14 @@ class TableOrderViewModel @Inject constructor(
         }
     }
 
-    /** Detalles del cheque (nombre/notas/comensales/cliente). null = sin cambio. */
-    fun updateDetails(name: String? = null, notes: String? = null, covers: Int? = null, customerId: String? = null) {
+    /** Detalles del cheque (nombre/notas/comensales/cliente/cumplimiento). null = sin cambio. */
+    fun updateDetails(name: String? = null, notes: String? = null, covers: Int? = null, customerId: String? = null, orderType: String? = null) {
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
         viewModelScope.launch {
             repository.updateOrderDetails(
                 vId, session.orderId,
-                com.avoqado.pos.tables.data.OrderDetailsRequest(name = name, notes = notes, covers = covers, customerId = customerId),
+                com.avoqado.pos.tables.data.OrderDetailsRequest(name = name, notes = notes, covers = covers, customerId = customerId, orderType = orderType),
             ).fold(
                 onSuccess = {
                     _actionMessage.value = "Cuenta actualizada"
@@ -392,6 +400,30 @@ class TableOrderViewModel @Inject constructor(
                     repository.refresh(vId)
                 },
                 onFailure = { e -> _actionMessage.value = e.message ?: "No se pudo actualizar la cuenta" },
+            )
+        }
+    }
+
+    /** Aplica un descuento de catálogo (ORDER) al cheque. */
+    fun applyDiscount(discountId: String) {
+        val session = tableSession.current() ?: return
+        val vId = venueId ?: return
+        viewModelScope.launch {
+            repository.applyOrderDiscount(vId, session.orderId, discountId).fold(
+                onSuccess = { _actionMessage.value = "Descuento aplicado"; loadCheck(); repository.refresh(vId) },
+                onFailure = { e -> _actionMessage.value = e.message ?: "No se pudo aplicar el descuento" },
+            )
+        }
+    }
+
+    /** Quita un descuento aplicado del cheque. */
+    fun removeDiscount(orderDiscountId: String) {
+        val session = tableSession.current() ?: return
+        val vId = venueId ?: return
+        viewModelScope.launch {
+            repository.removeOrderDiscount(vId, session.orderId, orderDiscountId).fold(
+                onSuccess = { _actionMessage.value = "Descuento quitado"; loadCheck(); repository.refresh(vId) },
+                onFailure = { e -> _actionMessage.value = e.message ?: "No se pudo quitar el descuento" },
             )
         }
     }

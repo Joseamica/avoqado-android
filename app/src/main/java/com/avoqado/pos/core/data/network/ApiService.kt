@@ -140,6 +140,21 @@ interface ApiService {
         @Body request: com.avoqado.pos.tables.data.AssignOrderRequest,
     ): com.avoqado.pos.tables.data.SimpleSuccessResponse
 
+    // Descuentos de orden en el cheque (TABLE_SERVICE).
+    @POST("mobile/venues/{venueId}/orders/{orderId}/discounts")
+    suspend fun applyOrderDiscount(
+        @Path("venueId") venueId: String,
+        @Path("orderId") orderId: String,
+        @Body request: com.avoqado.pos.tables.data.ApplyOrderDiscountRequest,
+    ): com.avoqado.pos.tables.data.SimpleSuccessResponse
+
+    @retrofit2.http.DELETE("mobile/venues/{venueId}/orders/{orderId}/discounts/{orderDiscountId}")
+    suspend fun removeOrderDiscount(
+        @Path("venueId") venueId: String,
+        @Path("orderId") orderId: String,
+        @Path("orderDiscountId") orderDiscountId: String,
+    ): com.avoqado.pos.tables.data.SimpleSuccessResponse
+
     // "Cortesía en la cuenta" (TABLE_SERVICE) — comps EVERY line with one reason.
     @POST("mobile/venues/{venueId}/orders/{orderId}/comp")
     suspend fun compWholeOrder(

@@ -114,6 +114,8 @@ fun TableOrderScreen(
     var showNameNotesDialog by remember { mutableStateOf(false) }
     var showCoversDialog by remember { mutableStateOf(false) }
     var showCustomerPicker by remember { mutableStateOf(false) }
+    var showFulfillmentDialog by remember { mutableStateOf(false) }
+    var showDiscountsDialog by remember { mutableStateOf(false) }
     var showDiscardDialog by remember { mutableStateOf(false) }
     var showAnularDialog by remember { mutableStateOf(false) }
     var compTarget by remember { mutableStateOf<OrderDetailItem?>(null) }
@@ -254,6 +256,8 @@ fun TableOrderScreen(
                                 },
                                 onNameNotes = { showNameNotesDialog = true },
                                 onCovers = { showCoversDialog = true },
+                                onCumplimiento = { showFulfillmentDialog = true },
+                                onDescuentos = { showDiscountsDialog = true },
                             )
                             PanelTab.CLIENTE -> TableClientePanel(
                                 customerName = check?.customerName,
@@ -373,6 +377,8 @@ fun TableOrderScreen(
                                 },
                                 onNameNotes = { showNameNotesDialog = true },
                                 onCovers = { showCoversDialog = true },
+                                onCumplimiento = { showFulfillmentDialog = true },
+                                onDescuentos = { showDiscountsDialog = true },
                             )
                             PanelTab.CLIENTE -> TableClientePanel(
                                 customerName = check?.customerName,
@@ -391,8 +397,11 @@ fun TableOrderScreen(
         ProductDetailPanel(
             product = product,
             isTablet = isTablet,
-            onAddToCart = { quantity, modifiers, note, _, _, _, _ ->
-                viewModel.addProductWithModifiers(product, quantity, modifiers, note)
+            onAddToCart = { quantity, modifiers, note, isCortesia, cortesiaReason, _, _ ->
+                viewModel.addProductWithModifiers(
+                    product, quantity, modifiers, note,
+                    isCortesia = isCortesia, cortesiaReason = cortesiaReason,
+                )
                 selectedProduct = null
             },
             onDismiss = { selectedProduct = null },
@@ -428,6 +437,28 @@ fun TableOrderScreen(
                 viewModel.assignWaiter(staff.id, staff.fullName)
             },
             onDismiss = { showAssignSheet = false },
+        )
+    }
+
+    if (showFulfillmentDialog) {
+        FulfillmentDialog(
+            current = check?.orderType ?: "DINE_IN",
+            onDismiss = { showFulfillmentDialog = false },
+            onConfirm = { type ->
+                showFulfillmentDialog = false
+                viewModel.updateDetails(orderType = type)
+            },
+        )
+    }
+
+    if (showDiscountsDialog) {
+        val allDiscounts by catalogViewModel.discountsRepository.discounts.collectAsState()
+        OrderDiscountsDialog(
+            available = allDiscounts.filter { it.scope == "ORDER" && it.active },
+            applied = check?.discounts ?: emptyList(),
+            onApply = { id -> viewModel.applyDiscount(id) },
+            onRemove = { id -> viewModel.removeDiscount(id) },
+            onDismiss = { showDiscountsDialog = false },
         )
     }
 
@@ -676,6 +707,22 @@ internal fun TableCheckPanel(
                     text = centsDisplay(sentSubtotalCents + pendingTotalCents),
                     style = MaterialTheme.typography.bodyMedium,
                 )
+            }
+            check?.takeIf { it.discountAmount > 0 }?.let { c ->
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xs))
+                Row(modifier = Modifier.fillMaxWidth().padding(horizontal = AvoqadoTheme.spacing.xs)) {
+                    Text(
+                        text = "Descuentos",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Success,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        text = "-" + centsDisplay(kotlin.math.round(c.discountAmount * 100).toInt()),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Success,
+                    )
+                }
             }
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xs))
             Row(modifier = Modifier.fillMaxWidth().padding(horizontal = AvoqadoTheme.spacing.xs)) {
@@ -1033,6 +1080,8 @@ internal fun TableActionsPanel(
     onDividir: () -> Unit = {},
     onNameNotes: () -> Unit = {},
     onCovers: () -> Unit = {},
+    onCumplimiento: () -> Unit = {},
+    onDescuentos: () -> Unit = {},
 ) {
     Column(
         modifier = Modifier
@@ -1117,6 +1166,20 @@ internal fun TableActionsPanel(
                 label = "Conteo de clientes",
                 enabled = true,
                 onClick = onCovers,
+                modifier = Modifier.weight(1f),
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+            ActionPill(
+                label = "Cumplimiento",
+                enabled = true,
+                onClick = onCumplimiento,
+                modifier = Modifier.weight(1f),
+            )
+            ActionPill(
+                label = "Descuentos",
+                enabled = true,
+                onClick = onDescuentos,
                 modifier = Modifier.weight(1f),
             )
         }
@@ -1435,5 +1498,114 @@ private fun CoversDialog(
         },
         confirmButton = { TextButton(onClick = { onConfirm(covers) }) { Text("Guardar") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
+    )
+}
+
+
+// MARK: - Cumplimiento (Square: comer aquí / para llevar / entrega / pickup)
+
+internal val FULFILLMENT_OPTIONS = listOf(
+    "DINE_IN" to "En tienda",
+    "TAKEOUT" to "Para llevar",
+    "DELIVERY" to "Entrega",
+    "PICKUP" to "Pickup",
+)
+
+@Composable
+private fun FulfillmentDialog(
+    current: String,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit,
+) {
+    var selected by remember { mutableStateOf(current) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Cumplimiento") },
+        text = {
+            Column {
+                FULFILLMENT_OPTIONS.forEach { (code, label) ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { selected = code }
+                            .padding(vertical = AvoqadoTheme.spacing.xs),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        androidx.compose.material3.RadioButton(selected = selected == code, onClick = { selected = code })
+                        Text(label, style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = { onConfirm(selected) }) { Text("Guardar") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
+    )
+}
+
+// MARK: - Descuentos de orden en el cheque
+
+@Composable
+private fun OrderDiscountsDialog(
+    available: List<com.avoqado.pos.pos.data.model.Discount>,
+    applied: List<com.avoqado.pos.tables.data.AppliedOrderDiscount>,
+    onApply: (String) -> Unit,
+    onRemove: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Descuentos") },
+        text = {
+            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                if (applied.isNotEmpty()) {
+                    Text("Aplicados", fontWeight = FontWeight.SemiBold)
+                    applied.forEach { d ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = AvoqadoTheme.spacing.xs),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(d.name, style = MaterialTheme.typography.bodyMedium)
+                                Text(
+                                    "-" + centsDisplay(kotlin.math.round(d.amount * 100).toInt()),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = Success,
+                                )
+                            }
+                            TextButton(onClick = { onRemove(d.id) }) { Text("Quitar", color = Color(0xFFD32F2F)) }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+                }
+                Text("Disponibles", fontWeight = FontWeight.SemiBold)
+                if (available.isEmpty()) {
+                    Text(
+                        "No hay descuentos de orden configurados.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                available.forEach { d ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onApply(d.id) }
+                            .padding(vertical = AvoqadoTheme.spacing.xs),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(d.name, style = MaterialTheme.typography.bodyMedium)
+                            Text(
+                                if (d.type == "PERCENTAGE") "${d.value.toInt()}%" else centsDisplay(kotlin.math.round(d.value * 100).toInt()),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Text("Aplicar", color = MaterialTheme.colorScheme.primary)
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Listo") } },
     )
 }

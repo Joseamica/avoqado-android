@@ -82,6 +82,18 @@ class TableServiceRepository @Inject constructor(
         Unit
     }.onFailure { Log.e(TAG, "❌ assignOrder failed: ${it.message}") }
 
+    /** Aplica un descuento de catálogo (scope ORDER) a la cuenta abierta. */
+    suspend fun applyOrderDiscount(venueId: String, orderId: String, discountId: String): Result<Unit> = runCatching {
+        apiService.applyOrderDiscount(venueId, orderId, ApplyOrderDiscountRequest(discountId))
+        Unit
+    }.onFailure { Log.e(TAG, "❌ applyOrderDiscount failed: ${it.message}") }
+
+    /** Quita un descuento aplicado de la cuenta. */
+    suspend fun removeOrderDiscount(venueId: String, orderId: String, orderDiscountId: String): Result<Unit> = runCatching {
+        apiService.removeOrderDiscount(venueId, orderId, orderDiscountId)
+        Unit
+    }.onFailure { Log.e(TAG, "❌ removeOrderDiscount failed: ${it.message}") }
+
     /** "Cortesía en la cuenta": comps EVERY line of the open order with one reason. */
     suspend fun compWholeOrder(venueId: String, orderId: String, reason: String): Result<Unit> = runCatching {
         apiService.compWholeOrder(venueId, orderId, CompItemRequest(reason))

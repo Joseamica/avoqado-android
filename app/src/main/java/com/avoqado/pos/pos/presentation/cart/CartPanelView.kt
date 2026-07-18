@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.AttachMoney
 import androidx.compose.material.icons.automirrored.filled.CallSplit
 import androidx.compose.material.icons.filled.CardGiftcard
@@ -85,6 +86,8 @@ fun CartPanelView(
     staffName: String = cartState.selectedStaffName,
     onStaffTap: () -> Unit = {},
     onSplitPayment: () -> Unit = {},
+    /** Cumplimiento de la venta (header de la sección, antes fijo "En tienda"). */
+    onOrderTypeChange: (String) -> Unit = {},
     // Referral capture (Plan 5B) — optional, the cart still works without it.
     referralCode: String = "",
     referralUiState: ReferralCaptureUiState = ReferralCaptureUiState.Idle,
@@ -181,15 +184,56 @@ fun CartPanelView(
                             horizontalArrangement = Arrangement.SpaceBetween,
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Text(
-                                text = "En tienda",
-                                style = if (useDenseTabletLayout) {
-                                    MaterialTheme.typography.bodyMedium
-                                } else {
-                                    MaterialTheme.typography.titleSmall
-                                },
-                                fontWeight = if (useDenseTabletLayout) FontWeight.Medium else FontWeight.SemiBold,
-                            )
+                            // Cumplimiento (Square): el título de la sección ES el
+                            // selector — tap para cambiar En tienda/Llevar/Entrega/Pickup.
+                            var showFulfillmentMenu by remember { mutableStateOf(false) }
+                            val fulfillmentLabel = when (cartState.orderType) {
+                                "TAKEOUT" -> "Para llevar"
+                                "DELIVERY" -> "Entrega"
+                                "PICKUP" -> "Pickup"
+                                else -> "En tienda"
+                            }
+                            Box {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier.clickable { showFulfillmentMenu = true },
+                                ) {
+                                    Text(
+                                        text = fulfillmentLabel,
+                                        style = if (useDenseTabletLayout) {
+                                            MaterialTheme.typography.bodyMedium
+                                        } else {
+                                            MaterialTheme.typography.titleSmall
+                                        },
+                                        fontWeight = if (useDenseTabletLayout) FontWeight.Medium else FontWeight.SemiBold,
+                                    )
+                                    Icon(
+                                        Icons.Filled.ArrowDropDown,
+                                        contentDescription = "Cambiar forma de entrega",
+                                        modifier = Modifier.size(18.dp),
+                                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                                DropdownMenu(
+                                    expanded = showFulfillmentMenu,
+                                    onDismissRequest = { showFulfillmentMenu = false },
+                                ) {
+                                    listOf(
+                                        "DINE_IN" to "En tienda",
+                                        "TAKEOUT" to "Para llevar",
+                                        "DELIVERY" to "Entrega",
+                                        "PICKUP" to "Pickup",
+                                    ).forEach { (code, label) ->
+                                        DropdownMenuItem(
+                                            text = { Text(label) },
+                                            onClick = {
+                                                showFulfillmentMenu = false
+                                                onOrderTypeChange(code)
+                                            },
+                                        )
+                                    }
+                                }
+                            }
                             Box {
                                 Icon(
                                     Icons.Filled.MoreHoriz,

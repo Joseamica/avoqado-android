@@ -480,7 +480,7 @@ class PaymentFlowViewModel @Inject constructor(
                     if (createdOrderId == null) {
                         // Create order only once per payment session.
                         val orderRequest = buildOrderRequest(cart)
-                        val orderResult = orderRepository.createOrder(orderRequest, staffId = selectedStaffId())
+                        val orderResult = orderRepository.createOrder(orderRequest, staffId = selectedStaffId(), orderType = cart.orderType)
 
                         orderResult.fold(
                             onSuccess = { response ->
@@ -705,7 +705,7 @@ class PaymentFlowViewModel @Inject constructor(
                                 orderRequest = orderRequest,
                             )
                         } else {
-                            val orderResult = orderRepository.createOrder(orderRequest, staffId = selectedStaffId())
+                            val orderResult = orderRepository.createOrder(orderRequest, staffId = selectedStaffId(), orderType = cart.orderType)
                             orderResult.fold(
                                 onSuccess = { orderResponse ->
                                     val orderId = orderResponse.data?.id

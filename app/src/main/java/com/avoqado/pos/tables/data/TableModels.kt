@@ -92,6 +92,9 @@ data class AddOrderItemRequest(
     /** Custom-amount line: label + unit price in cents (productId null). */
     val customName: String? = null,
     val customUnitPriceCents: Int? = null,
+    /** La línea llega YA de cortesía (elegida en el detalle antes de enviar). */
+    val isCortesia: Boolean? = null,
+    val cortesiaReason: String? = null,
 )
 
 @Serializable
@@ -126,7 +129,13 @@ data class OrderDetailsRequest(
     val notes: String? = null,
     val covers: Int? = null,
     val customerId: String? = null,
+    /** Cumplimiento: DINE_IN | TAKEOUT | DELIVERY | PICKUP. */
+    val orderType: String? = null,
 )
+
+/** POST .../orders/:orderId/discounts body. */
+@Serializable
+data class ApplyOrderDiscountRequest(val discountId: String)
 
 /** POST .../orders/:orderId/items/:itemId/comp body — "Dar de cortesía". */
 @Serializable
@@ -161,7 +170,19 @@ data class OrderDetail(
     val customerName: String? = null,
     val specialRequests: String? = null,
     val covers: Int? = null,
+    /** Cumplimiento actual del cheque. */
+    val orderType: String? = null,
+    val discountAmount: Double = 0.0,
+    /** Descuentos de orden aplicados (pestaña Acciones → Descuentos). */
+    val discounts: List<AppliedOrderDiscount> = emptyList(),
     val items: List<OrderDetailItem> = emptyList(),
+)
+
+@Serializable
+data class AppliedOrderDiscount(
+    val id: String,
+    val name: String = "",
+    val amount: Double = 0.0,
 )
 
 @Serializable
