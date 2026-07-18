@@ -33,6 +33,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -66,6 +67,11 @@ fun CashDrawerScreen(
     onDismiss: () -> Unit,
     viewModel: CashDrawerViewModel = hiltViewModel(),
 ) {
+    // Reload on every entry: the Hilt VM can outlive the overlay, so sales
+    // recorded while the screen was closed (recordCashSale from the register)
+    // were showing stale ("Ventas $0"). Fresh load fixes it.
+    LaunchedEffect(Unit) { viewModel.loadCurrentSession() }
+
     if (isTablet) {
         TabletCashDrawerLayout(
             viewModel = viewModel,
@@ -100,9 +106,17 @@ private fun TabletCashDrawerLayout(
 
     // Show DailyReportView if active
     if (showDailyReport && reportSession != null) {
+        val tenderBreakdown by viewModel.tenderBreakdown.collectAsState()
+        LaunchedEffect(reportSession!!.id) {
+            viewModel.loadTenderBreakdown(
+                reportSession!!.openedAt,
+                reportSession!!.closedAt ?: System.currentTimeMillis(),
+            )
+        }
         DailyReportView(
             session = reportSession!!,
             events = reportEvents,
+            tenderBreakdown = tenderBreakdown,
             onDismiss = {
                 showDailyReport = false
                 reportSession = null
@@ -282,9 +296,17 @@ private fun PhoneCashDrawerLayout(
 
     // Show DailyReportView if active
     if (showDailyReport && reportSession != null) {
+        val tenderBreakdown by viewModel.tenderBreakdown.collectAsState()
+        LaunchedEffect(reportSession!!.id) {
+            viewModel.loadTenderBreakdown(
+                reportSession!!.openedAt,
+                reportSession!!.closedAt ?: System.currentTimeMillis(),
+            )
+        }
         DailyReportView(
             session = reportSession!!,
             events = reportEvents,
+            tenderBreakdown = tenderBreakdown,
             onDismiss = {
                 showDailyReport = false
                 reportSession = null

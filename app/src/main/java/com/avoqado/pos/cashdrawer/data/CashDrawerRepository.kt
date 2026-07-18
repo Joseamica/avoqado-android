@@ -78,6 +78,45 @@ class CashDrawerRepository @Inject constructor(
         return dao.getClosedSessions(venueId)
     }
 
+    // MARK: - Tender breakdown (corte de caja — all payment methods, not just cash)
+
+    /** One tender row for the corte's "Desglose por método de pago". */
+    data class TenderRow(val method: String, val totalCents: Int)
+
+    /**
+     * Payments grouped by method for the session window [fromMillis, toMillis].
+     * The drawer only tracks CASH physically, so card/other totals come from the
+     * server's payment records. Returns empty on any failure (corte still renders).
+     */
+    suspend fun getTenderBreakdown(fromMillis: Long, toMillis: Long): List<TenderRow> {
+        if (venueId.isEmpty()) return emptyList()
+        return try {
+            val from = java.time.Instant.ofEpochMilli(fromMillis).toString()
+            val to = java.time.Instant.ofEpochMilli(toMillis).toString()
+            val url = "$baseUrl/tender-breakdown?from=${java.net.URLEncoder.encode(from, "UTF-8")}&to=${java.net.URLEncoder.encode(to, "UTF-8")}"
+            val request = Request.Builder().url(url).get().build()
+            val (code, body) = withContext(Dispatchers.IO) {
+                val response = client.newCall(request).execute()
+                response.code to (response.body?.string() ?: "")
+            }
+            if (code !in 200..299 || body.isEmpty()) {
+                Log.e(TAG, "❌ tender-breakdown failed: $code")
+                return emptyList()
+            }
+            val root = json.decodeFromString<JsonObject>(body)
+            val arr = root["data"]?.jsonObject?.get("tenderBreakdown")?.jsonArray ?: return emptyList()
+            arr.mapNotNull { el ->
+                val obj = el.jsonObject
+                val method = obj["method"]?.jsonPrimitive?.content ?: return@mapNotNull null
+                val dollars = obj["total"]?.jsonPrimitive?.double ?: 0.0
+                TenderRow(method = method, totalCents = (dollars * 100).toInt())
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ tender-breakdown error: ${e.message}")
+            emptyList()
+        }
+    }
+
     // MARK: - Sync from API
 
     /**
@@ -108,18 +147,22 @@ class CashDrawerRepository @Inject constructor(
         if (code in 200..299 && body.isNotEmpty()) {
             try {
                 val root = json.decodeFromString<JsonObject>(body)
-                val sessionObj = root["session"]?.jsonObject
+                // Server envelope is {success, data: session} with the events
+                // ARRAY EMBEDDED in the session; accept legacy top-level keys too.
+                val sessionObj = (root["data"] as? JsonObject)
+                    ?: root["data"]?.let { if (it is kotlinx.serialization.json.JsonNull) null else it.jsonObject }
+                    ?: root["session"]?.jsonObject
                 if (sessionObj != null) {
                     val session = parseSessionFromApi(sessionObj)
                     dao.insertSession(session)
 
-                    // Parse events if present
-                    val eventsArray = root["events"]?.jsonArray
+                    // Events live inside the session payload (fallback: top-level).
+                    val eventsArray = sessionObj["events"]?.jsonArray ?: root["events"]?.jsonArray
                     eventsArray?.forEach { eventJson ->
                         val event = parseEventFromApi(eventJson.jsonObject, session.id)
                         dao.insertEvent(event)
                     }
-                    Log.d(TAG, "✅ Synced current session from API: ${session.id}")
+                    Log.d(TAG, "✅ Synced current session from API: ${session.id} (${eventsArray?.size ?: 0} events)")
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "❌ Parse current session error: ${e.message}")
@@ -336,8 +379,49 @@ class CashDrawerRepository @Inject constructor(
         )
         dao.insertEvent(event)
         Log.d(TAG, "✅ Cash sale recorded: $amountCents, order: $orderId")
+
+        // Push to the server so the backend session's expectedAmount tracks
+        // real cash sales (was Room-only → server drawer drifted). Uses the
+        // batch /sync endpoint; fire-and-forget like the other event POSTs.
+        try {
+            val payload = SyncEventsRequest(
+                events = listOf(
+                    SyncEventDto(
+                        type = CashDrawerEventType.CASH_SALE.name,
+                        amount = amountCents / 100.0,
+                        staffId = staffId,
+                        staffName = staffName,
+                        orderId = orderId,
+                        createdAt = java.time.Instant.ofEpochMilli(event.createdAt).toString(),
+                    ),
+                ),
+            )
+            val body = json.encodeToString(SyncEventsRequest.serializer(), payload)
+                .toRequestBody("application/json".toMediaType())
+            val request = Request.Builder()
+                .url("$baseUrl/sync")
+                .post(body)
+                .build()
+            val code = withContext(Dispatchers.IO) { client.newCall(request).execute().use { it.code } }
+            if (code !in 200..299) Log.e(TAG, "❌ API cash-sale sync failed: $code")
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ API cash-sale sync error: ${e.message}")
+        }
         return event
     }
+
+    @kotlinx.serialization.Serializable
+    private data class SyncEventDto(
+        val type: String,
+        val amount: Double,
+        val staffId: String,
+        val staffName: String,
+        val orderId: String? = null,
+        val createdAt: String,
+    )
+
+    @kotlinx.serialization.Serializable
+    private data class SyncEventsRequest(val events: List<SyncEventDto>)
 
     // MARK: - Close Session
 
@@ -426,7 +510,7 @@ class CashDrawerRepository @Inject constructor(
         val id = obj["id"]?.jsonPrimitive?.content ?: UUID.randomUUID().toString()
         val startingDollars = obj["startingAmount"]?.jsonPrimitive?.double ?: 0.0
         val actualDollars = obj["actualAmount"]?.jsonPrimitive?.double
-        val overShortDollars = obj["overShortAmount"]?.jsonPrimitive?.double
+        val overShortDollars = (obj["overShort"] ?: obj["overShortAmount"])?.jsonPrimitive?.double
         val status = obj["status"]?.jsonPrimitive?.content ?: CashDrawerStatus.OPEN.name
 
         return CashDrawerSessionEntity(
@@ -466,14 +550,17 @@ class CashDrawerRepository @Inject constructor(
 
     private fun parseTimestamp(value: String?): Long {
         if (value == null) return System.currentTimeMillis()
-        // Try parsing as ISO-8601
+        // Server sends full ISO-8601 with millis + Z ("2026-07-17T19:50:18.274Z").
         return try {
-            java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US).apply {
-                timeZone = java.util.TimeZone.getTimeZone("UTC")
-            }.parse(value)?.time ?: System.currentTimeMillis()
+            java.time.Instant.parse(value).toEpochMilli()
         } catch (_: Exception) {
-            // Try as millis
-            value.toLongOrNull() ?: System.currentTimeMillis()
+            try {
+                java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US).apply {
+                    timeZone = java.util.TimeZone.getTimeZone("UTC")
+                }.parse(value)?.time ?: System.currentTimeMillis()
+            } catch (_: Exception) {
+                value.toLongOrNull() ?: System.currentTimeMillis()
+            }
         }
     }
 }

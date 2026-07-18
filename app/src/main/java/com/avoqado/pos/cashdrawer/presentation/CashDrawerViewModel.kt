@@ -46,6 +46,18 @@ class CashDrawerViewModel @Inject constructor(
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
+    // Tender breakdown for the corte (card + cash + other), keyed nowhere —
+    // refetched per report shown. Empty until loaded / on failure.
+    private val _tenderBreakdown = MutableStateFlow<List<CashDrawerRepository.TenderRow>>(emptyList())
+    val tenderBreakdown: StateFlow<List<CashDrawerRepository.TenderRow>> = _tenderBreakdown.asStateFlow()
+
+    /** Fetch the payment-method breakdown for a session's window (corte de caja). */
+    fun loadTenderBreakdown(fromMillis: Long, toMillis: Long) {
+        viewModelScope.launch {
+            _tenderBreakdown.value = repository.getTenderBreakdown(fromMillis, toMillis)
+        }
+    }
+
     // MARK: - Init
 
     init {

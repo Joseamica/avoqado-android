@@ -45,6 +45,9 @@ fun DailyReportView(
     session: CashDrawerSessionEntity,
     events: List<CashDrawerEventEntity>,
     venueName: String = "Avoqado",
+    // Payment-method breakdown from the server (card + cash + other) for the
+    // session window. Empty = not loaded / offline → falls back to cash-only.
+    tenderBreakdown: List<com.avoqado.pos.cashdrawer.data.CashDrawerRepository.TenderRow> = emptyList(),
     onDismiss: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -67,8 +70,21 @@ fun DailyReportView(
         .filter { it.type == CashDrawerEventType.PAY_OUT.name }
         .sumOf { it.amountCents }
 
+    // Payment-method breakdown: prefer the server tender data (all methods),
+    // fall back to local cash-only when it hasn't loaded (offline).
+    val cardCents = tenderBreakdown
+        .filter { it.method == "CREDIT_CARD" || it.method == "DEBIT_CARD" }
+        .sumOf { it.totalCents }
+    val breakdownCashCents = tenderBreakdown.firstOrNull { it.method == "CASH" }?.totalCents
+    val otherCents = tenderBreakdown
+        .filter { it.method != "CASH" && it.method != "CREDIT_CARD" && it.method != "DEBIT_CARD" }
+        .sumOf { it.totalCents }
+    val displayCashCents = breakdownCashCents ?: cashSalesCents
+    val hasServerBreakdown = tenderBreakdown.isNotEmpty()
+
     val transactionCount = events.count { it.type == CashDrawerEventType.CASH_SALE.name }
-    val totalSalesCents = cashSalesCents
+    // Total sales = all tenders when the server breakdown is available.
+    val totalSalesCents = if (hasServerBreakdown) tenderBreakdown.sumOf { it.totalCents } else cashSalesCents
     val avgTicketCents = if (transactionCount > 0) totalSalesCents / transactionCount else 0
 
     val expectedCents = session.startingAmountCents + cashSalesCents + payInsCents - payOutsCents
@@ -149,9 +165,11 @@ fun DailyReportView(
             ReportSectionTitle(text = "Desglose por metodo de pago")
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
 
-            ReportRow(label = "Efectivo", value = formatCurrency(cashSalesCents))
-            // Card and other methods would come from order data, placeholder for now
-            ReportRow(label = "Tarjeta", value = formatCurrency(0))
+            ReportRow(label = "Efectivo", value = formatCurrency(displayCashCents))
+            ReportRow(label = "Tarjeta", value = formatCurrency(cardCents))
+            if (otherCents != 0) {
+                ReportRow(label = "Otros", value = formatCurrency(otherCents))
+            }
 
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
 
