@@ -117,6 +117,32 @@ class CashDrawerRepository @Inject constructor(
         }
     }
 
+    // MARK: - End of day ("Cierre del día")
+
+    /**
+     * Fetches the end-of-day summary: the day's sales by tender + the blockers
+     * (open checks, open drawers, clocked-in staff). Read-only; null on failure.
+     */
+    suspend fun getEndOfDay(): EndOfDaySummary? {
+        if (venueId.isEmpty()) return null
+        return try {
+            val url = "${ApiConstants.BASE_URL}/mobile/venues/$venueId/end-of-day"
+            val request = Request.Builder().url(url).get().build()
+            val (code, body) = withContext(Dispatchers.IO) {
+                val response = client.newCall(request).execute()
+                response.code to (response.body?.string() ?: "")
+            }
+            if (code !in 200..299 || body.isEmpty()) {
+                Log.e(TAG, "❌ end-of-day failed: $code")
+                return null
+            }
+            json.decodeFromString(EndOfDayResponse.serializer(), body).data
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ end-of-day error: ${e.message}")
+            null
+        }
+    }
+
     // MARK: - Sync from API
 
     /**

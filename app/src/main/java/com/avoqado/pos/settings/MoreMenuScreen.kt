@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.LocalOffer
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.automirrored.filled.PlaylistAddCheck
+import androidx.compose.material.icons.filled.Assignment
 import androidx.compose.material.icons.filled.PointOfSale
 import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.Schedule
@@ -108,6 +109,7 @@ fun MoreMenuScreen(
     var showReports by remember { mutableStateOf(false) }
     var showOrders by remember { mutableStateOf(false) }
     var showCashDrawer by remember { mutableStateOf(false) }
+    var showEndOfDay by remember { mutableStateOf(false) }
     var showEstimates by remember { mutableStateOf(false) }
     var showSetupWizard by remember { mutableStateOf(false) }
     var showCustomizeMenu by remember { mutableStateOf(false) }
@@ -127,6 +129,7 @@ fun MoreMenuScreen(
         showReports = false
         showOrders = false
         showCashDrawer = false
+        showEndOfDay = false
         showEstimates = false
         showSetupWizard = false
         showCustomizeMenu = false
@@ -452,6 +455,12 @@ fun MoreMenuScreen(
                 onClick = { showCashDrawer = true },
                 dense = denseMenu,
             )
+            MenuRow(
+                icon = Icons.Filled.Assignment,
+                label = "Cierre del día",
+                onClick = { showEndOfDay = true },
+                dense = denseMenu,
+            )
         }
         if (viewModel.canAccessKDS) {
             MenuRow(
@@ -657,6 +666,25 @@ fun MoreMenuScreen(
             CashDrawerScreen(
                 isTablet = isTablet,
                 onDismiss = { showCashDrawer = false },
+            )
+        }
+    }
+    // End of Day ("Cierre del día") Fullscreen Overlay
+    if (showEndOfDay) {
+        val eodInteraction = remember { MutableInteractionSource() }
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .zIndex(10f)
+                .background(MaterialTheme.colorScheme.surface)
+                .clickable(
+                    interactionSource = eodInteraction,
+                    indication = null,
+                    onClick = {},
+                ),
+        ) {
+            com.avoqado.pos.cashdrawer.presentation.EndOfDayScreen(
+                onDismiss = { showEndOfDay = false },
             )
         }
     }

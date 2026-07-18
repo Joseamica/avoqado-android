@@ -58,6 +58,21 @@ class CashDrawerViewModel @Inject constructor(
         }
     }
 
+    // End of day ("Cierre del día") — day summary + blockers.
+    private val _endOfDay = MutableStateFlow<com.avoqado.pos.cashdrawer.data.EndOfDaySummary?>(null)
+    val endOfDay: StateFlow<com.avoqado.pos.cashdrawer.data.EndOfDaySummary?> = _endOfDay.asStateFlow()
+
+    private val _isLoadingEndOfDay = MutableStateFlow(false)
+    val isLoadingEndOfDay: StateFlow<Boolean> = _isLoadingEndOfDay.asStateFlow()
+
+    fun loadEndOfDay() {
+        viewModelScope.launch {
+            _isLoadingEndOfDay.value = true
+            _endOfDay.value = repository.getEndOfDay()
+            _isLoadingEndOfDay.value = false
+        }
+    }
+
     // MARK: - Init
 
     init {

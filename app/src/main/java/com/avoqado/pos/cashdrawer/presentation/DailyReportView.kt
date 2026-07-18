@@ -284,7 +284,7 @@ fun DailyReportView(
 // MARK: - Helper Composables
 
 @Composable
-private fun ReportSectionTitle(text: String) {
+internal fun ReportSectionTitle(text: String) {
     Text(
         text = text,
         style = MaterialTheme.typography.titleSmall,
@@ -294,7 +294,7 @@ private fun ReportSectionTitle(text: String) {
 }
 
 @Composable
-private fun ReportRow(
+internal fun ReportRow(
     label: String,
     value: String,
     valueColor: androidx.compose.ui.graphics.Color? = null,
