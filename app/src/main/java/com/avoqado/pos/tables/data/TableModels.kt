@@ -119,6 +119,15 @@ data class MoveOrderRequest(val targetTableId: String)
 @Serializable
 data class AssignOrderRequest(val staffId: String)
 
+/** POST .../orders/:orderId/details body — null = sin cambio, "" borra. */
+@Serializable
+data class OrderDetailsRequest(
+    val name: String? = null,
+    val notes: String? = null,
+    val covers: Int? = null,
+    val customerId: String? = null,
+)
+
 /** POST .../orders/:orderId/items/:itemId/comp body — "Dar de cortesía". */
 @Serializable
 data class CompItemRequest(val reason: String)
@@ -148,6 +157,10 @@ data class OrderDetail(
     /** Pesos (major units). */
     val subtotal: Double = 0.0,
     val total: Double = 0.0,
+    /** Check metadata editable desde el panel (Detalles). */
+    val customerName: String? = null,
+    val specialRequests: String? = null,
+    val covers: Int? = null,
     val items: List<OrderDetailItem> = emptyList(),
 )
 

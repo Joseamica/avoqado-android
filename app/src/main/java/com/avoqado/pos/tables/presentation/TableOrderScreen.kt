@@ -23,6 +23,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Print
@@ -109,6 +110,10 @@ fun TableOrderScreen(
     var showCustomAmount by remember { mutableStateOf(false) }
     var showMoveDialog by remember { mutableStateOf(false) }
     var showAssignSheet by remember { mutableStateOf(false) }
+    var showWholeCortesia by remember { mutableStateOf(false) }
+    var showNameNotesDialog by remember { mutableStateOf(false) }
+    var showCoversDialog by remember { mutableStateOf(false) }
+    var showCustomerPicker by remember { mutableStateOf(false) }
     var showDiscardDialog by remember { mutableStateOf(false) }
     var showAnularDialog by remember { mutableStateOf(false) }
     var compTarget by remember { mutableStateOf<OrderDetailItem?>(null) }
@@ -236,6 +241,24 @@ fun TableOrderScreen(
                                     catalogViewModel.fetchStaff()
                                     showAssignSheet = true
                                 },
+                                onCompWhole = { showWholeCortesia = true },
+                                onDividir = {
+                                    if (pendingLines.isNotEmpty()) {
+                                        android.widget.Toast.makeText(context, "Envía o borra los artículos pendientes antes de dividir", android.widget.Toast.LENGTH_LONG).show()
+                                    } else if (viewModel.preparePagar(openSplit = true)) {
+                                        exited = true
+                                        onPagar()
+                                    } else {
+                                        android.widget.Toast.makeText(context, "La cuenta no tiene cargos todavía", android.widget.Toast.LENGTH_SHORT).show()
+                                    }
+                                },
+                                onNameNotes = { showNameNotesDialog = true },
+                                onCovers = { showCoversDialog = true },
+                            )
+                            PanelTab.CLIENTE -> TableClientePanel(
+                                customerName = check?.customerName,
+                                onPickCustomer = { showCustomerPicker = true },
+                                onDetachCustomer = { viewModel.updateDetails(customerId = "") },
                             )
                         }
                     }
@@ -337,6 +360,24 @@ fun TableOrderScreen(
                                     catalogViewModel.fetchStaff()
                                     showAssignSheet = true
                                 },
+                                onCompWhole = { showWholeCortesia = true },
+                                onDividir = {
+                                    if (pendingLines.isNotEmpty()) {
+                                        android.widget.Toast.makeText(context, "Envía o borra los artículos pendientes antes de dividir", android.widget.Toast.LENGTH_LONG).show()
+                                    } else if (viewModel.preparePagar(openSplit = true)) {
+                                        exited = true
+                                        onPagar()
+                                    } else {
+                                        android.widget.Toast.makeText(context, "La cuenta no tiene cargos todavía", android.widget.Toast.LENGTH_SHORT).show()
+                                    }
+                                },
+                                onNameNotes = { showNameNotesDialog = true },
+                                onCovers = { showCoversDialog = true },
+                            )
+                            PanelTab.CLIENTE -> TableClientePanel(
+                                customerName = check?.customerName,
+                                onPickCustomer = { showCustomerPicker = true },
+                                onDetachCustomer = { viewModel.updateDetails(customerId = "") },
                             )
                         }
                     }
@@ -388,6 +429,61 @@ fun TableOrderScreen(
             },
             onDismiss = { showAssignSheet = false },
         )
+    }
+
+    if (showWholeCortesia) {
+        WholeCortesiaDialog(
+            onDismiss = { showWholeCortesia = false },
+            onConfirm = { reason ->
+                showWholeCortesia = false
+                viewModel.compWholeCheck(reason)
+                panelTab = PanelTab.CUENTA
+            },
+        )
+    }
+
+    if (showNameNotesDialog) {
+        NameNotesDialog(
+            initialName = check?.customerName.orEmpty(),
+            initialNotes = check?.specialRequests.orEmpty(),
+            onDismiss = { showNameNotesDialog = false },
+            onConfirm = { name, notes ->
+                showNameNotesDialog = false
+                viewModel.updateDetails(name = name, notes = notes)
+            },
+        )
+    }
+
+    if (showCoversDialog) {
+        CoversDialog(
+            initial = check?.covers ?: floorTable?.currentOrder?.covers ?: 2,
+            onDismiss = { showCoversDialog = false },
+            onConfirm = { covers ->
+                showCoversDialog = false
+                viewModel.updateDetails(covers = covers)
+            },
+        )
+    }
+
+    if (showCustomerPicker) {
+        val customersViewModel: com.avoqado.pos.customers.presentation.CustomersViewModel =
+            androidx.hilt.navigation.compose.hiltViewModel()
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.surface),
+        ) {
+            com.avoqado.pos.customers.presentation.CustomersView(
+                viewModel = customersViewModel,
+                onCustomerSelected = { customer ->
+                    showCustomerPicker = false
+                    viewModel.updateDetails(customerId = customer.id)
+                },
+                onDismiss = { showCustomerPicker = false },
+                onCreateCustomer = { },
+                canCreateCustomer = false,
+            )
+        }
     }
 
     if (showCustomAmount) {
@@ -884,7 +980,7 @@ private fun elapsedSince(iso: String?, nowMs: Long): String? {
 
 // MARK: - Right-panel tabs (Square: Cuenta · Acciones)
 
-internal enum class PanelTab(val label: String) { CUENTA("Cuenta"), ACCIONES("Acciones") }
+internal enum class PanelTab(val label: String) { CUENTA("Cuenta"), ACCIONES("Acciones"), CLIENTE("Cliente") }
 
 @Composable
 internal fun PanelTabsRow(selected: PanelTab, onSelect: (PanelTab) -> Unit) {
@@ -933,6 +1029,10 @@ internal fun TableActionsPanel(
     onCustomAmount: () -> Unit,
     onMover: () -> Unit = {},
     onAsignar: () -> Unit = {},
+    onCompWhole: () -> Unit = {},
+    onDividir: () -> Unit = {},
+    onNameNotes: () -> Unit = {},
+    onCovers: () -> Unit = {},
 ) {
     Column(
         modifier = Modifier
@@ -972,6 +1072,20 @@ internal fun TableActionsPanel(
         }
         Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
             ActionPill(
+                label = "Cortesía en la cuenta",
+                enabled = hasSent,
+                onClick = onCompWhole,
+                modifier = Modifier.weight(1f),
+            )
+            ActionPill(
+                label = "Dividir la cuenta",
+                enabled = hasSent,
+                onClick = onDividir,
+                modifier = Modifier.weight(1f),
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+            ActionPill(
                 label = "Imprimir cuenta",
                 enabled = hasSent,
                 onClick = onPrintPreBill,
@@ -981,6 +1095,28 @@ internal fun TableActionsPanel(
                 label = "Volver a imprimir pedido",
                 enabled = hasSent,
                 onClick = onReprintComandas,
+                modifier = Modifier.weight(1f),
+            )
+        }
+
+        Text(
+            text = "Detalles",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(top = AvoqadoTheme.spacing.md),
+        )
+        HorizontalDivider()
+        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+            ActionPill(
+                label = "Nombre y notas",
+                enabled = true,
+                onClick = onNameNotes,
+                modifier = Modifier.weight(1f),
+            )
+            ActionPill(
+                label = "Conteo de clientes",
+                enabled = true,
+                onClick = onCovers,
                 modifier = Modifier.weight(1f),
             )
         }
@@ -1128,6 +1264,176 @@ private fun MoveTableDialog(
         confirmButton = {
             TextButton(onClick = { selectedId?.let(onConfirm) }, enabled = selectedId != null) { Text("Mover") }
         },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
+    )
+}
+
+
+// MARK: - Pestaña Cliente (Square: buscador + adjuntar cliente al cheque)
+
+@Composable
+internal fun TableClientePanel(
+    customerName: String?,
+    onPickCustomer: () -> Unit,
+    onDetachCustomer: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(AvoqadoTheme.spacing.md),
+        verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
+    ) {
+        if (customerName.isNullOrBlank()) {
+            Text(
+                text = "Sin cliente asignado a la cuenta.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.lg))
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f))
+                    .padding(AvoqadoTheme.spacing.md),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(customerName, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        "Cliente de la cuenta",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                TextButton(onClick = onDetachCustomer) { Text("Quitar", color = Color(0xFFD32F2F)) }
+            }
+        }
+        ActionPill(
+            label = if (customerName.isNullOrBlank()) "Asignar cliente" else "Cambiar cliente",
+            enabled = true,
+            onClick = onPickCustomer,
+            modifier = Modifier.fillMaxWidth(),
+        )
+    }
+}
+
+// MARK: - Cortesía en la cuenta (toda)
+
+@Composable
+private fun WholeCortesiaDialog(
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit,
+) {
+    val reasons = listOf(
+        "Error de entrada",
+        "El cliente cambió de parecer",
+        "Reclamo del cliente",
+        "Amigos y familia",
+        "Descuento de empleado",
+        "Especial del administrador",
+    )
+    var selected by remember { mutableStateOf<String?>(null) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Cortesía en la cuenta") },
+        text = {
+            Column {
+                Text(
+                    "TODOS los artículos se quedan en la cuenta pero dejan de cobrarse.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+                Text("Motivo", fontWeight = FontWeight.SemiBold)
+                reasons.forEach { reason ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { selected = reason }
+                            .padding(vertical = AvoqadoTheme.spacing.xs),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        androidx.compose.material3.RadioButton(selected = selected == reason, onClick = { selected = reason })
+                        Text(reason, style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { selected?.let(onConfirm) }, enabled = selected != null) { Text("Dar de cortesía") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
+    )
+}
+
+// MARK: - Nombre y notas de la cuenta
+
+@Composable
+private fun NameNotesDialog(
+    initialName: String,
+    initialNotes: String,
+    onDismiss: () -> Unit,
+    onConfirm: (String, String) -> Unit,
+) {
+    var name by remember { mutableStateOf(initialName) }
+    var notes by remember { mutableStateOf(initialNotes) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Nombre y notas") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md)) {
+                androidx.compose.material3.OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Nombre de la cuenta") },
+                    singleLine = true,
+                )
+                androidx.compose.material3.OutlinedTextField(
+                    value = notes,
+                    onValueChange = { notes = it },
+                    label = { Text("Notas (alergias, ocasión...)") },
+                    minLines = 2,
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = { onConfirm(name, notes) }) { Text("Guardar") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
+    )
+}
+
+// MARK: - Conteo de clientes (comensales)
+
+@Composable
+private fun CoversDialog(
+    initial: Int,
+    onDismiss: () -> Unit,
+    onConfirm: (Int) -> Unit,
+) {
+    var covers by remember { mutableStateOf(initial.coerceAtLeast(1)) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Conteo de clientes") },
+        text = {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Comensales", modifier = Modifier.weight(1f))
+                androidx.compose.material3.IconButton(onClick = { if (covers > 1) covers-- }) {
+                    Icon(Icons.Filled.Remove, contentDescription = "Menos")
+                }
+                Text(
+                    text = "$covers",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.padding(horizontal = AvoqadoTheme.spacing.sm),
+                )
+                androidx.compose.material3.IconButton(onClick = { if (covers < 200) covers++ }) {
+                    Icon(Icons.Filled.Add, contentDescription = "Más")
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = { onConfirm(covers) }) { Text("Guardar") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
     )
 }

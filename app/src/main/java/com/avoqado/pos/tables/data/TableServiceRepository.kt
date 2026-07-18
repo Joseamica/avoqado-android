@@ -82,6 +82,18 @@ class TableServiceRepository @Inject constructor(
         Unit
     }.onFailure { Log.e(TAG, "❌ assignOrder failed: ${it.message}") }
 
+    /** "Cortesía en la cuenta": comps EVERY line of the open order with one reason. */
+    suspend fun compWholeOrder(venueId: String, orderId: String, reason: String): Result<Unit> = runCatching {
+        apiService.compWholeOrder(venueId, orderId, CompItemRequest(reason))
+        Unit
+    }.onFailure { Log.e(TAG, "❌ compWholeOrder failed: ${it.message}") }
+
+    /** Detalles del cheque: nombre/notas/comensales/cliente (null = sin cambio). */
+    suspend fun updateOrderDetails(venueId: String, orderId: String, request: OrderDetailsRequest): Result<Unit> = runCatching {
+        apiService.updateOrderDetails(venueId, orderId, request)
+        Unit
+    }.onFailure { Log.e(TAG, "❌ updateOrderDetails failed: ${it.message}") }
+
     /** "Dar de cortesía": comps one line of the open order (stays on the check, costs 0). */
     suspend fun compItem(venueId: String, orderId: String, itemId: String, reason: String): Result<Unit> = runCatching {
         apiService.compOrderItem(venueId, orderId, itemId, CompItemRequest(reason))

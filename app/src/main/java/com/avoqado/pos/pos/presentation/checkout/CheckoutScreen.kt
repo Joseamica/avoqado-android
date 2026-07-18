@@ -158,6 +158,14 @@ fun CheckoutScreen(
     var createProductInitialGtin by remember { mutableStateOf("") }
     var unknownBarcode by remember { mutableStateOf<String?>(null) }
     var showSplitPayment by remember { mutableStateOf(false) }
+    // "Dividir la cuenta" from the table panel: auto-open the split sheet once
+    // on arrival (flag consumed so re-compositions don't re-open it).
+    LaunchedEffect(tableSessionActive?.openSplitOnArrival) {
+        tableSessionActive?.takeIf { it.openSplitOnArrival }?.let { session ->
+            tablesViewModel.tableSession.start(session.copy(openSplitOnArrival = false))
+            showSplitPayment = true
+        }
+    }
     var showStaffSelector by remember { mutableStateOf(false) }
     var pendingSplitConfig by remember { mutableStateOf(SplitConfig()) }
     var customerSelectionContext by remember { mutableStateOf(CustomerSelectionContext.GENERAL) }

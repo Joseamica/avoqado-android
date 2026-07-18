@@ -38,6 +38,9 @@ class TableSession @Inject constructor() {
         /** Order total in cents at session start (PAYING mode seeds the cart with it). */
         val totalCents: Int,
         val mode: Mode,
+        /** "Dividir la cuenta" from the check panel: the register auto-opens
+         *  the split sheet on arrival (consumed once by CheckoutScreen). */
+        val openSplitOnArrival: Boolean = false,
     ) {
         val label: String get() = "Mesa $tableNumber" + (areaName?.let { " · $it" } ?: "")
     }

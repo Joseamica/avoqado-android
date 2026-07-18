@@ -140,6 +140,23 @@ interface ApiService {
         @Body request: com.avoqado.pos.tables.data.AssignOrderRequest,
     ): com.avoqado.pos.tables.data.SimpleSuccessResponse
 
+    // "Cortesía en la cuenta" (TABLE_SERVICE) — comps EVERY line with one reason.
+    @POST("mobile/venues/{venueId}/orders/{orderId}/comp")
+    suspend fun compWholeOrder(
+        @Path("venueId") venueId: String,
+        @Path("orderId") orderId: String,
+        @Body request: com.avoqado.pos.tables.data.CompItemRequest,
+    ): com.avoqado.pos.tables.data.SimpleSuccessResponse
+
+    // Detalles del cheque (TABLE_SERVICE) — nombre/notas/comensales/cliente.
+    // null = sin cambio; string vacío borra (semántica tolerante del server).
+    @POST("mobile/venues/{venueId}/orders/{orderId}/details")
+    suspend fun updateOrderDetails(
+        @Path("venueId") venueId: String,
+        @Path("orderId") orderId: String,
+        @Body request: com.avoqado.pos.tables.data.OrderDetailsRequest,
+    ): com.avoqado.pos.tables.data.SimpleSuccessResponse
+
     // "Dar de cortesía" (TABLE_SERVICE) — comps one line with a required reason.
     @POST("mobile/venues/{venueId}/orders/{orderId}/items/{itemId}/comp")
     suspend fun compOrderItem(

@@ -358,6 +358,54 @@ class TableOrderViewModel @Inject constructor(
         }
     }
 
+    /** "Cortesía en la cuenta" — comps EVERY line with one reason. */
+    fun compWholeCheck(reason: String) {
+        val session = tableSession.current() ?: return
+        val vId = venueId ?: return
+        viewModelScope.launch {
+            repository.compWholeOrder(vId, session.orderId, reason).fold(
+                onSuccess = {
+                    _actionMessage.value = "Cuenta de cortesía — $reason"
+                    loadCheck()
+                    repository.refresh(vId)
+                },
+                onFailure = { e ->
+                    _actionMessage.value = e.message ?: "No se pudo dar la cortesía"
+                    loadCheck()
+                },
+            )
+        }
+    }
+
+    /** Detalles del cheque (nombre/notas/comensales/cliente). null = sin cambio. */
+    fun updateDetails(name: String? = null, notes: String? = null, covers: Int? = null, customerId: String? = null) {
+        val session = tableSession.current() ?: return
+        val vId = venueId ?: return
+        viewModelScope.launch {
+            repository.updateOrderDetails(
+                vId, session.orderId,
+                com.avoqado.pos.tables.data.OrderDetailsRequest(name = name, notes = notes, covers = covers, customerId = customerId),
+            ).fold(
+                onSuccess = {
+                    _actionMessage.value = "Cuenta actualizada"
+                    loadCheck()
+                    repository.refresh(vId)
+                },
+                onFailure = { e -> _actionMessage.value = e.message ?: "No se pudo actualizar la cuenta" },
+            )
+        }
+    }
+
+    /** "Dividir la cuenta": same PAYING hand-off as Pagar, but the register
+     *  auto-opens the split sheet on arrival. */
+    fun preparePagar(openSplit: Boolean): Boolean {
+        val ok = preparePagar()
+        if (ok && openSplit) {
+            tableSession.current()?.let { tableSession.start(it.copy(openSplitOnArrival = true)) }
+        }
+        return ok
+    }
+
     /** "Anular cuenta" — cancels the check; success means the table is free. */
     fun anularCuenta(reason: String, onDone: (Boolean, String) -> Unit) {
         val session = tableSession.current() ?: return
