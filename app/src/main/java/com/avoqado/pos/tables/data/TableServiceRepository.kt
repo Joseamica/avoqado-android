@@ -70,6 +70,18 @@ class TableServiceRepository @Inject constructor(
         Unit
     }.onFailure { Log.e(TAG, "❌ payOrderCash failed: ${it.message}") }
 
+    /** "Mover": moves the OPEN check to another table (source freed, target occupied). */
+    suspend fun moveOrder(venueId: String, orderId: String, targetTableId: String): Result<Unit> = runCatching {
+        apiService.moveOrder(venueId, orderId, MoveOrderRequest(targetTableId))
+        Unit
+    }.onFailure { Log.e(TAG, "❌ moveOrder failed: ${it.message}") }
+
+    /** "Asignar": reassigns the OPEN check to another waiter (tips/corte follow). */
+    suspend fun assignOrder(venueId: String, orderId: String, staffId: String): Result<Unit> = runCatching {
+        apiService.assignOrder(venueId, orderId, AssignOrderRequest(staffId))
+        Unit
+    }.onFailure { Log.e(TAG, "❌ assignOrder failed: ${it.message}") }
+
     /** "Dar de cortesía": comps one line of the open order (stays on the check, costs 0). */
     suspend fun compItem(venueId: String, orderId: String, itemId: String, reason: String): Result<Unit> = runCatching {
         apiService.compOrderItem(venueId, orderId, itemId, CompItemRequest(reason))

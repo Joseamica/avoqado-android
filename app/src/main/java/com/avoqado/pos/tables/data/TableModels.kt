@@ -111,6 +111,14 @@ data class PayCashRequest(val amount: Int, val tip: Int = 0)
 @Serializable
 data class CancelOrderRequest(val reason: String)
 
+/** POST .../orders/:orderId/move body — "Mover" cuenta a otra mesa. */
+@Serializable
+data class MoveOrderRequest(val targetTableId: String)
+
+/** POST .../orders/:orderId/assign body — "Asignar" cuenta a otro mesero. */
+@Serializable
+data class AssignOrderRequest(val staffId: String)
+
 /** POST .../orders/:orderId/items/:itemId/comp body — "Dar de cortesía". */
 @Serializable
 data class CompItemRequest(val reason: String)

@@ -124,6 +124,22 @@ interface ApiService {
         @Body request: com.avoqado.pos.tables.data.PayCashRequest,
     ): com.avoqado.pos.tables.data.SimpleSuccessResponse
 
+    // "Mover" (TABLE_SERVICE) — moves the OPEN check to another table.
+    @POST("mobile/venues/{venueId}/orders/{orderId}/move")
+    suspend fun moveOrder(
+        @Path("venueId") venueId: String,
+        @Path("orderId") orderId: String,
+        @Body request: com.avoqado.pos.tables.data.MoveOrderRequest,
+    ): com.avoqado.pos.tables.data.SimpleSuccessResponse
+
+    // "Asignar" (TABLE_SERVICE) — reassigns the OPEN check to another waiter.
+    @POST("mobile/venues/{venueId}/orders/{orderId}/assign")
+    suspend fun assignOrder(
+        @Path("venueId") venueId: String,
+        @Path("orderId") orderId: String,
+        @Body request: com.avoqado.pos.tables.data.AssignOrderRequest,
+    ): com.avoqado.pos.tables.data.SimpleSuccessResponse
+
     // "Dar de cortesía" (TABLE_SERVICE) — comps one line with a required reason.
     @POST("mobile/venues/{venueId}/orders/{orderId}/items/{itemId}/comp")
     suspend fun compOrderItem(

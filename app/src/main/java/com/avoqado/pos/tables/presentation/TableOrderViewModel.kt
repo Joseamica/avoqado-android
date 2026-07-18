@@ -325,6 +325,39 @@ class TableOrderViewModel @Inject constructor(
         _actionMessage.value = null
     }
 
+    /** "Mover" — moves the check to another table. The session's table context
+     *  goes stale, so on success the caller exits to the floor plan. */
+    fun moveTable(targetTableId: String, onDone: (Boolean, String) -> Unit) {
+        val session = tableSession.current() ?: return
+        val vId = venueId ?: return
+        viewModelScope.launch {
+            repository.moveOrder(vId, session.orderId, targetTableId).fold(
+                onSuccess = {
+                    repository.refresh(vId)
+                    tableSession.clear()
+                    val target = repository.tables.value.firstOrNull { it.id == targetTableId }
+                    onDone(true, "Cuenta movida a Mesa ${target?.number ?: ""}".trim())
+                },
+                onFailure = { e -> onDone(false, e.message ?: "No se pudo mover la cuenta") },
+            )
+        }
+    }
+
+    /** "Asignar" — reassigns the check to another waiter (stays on screen). */
+    fun assignWaiter(staffId: String, staffName: String) {
+        val session = tableSession.current() ?: return
+        val vId = venueId ?: return
+        viewModelScope.launch {
+            repository.assignOrder(vId, session.orderId, staffId).fold(
+                onSuccess = {
+                    repository.refresh(vId)
+                    _actionMessage.value = "Cuenta asignada a $staffName"
+                },
+                onFailure = { e -> _actionMessage.value = e.message ?: "No se pudo asignar la cuenta" },
+            )
+        }
+    }
+
     /** "Anular cuenta" — cancels the check; success means the table is free. */
     fun anularCuenta(reason: String, onDone: (Boolean, String) -> Unit) {
         val session = tableSession.current() ?: return

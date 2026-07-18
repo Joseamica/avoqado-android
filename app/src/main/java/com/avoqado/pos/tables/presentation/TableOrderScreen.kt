@@ -107,6 +107,8 @@ fun TableOrderScreen(
     // Square's right-panel tabs: Cuenta (the check) / Acciones (the catalog).
     var panelTab by remember { mutableStateOf(PanelTab.CUENTA) }
     var showCustomAmount by remember { mutableStateOf(false) }
+    var showMoveDialog by remember { mutableStateOf(false) }
+    var showAssignSheet by remember { mutableStateOf(false) }
     var showDiscardDialog by remember { mutableStateOf(false) }
     var showAnularDialog by remember { mutableStateOf(false) }
     var compTarget by remember { mutableStateOf<OrderDetailItem?>(null) }
@@ -223,6 +225,17 @@ fun TableOrderScreen(
                                 onPrintPreBill = { viewModel.printPreBill() },
                                 onReprintComandas = { viewModel.reprintComandas() },
                                 onCustomAmount = { showCustomAmount = true },
+                                onMover = {
+                                    if (pendingLines.isNotEmpty()) {
+                                        android.widget.Toast.makeText(context, "Envía o borra los artículos pendientes antes de mover", android.widget.Toast.LENGTH_LONG).show()
+                                    } else {
+                                        showMoveDialog = true
+                                    }
+                                },
+                                onAsignar = {
+                                    catalogViewModel.fetchStaff()
+                                    showAssignSheet = true
+                                },
                             )
                         }
                     }
@@ -313,6 +326,17 @@ fun TableOrderScreen(
                                 onPrintPreBill = { viewModel.printPreBill() },
                                 onReprintComandas = { viewModel.reprintComandas() },
                                 onCustomAmount = { showCustomAmount = true },
+                                onMover = {
+                                    if (pendingLines.isNotEmpty()) {
+                                        android.widget.Toast.makeText(context, "Envía o borra los artículos pendientes antes de mover", android.widget.Toast.LENGTH_LONG).show()
+                                    } else {
+                                        showMoveDialog = true
+                                    }
+                                },
+                                onAsignar = {
+                                    catalogViewModel.fetchStaff()
+                                    showAssignSheet = true
+                                },
                             )
                         }
                     }
@@ -331,6 +355,38 @@ fun TableOrderScreen(
                 selectedProduct = null
             },
             onDismiss = { selectedProduct = null },
+        )
+    }
+
+    if (showMoveDialog) {
+        val freeTables = floorTables.filter { it.isAvailable && it.id != active.tableId }
+        MoveTableDialog(
+            tables = freeTables,
+            onDismiss = { showMoveDialog = false },
+            onConfirm = { targetId ->
+                showMoveDialog = false
+                viewModel.moveTable(targetId) { ok, msg ->
+                    android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_LONG).show()
+                    if (ok) exitOnce()
+                }
+            },
+        )
+    }
+
+    if (showAssignSheet) {
+        val staffOptions by catalogViewModel.staffOptions.collectAsState()
+        val isStaffLoading by catalogViewModel.isStaffLoading.collectAsState()
+        val staffError by catalogViewModel.staffError.collectAsState()
+        com.avoqado.pos.pos.presentation.cart.StaffSelectorSheet(
+            staff = staffOptions,
+            selectedStaffId = "",
+            isLoading = isStaffLoading,
+            error = staffError,
+            onStaffSelected = { staff ->
+                showAssignSheet = false
+                viewModel.assignWaiter(staff.id, staff.fullName)
+            },
+            onDismiss = { showAssignSheet = false },
         )
     }
 
@@ -875,6 +931,8 @@ internal fun TableActionsPanel(
     onPrintPreBill: () -> Unit,
     onReprintComandas: () -> Unit,
     onCustomAmount: () -> Unit,
+    onMover: () -> Unit = {},
+    onAsignar: () -> Unit = {},
 ) {
     Column(
         modifier = Modifier
@@ -891,10 +949,24 @@ internal fun TableActionsPanel(
                 modifier = Modifier.weight(1f),
             )
             ActionPill(
+                label = "Mover",
+                enabled = true,
+                onClick = onMover,
+                modifier = Modifier.weight(1f),
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+            ActionPill(
                 label = "Anular cuenta",
                 enabled = true,
                 destructive = true,
                 onClick = onAnular,
+                modifier = Modifier.weight(1f),
+            )
+            ActionPill(
+                label = "Asignar",
+                enabled = true,
+                onClick = onAsignar,
                 modifier = Modifier.weight(1f),
             )
         }
@@ -1003,6 +1075,58 @@ private fun CustomAmountDialog(
         },
         confirmButton = {
             TextButton(onClick = { onConfirm(name, cents) }, enabled = cents > 0) { Text("Agregar") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
+    )
+}
+
+
+// MARK: - Mover cuenta a otra mesa
+
+@Composable
+private fun MoveTableDialog(
+    tables: List<com.avoqado.pos.tables.data.DiningTable>,
+    onDismiss: () -> Unit,
+    onConfirm: (String) -> Unit,
+) {
+    var selectedId by remember { mutableStateOf<String?>(null) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Mover cuenta") },
+        text = {
+            if (tables.isEmpty()) {
+                Text("No hay mesas libres a dónde mover la cuenta.")
+            } else {
+                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                    Text(
+                        "La cuenta completa (artículos y tiempos) se mueve a la mesa que elijas.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+                    tables.forEach { table ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable { selectedId = table.id }
+                                .padding(vertical = AvoqadoTheme.spacing.xs),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            androidx.compose.material3.RadioButton(
+                                selected = selectedId == table.id,
+                                onClick = { selectedId = table.id },
+                            )
+                            Text(
+                                "Mesa ${table.number}" + (table.areaName?.let { " · $it" } ?: ""),
+                                style = MaterialTheme.typography.bodyMedium,
+                            )
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { selectedId?.let(onConfirm) }, enabled = selectedId != null) { Text("Mover") }
         },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
     )
