@@ -260,6 +260,81 @@ class TablesViewModel @Inject constructor(
         }
     }
 
+    // MARK: - Acciones masivas del plano (Square: "Seleccionar cheques")
+
+    /** Anula la cuenta de CADA mesa seleccionada (ocupadas) con una razón. */
+    fun bulkAnular(tables: List<DiningTable>, reason: String, onDone: (Int, Int) -> Unit) {
+        val vId = venueId ?: return
+        viewModelScope.launch {
+            var ok = 0
+            var fail = 0
+            tables.forEach { table ->
+                val order = table.currentOrder ?: return@forEach
+                repository.cancelOrder(vId, order.id, reason).fold(
+                    onSuccess = {
+                        repository.clearTable(vId, table.id)
+                        if (tableSession.current()?.orderId == order.id) tableSession.clear()
+                        ok++
+                    },
+                    onFailure = { fail++ },
+                )
+            }
+            repository.refresh(vId)
+            onDone(ok, fail)
+        }
+    }
+
+    /** Asigna las cuentas de las mesas seleccionadas a otro mesero. */
+    fun bulkAsignar(tables: List<DiningTable>, staffId: String, onDone: (Int, Int) -> Unit) {
+        val vId = venueId ?: return
+        viewModelScope.launch {
+            var ok = 0
+            var fail = 0
+            tables.forEach { table ->
+                val order = table.currentOrder ?: return@forEach
+                repository.assignOrder(vId, order.id, staffId).fold(
+                    onSuccess = { ok++ },
+                    onFailure = { fail++ },
+                )
+            }
+            repository.refresh(vId)
+            onDone(ok, fail)
+        }
+    }
+
+    /** Cortesía de la cuenta COMPLETA de cada mesa seleccionada. */
+    fun bulkCortesia(tables: List<DiningTable>, reason: String, onDone: (Int, Int) -> Unit) {
+        val vId = venueId ?: return
+        viewModelScope.launch {
+            var ok = 0
+            var fail = 0
+            tables.forEach { table ->
+                val order = table.currentOrder ?: return@forEach
+                repository.compWholeOrder(vId, order.id, reason).fold(
+                    onSuccess = { ok++ },
+                    onFailure = { fail++ },
+                )
+            }
+            repository.refresh(vId)
+            onDone(ok, fail)
+        }
+    }
+
+    /** Mueve la cuenta de UNA mesa seleccionada a una mesa libre. */
+    fun bulkMover(source: DiningTable, targetTableId: String, onDone: (Boolean, String) -> Unit) {
+        val vId = venueId ?: return
+        val order = source.currentOrder ?: return
+        viewModelScope.launch {
+            repository.moveOrder(vId, order.id, targetTableId).fold(
+                onSuccess = {
+                    repository.refresh(vId)
+                    onDone(true, "Cuenta movida")
+                },
+                onFailure = { e -> onDone(false, e.message ?: "No se pudo mover") },
+            )
+        }
+    }
+
     // MARK: - Pre-bill
 
     /** Prints the pre-cuenta (items + total, no payment info) on the RECEIPT printer. */

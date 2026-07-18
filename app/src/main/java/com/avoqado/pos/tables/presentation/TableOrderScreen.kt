@@ -116,6 +116,8 @@ fun TableOrderScreen(
     var showCustomerPicker by remember { mutableStateOf(false) }
     var showFulfillmentDialog by remember { mutableStateOf(false) }
     var showDiscountsDialog by remember { mutableStateOf(false) }
+    // Menú … por tiempo (¡Listo!/Repetir). Par (curso, abierto).
+    var courseMenuTarget by remember { mutableStateOf<Pair<String?, Boolean>?>(null) }
     var showDiscardDialog by remember { mutableStateOf(false) }
     var showAnularDialog by remember { mutableStateOf(false) }
     var compTarget by remember { mutableStateOf<OrderDetailItem?>(null) }
@@ -218,6 +220,7 @@ fun TableOrderScreen(
                                 onAddCourse = { viewModel.addExtraCourse() },
                                 onRemovePending = { viewModel.removePending(it) },
                                 onSentItemTap = { item -> if (!item.isCortesia) compTarget = item },
+                                onCourseMenu = { c -> courseMenuTarget = c to true },
                                 pendingCount = viewModel.pendingCount,
                                 pendingTotalCents = viewModel.pendingTotalCents,
                                 onEnviar = { fireSend() },
@@ -339,6 +342,7 @@ fun TableOrderScreen(
                                 onAddCourse = { viewModel.addExtraCourse() },
                                 onRemovePending = { viewModel.removePending(it) },
                                 onSentItemTap = { item -> if (!item.isCortesia) compTarget = item },
+                                onCourseMenu = { c -> courseMenuTarget = c to true },
                                 pendingCount = viewModel.pendingCount,
                                 pendingTotalCents = viewModel.pendingTotalCents,
                                 onEnviar = { showPhoneCheck = false; fireSend() },
@@ -437,6 +441,29 @@ fun TableOrderScreen(
                 viewModel.assignWaiter(staff.id, staff.fullName)
             },
             onDismiss = { showAssignSheet = false },
+        )
+    }
+
+    courseMenuTarget?.takeIf { it.second }?.let { (course, _) ->
+        val count = check?.items?.filter { it.course == course }?.sumOf { it.quantity } ?: 0
+        AlertDialog(
+            onDismissRequest = { courseMenuTarget = null },
+            title = { Text(course ?: "Inmediato") },
+            text = { Text("$count artículo(s) en este tiempo.") },
+            confirmButton = {
+                Row {
+                    TextButton(onClick = {
+                        courseMenuTarget = null
+                        viewModel.marcharCourse(course)
+                    }) { Text("¡Listo!") }
+                    TextButton(onClick = {
+                        courseMenuTarget = null
+                        viewModel.repeatCourse(course)
+                        panelTab = PanelTab.CUENTA
+                    }) { Text("Repetir") }
+                }
+            },
+            dismissButton = { TextButton(onClick = { courseMenuTarget = null }) { Text("Cancelar") } },
         )
     }
 
@@ -635,6 +662,7 @@ internal fun TableCheckPanel(
     onAddCourse: () -> Unit,
     onRemovePending: (String) -> Unit,
     onSentItemTap: (OrderDetailItem) -> Unit,
+    onCourseMenu: (String?) -> Unit = {},
     pendingCount: Int,
     pendingTotalCents: Int,
     onEnviar: () -> Unit,
@@ -675,7 +703,7 @@ internal fun TableCheckPanel(
                     Switch(checked = hideSent, onCheckedChange = { onToggleHideSent() })
                 }
                 if (!hideSent) {
-                    SentCard(sentItems = sentItems, onSentItemTap = onSentItemTap)
+                    SentCard(sentItems = sentItems, onSentItemTap = onSentItemTap, onCourseMenu = onCourseMenu)
                     Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
                 }
             }
@@ -783,6 +811,7 @@ internal fun TableCheckPanel(
 private fun SentCard(
     sentItems: List<OrderDetailItem>,
     onSentItemTap: (OrderDetailItem) -> Unit,
+    onCourseMenu: (String?) -> Unit = {},
 ) {
     // Course = the grouping unit (Square). Header time = the course's first fire.
     val groups = sentItems
@@ -802,12 +831,24 @@ private fun SentCard(
             }
             Column(modifier = Modifier.padding(AvoqadoTheme.spacing.md)) {
                 val sentAt = items.mapNotNull { parseIsoMs(it.createdAt) }.minOrNull()
-                Text(
-                    text = course ?: "Inmediato",
-                    style = MaterialTheme.typography.labelMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = course ?: "Inmediato",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f),
+                    )
+                    // Menú por tiempo de Square: ¡Listo! / Repetir.
+                    Icon(
+                        Icons.Filled.MoreHoriz,
+                        contentDescription = "Acciones del tiempo",
+                        modifier = Modifier
+                            .size(20.dp)
+                            .clickable { onCourseMenu(course) },
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 sentAt?.let {
                     Text(
                         text = "Enviado a la cocina a las ${timeDisplay(it)}",

@@ -5,6 +5,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -125,6 +127,17 @@ fun TablesScreen(
     val isLoading by viewModel.isLoading.collectAsState()
     val selectedTableId by viewModel.selectedTableId.collectAsState()
 
+    // "Seleccionar cheques" (Square): modo de selección múltiple del plano.
+    var selectionMode by remember { mutableStateOf(false) }
+    var selectedIds by remember { mutableStateOf(setOf<String>()) }
+    var showBulkAnular by remember { mutableStateOf(false) }
+    var showBulkCortesia by remember { mutableStateOf(false) }
+    var showBulkAsignar by remember { mutableStateOf(false) }
+    var showBulkMover by remember { mutableStateOf(false) }
+    val bulkCtx = androidx.compose.ui.platform.LocalContext.current
+    fun exitSelection() { selectionMode = false; selectedIds = emptySet() }
+    val selectedOccupied = tables.filter { it.id in selectedIds && it.isOccupied }
+
     DisposableEffect(Unit) {
         viewModel.startPolling()
         onDispose { viewModel.stopPolling() }
@@ -142,25 +155,36 @@ fun TablesScreen(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                text = "Mesas",
+                text = if (selectionMode) "Seleccionar cheques" else "Mesas",
                 style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.weight(1f),
             )
-            val occupied = tables.count { it.isOccupied }
-            if (tables.isNotEmpty()) {
-                Text(
-                    text = "$occupied/${tables.size} ocupadas",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            if (isLoading) {
-                Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
-                CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+            if (selectionMode) {
+                // Barra de acciones masivas (Square): grises hasta seleccionar.
+                val hasSel = selectedOccupied.isNotEmpty()
+                TextButton(onClick = { if (selectedOccupied.size == 1) showBulkMover = true }, enabled = selectedOccupied.size == 1) { Text("Mover") }
+                TextButton(onClick = { if (hasSel) showBulkAsignar = true }, enabled = hasSel) { Text("Asignar") }
+                TextButton(onClick = { if (hasSel) showBulkAnular = true }, enabled = hasSel) { Text("Anular") }
+                TextButton(onClick = { if (hasSel) showBulkCortesia = true }, enabled = hasSel) { Text("Cortesía") }
+                PrimaryButton(text = "Listo", onClick = { exitSelection() })
             } else {
-                IconButton(onClick = { viewModel.refresh() }) {
-                    Icon(Icons.Filled.Refresh, contentDescription = "Actualizar")
+                val occupied = tables.count { it.isOccupied }
+                if (tables.isNotEmpty()) {
+                    Text(
+                        text = "$occupied/${tables.size} ocupadas",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
+                TextButton(onClick = { selectionMode = true }) { Text("Acciones") }
+                if (isLoading) {
+                    CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+                } else {
+                    IconButton(onClick = { viewModel.refresh() }) {
+                        Icon(Icons.Filled.Refresh, contentDescription = "Actualizar")
+                    }
                 }
             }
         }
@@ -173,7 +197,11 @@ fun TablesScreen(
             // sheet (cobrar/imprimir/anular). Free tables still open the
             // covers sheet on tap.
             val onTableTap: (DiningTable) -> Unit = { t ->
-                if (t.isOccupied) {
+                if (selectionMode) {
+                    if (t.isOccupied) {
+                        selectedIds = if (t.id in selectedIds) selectedIds - t.id else selectedIds + t.id
+                    }
+                } else if (t.isOccupied) {
                     viewModel.startOrdering(t, onReady = onOpenTableOrder)
                 } else {
                     viewModel.selectTable(t.id)
@@ -197,6 +225,92 @@ fun TablesScreen(
                     modifier = Modifier.weight(1f),
                 )
             }
+        }
+    }
+
+    if (showBulkAnular) {
+        AnularCuentaDialog(
+            tableNumber = selectedOccupied.joinToString(", ") { it.number },
+            onDismiss = { showBulkAnular = false },
+            onConfirm = { reason ->
+                showBulkAnular = false
+                viewModel.bulkAnular(selectedOccupied, reason) { ok, fail ->
+                    android.widget.Toast.makeText(bulkCtx, "$ok anuladas" + (if (fail > 0) ", $fail fallaron" else ""), android.widget.Toast.LENGTH_LONG).show()
+                }
+                exitSelection()
+            },
+        )
+    }
+
+    if (showBulkCortesia) {
+        CortesiaDialog(
+            productName = "las cuentas de ${selectedOccupied.size} mesa(s)",
+            onDismiss = { showBulkCortesia = false },
+            onConfirm = { reason ->
+                showBulkCortesia = false
+                viewModel.bulkCortesia(selectedOccupied, reason) { ok, fail ->
+                    android.widget.Toast.makeText(bulkCtx, "$ok cuentas de cortesía" + (if (fail > 0) ", $fail fallaron" else ""), android.widget.Toast.LENGTH_LONG).show()
+                }
+                exitSelection()
+            },
+        )
+    }
+
+    if (showBulkAsignar) {
+        val cartVM: com.avoqado.pos.pos.presentation.cart.CartViewModel = hiltViewModel()
+        androidx.compose.runtime.LaunchedEffect(Unit) { cartVM.fetchStaff() }
+        val staffOptions by cartVM.staffOptions.collectAsState()
+        val isStaffLoading by cartVM.isStaffLoading.collectAsState()
+        val staffError by cartVM.staffError.collectAsState()
+        com.avoqado.pos.pos.presentation.cart.StaffSelectorSheet(
+            staff = staffOptions,
+            selectedStaffId = "",
+            isLoading = isStaffLoading,
+            error = staffError,
+            onStaffSelected = { staff ->
+                showBulkAsignar = false
+                viewModel.bulkAsignar(selectedOccupied, staff.id) { ok, fail ->
+                    android.widget.Toast.makeText(bulkCtx, "$ok asignadas a ${staff.fullName}" + (if (fail > 0) ", $fail fallaron" else ""), android.widget.Toast.LENGTH_LONG).show()
+                }
+                exitSelection()
+            },
+            onDismiss = { showBulkAsignar = false },
+        )
+    }
+
+    if (showBulkMover) {
+        val source = selectedOccupied.firstOrNull()
+        val freeTables = tables.filter { it.isAvailable }
+        if (source != null) {
+            androidx.compose.material3.AlertDialog(
+                onDismissRequest = { showBulkMover = false },
+                title = { Text("Mover cuenta — Mesa ${source.number}") },
+                text = {
+                    Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                        var picked by remember { mutableStateOf<String?>(null) }
+                        freeTables.forEach { t ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clickable {
+                                        showBulkMover = false
+                                        viewModel.bulkMover(source, t.id) { ok, msg ->
+                                            android.widget.Toast.makeText(bulkCtx, msg, android.widget.Toast.LENGTH_LONG).show()
+                                        }
+                                        exitSelection()
+                                    }
+                                    .padding(vertical = AvoqadoTheme.spacing.sm),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Text("Mesa ${t.number}" + (t.areaName?.let { " · $it" } ?: ""))
+                            }
+                        }
+                        if (freeTables.isEmpty()) Text("No hay mesas libres.")
+                    }
+                },
+                confirmButton = {},
+                dismissButton = { TextButton(onClick = { showBulkMover = false }) { Text("Cancelar") } },
+            )
         }
     }
 

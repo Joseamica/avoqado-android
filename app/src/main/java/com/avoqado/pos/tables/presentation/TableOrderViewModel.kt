@@ -500,6 +500,79 @@ class TableOrderViewModel @Inject constructor(
         }
     }
 
+    /** "¡Listo!" del menú por tiempo (Square): manda a cocina la orden de
+     *  MARCHAR ese curso — imprime la comanda del curso con sello ¡MARCHAR!. */
+    fun marcharCourse(course: String?) {
+        val session = tableSession.current() ?: return
+        val vId = venueId ?: return
+        val courseItems = _check.value?.items?.filter { it.course == course && it.productId != null } ?: emptyList()
+        if (courseItems.isEmpty()) {
+            _actionMessage.value = "No hay artículos en ese tiempo"
+            return
+        }
+        viewModelScope.launch {
+            printConfigRepository.refresh(vId)
+            val config = printConfigRepository.getCurrentConfig()
+            if (!config.stations.any { it.active }) {
+                _actionMessage.value = "No hay estaciones de impresión activas"
+                return@launch
+            }
+            val routable = courseItems.map { item ->
+                RoutableItem(
+                    orderItemId = item.id,
+                    productId = item.productId,
+                    categoryId = null,
+                    productName = item.productName ?: "Artículo",
+                    quantity = item.quantity,
+                    modifiers = item.modifiers.map { it.name },
+                    notes = item.notes,
+                )
+            }
+            val plans = PrintRoutingMapper.buildComandas(routable, config)
+            comandaPrinter.printComandas(
+                plans = plans,
+                config = config,
+                orderNumber = session.orderNumber,
+                orderType = "Mesa ${session.tableNumber} · ¡MARCHAR ${course ?: "Inmediato"}!",
+            )
+            _actionMessage.value = "¡Marchando ${course ?: "Inmediato"}!"
+        }
+    }
+
+    /** "Repetir" del menú por tiempo (Square): duplica los artículos ya
+     *  enviados de ese curso como líneas PENDIENTES (nueva ronda). */
+    fun repeatCourse(course: String?) {
+        val courseItems = _check.value?.items?.filter { it.course == course && it.productId != null } ?: emptyList()
+        if (courseItems.isEmpty()) {
+            _actionMessage.value = "No hay artículos en ese tiempo"
+            return
+        }
+        val copies = courseItems.map { item ->
+            PendingLine(
+                item = CartItem(
+                    type = CartItemType.ProductItem(item.productId!!),
+                    name = item.productName ?: "Artículo",
+                    unitPrice = kotlin.math.round(item.unitPrice * 100).toInt(),
+                    quantity = item.quantity,
+                    selectedModifiers = item.modifiers.map { m ->
+                        com.avoqado.pos.pos.data.model.SelectedModifier(
+                            groupId = "",
+                            groupName = "",
+                            modifierId = m.id,
+                            modifierName = m.name,
+                            priceInCents = kotlin.math.round(m.price * 100).toInt(),
+                        )
+                    },
+                    itemNote = item.notes,
+                ),
+                course = course,
+            )
+        }
+        _pending.value = _pending.value + copies
+        _selectedCourse.value = course
+        _actionMessage.value = "${copies.sumOf { it.item.quantity }} artículo(s) repetidos en ${course ?: "Inmediato"}"
+    }
+
     /** Pre-cuenta on the RECEIPT printer, from the freshly loaded check. */
     fun printPreBill() {
         val session = tableSession.current() ?: return
