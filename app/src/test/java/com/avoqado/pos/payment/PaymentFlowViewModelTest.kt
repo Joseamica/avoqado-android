@@ -90,7 +90,7 @@ class PaymentFlowViewModelTest {
         } returns CashPaymentResult.Success(changeCents = 0)
 
         coEvery {
-            orderRepository.recordFastCashPayment(any(), any(), any(), any())
+            orderRepository.recordFastCashPayment(any(), any(), any(), any(), any())
         } returns Result.success("fast-pay-1")
 
         coEvery {
@@ -128,6 +128,7 @@ class PaymentFlowViewModelTest {
             secureStorage = secureStorage,
             printConfigRepository = printConfigRepository,
             comandaPrinter = comandaPrinter,
+            tableSession = com.avoqado.pos.tables.data.TableSession(),
         )
     }
 
@@ -218,7 +219,7 @@ class PaymentFlowViewModelTest {
     @Test
     fun `start payment flow resets previous tip before next custom payment`() = runTest {
         coEvery {
-            orderRepository.recordFastCashPayment(any(), any(), any(), any())
+            orderRepository.recordFastCashPayment(any(), any(), any(), any(), any())
         } returns Result.success("fast-pay-2")
 
         val firstCart = CartState(
@@ -250,7 +251,7 @@ class PaymentFlowViewModelTest {
         advanceUntilIdle()
 
         verify(exactly = 1) { cashPaymentRepository.processCashPayment(500, 500) }
-        coVerify(exactly = 1) { orderRepository.recordFastCashPayment(500, "user-456", 0, "FULLPAYMENT") }
+        coVerify(exactly = 1) { orderRepository.recordFastCashPayment(500, "user-456", 0, "FULLPAYMENT", any()) }
         assertTrue(viewModel.state.value is PaymentFlowState.Success)
     }
 

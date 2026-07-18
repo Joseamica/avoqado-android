@@ -124,6 +124,7 @@ class CartViewModelReferralTest {
         captureReferralUseCase = captureReferralUseCase,
         // Relaxed SecureStorage mock → planTier null → fail-open (allowed).
         planManager = PlanManager(secureStorage),
+        tableSession = com.avoqado.pos.tables.data.TableSession(),
     )
 
     private suspend fun selectCustomer(viewModel: CartViewModel, id: String = "cust-7") {
