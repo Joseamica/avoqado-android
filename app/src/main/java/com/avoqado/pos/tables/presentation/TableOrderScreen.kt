@@ -121,6 +121,8 @@ fun TableOrderScreen(
     var showSortCartDialog by remember { mutableStateOf(false) }
     var showCalculator by remember { mutableStateOf(false) }
     var showTimeClock by remember { mutableStateOf(false) }
+    var showBarcodeScanner by remember { mutableStateOf(false) }
+    var unknownBarcode by remember { mutableStateOf<String?>(null) }
     // Menú … por tiempo (¡Listo!/Repetir). Par (curso, abierto).
     var courseMenuTarget by remember { mutableStateOf<Pair<String?, Boolean>?>(null) }
     var showDiscardDialog by remember { mutableStateOf(false) }
@@ -276,6 +278,7 @@ fun TableOrderScreen(
                                 onMarcarEntrada = { showTimeClock = true },
                                 onCajaAbierta = { viewModel.openCashDrawer() },
                                 hasCashDrawer = viewModel.hasCashDrawer,
+                                onEscanear = { showBarcodeScanner = true },
                             )
                             PanelTab.CLIENTE -> TableClientePanel(
                                 customerName = check?.customerName,
@@ -408,6 +411,7 @@ fun TableOrderScreen(
                                 onMarcarEntrada = { showTimeClock = true },
                                 onCajaAbierta = { viewModel.openCashDrawer() },
                                 hasCashDrawer = viewModel.hasCashDrawer,
+                                onEscanear = { showBarcodeScanner = true },
                             )
                             PanelTab.CLIENTE -> TableClientePanel(
                                 customerName = check?.customerName,
@@ -489,6 +493,41 @@ fun TableOrderScreen(
                 }
             },
             dismissButton = { TextButton(onClick = { courseMenuTarget = null }) { Text("Cancelar") } },
+        )
+    }
+
+    // "Escanear" (Acciones): mismo escáner que la venta rápida — el código se
+    // busca contra el catálogo YA cacheado (sku/gtin viajan en /products).
+    if (showBarcodeScanner) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color.Black),
+        ) {
+            com.avoqado.pos.pos.presentation.scanner.BarcodeScannerView(
+                onBarcodeScanned = { barcode ->
+                    showBarcodeScanner = false
+                    val matched = catalogViewModel.products.value.find { product ->
+                        product.sku == barcode || product.barcode == barcode || product.gtin == barcode
+                    }
+                    if (matched != null) {
+                        handleProductTap(matched)
+                        panelTab = PanelTab.CUENTA
+                    } else {
+                        unknownBarcode = barcode
+                    }
+                },
+                onDismiss = { showBarcodeScanner = false },
+            )
+        }
+    }
+
+    unknownBarcode?.let { scannedCode ->
+        AlertDialog(
+            onDismissRequest = { unknownBarcode = null },
+            title = { Text("Producto no encontrado") },
+            text = { Text("Ningún producto del catálogo tiene el código $scannedCode.") },
+            confirmButton = { TextButton(onClick = { unknownBarcode = null }) { Text("Entendido") } },
         )
     }
 
@@ -1217,6 +1256,7 @@ internal fun TableActionsPanel(
     onMarcarEntrada: () -> Unit = {},
     onCajaAbierta: () -> Unit = {},
     hasCashDrawer: Boolean = false,
+    onEscanear: () -> Unit = {},
 ) {
     Column(
         modifier = Modifier
@@ -1295,6 +1335,15 @@ internal fun TableActionsPanel(
                 onClick = onReprintComandas,
                 modifier = Modifier.weight(1f),
             )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+            ActionPill(
+                label = "Escanear",
+                enabled = true,
+                onClick = onEscanear,
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(modifier = Modifier.weight(1f))
         }
 
         Text(
