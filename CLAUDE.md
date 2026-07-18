@@ -2,6 +2,26 @@
 
 This file provides guidance to Claude Code when working with this repository.
 
+## 🔴 CRITICAL — Android e iOS se cambian JUNTOS (paridad obligatoria)
+
+**Todo cambio de producto que hagas aquí debe portarse a `avoqado-ios` en el MISMO
+trabajo — nunca "después".** Android e iOS son la misma app en dos plataformas: si una
+queda atrás, el founder ve comportamientos distintos según el dispositivo y hay que
+re-descubrir el diseño meses después.
+
+- Aplica a: features nuevas, cambios de UX/flujo, fixes de bugs (sobre todo de dinero),
+  estados de carga/guards, textos visibles, y contratos con el server.
+- El port no es opcional ni un TODO: si el cambio no está en ambos, el trabajo está
+  incompleto. Deja el iOS compilando (`xcodebuild ... build`) antes de darlo por hecho.
+- Si por algo NO se puede portar en el momento (worktree bloqueado, falta hardware,
+  decisión pendiente), **dilo explícitamente en el reporte y anótalo en memoria** con
+  qué falta exactamente — no lo dejes silencioso.
+- Excepción: cosas genuinamente específicas de plataforma (permisos de Android, MFi/
+  ExternalAccessory de iOS, layouts propios de cada SO). Aun así, el COMPORTAMIENTO
+  que ve el usuario debe ser equivalente.
+- Espejo exacto: usa los mismos nombres de campos, textos en español y semántica que
+  el otro repo. Los códigos de feature/permiso se replican por nombre EXACTO.
+
 ## 🔴 CRITICAL — Ask which payment tier BEFORE building or changing anything
 
 Avoqado is a tier-gated SaaS (**FREE · PRO · PREMIUM · ENTERPRISE**). Whenever you add a new
