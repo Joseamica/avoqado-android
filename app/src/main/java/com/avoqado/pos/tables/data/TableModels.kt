@@ -146,6 +146,8 @@ data class OrderDetail(
 @Serializable
 data class OrderDetailItem(
     val id: String,
+    /** Null for custom-amount lines. Needed to re-route comanda reprints. */
+    val productId: String? = null,
     val productName: String? = null,
     val quantity: Int = 1,
     val unitPrice: Double = 0.0,

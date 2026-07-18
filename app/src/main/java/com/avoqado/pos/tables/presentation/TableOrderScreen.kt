@@ -104,6 +104,9 @@ fun TableOrderScreen(
     val context = LocalContext.current
     var selectedProduct by remember { mutableStateOf<Product?>(null) }
     var showSearch by remember { mutableStateOf(false) }
+    // Square's right-panel tabs: Cuenta (the check) / Acciones (the catalog).
+    var panelTab by remember { mutableStateOf(PanelTab.CUENTA) }
+    var showCustomAmount by remember { mutableStateOf(false) }
     var showDiscardDialog by remember { mutableStateOf(false) }
     var showAnularDialog by remember { mutableStateOf(false) }
     var compTarget by remember { mutableStateOf<OrderDetailItem?>(null) }
@@ -163,8 +166,6 @@ fun TableOrderScreen(
             covers = floorTable?.currentOrder?.covers,
             openedAt = floorTable?.currentOrder?.createdAt,
             onBack = { requestExit() },
-            onPrintPreBill = { viewModel.printPreBill() },
-            onAnular = { showAnularDialog = true },
         )
         HorizontalDivider()
 
@@ -192,25 +193,39 @@ fun TableOrderScreen(
                         .background(MaterialTheme.colorScheme.outlineVariant),
                 )
                 Box(modifier = Modifier.weight(0.5f).fillMaxHeight()) {
-                    TableCheckPanel(
-                        check = check,
-                        isLoadingCheck = isLoadingCheck,
-                        pendingLines = pendingLines,
-                        selectedCourse = selectedCourse,
-                        extraCourses = extraCourses,
-                        hideSent = hideSent,
-                        isSending = isSending,
-                        onToggleHideSent = { viewModel.toggleHideSent() },
-                        onSelectCourse = { viewModel.selectCourse(it) },
-                        onAddCourse = { viewModel.addExtraCourse() },
-                        onRemovePending = { viewModel.removePending(it) },
-                        onSentItemTap = { item -> if (!item.isCortesia) compTarget = item },
-                        pendingCount = viewModel.pendingCount,
-                        pendingTotalCents = viewModel.pendingTotalCents,
-                        onEnviar = { fireSend() },
-                        onPagar = { firePagar() },
-                        onGuardar = { requestExit() },
-                    )
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        PanelTabsRow(selected = panelTab, onSelect = { panelTab = it })
+                        when (panelTab) {
+                            PanelTab.CUENTA -> TableCheckPanel(
+                                check = check,
+                                isLoadingCheck = isLoadingCheck,
+                                pendingLines = pendingLines,
+                                selectedCourse = selectedCourse,
+                                extraCourses = extraCourses,
+                                hideSent = hideSent,
+                                isSending = isSending,
+                                onToggleHideSent = { viewModel.toggleHideSent() },
+                                onSelectCourse = { viewModel.selectCourse(it) },
+                                onAddCourse = { viewModel.addExtraCourse() },
+                                onRemovePending = { viewModel.removePending(it) },
+                                onSentItemTap = { item -> if (!item.isCortesia) compTarget = item },
+                                pendingCount = viewModel.pendingCount,
+                                pendingTotalCents = viewModel.pendingTotalCents,
+                                onEnviar = { fireSend() },
+                                onPagar = { firePagar() },
+                                onGuardar = { requestExit() },
+                            )
+                            PanelTab.ACCIONES -> TableActionsPanel(
+                                hasPending = pendingLines.isNotEmpty(),
+                                hasSent = !check?.items.isNullOrEmpty(),
+                                onClearPending = { viewModel.clearPending(); panelTab = PanelTab.CUENTA },
+                                onAnular = { showAnularDialog = true },
+                                onPrintPreBill = { viewModel.printPreBill() },
+                                onReprintComandas = { viewModel.reprintComandas() },
+                                onCustomAmount = { showCustomAmount = true },
+                            )
+                        }
+                    }
                 }
             }
         } else {
@@ -269,25 +284,37 @@ fun TableOrderScreen(
                             Spacer(modifier = Modifier.weight(1f))
                         }
                         HorizontalDivider()
-                        TableCheckPanel(
-                            check = check,
-                            isLoadingCheck = isLoadingCheck,
-                            pendingLines = pendingLines,
-                            selectedCourse = selectedCourse,
-                            extraCourses = extraCourses,
-                            hideSent = hideSent,
-                            isSending = isSending,
-                            onToggleHideSent = { viewModel.toggleHideSent() },
-                            onSelectCourse = { viewModel.selectCourse(it) },
-                            onAddCourse = { viewModel.addExtraCourse() },
-                            onRemovePending = { viewModel.removePending(it) },
-                            onSentItemTap = { item -> if (!item.isCortesia) compTarget = item },
-                            pendingCount = viewModel.pendingCount,
-                            pendingTotalCents = viewModel.pendingTotalCents,
-                            onEnviar = { showPhoneCheck = false; fireSend() },
-                            onPagar = { showPhoneCheck = false; firePagar() },
-                            onGuardar = { showPhoneCheck = false; requestExit() },
-                        )
+                        PanelTabsRow(selected = panelTab, onSelect = { panelTab = it })
+                        when (panelTab) {
+                            PanelTab.CUENTA -> TableCheckPanel(
+                                check = check,
+                                isLoadingCheck = isLoadingCheck,
+                                pendingLines = pendingLines,
+                                selectedCourse = selectedCourse,
+                                extraCourses = extraCourses,
+                                hideSent = hideSent,
+                                isSending = isSending,
+                                onToggleHideSent = { viewModel.toggleHideSent() },
+                                onSelectCourse = { viewModel.selectCourse(it) },
+                                onAddCourse = { viewModel.addExtraCourse() },
+                                onRemovePending = { viewModel.removePending(it) },
+                                onSentItemTap = { item -> if (!item.isCortesia) compTarget = item },
+                                pendingCount = viewModel.pendingCount,
+                                pendingTotalCents = viewModel.pendingTotalCents,
+                                onEnviar = { showPhoneCheck = false; fireSend() },
+                                onPagar = { showPhoneCheck = false; firePagar() },
+                                onGuardar = { showPhoneCheck = false; requestExit() },
+                            )
+                            PanelTab.ACCIONES -> TableActionsPanel(
+                                hasPending = pendingLines.isNotEmpty(),
+                                hasSent = !check?.items.isNullOrEmpty(),
+                                onClearPending = { viewModel.clearPending(); panelTab = PanelTab.CUENTA },
+                                onAnular = { showAnularDialog = true },
+                                onPrintPreBill = { viewModel.printPreBill() },
+                                onReprintComandas = { viewModel.reprintComandas() },
+                                onCustomAmount = { showCustomAmount = true },
+                            )
+                        }
                     }
                 }
             }
@@ -304,6 +331,17 @@ fun TableOrderScreen(
                 selectedProduct = null
             },
             onDismiss = { selectedProduct = null },
+        )
+    }
+
+    if (showCustomAmount) {
+        CustomAmountDialog(
+            onDismiss = { showCustomAmount = false },
+            onConfirm = { name, cents ->
+                showCustomAmount = false
+                viewModel.addCustomAmount(name, cents)
+                panelTab = PanelTab.CUENTA
+            },
         )
     }
 
@@ -357,10 +395,7 @@ private fun TableContextBar(
     covers: Int?,
     openedAt: String?,
     onBack: () -> Unit,
-    onPrintPreBill: () -> Unit,
-    onAnular: () -> Unit,
 ) {
-    var showMenu by remember { mutableStateOf(false) }
     val nowMs by produceState(initialValue = System.currentTimeMillis()) {
         while (true) {
             kotlinx.coroutines.delay(30_000)
@@ -395,29 +430,6 @@ private fun TableContextBar(
                     text = parts.joinToString(" · "),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
-        Box {
-            Box(
-                modifier = Modifier
-                    .size(40.dp)
-                    .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.surfaceVariant)
-                    .clickable { showMenu = true },
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(Icons.Filled.MoreHoriz, contentDescription = "Más opciones")
-            }
-            DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
-                DropdownMenuItem(
-                    text = { Text("Imprimir cuenta") },
-                    leadingIcon = { Icon(Icons.Filled.Print, null, modifier = Modifier.size(18.dp)) },
-                    onClick = { showMenu = false; onPrintPreBill() },
-                )
-                DropdownMenuItem(
-                    text = { Text("Anular cuenta", color = Color(0xFFD32F2F)) },
-                    onClick = { showMenu = false; onAnular() },
                 )
             }
         }
@@ -497,9 +509,26 @@ internal fun TableCheckPanel(
 
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
 
+            // Subtotal (N) + Total — Square shows both on the check card.
+            val sentSubtotalCents = check?.let {
+                val sub = kotlin.math.round(it.subtotal * 100).toInt()
+                if (sub > 0) sub else kotlin.math.round(it.total * 100).toInt()
+            } ?: 0
             Row(modifier = Modifier.fillMaxWidth().padding(horizontal = AvoqadoTheme.spacing.xs)) {
                 Text(
                     text = "Subtotal ($itemCount)",
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    text = centsDisplay(sentSubtotalCents + pendingTotalCents),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xs))
+            Row(modifier = Modifier.fillMaxWidth().padding(horizontal = AvoqadoTheme.spacing.xs)) {
+                Text(
+                    text = "Total",
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.weight(1f),
@@ -795,4 +824,186 @@ private fun elapsedSince(iso: String?, nowMs: Long): String? {
     val start = parseIsoMs(iso) ?: return null
     val minutes = ((nowMs - start).coerceAtLeast(0L) / 60_000L).toInt()
     return "${minutes / 60}:${String.format(Locale.US, "%02d", minutes % 60)}"
+}
+
+// MARK: - Right-panel tabs (Square: Cuenta · Acciones)
+
+internal enum class PanelTab(val label: String) { CUENTA("Cuenta"), ACCIONES("Acciones") }
+
+@Composable
+internal fun PanelTabsRow(selected: PanelTab, onSelect: (PanelTab) -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = AvoqadoTheme.spacing.md)
+            .padding(top = AvoqadoTheme.spacing.sm),
+        horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.lg),
+    ) {
+        PanelTab.entries.forEach { tab ->
+            val isSelected = selected == tab
+            Column(modifier = Modifier.clickable { onSelect(tab) }) {
+                Text(
+                    text = tab.label,
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                    color = if (isSelected) MaterialTheme.colorScheme.onSurface
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Box(
+                    modifier = Modifier
+                        .width(64.dp)
+                        .height(2.dp)
+                        .background(
+                            if (isSelected) MaterialTheme.colorScheme.onSurface else Color.Transparent,
+                        ),
+                )
+            }
+        }
+    }
+}
+
+// MARK: - Acciones panel (level 1 — only actions that actually work today;
+// Mover/Asignar/Cortesía-de-cuenta land with their server endpoints)
+
+@Composable
+internal fun TableActionsPanel(
+    hasPending: Boolean,
+    hasSent: Boolean,
+    onClearPending: () -> Unit,
+    onAnular: () -> Unit,
+    onPrintPreBill: () -> Unit,
+    onReprintComandas: () -> Unit,
+    onCustomAmount: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState())
+            .padding(AvoqadoTheme.spacing.md),
+        verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
+    ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+            ActionPill(
+                label = "Borrar nuevos artículos",
+                enabled = hasPending,
+                onClick = onClearPending,
+                modifier = Modifier.weight(1f),
+            )
+            ActionPill(
+                label = "Anular cuenta",
+                enabled = true,
+                destructive = true,
+                onClick = onAnular,
+                modifier = Modifier.weight(1f),
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+            ActionPill(
+                label = "Imprimir cuenta",
+                enabled = hasSent,
+                onClick = onPrintPreBill,
+                modifier = Modifier.weight(1f),
+            )
+            ActionPill(
+                label = "Volver a imprimir pedido",
+                enabled = hasSent,
+                onClick = onReprintComandas,
+                modifier = Modifier.weight(1f),
+            )
+        }
+
+        Text(
+            text = "Otras acciones",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.SemiBold,
+            modifier = Modifier.padding(top = AvoqadoTheme.spacing.md),
+        )
+        HorizontalDivider()
+        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+            ActionPill(
+                label = "Importe personalizado",
+                enabled = true,
+                onClick = onCustomAmount,
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(modifier = Modifier.weight(1f))
+        }
+    }
+}
+
+@Composable
+private fun ActionPill(
+    label: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    destructive: Boolean = false,
+) {
+    val contentColor = when {
+        !enabled -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
+        destructive -> Color(0xFFD32F2F)
+        else -> MaterialTheme.colorScheme.onSurface
+    }
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(50))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (enabled) 1f else 0.5f))
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = AvoqadoTheme.spacing.md, vertical = AvoqadoTheme.spacing.lg),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = contentColor,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+// MARK: - Importe personalizado
+
+@Composable
+private fun CustomAmountDialog(
+    onDismiss: () -> Unit,
+    onConfirm: (String, Int) -> Unit,
+) {
+    var name by remember { mutableStateOf("") }
+    var amountText by remember { mutableStateOf("") }
+    val cents = amountText.toDoubleOrNull()?.let { (it * 100).toInt() } ?: 0
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Importe personalizado") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md)) {
+                Text(
+                    "Se agrega al tiempo seleccionado y se envía a la cuenta con la ronda.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                androidx.compose.material3.OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { Text("Concepto (opcional)") },
+                    singleLine = true,
+                )
+                androidx.compose.material3.OutlinedTextField(
+                    value = amountText,
+                    onValueChange = { input -> amountText = input.filter { it.isDigit() || it == '.' } },
+                    label = { Text("Monto (pesos)") },
+                    singleLine = true,
+                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
+                        keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal,
+                    ),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onConfirm(name, cents) }, enabled = cents > 0) { Text("Agregar") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
+    )
 }

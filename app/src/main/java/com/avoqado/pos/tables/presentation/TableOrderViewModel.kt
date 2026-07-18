@@ -172,6 +172,27 @@ class TableOrderViewModel @Inject constructor(
         _pending.value = _pending.value.filterNot { it.item.id == lineItemId }
     }
 
+    /** "Borrar nuevos artículos" (Acciones): drops every unsent line. */
+    fun clearPending() {
+        _pending.value = emptyList()
+        _actionMessage.value = "Artículos sin enviar borrados"
+    }
+
+    /** "Importe personalizado" (Acciones): a free-amount line on the selected
+     *  course — the server accepts it in the same round (customName +
+     *  customUnitPriceCents, no productId). */
+    fun addCustomAmount(name: String, amountCents: Int) {
+        if (amountCents <= 0) return
+        _pending.value = _pending.value + PendingLine(
+            item = CartItem(
+                type = CartItemType.CustomAmount,
+                name = name.ifBlank { "Importe personalizado" },
+                unitPrice = amountCents,
+            ),
+            course = _selectedCourse.value,
+        )
+    }
+
     fun updatePendingQuantity(lineItemId: String, quantity: Int) {
         if (quantity < 1) return removePending(lineItemId)
         _pending.value = _pending.value.map { line ->
@@ -203,13 +224,24 @@ class TableOrderViewModel @Inject constructor(
         _isSending.value = true
         viewModelScope.launch {
             val requests = lines.map { line ->
-                AddOrderItemRequest(
-                    productId = (line.item.type as CartItemType.ProductItem).productId,
-                    quantity = line.item.quantity,
-                    notes = line.item.itemNote,
-                    modifierIds = line.item.selectedModifiers.map { it.modifierId }.ifEmpty { null },
-                    course = line.course,
-                )
+                when (val type = line.item.type) {
+                    is CartItemType.ProductItem -> AddOrderItemRequest(
+                        productId = type.productId,
+                        quantity = line.item.quantity,
+                        notes = line.item.itemNote,
+                        modifierIds = line.item.selectedModifiers.map { it.modifierId }.ifEmpty { null },
+                        course = line.course,
+                    )
+                    // Custom-amount line: server keys on customName + cents.
+                    else -> AddOrderItemRequest(
+                        productId = null,
+                        quantity = line.item.quantity,
+                        notes = line.item.itemNote,
+                        course = line.course,
+                        customName = line.item.name,
+                        customUnitPriceCents = line.item.effectiveUnitPrice,
+                    )
+                }
             }
             repository.addRound(vId, session.orderId, requests, session.version).fold(
                 onSuccess = { updated ->
@@ -227,7 +259,10 @@ class TableOrderViewModel @Inject constructor(
                         if (config.stations.any { it.active }) {
                             // One comanda batch per course so each ticket reads
                             // "Mesa 8 · Aperitivos" like the single-course flow.
-                            lines.groupBy { it.course }.forEach { (course, courseLines) ->
+                            // Comandas route catalog products only — custom
+                            // amounts ride to the check but never to kitchen.
+                            val kitchenLines = lines.filter { it.item.type is CartItemType.ProductItem }
+                            kitchenLines.groupBy { it.course }.forEach { (course, courseLines) ->
                                 val routable = courseLines.map { line ->
                                     RoutableItem(
                                         orderItemId = line.item.id,
@@ -307,6 +342,48 @@ class TableOrderViewModel @Inject constructor(
                     onDone(false, e.message ?: "No se pudo anular la cuenta")
                 },
             )
+        }
+    }
+
+    /** "Volver a imprimir pedido" (Acciones): re-fires the comandas for the
+     *  ALREADY-SENT items, grouped by course — for when the kitchen lost a
+     *  ticket. Uses the check's real lines (productId + modifiers). */
+    fun reprintComandas() {
+        val session = tableSession.current() ?: return
+        val vId = venueId ?: return
+        val sentItems = _check.value?.items?.filter { it.productId != null } ?: emptyList()
+        if (sentItems.isEmpty()) {
+            _actionMessage.value = "No hay artículos enviados para reimprimir"
+            return
+        }
+        viewModelScope.launch {
+            printConfigRepository.refresh(vId)
+            val config = printConfigRepository.getCurrentConfig()
+            if (!config.stations.any { it.active }) {
+                _actionMessage.value = "No hay estaciones de impresión activas"
+                return@launch
+            }
+            sentItems.groupBy { it.course }.forEach { (course, courseItems) ->
+                val routable = courseItems.map { item ->
+                    RoutableItem(
+                        orderItemId = item.id,
+                        productId = item.productId,
+                        categoryId = null,
+                        productName = item.productName ?: "Artículo",
+                        quantity = item.quantity,
+                        modifiers = item.modifiers.map { it.name },
+                        notes = item.notes,
+                    )
+                }
+                val plans = PrintRoutingMapper.buildComandas(routable, config)
+                comandaPrinter.printComandas(
+                    plans = plans,
+                    config = config,
+                    orderNumber = session.orderNumber,
+                    orderType = "Mesa ${session.tableNumber}" + (course?.let { " · $it" } ?: "") + " · REIMPRESIÓN",
+                )
+            }
+            _actionMessage.value = "Comandas reimpresas"
         }
     }
 
