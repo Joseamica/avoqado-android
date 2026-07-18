@@ -95,6 +95,8 @@ data class AddOrderItemRequest(
     /** La línea llega YA de cortesía (elegida en el detalle antes de enviar). */
     val isCortesia: Boolean? = null,
     val cortesiaReason: String? = null,
+    /** Asiento/comensal de la línea (Square's seats). */
+    val seat: Int? = null,
 )
 
 @Serializable
@@ -198,6 +200,8 @@ data class OrderDetailItem(
     val modifiers: List<OrderDetailModifier> = emptyList(),
     /** Course/tiempo the line was fired under. Null = "Inmediato". */
     val course: String? = null,
+    /** Asiento/comensal de la línea. */
+    val seat: Int? = null,
     /** ISO timestamp — the moment the round was sent to the kitchen. */
     val createdAt: String? = null,
     val isCortesia: Boolean = false,

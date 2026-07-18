@@ -219,6 +219,10 @@ fun TableOrderScreen(
                                 onSelectCourse = { viewModel.selectCourse(it) },
                                 onAddCourse = { viewModel.addExtraCourse() },
                                 onRemovePending = { viewModel.removePending(it) },
+                                onCycleSeat = { id ->
+                                    val maxSeats = (check?.covers ?: floorTable?.currentOrder?.covers ?: 4).coerceAtLeast(1)
+                                    viewModel.cyclePendingSeat(id, maxSeats)
+                                },
                                 onSentItemTap = { item -> if (!item.isCortesia) compTarget = item },
                                 onCourseMenu = { c -> courseMenuTarget = c to true },
                                 pendingCount = viewModel.pendingCount,
@@ -341,6 +345,10 @@ fun TableOrderScreen(
                                 onSelectCourse = { viewModel.selectCourse(it) },
                                 onAddCourse = { viewModel.addExtraCourse() },
                                 onRemovePending = { viewModel.removePending(it) },
+                                onCycleSeat = { id ->
+                                    val maxSeats = (check?.covers ?: floorTable?.currentOrder?.covers ?: 4).coerceAtLeast(1)
+                                    viewModel.cyclePendingSeat(id, maxSeats)
+                                },
                                 onSentItemTap = { item -> if (!item.isCortesia) compTarget = item },
                                 onCourseMenu = { c -> courseMenuTarget = c to true },
                                 pendingCount = viewModel.pendingCount,
@@ -661,6 +669,7 @@ internal fun TableCheckPanel(
     onSelectCourse: (String?) -> Unit,
     onAddCourse: () -> Unit,
     onRemovePending: (String) -> Unit,
+    onCycleSeat: (String) -> Unit = {},
     onSentItemTap: (OrderDetailItem) -> Unit,
     onCourseMenu: (String?) -> Unit = {},
     pendingCount: Int,
@@ -716,6 +725,7 @@ internal fun TableCheckPanel(
                 onSelectCourse = onSelectCourse,
                 onAddCourse = onAddCourse,
                 onRemovePending = onRemovePending,
+                onCycleSeat = onCycleSeat,
             )
 
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
@@ -882,6 +892,13 @@ private fun SentCard(
                                     color = Color(0xFFFF9500),
                                 )
                             }
+                            item.seat?.let { seatN ->
+                                Text(
+                                    text = "Asiento $seatN",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
                             if (item.isCortesia) {
                                 Text(
                                     text = "Cortesía" + (item.cortesiaReason?.let { " · $it" } ?: ""),
@@ -912,6 +929,7 @@ private fun PendingCard(
     onSelectCourse: (String?) -> Unit,
     onAddCourse: () -> Unit,
     onRemovePending: (String) -> Unit,
+    onCycleSeat: (String) -> Unit = {},
 ) {
     val allCourses: List<String?> = TableOrderViewModel.BASE_COURSES + extraCourses
     Column(
@@ -971,6 +989,25 @@ private fun PendingCard(
                                     )
                                 }
                             }
+                            // Asiento (Square seats): chip que cicla — → A1 → ... → An.
+                            Box(
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(50))
+                                    .background(
+                                        if (line.seat != null) MaterialTheme.colorScheme.onSurface
+                                        else MaterialTheme.colorScheme.surfaceVariant,
+                                    )
+                                    .clickable { onCycleSeat(line.item.id) }
+                                    .padding(horizontal = AvoqadoTheme.spacing.sm, vertical = 3.dp),
+                            ) {
+                                Text(
+                                    text = line.seat?.let { "A$it" } ?: "A—",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = if (line.seat != null) MaterialTheme.colorScheme.surface
+                                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
                             Text(text = centsDisplay(line.item.totalPrice))
                             Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
                             Icon(

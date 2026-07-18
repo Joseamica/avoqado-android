@@ -50,7 +50,7 @@ class TableOrderViewModel @Inject constructor(
 ) : ViewModel() {
 
     /** A not-yet-sent line: the cart item + the course it will fire under. */
-    data class PendingLine(val item: CartItem, val course: String?)
+    data class PendingLine(val item: CartItem, val course: String?, val seat: Int? = null)
 
     /** Floor snapshot — the header reads covers/openedAt for the active table. */
     val floorTables: StateFlow<List<com.avoqado.pos.tables.data.DiningTable>> = repository.tables
@@ -172,6 +172,20 @@ class TableOrderViewModel @Inject constructor(
         )
     }
 
+    /** Asiento de una línea pendiente: cicla — → A1 → ... → Amax → —. */
+    fun cyclePendingSeat(lineItemId: String, maxSeats: Int) {
+        _pending.value = _pending.value.map { line ->
+            if (line.item.id != lineItemId) line
+            else {
+                val next = when (val cur = line.seat) {
+                    null -> 1
+                    else -> if (cur >= maxSeats) null else cur + 1
+                }
+                line.copy(seat = next)
+            }
+        }
+    }
+
     fun removePending(lineItemId: String) {
         _pending.value = _pending.value.filterNot { it.item.id == lineItemId }
     }
@@ -237,6 +251,7 @@ class TableOrderViewModel @Inject constructor(
                         course = line.course,
                         isCortesia = line.item.isCortesia.takeIf { it },
                         cortesiaReason = line.item.cortesiaReason?.takeIf { line.item.isCortesia },
+                        seat = line.seat,
                     )
                     // Custom-amount line: server keys on customName + cents.
                     else -> AddOrderItemRequest(
@@ -248,6 +263,7 @@ class TableOrderViewModel @Inject constructor(
                         customUnitPriceCents = line.item.effectiveUnitPrice,
                         isCortesia = line.item.isCortesia.takeIf { it },
                         cortesiaReason = line.item.cortesiaReason?.takeIf { line.item.isCortesia },
+                        seat = line.seat,
                     )
                 }
             }
