@@ -454,6 +454,24 @@ class TableOrderViewModel @Inject constructor(
         return ok
     }
 
+    /** Multi-cheque: separa artículos ya enviados en una cuenta NUEVA de la
+     *  misma mesa (Square's separate checks). La sesión sigue en la original. */
+    fun splitItems(itemIds: List<String>) {
+        val session = tableSession.current() ?: return
+        val vId = venueId ?: return
+        if (itemIds.isEmpty()) return
+        viewModelScope.launch {
+            repository.splitOrder(vId, session.orderId, itemIds).fold(
+                onSuccess = {
+                    _actionMessage.value = "Cuenta separada — ${itemIds.size} artículo(s) movidos"
+                    loadCheck()
+                    repository.refresh(vId)
+                },
+                onFailure = { e -> _actionMessage.value = e.message ?: "No se pudo separar la cuenta" },
+            )
+        }
+    }
+
     /** "Anular cuenta" — cancels the check; success means the table is free. */
     fun anularCuenta(reason: String, onDone: (Boolean, String) -> Unit) {
         val session = tableSession.current() ?: return

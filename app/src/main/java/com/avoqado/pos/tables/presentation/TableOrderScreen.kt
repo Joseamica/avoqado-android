@@ -116,6 +116,7 @@ fun TableOrderScreen(
     var showCustomerPicker by remember { mutableStateOf(false) }
     var showFulfillmentDialog by remember { mutableStateOf(false) }
     var showDiscountsDialog by remember { mutableStateOf(false) }
+    var showSplitCheckDialog by remember { mutableStateOf(false) }
     // Menú … por tiempo (¡Listo!/Repetir). Par (curso, abierto).
     var courseMenuTarget by remember { mutableStateOf<Pair<String?, Boolean>?>(null) }
     var showDiscardDialog by remember { mutableStateOf(false) }
@@ -265,6 +266,7 @@ fun TableOrderScreen(
                                 onCovers = { showCoversDialog = true },
                                 onCumplimiento = { showFulfillmentDialog = true },
                                 onDescuentos = { showDiscountsDialog = true },
+                                onSepararCuenta = { showSplitCheckDialog = true },
                             )
                             PanelTab.CLIENTE -> TableClientePanel(
                                 customerName = check?.customerName,
@@ -391,6 +393,7 @@ fun TableOrderScreen(
                                 onCovers = { showCoversDialog = true },
                                 onCumplimiento = { showFulfillmentDialog = true },
                                 onDescuentos = { showDiscountsDialog = true },
+                                onSepararCuenta = { showSplitCheckDialog = true },
                             )
                             PanelTab.CLIENTE -> TableClientePanel(
                                 customerName = check?.customerName,
@@ -472,6 +475,18 @@ fun TableOrderScreen(
                 }
             },
             dismissButton = { TextButton(onClick = { courseMenuTarget = null }) { Text("Cancelar") } },
+        )
+    }
+
+    if (showSplitCheckDialog) {
+        SplitCheckDialog(
+            items = check?.items ?: emptyList(),
+            onDismiss = { showSplitCheckDialog = false },
+            onConfirm = { ids ->
+                showSplitCheckDialog = false
+                viewModel.splitItems(ids)
+                panelTab = PanelTab.CUENTA
+            },
         )
     }
 
@@ -1160,6 +1175,7 @@ internal fun TableActionsPanel(
     onCovers: () -> Unit = {},
     onCumplimiento: () -> Unit = {},
     onDescuentos: () -> Unit = {},
+    onSepararCuenta: () -> Unit = {},
 ) {
     Column(
         modifier = Modifier
@@ -1210,6 +1226,15 @@ internal fun TableActionsPanel(
                 onClick = onDividir,
                 modifier = Modifier.weight(1f),
             )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+            ActionPill(
+                label = "Separar en otra cuenta",
+                enabled = hasSent,
+                onClick = onSepararCuenta,
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(modifier = Modifier.weight(1f))
         }
         Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
             ActionPill(
@@ -1685,5 +1710,61 @@ private fun OrderDiscountsDialog(
             }
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("Listo") } },
+    )
+}
+
+
+// MARK: - Separar en otra cuenta (Square's separate checks)
+
+@Composable
+private fun SplitCheckDialog(
+    items: List<OrderDetailItem>,
+    onDismiss: () -> Unit,
+    onConfirm: (List<String>) -> Unit,
+) {
+    var selected by remember { mutableStateOf(setOf<String>()) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Separar en otra cuenta") },
+        text = {
+            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                Text(
+                    "Los artículos elegidos se mueven a una cuenta NUEVA de esta mesa (debe quedar al menos uno).",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+                items.forEach { item ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable {
+                                selected = if (item.id in selected) selected - item.id else selected + item.id
+                            }
+                            .padding(vertical = AvoqadoTheme.spacing.xs),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        androidx.compose.material3.Checkbox(
+                            checked = item.id in selected,
+                            onCheckedChange = { checked ->
+                                selected = if (checked) selected + item.id else selected - item.id
+                            },
+                        )
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text("${item.quantity}× ${item.productName ?: "Artículo"}", style = MaterialTheme.typography.bodyMedium)
+                            item.seat?.let { Text("Asiento $it", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                        }
+                        Text("$${String.format(java.util.Locale.US, "%.2f", item.total)}")
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onConfirm(selected.toList()) },
+                enabled = selected.isNotEmpty() && selected.size < items.size,
+            ) { Text("Separar (${selected.size})") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
     )
 }

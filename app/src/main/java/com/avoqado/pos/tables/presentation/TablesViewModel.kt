@@ -145,6 +145,24 @@ class TablesViewModel @Inject constructor(
         onReady()
     }
 
+    /** Multi-cheque: abre la sesión sobre UNA cuenta específica de la mesa. */
+    fun startOrderingCheck(table: DiningTable, check: com.avoqado.pos.tables.data.OpenCheckSummary, onReady: () -> Unit) {
+        tableSession.start(
+            TableSession.Active(
+                tableId = table.id,
+                tableNumber = table.number,
+                areaName = table.areaName,
+                orderId = check.id,
+                orderNumber = check.orderNumber,
+                version = check.version,
+                totalCents = round(check.total * 100).toInt(),
+                mode = TableSession.Mode.ORDERING,
+            ),
+        )
+        _selectedTableId.value = null
+        onReady()
+    }
+
     /**
      * Occupied table → PAYING session. The Cobrar screen seeds the cart with
      * one "Cuenta Mesa N" line for the order total and the NORMAL payment flow

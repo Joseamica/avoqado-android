@@ -140,6 +140,14 @@ interface ApiService {
         @Body request: com.avoqado.pos.tables.data.AssignOrderRequest,
     ): com.avoqado.pos.tables.data.SimpleSuccessResponse
 
+    // Separar artículos en una cuenta NUEVA de la misma mesa (TABLE_SERVICE).
+    @POST("mobile/venues/{venueId}/orders/{orderId}/split")
+    suspend fun splitOrder(
+        @Path("venueId") venueId: String,
+        @Path("orderId") orderId: String,
+        @Body request: com.avoqado.pos.tables.data.SplitOrderRequest,
+    ): com.avoqado.pos.tables.data.SimpleSuccessResponse
+
     // Descuentos de orden en el cheque (TABLE_SERVICE).
     @POST("mobile/venues/{venueId}/orders/{orderId}/discounts")
     suspend fun applyOrderDiscount(

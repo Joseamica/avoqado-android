@@ -20,11 +20,29 @@ data class DiningTable(
     val areaId: String? = null,
     val areaName: String? = null,
     val currentOrder: TableOrder? = null,
+    /** Multi-cheque: TODAS las cuentas abiertas de la mesa (resumen ligero). */
+    val openOrders: List<OpenCheckSummary> = emptyList(),
 ) {
     val isAvailable: Boolean get() = status == "AVAILABLE"
     val isOccupied: Boolean get() = status == "OCCUPIED"
     val isReserved: Boolean get() = status == "RESERVED"
     val hasPosition: Boolean get() = positionX != null && positionY != null
+}
+
+/** Resumen de una cuenta abierta en la mesa (picker multi-cheque). */
+@Serializable
+data class OpenCheckSummary(
+    val id: String,
+    val orderNumber: String = "",
+    val covers: Int? = null,
+    val total: Double = 0.0,
+    val itemCount: Int = 0,
+    val version: Int = 1,
+    val name: String? = null,
+    val waiterName: String? = null,
+    val createdAt: String? = null,
+) {
+    val totalDisplay: String get() = "$${String.format(java.util.Locale.US, "%.2f", total)}"
 }
 
 @Serializable
@@ -134,6 +152,10 @@ data class OrderDetailsRequest(
     /** Cumplimiento: DINE_IN | TAKEOUT | DELIVERY | PICKUP. */
     val orderType: String? = null,
 )
+
+/** POST .../orders/:orderId/split body — separar artículos en cuenta nueva. */
+@Serializable
+data class SplitOrderRequest(val itemIds: List<String>)
 
 /** POST .../orders/:orderId/discounts body. */
 @Serializable

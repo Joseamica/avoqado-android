@@ -82,6 +82,12 @@ class TableServiceRepository @Inject constructor(
         Unit
     }.onFailure { Log.e(TAG, "❌ assignOrder failed: ${it.message}") }
 
+    /** Separa artículos en una cuenta NUEVA de la misma mesa (Square). */
+    suspend fun splitOrder(venueId: String, orderId: String, itemIds: List<String>): Result<Unit> = runCatching {
+        apiService.splitOrder(venueId, orderId, SplitOrderRequest(itemIds))
+        Unit
+    }.onFailure { Log.e(TAG, "❌ splitOrder failed: ${it.message}") }
+
     /** Aplica un descuento de catálogo (scope ORDER) a la cuenta abierta. */
     suspend fun applyOrderDiscount(venueId: String, orderId: String, discountId: String): Result<Unit> = runCatching {
         apiService.applyOrderDiscount(venueId, orderId, ApplyOrderDiscountRequest(discountId))
