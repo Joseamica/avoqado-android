@@ -3,17 +3,10 @@ package com.avoqado.pos.tables.presentation
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.core.data.local.SecureStorage
-import com.avoqado.pos.pos.data.model.CartItem
-import com.avoqado.pos.pos.data.model.CartItemType
-import com.avoqado.pos.printing.data.ComandaPrinter
 import com.avoqado.pos.printing.data.PrinterService
 import com.avoqado.pos.printing.data.model.PrinterRole
 import com.avoqado.pos.printing.data.model.ReceiptData
 import com.avoqado.pos.printing.data.model.ReceiptItem
-import com.avoqado.pos.printing.routing.PrintConfigRepository
-import com.avoqado.pos.printing.routing.PrintRoutingMapper
-import com.avoqado.pos.printing.routing.RoutableItem
-import com.avoqado.pos.tables.data.AddOrderItemRequest
 import com.avoqado.pos.tables.data.DiningTable
 import com.avoqado.pos.tables.data.TableServiceRepository
 import com.avoqado.pos.tables.data.TableSession
@@ -36,19 +29,17 @@ sealed interface TableActionState {
 }
 
 /**
- * TABLE_SERVICE (PRO) — floor plan + table lifecycle. Square-style: opening a
- * table (or adding to it) drops the user into the NORMAL selling flow with a
- * [TableSession] active; paying uses the NORMAL payment flow against the
- * table's existing order. This ViewModel owns the floor state and the
- * session hand-offs, plus send-to-kitchen and the pre-bill print.
+ * TABLE_SERVICE (PRO) — floor plan + table lifecycle. Opening a table (or
+ * adding to it) starts an ORDERING [TableSession] and opens the DEDICATED
+ * TableOrderScreen (grid + check panel); paying uses the NORMAL payment flow
+ * against the table's existing order (register PAYING seam). This ViewModel
+ * owns the floor state, the session hand-offs and the pre-bill print.
  */
 @HiltViewModel
 class TablesViewModel @Inject constructor(
     val repository: TableServiceRepository,
     val planManager: com.avoqado.pos.core.domain.PlanManager,
     val tableSession: TableSession,
-    private val printConfigRepository: PrintConfigRepository,
-    private val comandaPrinter: ComandaPrinter,
     private val printerService: PrinterService,
     private val secureStorage: SecureStorage,
 ) : ViewModel() {
@@ -61,10 +52,6 @@ class TablesViewModel @Inject constructor(
 
     private val _actionState = MutableStateFlow<TableActionState>(TableActionState.Idle)
     val actionState: StateFlow<TableActionState> = _actionState.asStateFlow()
-
-    /** In-flight guard for "Enviar a cocina" — drives the button's loading state. */
-    private val _isSendingRound = MutableStateFlow(false)
-    val isSendingRound: StateFlow<Boolean> = _isSendingRound.asStateFlow()
 
     private var pollJob: Job? = null
 
@@ -202,18 +189,6 @@ class TablesViewModel @Inject constructor(
     }
 
     /**
-     * Square's direct occupied-table flow: from the register's empty cart in
-     * ORDERING mode, "Cobrar cuenta" flips the session to PAYING — the
-     * checkout's LaunchedEffect (keyed on mode) then seeds the cart with the
-     * check total and the normal payment flow takes over.
-     */
-    fun cobrarActiveTable() {
-        val session = tableSession.current() ?: return
-        if (session.mode == TableSession.Mode.PAYING) return
-        tableSession.start(session.copy(mode = TableSession.Mode.PAYING))
-    }
-
-    /**
      * "Dar de cortesía" (Square's comp): the line stays on the check for the
      * kitchen/audit but stops costing money. Requires a reason; the server
      * rejects it once the order is paid.
@@ -267,102 +242,6 @@ class TablesViewModel @Inject constructor(
 
     fun exitTableMode() {
         tableSession.clear()
-    }
-
-    // MARK: - Send round to kitchen (called from the Checkout screen's cart)
-
-    /**
-     * Appends the REAL cart's product lines (with their modifiers and notes —
-     * picked with the normal grid/detail panel) to the table's open order,
-     * then prints one comanda per print station. Returns via [onDone]
-     * (success=true → the caller clears the cart and returns to Mesas).
-     */
-    fun sendCartToKitchen(items: List<CartItem>, course: String? = null, onDone: (Boolean, String) -> Unit) {
-        val session = tableSession.current() ?: run { onDone(false, "No hay mesa activa"); return }
-        val vId = venueId ?: return
-        // Double-tap guard: one round in flight at a time.
-        if (_isSendingRound.value) return
-        // Catalog products AND custom-amount lines both ride to the check.
-        val sendableLines = items.filter { it.type is CartItemType.ProductItem || it.type is CartItemType.CustomAmount }
-        if (sendableLines.isEmpty()) {
-            onDone(false, "Agrega productos o importes para enviar a la cuenta")
-            return
-        }
-        val productLines = sendableLines.filter { it.type is CartItemType.ProductItem }
-
-        _isSendingRound.value = true
-        viewModelScope.launch {
-            val requests = sendableLines.map { item ->
-                when (item.type) {
-                    is CartItemType.ProductItem -> AddOrderItemRequest(
-                        productId = (item.type as CartItemType.ProductItem).productId,
-                        quantity = item.quantity,
-                        notes = item.itemNote,
-                        modifierIds = item.selectedModifiers.map { it.modifierId }.ifEmpty { null },
-                        course = course,
-                    )
-                    else -> AddOrderItemRequest(
-                        productId = null,
-                        quantity = item.quantity,
-                        notes = item.itemNote,
-                        course = course,
-                        customName = item.name,
-                        customUnitPriceCents = item.effectiveUnitPrice,
-                    )
-                }
-            }
-            repository.addRound(vId, session.orderId, requests, session.version).fold(
-                onSuccess = { updated ->
-                    // The round is SAVED — give the user feedback and return them
-                    // to the floor plan IMMEDIATELY. Printing + the floor refresh
-                    // are slow (extra network round-trips) and must NOT block the
-                    // UI: Square fires the kitchen ticket and drops you back on the
-                    // plano at once.
-                    tableSession.updateVersion(updated.version)
-                    tableSession.clear()
-                    _isSendingRound.value = false
-                    onDone(true, "Ronda enviada a cocina — Mesa ${session.tableNumber}")
-
-                    // Fire-and-forget: comandas per station + floor refresh.
-                    launch {
-                        printConfigRepository.refresh(vId)
-                        val config = printConfigRepository.getCurrentConfig()
-                        if (config.stations.any { it.active }) {
-                            val routable = productLines.map { item ->
-                                RoutableItem(
-                                    orderItemId = item.id,
-                                    productId = (item.type as? CartItemType.ProductItem)?.productId,
-                                    categoryId = item.categoryId,
-                                    productName = item.name,
-                                    quantity = item.quantity,
-                                    modifiers = item.selectedModifiers.map { it.modifierName },
-                                    notes = item.itemNote,
-                                )
-                            }
-                            val plans = PrintRoutingMapper.buildComandas(routable, config)
-                            comandaPrinter.printComandas(
-                                plans = plans,
-                                config = config,
-                                orderNumber = session.orderNumber,
-                                // Course/tiempo on the comanda header ("Mesa 8 · Aperitivos")
-                                orderType = "Mesa ${session.tableNumber}" + (course?.let { " · $it" } ?: ""),
-                            )
-                        }
-                        repository.refresh(vId)
-                    }
-                },
-                onFailure = { e ->
-                    _isSendingRound.value = false
-                    repository.refresh(vId)
-                    val msg = if (e.message?.contains("409") == true) {
-                        "La orden cambió en otro dispositivo — vuelve a abrir la mesa"
-                    } else {
-                        e.message ?: "No se pudo enviar la ronda"
-                    }
-                    onDone(false, msg)
-                },
-            )
-        }
     }
 
     // MARK: - After payment (called from the Checkout completion in PAYING mode)

@@ -107,6 +107,17 @@ fun CheckoutScreen(
     // Walk-in class flow: if a class was just reserved on the class screen,
     // drop it into the cart on arrival (Square-style: service enters the sale).
     LaunchedEffect(Unit) { cartViewModel.consumePendingClassSeed() }
+
+    // TABLE_SERVICE (PRO) — table ORDERING lives on the dedicated
+    // TableOrderScreen now; the register only keeps the PAYING seam: the
+    // session seeds the cart with the check total so the NORMAL payment flow
+    // (tips, terminal, split) charges the EXISTING table order. With no
+    // session active everything below is inert.
+    val tablesViewModel: com.avoqado.pos.tables.presentation.TablesViewModel = hiltViewModel()
+    val tableSessionActive by tablesViewModel.tableSession.active.collectAsState()
+    LaunchedEffect(tableSessionActive?.orderId, tableSessionActive?.mode) {
+        cartViewModel.consumePendingTableCobrar()
+    }
     // Class-seed conflict: the walk-in class wasn't added because the cart
     // already links a different reservation — tell the cashier instead of
     // silently dropping it.
@@ -706,12 +717,23 @@ fun CheckoutScreen(
                                 name = "Saldo pendiente",
                                 amountCents = completion.remainingBalanceCents,
                             )
+                            // TABLE_SERVICE (PAYING): the session's charge target
+                            // becomes the remainder so a re-entry never re-seeds
+                            // the original (already partially paid) total.
+                            if (tableSessionActive?.mode == com.avoqado.pos.tables.data.TableSession.Mode.PAYING) {
+                                tablesViewModel.updateTableSessionRemaining(completion.remainingBalanceCents)
+                            }
                         }
                         else -> {
                             // Full payment — grant any captured membership credits.
                             pendingPackGrant?.let { creditsViewModel.grantPacks(it.second, it.first) }
                             pendingPackGrant = null
                             cartViewModel.clearCart()
+                            // TABLE_SERVICE (PAYING): the table's order was just
+                            // fully paid through the normal flow — release it.
+                            if (tableSessionActive?.mode == com.avoqado.pos.tables.data.TableSession.Mode.PAYING) {
+                                tablesViewModel.finishTableAfterPayment()
+                            }
                         }
                     }
                     // Referral is real now: capture on actual payment success

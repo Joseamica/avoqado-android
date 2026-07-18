@@ -7,12 +7,14 @@ import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material.icons.filled.ShoppingCart
+import androidx.compose.material.icons.filled.TableRestaurant
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.Inventory2
 import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.Receipt
 import androidx.compose.material.icons.outlined.ShoppingCart
+import androidx.compose.material.icons.outlined.TableRestaurant
 import androidx.compose.ui.graphics.vector.ImageVector
 
 enum class MainTab(
@@ -63,5 +65,14 @@ enum class MainTab(
         shortLabel = "Calendario",
         selectedIcon = Icons.Filled.CalendarMonth,
         unselectedIcon = Icons.Outlined.CalendarMonth,
+    ),
+
+    /** TABLE_SERVICE (PRO) — restaurant floor plan; visible only in Restaurante mode. */
+    TABLES(
+        route = "tables",
+        label = "Mesas",
+        shortLabel = "Mesas",
+        selectedIcon = Icons.Filled.TableRestaurant,
+        unselectedIcon = Icons.Outlined.TableRestaurant,
     ),
 }

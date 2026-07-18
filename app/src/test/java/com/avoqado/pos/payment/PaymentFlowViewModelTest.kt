@@ -22,7 +22,12 @@ import com.avoqado.pos.payment.presentation.PaymentFlowViewModel
 import com.avoqado.pos.pos.data.model.CartItem
 import com.avoqado.pos.pos.data.model.CartItemType
 import com.avoqado.pos.pos.presentation.cart.CartState
+import com.avoqado.pos.printing.data.ComandaPrinter
 import com.avoqado.pos.printing.data.PrinterService
+import com.avoqado.pos.printing.routing.PrintConfig
+import com.avoqado.pos.printing.routing.PrintConfigRepository
+import com.avoqado.pos.printing.routing.StationInfo
+import com.avoqado.pos.printing.routing.TicketPlan
 import com.avoqado.pos.tpvsettings.data.TpvSettings
 import com.avoqado.pos.tpvsettings.data.TpvSettingsRepository
 import io.mockk.coEvery
@@ -56,6 +61,8 @@ class PaymentFlowViewModelTest {
     private val kdsOrderBus = mockk<KDSOrderBus>(relaxed = true)
     private val printerService = mockk<PrinterService>(relaxed = true)
     private val secureStorage = mockk<SecureStorage>(relaxed = true)
+    private val printConfigRepository = mockk<PrintConfigRepository>(relaxed = true)
+    private val comandaPrinter = mockk<ComandaPrinter>(relaxed = true)
 
     private lateinit var viewModel: PaymentFlowViewModel
 
@@ -100,6 +107,13 @@ class PaymentFlowViewModelTest {
         coEvery { printerService.manualPrintReceipt(any()) } returns 1
         every { secureStorage.venueName } returns "Avoqado Test"
         every { secureStorage.userId } returns "user-456"
+        every { secureStorage.venueId } returns "venue-1"
+
+        // PRINT_STATIONS — default to "no stations configured" so existing tests keep
+        // exercising the legacy single-ticket path unless a test overrides this.
+        coEvery { printConfigRepository.refresh(any()) } returns Unit
+        every { printConfigRepository.getCurrentConfig() } returns PrintConfig()
+        coEvery { comandaPrinter.printComandas(any(), any(), any(), any(), any()) } returns Unit
 
         viewModel = PaymentFlowViewModel(
             orderRepository = orderRepository,
@@ -112,6 +126,8 @@ class PaymentFlowViewModelTest {
             kdsOrderBus = kdsOrderBus,
             printerService = printerService,
             secureStorage = secureStorage,
+            printConfigRepository = printConfigRepository,
+            comandaPrinter = comandaPrinter,
         )
     }
 
@@ -236,6 +252,66 @@ class PaymentFlowViewModelTest {
         verify(exactly = 1) { cashPaymentRepository.processCashPayment(500, 500) }
         coVerify(exactly = 1) { orderRepository.recordFastCashPayment(500, "user-456", 0, "FULLPAYMENT") }
         assertTrue(viewModel.state.value is PaymentFlowState.Success)
+    }
+
+    @Test
+    fun `no print stations configured falls back to the legacy single kitchen ticket`() = runTest {
+        coEvery {
+            orderRepository.createOrder(any(), any(), any(), any())
+        } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-legacy")))
+        coEvery {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any())
+        } returns Result.success("payment-legacy")
+        // Default from setup(): printConfigRepository.getCurrentConfig() returns PrintConfig() (no stations)
+
+        val cart = CartState(
+            items = listOf(
+                CartItem(id = "line-1", type = CartItemType.ProductItem("prod-1"), name = "Taco", unitPrice = 1000),
+            ),
+        )
+
+        viewModel.startPaymentFlow(cart)
+        viewModel.confirmCashCustom(1000)
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value is PaymentFlowState.Success)
+        coVerify(exactly = 1) { printerService.autoPrintKitchenTicket(any()) }
+        coVerify(exactly = 0) { comandaPrinter.printComandas(any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `active print stations route the kitchen ticket through the comanda printer instead of the legacy fan-out`() = runTest {
+        coEvery {
+            orderRepository.createOrder(any(), any(), any(), any())
+        } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-routed")))
+        coEvery {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any())
+        } returns Result.success("payment-routed")
+
+        val station = StationInfo(id = "st_cocina", name = "Cocina", printerId = "pr_1", active = true)
+        val config = PrintConfig(stations = listOf(station), defaultStationId = "st_cocina")
+        every { printConfigRepository.getCurrentConfig() } returns config
+
+        val plansSlot = slot<List<TicketPlan>>()
+        coEvery {
+            comandaPrinter.printComandas(capture(plansSlot), config, any(), any(), any())
+        } returns Unit
+
+        val cart = CartState(
+            items = listOf(
+                CartItem(id = "line-1", type = CartItemType.ProductItem("prod-1"), name = "Taco", unitPrice = 1000),
+            ),
+        )
+
+        viewModel.startPaymentFlow(cart)
+        viewModel.confirmCashCustom(1000)
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value is PaymentFlowState.Success)
+        coVerify(exactly = 1) { printConfigRepository.refresh("venue-1") }
+        coVerify(exactly = 1) { comandaPrinter.printComandas(any(), config, any(), any(), any()) }
+        coVerify(exactly = 0) { printerService.autoPrintKitchenTicket(any()) }
+        assertEquals(listOf("Taco"), plansSlot.captured.single().lines.map { it.productName })
     }
 
     @Test

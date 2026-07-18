@@ -100,6 +100,7 @@ class CartViewModel @Inject constructor(
     private val validateReferralUseCase: ValidateReferralUseCase,
     private val captureReferralUseCase: CaptureReferralUseCase,
     private val planManager: PlanManager,
+    private val tableSession: com.avoqado.pos.tables.data.TableSession,
 ) : ViewModel() {
 
     private val _cartState = MutableStateFlow(defaultCartState())
@@ -281,6 +282,30 @@ class CartViewModel @Inject constructor(
      * Square adds a service to the current sale. The reservationId is stored on
      * the cart so the resulting order links back to the reservation.
      */
+    /**
+     * TABLE_SERVICE — when arriving at Cobrar with a PAYING table session, seed
+     * the cart with ONE "Cuenta Mesa N" line for the order total so the NORMAL
+     * payment flow (tips, cash/terminal, split) charges the right amount. The
+     * PaymentFlowViewModel seam then pays the EXISTING table order instead of
+     * creating a new one. Idempotent: re-arriving with the same session doesn't
+     * duplicate the line.
+     */
+    fun consumePendingTableCobrar() {
+        val session = tableSession.current() ?: return
+        if (session.mode != com.avoqado.pos.tables.data.TableSession.Mode.PAYING) return
+        val label = "Cuenta Mesa ${session.tableNumber}"
+        val items = _cartState.value.items
+        if (items.any { it.name == label }) return
+        // Mid-split re-entry: the cart already carries the live remainder line
+        // ("Saldo pendiente") — never wipe it and re-seed the original total.
+        if (items.any { it.name == "Saldo pendiente" }) return
+        clearCart()
+        // session.totalCents tracks the REMAINING balance after partial
+        // payments (updateRemaining), so an empty-cart re-seed charges exactly
+        // what's still owed.
+        addCustomAmount(name = label, amountCents = session.totalCents)
+    }
+
     fun consumePendingClassSeed() {
         val seed = classCheckoutSeed.consume() ?: return
         viewModelScope.launch {

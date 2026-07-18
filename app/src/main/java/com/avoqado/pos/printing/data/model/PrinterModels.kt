@@ -10,12 +10,14 @@ import java.util.UUID
 enum class PrinterConnectionType(val value: String) {
     WIFI("wifi"),
     BLUETOOTH("bluetooth"),
+    USB("usb"),
     ;
 
     val displayName: String
         get() = when (this) {
             WIFI -> "WiFi"
             BLUETOOTH -> "Bluetooth"
+            USB -> "USB"
         }
 }
 
@@ -60,8 +62,8 @@ enum class PaperWidth(val mm: Int) {
 data class SavedPrinter(
     val id: String = UUID.randomUUID().toString(),
     val name: String,
-    val connectionType: String, // "wifi" or "bluetooth"
-    val address: String, // IP address or Bluetooth MAC
+    val connectionType: String, // "wifi", "bluetooth" or "usb"
+    val address: String, // IP address, Bluetooth MAC, or "usb:VID:PID"
     val port: Int? = null, // Only for WiFi (typically 9100)
     val roles: List<String> = listOf("receipt"),
     val paperWidthMm: Int = 80,
@@ -73,7 +75,11 @@ data class SavedPrinter(
     val lastConnected: Long? = null,
 ) {
     val connectionTypeEnum: PrinterConnectionType
-        get() = if (connectionType == "bluetooth") PrinterConnectionType.BLUETOOTH else PrinterConnectionType.WIFI
+        get() = when (connectionType) {
+            "bluetooth" -> PrinterConnectionType.BLUETOOTH
+            "usb" -> PrinterConnectionType.USB
+            else -> PrinterConnectionType.WIFI
+        }
 
     val paperWidth: PaperWidth
         get() = if (paperWidthMm == 58) PaperWidth.MM58 else PaperWidth.MM80
@@ -84,7 +90,11 @@ data class SavedPrinter(
         }
 
     val displayAddress: String
-        get() = if (port != null) "$address:$port" else address
+        get() = when {
+            connectionTypeEnum == PrinterConnectionType.USB -> "USB"
+            port != null -> "$address:$port"
+            else -> address
+        }
 
     fun hasRole(role: PrinterRole): Boolean = roles.contains(role.value)
 }
@@ -217,6 +227,10 @@ data class KitchenTicketData(
     val priority: KitchenPriority = KitchenPriority.NORMAL,
     val timestamp: Date = Date(),
     val serverName: String? = null,
+    /** PRINT_STATIONS — optional station label ("Cocina", "Barra", "SIN ESTACIÓN")
+     *  shown in the ticket header when per-station routing is active. Additive:
+     *  null (the default) reproduces today's ticket exactly. */
+    val stationName: String? = null,
 ) {
     val formattedTime: String
         get() = timestamp.toInstant()

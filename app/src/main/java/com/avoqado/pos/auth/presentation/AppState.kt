@@ -9,6 +9,8 @@ import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.navigation.MainTab
 import com.avoqado.pos.payment.data.PaymentSyncService
 import com.avoqado.pos.reservations.domain.VenueMode
+import com.avoqado.pos.settings.domain.PosMode
+import com.avoqado.pos.settings.domain.PosModeManager
 import com.avoqado.pos.timeclock.data.TimeEntryRepository
 import com.avoqado.pos.tpvsettings.data.TpvSettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -29,6 +31,7 @@ class AppState @Inject constructor(
     private val planManager: PlanManager,
     private val tpvSettingsRepository: TpvSettingsRepository,
     private val paymentSyncService: PaymentSyncService,
+    private val posModeManager: PosModeManager,
     connectivityMonitor: ConnectivityMonitor,
 ) : ViewModel() {
 
@@ -87,16 +90,18 @@ class AppState @Inject constructor(
         _reservationsEnabled,
         _venueMode,
         _roleVersion,
-    ) { enabled, mode, _ -> computeVisibleTabs(enabled, mode) }
+        posModeManager.currentMode,
+    ) { enabled, mode, _, posMode -> computeVisibleTabs(enabled, mode, posMode) }
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.Eagerly,
-            initialValue = computeVisibleTabs(_reservationsEnabled.value, _venueMode.value),
+            initialValue = computeVisibleTabs(_reservationsEnabled.value, _venueMode.value, posModeManager.currentMode.value),
         )
 
     private fun computeVisibleTabs(
         reservationsEnabled: Boolean,
         venueMode: VenueMode,
+        posMode: PosMode = PosMode.RETAIL,
     ): List<MainTab> {
         // Plan gate ANDed with the local toggle: a stale local
         // `reservationsEnabled` can never expose the Calendar tab on a plan
@@ -105,10 +110,25 @@ class AppState @Inject constructor(
         val inReservationsMode = reservationsEnabled &&
             planAllowsReservations &&
             venueMode == VenueMode.RESERVATIONS
+        // TABLE_SERVICE (PRO): the Mesas tab appears only in Restaurante mode.
+        // Plan gate ANDed like reservations — fail-open when the plan is unknown;
+        // the screen itself shows the PRO upsell when the feature is locked.
+        val inRestaurantMode = posMode == PosMode.RESTAURANT
         val ordered = if (inReservationsMode) {
             // Calendar leads, but Inventory is preserved alongside.
             listOf(
                 MainTab.CALENDAR,
+                MainTab.CHECKOUT,
+                MainTab.INVENTORY,
+                MainTab.TRANSACTIONS,
+                MainTab.NOTIFICATIONS,
+                MainTab.MORE,
+            )
+        } else if (inRestaurantMode) {
+            // Mesas leads — the restaurant flow starts at the floor plan.
+            // Inventory stays alongside (same 6-tab pattern as reservations mode).
+            listOf(
+                MainTab.TABLES,
                 MainTab.CHECKOUT,
                 MainTab.INVENTORY,
                 MainTab.TRANSACTIONS,
@@ -132,6 +152,7 @@ class AppState @Inject constructor(
                 MainTab.NOTIFICATIONS -> true
                 MainTab.MORE -> true
                 MainTab.CALENDAR -> true
+                MainTab.TABLES -> roleManager.canAccessPOS
             }
         }
     }

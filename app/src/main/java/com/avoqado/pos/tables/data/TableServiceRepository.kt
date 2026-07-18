@@ -47,6 +47,12 @@ class TableServiceRepository @Inject constructor(
         response.data?.order ?: error("Respuesta sin orden")
     }.onFailure { Log.e(TAG, "❌ openTable failed: ${it.message}") }
 
+    /** Full check (items + modifiers + send times) for the table order panel. */
+    suspend fun getOrderDetail(venueId: String, orderId: String): Result<OrderDetail> = runCatching {
+        val response = apiService.getOrderDetail(venueId, orderId)
+        response.order ?: error("Respuesta sin orden")
+    }.onFailure { Log.e(TAG, "❌ getOrderDetail failed: ${it.message}") }
+
     /** Appends a round to the open order. 409 = stale version → caller refreshes and retries. */
     suspend fun addRound(
         venueId: String,

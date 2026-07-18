@@ -119,3 +119,50 @@ data class CompItemRequest(val reason: String)
  *  (pay-cash, clear-table). Retrofit + kotlinx can't deserialize `Any`. */
 @Serializable
 data class SimpleSuccessResponse(val success: Boolean = true, val message: String? = null)
+
+// MARK: - Full order detail (check panel)
+
+/** GET /mobile/venues/:id/orders/:orderId — note the envelope key is `order`, not `data`. */
+@Serializable
+data class OrderDetailResponse(val success: Boolean = true, val order: OrderDetail? = null)
+
+/**
+ * The table's full check for the Square-style panel: sent items grouped by
+ * course with their send time. In the table flow items are created exactly
+ * when the round is fired, so [OrderDetailItem.createdAt] IS the send time.
+ */
+@Serializable
+data class OrderDetail(
+    val id: String,
+    val orderNumber: String = "",
+    val status: String = "",
+    val paymentStatus: String = "",
+    /** Pesos (major units). */
+    val subtotal: Double = 0.0,
+    val total: Double = 0.0,
+    val items: List<OrderDetailItem> = emptyList(),
+)
+
+@Serializable
+data class OrderDetailItem(
+    val id: String,
+    val productName: String? = null,
+    val quantity: Int = 1,
+    val unitPrice: Double = 0.0,
+    val total: Double = 0.0,
+    val notes: String? = null,
+    val modifiers: List<OrderDetailModifier> = emptyList(),
+    /** Course/tiempo the line was fired under. Null = "Inmediato". */
+    val course: String? = null,
+    /** ISO timestamp — the moment the round was sent to the kitchen. */
+    val createdAt: String? = null,
+    val isCortesia: Boolean = false,
+    val cortesiaReason: String? = null,
+)
+
+@Serializable
+data class OrderDetailModifier(
+    val id: String = "",
+    val name: String = "",
+    val price: Double = 0.0,
+)

@@ -102,6 +102,14 @@ interface ApiService {
         @Path("tableId") tableId: String,
     ): com.avoqado.pos.tables.data.SimpleSuccessResponse
 
+    // Full check for the table panel: items with modifiers, course and
+    // createdAt (== send time), ordered by createdAt.
+    @GET("mobile/venues/{venueId}/orders/{orderId}")
+    suspend fun getOrderDetail(
+        @Path("venueId") venueId: String,
+        @Path("orderId") orderId: String,
+    ): com.avoqado.pos.tables.data.OrderDetailResponse
+
     @POST("mobile/venues/{venueId}/orders/{orderId}/items")
     suspend fun addOrderItems(
         @Path("venueId") venueId: String,

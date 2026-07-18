@@ -204,6 +204,24 @@ private fun MainScaffold(
             ) {
                 if (roleManager.canAccessPOS) {
                     composable(MainTab.CHECKOUT.route) { CheckoutScreen(isTablet = true, roleManager = roleManager) }
+                    composable(MainTab.TABLES.route) {
+                        com.avoqado.pos.tables.presentation.TablesScreen(
+                            // Same save/restore discipline the bottom bar uses —
+                            // a plain navigate() here corrupts the per-tab stacks.
+                            onGoToCheckout = { navigateToTab(MainTab.CHECKOUT) },
+                            onOpenTableOrder = { navController.navigate("table-order") },
+                        )
+                    }
+                    composable("table-order") {
+                        com.avoqado.pos.tables.presentation.TableOrderScreen(
+                            isTablet = true,
+                            onExit = { navController.popBackStack() },
+                            onPagar = {
+                                navController.popBackStack()
+                                navigateToTab(MainTab.CHECKOUT)
+                            },
+                        )
+                    }
                 }
                 if (roleManager.canAccessInventory) {
                     composable(MainTab.INVENTORY.route) { InventoryScreen(isTablet = true) }
@@ -457,6 +475,24 @@ private fun MainScaffold(
             ) {
                 if (roleManager.canAccessPOS) {
                     composable(MainTab.CHECKOUT.route) { CheckoutScreen(isTablet = false, roleManager = roleManager) }
+                    composable(MainTab.TABLES.route) {
+                        com.avoqado.pos.tables.presentation.TablesScreen(
+                            // Same save/restore discipline the bottom bar uses —
+                            // a plain navigate() here corrupts the per-tab stacks.
+                            onGoToCheckout = { navigateToTab(MainTab.CHECKOUT) },
+                            onOpenTableOrder = { navController.navigate("table-order") },
+                        )
+                    }
+                    composable("table-order") {
+                        com.avoqado.pos.tables.presentation.TableOrderScreen(
+                            isTablet = false,
+                            onExit = { navController.popBackStack() },
+                            onPagar = {
+                                navController.popBackStack()
+                                navigateToTab(MainTab.CHECKOUT)
+                            },
+                        )
+                    }
                 }
                 if (roleManager.canAccessInventory) {
                     composable(MainTab.INVENTORY.route) { InventoryScreen(isTablet = false) }

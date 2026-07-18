@@ -26,11 +26,15 @@ import com.avoqado.pos.payment.data.model.PaymentMethod
 import com.avoqado.pos.pos.data.model.CartItemType
 import com.avoqado.pos.pos.presentation.cart.CartState
 import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.printing.data.ComandaPrinter
 import com.avoqado.pos.printing.data.PrinterService
 import com.avoqado.pos.printing.data.model.KitchenItem
 import com.avoqado.pos.printing.data.model.KitchenTicketData
 import com.avoqado.pos.printing.data.model.ReceiptData
 import com.avoqado.pos.printing.data.model.ReceiptItem
+import com.avoqado.pos.printing.routing.PrintConfigRepository
+import com.avoqado.pos.printing.routing.PrintRoutingMapper
+import com.avoqado.pos.printing.routing.RoutableItem
 import com.avoqado.pos.tpvsettings.data.TpvSettings
 import com.avoqado.pos.tpvsettings.data.TpvSettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -50,6 +54,7 @@ const val LOCAL_PRINTER_UNAVAILABLE = "__LOCAL_PRINTER_UNAVAILABLE__"
 
 @HiltViewModel
 class PaymentFlowViewModel @Inject constructor(
+    private val tableSession: com.avoqado.pos.tables.data.TableSession,
     private val orderRepository: OrderRepository,
     private val cashPaymentRepository: CashPaymentRepository,
     private val terminalPaymentService: TerminalPaymentService,
@@ -60,6 +65,8 @@ class PaymentFlowViewModel @Inject constructor(
     private val kdsOrderBus: KDSOrderBus,
     private val printerService: PrinterService,
     private val secureStorage: SecureStorage,
+    private val printConfigRepository: PrintConfigRepository,
+    private val comandaPrinter: ComandaPrinter,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<PaymentFlowState>(PaymentFlowState.Loading)
@@ -309,6 +316,17 @@ class PaymentFlowViewModel @Inject constructor(
         currentRating = null
         currentTipCents = 0
         createdOrderId = null
+
+        // TABLE_SERVICE (PRO) seam — a PAYING table session means this payment
+        // settles the table's EXISTING order: preset its id so (a) the card path
+        // sends orderId to the terminal (the TPV records against the order and
+        // marks it PAID, its native table flow) and (b) the cash path records
+        // against it via recordCashPaymentForOrder — and NO new order is ever
+        // created for this charge. With no session active this is a no-op and
+        // every retail/quick flow is byte-identical.
+        tableSession.current()
+            ?.takeIf { it.mode == com.avoqado.pos.tables.data.TableSession.Mode.PAYING }
+            ?.let { createdOrderId = it.orderId }
         selectedTerminalId = null
         _canPrintOnTerminal.value = false
         lastPaymentId = null
@@ -671,7 +689,10 @@ class PaymentFlowViewModel @Inject constructor(
                     val cart = cartState
                     val hasRealProducts = cart?.let(::hasProductItems) ?: false
 
-                    if (hasRealProducts) {
+                    // TABLE_SERVICE: a preset createdOrderId (PAYING table session)
+                    // routes cash through the order-based path even though the
+                    // seeded cart only carries the "Cuenta Mesa N" amount line.
+                    if (hasRealProducts || (!createdOrderId.isNullOrBlank() && cart != null)) {
                         // Order-based cash payment: create order once, then reuse it across retries.
                         val orderRequest = buildOrderRequest(cart)
                         val existingOrderId = createdOrderId
@@ -1046,22 +1067,53 @@ class PaymentFlowViewModel @Inject constructor(
                 printerService.autoPrintReceipt(receipt)
             }
 
-            // Auto-print kitchen ticket
+            // Auto-print kitchen ticket(s)
             if (realItems.isEmpty()) return@launch
-            val kitchenTicket = KitchenTicketData(
-                orderNumber = createdOrderId?.takeLast(4) ?: "Q-${(1000..9999).random()}",
-                orderType = "En tienda",
-                items = realItems.map { item ->
-                    KitchenItem(
-                        name = item.name,
+            val orderNumber = createdOrderId?.takeLast(4) ?: "Q-${(1000..9999).random()}"
+
+            // PRINT_STATIONS — refresh() never throws (fails open to an empty/default
+            // config internally), so a stale/slow/failed fetch just falls back to the
+            // legacy single-ticket path below — safe.
+            secureStorage.venueId?.let { venueId -> printConfigRepository.refresh(venueId) }
+            val printConfig = printConfigRepository.getCurrentConfig()
+
+            if (printConfig.stations.any { it.active }) {
+                val routableItems = realItems.map { item ->
+                    RoutableItem(
+                        orderItemId = item.id,
+                        productId = (item.type as? CartItemType.ProductItem)?.productId,
+                        categoryId = item.categoryId,
+                        productName = item.name,
                         quantity = item.quantity,
-                        modifiers = item.selectedModifiers.map { it.modifierName }.ifEmpty { null },
-                        note = item.itemNote,
-                        category = item.subtitle,
+                        modifiers = item.selectedModifiers.map { it.modifierName },
+                        notes = item.itemNote,
                     )
-                },
-            )
-            printerService.autoPrintKitchenTicket(kitchenTicket)
+                }
+                val plans = PrintRoutingMapper.buildComandas(routableItems, printConfig)
+                comandaPrinter.printComandas(
+                    plans = plans,
+                    config = printConfig,
+                    orderNumber = orderNumber,
+                    orderType = "En tienda",
+                )
+            } else {
+                // No print stations configured for this venue — EXACT legacy behavior:
+                // one kitchen ticket, fanned out to every enabled KITCHEN-role printer.
+                val kitchenTicket = KitchenTicketData(
+                    orderNumber = orderNumber,
+                    orderType = "En tienda",
+                    items = realItems.map { item ->
+                        KitchenItem(
+                            name = item.name,
+                            quantity = item.quantity,
+                            modifiers = item.selectedModifiers.map { it.modifierName }.ifEmpty { null },
+                            note = item.itemNote,
+                            category = item.subtitle,
+                        )
+                    },
+                )
+                printerService.autoPrintKitchenTicket(kitchenTicket)
+            }
         }
     }
 

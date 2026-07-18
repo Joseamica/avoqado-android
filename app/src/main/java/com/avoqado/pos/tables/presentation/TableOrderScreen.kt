@@ -1,0 +1,798 @@
+package com.avoqado.pos.tables.presentation
+
+import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.MoreHoriz
+import androidx.compose.material.icons.filled.Print
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.hilt.navigation.compose.hiltViewModel
+import com.avoqado.pos.designsystem.components.PrimaryButton
+import com.avoqado.pos.designsystem.theme.AvoqadoTheme
+import com.avoqado.pos.designsystem.theme.Success
+import com.avoqado.pos.pos.data.model.Product
+import com.avoqado.pos.pos.presentation.cart.CartViewModel
+import com.avoqado.pos.pos.presentation.product.ProductDetailPanel
+import com.avoqado.pos.pos.presentation.product.ProductGridView
+import com.avoqado.pos.pos.presentation.search.SearchOverlayView
+import com.avoqado.pos.tables.data.OrderDetail
+import com.avoqado.pos.tables.data.OrderDetailItem
+import java.time.Instant
+import java.time.OffsetDateTime
+import java.time.ZoneId
+import java.time.format.DateTimeFormatter
+import java.util.Locale
+
+/**
+ * TABLE_SERVICE (PRO) — the DEDICATED table screen (Square's check view).
+ * Isolated from the quick-sale register: left = the shared product grid,
+ * right = the two-card check panel (sent per course with fire times + local
+ * pending course slots). "Pagar" hands off to the register's proven PAYING
+ * seam; everything ordering-related lives here.
+ */
+@Composable
+fun TableOrderScreen(
+    isTablet: Boolean,
+    onExit: () -> Unit,
+    onPagar: () -> Unit,
+    viewModel: TableOrderViewModel = hiltViewModel(),
+    catalogViewModel: CartViewModel = hiltViewModel(),
+) {
+    // SNAPSHOT, not collected: this screen OWNS the session — clearing it on
+    // send/exit must not recompose into the null-guard (that double-fired
+    // onExit and popped the NavHost empty → blank screen).
+    val session = remember { viewModel.tableSession.current() }
+    val check by viewModel.check.collectAsState()
+    val isLoadingCheck by viewModel.isLoadingCheck.collectAsState()
+    val pendingLines by viewModel.pending.collectAsState()
+    val selectedCourse by viewModel.selectedCourse.collectAsState()
+    val extraCourses by viewModel.extraCourses.collectAsState()
+    val hideSent by viewModel.hideSent.collectAsState()
+    val isSending by viewModel.isSending.collectAsState()
+    val actionMessage by viewModel.actionMessage.collectAsState()
+    val floorTables by viewModel.floorTables.collectAsState()
+
+    val context = LocalContext.current
+    var selectedProduct by remember { mutableStateOf<Product?>(null) }
+    var showSearch by remember { mutableStateOf(false) }
+    var showDiscardDialog by remember { mutableStateOf(false) }
+    var showAnularDialog by remember { mutableStateOf(false) }
+    var compTarget by remember { mutableStateOf<OrderDetailItem?>(null) }
+    var showPhoneCheck by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) { viewModel.loadCheck() }
+    LaunchedEffect(actionMessage) {
+        actionMessage?.let {
+            android.widget.Toast.makeText(context, it, android.widget.Toast.LENGTH_LONG).show()
+            viewModel.consumeActionMessage()
+        }
+    }
+
+    // No session (e.g. process restore) — nothing to work on, back to the floor.
+    var exited by remember { mutableStateOf(false) }
+    fun exitOnce() {
+        if (!exited) {
+            exited = true
+            onExit()
+        }
+    }
+    if (session == null) {
+        LaunchedEffect(Unit) { exitOnce() }
+        return
+    }
+    val active = session
+    val floorTable = floorTables.firstOrNull { it.id == active.tableId }
+
+    fun requestExit() {
+        if (pendingLines.isNotEmpty()) showDiscardDialog = true
+        else {
+            viewModel.exitToFloor()
+            exitOnce()
+        }
+    }
+    BackHandler { requestExit() }
+
+    fun handleProductTap(product: Product) {
+        if (product.hasModifiers) selectedProduct = product else viewModel.addProduct(product)
+    }
+
+    fun fireSend() {
+        viewModel.sendRound { ok, msg ->
+            android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_LONG).show()
+            if (ok) exitOnce()
+        }
+    }
+
+    fun firePagar() {
+        if (viewModel.preparePagar()) onPagar()
+        else android.widget.Toast.makeText(context, "La cuenta no tiene cargos todavía", android.widget.Toast.LENGTH_SHORT).show()
+    }
+
+    Column(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
+        TableContextBar(
+            label = active.label,
+            covers = floorTable?.currentOrder?.covers,
+            openedAt = floorTable?.currentOrder?.createdAt,
+            onBack = { requestExit() },
+            onPrintPreBill = { viewModel.printPreBill() },
+            onAnular = { showAnularDialog = true },
+        )
+        HorizontalDivider()
+
+        if (isTablet) {
+            Row(modifier = Modifier.fillMaxSize()) {
+                Box(modifier = Modifier.weight(0.5f).fillMaxHeight()) {
+                    if (showSearch) {
+                        SearchOverlayView(
+                            viewModel = catalogViewModel,
+                            onProductTap = { handleProductTap(it); showSearch = false },
+                            onDismiss = { showSearch = false },
+                        )
+                    } else {
+                        Column(modifier = Modifier.fillMaxSize()) {
+                            TableSearchBar(onSearchTap = { showSearch = true })
+                            ProductGridView(
+                                viewModel = catalogViewModel,
+                                onProductTap = { handleProductTap(it) },
+                            )
+                        }
+                    }
+                }
+                Box(
+                    modifier = Modifier.width(1.dp).fillMaxHeight()
+                        .background(MaterialTheme.colorScheme.outlineVariant),
+                )
+                Box(modifier = Modifier.weight(0.5f).fillMaxHeight()) {
+                    TableCheckPanel(
+                        check = check,
+                        isLoadingCheck = isLoadingCheck,
+                        pendingLines = pendingLines,
+                        selectedCourse = selectedCourse,
+                        extraCourses = extraCourses,
+                        hideSent = hideSent,
+                        isSending = isSending,
+                        onToggleHideSent = { viewModel.toggleHideSent() },
+                        onSelectCourse = { viewModel.selectCourse(it) },
+                        onAddCourse = { viewModel.addExtraCourse() },
+                        onRemovePending = { viewModel.removePending(it) },
+                        onSentItemTap = { item -> if (!item.isCortesia) compTarget = item },
+                        pendingCount = viewModel.pendingCount,
+                        pendingTotalCents = viewModel.pendingTotalCents,
+                        onEnviar = { fireSend() },
+                        onPagar = { firePagar() },
+                        onGuardar = { requestExit() },
+                    )
+                }
+            }
+        } else {
+            Column(modifier = Modifier.fillMaxSize()) {
+                if (showSearch) {
+                    Box(modifier = Modifier.weight(1f)) {
+                        SearchOverlayView(
+                            viewModel = catalogViewModel,
+                            onProductTap = { handleProductTap(it); showSearch = false },
+                            onDismiss = { showSearch = false },
+                        )
+                    }
+                } else {
+                    TableSearchBar(onSearchTap = { showSearch = true })
+                    Box(modifier = Modifier.weight(1f)) {
+                        ProductGridView(
+                            viewModel = catalogViewModel,
+                            onProductTap = { handleProductTap(it) },
+                        )
+                    }
+                }
+                // Phone bottom bar → full-screen check
+                val totalCents = checkTotalCents(check) + viewModel.pendingTotalCents
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.inverseSurface)
+                        .clickable { showPhoneCheck = true }
+                        .padding(horizontal = AvoqadoTheme.spacing.xl, vertical = AvoqadoTheme.spacing.lg),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "Ver cheque",
+                        style = MaterialTheme.typography.titleSmall,
+                        color = MaterialTheme.colorScheme.inverseOnSurface,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        text = centsDisplay(totalCents),
+                        style = MaterialTheme.typography.titleMedium,
+                        color = MaterialTheme.colorScheme.inverseOnSurface,
+                    )
+                }
+            }
+            if (showPhoneCheck) {
+                Box(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth()
+                                .padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.md),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            TextButton(onClick = { showPhoneCheck = false }) { Text("Cerrar") }
+                            Spacer(modifier = Modifier.weight(1f))
+                            Text(active.label, fontWeight = FontWeight.SemiBold)
+                            Spacer(modifier = Modifier.weight(1f))
+                        }
+                        HorizontalDivider()
+                        TableCheckPanel(
+                            check = check,
+                            isLoadingCheck = isLoadingCheck,
+                            pendingLines = pendingLines,
+                            selectedCourse = selectedCourse,
+                            extraCourses = extraCourses,
+                            hideSent = hideSent,
+                            isSending = isSending,
+                            onToggleHideSent = { viewModel.toggleHideSent() },
+                            onSelectCourse = { viewModel.selectCourse(it) },
+                            onAddCourse = { viewModel.addExtraCourse() },
+                            onRemovePending = { viewModel.removePending(it) },
+                            onSentItemTap = { item -> if (!item.isCortesia) compTarget = item },
+                            pendingCount = viewModel.pendingCount,
+                            pendingTotalCents = viewModel.pendingTotalCents,
+                            onEnviar = { showPhoneCheck = false; fireSend() },
+                            onPagar = { showPhoneCheck = false; firePagar() },
+                            onGuardar = { showPhoneCheck = false; requestExit() },
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    // Product detail (modifiers/notes) — adds land on the SELECTED course.
+    selectedProduct?.let { product ->
+        ProductDetailPanel(
+            product = product,
+            isTablet = isTablet,
+            onAddToCart = { quantity, modifiers, note, _, _, _, _ ->
+                viewModel.addProductWithModifiers(product, quantity, modifiers, note)
+                selectedProduct = null
+            },
+            onDismiss = { selectedProduct = null },
+        )
+    }
+
+    if (showDiscardDialog) {
+        AlertDialog(
+            onDismissRequest = { showDiscardDialog = false },
+            title = { Text("Artículos sin enviar") },
+            text = { Text("Tienes ${viewModel.pendingCount} artículo(s) sin enviar a cocina. Si sales ahora se descartan.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    showDiscardDialog = false
+                    viewModel.exitToFloor()
+                    exitOnce()
+                }) { Text("Descartar y salir", color = Color(0xFFD32F2F)) }
+            },
+            dismissButton = { TextButton(onClick = { showDiscardDialog = false }) { Text("Seguir aquí") } },
+        )
+    }
+
+    compTarget?.let { target ->
+        CortesiaDialog(
+            productName = target.productName ?: "Artículo",
+            onDismiss = { compTarget = null },
+            onConfirm = { reason ->
+                compTarget = null
+                viewModel.compSentItem(target.id, reason)
+            },
+        )
+    }
+
+    if (showAnularDialog) {
+        AnularCuentaDialog(
+            tableNumber = active.tableNumber,
+            onDismiss = { showAnularDialog = false },
+            onConfirm = { reason ->
+                showAnularDialog = false
+                viewModel.anularCuenta(reason) { ok, msg ->
+                    android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_LONG).show()
+                    if (ok) exitOnce()
+                }
+            },
+        )
+    }
+}
+
+// MARK: - Context bar
+
+@Composable
+private fun TableContextBar(
+    label: String,
+    covers: Int?,
+    openedAt: String?,
+    onBack: () -> Unit,
+    onPrintPreBill: () -> Unit,
+    onAnular: () -> Unit,
+) {
+    var showMenu by remember { mutableStateOf(false) }
+    val nowMs by produceState(initialValue = System.currentTimeMillis()) {
+        while (true) {
+            kotlinx.coroutines.delay(30_000)
+            value = System.currentTimeMillis()
+        }
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.sm),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(40.dp)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .clickable(onClick = onBack),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Volver al plano", modifier = Modifier.size(20.dp))
+        }
+        Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.md))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(text = label, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            val parts = buildList {
+                covers?.let { add("$it persona${if (it == 1) "" else "s"}") }
+                elapsedSince(openedAt, nowMs)?.let { add(it) }
+            }
+            if (parts.isNotEmpty()) {
+                Text(
+                    text = parts.joinToString(" · "),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        Box {
+            Box(
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .clickable { showMenu = true },
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(Icons.Filled.MoreHoriz, contentDescription = "Más opciones")
+            }
+            DropdownMenu(expanded = showMenu, onDismissRequest = { showMenu = false }) {
+                DropdownMenuItem(
+                    text = { Text("Imprimir cuenta") },
+                    leadingIcon = { Icon(Icons.Filled.Print, null, modifier = Modifier.size(18.dp)) },
+                    onClick = { showMenu = false; onPrintPreBill() },
+                )
+                DropdownMenuItem(
+                    text = { Text("Anular cuenta", color = Color(0xFFD32F2F)) },
+                    onClick = { showMenu = false; onAnular() },
+                )
+            }
+        }
+    }
+}
+
+// MARK: - Check panel (the two Square cards)
+
+@Composable
+internal fun TableCheckPanel(
+    check: OrderDetail?,
+    isLoadingCheck: Boolean,
+    pendingLines: List<TableOrderViewModel.PendingLine>,
+    selectedCourse: String?,
+    extraCourses: List<String>,
+    hideSent: Boolean,
+    isSending: Boolean,
+    onToggleHideSent: () -> Unit,
+    onSelectCourse: (String?) -> Unit,
+    onAddCourse: () -> Unit,
+    onRemovePending: (String) -> Unit,
+    onSentItemTap: (OrderDetailItem) -> Unit,
+    pendingCount: Int,
+    pendingTotalCents: Int,
+    onEnviar: () -> Unit,
+    onPagar: () -> Unit,
+    onGuardar: () -> Unit,
+) {
+    val sentItems = check?.items.orEmpty()
+    val hasPending = pendingLines.isNotEmpty()
+    val subtotalCents = checkTotalCents(check) + pendingTotalCents
+    val itemCount = sentItems.sumOf { it.quantity } + pendingCount
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .verticalScroll(rememberScrollState())
+                .padding(AvoqadoTheme.spacing.md),
+        ) {
+            if (isLoadingCheck && check == null) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(AvoqadoTheme.spacing.lg),
+                    horizontalArrangement = Arrangement.Center,
+                ) { CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp) }
+            }
+
+            // ── Gray card: what the kitchen already has ──────────────────
+            if (sentItems.isNotEmpty()) {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(bottom = AvoqadoTheme.spacing.xs),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "Ocultar artículos enviados a la cocina",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Switch(checked = hideSent, onCheckedChange = { onToggleHideSent() })
+                }
+                if (!hideSent) {
+                    SentCard(sentItems = sentItems, onSentItemTap = onSentItemTap)
+                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+                }
+            }
+
+            // ── White card: pending course slots ─────────────────────────
+            PendingCard(
+                pendingLines = pendingLines,
+                selectedCourse = selectedCourse,
+                extraCourses = extraCourses,
+                onSelectCourse = onSelectCourse,
+                onAddCourse = onAddCourse,
+                onRemovePending = onRemovePending,
+            )
+
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+
+            Row(modifier = Modifier.fillMaxWidth().padding(horizontal = AvoqadoTheme.spacing.xs)) {
+                Text(
+                    text = "Subtotal ($itemCount)",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    text = centsDisplay(subtotalCents),
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+        }
+
+        // ── CTA hierarchy swap (Square) ─────────────────────────────────
+        HorizontalDivider()
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.lg),
+            horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
+        ) {
+            if (hasPending) {
+                OutlinedButton(
+                    onClick = onPagar,
+                    enabled = false,
+                    modifier = Modifier.weight(0.35f).height(AvoqadoTheme.dimensions.buttonLarge),
+                    shape = RoundedCornerShape(50),
+                ) { Text("Pagar") }
+                PrimaryButton(
+                    text = if (isSending) "Enviando..." else "Enviar",
+                    onClick = { if (!isSending) onEnviar() },
+                    enabled = !isSending,
+                    modifier = Modifier.weight(0.65f),
+                )
+            } else {
+                PrimaryButton(
+                    text = "Pagar ${centsDisplay(subtotalCents)}",
+                    onClick = onPagar,
+                    enabled = subtotalCents > 0,
+                    modifier = Modifier.weight(0.5f),
+                )
+                OutlinedButton(
+                    onClick = onGuardar,
+                    modifier = Modifier.weight(0.5f).height(AvoqadoTheme.dimensions.buttonLarge),
+                    shape = RoundedCornerShape(50),
+                ) { Text("Guardar") }
+            }
+        }
+    }
+}
+
+/** Sent blocks: grouped by course, ordered by fire time, black divider between. */
+@Composable
+private fun SentCard(
+    sentItems: List<OrderDetailItem>,
+    onSentItemTap: (OrderDetailItem) -> Unit,
+) {
+    // Course = the grouping unit (Square). Header time = the course's first fire.
+    val groups = sentItems
+        .groupBy { it.course }
+        .entries
+        .sortedBy { (_, items) -> items.mapNotNull { parseIsoMs(it.createdAt) }.minOrNull() ?: Long.MAX_VALUE }
+
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.lg))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)),
+    ) {
+        groups.forEachIndexed { index, (course, items) ->
+            if (index > 0) {
+                HorizontalDivider(thickness = 2.dp, color = MaterialTheme.colorScheme.onSurface)
+            }
+            Column(modifier = Modifier.padding(AvoqadoTheme.spacing.md)) {
+                val sentAt = items.mapNotNull { parseIsoMs(it.createdAt) }.minOrNull()
+                Text(
+                    text = course ?: "Inmediato",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                sentAt?.let {
+                    Text(
+                        text = "Enviado a la cocina a las ${timeDisplay(it)}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xs))
+                items.forEach { item ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(enabled = !item.isCortesia) { onSentItemTap(item) }
+                            .padding(vertical = 3.dp),
+                    ) {
+                        Text("${item.quantity}×", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(item.productName ?: "Artículo", maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            if (item.modifiers.isNotEmpty()) {
+                                Text(
+                                    text = item.modifiers.joinToString(", ") { it.name },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            item.notes?.takeIf { it.isNotBlank() }?.let {
+                                Text(
+                                    text = "Nota: $it",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Color(0xFFFF9500),
+                                )
+                            }
+                            if (item.isCortesia) {
+                                Text(
+                                    text = "Cortesía" + (item.cortesiaReason?.let { " · $it" } ?: ""),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = Success,
+                                )
+                            }
+                        }
+                        Text(
+                            text = "$${String.format(Locale.US, "%.2f", item.total)}",
+                            color = if (item.isCortesia) Success else MaterialTheme.colorScheme.onSurface,
+                            textDecoration = if (item.isCortesia) TextDecoration.LineThrough else null,
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** Pending slots: every course always visible; the selected one gets the black
+ *  outline AND expands with its lines; "Más platos" appends numbered slots. */
+@Composable
+private fun PendingCard(
+    pendingLines: List<TableOrderViewModel.PendingLine>,
+    selectedCourse: String?,
+    extraCourses: List<String>,
+    onSelectCourse: (String?) -> Unit,
+    onAddCourse: () -> Unit,
+    onRemovePending: (String) -> Unit,
+) {
+    val allCourses: List<String?> = TableOrderViewModel.BASE_COURSES + extraCourses
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.lg))
+            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(AvoqadoTheme.cornerRadius.lg))
+            .padding(AvoqadoTheme.spacing.xs),
+    ) {
+        allCourses.forEach { course ->
+            val isSelected = selectedCourse == course
+            val lines = pendingLines.filter { it.course == course }
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(2.dp)
+                    .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
+                    .then(
+                        if (isSelected) {
+                            Modifier.border(2.dp, MaterialTheme.colorScheme.onSurface, RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
+                        } else {
+                            Modifier
+                        },
+                    )
+                    .clickable { onSelectCourse(course) }
+                    .padding(AvoqadoTheme.spacing.md),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = course ?: "Inmediato",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        text = if (lines.isEmpty()) "No enviado" else "${lines.sumOf { it.item.quantity }} artículo(s)",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (isSelected && lines.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xs))
+                    lines.forEach { line ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text("${line.item.quantity}×", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(line.item.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                line.item.modifiersSummary?.let {
+                                    Text(
+                                        text = it,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                            Text(text = centsDisplay(line.item.totalPrice))
+                            Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
+                            Icon(
+                                Icons.Filled.Close,
+                                contentDescription = "Quitar",
+                                modifier = Modifier
+                                    .size(18.dp)
+                                    .clickable { onRemovePending(line.item.id) },
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+        // "Más platos" — Square's last row
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onAddCourse)
+                .padding(AvoqadoTheme.spacing.md),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
+            Text("Más platos", style = MaterialTheme.typography.bodyMedium)
+        }
+    }
+}
+
+// MARK: - Search bar (simplified pill, table mode)
+
+@Composable
+private fun TableSearchBar(onSearchTap: () -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = AvoqadoTheme.spacing.xl, vertical = AvoqadoTheme.spacing.md),
+    ) {
+        Row(
+            modifier = Modifier
+                .weight(1f)
+                .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.lg))
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .clickable(onClick = onSearchTap)
+                .padding(horizontal = AvoqadoTheme.spacing.md, vertical = AvoqadoTheme.spacing.md),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                Icons.Filled.Search,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(20.dp),
+            )
+            Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
+            Text(
+                text = "Buscar",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+// MARK: - Helpers
+
+private fun checkTotalCents(check: OrderDetail?): Int =
+    check?.let { kotlin.math.round(it.total * 100).toInt() } ?: 0
+
+private fun centsDisplay(cents: Int): String = "$${String.format(Locale.US, "%.2f", cents / 100.0)}"
+
+private fun parseIsoMs(iso: String?): Long? {
+    if (iso.isNullOrBlank()) return null
+    return try {
+        Instant.parse(iso).toEpochMilli()
+    } catch (_: Exception) {
+        try {
+            OffsetDateTime.parse(iso).toInstant().toEpochMilli()
+        } catch (_: Exception) {
+            null
+        }
+    }
+}
+
+private fun timeDisplay(epochMs: Long): String =
+    Instant.ofEpochMilli(epochMs).atZone(ZoneId.systemDefault())
+        .format(DateTimeFormatter.ofPattern("HH:mm"))
+
+/** "0:45" elapsed since [iso] — same format the floor canvas uses. */
+private fun elapsedSince(iso: String?, nowMs: Long): String? {
+    val start = parseIsoMs(iso) ?: return null
+    val minutes = ((nowMs - start).coerceAtLeast(0L) / 60_000L).toInt()
+    return "${minutes / 60}:${String.format(Locale.US, "%02d", minutes % 60)}"
+}

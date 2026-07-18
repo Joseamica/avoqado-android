@@ -103,14 +103,16 @@ private fun rememberFloorClock(): Long {
 }
 
 /**
- * TABLE_SERVICE (PRO) — Square-style floor plan. Tapping a table hands off to
- * the NORMAL selling flow ([onGoToCheckout] → Cobrar tab with a TableSession
- * active); this screen only shows the floor and the check summary.
+ * TABLE_SERVICE (PRO) — Square-style floor plan. Tapping a table opens the
+ * DEDICATED table screen ([onOpenTableOrder] → TableOrderScreen: grid + the
+ * two-card check panel). Paying still rides the register's proven PAYING seam
+ * ([onGoToCheckout] → Cobrar tab).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun TablesScreen(
     onGoToCheckout: () -> Unit = {},
+    onOpenTableOrder: () -> Unit = {},
     viewModel: TablesViewModel = hiltViewModel(),
 ) {
     // TABLE_SERVICE (PRO) — mirror of the server gate by exact code name.
@@ -167,12 +169,12 @@ fun TablesScreen(
             EmptyFloor()
         } else {
             // Square's flow: tapping an OCCUPIED table goes STRAIGHT to the
-            // register in table mode (no intermediate sheet); long-press keeps
-            // the check sheet (cobrar/imprimir/anular). Free tables still open
-            // the covers sheet on tap.
+            // table screen (no intermediate sheet); long-press keeps the check
+            // sheet (cobrar/imprimir/anular). Free tables still open the
+            // covers sheet on tap.
             val onTableTap: (DiningTable) -> Unit = { t ->
                 if (t.isOccupied) {
-                    viewModel.startOrdering(t, onReady = onGoToCheckout)
+                    viewModel.startOrdering(t, onReady = onOpenTableOrder)
                 } else {
                     viewModel.selectTable(t.id)
                 }
@@ -205,7 +207,12 @@ fun TablesScreen(
                 onDismissRequest = { viewModel.selectTable(null) },
                 sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
             ) {
-                TableCheckSheet(table = table, viewModel = viewModel, onGoToCheckout = onGoToCheckout)
+                TableCheckSheet(
+                    table = table,
+                    viewModel = viewModel,
+                    onGoToCheckout = onGoToCheckout,
+                    onOpenTableOrder = onOpenTableOrder,
+                )
             }
         }
     }
@@ -463,6 +470,7 @@ private fun TableCheckSheet(
     table: DiningTable,
     viewModel: TablesViewModel,
     onGoToCheckout: () -> Unit,
+    onOpenTableOrder: () -> Unit,
 ) {
     val actionState by viewModel.actionState.collectAsState()
     var covers by remember { mutableIntStateOf(2) }
@@ -520,7 +528,7 @@ private fun TableCheckSheet(
                 }
                 PrimaryButton(
                     text = if (actionState is TableActionState.Working) "Abriendo..." else "Abrir mesa y ordenar",
-                    onClick = { viewModel.openTableAndStartOrdering(table, covers, onReady = onGoToCheckout) },
+                    onClick = { viewModel.openTableAndStartOrdering(table, covers, onReady = onOpenTableOrder) },
                     enabled = actionState !is TableActionState.Working,
                     fullWidth = true,
                 )
@@ -599,10 +607,10 @@ private fun TableCheckSheet(
 
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
 
-                // Square's flow: add items with the NORMAL register.
+                // Square's flow: items are added on the dedicated table screen.
                 PrimaryButton(
                     text = "Agregar productos",
-                    onClick = { viewModel.startOrdering(table, onReady = onGoToCheckout) },
+                    onClick = { viewModel.startOrdering(table, onReady = onOpenTableOrder) },
                     fullWidth = true,
                 )
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
@@ -672,7 +680,7 @@ private fun TableCheckSheet(
  * (`39_cortesia.png`). Confirm stays disabled until a reason is picked.
  */
 @Composable
-private fun CortesiaDialog(
+internal fun CortesiaDialog(
     productName: String,
     onDismiss: () -> Unit,
     onConfirm: (String) -> Unit,
@@ -729,7 +737,7 @@ private fun CortesiaDialog(
  * confirm stays disabled until a reason is picked (`53_anular_dialog.png`).
  */
 @Composable
-private fun AnularCuentaDialog(
+internal fun AnularCuentaDialog(
     tableNumber: String,
     onDismiss: () -> Unit,
     onConfirm: (String) -> Unit,
