@@ -47,6 +47,8 @@ class TableOrderViewModel @Inject constructor(
     private val comandaPrinter: ComandaPrinter,
     private val printerService: PrinterService,
     private val secureStorage: SecureStorage,
+    /** "Marcar entrada/salida" (Acciones) reusa el reloj checador tal cual. */
+    val timeEntryRepository: com.avoqado.pos.timeclock.data.TimeEntryRepository,
 ) : ViewModel() {
 
     /** A not-yet-sent line: the cart item + the course it will fire under. */
@@ -194,6 +196,46 @@ class TableOrderViewModel @Inject constructor(
     fun clearPending() {
         _pending.value = emptyList()
         _actionMessage.value = "Artículos sin enviar borrados"
+    }
+
+    /** Criterios de "Ordenar carrito" (Square). */
+    enum class CartSort(val label: String) {
+        ASIENTO("Por asiento"),
+        NOMBRE("Por nombre"),
+        PRECIO("Por precio"),
+    }
+
+    /** "Ordenar carrito": reordena SOLO las líneas pendientes. Lo ya enviado
+     *  vive en el server ordenado por hora de envío y no se toca. */
+    fun sortPending(mode: CartSort) {
+        _pending.value = when (mode) {
+            CartSort.ASIENTO -> _pending.value.sortedWith(
+                compareBy({ it.seat ?: Int.MAX_VALUE }, { it.item.name.lowercase() }),
+            )
+            CartSort.NOMBRE -> _pending.value.sortedBy { it.item.name.lowercase() }
+            CartSort.PRECIO -> _pending.value.sortedByDescending { it.item.unitPrice }
+        }
+        _actionMessage.value = "Carrito ordenado — ${mode.label.lowercase()}"
+    }
+
+    /** ¿Hay impresora de recibos? Square deshabilita "Caja abierta" sin caja. */
+    val hasCashDrawer: Boolean
+        get() = printerService.getDefaultPrinter(PrinterRole.RECEIPT) != null
+
+    /** "Caja abierta": pulso ESC/POS al cajón por la impresora de recibos. */
+    fun openCashDrawer() {
+        val printer = printerService.getDefaultPrinter(PrinterRole.RECEIPT) ?: run {
+            _actionMessage.value = "No hay impresora de recibos configurada"
+            return
+        }
+        viewModelScope.launch {
+            try {
+                printerService.openCashDrawer(printer)
+                _actionMessage.value = "Caja abierta"
+            } catch (e: Exception) {
+                _actionMessage.value = "No se pudo abrir la caja: ${e.message}"
+            }
+        }
     }
 
     /** "Importe personalizado" (Acciones): a free-amount line on the selected

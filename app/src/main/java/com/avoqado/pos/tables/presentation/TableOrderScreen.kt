@@ -53,6 +53,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -117,6 +118,9 @@ fun TableOrderScreen(
     var showFulfillmentDialog by remember { mutableStateOf(false) }
     var showDiscountsDialog by remember { mutableStateOf(false) }
     var showSplitCheckDialog by remember { mutableStateOf(false) }
+    var showSortCartDialog by remember { mutableStateOf(false) }
+    var showCalculator by remember { mutableStateOf(false) }
+    var showTimeClock by remember { mutableStateOf(false) }
     // Menú … por tiempo (¡Listo!/Repetir). Par (curso, abierto).
     var courseMenuTarget by remember { mutableStateOf<Pair<String?, Boolean>?>(null) }
     var showDiscardDialog by remember { mutableStateOf(false) }
@@ -267,6 +271,11 @@ fun TableOrderScreen(
                                 onCumplimiento = { showFulfillmentDialog = true },
                                 onDescuentos = { showDiscountsDialog = true },
                                 onSepararCuenta = { showSplitCheckDialog = true },
+                                onOrdenarCarrito = { showSortCartDialog = true },
+                                onCalculadora = { showCalculator = true },
+                                onMarcarEntrada = { showTimeClock = true },
+                                onCajaAbierta = { viewModel.openCashDrawer() },
+                                hasCashDrawer = viewModel.hasCashDrawer,
                             )
                             PanelTab.CLIENTE -> TableClientePanel(
                                 customerName = check?.customerName,
@@ -394,6 +403,11 @@ fun TableOrderScreen(
                                 onCumplimiento = { showFulfillmentDialog = true },
                                 onDescuentos = { showDiscountsDialog = true },
                                 onSepararCuenta = { showSplitCheckDialog = true },
+                                onOrdenarCarrito = { showSortCartDialog = true },
+                                onCalculadora = { showCalculator = true },
+                                onMarcarEntrada = { showTimeClock = true },
+                                onCajaAbierta = { viewModel.openCashDrawer() },
+                                hasCashDrawer = viewModel.hasCashDrawer,
                             )
                             PanelTab.CLIENTE -> TableClientePanel(
                                 customerName = check?.customerName,
@@ -475,6 +489,28 @@ fun TableOrderScreen(
                 }
             },
             dismissButton = { TextButton(onClick = { courseMenuTarget = null }) { Text("Cancelar") } },
+        )
+    }
+
+    if (showSortCartDialog) {
+        SortCartDialog(
+            onDismiss = { showSortCartDialog = false },
+            onPick = { mode ->
+                showSortCartDialog = false
+                viewModel.sortPending(mode)
+                panelTab = PanelTab.CUENTA
+            },
+        )
+    }
+
+    if (showCalculator) {
+        CalculatorDialog(onDismiss = { showCalculator = false })
+    }
+
+    if (showTimeClock) {
+        com.avoqado.pos.timeclock.presentation.TimeClockSheet(
+            repository = viewModel.timeEntryRepository,
+            onDismiss = { showTimeClock = false },
         )
     }
 
@@ -1176,6 +1212,11 @@ internal fun TableActionsPanel(
     onCumplimiento: () -> Unit = {},
     onDescuentos: () -> Unit = {},
     onSepararCuenta: () -> Unit = {},
+    onOrdenarCarrito: () -> Unit = {},
+    onCalculadora: () -> Unit = {},
+    onMarcarEntrada: () -> Unit = {},
+    onCajaAbierta: () -> Unit = {},
+    hasCashDrawer: Boolean = false,
 ) {
     Column(
         modifier = Modifier
@@ -1234,7 +1275,12 @@ internal fun TableActionsPanel(
                 onClick = onSepararCuenta,
                 modifier = Modifier.weight(1f),
             )
-            Spacer(modifier = Modifier.weight(1f))
+            ActionPill(
+                label = "Ordenar carrito",
+                enabled = hasPending,
+                onClick = onOrdenarCarrito,
+                modifier = Modifier.weight(1f),
+            )
         }
         Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
             ActionPill(
@@ -1296,12 +1342,31 @@ internal fun TableActionsPanel(
         HorizontalDivider()
         Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
             ActionPill(
+                label = "Calculadora",
+                enabled = true,
+                onClick = onCalculadora,
+                modifier = Modifier.weight(1f),
+            )
+            ActionPill(
                 label = "Importe personalizado",
                 enabled = true,
                 onClick = onCustomAmount,
                 modifier = Modifier.weight(1f),
             )
-            Spacer(modifier = Modifier.weight(1f))
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+            ActionPill(
+                label = "Marcar entrada/salida",
+                enabled = true,
+                onClick = onMarcarEntrada,
+                modifier = Modifier.weight(1f),
+            )
+            ActionPill(
+                label = "Caja abierta",
+                enabled = hasCashDrawer,
+                onClick = onCajaAbierta,
+                modifier = Modifier.weight(1f),
+            )
         }
     }
 }
@@ -1713,6 +1778,145 @@ private fun OrderDiscountsDialog(
     )
 }
 
+
+// MARK: - Ordenar carrito (Square's sort cart)
+
+@Composable
+private fun SortCartDialog(
+    onDismiss: () -> Unit,
+    onPick: (TableOrderViewModel.CartSort) -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Ordenar carrito") },
+        text = {
+            Column {
+                Text(
+                    "Reordena los artículos sin enviar. Lo que ya está en cocina no cambia.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+                TableOrderViewModel.CartSort.entries.forEach { mode ->
+                    Text(
+                        text = mode.label,
+                        style = MaterialTheme.typography.bodyLarge,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onPick(mode) }
+                            .padding(vertical = AvoqadoTheme.spacing.sm),
+                    )
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
+    )
+}
+
+// MARK: - Calculadora (Square's calculator — local, no toca la cuenta)
+
+@Composable
+private fun CalculatorDialog(onDismiss: () -> Unit) {
+    var display by remember { mutableStateOf("0") }
+    var accumulator by remember { mutableStateOf<Double?>(null) }
+    var pendingOp by remember { mutableStateOf<String?>(null) }
+    var freshEntry by remember { mutableStateOf(true) }
+
+    fun currentValue(): Double = display.replace(",", ".").toDoubleOrNull() ?: 0.0
+
+    fun showNumber(v: Double) {
+        display = if (v == v.toLong().toDouble()) v.toLong().toString()
+        else String.format(java.util.Locale.US, "%.2f", v)
+    }
+
+    fun applyPending() {
+        val acc = accumulator
+        val op = pendingOp
+        if (acc == null || op == null) {
+            accumulator = currentValue()
+            return
+        }
+        val rhs = currentValue()
+        val result = when (op) {
+            "+" -> acc + rhs
+            "−" -> acc - rhs
+            "×" -> acc * rhs
+            "÷" -> if (rhs == 0.0) 0.0 else acc / rhs
+            else -> rhs
+        }
+        accumulator = result
+        showNumber(result)
+    }
+
+    fun digit(d: String) {
+        display = if (freshEntry || display == "0") d else display + d
+        freshEntry = false
+    }
+
+    fun operator(op: String) {
+        applyPending()
+        pendingOp = op
+        freshEntry = true
+    }
+
+    val keys = listOf(
+        listOf("7", "8", "9", "÷"),
+        listOf("4", "5", "6", "×"),
+        listOf("1", "2", "3", "−"),
+        listOf("0", ".", "=", "+"),
+    )
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Calculadora") },
+        text = {
+            Column {
+                Text(
+                    text = display,
+                    style = MaterialTheme.typography.displaySmall,
+                    fontWeight = FontWeight.SemiBold,
+                    textAlign = TextAlign.End,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = AvoqadoTheme.spacing.md),
+                )
+                keys.forEach { row ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                        row.forEach { key ->
+                            TextButton(
+                                onClick = {
+                                    when (key) {
+                                        "=" -> {
+                                            applyPending()
+                                            pendingOp = null
+                                            freshEntry = true
+                                        }
+                                        "+", "−", "×", "÷" -> operator(key)
+                                        "." -> if (!display.contains(".")) {
+                                            display = if (freshEntry) "0." else "$display."
+                                            freshEntry = false
+                                        }
+                                        else -> digit(key)
+                                    }
+                                },
+                                modifier = Modifier.weight(1f),
+                            ) {
+                                Text(key, style = MaterialTheme.typography.titleMedium)
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                display = "0"; accumulator = null; pendingOp = null; freshEntry = true
+            }) { Text("Limpiar") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cerrar") } },
+    )
+}
 
 // MARK: - Separar en otra cuenta (Square's separate checks)
 
