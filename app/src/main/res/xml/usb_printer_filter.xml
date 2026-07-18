@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- USB devices that should offer/open Avoqado when plugged in.
+     Matches receipt printers two ways:
+     - class 7 = USB printer class (interface-level match, any brand), and
+     - vendor-id 1208 (0x04B8) = Epson, whose TM series sometimes exposes a
+       vendor-specific class instead of class 7. -->
+<resources>
+    <usb-device class="7" />
+    <usb-device vendor-id="1208" />
+</resources>

@@ -18,6 +18,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Print
+import androidx.compose.material.icons.filled.Usb
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -127,8 +128,11 @@ fun PrinterConfigSheet(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Icon(
-                    if (printer.connectionTypeEnum == PrinterConnectionType.WIFI)
-                        Icons.Filled.Wifi else Icons.Filled.Bluetooth,
+                    when (printer.connectionTypeEnum) {
+                        PrinterConnectionType.WIFI -> Icons.Filled.Wifi
+                        PrinterConnectionType.BLUETOOTH -> Icons.Filled.Bluetooth
+                        PrinterConnectionType.USB -> Icons.Filled.Usb
+                    },
                     contentDescription = null,
                     tint = if (status.isConnected) Success else MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.size(28.dp),

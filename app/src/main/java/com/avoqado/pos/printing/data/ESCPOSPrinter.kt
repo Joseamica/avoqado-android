@@ -281,10 +281,13 @@ class ESCPOSPrinter(
             printLine()
         }
 
-        // Header
+        // Header — PRINT_STATIONS: the station IS the title when per-station routing
+        // resolved one ("BARRA", "SIN ESTACIÓN"…). A bar ticket titled "COCINA" is
+        // wrong/confusing for staff. Falls back to "COCINA" when there is no station
+        // (legacy single-ticket path) so old tickets stay byte-for-byte unchanged.
         setAlignment(TextAlignment.CENTER)
         setLargeText(true)
-        printLine("COCINA")
+        printLine(ticket.stationName?.uppercase(Locale("es", "MX")) ?: "COCINA")
         setLargeText(false)
 
         printDoubleDivider()

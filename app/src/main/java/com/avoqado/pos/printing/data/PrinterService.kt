@@ -23,11 +23,15 @@ import com.avoqado.pos.printing.data.model.PrinterStatus
 import com.avoqado.pos.printing.data.model.ReceiptData
 import com.avoqado.pos.printing.data.model.SavedPrinter
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import java.io.OutputStream
@@ -47,6 +51,40 @@ private const val DEFAULT_PORT = 9100
 
 /** Connection timeout in milliseconds */
 private const val CONNECTION_TIMEOUT_MS = 10_000L
+
+/** How long a discovery scan runs before auto-stopping. mDNS browsing never
+ *  "finishes" on its own, so without this the UI spinner spins forever. */
+private const val DISCOVERY_WINDOW_MS = 12_000L
+
+/**
+ * Pure decision for whether [PrinterService.sendData] must drop the cached socket
+ * and reconnect before writing, instead of reusing the socket in the connection
+ * cache. Kept side-effect free and top-level `internal` so it is exhaustively
+ * unit-testable without touching real sockets or a Context.
+ *
+ * Reconnect is required when: the status doesn't say connected (today's existing
+ * behavior), there is no cached endpoint, the cached endpoint no longer matches
+ * the printer's current endpoint (e.g. its IP was edited in the dashboard and the
+ * config was refetched — the bug this guards against), or the cached socket is
+ * already closed.
+ *
+ * NOTE: this cannot and does not detect a half-open TCP socket where the peer
+ * silently vanished without sending FIN/RST — that failure mode is not reliably
+ * detectable from userspace and is explicitly out of scope. The product's
+ * printing states are honest about this already: "Printing"/"Connected" means
+ * bytes were accepted by the OS socket, not proof that paper came out.
+ */
+internal fun shouldReconnect(
+    status: PrinterStatus,
+    cachedEndpoint: String?,
+    requestedEndpoint: String,
+    socketClosed: Boolean,
+): Boolean {
+    if (!status.isConnected) return true
+    if (cachedEndpoint == null || cachedEndpoint != requestedEndpoint) return true
+    if (socketClosed) return true
+    return false
+}
 
 @Singleton
 class PrinterService @Inject constructor(
@@ -70,9 +108,25 @@ class PrinterService @Inject constructor(
 
     private val wifiConnections = java.util.concurrent.ConcurrentHashMap<String, Socket>()
     private val btConnections = java.util.concurrent.ConcurrentHashMap<String, BluetoothSocket>()
+
+    /**
+     * Endpoint ("host:port" for WIFI, MAC address for BLUETOOTH) that the cached
+     * socket in [wifiConnections]/[btConnections] was actually opened for, keyed
+     * by printer.id. Used by [sendData] to detect a stale cache when a printer's
+     * address/port changes without the connection status changing — see
+     * [shouldReconnect].
+     */
+    private val connectionEndpoints = java.util.concurrent.ConcurrentHashMap<String, String>()
+
     private val storage = PrinterStorage(context)
     private var nsdManager: NsdManager? = null
     private val discoveryListeners = mutableListOf<NsdManager.DiscoveryListener>()
+
+    /** USB-host transport (Epson TM-m30III et al. plugged in by cable). */
+    private val usbPrinters = UsbPrinterManager(context)
+
+    private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+    private var discoveryTimeoutJob: Job? = null
 
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -131,6 +185,7 @@ class PrinterService @Inject constructor(
             when (printer.connectionTypeEnum) {
                 PrinterConnectionType.WIFI -> connectWiFi(printer)
                 PrinterConnectionType.BLUETOOTH -> connectBluetooth(printer)
+                PrinterConnectionType.USB -> connectUsb(printer)
             }
             updateStatus(printer.id, PrinterStatus.Connected)
             updateLastConnected(printer)
@@ -145,9 +200,11 @@ class PrinterService @Inject constructor(
         try {
             wifiConnections.remove(printer.id)?.close()
             btConnections.remove(printer.id)?.close()
+            usbPrinters.close(printer.id)
         } catch (e: Exception) {
             Log.w(TAG, "Error disconnecting: ${e.message}")
         }
+        connectionEndpoints.remove(printer.id)
         updateStatus(printer.id, PrinterStatus.Disconnected)
     }
 
@@ -161,10 +218,18 @@ class PrinterService @Inject constructor(
         try {
             socket.connect(InetSocketAddress(printer.address, port), CONNECTION_TIMEOUT_MS.toInt())
             wifiConnections[printer.id] = socket
+            connectionEndpoints[printer.id] = "${printer.address}:$port"
         } catch (e: Exception) {
             socket.close()
             throw PrinterException.ConnectionFailed(e.message ?: "No se pudo conectar a ${printer.address}:$port")
         }
+    }
+
+    private suspend fun connectUsb(printer: SavedPrinter) = withContext(Dispatchers.IO) {
+        // ensurePermission inside open() may pop the system USB dialog and suspend
+        // until the user answers — same UX Square shows on first connect.
+        usbPrinters.open(printer.id, printer.address)
+        connectionEndpoints[printer.id] = printer.address
     }
 
     @SuppressLint("MissingPermission")
@@ -191,6 +256,7 @@ class PrinterService @Inject constructor(
             }
             socket.connect()
             btConnections[printer.id] = socket
+            connectionEndpoints[printer.id] = printer.address
         } catch (e: Exception) {
             try { socket.close() } catch (_: Exception) {}
             throw PrinterException.ConnectionFailed(e.message ?: "No se pudo conectar por Bluetooth")
@@ -225,9 +291,22 @@ class PrinterService @Inject constructor(
     }
 
     private suspend fun sendData(data: ByteArray, printer: SavedPrinter) {
-        // Auto-connect if not connected
+        // Auto-connect if not connected, or if the cached socket is stale: the
+        // status says "connected" but it was opened for a different endpoint
+        // (e.g. the printer's IP was edited and the config was refetched) or the
+        // socket has since been closed. See shouldReconnect() for the exact
+        // decision and its limits.
         val status = _printerStatuses.value[printer.id] ?: PrinterStatus.Disconnected
-        if (!status.isConnected) {
+        val requestedEndpoint = resolveEndpoint(printer)
+        val cachedEndpoint = connectionEndpoints[printer.id]
+        val socketClosed = isCachedSocketClosed(printer)
+        if (shouldReconnect(status, cachedEndpoint, requestedEndpoint, socketClosed)) {
+            if (status.isConnected) {
+                // Legacy path (status was disconnected) never called disconnect()
+                // here, it just connected fresh — only drop the socket first when
+                // we're overriding a "connected" status that turned out stale.
+                disconnect(printer)
+            }
             connect(printer)
         }
 
@@ -237,6 +316,7 @@ class PrinterService @Inject constructor(
             when (printer.connectionTypeEnum) {
                 PrinterConnectionType.WIFI -> sendDataWiFi(data, printer)
                 PrinterConnectionType.BLUETOOTH -> sendDataBluetooth(data, printer)
+                PrinterConnectionType.USB -> sendDataUsb(data, printer)
             }
             updateStatus(printer.id, PrinterStatus.Connected)
         } catch (e: Exception) {
@@ -245,11 +325,32 @@ class PrinterService @Inject constructor(
         }
     }
 
+    /** Same "host:port" / MAC resolution used by connectWiFi/connectBluetooth, used to detect a stale cached endpoint. */
+    private fun resolveEndpoint(printer: SavedPrinter): String =
+        when (printer.connectionTypeEnum) {
+            PrinterConnectionType.WIFI -> "${printer.address}:${printer.port ?: DEFAULT_PORT}"
+            PrinterConnectionType.BLUETOOTH -> printer.address
+            PrinterConnectionType.USB -> printer.address
+        }
+
+    private fun isCachedSocketClosed(printer: SavedPrinter): Boolean =
+        when (printer.connectionTypeEnum) {
+            PrinterConnectionType.WIFI -> wifiConnections[printer.id]?.isClosed ?: true
+            PrinterConnectionType.BLUETOOTH -> btConnections[printer.id]?.isConnected?.not() ?: true
+            // "Closed" also when the printer was unplugged — forces a clean reconnect
+            // (and a fresh permission check) on the next print instead of a dead write.
+            PrinterConnectionType.USB -> !usbPrinters.isOpen(printer.id) || usbPrinters.findDevice(printer.address) == null
+        }
+
     private suspend fun sendDataWiFi(data: ByteArray, printer: SavedPrinter) = withContext(Dispatchers.IO) {
         val socket = wifiConnections[printer.id] ?: throw PrinterException.NotConnected()
         val output: OutputStream = socket.getOutputStream()
         output.write(data)
         output.flush()
+    }
+
+    private suspend fun sendDataUsb(data: ByteArray, printer: SavedPrinter) = withContext(Dispatchers.IO) {
+        usbPrinters.write(printer.id, data)
     }
 
     private suspend fun sendDataBluetooth(data: ByteArray, printer: SavedPrinter) = withContext(Dispatchers.IO) {
@@ -327,11 +428,38 @@ class PrinterService @Inject constructor(
     fun startDiscovery() {
         _isDiscovering.value = true
         _discoveredPrinters.value = emptyList()
+        startUsbDiscovery()
         startNetworkDiscovery()
         startBluetoothDiscovery()
+
+        // Auto-stop after a window: mDNS browsing never completes by itself, so
+        // without this the "Buscando..." state sticks forever. Results already
+        // found stay listed.
+        discoveryTimeoutJob?.cancel()
+        discoveryTimeoutJob = serviceScope.launch {
+            delay(DISCOVERY_WINDOW_MS)
+            stopDiscovery()
+        }
+    }
+
+    /** USB is synchronous enumeration — attached printers appear instantly (Square-style). */
+    private fun startUsbDiscovery() {
+        try {
+            val usbFound = usbPrinters.discoverPrinters()
+            if (usbFound.isEmpty()) return
+            val current = _discoveredPrinters.value.toMutableList()
+            usbFound.forEach { printer ->
+                if (current.none { it.id == printer.id }) current.add(printer)
+            }
+            _discoveredPrinters.value = current
+        } catch (e: Exception) {
+            Log.e(TAG, "USB discovery error: ${e.message}")
+        }
     }
 
     fun stopDiscovery() {
+        discoveryTimeoutJob?.cancel()
+        discoveryTimeoutJob = null
         _isDiscovering.value = false
         stopNetworkDiscovery()
     }

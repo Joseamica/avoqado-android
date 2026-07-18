@@ -26,7 +26,9 @@ import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Print
+import androidx.compose.material.icons.filled.Usb
 import androidx.compose.material.icons.filled.Wifi
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -36,6 +38,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -49,7 +52,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Success
 import com.avoqado.pos.printing.data.PrinterService
@@ -93,6 +95,13 @@ fun PrinterSettingsSheet(
         if (hasBluetoothPermission) {
             printerService.startDiscovery()
         }
+    }
+
+    // Search automatically on open (Square-style): USB appears instantly, network
+    // results stream in. Without BT permission the scan still covers USB + WiFi
+    // (the Bluetooth leg skips itself); the button below can request BT explicitly.
+    LaunchedEffect(Unit) {
+        printerService.startDiscovery()
     }
 
     // If config sheet is open, render only that — avoid stacked ModalBottomSheets
@@ -149,36 +158,66 @@ fun PrinterSettingsSheet(
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
             }
 
-            // Discovery section
-            Text(
-                text = "Buscar impresoras",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.SemiBold,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-
-            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
-
-            PrimaryButton(
-                text = if (isDiscovering) "Buscando..." else "Buscar impresoras",
-                onClick = {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !hasBluetoothPermission) {
-                        permissionLauncher.launch(
-                            arrayOf(
-                                Manifest.permission.BLUETOOTH_CONNECT,
-                                Manifest.permission.BLUETOOTH_SCAN,
-                            ),
-                        )
-                    } else {
-                        printerService.startDiscovery()
+            // Discovery section — the scan runs automatically on open; this row
+            // shows live progress and the button re-runs / stops the scan.
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "Impresoras disponibles",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                if (isDiscovering) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(14.dp),
+                        strokeWidth = 2.dp,
+                    )
+                    Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.xs))
+                    Text(
+                        text = "Buscando…",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                } else {
+                    TextButton(onClick = {
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !hasBluetoothPermission) {
+                            permissionLauncher.launch(
+                                arrayOf(
+                                    Manifest.permission.BLUETOOTH_CONNECT,
+                                    Manifest.permission.BLUETOOTH_SCAN,
+                                ),
+                            )
+                        } else {
+                            printerService.startDiscovery()
+                        }
+                    }) {
+                        Text("Buscar de nuevo")
                     }
-                },
-                isLoading = isDiscovering,
-            )
+                }
+            }
 
-            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
 
-            if (discoveredPrinters.isEmpty() && !isDiscovering) {
+            if (discoveredPrinters.isEmpty() && isDiscovering) {
+                // Scanning, nothing found yet — placeholder instead of a blank gap.
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = AvoqadoTheme.spacing.xl),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "Buscando impresoras por USB, red y Bluetooth…",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            } else if (discoveredPrinters.isEmpty()) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -198,7 +237,7 @@ fun PrinterSettingsSheet(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Text(
-                        text = "Asegurate que tu impresora este encendida y en la misma red WiFi, o emparejada por Bluetooth",
+                        text = "Conecta la impresora por USB, o asegurate que este encendida y en la misma red WiFi o emparejada por Bluetooth",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -261,8 +300,11 @@ private fun SavedPrinterRow(
             contentAlignment = Alignment.Center,
         ) {
             Icon(
-                if (printer.connectionTypeEnum == PrinterConnectionType.WIFI)
-                    Icons.Filled.Wifi else Icons.Filled.Bluetooth,
+                when (printer.connectionTypeEnum) {
+                    PrinterConnectionType.WIFI -> Icons.Filled.Wifi
+                    PrinterConnectionType.BLUETOOTH -> Icons.Filled.Bluetooth
+                    PrinterConnectionType.USB -> Icons.Filled.Usb
+                },
                 contentDescription = null,
                 tint = if (status.isConnected) Success
                 else MaterialTheme.colorScheme.onSurfaceVariant,
@@ -341,8 +383,11 @@ private fun DiscoveredPrinterRow(
             contentAlignment = Alignment.Center,
         ) {
             Icon(
-                if (printer.connectionType == PrinterConnectionType.WIFI)
-                    Icons.Filled.Wifi else Icons.Filled.Bluetooth,
+                when (printer.connectionType) {
+                    PrinterConnectionType.WIFI -> Icons.Filled.Wifi
+                    PrinterConnectionType.BLUETOOTH -> Icons.Filled.Bluetooth
+                    PrinterConnectionType.USB -> Icons.Filled.Usb
+                },
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(20.dp),
