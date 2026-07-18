@@ -215,6 +215,7 @@ fun TablesScreen(
                     tables = tables,
                     onTap = onTableTap,
                     onLongPress = onTableLongPress,
+                    selectedIds = if (selectionMode) selectedIds else emptySet(),
                     modifier = Modifier.weight(1f),
                 )
             } else {
@@ -222,6 +223,7 @@ fun TablesScreen(
                     tables = tables,
                     onTap = onTableTap,
                     onLongPress = onTableLongPress,
+                    selectedIds = if (selectionMode) selectedIds else emptySet(),
                     modifier = Modifier.weight(1f),
                 )
             }
@@ -372,6 +374,7 @@ private fun FloorCanvas(
     tables: List<DiningTable>,
     onTap: (DiningTable) -> Unit,
     onLongPress: (DiningTable) -> Unit,
+    selectedIds: Set<String> = emptySet(),
     modifier: Modifier = Modifier,
 ) {
     val positioned = tables.filter { it.hasPosition }
@@ -402,6 +405,7 @@ private fun FloorCanvas(
                 TableNode(
                     table = table,
                     size = tableSize,
+                    selected = table.id in selectedIds,
                     modifier = Modifier
                         .offset(x = availW * fx, y = availH * fy)
                         .combinedClickable(
@@ -429,7 +433,7 @@ private fun FloorCanvas(
                     .padding(vertical = AvoqadoTheme.spacing.sm),
             ) {
                 items(unpositioned, key = { it.id }) { table ->
-                    TableCard(table = table, onTap = { onTap(table) }, onLongPress = { onLongPress(table) })
+                    TableCard(table = table, onTap = { onTap(table) }, onLongPress = { onLongPress(table) }, selected = table.id in selectedIds)
                 }
             }
         }
@@ -443,6 +447,7 @@ private fun TableGrid(
     tables: List<DiningTable>,
     onTap: (DiningTable) -> Unit,
     onLongPress: (DiningTable) -> Unit,
+    selectedIds: Set<String> = emptySet(),
     modifier: Modifier = Modifier,
 ) {
     val byArea = tables.groupBy { it.areaName ?: "General" }
@@ -464,7 +469,7 @@ private fun TableGrid(
                         Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
                             row.forEach { table ->
                                 Box(modifier = Modifier.weight(1f)) {
-                                    TableCard(table = table, onTap = { onTap(table) }, onLongPress = { onLongPress(table) })
+                                    TableCard(table = table, onTap = { onTap(table) }, onLongPress = { onLongPress(table) }, selected = table.id in selectedIds)
                                 }
                             }
                             repeat(4 - row.size) { Spacer(modifier = Modifier.weight(1f)) }
@@ -485,7 +490,7 @@ private fun statusColor(table: DiningTable): Color = when {
 }
 
 @Composable
-private fun TableNode(table: DiningTable, size: Dp, modifier: Modifier = Modifier) {
+private fun TableNode(table: DiningTable, size: Dp, selected: Boolean = false, modifier: Modifier = Modifier) {
     val shape = when (table.shape.uppercase(Locale.US)) {
         "ROUND" -> CircleShape
         else -> RoundedCornerShape(12.dp)
@@ -503,8 +508,8 @@ private fun TableNode(table: DiningTable, size: Dp, modifier: Modifier = Modifie
             .clip(shape)
             .background(fill)
             .border(
-                width = if (table.isReserved) 2.dp else 1.dp,
-                color = if (table.isReserved) ReservedColor else if (occupied) OccupiedColor else FreeBorder,
+                width = if (selected) 3.dp else if (table.isReserved) 2.dp else 1.dp,
+                color = if (selected) Success else if (table.isReserved) ReservedColor else if (occupied) OccupiedColor else FreeBorder,
                 shape = shape,
             ),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -534,7 +539,7 @@ private fun TableNode(table: DiningTable, size: Dp, modifier: Modifier = Modifie
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun TableCard(table: DiningTable, onTap: () -> Unit, onLongPress: () -> Unit = {}) {
+private fun TableCard(table: DiningTable, onTap: () -> Unit, onLongPress: () -> Unit = {}, selected: Boolean = false) {
     // Square-style, same language as the canvas nodes: occupied = solid dark
     // card with light text + "total · h:mm"; free = flat light gray.
     val occupied = table.isOccupied
@@ -547,8 +552,8 @@ private fun TableCard(table: DiningTable, onTap: () -> Unit, onLongPress: () -> 
             .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
             .background(fill)
             .border(
-                width = if (table.isReserved) 2.dp else 1.dp,
-                color = if (table.isReserved) ReservedColor else if (occupied) OccupiedColor else FreeBorder,
+                width = if (selected) 3.dp else if (table.isReserved) 2.dp else 1.dp,
+                color = if (selected) Success else if (table.isReserved) ReservedColor else if (occupied) OccupiedColor else FreeBorder,
                 shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.md),
             )
             .combinedClickable(onClick = onTap, onLongClick = onLongPress)
