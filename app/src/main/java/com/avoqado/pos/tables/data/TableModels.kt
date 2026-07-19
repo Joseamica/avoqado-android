@@ -192,6 +192,8 @@ data class OrderDetail(
     val total: Double = 0.0,
     /** Check metadata editable desde el panel (Detalles). */
     val customerName: String? = null,
+    /** Cliente adjunto — necesario para leer su saldo de puntos (Recompensas). */
+    val customerId: String? = null,
     val specialRequests: String? = null,
     val covers: Int? = null,
     /** Cumplimiento actual del cheque. */
@@ -236,3 +238,28 @@ data class OrderDetailModifier(
     val name: String = "",
     val price: Double = 0.0,
 )
+
+// MARK: - Recompensas (lealtad, LOYALTY_PROGRAM / PRO)
+
+/** GET .../customers/:customerId/loyalty?orderId= — saldo + reglas del programa. */
+@Serializable
+data class CustomerLoyalty(
+    val customerId: String = "",
+    val customerName: String? = null,
+    val active: Boolean = false,
+    val balance: Int = 0,
+    val pointsPerDollar: Double = 0.0,
+    val redemptionRate: Double = 0.0,
+    val minPointsRedeem: Int = 0,
+    val balanceValue: Double = 0.0,
+    val maxRedeemablePoints: Int = 0,
+    val maxRedeemableValue: Double = 0.0,
+    val canRedeem: Boolean = false,
+)
+
+@Serializable
+data class CustomerLoyaltyResponse(val success: Boolean = true, val data: CustomerLoyalty? = null)
+
+/** POST .../orders/:orderId/loyalty/redeem body. */
+@Serializable
+data class RedeemPointsRequest(val customerId: String, val points: Int)

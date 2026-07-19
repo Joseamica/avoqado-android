@@ -99,6 +99,8 @@ class TableOrderViewModel @Inject constructor(
             _isLoadingCheck.value = true
             repository.getOrderDetail(vId, session.orderId).onSuccess { _check.value = it }
             _isLoadingCheck.value = false
+            // El saldo de puntos depende del cliente adjunto, que viene en el cheque.
+            loadLoyalty()
         }
     }
 
@@ -494,6 +496,50 @@ class TableOrderViewModel @Inject constructor(
             tableSession.current()?.let { tableSession.start(it.copy(openSplitOnArrival = true)) }
         }
         return ok
+    }
+
+    // MARK: - Recompensas (lealtad)
+
+    private val _loyalty = MutableStateFlow<com.avoqado.pos.tables.data.CustomerLoyalty?>(null)
+    val loyalty: StateFlow<com.avoqado.pos.tables.data.CustomerLoyalty?> = _loyalty.asStateFlow()
+
+    /** Carga el saldo del cliente adjunto al cheque (null si no hay cliente). */
+    fun loadLoyalty() {
+        val session = tableSession.current() ?: return
+        val vId = venueId ?: return
+        val customerId = _check.value?.customerId
+        if (customerId.isNullOrBlank()) {
+            _loyalty.value = null
+            return
+        }
+        viewModelScope.launch {
+            repository.getCustomerLoyalty(vId, customerId, session.orderId).fold(
+                onSuccess = { _loyalty.value = it },
+                onFailure = { _loyalty.value = null },
+            )
+        }
+    }
+
+    /**
+     * Canjea puntos como descuento del cheque. El server quema los puntos y
+     * aplica el descuento en UNA transacción; quitar ese descuento después
+     * devuelve los puntos solo.
+     */
+    fun redeemPoints(points: Int) {
+        val session = tableSession.current() ?: return
+        val vId = venueId ?: return
+        val customerId = _check.value?.customerId ?: return
+        viewModelScope.launch {
+            repository.redeemLoyaltyPoints(vId, session.orderId, customerId, points).fold(
+                onSuccess = {
+                    _actionMessage.value = "Recompensa aplicada — $points puntos"
+                    loadCheck()
+                    loadLoyalty()
+                    repository.refresh(vId)
+                },
+                onFailure = { e -> _actionMessage.value = e.message ?: "No se pudo canjear los puntos" },
+            )
+        }
     }
 
     /** Multi-cheque: separa artículos ya enviados en una cuenta NUEVA de la

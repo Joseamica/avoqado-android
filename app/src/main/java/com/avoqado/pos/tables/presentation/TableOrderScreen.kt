@@ -34,6 +34,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Switch
@@ -101,6 +102,7 @@ fun TableOrderScreen(
     val hideSent by viewModel.hideSent.collectAsState()
     val isSending by viewModel.isSending.collectAsState()
     val actionMessage by viewModel.actionMessage.collectAsState()
+    val loyalty by viewModel.loyalty.collectAsState()
     val floorTables by viewModel.floorTables.collectAsState()
 
     val context = LocalContext.current
@@ -122,6 +124,7 @@ fun TableOrderScreen(
     var showCalculator by remember { mutableStateOf(false) }
     var showTimeClock by remember { mutableStateOf(false) }
     var showBarcodeScanner by remember { mutableStateOf(false) }
+    var showRewards by remember { mutableStateOf(false) }
     var unknownBarcode by remember { mutableStateOf<String?>(null) }
     // Menú … por tiempo (¡Listo!/Repetir). Par (curso, abierto).
     var courseMenuTarget by remember { mutableStateOf<Pair<String?, Boolean>?>(null) }
@@ -279,6 +282,8 @@ fun TableOrderScreen(
                                 onCajaAbierta = { viewModel.openCashDrawer() },
                                 hasCashDrawer = viewModel.hasCashDrawer,
                                 onEscanear = { showBarcodeScanner = true },
+                                onRecompensas = { showRewards = true },
+                                hasLoyalty = loyalty?.canRedeem == true,
                             )
                             PanelTab.CLIENTE -> TableClientePanel(
                                 customerName = check?.customerName,
@@ -412,6 +417,8 @@ fun TableOrderScreen(
                                 onCajaAbierta = { viewModel.openCashDrawer() },
                                 hasCashDrawer = viewModel.hasCashDrawer,
                                 onEscanear = { showBarcodeScanner = true },
+                                onRecompensas = { showRewards = true },
+                                hasLoyalty = loyalty?.canRedeem == true,
                             )
                             PanelTab.CLIENTE -> TableClientePanel(
                                 customerName = check?.customerName,
@@ -529,6 +536,20 @@ fun TableOrderScreen(
             text = { Text("Ningún producto del catálogo tiene el código $scannedCode.") },
             confirmButton = { TextButton(onClick = { unknownBarcode = null }) { Text("Entendido") } },
         )
+    }
+
+    if (showRewards) {
+        loyalty?.let { l ->
+            RewardsDialog(
+                loyalty = l,
+                onDismiss = { showRewards = false },
+                onRedeem = { pts ->
+                    showRewards = false
+                    viewModel.redeemPoints(pts)
+                    panelTab = PanelTab.CUENTA
+                },
+            )
+        }
     }
 
     if (showSortCartDialog) {
@@ -1257,6 +1278,8 @@ internal fun TableActionsPanel(
     onCajaAbierta: () -> Unit = {},
     hasCashDrawer: Boolean = false,
     onEscanear: () -> Unit = {},
+    onRecompensas: () -> Unit = {},
+    hasLoyalty: Boolean = false,
 ) {
     Column(
         modifier = Modifier
@@ -1380,6 +1403,15 @@ internal fun TableActionsPanel(
                 onClick = onDescuentos,
                 modifier = Modifier.weight(1f),
             )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+            ActionPill(
+                label = "Recompensas",
+                enabled = hasLoyalty,
+                onClick = onRecompensas,
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(modifier = Modifier.weight(1f))
         }
 
         Text(
@@ -1827,6 +1859,77 @@ private fun OrderDiscountsDialog(
     )
 }
 
+
+// MARK: - Recompensas (canje de puntos de lealtad)
+
+@Composable
+private fun RewardsDialog(
+    loyalty: com.avoqado.pos.tables.data.CustomerLoyalty,
+    onDismiss: () -> Unit,
+    onRedeem: (Int) -> Unit,
+) {
+    // Arranca en el máximo canjeable: es lo que el mesero pide casi siempre.
+    var points by remember { mutableStateOf(loyalty.maxRedeemablePoints) }
+    val step = loyalty.minPointsRedeem.coerceAtLeast(1)
+    val value = points * loyalty.redemptionRate
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Recompensas") },
+        text = {
+            Column {
+                Text(
+                    text = loyalty.customerName ?: "Cliente",
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    text = "${loyalty.balance} puntos disponibles · vale ${money(loyalty.balanceValue)}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    IconButton(onClick = { points = (points - step).coerceAtLeast(0) }) {
+                        Icon(Icons.Default.Remove, contentDescription = "Menos puntos")
+                    }
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text("$points pts", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.SemiBold)
+                        Text(
+                            text = "− ${money(value)} en la cuenta",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    IconButton(onClick = { points = (points + step).coerceAtMost(loyalty.maxRedeemablePoints) }) {
+                        Icon(Icons.Default.Add, contentDescription = "Más puntos")
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+                Text(
+                    text = "Mínimo ${loyalty.minPointsRedeem} puntos. Si quitas la recompensa de la cuenta, los puntos regresan.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(
+                onClick = { onRedeem(points) },
+                enabled = points >= loyalty.minPointsRedeem && points <= loyalty.maxRedeemablePoints,
+            ) { Text("Canjear") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
+    )
+}
+
+private fun money(v: Double): String = "$" + String.format(java.util.Locale.US, "%.2f", v)
 
 // MARK: - Ordenar carrito (Square's sort cart)
 

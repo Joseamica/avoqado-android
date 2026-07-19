@@ -11,6 +11,7 @@ import retrofit2.http.Body
 import retrofit2.http.GET
 import retrofit2.http.POST
 import retrofit2.http.Path
+import retrofit2.http.Query
 
 interface ApiService {
 
@@ -138,6 +139,22 @@ interface ApiService {
         @Path("venueId") venueId: String,
         @Path("orderId") orderId: String,
         @Body request: com.avoqado.pos.tables.data.AssignOrderRequest,
+    ): com.avoqado.pos.tables.data.SimpleSuccessResponse
+
+    // Recompensas (LOYALTY_PROGRAM): saldo de puntos del cliente del cheque.
+    @GET("mobile/venues/{venueId}/customers/{customerId}/loyalty")
+    suspend fun getCustomerLoyalty(
+        @Path("venueId") venueId: String,
+        @Path("customerId") customerId: String,
+        @Query("orderId") orderId: String? = null,
+    ): com.avoqado.pos.tables.data.CustomerLoyaltyResponse
+
+    // Canjea puntos como descuento en la cuenta abierta (una sola transacción).
+    @POST("mobile/venues/{venueId}/orders/{orderId}/loyalty/redeem")
+    suspend fun redeemLoyaltyPoints(
+        @Path("venueId") venueId: String,
+        @Path("orderId") orderId: String,
+        @Body request: com.avoqado.pos.tables.data.RedeemPointsRequest,
     ): com.avoqado.pos.tables.data.SimpleSuccessResponse
 
     // Separar artículos en una cuenta NUEVA de la misma mesa (TABLE_SERVICE).

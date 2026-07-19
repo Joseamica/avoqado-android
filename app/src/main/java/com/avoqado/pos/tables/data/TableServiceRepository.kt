@@ -82,6 +82,18 @@ class TableServiceRepository @Inject constructor(
         Unit
     }.onFailure { Log.e(TAG, "❌ assignOrder failed: ${it.message}") }
 
+    /** Recompensas: saldo de puntos del cliente adjunto al cheque. */
+    suspend fun getCustomerLoyalty(venueId: String, customerId: String, orderId: String?): Result<CustomerLoyalty> = runCatching {
+        apiService.getCustomerLoyalty(venueId, customerId, orderId).data
+            ?: error("Respuesta sin datos de lealtad")
+    }.onFailure { Log.e(TAG, "❌ getCustomerLoyalty failed: ${it.message}") }
+
+    /** Canjea puntos como descuento en la cuenta abierta. */
+    suspend fun redeemLoyaltyPoints(venueId: String, orderId: String, customerId: String, points: Int): Result<Unit> = runCatching {
+        apiService.redeemLoyaltyPoints(venueId, orderId, RedeemPointsRequest(customerId, points))
+        Unit
+    }.onFailure { Log.e(TAG, "❌ redeemLoyaltyPoints failed: ${it.message}") }
+
     /** Separa artículos en una cuenta NUEVA de la misma mesa (Square). */
     suspend fun splitOrder(venueId: String, orderId: String, itemIds: List<String>): Result<Unit> = runCatching {
         apiService.splitOrder(venueId, orderId, SplitOrderRequest(itemIds))
