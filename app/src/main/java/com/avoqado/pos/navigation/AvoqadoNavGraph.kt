@@ -759,11 +759,14 @@ private fun TabletTabBar(
                 )
             }
 
-            Spacer(modifier = Modifier.weight(1f))
+            Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.md))
 
-            // Center tabs capsule (iOS-style)
+            // Cápsula de tabs a TODO el ancho restante, items distribuidos
+            // uniformemente (Square expande su tab bar en width; una píldora
+            // centrada al contenido deja hueco muerto y se ve descuadrada).
             Row(
                 modifier = Modifier
+                    .weight(1f)
                     .background(
                         MaterialTheme.colorScheme.surfaceContainerLow,
                         RoundedCornerShape(50),
@@ -774,7 +777,8 @@ private fun TabletTabBar(
                         shape = RoundedCornerShape(50),
                     )
                     .padding(AvoqadoTheme.spacing.xxs),
-                horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.xxs),
+                horizontalArrangement = Arrangement.SpaceEvenly,
+                verticalAlignment = Alignment.CenterVertically,
             ) {
                 visibleTabs.forEach { tab ->
                     val isSelected = selectedTab == tab
@@ -786,11 +790,6 @@ private fun TabletTabBar(
                     )
                 }
             }
-
-            Spacer(modifier = Modifier.weight(1f))
-
-            // Balance spacer (right) - same size as clock button
-            Spacer(modifier = Modifier.size(44.dp))
         }
     }
 }
