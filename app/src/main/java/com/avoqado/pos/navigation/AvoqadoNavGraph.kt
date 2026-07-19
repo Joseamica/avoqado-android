@@ -761,22 +761,11 @@ private fun TabletTabBar(
 
             Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.md))
 
-            // Cápsula de tabs a TODO el ancho restante, items distribuidos
-            // uniformemente (Square expande su tab bar en width; una píldora
-            // centrada al contenido deja hueco muerto y se ve descuadrada).
+            // Tabs LIBRES sobre la barra, a todo el ancho restante y
+            // distribuidos uniformemente — Square no encierra sus tabs en una
+            // cápsula; solo el seleccionado lleva pastilla.
             Row(
-                modifier = Modifier
-                    .weight(1f)
-                    .background(
-                        MaterialTheme.colorScheme.surfaceContainerLow,
-                        RoundedCornerShape(50),
-                    )
-                    .border(
-                        width = 1.dp,
-                        color = MaterialTheme.colorScheme.outlineVariant,
-                        shape = RoundedCornerShape(50),
-                    )
-                    .padding(AvoqadoTheme.spacing.xxs),
+                modifier = Modifier.weight(1f),
                 horizontalArrangement = Arrangement.SpaceEvenly,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -801,8 +790,10 @@ private fun TabBarItem(
     onClick: () -> Unit,
     badgeCount: Int = 0,
 ) {
+    // Pastilla gris sobre la barra clara (Square); antes era pastilla blanca
+    // dentro de la cápsula gris que ya no existe.
     val bgColor by animateColorAsState(
-        targetValue = if (isSelected) MaterialTheme.colorScheme.surface else Color.Transparent,
+        targetValue = if (isSelected) MaterialTheme.colorScheme.surfaceContainerHigh else Color.Transparent,
         label = "tab_bg",
     )
     val contentColor by animateColorAsState(
@@ -815,13 +806,6 @@ private fun TabBarItem(
             .clip(RoundedCornerShape(50))
             .defaultMinSize(minHeight = 44.dp)
             .widthIn(min = 72.dp)
-            .then(
-                if (isSelected) {
-                    Modifier.shadow(1.dp, RoundedCornerShape(50))
-                } else {
-                    Modifier
-                },
-            )
             .background(bgColor, RoundedCornerShape(50))
             .clickable(onClick = onClick)
             .padding(
