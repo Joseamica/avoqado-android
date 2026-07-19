@@ -727,7 +727,9 @@ private fun TabletTabBar(
             .fillMaxWidth()
             .background(MaterialTheme.colorScheme.surface)
             .navigationBarsPadding()
-            .padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.sm),
+            // md (no sm): con sm la pastilla del tab seleccionado tocaba el
+            // hairline superior de la barra.
+            .padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.md),
     ) {
         // Top border
         Box(

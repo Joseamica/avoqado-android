@@ -340,6 +340,9 @@ class CartViewModel @Inject constructor(
     // MARK: - Cart Operations
 
     fun addProduct(product: Product) {
+        // Guard de inventario (búsqueda/escáner llegan sin pasar por el tile);
+        // sin seguimiento (trackInventory false/null) nunca bloquea.
+        if (product.isOutOfStock) return
         _cartState.update { state ->
             // Check if same product without modifiers already in cart
             val existingIndex = state.items.indexOfFirst {
@@ -379,6 +382,7 @@ class CartViewModel @Inject constructor(
         priceAdjustment: Int? = null,
         discountId: String? = null,
     ) {
+        if (product.isOutOfStock) return
         val newItem = CartItem(
             type = CartItemType.ProductItem(product.id),
             name = product.name,

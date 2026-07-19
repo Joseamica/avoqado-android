@@ -36,6 +36,15 @@ data class Product(
 ) {
     val priceInCents: Int get() = (priceValue * 100).toInt()
 
+    /**
+     * Agotado SOLO cuando el venue rastrea inventario de ESTE producto y el
+     * server calculó stock 0 (QUANTITY = currentStock, RECIPE = porciones).
+     * Venues sin seguimiento (trackInventory false/null o availableQuantity
+     * null) ordenan libre — el inventario es opcional por producto.
+     */
+    val isOutOfStock: Boolean
+        get() = trackInventory == true && (availableQuantity ?: 1) <= 0
+
     val displayPrice: String get() = "$${String.format("%.2f", priceValue)}"
 
     val hasModifiers: Boolean

@@ -134,6 +134,11 @@ class TableOrderViewModel @Inject constructor(
     /** Grid tap without modifiers. Dedupe is COURSE-aware: the same product on
      *  two courses must stay two lines (they fire at different moments). */
     fun addProduct(product: Product) {
+        // Guard de inventario (búsqueda/escáner llegan sin pasar por el tile).
+        if (product.isOutOfStock) {
+            _actionMessage.value = "\"${product.name}\" está agotado"
+            return
+        }
         val course = _selectedCourse.value
         val existing = _pending.value.firstOrNull { line ->
             line.course == course &&
@@ -168,6 +173,10 @@ class TableOrderViewModel @Inject constructor(
         isCortesia: Boolean = false,
         cortesiaReason: String? = null,
     ) {
+        if (product.isOutOfStock) {
+            _actionMessage.value = "\"${product.name}\" está agotado"
+            return
+        }
         _pending.value = _pending.value + PendingLine(
             item = CartItem(
                 type = CartItemType.ProductItem(product.id),

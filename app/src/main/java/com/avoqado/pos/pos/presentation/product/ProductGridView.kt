@@ -42,6 +42,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
@@ -414,8 +415,11 @@ private fun ProductTile(
         shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.md),
         color = MaterialTheme.colorScheme.surface,
         onClick = onClick,
+        // Con seguimiento de inventario y stock 0 el tile no se puede ordenar;
+        // sin seguimiento nunca se bloquea.
+        enabled = !product.isOutOfStock,
     ) {
-        Column {
+        Column(modifier = if (product.isOutOfStock) Modifier.alpha(0.45f) else Modifier) {
             // Image container
             Box(
                 modifier = Modifier
@@ -445,6 +449,19 @@ private fun ProductTile(
                         modifier = Modifier
                             .align(Alignment.BottomStart)
                             .padding(AvoqadoTheme.spacing.sm),
+                    )
+                }
+
+                if (product.isOutOfStock) {
+                    Text(
+                        text = "Agotado",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color.White,
+                        modifier = Modifier
+                            .align(Alignment.Center)
+                            .background(Color.Black.copy(alpha = 0.65f), RoundedCornerShape(50))
+                            .padding(horizontal = AvoqadoTheme.spacing.md, vertical = AvoqadoTheme.spacing.xs),
                     )
                 }
 
