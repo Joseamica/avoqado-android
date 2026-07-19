@@ -82,6 +82,23 @@ class TableServiceRepository @Inject constructor(
         Unit
     }.onFailure { Log.e(TAG, "❌ assignOrder failed: ${it.message}") }
 
+    /** Catálogo de cobros por servicio del venue. */
+    suspend fun getServiceCharges(venueId: String): Result<List<ServiceChargeOption>> = runCatching {
+        apiService.getServiceCharges(venueId).data
+    }.onFailure { Log.e(TAG, "❌ getServiceCharges failed: ${it.message}") }
+
+    /** Aplica un cobro por servicio a la cuenta (SUMA al total). */
+    suspend fun applyServiceCharge(venueId: String, orderId: String, serviceChargeId: String): Result<Unit> = runCatching {
+        apiService.applyServiceCharge(venueId, orderId, ApplyServiceChargeRequest(serviceChargeId))
+        Unit
+    }.onFailure { Log.e(TAG, "❌ applyServiceCharge failed: ${it.message}") }
+
+    /** Quita un cobro por servicio aplicado. */
+    suspend fun removeServiceCharge(venueId: String, orderId: String, orderServiceChargeId: String): Result<Unit> = runCatching {
+        apiService.removeServiceCharge(venueId, orderId, orderServiceChargeId)
+        Unit
+    }.onFailure { Log.e(TAG, "❌ removeServiceCharge failed: ${it.message}") }
+
     /** Recompensas: saldo de puntos del cliente adjunto al cheque. */
     suspend fun getCustomerLoyalty(venueId: String, customerId: String, orderId: String?): Result<CustomerLoyalty> = runCatching {
         apiService.getCustomerLoyalty(venueId, customerId, orderId).data

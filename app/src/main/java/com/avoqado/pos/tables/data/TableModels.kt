@@ -201,6 +201,9 @@ data class OrderDetail(
     val discountAmount: Double = 0.0,
     /** Descuentos de orden aplicados (pestaña Acciones → Descuentos). */
     val discounts: List<AppliedOrderDiscount> = emptyList(),
+    /** Cobros por servicio aplicados — SUMAN al total (ingreso gravable). */
+    val serviceChargeAmount: Double = 0.0,
+    val serviceCharges: List<AppliedServiceCharge> = emptyList(),
     val items: List<OrderDetailItem> = emptyList(),
 )
 
@@ -263,3 +266,36 @@ data class CustomerLoyaltyResponse(val success: Boolean = true, val data: Custom
 /** POST .../orders/:orderId/loyalty/redeem body. */
 @Serializable
 data class RedeemPointsRequest(val customerId: String, val points: Int)
+
+// MARK: - Cobros por servicio (propina automática por grupo, descorche…)
+
+/** Un cobro del catálogo del venue. */
+@Serializable
+data class ServiceChargeOption(
+    val id: String,
+    val name: String = "",
+    val type: String = "FIXED_AMOUNT", // PERCENTAGE | FIXED_AMOUNT
+    val value: Double = 0.0,
+    val taxable: Boolean = true,
+    val autoApplyMinCovers: Int? = null,
+) {
+    val valueDisplay: String
+        get() = if (type == "PERCENTAGE") "${value.toInt()}%"
+        else "$" + String.format(java.util.Locale.US, "%.2f", value)
+}
+
+@Serializable
+data class ServiceChargesResponse(val success: Boolean = true, val data: List<ServiceChargeOption> = emptyList())
+
+/** Un cobro YA aplicado a la cuenta. */
+@Serializable
+data class AppliedServiceCharge(
+    val id: String,
+    val name: String = "",
+    val amount: Double = 0.0,
+    val isAutomatic: Boolean = false,
+)
+
+/** POST .../orders/:orderId/service-charges body. */
+@Serializable
+data class ApplyServiceChargeRequest(val serviceChargeId: String)

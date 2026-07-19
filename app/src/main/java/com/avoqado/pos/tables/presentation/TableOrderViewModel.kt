@@ -498,6 +498,49 @@ class TableOrderViewModel @Inject constructor(
         return ok
     }
 
+    // MARK: - Cobros por servicio
+
+    private val _serviceCharges = MutableStateFlow<List<com.avoqado.pos.tables.data.ServiceChargeOption>>(emptyList())
+    val serviceCharges: StateFlow<List<com.avoqado.pos.tables.data.ServiceChargeOption>> = _serviceCharges.asStateFlow()
+
+    fun loadServiceCharges() {
+        val vId = venueId ?: return
+        viewModelScope.launch {
+            repository.getServiceCharges(vId).onSuccess { _serviceCharges.value = it }
+        }
+    }
+
+    /** Aplica un cobro por servicio: SUMA al total del cheque. */
+    fun applyServiceCharge(serviceChargeId: String) {
+        val session = tableSession.current() ?: return
+        val vId = venueId ?: return
+        viewModelScope.launch {
+            repository.applyServiceCharge(vId, session.orderId, serviceChargeId).fold(
+                onSuccess = {
+                    _actionMessage.value = "Cobro por servicio aplicado"
+                    loadCheck()
+                    repository.refresh(vId)
+                },
+                onFailure = { e -> _actionMessage.value = e.message ?: "No se pudo aplicar el cobro" },
+            )
+        }
+    }
+
+    fun removeServiceCharge(orderServiceChargeId: String) {
+        val session = tableSession.current() ?: return
+        val vId = venueId ?: return
+        viewModelScope.launch {
+            repository.removeServiceCharge(vId, session.orderId, orderServiceChargeId).fold(
+                onSuccess = {
+                    _actionMessage.value = "Cobro por servicio quitado"
+                    loadCheck()
+                    repository.refresh(vId)
+                },
+                onFailure = { e -> _actionMessage.value = e.message ?: "No se pudo quitar el cobro" },
+            )
+        }
+    }
+
     // MARK: - Recompensas (lealtad)
 
     private val _loyalty = MutableStateFlow<com.avoqado.pos.tables.data.CustomerLoyalty?>(null)

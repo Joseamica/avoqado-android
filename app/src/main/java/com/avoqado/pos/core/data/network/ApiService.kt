@@ -141,6 +141,28 @@ interface ApiService {
         @Body request: com.avoqado.pos.tables.data.AssignOrderRequest,
     ): com.avoqado.pos.tables.data.SimpleSuccessResponse
 
+    // Cobros por servicio (TABLE_SERVICE): catálogo del venue.
+    @GET("mobile/venues/{venueId}/service-charges")
+    suspend fun getServiceCharges(
+        @Path("venueId") venueId: String,
+    ): com.avoqado.pos.tables.data.ServiceChargesResponse
+
+    // Aplica un cobro por servicio a la cuenta (SUMA al total).
+    @POST("mobile/venues/{venueId}/orders/{orderId}/service-charges")
+    suspend fun applyServiceCharge(
+        @Path("venueId") venueId: String,
+        @Path("orderId") orderId: String,
+        @Body request: com.avoqado.pos.tables.data.ApplyServiceChargeRequest,
+    ): com.avoqado.pos.tables.data.SimpleSuccessResponse
+
+    // Quita un cobro por servicio aplicado.
+    @retrofit2.http.DELETE("mobile/venues/{venueId}/orders/{orderId}/service-charges/{orderServiceChargeId}")
+    suspend fun removeServiceCharge(
+        @Path("venueId") venueId: String,
+        @Path("orderId") orderId: String,
+        @Path("orderServiceChargeId") orderServiceChargeId: String,
+    ): com.avoqado.pos.tables.data.SimpleSuccessResponse
+
     // Recompensas (LOYALTY_PROGRAM): saldo de puntos del cliente del cheque.
     @GET("mobile/venues/{venueId}/customers/{customerId}/loyalty")
     suspend fun getCustomerLoyalty(

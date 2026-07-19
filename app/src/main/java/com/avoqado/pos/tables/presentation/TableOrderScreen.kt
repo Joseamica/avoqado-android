@@ -106,6 +106,7 @@ fun TableOrderScreen(
     val isSending by viewModel.isSending.collectAsState()
     val actionMessage by viewModel.actionMessage.collectAsState()
     val loyalty by viewModel.loyalty.collectAsState()
+    val serviceChargeOptions by viewModel.serviceCharges.collectAsState()
     val floorTables by viewModel.floorTables.collectAsState()
 
     val context = LocalContext.current
@@ -129,6 +130,7 @@ fun TableOrderScreen(
     var showBarcodeScanner by remember { mutableStateOf(false) }
     var showRewards by remember { mutableStateOf(false) }
     var showCheckSwitcher by remember { mutableStateOf(false) }
+    var showServiceCharges by remember { mutableStateOf(false) }
     var unknownBarcode by remember { mutableStateOf<String?>(null) }
     // Menú … por tiempo (¡Listo!/Repetir). Par (curso, abierto).
     var courseMenuTarget by remember { mutableStateOf<Pair<String?, Boolean>?>(null) }
@@ -291,6 +293,7 @@ fun TableOrderScreen(
                                 hasCashDrawer = viewModel.hasCashDrawer,
                                 onEscanear = { showBarcodeScanner = true },
                                 onRecompensas = { showRewards = true },
+                                onCobrosServicio = { viewModel.loadServiceCharges(); showServiceCharges = true },
                                 hasLoyalty = loyalty?.canRedeem == true,
                             )
                             PanelTab.CLIENTE -> TableClientePanel(
@@ -426,6 +429,7 @@ fun TableOrderScreen(
                                 hasCashDrawer = viewModel.hasCashDrawer,
                                 onEscanear = { showBarcodeScanner = true },
                                 onRecompensas = { showRewards = true },
+                                onCobrosServicio = { viewModel.loadServiceCharges(); showServiceCharges = true },
                                 hasLoyalty = loyalty?.canRedeem == true,
                             )
                             PanelTab.CLIENTE -> TableClientePanel(
@@ -587,6 +591,16 @@ fun TableOrderScreen(
             },
             confirmButton = {},
             dismissButton = { TextButton(onClick = { showCheckSwitcher = false }) { Text("Cerrar") } },
+        )
+    }
+
+    if (showServiceCharges) {
+        ServiceChargesDialog(
+            options = serviceChargeOptions,
+            applied = check?.serviceCharges ?: emptyList(),
+            onDismiss = { showServiceCharges = false },
+            onApply = { id -> viewModel.applyServiceCharge(id); panelTab = PanelTab.CUENTA },
+            onRemove = { id -> viewModel.removeServiceCharge(id) },
         )
     }
 
@@ -948,6 +962,24 @@ internal fun TableCheckPanel(
                         text = "-" + centsDisplay(kotlin.math.round(c.discountAmount * 100).toInt()),
                         style = MaterialTheme.typography.bodyMedium,
                         color = Success,
+                    )
+                }
+            }
+            // Cobros por servicio: SUMAN (ingreso gravable), por eso van con "+"
+            // y sin el verde de descuento.
+            check?.takeIf { it.serviceChargeAmount > 0 }?.let { c ->
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xs))
+                Row(modifier = Modifier.fillMaxWidth().padding(horizontal = AvoqadoTheme.spacing.xs)) {
+                    Text(
+                        text = "Cobros por servicio",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        text = "+" + centsDisplay(kotlin.math.round(c.serviceChargeAmount * 100).toInt()),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
@@ -1357,6 +1389,7 @@ internal fun TableActionsPanel(
     hasCashDrawer: Boolean = false,
     onEscanear: () -> Unit = {},
     onRecompensas: () -> Unit = {},
+    onCobrosServicio: () -> Unit = {},
     hasLoyalty: Boolean = false,
 ) {
     Column(
@@ -1489,7 +1522,12 @@ internal fun TableActionsPanel(
                 onClick = onRecompensas,
                 modifier = Modifier.weight(1f),
             )
-            Spacer(modifier = Modifier.weight(1f))
+            ActionPill(
+                label = "Cobros por servicio",
+                enabled = true,
+                onClick = onCobrosServicio,
+                modifier = Modifier.weight(1f),
+            )
         }
 
         Text(
@@ -1937,6 +1975,78 @@ private fun OrderDiscountsDialog(
     )
 }
 
+
+// MARK: - Cobros por servicio (SUMAN al total: ingreso gravable)
+
+@Composable
+private fun ServiceChargesDialog(
+    options: List<com.avoqado.pos.tables.data.ServiceChargeOption>,
+    applied: List<com.avoqado.pos.tables.data.AppliedServiceCharge>,
+    onDismiss: () -> Unit,
+    onApply: (String) -> Unit,
+    onRemove: (String) -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Cobros por servicio") },
+        text = {
+            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                if (applied.isNotEmpty()) {
+                    Text("Aplicados", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    applied.forEach { a ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(vertical = AvoqadoTheme.spacing.sm),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(a.name)
+                                Text(
+                                    text = "+" + money(a.amount) + if (a.isAutomatic) " · automático" else "",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            // Un cargo automático se retira solo al corregir los
+                            // comensales; quitarlo a mano volvería a aparecer.
+                            if (!a.isAutomatic) {
+                                TextButton(onClick = { onRemove(a.id) }) { Text("Quitar", color = MaterialTheme.colorScheme.error) }
+                            }
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+                }
+
+                val appliedIds = applied.mapNotNull { it.name }.toSet()
+                val disponibles = options.filter { it.name !in appliedIds }
+                Text("Disponibles", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                if (disponibles.isEmpty()) {
+                    Text(
+                        "No hay más cobros configurados para este local.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                disponibles.forEach { op ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(vertical = AvoqadoTheme.spacing.sm),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(op.name)
+                            Text(
+                                text = op.valueDisplay + (op.autoApplyMinCovers?.let { " · automático desde $it comensales" } ?: ""),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        TextButton(onClick = { onApply(op.id) }) { Text("Aplicar") }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Listo") } },
+    )
+}
 
 // MARK: - Recompensas (canje de puntos de lealtad)
 
