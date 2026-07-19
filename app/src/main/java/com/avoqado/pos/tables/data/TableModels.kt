@@ -210,6 +210,8 @@ data class OrderDetail(
     val serviceCharges: List<AppliedServiceCharge> = emptyList(),
     /** Pagos ya hechos (splits parciales): Pagar debe cobrar SOLO lo restante. */
     val payments: List<OrderDetailPayment> = emptyList(),
+    /** Optimistic concurrency del add-round: refresca la sesión y evita el 409 fantasma. */
+    val version: Int? = null,
     val items: List<OrderDetailItem> = emptyList(),
 )
 
@@ -298,12 +300,16 @@ data class ServiceChargesResponse(val success: Boolean = true, val data: List<Se
 data class OrderDetailPayment(
     val id: String = "",
     val amount: Double = 0.0,
+    /** La propina viaja aparte pero el server la mete al total: se resta también. */
+    val tipAmount: Double = 0.0,
     val status: String = "",
 )
 
 @Serializable
 data class AppliedServiceCharge(
     val id: String,
+    /** Id del catálogo — el filtro de "Disponibles" compara por ESTO, no por nombre. */
+    val serviceChargeId: String? = null,
     val name: String = "",
     val amount: Double = 0.0,
     val isAutomatic: Boolean = false,

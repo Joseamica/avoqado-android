@@ -99,7 +99,15 @@ class TableOrderViewModel @Inject constructor(
         val vId = venueId ?: return
         viewModelScope.launch {
             _isLoadingCheck.value = true
-            repository.getOrderDetail(vId, session.orderId).onSuccess { _check.value = it }
+            repository.getOrderDetail(vId, session.orderId).fold(
+                onSuccess = { detail ->
+                    _check.value = detail
+                    // Toda acción del panel incrementa Order.version en el server;
+                    // sin refrescarla, el siguiente Enviar da 409 (auditoría).
+                    detail.version?.let { tableSession.updateVersion(it) }
+                },
+                onFailure = { _actionMessage.value = "No se pudo actualizar la cuenta" },
+            )
             _isLoadingCheck.value = false
             // El saldo de puntos depende del cliente adjunto, que viene en el cheque.
             loadLoyalty()
@@ -512,7 +520,10 @@ class TableOrderViewModel @Inject constructor(
     /** Categorías del menú elegido; null = sin filtro. */
     val menuCategoryIds: StateFlow<Set<String>?> = _selectedMenuId
         .combine(_menus) { id, list ->
-            if (id == null) null else list.firstOrNull { it.id == id }?.categoryIds?.toSet()
+            // Menú sin categorías = sin filtro: un set vacío dejaría la
+            // cuadrícula en blanco sin salida (auditoría).
+            if (id == null) null
+            else list.firstOrNull { it.id == id }?.categoryIds?.takeIf { it.isNotEmpty() }?.toSet()
         }
         .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, null)
 
@@ -641,6 +652,8 @@ class TableOrderViewModel @Inject constructor(
             orderNumber = check.orderNumber,
             version = check.version,
             totalCents = round(check.total * 100).toInt(),
+            // Nunca arrastrar PAYING al otro cheque: cobrar es por-cuenta.
+            mode = TableSession.Mode.ORDERING,
         )
         tableSession.start(next)
         clearPending()
@@ -894,8 +907,13 @@ class TableOrderViewModel @Inject constructor(
         val session = tableSession.current() ?: return false
         // 🔴 MONEY: si ya hubo pagos parciales (split), Pagar debe cobrar SOLO lo
         // restante — usar el total completo re-cobraría lo ya pagado.
-        val totalCents = _check.value?.let { check ->
-            val paid = check.payments.filter { it.status == "COMPLETED" }.sumOf { it.amount }
+        // Solo confiar en el cheque si ES el de esta sesión (cambiar de cuenta
+        // dispara loadCheck async — cobrar el total del cheque ANTERIOR contra
+        // el orderId nuevo sería dinero equivocado; auditoría 2026-07-18).
+        val totalCents = _check.value?.takeIf { it.id == session.orderId }?.let { check ->
+            // amount + tipAmount: el server mete las propinas de pagos previos
+            // DENTRO de order.total, así que se restan completas.
+            val paid = check.payments.filter { it.status == "COMPLETED" }.sumOf { it.amount + it.tipAmount }
             round((check.total - paid) * 100).toInt()
         } ?: session.totalCents
         if (totalCents <= 0) return false

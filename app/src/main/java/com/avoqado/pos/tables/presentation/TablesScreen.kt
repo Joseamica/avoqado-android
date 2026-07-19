@@ -749,9 +749,12 @@ private fun TableCheckSheet(
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
 
                 if (order != null && order.total > 0) {
+                    // Una sola puerta de cobro (auditoría): el register sembraba el
+                    // TOTAL COMPLETO sin restar pagos parciales. Ahora este botón
+                    // abre la pantalla de mesa, cuyo Pagar cobra solo lo restante.
                     PrimaryButton(
                         text = "Cobrar cuenta • ${order.totalDisplay}",
-                        onClick = { viewModel.startCobrar(table, onReady = onGoToCheckout) },
+                        onClick = { viewModel.startOrdering(table, onReady = onOpenTableOrder) },
                         fullWidth = true,
                     )
                     Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))

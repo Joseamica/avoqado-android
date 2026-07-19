@@ -133,6 +133,7 @@ fun TableOrderScreen(
     var showBarcodeScanner by remember { mutableStateOf(false) }
     var showRewards by remember { mutableStateOf(false) }
     var showCheckSwitcher by remember { mutableStateOf(false) }
+    var pendingSwitchTarget by remember { mutableStateOf<com.avoqado.pos.tables.data.OpenCheckSummary?>(null) }
     var showServiceCharges by remember { mutableStateOf(false) }
     var showMenus by remember { mutableStateOf(false) }
     var showSplitModes by remember { mutableStateOf(false) }
@@ -581,7 +582,11 @@ fun TableOrderScreen(
                                 .fillMaxWidth()
                                 .clickable(enabled = !esActual) {
                                     showCheckSwitcher = false
-                                    viewModel.switchToCheck(cuenta)?.let { session = it }
+                                    if (pendingLines.isNotEmpty()) {
+                                        pendingSwitchTarget = cuenta
+                                    } else {
+                                        viewModel.switchToCheck(cuenta)?.let { session = it }
+                                    }
                                 }
                                 .padding(vertical = AvoqadoTheme.spacing.sm),
                             verticalAlignment = Alignment.CenterVertically,
@@ -631,6 +636,20 @@ fun TableOrderScreen(
     }
 
     if (showPayment) {
+        // 🔴 Semilla ESTABLE (auditoría): construir el CartState inline generaba
+        // un id nuevo por recompose y PaymentFlowScreen (LaunchedEffect(cartState))
+        // REINICIABA el flujo — hasta con un cargo en vuelo en la terminal.
+        val paymentCart = remember(paymentSeedCents, session?.orderId) {
+            com.avoqado.pos.pos.presentation.cart.CartState(
+                items = listOf(
+                    com.avoqado.pos.pos.data.model.CartItem(
+                        type = com.avoqado.pos.pos.data.model.CartItemType.CustomAmount,
+                        name = "Cuenta Mesa ${session?.tableNumber ?: ""}",
+                        unitPrice = paymentSeedCents,
+                    ),
+                ),
+            )
+        }
         androidx.compose.ui.window.Dialog(
             onDismissRequest = { /* la X del flujo cierra; el back no lo tumba a medias */ },
             properties = androidx.compose.ui.window.DialogProperties(
@@ -645,15 +664,7 @@ fun TableOrderScreen(
                     .background(MaterialTheme.colorScheme.surface),
             ) {
                 com.avoqado.pos.payment.presentation.PaymentFlowScreen(
-                    cartState = com.avoqado.pos.pos.presentation.cart.CartState(
-                        items = listOf(
-                            com.avoqado.pos.pos.data.model.CartItem(
-                                type = com.avoqado.pos.pos.data.model.CartItemType.CustomAmount,
-                                name = "Cuenta Mesa ${session?.tableNumber ?: ""}",
-                                unitPrice = paymentSeedCents,
-                            ),
-                        ),
-                    ),
+                    cartState = paymentCart,
                     splitConfig = pendingSplitConfig,
                     onSplitImporte = {
                         showPayment = false
@@ -678,11 +689,32 @@ fun TableOrderScreen(
                     onCancel = {
                         showPayment = false
                         pendingSplitConfig = com.avoqado.pos.payment.presentation.SplitConfig()
+                        // 🔴 La sesión NO puede quedarse en PAYING (auditoría): el tab
+                        // Cobrar la detectaría y sembraría el register con esta mesa —
+                        // una venta retail acabaría registrada contra la orden de la mesa.
+                        viewModel.tableSession.current()?.let { s ->
+                            viewModel.tableSession.start(s.copy(mode = com.avoqado.pos.tables.data.TableSession.Mode.ORDERING))
+                        }
                         viewModel.loadCheck()
                     },
                 )
             }
         }
+    }
+
+    pendingSwitchTarget?.let { target ->
+        AlertDialog(
+            onDismissRequest = { pendingSwitchTarget = null },
+            title = { Text("Artículos sin enviar") },
+            text = { Text("Tienes artículos sin enviar a cocina. Si cambias de cuenta ahora se descartan.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingSwitchTarget = null
+                    viewModel.switchToCheck(target)?.let { session = it }
+                }) { Text("Descartar y cambiar", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = { TextButton(onClick = { pendingSwitchTarget = null }) { Text("Seguir aquí") } },
+        )
     }
 
     if (showMerge) {
@@ -2375,8 +2407,8 @@ private fun ServiceChargesDialog(
                     Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
                 }
 
-                val appliedIds = applied.mapNotNull { it.name }.toSet()
-                val disponibles = options.filter { it.name !in appliedIds }
+                val appliedIds = applied.mapNotNull { it.serviceChargeId }.toSet()
+                val disponibles = options.filter { it.id !in appliedIds }
                 Text("Disponibles", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 if (disponibles.isEmpty()) {
                     Text(
