@@ -23,6 +23,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.MoreHoriz
@@ -93,7 +94,9 @@ fun TableOrderScreen(
     // SNAPSHOT, not collected: this screen OWNS the session — clearing it on
     // send/exit must not recompose into the null-guard (that double-fired
     // onExit and popped the NavHost empty → blank screen).
-    val session = remember { viewModel.tableSession.current() }
+    // Snapshot MUTABLE: colectar la sesión causaba double-pop, pero el selector
+    // de cuenta necesita reemplazarlo al cambiar de cheque.
+    var session by remember { mutableStateOf(viewModel.tableSession.current()) }
     val check by viewModel.check.collectAsState()
     val isLoadingCheck by viewModel.isLoadingCheck.collectAsState()
     val pendingLines by viewModel.pending.collectAsState()
@@ -125,6 +128,7 @@ fun TableOrderScreen(
     var showTimeClock by remember { mutableStateOf(false) }
     var showBarcodeScanner by remember { mutableStateOf(false) }
     var showRewards by remember { mutableStateOf(false) }
+    var showCheckSwitcher by remember { mutableStateOf(false) }
     var unknownBarcode by remember { mutableStateOf<String?>(null) }
     // Menú … por tiempo (¡Listo!/Repetir). Par (curso, abierto).
     var courseMenuTarget by remember { mutableStateOf<Pair<String?, Boolean>?>(null) }
@@ -153,7 +157,7 @@ fun TableOrderScreen(
         LaunchedEffect(Unit) { exitOnce() }
         return
     }
-    val active = session
+    val active = session ?: return
     val floorTable = floorTables.firstOrNull { it.id == active.tableId }
 
     fun requestExit() {
@@ -187,6 +191,10 @@ fun TableOrderScreen(
             covers = floorTable?.currentOrder?.covers,
             openedAt = floorTable?.currentOrder?.createdAt,
             onBack = { requestExit() },
+            // Multi-cheque: cuál de las cuentas de la mesa estamos viendo.
+            checkIndex = floorTable?.openOrders?.indexOfFirst { it.id == active.orderId }?.takeIf { it >= 0 },
+            checkCount = floorTable?.openOrders?.size ?: 0,
+            onSwitchCheck = { showCheckSwitcher = true },
         )
         HorizontalDivider()
 
@@ -538,6 +546,50 @@ fun TableOrderScreen(
         )
     }
 
+    if (showCheckSwitcher) {
+        val cuentas = floorTable?.openOrders ?: emptyList()
+        AlertDialog(
+            onDismissRequest = { showCheckSwitcher = false },
+            title = { Text("Cuentas de la mesa") },
+            text = {
+                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                    cuentas.forEachIndexed { index, cuenta ->
+                        val esActual = cuenta.id == session?.orderId
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(enabled = !esActual) {
+                                    showCheckSwitcher = false
+                                    viewModel.switchToCheck(cuenta)?.let { session = it }
+                                }
+                                .padding(vertical = AvoqadoTheme.spacing.sm),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = cuenta.name?.takeIf { it.isNotBlank() } ?: "Cuenta ${index + 1}",
+                                    fontWeight = if (esActual) FontWeight.Bold else FontWeight.Normal,
+                                )
+                                Text(
+                                    text = "${cuenta.itemCount} artículo(s)" + (cuenta.waiterName?.let { " · $it" } ?: ""),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            Text(cuenta.totalDisplay, fontWeight = FontWeight.SemiBold)
+                            if (esActual) {
+                                Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
+                                Text("Actual", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = { TextButton(onClick = { showCheckSwitcher = false }) { Text("Cerrar") } },
+        )
+    }
+
     if (showRewards) {
         loyalty?.let { l ->
             RewardsDialog(
@@ -724,6 +776,9 @@ private fun TableContextBar(
     covers: Int?,
     openedAt: String?,
     onBack: () -> Unit,
+    checkIndex: Int? = null,
+    checkCount: Int = 0,
+    onSwitchCheck: () -> Unit = {},
 ) {
     val nowMs by produceState(initialValue = System.currentTimeMillis()) {
         while (true) {
@@ -759,6 +814,29 @@ private fun TableContextBar(
                     text = parts.joinToString(" · "),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        // Solo aparece cuando la mesa TIENE varias cuentas: deja claro en cuál
+        // estás y permite cambiar sin volver al plano.
+        if (checkCount > 1 && checkIndex != null) {
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(20.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .clickable(onClick = onSwitchCheck)
+                    .padding(horizontal = AvoqadoTheme.spacing.md, vertical = AvoqadoTheme.spacing.sm),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "Cuenta ${checkIndex + 1} de $checkCount",
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Icon(
+                    Icons.Default.ArrowDropDown,
+                    contentDescription = "Cambiar de cuenta",
+                    modifier = Modifier.size(20.dp),
                 )
             }
         }

@@ -542,6 +542,26 @@ class TableOrderViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Multi-cheque: cambia la sesión a OTRA cuenta abierta de la MISMA mesa sin
+     * salir de la pantalla. Devuelve la sesión nueva para que la pantalla
+     * actualice su snapshot (colectar la sesión causaba double-pop).
+     */
+    fun switchToCheck(check: com.avoqado.pos.tables.data.OpenCheckSummary): TableSession.Active? {
+        val current = tableSession.current() ?: return null
+        val next = current.copy(
+            orderId = check.id,
+            orderNumber = check.orderNumber,
+            version = check.version,
+            totalCents = round(check.total * 100).toInt(),
+        )
+        tableSession.start(next)
+        clearPending()
+        _actionMessage.value = null
+        loadCheck()
+        return next
+    }
+
     /** Multi-cheque: separa artículos ya enviados en una cuenta NUEVA de la
      *  misma mesa (Square's separate checks). La sesión sigue en la original. */
     fun splitItems(itemIds: List<String>) {

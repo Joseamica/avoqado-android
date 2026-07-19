@@ -134,8 +134,6 @@ fun TablesScreen(
     var showBulkCortesia by remember { mutableStateOf(false) }
     var showBulkAsignar by remember { mutableStateOf(false) }
     var showBulkMover by remember { mutableStateOf(false) }
-    // Multi-cheque: mesa con >1 cuentas abiertas → picker de cheque.
-    var checkPickerTable by remember { mutableStateOf<DiningTable?>(null) }
     val bulkCtx = androidx.compose.ui.platform.LocalContext.current
     fun exitSelection() { selectionMode = false; selectedIds = emptySet() }
     val selectedOccupied = tables.filter { it.id in selectedIds && it.isOccupied }
@@ -204,11 +202,10 @@ fun TablesScreen(
                         selectedIds = if (t.id in selectedIds) selectedIds - t.id else selectedIds + t.id
                     }
                 } else if (t.isOccupied) {
-                    if (t.openOrders.size > 1) {
-                        checkPickerTable = t
-                    } else {
-                        viewModel.startOrdering(t, onReady = onOpenTableOrder)
-                    }
+                    // Entra SIEMPRE a la cuenta principal de la mesa (Square no
+                    // interpone un modal): si hay varias, se cambia desde el
+                    // selector de la barra de contexto dentro del cheque.
+                    viewModel.startOrdering(t, onReady = onOpenTableOrder)
                 } else {
                     viewModel.selectTable(t.id)
                 }
@@ -234,44 +231,6 @@ fun TablesScreen(
                 )
             }
         }
-    }
-
-    checkPickerTable?.let { table ->
-        androidx.compose.material3.AlertDialog(
-            onDismissRequest = { checkPickerTable = null },
-            title = { Text("Mesa ${table.number} — ${table.openOrders.size} cuentas") },
-            text = {
-                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-                    table.openOrders.forEach { check ->
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    checkPickerTable = null
-                                    viewModel.startOrderingCheck(table, check, onReady = onOpenTableOrder)
-                                }
-                                .padding(vertical = AvoqadoTheme.spacing.sm),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(
-                                    text = check.name?.takeIf { it.isNotBlank() } ?: "Cuenta ${check.orderNumber.takeLast(4)}",
-                                    fontWeight = FontWeight.SemiBold,
-                                )
-                                Text(
-                                    text = "${check.itemCount} artículo(s)" + (check.waiterName?.let { " · $it" } ?: ""),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            }
-                            Text(check.totalDisplay, fontWeight = FontWeight.SemiBold)
-                        }
-                    }
-                }
-            },
-            confirmButton = {},
-            dismissButton = { TextButton(onClick = { checkPickerTable = null }) { Text("Cancelar") } },
-        )
     }
 
     if (showBulkAnular) {
