@@ -116,6 +116,12 @@ class TableServiceRepository @Inject constructor(
         Unit
     }.onFailure { Log.e(TAG, "❌ redeemLoyaltyPoints failed: ${it.message}") }
 
+    /** "Fusionar cuentas": vuelca [sourceOrderId] en [orderId] y cierra el origen. */
+    suspend fun mergeOrders(venueId: String, orderId: String, sourceOrderId: String): Result<Unit> = runCatching {
+        apiService.mergeOrders(venueId, orderId, MergeOrdersRequest(sourceOrderId))
+        Unit
+    }.onFailure { Log.e(TAG, "❌ mergeOrders failed: ${it.message}") }
+
     /** "Dividir por puesto": un cheque por asiento (atómico en el server). */
     suspend fun splitOrderBySeat(venueId: String, orderId: String): Result<Unit> = runCatching {
         apiService.splitOrderBySeat(venueId, orderId)

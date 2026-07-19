@@ -136,6 +136,7 @@ fun TableOrderScreen(
     var showServiceCharges by remember { mutableStateOf(false) }
     var showMenus by remember { mutableStateOf(false) }
     var showSplitModes by remember { mutableStateOf(false) }
+    var showMerge by remember { mutableStateOf(false) }
     var unknownBarcode by remember { mutableStateOf<String?>(null) }
     // Menú … por tiempo (¡Listo!/Repetir). Par (curso, abierto).
     var courseMenuTarget by remember { mutableStateOf<Pair<String?, Boolean>?>(null) }
@@ -298,6 +299,7 @@ fun TableOrderScreen(
                                 onRecompensas = { showRewards = true },
                                 onCobrosServicio = { viewModel.loadServiceCharges(); showServiceCharges = true },
                                 onMenus = { viewModel.loadMenus(); showMenus = true },
+                                onFusionar = { showMerge = true },
                                 hasLoyalty = loyalty?.canRedeem == true,
                             )
                             PanelTab.CLIENTE -> TableClientePanel(
@@ -432,6 +434,7 @@ fun TableOrderScreen(
                                 onRecompensas = { showRewards = true },
                                 onCobrosServicio = { viewModel.loadServiceCharges(); showServiceCharges = true },
                                 onMenus = { viewModel.loadMenus(); showMenus = true },
+                                onFusionar = { showMerge = true },
                                 hasLoyalty = loyalty?.canRedeem == true,
                             )
                             PanelTab.CLIENTE -> TableClientePanel(
@@ -593,6 +596,22 @@ fun TableOrderScreen(
             },
             confirmButton = {},
             dismissButton = { TextButton(onClick = { showCheckSwitcher = false }) { Text("Cerrar") } },
+        )
+    }
+
+    if (showMerge) {
+        val otras = floorTables.flatMap { t -> t.openOrders.map { t to it } }
+            .filter { (_, cuenta) -> cuenta.id != session?.orderId }
+        MergeOrdersDialog(
+            otras = otras,
+            onDismiss = { showMerge = false },
+            onPick = { sourceId ->
+                showMerge = false
+                viewModel.mergeFrom(sourceId) { _, msg ->
+                    android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_LONG).show()
+                }
+                panelTab = PanelTab.CUENTA
+            },
         )
     }
 
@@ -1430,6 +1449,7 @@ internal fun TableActionsPanel(
     onRecompensas: () -> Unit = {},
     onCobrosServicio: () -> Unit = {},
     onMenus: () -> Unit = {},
+    onFusionar: () -> Unit = {},
     hasLoyalty: Boolean = false,
 ) {
     Column(
@@ -1490,11 +1510,20 @@ internal fun TableActionsPanel(
                 modifier = Modifier.weight(1f),
             )
             ActionPill(
+                label = "Fusionar cuentas",
+                enabled = true,
+                onClick = onFusionar,
+                modifier = Modifier.weight(1f),
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+            ActionPill(
                 label = "Ordenar carrito",
                 enabled = hasPending,
                 onClick = onOrdenarCarrito,
                 modifier = Modifier.weight(1f),
             )
+            Spacer(modifier = Modifier.weight(1f))
         }
         Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
             ActionPill(
@@ -2024,6 +2053,61 @@ private fun OrderDiscountsDialog(
     )
 }
 
+
+// MARK: - Fusionar cuentas (el inverso de dividir)
+
+@Composable
+private fun MergeOrdersDialog(
+    otras: List<Pair<com.avoqado.pos.tables.data.DiningTable, com.avoqado.pos.tables.data.OpenCheckSummary>>,
+    onDismiss: () -> Unit,
+    onPick: (String) -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Fusionar cuentas") },
+        text = {
+            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                Text(
+                    "Los artículos de la cuenta que elijas se pasan a ESTA cuenta y aquella se cierra. Útil cuando dos mesas se juntan.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+                if (otras.isEmpty()) {
+                    Text(
+                        "No hay otras cuentas abiertas.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                otras.forEach { (mesa, cuenta) ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onPick(cuenta.id) }
+                            .padding(vertical = AvoqadoTheme.spacing.sm),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = cuenta.name?.takeIf { it.isNotBlank() } ?: "Cuenta ${cuenta.orderNumber.takeLast(4)}",
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                text = "Mesa ${mesa.number} · ${cuenta.itemCount} artículo(s)",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        Text(cuenta.totalDisplay, fontWeight = FontWeight.SemiBold)
+                    }
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
+    )
+}
 
 // MARK: - Dividir la cuenta (los 3 modos de Square)
 

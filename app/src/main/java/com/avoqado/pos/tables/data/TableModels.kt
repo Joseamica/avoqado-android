@@ -153,6 +153,10 @@ data class OrderDetailsRequest(
     val orderType: String? = null,
 )
 
+/** POST .../orders/:orderId/merge body — fusionar otra cuenta en esta. */
+@Serializable
+data class MergeOrdersRequest(val sourceOrderId: String)
+
 /** POST .../orders/:orderId/split body — separar artículos en cuenta nueva. */
 @Serializable
 data class SplitOrderRequest(val itemIds: List<String>)

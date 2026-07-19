@@ -649,6 +649,26 @@ class TableOrderViewModel @Inject constructor(
         return next
     }
 
+    /**
+     * "Fusionar cuentas": vuelca OTRA cuenta abierta en la actual. El server
+     * rechaza si el origen trae descuentos/recompensas (su monto se calculó
+     * sobre esa cuenta) — el mensaje se muestra tal cual al mesero.
+     */
+    fun mergeFrom(sourceOrderId: String, onDone: (Boolean, String) -> Unit) {
+        val session = tableSession.current() ?: return
+        val vId = venueId ?: return
+        viewModelScope.launch {
+            repository.mergeOrders(vId, session.orderId, sourceOrderId).fold(
+                onSuccess = {
+                    loadCheck()
+                    repository.refresh(vId)
+                    onDone(true, "Cuentas fusionadas")
+                },
+                onFailure = { e -> onDone(false, e.message ?: "No se pudo fusionar") },
+            )
+        }
+    }
+
     /** ¿Cuántos asientos distintos tienen artículos? Habilita "Dividir por puesto". */
     val seatsWithItems: Int
         get() = _check.value?.items?.mapNotNull { it.seat }?.distinct()?.size ?: 0
