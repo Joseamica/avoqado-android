@@ -325,11 +325,13 @@ class TableOrderViewModel @Inject constructor(
                 onSuccess = { updated ->
                     // Saved — hand control back IMMEDIATELY; printing and the
                     // floor refresh are slow network hops and must not block.
+                    // Square: Enviar NO regresa al piso — la sesión sigue viva
+                    // y el panel recarga para mostrar la ronda recién enviada.
                     tableSession.updateVersion(updated.version)
-                    tableSession.clear()
                     _pending.value = emptyList()
                     _isSending.value = false
                     onDone(true, "Ronda enviada a cocina — Mesa ${session.tableNumber}")
+                    loadCheck()
 
                     launch {
                         printConfigRepository.refresh(vId)

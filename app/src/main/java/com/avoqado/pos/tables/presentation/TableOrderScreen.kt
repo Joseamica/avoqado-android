@@ -21,6 +21,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Print
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
@@ -38,6 +39,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedIconButton
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -190,9 +192,10 @@ fun TableOrderScreen(
     }
 
     fun fireSend() {
-        viewModel.sendRound { ok, msg ->
+        // Square: Enviar se queda en la mesa — el panel muestra la ronda recién
+        // enviada como bloque nuevo; se sale con Regresar/Guardar.
+        viewModel.sendRound { _, msg ->
             android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_LONG).show()
-            if (ok) exitOnce()
         }
     }
 
@@ -207,35 +210,44 @@ fun TableOrderScreen(
     }
 
     Column(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
-        TableContextBar(
-            label = active.label,
-            covers = floorTable?.currentOrder?.covers,
-            openedAt = floorTable?.currentOrder?.createdAt,
-            onBack = { requestExit() },
-            // Multi-cheque: cuál de las cuentas de la mesa estamos viendo.
-            checkIndex = floorTable?.openOrders?.indexOfFirst { it.id == active.orderId }?.takeIf { it >= 0 },
-            checkCount = floorTable?.openOrders?.size ?: 0,
-            onSwitchCheck = { showCheckSwitcher = true },
-        )
-        HorizontalDivider()
+        // Square: el header (regresar + mesa + comensales) vive en la COLUMNA
+        // IZQUIERDA — el panel del cheque gana toda la altura en tablet.
+        val contextBar: @Composable () -> Unit = {
+            TableContextBar(
+                label = active.label,
+                covers = floorTable?.currentOrder?.covers,
+                openedAt = floorTable?.currentOrder?.createdAt,
+                onBack = { requestExit() },
+                // Multi-cheque: cuál de las cuentas de la mesa estamos viendo.
+                checkIndex = floorTable?.openOrders?.indexOfFirst { it.id == active.orderId }?.takeIf { it >= 0 },
+                checkCount = floorTable?.openOrders?.size ?: 0,
+                onSwitchCheck = { showCheckSwitcher = true },
+            )
+        }
 
         if (isTablet) {
             Row(modifier = Modifier.fillMaxSize()) {
                 Box(modifier = Modifier.weight(0.5f).fillMaxHeight()) {
-                    if (showSearch) {
-                        SearchOverlayView(
-                            viewModel = catalogViewModel,
-                            onProductTap = { handleProductTap(it); showSearch = false },
-                            onDismiss = { showSearch = false },
-                        )
-                    } else {
-                        Column(modifier = Modifier.fillMaxSize()) {
-                            TableSearchBar(onSearchTap = { showSearch = true })
-                            ProductGridView(
-                                viewModel = catalogViewModel,
-                                onProductTap = { handleProductTap(it) },
-                                menuCategoryIds = menuCategoryIds,
-                            )
+                    Column(modifier = Modifier.fillMaxSize()) {
+                        contextBar()
+                        HorizontalDivider()
+                        Box(modifier = Modifier.weight(1f)) {
+                            if (showSearch) {
+                                SearchOverlayView(
+                                    viewModel = catalogViewModel,
+                                    onProductTap = { handleProductTap(it); showSearch = false },
+                                    onDismiss = { showSearch = false },
+                                )
+                            } else {
+                                Column(modifier = Modifier.fillMaxSize()) {
+                                    TableSearchBar(onSearchTap = { showSearch = true })
+                                    ProductGridView(
+                                        viewModel = catalogViewModel,
+                                        onProductTap = { handleProductTap(it) },
+                                        menuCategoryIds = menuCategoryIds,
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -268,6 +280,7 @@ fun TableOrderScreen(
                                 pendingCount = viewModel.pendingCount,
                                 pendingTotalCents = viewModel.pendingTotalCents,
                                 onEnviar = { fireSend() },
+                                onPrintCuenta = { viewModel.printPreBill() },
                                 onPagar = { firePagar() },
                                 onGuardar = { requestExit() },
                             )
@@ -326,6 +339,8 @@ fun TableOrderScreen(
             }
         } else {
             Column(modifier = Modifier.fillMaxSize()) {
+                contextBar()
+                HorizontalDivider()
                 if (showSearch) {
                     Box(modifier = Modifier.weight(1f)) {
                         SearchOverlayView(
@@ -403,6 +418,7 @@ fun TableOrderScreen(
                                 pendingCount = viewModel.pendingCount,
                                 pendingTotalCents = viewModel.pendingTotalCents,
                                 onEnviar = { showPhoneCheck = false; fireSend() },
+                                onPrintCuenta = { viewModel.printPreBill() },
                                 onPagar = { showPhoneCheck = false; firePagar() },
                                 onGuardar = { showPhoneCheck = false; requestExit() },
                             )
@@ -1054,6 +1070,8 @@ internal fun TableCheckPanel(
     pendingCount: Int,
     pendingTotalCents: Int,
     onEnviar: () -> Unit,
+    /** Ícono de impresora junto a Pagar/Guardar (Square) — imprime la pre-cuenta. */
+    onPrintCuenta: () -> Unit = {},
     onPagar: () -> Unit,
     onGuardar: () -> Unit,
 ) {
@@ -1197,6 +1215,15 @@ internal fun TableCheckPanel(
                     modifier = Modifier.weight(0.65f),
                 )
             } else {
+                // Square: ícono de impresora a la izquierda de los CTAs.
+                OutlinedIconButton(
+                    onClick = onPrintCuenta,
+                    enabled = subtotalCents > 0,
+                    modifier = Modifier.size(AvoqadoTheme.dimensions.buttonLarge),
+                    shape = RoundedCornerShape(50),
+                ) {
+                    Icon(Icons.Outlined.Print, contentDescription = "Imprimir cuenta")
+                }
                 PrimaryButton(
                     text = "Pagar ${centsDisplay(subtotalCents)}",
                     onClick = onPagar,
