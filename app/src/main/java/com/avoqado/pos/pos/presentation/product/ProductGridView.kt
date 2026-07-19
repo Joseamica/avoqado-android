@@ -72,6 +72,18 @@ fun ProductGridView(
      *  (y sus productos) del menú activo. Null = catálogo completo, como siempre. */
     menuCategoryIds: Set<String>? = null,
 ) {
+    // Agotado (espejo de avoqado-tpv): el tile SIGUE siendo clickeable, pero el
+    // tap abre el modal informativo (QUÉ falta) en vez de agregar. Interceptado
+    // aquí para que TODOS los consumidores del grid (register, mesas, phone) lo
+    // hereden sin tocar sus call sites.
+    var unavailableInfo by remember { mutableStateOf<Product?>(null) }
+    val tapOrInfo: (Product) -> Unit = { p ->
+        if (p.isOutOfStock) unavailableInfo = p else onProductTap(p)
+    }
+    unavailableInfo?.let { product ->
+        UnavailableProductDialog(product = product, onDismiss = { unavailableInfo = null })
+    }
+
     val allProductsUnfiltered by viewModel.products.collectAsState()
     val categoriesUnfiltered by viewModel.categories.collectAsState()
     val allProducts = remember(allProductsUnfiltered, menuCategoryIds) {
@@ -143,7 +155,7 @@ fun ProductGridView(
                         categories = categories,
                         uncategorizedProducts = uncategorized,
                         onCategoryTap = { selectedCategory = it },
-                        onProductTap = onProductTap,
+                        onProductTap = tapOrInfo,
                         packs = if (onPackTap != null) packs else emptyList(),
                         onPackTap = onPackTap,
                     )
@@ -173,7 +185,7 @@ fun ProductGridView(
                 } else {
                     ProductsGrid(
                         products = categoryProducts,
-                        onProductTap = onProductTap,
+                        onProductTap = tapOrInfo,
                     )
                 }
             }
@@ -415,9 +427,6 @@ private fun ProductTile(
         shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.md),
         color = MaterialTheme.colorScheme.surface,
         onClick = onClick,
-        // Con seguimiento de inventario y stock 0 el tile no se puede ordenar;
-        // sin seguimiento nunca se bloquea.
-        enabled = !product.isOutOfStock,
     ) {
         Column(modifier = if (product.isOutOfStock) Modifier.alpha(0.45f) else Modifier) {
             // Image container

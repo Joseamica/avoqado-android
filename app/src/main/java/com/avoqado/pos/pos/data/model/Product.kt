@@ -33,6 +33,12 @@ data class Product(
     val modifierGroups: List<ProductModifierGroupEntry>? = null,
     val trackInventory: Boolean? = null,
     val availableQuantity: Int? = null,
+    /** QUANTITY | RECIPE — para que el modal de agotado explique la causa. */
+    val inventoryMethod: String? = null,
+    /** Insumo cuello de botella de la receta (null sin receta / backend viejo). */
+    val limitingIngredient: IngredientShortage? = null,
+    /** Insumos con los que ya no alcanza NI para una porción. */
+    val insufficientIngredients: List<IngredientShortage>? = null,
 ) {
     val priceInCents: Int get() = (priceValue * 100).toInt()
 
@@ -159,4 +165,16 @@ data class ProductsResponse(
 data class CategoriesResponse(
     val success: Boolean = true,
     val data: List<ProductCategory> = emptyList(),
+)
+
+
+/** Espejo de avoqado-tpv: detalle de un insumo faltante para el modal de agotado. */
+@kotlinx.serialization.Serializable
+data class IngredientShortage(
+    val rawMaterialId: String = "",
+    val name: String = "",
+    val required: Double = 0.0,
+    val available: Double = 0.0,
+    val unit: String = "",
+    val maxPortions: Int = 0,
 )
