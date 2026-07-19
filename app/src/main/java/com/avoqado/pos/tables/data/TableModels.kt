@@ -182,8 +182,8 @@ data class OrderDetailResponse(val success: Boolean = true, val order: OrderDeta
 
 /**
  * The table's full check for the Square-style panel: sent items grouped by
- * course with their send time. In the table flow items are created exactly
- * when the round is fired, so [OrderDetailItem.createdAt] IS the send time.
+ * ROUND — (course, sentToKitchenAt) — mirroring Square, where every send gets
+ * its own repeatable course header with its own hour.
  */
 @Serializable
 data class OrderDetail(
@@ -237,8 +237,15 @@ data class OrderDetailItem(
     val course: String? = null,
     /** Asiento/comensal de la línea. */
     val seat: Int? = null,
-    /** ISO timestamp — the moment the round was sent to the kitchen. */
+    /** ISO timestamp de creación de la fila (fallback de agrupación para filas viejas). */
     val createdAt: String? = null,
+    /**
+     * ISO timestamp de la RONDA (compartido por todas las filas de un mismo
+     * Enviar). Modelo Square: el panel agrupa por (course, sentToKitchenAt) y
+     * repite el encabezado del tiempo con la hora de CADA envío. Null en filas
+     * anteriores al cambio → caer a createdAt.
+     */
+    val sentToKitchenAt: String? = null,
     val isCortesia: Boolean = false,
     val cortesiaReason: String? = null,
 )

@@ -1213,18 +1213,26 @@ internal fun TableCheckPanel(
     }
 }
 
-/** Sent blocks: grouped by course, ordered by fire time, black divider between. */
+/** Sent blocks: agrupados por RONDA (course + hora de envío), divisor negro entre grupos. */
 @Composable
 private fun SentCard(
     sentItems: List<OrderDetailItem>,
     onSentItemTap: (OrderDetailItem) -> Unit,
     onCourseMenu: (String?) -> Unit = {},
 ) {
-    // Course = the grouping unit (Square). Header time = the course's first fire.
+    // RONDA = la unidad de agrupación (modelo Square verificado en el POS real):
+    // cada Enviar repite el encabezado del tiempo con SU propia hora — líneas
+    // idénticas de rondas distintas nunca se fusionan. sentToKitchenAt agrupa
+    // exacto; filas viejas (null) caen a createdAt truncado al minuto para no
+    // partir una ronda por los ms que separan sus create.
     val groups = sentItems
-        .groupBy { it.course }
+        .groupBy { item ->
+            val round = parseIsoMs(item.sentToKitchenAt)
+                ?: parseIsoMs(item.createdAt)?.let { it / 60000 * 60000 }
+            item.course to round
+        }
         .entries
-        .sortedBy { (_, items) -> items.mapNotNull { parseIsoMs(it.createdAt) }.minOrNull() ?: Long.MAX_VALUE }
+        .sortedBy { (key, _) -> key.second ?: Long.MAX_VALUE }
 
     Column(
         modifier = Modifier
@@ -1232,12 +1240,13 @@ private fun SentCard(
             .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.lg))
             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f)),
     ) {
-        groups.forEachIndexed { index, (course, items) ->
+        groups.forEachIndexed { index, (key, items) ->
+            val course = key.first
             if (index > 0) {
                 HorizontalDivider(thickness = 2.dp, color = MaterialTheme.colorScheme.onSurface)
             }
             Column(modifier = Modifier.padding(AvoqadoTheme.spacing.md)) {
-                val sentAt = items.mapNotNull { parseIsoMs(it.createdAt) }.minOrNull()
+                val sentAt = key.second
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         text = course ?: "Inmediato",
