@@ -82,6 +82,11 @@ class TableServiceRepository @Inject constructor(
         Unit
     }.onFailure { Log.e(TAG, "❌ assignOrder failed: ${it.message}") }
 
+    /** Menús del venue con su horario y cuál aplica ahora. */
+    suspend fun getMenus(venueId: String): Result<MenusPayload> = runCatching {
+        apiService.getMenus(venueId).data ?: MenusPayload()
+    }.onFailure { Log.e(TAG, "❌ getMenus failed: ${it.message}") }
+
     /** Catálogo de cobros por servicio del venue. */
     suspend fun getServiceCharges(venueId: String): Result<List<ServiceChargeOption>> = runCatching {
         apiService.getServiceCharges(venueId).data

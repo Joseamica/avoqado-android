@@ -23,6 +23,8 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 import kotlin.math.round
@@ -496,6 +498,48 @@ class TableOrderViewModel @Inject constructor(
             tableSession.current()?.let { tableSession.start(it.copy(openSplitOnArrival = true)) }
         }
         return ok
+    }
+
+    // MARK: - Menús por horario
+
+    private val _menus = MutableStateFlow<List<com.avoqado.pos.tables.data.VenueMenu>>(emptyList())
+    val menus: StateFlow<List<com.avoqado.pos.tables.data.VenueMenu>> = _menus.asStateFlow()
+
+    /** Menú elegido para la cuadrícula. Null = catálogo completo. */
+    private val _selectedMenuId = MutableStateFlow<String?>(null)
+    val selectedMenuId: StateFlow<String?> = _selectedMenuId.asStateFlow()
+
+    /** Categorías del menú elegido; null = sin filtro. */
+    val menuCategoryIds: StateFlow<Set<String>?> = _selectedMenuId
+        .combine(_menus) { id, list ->
+            if (id == null) null else list.firstOrNull { it.id == id }?.categoryIds?.toSet()
+        }
+        .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, null)
+
+    /** Carga los menús y preselecciona el que aplica AHORA (lo decide el server
+     *  con la zona horaria del venue, no la del dispositivo). */
+    fun loadMenus() {
+        val vId = venueId ?: return
+        viewModelScope.launch {
+            repository.getMenus(vId).onSuccess { payload ->
+                _menus.value = payload.menus
+                // Solo preselecciona si el menú activo tiene horario propio: si
+                // el venue no usa menús por horario, la cuadrícula no se toca.
+                if (_selectedMenuId.value == null) {
+                    val activo = payload.menus.firstOrNull { it.id == payload.activeMenuId }
+                    if (activo != null && activo.scheduleDisplay != null) {
+                        _selectedMenuId.value = activo.id
+                    }
+                }
+            }
+        }
+    }
+
+    fun selectMenu(menuId: String?) {
+        _selectedMenuId.value = menuId
+        _actionMessage.value = menuId?.let { id ->
+            _menus.value.firstOrNull { it.id == id }?.let { "Menú: ${it.name}" }
+        } ?: "Catálogo completo"
     }
 
     // MARK: - Cobros por servicio

@@ -141,6 +141,12 @@ interface ApiService {
         @Body request: com.avoqado.pos.tables.data.AssignOrderRequest,
     ): com.avoqado.pos.tables.data.SimpleSuccessResponse
 
+    // Menús por horario: cuál aplica ahora + categorías de cada uno.
+    @GET("mobile/venues/{venueId}/menus")
+    suspend fun getMenus(
+        @Path("venueId") venueId: String,
+    ): com.avoqado.pos.tables.data.MenusResponse
+
     // Cobros por servicio (TABLE_SERVICE): catálogo del venue.
     @GET("mobile/venues/{venueId}/service-charges")
     suspend fun getServiceCharges(

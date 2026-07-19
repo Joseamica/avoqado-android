@@ -67,9 +67,20 @@ fun ProductGridView(
     viewModel: CartViewModel,
     onProductTap: (Product) -> Unit,
     onPackTap: ((com.avoqado.pos.articles.data.model.CreditPack) -> Unit)? = null,
+    /** Menús por horario: cuando viene, la cuadrícula solo muestra las categorías
+     *  (y sus productos) del menú activo. Null = catálogo completo, como siempre. */
+    menuCategoryIds: Set<String>? = null,
 ) {
-    val allProducts by viewModel.products.collectAsState()
-    val categories by viewModel.categories.collectAsState()
+    val allProductsUnfiltered by viewModel.products.collectAsState()
+    val categoriesUnfiltered by viewModel.categories.collectAsState()
+    val allProducts = remember(allProductsUnfiltered, menuCategoryIds) {
+        if (menuCategoryIds == null) allProductsUnfiltered
+        else allProductsUnfiltered.filter { it.categoryId != null && it.categoryId in menuCategoryIds }
+    }
+    val categories = remember(categoriesUnfiltered, menuCategoryIds) {
+        if (menuCategoryIds == null) categoriesUnfiltered
+        else categoriesUnfiltered.filter { it.id in menuCategoryIds }
+    }
     val isLoading by viewModel.isLoading.collectAsState()
 
     // Prepaid credit packs (membresías), shown as tiles when onPackTap is set.

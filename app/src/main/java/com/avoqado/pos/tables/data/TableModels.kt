@@ -299,3 +299,31 @@ data class AppliedServiceCharge(
 /** POST .../orders/:orderId/service-charges body. */
 @Serializable
 data class ApplyServiceChargeRequest(val serviceChargeId: String)
+
+// MARK: - Menús por horario (Square: "Menús")
+
+@Serializable
+data class VenueMenu(
+    val id: String,
+    val name: String = "",
+    val description: String? = null,
+    val isDefault: Boolean = false,
+    val availableFrom: String? = null,
+    val availableUntil: String? = null,
+    val availableDays: List<String> = emptyList(),
+    val categoryIds: List<String> = emptyList(),
+    val appliesNow: Boolean = false,
+) {
+    /** "07:00–12:00" o null si no tiene horario (aplica todo el día). */
+    val scheduleDisplay: String?
+        get() = if (availableFrom != null && availableUntil != null) "$availableFrom–$availableUntil" else null
+}
+
+@Serializable
+data class MenusPayload(
+    val menus: List<VenueMenu> = emptyList(),
+    val activeMenuId: String? = null,
+)
+
+@Serializable
+data class MenusResponse(val success: Boolean = true, val data: MenusPayload? = null)

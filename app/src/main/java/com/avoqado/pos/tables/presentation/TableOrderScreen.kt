@@ -107,6 +107,9 @@ fun TableOrderScreen(
     val actionMessage by viewModel.actionMessage.collectAsState()
     val loyalty by viewModel.loyalty.collectAsState()
     val serviceChargeOptions by viewModel.serviceCharges.collectAsState()
+    val menus by viewModel.menus.collectAsState()
+    val selectedMenuId by viewModel.selectedMenuId.collectAsState()
+    val menuCategoryIds by viewModel.menuCategoryIds.collectAsState()
     val floorTables by viewModel.floorTables.collectAsState()
 
     val context = LocalContext.current
@@ -131,6 +134,7 @@ fun TableOrderScreen(
     var showRewards by remember { mutableStateOf(false) }
     var showCheckSwitcher by remember { mutableStateOf(false) }
     var showServiceCharges by remember { mutableStateOf(false) }
+    var showMenus by remember { mutableStateOf(false) }
     var unknownBarcode by remember { mutableStateOf<String?>(null) }
     // Menú … por tiempo (¡Listo!/Repetir). Par (curso, abierto).
     var courseMenuTarget by remember { mutableStateOf<Pair<String?, Boolean>?>(null) }
@@ -215,6 +219,7 @@ fun TableOrderScreen(
                             ProductGridView(
                                 viewModel = catalogViewModel,
                                 onProductTap = { handleProductTap(it) },
+                                menuCategoryIds = menuCategoryIds,
                             )
                         }
                     }
@@ -294,6 +299,7 @@ fun TableOrderScreen(
                                 onEscanear = { showBarcodeScanner = true },
                                 onRecompensas = { showRewards = true },
                                 onCobrosServicio = { viewModel.loadServiceCharges(); showServiceCharges = true },
+                                onMenus = { viewModel.loadMenus(); showMenus = true },
                                 hasLoyalty = loyalty?.canRedeem == true,
                             )
                             PanelTab.CLIENTE -> TableClientePanel(
@@ -430,6 +436,7 @@ fun TableOrderScreen(
                                 onEscanear = { showBarcodeScanner = true },
                                 onRecompensas = { showRewards = true },
                                 onCobrosServicio = { viewModel.loadServiceCharges(); showServiceCharges = true },
+                                onMenus = { viewModel.loadMenus(); showMenus = true },
                                 hasLoyalty = loyalty?.canRedeem == true,
                             )
                             PanelTab.CLIENTE -> TableClientePanel(
@@ -591,6 +598,19 @@ fun TableOrderScreen(
             },
             confirmButton = {},
             dismissButton = { TextButton(onClick = { showCheckSwitcher = false }) { Text("Cerrar") } },
+        )
+    }
+
+    if (showMenus) {
+        MenusDialog(
+            menus = menus,
+            selectedMenuId = selectedMenuId,
+            onDismiss = { showMenus = false },
+            onPick = { id ->
+                showMenus = false
+                viewModel.selectMenu(id)
+                panelTab = PanelTab.CUENTA
+            },
         )
     }
 
@@ -1390,6 +1410,7 @@ internal fun TableActionsPanel(
     onEscanear: () -> Unit = {},
     onRecompensas: () -> Unit = {},
     onCobrosServicio: () -> Unit = {},
+    onMenus: () -> Unit = {},
     hasLoyalty: Boolean = false,
 ) {
     Column(
@@ -1528,6 +1549,15 @@ internal fun TableActionsPanel(
                 onClick = onCobrosServicio,
                 modifier = Modifier.weight(1f),
             )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+            ActionPill(
+                label = "Menús",
+                enabled = true,
+                onClick = onMenus,
+                modifier = Modifier.weight(1f),
+            )
+            Spacer(modifier = Modifier.weight(1f))
         }
 
         Text(
@@ -1975,6 +2005,78 @@ private fun OrderDiscountsDialog(
     )
 }
 
+
+// MARK: - Menús por horario
+
+@Composable
+private fun MenusDialog(
+    menus: List<com.avoqado.pos.tables.data.VenueMenu>,
+    selectedMenuId: String?,
+    onDismiss: () -> Unit,
+    onPick: (String?) -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Menús") },
+        text = {
+            Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                Text(
+                    "Cambia qué productos muestra la cuadrícula. El menú con horario se elige solo según la hora del local.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+
+                // Sin filtro: el catálogo completo, como antes de los menús.
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onPick(null) }
+                        .padding(vertical = AvoqadoTheme.spacing.sm),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "Todos los productos",
+                        fontWeight = if (selectedMenuId == null) FontWeight.Bold else FontWeight.Normal,
+                        modifier = Modifier.weight(1f),
+                    )
+                    if (selectedMenuId == null) {
+                        Text("Actual", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                    }
+                }
+
+                menus.forEach { menu ->
+                    val esActual = menu.id == selectedMenuId
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onPick(menu.id) }
+                            .padding(vertical = AvoqadoTheme.spacing.sm),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(menu.name, fontWeight = if (esActual) FontWeight.Bold else FontWeight.Normal)
+                            val sub = buildList {
+                                menu.scheduleDisplay?.let { add(it) }
+                                if (menu.appliesNow) add("aplica ahora")
+                                add("${menu.categoryIds.size} categorías")
+                            }
+                            Text(
+                                text = sub.joinToString(" · "),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                        if (esActual) {
+                            Text("Actual", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Listo") } },
+    )
+}
 
 // MARK: - Cobros por servicio (SUMAN al total: ingreso gravable)
 
