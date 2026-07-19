@@ -892,7 +892,12 @@ class TableOrderViewModel @Inject constructor(
      */
     fun preparePagar(): Boolean {
         val session = tableSession.current() ?: return false
-        val totalCents = _check.value?.let { round(it.total * 100).toInt() } ?: session.totalCents
+        // 🔴 MONEY: si ya hubo pagos parciales (split), Pagar debe cobrar SOLO lo
+        // restante — usar el total completo re-cobraría lo ya pagado.
+        val totalCents = _check.value?.let { check ->
+            val paid = check.payments.filter { it.status == "COMPLETED" }.sumOf { it.amount }
+            round((check.total - paid) * 100).toInt()
+        } ?: session.totalCents
         if (totalCents <= 0) return false
         tableSession.start(session.copy(mode = TableSession.Mode.PAYING, totalCents = totalCents))
         return true

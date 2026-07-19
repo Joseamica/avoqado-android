@@ -28,6 +28,8 @@ fun PaymentFlowScreen(
     onComplete: (PaymentCompletion) -> Unit,
     onCancel: () -> Unit,
     splitConfig: SplitConfig = SplitConfig(),
+    /** Mesas (Square): link "Dividir importe" en la selección de método. */
+    onSplitImporte: (() -> Unit)? = null,
     viewModel: PaymentFlowViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsState()
@@ -108,6 +110,7 @@ fun PaymentFlowScreen(
                     onCancel = onCancel,
                     terminalsUnavailable = terminalAvailability == PaymentFlowViewModel.TerminalAvailability.NONE,
                     onRetryTerminals = { viewModel.probeTerminalAvailability() },
+                    onSplitImporte = onSplitImporte,
                 )
             }
             is PaymentFlowState.CollectingCashAmount -> {

@@ -137,6 +137,13 @@ fun TableOrderScreen(
     var showMenus by remember { mutableStateOf(false) }
     var showSplitModes by remember { mutableStateOf(false) }
     var showMerge by remember { mutableStateOf(false) }
+    // Pago dedicado (Square): el flujo de pago se presenta AQUÍ, sin brincar al
+    // register de retail. Mismo PaymentFlowViewModel, solo cambia el cascarón.
+    var showPayment by remember { mutableStateOf(false) }
+    var paymentSeedCents by remember { mutableStateOf(0) }
+    var pendingSplitConfig by remember { mutableStateOf(com.avoqado.pos.payment.presentation.SplitConfig()) }
+    var showSplitImporte by remember { mutableStateOf(false) }
+    val tablesViewModel: TablesViewModel = androidx.hilt.navigation.compose.hiltViewModel()
     var unknownBarcode by remember { mutableStateOf<String?>(null) }
     // Menú … por tiempo (¡Listo!/Repetir). Par (curso, abierto).
     var courseMenuTarget by remember { mutableStateOf<Pair<String?, Boolean>?>(null) }
@@ -189,8 +196,13 @@ fun TableOrderScreen(
     }
 
     fun firePagar() {
-        if (viewModel.preparePagar()) onPagar()
-        else android.widget.Toast.makeText(context, "La cuenta no tiene cargos todavía", android.widget.Toast.LENGTH_SHORT).show()
+        if (viewModel.preparePagar()) {
+            paymentSeedCents = viewModel.tableSession.current()?.totalCents ?: 0
+            pendingSplitConfig = com.avoqado.pos.payment.presentation.SplitConfig()
+            showPayment = true
+        } else {
+            android.widget.Toast.makeText(context, "La cuenta no tiene cargos todavía", android.widget.Toast.LENGTH_SHORT).show()
+        }
     }
 
     Column(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
@@ -599,6 +611,80 @@ fun TableOrderScreen(
         )
     }
 
+    if (showSplitImporte) {
+        com.avoqado.pos.payment.presentation.SplitPaymentSheet(
+            totalCents = paymentSeedCents,
+            items = listOf(
+                com.avoqado.pos.pos.data.model.CartItem(
+                    type = com.avoqado.pos.pos.data.model.CartItemType.CustomAmount,
+                    name = "Cuenta Mesa ${session?.tableNumber ?: ""}",
+                    unitPrice = paymentSeedCents,
+                ),
+            ),
+            onDismiss = { showSplitImporte = false },
+            onConfirm = { config ->
+                showSplitImporte = false
+                pendingSplitConfig = config
+                showPayment = true
+            },
+        )
+    }
+
+    if (showPayment) {
+        androidx.compose.ui.window.Dialog(
+            onDismissRequest = { /* la X del flujo cierra; el back no lo tumba a medias */ },
+            properties = androidx.compose.ui.window.DialogProperties(
+                usePlatformDefaultWidth = false,
+                dismissOnBackPress = false,
+                dismissOnClickOutside = false,
+            ),
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.surface),
+            ) {
+                com.avoqado.pos.payment.presentation.PaymentFlowScreen(
+                    cartState = com.avoqado.pos.pos.presentation.cart.CartState(
+                        items = listOf(
+                            com.avoqado.pos.pos.data.model.CartItem(
+                                type = com.avoqado.pos.pos.data.model.CartItemType.CustomAmount,
+                                name = "Cuenta Mesa ${session?.tableNumber ?: ""}",
+                                unitPrice = paymentSeedCents,
+                            ),
+                        ),
+                    ),
+                    splitConfig = pendingSplitConfig,
+                    onSplitImporte = {
+                        showPayment = false
+                        showSplitImporte = true
+                    },
+                    onComplete = { completion ->
+                        if (completion.remainingBalanceCents > 0) {
+                            // Pago parcial (split): la sesión pasa a deber SOLO el
+                            // resto y el flujo se re-lanza con ese monto.
+                            tablesViewModel.updateTableSessionRemaining(completion.remainingBalanceCents)
+                            paymentSeedCents = completion.remainingBalanceCents
+                            pendingSplitConfig = com.avoqado.pos.payment.presentation.SplitConfig()
+                            viewModel.loadCheck()
+                        } else {
+                            // Pagada por completo: liberar la mesa y volver al plano
+                            // (Square: efectivo exacto → regresa al plano, mesa libre).
+                            tablesViewModel.finishTableAfterPayment()
+                            showPayment = false
+                            exitOnce()
+                        }
+                    },
+                    onCancel = {
+                        showPayment = false
+                        pendingSplitConfig = com.avoqado.pos.payment.presentation.SplitConfig()
+                        viewModel.loadCheck()
+                    },
+                )
+            }
+        }
+    }
+
     if (showMerge) {
         val otras = floorTables.flatMap { t -> t.openOrders.map { t to it } }
             .filter { (_, cuenta) -> cuenta.id != session?.orderId }
@@ -629,9 +715,9 @@ fun TableOrderScreen(
             onPorArticulo = { showSplitModes = false; showSplitCheckDialog = true },
             onPartesIguales = {
                 showSplitModes = false
-                if (viewModel.preparePagar(openSplit = true)) {
-                    exited = true
-                    onPagar()
+                if (viewModel.preparePagar()) {
+                    paymentSeedCents = viewModel.tableSession.current()?.totalCents ?: 0
+                    showSplitImporte = true
                 } else {
                     android.widget.Toast.makeText(context, "La cuenta no tiene cargos todavía", android.widget.Toast.LENGTH_SHORT).show()
                 }

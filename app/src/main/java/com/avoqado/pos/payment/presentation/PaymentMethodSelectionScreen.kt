@@ -65,6 +65,8 @@ fun PaymentMethodSelectionScreen(
     onCancel: () -> Unit,
     terminalsUnavailable: Boolean = false,
     onRetryTerminals: () -> Unit = {},
+    /** Mesas (Square): link "Dividir importe" arriba — null lo oculta (retail). */
+    onSplitImporte: (() -> Unit)? = null,
 ) {
     val amountCents = paymentContext.totalCents
     val suggestions = remember(amountCents) { calculateCashSuggestions(amountCents) }
@@ -80,8 +82,20 @@ fun PaymentMethodSelectionScreen(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(AvoqadoTheme.spacing.lg),
-            horizontalArrangement = Arrangement.End,
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
         ) {
+            if (onSplitImporte != null) {
+                Text(
+                    text = "Dividir importe",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    textDecoration = TextDecoration.Underline,
+                    modifier = Modifier.clickable(onClick = onSplitImporte),
+                )
+            } else {
+                Spacer(modifier = Modifier.size(1.dp))
+            }
             Box(
                 modifier = Modifier
                     .size(32.dp)

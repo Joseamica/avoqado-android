@@ -208,6 +208,8 @@ data class OrderDetail(
     /** Cobros por servicio aplicados — SUMAN al total (ingreso gravable). */
     val serviceChargeAmount: Double = 0.0,
     val serviceCharges: List<AppliedServiceCharge> = emptyList(),
+    /** Pagos ya hechos (splits parciales): Pagar debe cobrar SOLO lo restante. */
+    val payments: List<OrderDetailPayment> = emptyList(),
     val items: List<OrderDetailItem> = emptyList(),
 )
 
@@ -292,6 +294,13 @@ data class ServiceChargeOption(
 data class ServiceChargesResponse(val success: Boolean = true, val data: List<ServiceChargeOption> = emptyList())
 
 /** Un cobro YA aplicado a la cuenta. */
+@Serializable
+data class OrderDetailPayment(
+    val id: String = "",
+    val amount: Double = 0.0,
+    val status: String = "",
+)
+
 @Serializable
 data class AppliedServiceCharge(
     val id: String,
