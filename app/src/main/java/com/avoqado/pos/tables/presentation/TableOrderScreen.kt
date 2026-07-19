@@ -135,6 +135,7 @@ fun TableOrderScreen(
     var showCheckSwitcher by remember { mutableStateOf(false) }
     var showServiceCharges by remember { mutableStateOf(false) }
     var showMenus by remember { mutableStateOf(false) }
+    var showSplitModes by remember { mutableStateOf(false) }
     var unknownBarcode by remember { mutableStateOf<String?>(null) }
     // Menú … por tiempo (¡Listo!/Repetir). Par (curso, abierto).
     var courseMenuTarget by remember { mutableStateOf<Pair<String?, Boolean>?>(null) }
@@ -279,11 +280,8 @@ fun TableOrderScreen(
                                 onDividir = {
                                     if (pendingLines.isNotEmpty()) {
                                         android.widget.Toast.makeText(context, "Envía o borra los artículos pendientes antes de dividir", android.widget.Toast.LENGTH_LONG).show()
-                                    } else if (viewModel.preparePagar(openSplit = true)) {
-                                        exited = true
-                                        onPagar()
                                     } else {
-                                        android.widget.Toast.makeText(context, "La cuenta no tiene cargos todavía", android.widget.Toast.LENGTH_SHORT).show()
+                                        showSplitModes = true
                                     }
                                 },
                                 onNameNotes = { showNameNotesDialog = true },
@@ -416,11 +414,8 @@ fun TableOrderScreen(
                                 onDividir = {
                                     if (pendingLines.isNotEmpty()) {
                                         android.widget.Toast.makeText(context, "Envía o borra los artículos pendientes antes de dividir", android.widget.Toast.LENGTH_LONG).show()
-                                    } else if (viewModel.preparePagar(openSplit = true)) {
-                                        exited = true
-                                        onPagar()
                                     } else {
-                                        android.widget.Toast.makeText(context, "La cuenta no tiene cargos todavía", android.widget.Toast.LENGTH_SHORT).show()
+                                        showSplitModes = true
                                     }
                                 },
                                 onNameNotes = { showNameNotesDialog = true },
@@ -598,6 +593,30 @@ fun TableOrderScreen(
             },
             confirmButton = {},
             dismissButton = { TextButton(onClick = { showCheckSwitcher = false }) { Text("Cerrar") } },
+        )
+    }
+
+    if (showSplitModes) {
+        SplitModesDialog(
+            seatsWithItems = viewModel.seatsWithItems,
+            onDismiss = { showSplitModes = false },
+            onPorPuesto = {
+                showSplitModes = false
+                viewModel.splitBySeat { ok, msg ->
+                    android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_LONG).show()
+                    if (ok) exitOnce()
+                }
+            },
+            onPorArticulo = { showSplitModes = false; showSplitCheckDialog = true },
+            onPartesIguales = {
+                showSplitModes = false
+                if (viewModel.preparePagar(openSplit = true)) {
+                    exited = true
+                    onPagar()
+                } else {
+                    android.widget.Toast.makeText(context, "La cuenta no tiene cargos todavía", android.widget.Toast.LENGTH_SHORT).show()
+                }
+            },
         )
     }
 
@@ -2005,6 +2024,74 @@ private fun OrderDiscountsDialog(
     )
 }
 
+
+// MARK: - Dividir la cuenta (los 3 modos de Square)
+
+@Composable
+private fun SplitModesDialog(
+    seatsWithItems: Int,
+    onDismiss: () -> Unit,
+    onPorPuesto: () -> Unit,
+    onPorArticulo: () -> Unit,
+    onPartesIguales: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Dividir la cuenta") },
+        text = {
+            Column {
+                // Por puesto: usa los asientos ya asignados a cada línea.
+                val puedePorPuesto = seatsWithItems >= 2
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(enabled = puedePorPuesto, onClick = onPorPuesto)
+                        .padding(vertical = AvoqadoTheme.spacing.sm),
+                ) {
+                    Text(
+                        "Por puesto",
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = if (puedePorPuesto) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        text = if (puedePorPuesto) "Un cheque por asiento ($seatsWithItems asientos con artículos)"
+                        else "Asigna asientos a los artículos para usar esta opción",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(onClick = onPorArticulo)
+                        .padding(vertical = AvoqadoTheme.spacing.sm),
+                ) {
+                    Text("Por artículo", style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        "Eliges qué artículos se van a una cuenta nueva",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable(onClick = onPartesIguales)
+                        .padding(vertical = AvoqadoTheme.spacing.sm),
+                ) {
+                    Text("En partes iguales", style = MaterialTheme.typography.bodyLarge)
+                    Text(
+                        "Parte el IMPORTE al cobrar, sin crear cuentas nuevas",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        },
+        confirmButton = {},
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
+    )
+}
 
 // MARK: - Menús por horario
 

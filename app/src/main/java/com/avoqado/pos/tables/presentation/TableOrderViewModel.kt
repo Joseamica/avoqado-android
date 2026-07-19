@@ -649,6 +649,30 @@ class TableOrderViewModel @Inject constructor(
         return next
     }
 
+    /** ¿Cuántos asientos distintos tienen artículos? Habilita "Dividir por puesto". */
+    val seatsWithItems: Int
+        get() = _check.value?.items?.mapNotNull { it.seat }?.distinct()?.size ?: 0
+
+    /**
+     * "Dividir por puesto": el server arma un cheque por asiento en UNA
+     * transacción. Al terminar se sale al plano: la cuenta original cambió y
+     * las nuevas viven como cheques hermanos de la misma mesa.
+     */
+    fun splitBySeat(onDone: (Boolean, String) -> Unit) {
+        val session = tableSession.current() ?: return
+        val vId = venueId ?: return
+        viewModelScope.launch {
+            repository.splitOrderBySeat(vId, session.orderId).fold(
+                onSuccess = {
+                    repository.refresh(vId)
+                    tableSession.clear()
+                    onDone(true, "Cuenta dividida por puesto")
+                },
+                onFailure = { e -> onDone(false, e.message ?: "No se pudo dividir por puesto") },
+            )
+        }
+    }
+
     /** Multi-cheque: separa artículos ya enviados en una cuenta NUEVA de la
      *  misma mesa (Square's separate checks). La sesión sigue en la original. */
     fun splitItems(itemIds: List<String>) {

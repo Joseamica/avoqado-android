@@ -658,6 +658,13 @@ private fun TableCheckSheet(
                     enabled = actionState !is TableActionState.Working,
                     fullWidth = true,
                 )
+                // Escape de Square: abrir sin contar comensales (barra, para
+                // llevar). Sin conteo no hay asientos ni propina por grupo.
+                TextButton(
+                    onClick = { viewModel.openTableAndStartOrdering(table, 0, onReady = onOpenTableOrder) },
+                    enabled = actionState !is TableActionState.Working,
+                    modifier = Modifier.fillMaxWidth(),
+                ) { Text("Sin comensales") }
             }
 
             // ── Occupied: check summary + the 3 Square actions ───────────

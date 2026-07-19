@@ -185,6 +185,13 @@ interface ApiService {
         @Body request: com.avoqado.pos.tables.data.RedeemPointsRequest,
     ): com.avoqado.pos.tables.data.SimpleSuccessResponse
 
+    // "Dividir por puesto": un cheque por asiento, en una sola transacción.
+    @POST("mobile/venues/{venueId}/orders/{orderId}/split-by-seat")
+    suspend fun splitOrderBySeat(
+        @Path("venueId") venueId: String,
+        @Path("orderId") orderId: String,
+    ): com.avoqado.pos.tables.data.SimpleSuccessResponse
+
     // Separar artículos en una cuenta NUEVA de la misma mesa (TABLE_SERVICE).
     @POST("mobile/venues/{venueId}/orders/{orderId}/split")
     suspend fun splitOrder(
