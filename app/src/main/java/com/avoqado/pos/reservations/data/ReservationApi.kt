@@ -104,13 +104,7 @@ class ReservationApi @Inject constructor(
             body
         } else {
             Log.e(tag, "${req.method} ${req.url} -> $code: ${body.take(300)}")
-            // 404 means the route or resource is missing — distinct from connectivity loss.
-            // Keep the message short and Spanish-localized so consumer screens can show it
-            // verbatim in a snackbar without prepending "HTTP 404:" noise.
-            when (code) {
-                404 -> error("No se encontró el recurso")
-                else -> error("HTTP $code: ${body.take(200)}")
-            }
+            error(apiErrorMessage(code, body))
         }
     }
 }

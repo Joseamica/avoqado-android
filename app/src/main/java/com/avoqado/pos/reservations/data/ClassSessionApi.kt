@@ -98,9 +98,10 @@ class ClassSessionApi @Inject constructor(
             when (code) {
                 403 -> error("No tienes permiso para esta acción")
                 404 -> error("Sesión no encontrada")
-                409 -> error("Conflicto: ya hay una clase o reserva a esa hora")
-                422 -> error("No se pudo completar la acción. Revisa los datos e intenta de nuevo")
-                else -> error("HTTP $code: ${body.take(200)}")
+                // 409/422 y demás: el server manda el motivo EXACTO en español
+                // ("ya hay una clase a esa hora", "requiere N min de
+                // anticipación") — mostrarlo gana sobre un texto genérico.
+                else -> error(apiErrorMessage(code, body))
             }
         }
     }

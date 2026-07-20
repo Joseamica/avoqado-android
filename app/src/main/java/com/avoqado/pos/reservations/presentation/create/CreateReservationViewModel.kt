@@ -225,6 +225,23 @@ class CreateReservationViewModel @Inject constructor(
 
     fun submit() {
         if (_isSubmitting.value) return
+        // 🔴 Cada intento arranca LIMPIO. El gate del final (que protege el
+        // fallo de promoción de waitlist de ESTE intento) veía el failure
+        // ATORADO del intento anterior y bloqueaba todos los updates: del
+        // segundo Crear en adelante no salía ni error ni éxito — la pantalla
+        // parecía trabada aunque el POST sí corriera (y un éxito silencioso
+        // habría creado la reserva sin cerrar la pantalla).
+        _result.value = null
+        // Slot en el pasado (p.ej. tocaron las 15:00 del calendario a las 18:52):
+        // avisar SIN pegarle al server — el 422 de anticipación mínima igual lo
+        // atraparíamos, pero este caso se explica solo y ahorra el round-trip.
+        val d = _draft.value
+        if (!_isEditing.value &&
+            java.time.LocalDateTime.of(d.date, d.time).isBefore(java.time.LocalDateTime.now(zone))
+        ) {
+            _result.value = Result.failure(Exception("Ese horario ya pasó — elige una fecha y hora futura."))
+            return
+        }
         viewModelScope.launch {
             _isSubmitting.value = true
             val r = if (_isEditing.value && editingId != null) {
