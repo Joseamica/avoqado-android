@@ -80,7 +80,6 @@ import com.avoqado.pos.orders.presentation.OrdersScreen
 import com.avoqado.pos.printing.presentation.PrinterSettingsSheet
 import com.avoqado.pos.reports.presentation.ReportsScreen
 import com.avoqado.pos.reservations.domain.VenueMode
-import com.avoqado.pos.reservations.presentation.onboarding.ModeSwitcherSheet
 import com.avoqado.pos.settings.presentation.ChangeModeSheet
 import com.avoqado.pos.settings.presentation.CustomizeMenuSheet
 import com.avoqado.pos.settings.presentation.SetupWizardScreen
@@ -117,7 +116,6 @@ fun MoreMenuScreen(
     var showChangeMode by remember { mutableStateOf(false) }
     var showAddons by remember { mutableStateOf(false) }
     var showKDS by remember { mutableStateOf(false) }
-    var showModeSwitcher by remember { mutableStateOf(false) }
     val closeAllOverlays = {
         showVenueSwitcher = false
         showTimeClock = false
@@ -137,7 +135,6 @@ fun MoreMenuScreen(
         showChangeMode = false
         showAddons = false
         showKDS = false
-        showModeSwitcher = false
     }
 
     LaunchedEffect(moreTabReselectionTick) {
@@ -207,30 +204,9 @@ fun MoreMenuScreen(
 
         Spacer(modifier = Modifier.height(if (denseMenu) AvoqadoTheme.spacing.sm else AvoqadoTheme.spacing.lg))
 
-        // VenueMode Modo card — only visible when reservations feature is enabled
-        if (viewModel.reservationsEnabled) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { showModeSwitcher = true }
-                    .padding(vertical = modeRowPadding),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = "Modo: ${viewModel.currentVenueMode.displayLabel}",
-                    style = modeStyle,
-                    fontWeight = FontWeight.Medium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                )
-                Icon(
-                    Icons.Filled.KeyboardArrowDown,
-                    contentDescription = null,
-                    modifier = Modifier.size(AvoqadoTheme.dimensions.iconLarge),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Spacer(modifier = Modifier.height(if (denseMenu) AvoqadoTheme.spacing.xs else AvoqadoTheme.spacing.md))
-        }
+        // El selector legacy Estándar/Reservas ya NO existe: "Reservas" es una
+        // opción más del ÚNICO selector de modo (ChangeModeSheet) — antes había
+        // dos "Modo" desincronizados en esta pantalla.
 
         if (isSmallTablet) {
             Row(
@@ -855,20 +831,10 @@ fun MoreMenuScreen(
         ChangeModeSheet(
             posModeManager = viewModel.posModeManager,
             onDismiss = { showChangeMode = false },
+            reservationsAvailable = viewModel.reservationsEnabled,
         )
     }
 
-    // Venue Mode Switcher Sheet (only when reservations enabled)
-    if (showModeSwitcher) {
-        ModeSwitcherSheet(
-            currentMode = viewModel.currentVenueMode,
-            onModeSelected = {
-                viewModel.setVenueMode(it)
-                onTabsShouldRefresh()
-            },
-            onDismiss = { showModeSwitcher = false },
-        )
-    }
 
 }
 

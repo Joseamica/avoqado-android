@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Restaurant
 import androidx.compose.material.icons.filled.Storefront
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -39,8 +40,11 @@ import com.avoqado.pos.settings.domain.PosModeManager
 fun ChangeModeSheet(
     posModeManager: PosModeManager,
     onDismiss: () -> Unit,
+    /** Reservas solo se ofrece si el venue tiene la feature activa (+plan). */
+    reservationsAvailable: Boolean = false,
 ) {
     val currentMode by posModeManager.currentMode.collectAsState()
+    val modes = PosMode.entries.filter { it != PosMode.RESERVATIONS || reservationsAvailable }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -67,7 +71,7 @@ fun ChangeModeSheet(
 
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xl))
 
-            PosMode.entries.forEachIndexed { index, mode ->
+            modes.forEachIndexed { index, mode ->
                 if (index > 0) {
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 }
@@ -102,6 +106,7 @@ private fun ModeRow(
     val icon = when (mode) {
         PosMode.RETAIL -> Icons.Filled.Storefront
         PosMode.RESTAURANT -> Icons.Filled.Restaurant
+        PosMode.RESERVATIONS -> Icons.Filled.CalendarMonth
     }
 
     Row(

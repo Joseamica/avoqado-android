@@ -31,6 +31,7 @@ class MoreMenuViewModel @Inject constructor(
     val posModeManager: PosModeManager,
     val addonsManager: AddonsManager,
     val activeCartState: ActiveCartState,
+    val venueSwitchState: com.avoqado.pos.settings.domain.VenueSwitchState,
 ) : ViewModel() {
 
     private val _venueName = MutableStateFlow(secureStorage.venueName ?: "Sin establecimiento")
@@ -79,17 +80,14 @@ class MoreMenuViewModel @Inject constructor(
     val reservationsTierLabel: String
         get() = planManager.requiredTierLabel("RESERVATIONS") ?: "Pro"
 
-    val currentVenueMode: com.avoqado.pos.reservations.domain.VenueMode
-        get() = com.avoqado.pos.reservations.domain.VenueMode.fromStorage(secureStorage.venueMode)
 
-    fun setVenueMode(mode: com.avoqado.pos.reservations.domain.VenueMode) {
-        secureStorage.venueMode = mode.storageValue
-    }
 
     fun switchVenue(venue: StoredVenue, onSwitched: () -> Unit = {}) {
         if (venue.id == secureStorage.venueId) return
 
         _isSwitching.value = true
+        // Loader GLOBAL (sobrevive al rebuild del NavHost que detona el cambio).
+        venueSwitchState.begin("Cambiando a ${venue.name}…")
         viewModelScope.launch {
             try {
                 authRepository.switchVenue(venue)
@@ -108,6 +106,7 @@ class MoreMenuViewModel @Inject constructor(
                 Log.e("🔄", "❌ Venue switch error: ${e.message}")
             } finally {
                 _isSwitching.value = false
+                venueSwitchState.end()
             }
         }
     }

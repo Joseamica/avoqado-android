@@ -13,6 +13,7 @@ import javax.inject.Singleton
 class PosModeManager @Inject constructor(
     @ApplicationContext private val context: Context,
     private val secureStorage: SecureStorage,
+    private val switchState: VenueSwitchState,
 ) {
     private val prefs = context.getSharedPreferences("avoqado_pos_mode", Context.MODE_PRIVATE)
 
@@ -25,11 +26,21 @@ class PosModeManager @Inject constructor(
     }
 
     private fun loadMode(): PosMode {
-        val key = prefs.getString(prefKey(), PosMode.RETAIL.key)
-        return PosMode.entries.find { it.key == key } ?: PosMode.RETAIL
+        val stored = prefs.getString(prefKey(), null)
+        if (stored != null) {
+            return PosMode.entries.find { it.key == stored } ?: PosMode.RETAIL
+        }
+        // Migración del VenueMode legacy (Estándar/Reservas, llave global):
+        // si el dispositivo vivía en "Reservas", conservarlo como modo único.
+        // computeVisibleTabs igual cae a Retail si el venue no tiene reservas.
+        if (secureStorage.venueMode == "reservations") return PosMode.RESERVATIONS
+        return PosMode.RETAIL
     }
 
     fun switchMode(mode: PosMode) {
+        if (mode == _currentMode.value) return
+        // Loader de recarga (Square): el rebuild del NavHost hace el resto.
+        switchState.pulse("Cambiando a modo ${mode.displayName}…")
         prefs.edit().putString(prefKey(), mode.key).apply()
         _currentMode.value = mode
     }

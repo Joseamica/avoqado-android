@@ -8,7 +8,6 @@ import com.avoqado.pos.core.domain.RoleManager
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.navigation.MainTab
 import com.avoqado.pos.payment.data.PaymentSyncService
-import com.avoqado.pos.reservations.domain.VenueMode
 import com.avoqado.pos.settings.domain.PosMode
 import com.avoqado.pos.settings.domain.PosModeManager
 import com.avoqado.pos.timeclock.data.TimeEntryRepository
@@ -32,6 +31,7 @@ class AppState @Inject constructor(
     private val tpvSettingsRepository: TpvSettingsRepository,
     private val paymentSyncService: PaymentSyncService,
     private val posModeManager: PosModeManager,
+    val venueSwitchState: com.avoqado.pos.settings.domain.VenueSwitchState,
     connectivityMonitor: ConnectivityMonitor,
 ) : ViewModel() {
 
@@ -80,7 +80,6 @@ class AppState @Inject constructor(
         )
 
     private val _reservationsEnabled = MutableStateFlow(secureStorage.reservationsEnabled)
-    private val _venueMode = MutableStateFlow(VenueMode.fromStorage(secureStorage.venueMode))
 
     // Bumped on login/logout/venue-switch so the visibleTabs combine re-emits
     // even when reservations/venueMode didn't change but the role did.
@@ -88,28 +87,40 @@ class AppState @Inject constructor(
 
     val visibleTabs: StateFlow<List<MainTab>> = combine(
         _reservationsEnabled,
-        _venueMode,
         _roleVersion,
         posModeManager.currentMode,
-    ) { enabled, mode, _, posMode -> computeVisibleTabs(enabled, mode, posMode) }
+    ) { enabled, _, posMode -> computeVisibleTabs(enabled, posMode) }
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.Eagerly,
-            initialValue = computeVisibleTabs(_reservationsEnabled.value, _venueMode.value, posModeManager.currentMode.value),
+            initialValue = computeVisibleTabs(_reservationsEnabled.value, posModeManager.currentMode.value),
+        )
+
+    // Llave de rebuild total (Square): cambiar de sucursal o de modo recrea el
+    // NavHost completo — todas las pantallas montan de cero y recargan datos
+    // del venue/modo NUEVO en vez de quedarse con los del anterior.
+    val contentKey: StateFlow<String> = combine(
+        _roleVersion,
+        posModeManager.currentMode,
+    ) { _, posMode -> "${'$'}{secureStorage.venueId}:${'$'}{posMode.key}" }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.Eagerly,
+            initialValue = "${'$'}{secureStorage.venueId}:${'$'}{posModeManager.currentMode.value.key}",
         )
 
     private fun computeVisibleTabs(
         reservationsEnabled: Boolean,
-        venueMode: VenueMode,
         posMode: PosMode = PosMode.RETAIL,
     ): List<MainTab> {
-        // Plan gate ANDed with the local toggle: a stale local
-        // `reservationsEnabled` can never expose the Calendar tab on a plan
-        // without RESERVATIONS. Fail-open when the plan is unknown.
+        // UN solo modo de dispositivo (PosMode) — el VenueMode legacy
+        // (Estándar/Reservas) quedó solo como migración de storage. Gate del
+        // plan ANDed con el toggle local: si el venue nuevo no tiene reservas,
+        // un modo Reservas persistido cae solo a Retail.
         val planAllowsReservations = planManager.hasFeature("RESERVATIONS")
         val inReservationsMode = reservationsEnabled &&
             planAllowsReservations &&
-            venueMode == VenueMode.RESERVATIONS
+            posMode == PosMode.RESERVATIONS
         // TABLE_SERVICE (PRO): the Mesas tab appears only in Restaurante mode.
         // Plan gate ANDed like reservations — fail-open when the plan is unknown;
         // the screen itself shows the PRO upsell when the feature is locked.
@@ -159,7 +170,7 @@ class AppState @Inject constructor(
 
     fun refreshTabs() {
         _reservationsEnabled.value = secureStorage.reservationsEnabled
-        _venueMode.value = VenueMode.fromStorage(secureStorage.venueMode)
+        posModeManager.reloadForCurrentVenue()
         _roleVersion.value += 1
     }
 

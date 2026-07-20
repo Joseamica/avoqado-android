@@ -39,6 +39,7 @@ data class ActivateReservationsUiState(
 class ActivateReservationsViewModel @Inject constructor(
     private val secureStorage: SecureStorage,
     private val planManager: PlanManager,
+    private val posModeManager: com.avoqado.pos.settings.domain.PosModeManager,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(ActivateReservationsUiState())
@@ -68,7 +69,10 @@ class ActivateReservationsViewModel @Inject constructor(
         viewModelScope.launch {
             delay(400)
             secureStorage.reservationsEnabled = true
-            secureStorage.venueMode = VenueMode.RESERVATIONS.storageValue
+            // Activar reservas deja el dispositivo EN modo Reservas — ahora el
+            // modo vive en PosModeManager (selector único), no en el VenueMode
+            // legacy: escribir solo el legacy dejaba el tab Calendario invisible.
+            posModeManager.switchMode(com.avoqado.pos.settings.domain.PosMode.RESERVATIONS)
             _state.value = ActivateReservationsUiState(didSucceed = true)
         }
     }

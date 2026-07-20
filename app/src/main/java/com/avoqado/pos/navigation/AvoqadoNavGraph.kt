@@ -9,6 +9,12 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.layout.Column
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Surface
+import androidx.compose.runtime.key
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
@@ -98,23 +104,66 @@ fun AvoqadoNavGraph(
     val pendingPaymentCount by appState.pendingPaymentCount.collectAsState()
     val showOfflineBanner by appState.showOfflineBanner.collectAsState()
     val visibleTabs by appState.visibleTabs.collectAsState()
+    val contentKey by appState.contentKey.collectAsState()
+    val isSwitchingContext by appState.venueSwitchState.isSwitching.collectAsState()
+    val switchMessage by appState.venueSwitchState.message.collectAsState()
     val isTablet = windowSizeClass.widthSizeClass >= WindowWidthSizeClass.Medium
 
-    if (isLoggedIn) {
-        MainScaffold(
-            isTablet = isTablet,
-            onLogout = { appState.onLogout() },
-            timeEntryRepository = appState.timeEntryRepository,
-            visibleTabs = visibleTabs,
-            roleManager = appState.roleManager,
-            pendingPaymentCount = pendingPaymentCount,
-            showOfflineBanner = showOfflineBanner,
-            onTabsShouldRefresh = { appState.refreshTabs() },
-        )
-    } else {
-        LandingScreen(
-            onLoginSuccess = { appState.onLoginSuccess() },
-        )
+    Box(modifier = Modifier.fillMaxSize()) {
+        if (isLoggedIn) {
+            // 🔴 Cambiar de sucursal o de modo RECREA todo (como Square): la
+            // llave incluye venueId + modo, así que el NavHost y cada pantalla
+            // montan de cero y recargan datos del contexto NUEVO. Antes las
+            // pantallas ya montadas seguían con los datos del venue anterior.
+            key(contentKey) {
+                MainScaffold(
+                    isTablet = isTablet,
+                    onLogout = { appState.onLogout() },
+                    timeEntryRepository = appState.timeEntryRepository,
+                    visibleTabs = visibleTabs,
+                    roleManager = appState.roleManager,
+                    pendingPaymentCount = pendingPaymentCount,
+                    showOfflineBanner = showOfflineBanner,
+                    onTabsShouldRefresh = { appState.refreshTabs() },
+                )
+            }
+        } else {
+            LandingScreen(
+                onLoginSuccess = { appState.onLoginSuccess() },
+            )
+        }
+
+        // Loader global del cambio de contexto — vive ARRIBA del NavHost para
+        // sobrevivir al rebuild que el propio cambio detona.
+        if (isSwitchingContext) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.55f))
+                    .pointerInput(Unit) { detectTapGestures { } },
+                contentAlignment = Alignment.Center,
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.xl),
+                    color = MaterialTheme.colorScheme.surfaceContainerHigh,
+                    tonalElevation = 8.dp,
+                    shadowElevation = 8.dp,
+                ) {
+                    Column(
+                        modifier = Modifier.padding(AvoqadoTheme.spacing.xxl),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        CircularProgressIndicator()
+                        Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
+                        Text(
+                            text = switchMessage,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
