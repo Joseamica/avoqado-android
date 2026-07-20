@@ -288,13 +288,12 @@ class PrinterService @Inject constructor(
     }
 
     /**
-     * La integrada de Sunmi se traga todo lo que venga después de `ESC t 16`
-     * (texto Y el corte). Solo ahí se omite el comando; en red/Bluetooth sigue
-     * igual que siempre, que es donde lleva meses funcionando.
+     * La integrada de Sunmi arranca en multibyte (GB18030) y necesita `FS .`
+     * antes del code page. Las de red/Bluetooth ya están en single-byte.
      */
     private fun escposFor(printer: SavedPrinter) = ESCPOSPrinter(
         paperWidth = printer.paperWidth,
-        sendCodePage = printer.connectionTypeEnum != PrinterConnectionType.INTERNAL,
+        switchToSingleByteFirst = printer.connectionTypeEnum == PrinterConnectionType.INTERNAL,
     )
 
     suspend fun printTestPage(printer: SavedPrinter) {

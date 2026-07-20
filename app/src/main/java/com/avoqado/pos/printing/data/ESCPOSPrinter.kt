@@ -13,15 +13,18 @@ import java.util.Locale
 class ESCPOSPrinter(
     private val paperWidth: PaperWidth = PaperWidth.MM80,
     /**
-     * 🔴 La impresora INTEGRADA de Sunmi no soporta `ESC t 16` y, peor, no lo
-     * ignora: se traga TODO lo que venga después. El ticket salía en blanco y
-     * ni siquiera cortaba, porque el comando de corte también iba después.
-     * Comprobado con una sonda: el texto antes del comando imprime, el de
-     * después no. En las de red y Bluetooth (Epson) sí es válido —ahí 16 es
-     * WPC1252, que trae los acentos del español— así que solo se omite donde
-     * estorba en vez de cambiarlo para todas.
+     * 🔴 La impresora INTEGRADA de Sunmi arranca en MULTIBYTE (GB18030, chino)
+     * — así viene de fábrica, según su manual oficial. En ese modo `ESC t 16`
+     * no basta: los bytes Latin-1 que mandamos se interpretan como cabeceras
+     * multibyte y la impresora se come TODO lo que sigue. Ese era el ticket en
+     * blanco que ni cortaba (el corte también iba después).
+     *
+     * El arreglo NO es quitar el code page —el 16 (Windows-1252) siempre fue el
+     * valor correcto y trae los acentos del español— sino mandar ANTES
+     * `FS .` (0x1C 0x2E), que pasa la impresora a modo de un solo byte.
+     * Las Epson de red/Bluetooth ya están en single-byte y no lo necesitan.
      */
-    private val sendCodePage: Boolean = true,
+    private val switchToSingleByteFirst: Boolean = false,
 ) {
     private val buffer = ByteArrayOutputStream()
 
@@ -56,9 +59,14 @@ class ESCPOSPrinter(
         val OPEN_CASH_DRAWER = byteArrayOf(0x1B, 0x70, 0x00, 0x19, 0xFA.toByte())
 
         // Character set (Latin America)
-        // ESC t 16 = WPC1252 (no 858, como decía el comentario viejo). Trae los
-        // acentos del español y funciona en las Epson de red/Bluetooth.
+        // ESC t 16 = Windows-1252 (no 858, como decía el comentario viejo).
+        // Trae los acentos del español.
         val CODE_PAGE_LATIN1 = byteArrayOf(0x1B, 0x74, 0x10)
+
+        // FS . — pasa a modo de UN SOLO BYTE. Obligatorio en la integrada de
+        // Sunmi, que arranca en multibyte GB18030; sin esto el code page de
+        // arriba no aplica y se come el ticket entero.
+        val SINGLE_BYTE_MODE = byteArrayOf(0x1C, 0x2E)
     }
 
     // MARK: - Buffer Management
@@ -66,7 +74,8 @@ class ESCPOSPrinter(
     fun reset() {
         buffer.reset()
         appendCommand(INITIALIZE)
-        if (sendCodePage) appendCommand(CODE_PAGE_LATIN1)
+        if (switchToSingleByteFirst) appendCommand(SINGLE_BYTE_MODE)
+        appendCommand(CODE_PAGE_LATIN1)
     }
 
     fun getData(): ByteArray = buffer.toByteArray()
