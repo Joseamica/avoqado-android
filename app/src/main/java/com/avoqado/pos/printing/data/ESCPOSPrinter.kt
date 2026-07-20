@@ -12,6 +12,16 @@ import java.util.Locale
  */
 class ESCPOSPrinter(
     private val paperWidth: PaperWidth = PaperWidth.MM80,
+    /**
+     * 🔴 La impresora INTEGRADA de Sunmi no soporta `ESC t 16` y, peor, no lo
+     * ignora: se traga TODO lo que venga después. El ticket salía en blanco y
+     * ni siquiera cortaba, porque el comando de corte también iba después.
+     * Comprobado con una sonda: el texto antes del comando imprime, el de
+     * después no. En las de red y Bluetooth (Epson) sí es válido —ahí 16 es
+     * WPC1252, que trae los acentos del español— así que solo se omite donde
+     * estorba en vez de cambiarlo para todas.
+     */
+    private val sendCodePage: Boolean = true,
 ) {
     private val buffer = ByteArrayOutputStream()
 
@@ -46,7 +56,9 @@ class ESCPOSPrinter(
         val OPEN_CASH_DRAWER = byteArrayOf(0x1B, 0x70, 0x00, 0x19, 0xFA.toByte())
 
         // Character set (Latin America)
-        val CODE_PAGE_LATIN1 = byteArrayOf(0x1B, 0x74, 0x10) // Code page 858
+        // ESC t 16 = WPC1252 (no 858, como decía el comentario viejo). Trae los
+        // acentos del español y funciona en las Epson de red/Bluetooth.
+        val CODE_PAGE_LATIN1 = byteArrayOf(0x1B, 0x74, 0x10)
     }
 
     // MARK: - Buffer Management
@@ -54,7 +66,7 @@ class ESCPOSPrinter(
     fun reset() {
         buffer.reset()
         appendCommand(INITIALIZE)
-        appendCommand(CODE_PAGE_LATIN1)
+        if (sendCodePage) appendCommand(CODE_PAGE_LATIN1)
     }
 
     fun getData(): ByteArray = buffer.toByteArray()
@@ -380,6 +392,9 @@ class ESCPOSPrinter(
         printLine()
 
         printLine("Texto normal")
+        // Chequeo de acentos: en la integrada no mandamos el comando de code
+        // page, así que esta línea es la que dice si el español sale bien.
+        printLine("Acentos: aeiou AEIOU nN - áéíóú ÁÉÍÓÚ ñÑ ¿? °")
         setBold(true)
         printLine("Texto en negritas")
         setBold(false)

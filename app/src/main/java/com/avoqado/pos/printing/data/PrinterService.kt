@@ -276,25 +276,35 @@ class PrinterService @Inject constructor(
     // MARK: - Printing
 
     suspend fun printReceipt(receipt: ReceiptData, printer: SavedPrinter) {
-        val escpos = ESCPOSPrinter(paperWidth = printer.paperWidth)
+        val escpos = escposFor(printer)
         val data = escpos.generateReceipt(receipt)
         sendData(data, printer)
     }
 
     suspend fun printKitchenTicket(ticket: KitchenTicketData, printer: SavedPrinter) {
-        val escpos = ESCPOSPrinter(paperWidth = printer.paperWidth)
+        val escpos = escposFor(printer)
         val data = escpos.generateKitchenTicket(ticket)
         sendData(data, printer)
     }
 
+    /**
+     * La integrada de Sunmi se traga todo lo que venga después de `ESC t 16`
+     * (texto Y el corte). Solo ahí se omite el comando; en red/Bluetooth sigue
+     * igual que siempre, que es donde lleva meses funcionando.
+     */
+    private fun escposFor(printer: SavedPrinter) = ESCPOSPrinter(
+        paperWidth = printer.paperWidth,
+        sendCodePage = printer.connectionTypeEnum != PrinterConnectionType.INTERNAL,
+    )
+
     suspend fun printTestPage(printer: SavedPrinter) {
-        val escpos = ESCPOSPrinter(paperWidth = printer.paperWidth)
+        val escpos = escposFor(printer)
         val data = escpos.generateTestPrint()
         sendData(data, printer)
     }
 
     suspend fun openCashDrawer(printer: SavedPrinter) {
-        val escpos = ESCPOSPrinter(paperWidth = printer.paperWidth)
+        val escpos = escposFor(printer)
         escpos.reset()
         escpos.openCashDrawer()
         sendData(escpos.getData(), printer)

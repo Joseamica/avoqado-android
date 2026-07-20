@@ -91,6 +91,13 @@ class SunmiInnerPrinter @Inject constructor(
             return@suspendCancellableCoroutine
         }
         runCatching {
+            // 🔴 printerInit() ANTES de cada trabajo: tras el arranque —o tras un
+            // trabajo de otra app— el cabezal puede quedar en un estado donde el
+            // ESC/POS crudo se traga sin imprimir nada (sale papel en blanco).
+            // Los ejemplos oficiales de Sunmi lo llaman siempre; nosotros no, y
+            // ese fue exactamente el síntoma.
+            svc.printerInit(null)
+            Log.i(tag, "estado impresora = ${runCatching { svc.updatePrinterState() }.getOrNull()}")
             svc.sendRAWData(
                 data,
                 object : InnerResultCallback() {
