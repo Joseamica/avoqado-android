@@ -47,6 +47,10 @@ val Warning = Color(0xFFFF9500)
 val Error = Color(0xFFFF3B30)
 val Info = Color(0xFF007AFF)
 
+// Signature loader (shared with Web, TPV and iOS)
+val AvoqadoLoaderGreen = Color(0xFF7ADD2C)
+val AvoqadoLoaderSeed = Color(0xFFD97452)
+
 // Discount (Square-style mint)
 val DiscountBackground = Color(0xFFD9F2E0)
 val DiscountText = Color(0xFF008050)
