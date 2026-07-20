@@ -75,6 +75,7 @@ import com.avoqado.pos.auth.presentation.LandingScreen
 import com.avoqado.pos.core.domain.RoleManager
 import com.avoqado.pos.core.util.VenueDateTimeFormatter
 import com.avoqado.pos.designsystem.components.ConnectivityBanner
+import com.avoqado.pos.designsystem.components.AvoqadoBrandLoader
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.inventory.presentation.InventoryScreen
 import com.avoqado.pos.notifications.presentation.NotificationsScreen
@@ -153,7 +154,7 @@ fun AvoqadoNavGraph(
                         modifier = Modifier.padding(AvoqadoTheme.spacing.xxl),
                         horizontalAlignment = Alignment.CenterHorizontally,
                     ) {
-                        CircularProgressIndicator()
+                        AvoqadoBrandLoader(size = 72.dp)
                         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
                         Text(
                             text = switchMessage,
@@ -780,7 +781,12 @@ private fun TabletTabBar(
         modifier = Modifier
             .fillMaxWidth()
             .background(MaterialTheme.colorScheme.surfaceContainerLow)
-            .navigationBarsPadding()
+            // 🔴 SIN navigationBarsPadding a propósito. La app esconde el navbar
+            // (modo inmersivo), pero el sistema lo muestra TRANSITORIO al pasar
+            // el mouse por la orilla — y con ese padding la barra de pestañas
+            // saltaba hacia arriba justo debajo del cursor: el cajero apunta a
+            // un botón y le cambia de lugar al tocarlo. La barra transitoria se
+            // superpone unos segundos y se va sola; mover la interfaz es peor.
             .padding(horizontal = AvoqadoTheme.spacing.lg),
     ) {
         Row(
