@@ -183,9 +183,24 @@ class PaymentFlowViewModel @Inject constructor(
                         },
                     )
 
-                // El resto (selección de método, efectivo, terminal, error) es
-                // trabajo del cajero: el cliente sigue viendo su total.
-                else -> return
+                // Le toca al cajero: el cliente ve su total, sin nada tocable.
+                // Antes esto era `return` (no actualizar) y la pantalla del
+                // cliente se quedaba con la propina puesta y sus botones VIVOS
+                // después de que el cajero ya había avanzado.
+                is PaymentFlowState.SelectingPaymentMethod ->
+                    com.avoqado.pos.customerdisplay.CustomerContent.Total(st.amount)
+
+                is PaymentFlowState.CollectingCashAmount ->
+                    com.avoqado.pos.customerdisplay.CustomerContent.Total(st.total)
+
+                is PaymentFlowState.SelectingTerminal ->
+                    com.avoqado.pos.customerdisplay.CustomerContent.Total(st.totalAmount)
+
+                // Sin venta que mostrar (cargando, error): de vuelta a la marca.
+                is PaymentFlowState.Loading,
+                is PaymentFlowState.Error,
+                ->
+                    com.avoqado.pos.customerdisplay.CustomerContent.Idle
             },
         )
     }
@@ -429,6 +444,10 @@ class PaymentFlowViewModel @Inject constructor(
     }
 
     fun submitRating(rating: Int?) {
+        // 🔴 Con doble pantalla hay DOS dedos sobre el mismo flujo. Si el
+        // cliente toca su pantalla un instante después de que el cajero avanzó,
+        // esto reescribía el paso ya cerrado. Solo se acepta si seguimos en él.
+        if (_state.value !is PaymentFlowState.CollectingRating) return
         currentRating = rating
         val amount = currentBaseAmount()
 
@@ -440,6 +459,10 @@ class PaymentFlowViewModel @Inject constructor(
     }
 
     fun submitTip(tipCents: Int) {
+        // 🔴 MONEY: un toque tardío del cliente NO puede cambiar la propina con
+        // el cajero ya en método de pago / efectivo / terminal — cambiaría el
+        // total por debajo de una pantalla que ya mostraba otro.
+        if (_state.value !is PaymentFlowState.CollectingTip) return
         currentTipCents = tipCents
         val amount = currentBaseAmount()
 

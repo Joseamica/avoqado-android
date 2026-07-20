@@ -59,6 +59,7 @@ fun CustomerDisplayScreen(
             is CustomerContent.Cart -> CartMirror(c)
             is CustomerContent.Rating -> RatingPrompt(c, onRating)
             is CustomerContent.Tip -> TipPrompt(c, onTip)
+            is CustomerContent.Total -> TotalOnly(c)
             is CustomerContent.Charging -> ChargingPrompt(c)
             is CustomerContent.Done -> DonePrompt(c)
         }
@@ -267,6 +268,29 @@ private fun TipPrompt(c: CustomerContent.Tip, onTip: (Int) -> Unit) {
                 .clip(RoundedCornerShape(50))
                 .clickable { onTip(0) }
                 .padding(horizontal = AvoqadoTheme.spacing.xl, vertical = AvoqadoTheme.spacing.md),
+        )
+    }
+}
+
+// MARK: - Le toca al cajero: solo el total, nada tocable
+
+@Composable
+private fun TotalOnly(c: CustomerContent.Total) {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(AvoqadoTheme.spacing.xxl),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Text(
+            text = "Total",
+            style = MaterialTheme.typography.headlineSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(AvoqadoTheme.spacing.md))
+        Text(
+            text = money(c.totalCents),
+            style = MaterialTheme.typography.displayMedium,
+            fontWeight = FontWeight.Bold,
         )
     }
 }

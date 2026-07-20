@@ -42,6 +42,14 @@ sealed interface CustomerContent {
     /** Total final confirmado; el cobro ocurre en la terminal. */
     data class Charging(val totalCents: Int, val message: String) : CustomerContent
 
+    /**
+     * Le toca al CAJERO (elegir método, capturar efectivo, escoger terminal).
+     * El cliente ve su total y NADA que se pueda tocar: dejar aquí la pantalla
+     * anterior significaba dejarle vivos los botones de propina — un segundo
+     * toque re-abría la propina con el cajero ya en otra pantalla.
+     */
+    data class Total(val totalCents: Int) : CustomerContent
+
     /** Gracias + QR del recibo digital. */
     data class Done(val totalCents: Int, val receiptUrl: String?) : CustomerContent
 }
