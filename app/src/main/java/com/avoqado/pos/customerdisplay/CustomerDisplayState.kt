@@ -58,6 +58,19 @@ class CustomerDisplayState @Inject constructor() {
     private val _content = MutableStateFlow<CustomerContent>(CustomerContent.Idle)
     val content: StateFlow<CustomerContent> = _content.asStateFlow()
 
+    /**
+     * true cuando hay una pantalla de cliente montada AHORA. El flujo de pago
+     * lo usa para decidir quién captura propina y calificación: con doble
+     * pantalla las captura el CLIENTE (el cajero solo espera), y en un equipo
+     * de una sola pantalla todo sigue como siempre.
+     */
+    private val _isPresenting = MutableStateFlow(false)
+    val isPresenting: StateFlow<Boolean> = _isPresenting.asStateFlow()
+
+    fun setPresenting(presenting: Boolean) {
+        _isPresenting.value = presenting
+    }
+
     /** Callbacks de VUELTA: lo que el cliente toca en su pantalla. */
     var onRatingPicked: ((Int) -> Unit)? = null
     var onTipPicked: ((Int) -> Unit)? = null

@@ -33,6 +33,8 @@ fun PaymentFlowScreen(
     viewModel: PaymentFlowViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsState()
+    // Doble pantalla: cambia QUIÉN captura propina y calificación.
+    val customerDisplayActive by viewModel.customerDisplayActive.collectAsState()
     val terminalAvailability by viewModel.terminalAvailability.collectAsState()
     val terminals by viewModel.onlineTerminals.collectAsState()
     val paymentContext = viewModel.buildPaymentContext()
@@ -76,30 +78,55 @@ fun PaymentFlowScreen(
                 PaymentLoadingView()
             }
             is PaymentFlowState.CollectingRating -> {
-                RatingScreen(
-                    onRatingSubmitted = { viewModel.submitRating(it) },
-                    onSkip = { viewModel.submitRating(null) },
-                )
+                // 🔴 Con pantalla de cliente, las estrellas son SUYAS: el cajero
+                // solo espera y no puede calificarse a sí mismo.
+                if (customerDisplayActive) {
+                    WaitingForCustomerScreen(
+                        title = "El cliente está calificando",
+                        subtitle = "Pídele que use la pantalla frente a él",
+                        skipLabel = "Continuar sin calificación",
+                        onSkip = { viewModel.submitRating(null) },
+                    )
+                } else {
+                    RatingScreen(
+                        onRatingSubmitted = { viewModel.submitRating(it) },
+                        onSkip = { viewModel.submitRating(null) },
+                    )
+                }
             }
             is PaymentFlowState.CollectingTip -> {
-                // Show payment method screen underneath with tip sheet overlay (matching iOS)
-                PaymentMethodSelectionScreen(
-                    paymentContext = paymentContext.copy(totalCents = currentState.amount),
-                    onMethodSelected = { viewModel.selectPaymentMethod(it) },
-                    onCashPresetSelected = { viewModel.confirmCashPreset(it) },
-                    onCashCustomSelected = { viewModel.confirmCashCustom(it) },
-                    onCancel = onCancel,
-                    terminalsUnavailable = terminalAvailability == PaymentFlowViewModel.TerminalAvailability.NONE,
-                    onRetryTerminals = { viewModel.probeTerminalAvailability() },
-                )
-                TipSelectionSheet(
-                    amountCents = currentState.amount,
-                    tipBaseCents = viewModel.currentTipPercentageBaseCents(),
-                    tipSuggestions = viewModel.settings.tipSuggestions,
-                    onTipSelected = { viewModel.submitTip(it) },
-                    onSkip = { viewModel.submitTip(0) },
-                    onDismiss = { viewModel.submitTip(0) },
-                )
+                // 🔴 Misma regla que las estrellas: con pantalla de cliente la
+                // propina la elige ÉL. Y se muestra SOLA — dejar el método de
+                // pago debajo hacía que la espera se encimara sobre el desglose
+                // (ilegible) y además invitaba al cajero a saltarse el paso.
+                if (customerDisplayActive) {
+                    WaitingForCustomerScreen(
+                        title = "El cliente está eligiendo propina",
+                        subtitle = "Pídele que use la pantalla frente a él",
+                        skipLabel = "Continuar sin propina",
+                        onSkip = { viewModel.submitTip(0) },
+                    )
+                } else {
+                    // Sin pantalla de cliente: método de pago con la hoja de
+                    // propina encima, como siempre.
+                    PaymentMethodSelectionScreen(
+                        paymentContext = paymentContext.copy(totalCents = currentState.amount),
+                        onMethodSelected = { viewModel.selectPaymentMethod(it) },
+                        onCashPresetSelected = { viewModel.confirmCashPreset(it) },
+                        onCashCustomSelected = { viewModel.confirmCashCustom(it) },
+                        onCancel = onCancel,
+                        terminalsUnavailable = terminalAvailability == PaymentFlowViewModel.TerminalAvailability.NONE,
+                        onRetryTerminals = { viewModel.probeTerminalAvailability() },
+                    )
+                    TipSelectionSheet(
+                        amountCents = currentState.amount,
+                        tipBaseCents = viewModel.currentTipPercentageBaseCents(),
+                        tipSuggestions = viewModel.settings.tipSuggestions,
+                        onTipSelected = { viewModel.submitTip(it) },
+                        onSkip = { viewModel.submitTip(0) },
+                        onDismiss = { viewModel.submitTip(0) },
+                    )
+                }
             }
             is PaymentFlowState.SelectingPaymentMethod -> {
                 PaymentMethodSelectionScreen(

@@ -73,6 +73,9 @@ class PaymentFlowViewModel @Inject constructor(
     private val _state = MutableStateFlow<PaymentFlowState>(PaymentFlowState.Loading)
     val state: StateFlow<PaymentFlowState> = _state.asStateFlow()
 
+    /** Hay pantalla de cliente: propina y calificación las captura ÉL. */
+    val customerDisplayActive: StateFlow<Boolean> = customerDisplay.isPresenting
+
     private val _onlineTerminals = MutableStateFlow<List<OnlineTerminal>>(emptyList())
     val onlineTerminals: StateFlow<List<OnlineTerminal>> = _onlineTerminals.asStateFlow()
 

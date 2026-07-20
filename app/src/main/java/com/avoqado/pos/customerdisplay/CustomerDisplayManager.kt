@@ -83,12 +83,14 @@ class CustomerDisplayManager @Inject constructor(
                 it.show()
                 presentation = it
                 isActive = true
+                state.setPresenting(true)
                 Log.i(tag, "Pantalla del cliente montada en display ${target.displayId} (${target.name})")
             }
         }.onFailure {
             // Nunca tumbar la caja por culpa de la pantalla del cliente.
             Log.e(tag, "No se pudo montar la pantalla del cliente: ${it.message}")
             isActive = false
+            state.setPresenting(false)
         }
     }
 
@@ -96,5 +98,6 @@ class CustomerDisplayManager @Inject constructor(
         runCatching { presentation?.dismiss() }
         presentation = null
         isActive = false
+        state.setPresenting(false)
     }
 }
