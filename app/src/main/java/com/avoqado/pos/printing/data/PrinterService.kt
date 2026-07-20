@@ -56,6 +56,10 @@ private const val CONNECTION_TIMEOUT_MS = 10_000L
  *  "finishes" on its own, so without this the UI spinner spins forever. */
 private const val DISCOVERY_WINDOW_MS = 12_000L
 
+/** Espera al bind del servicio de la impresora integrada: 10 × 200 ms = 2 s. */
+private const val BIND_WAIT_TRIES = 10
+private const val BIND_WAIT_STEP_MS = 200L
+
 /**
  * Pure decision for whether [PrinterService.sendData] must drop the cached socket
  * and reconnect before writing, instead of reusing the socket in the connection
@@ -89,6 +93,7 @@ internal fun shouldReconnect(
 @Singleton
 class PrinterService @Inject constructor(
     @ApplicationContext private val context: Context,
+    private val innerPrinter: SunmiInnerPrinter,
 ) {
     // MARK: - State
 
@@ -186,6 +191,11 @@ class PrinterService @Inject constructor(
                 PrinterConnectionType.WIFI -> connectWiFi(printer)
                 PrinterConnectionType.BLUETOOTH -> connectBluetooth(printer)
                 PrinterConnectionType.USB -> connectUsb(printer)
+                // Va soldada: no hay nada que "conectar", el bind ya ocurrió.
+                PrinterConnectionType.INTERNAL ->
+                    if (!innerPrinter.isAvailable) {
+                        throw PrinterException.ConnectionFailed("La impresora integrada no está disponible")
+                    }
             }
             updateStatus(printer.id, PrinterStatus.Connected)
             updateLastConnected(printer)
@@ -317,6 +327,7 @@ class PrinterService @Inject constructor(
                 PrinterConnectionType.WIFI -> sendDataWiFi(data, printer)
                 PrinterConnectionType.BLUETOOTH -> sendDataBluetooth(data, printer)
                 PrinterConnectionType.USB -> sendDataUsb(data, printer)
+                PrinterConnectionType.INTERNAL -> innerPrinter.printRaw(data)
             }
             updateStatus(printer.id, PrinterStatus.Connected)
         } catch (e: Exception) {
@@ -331,6 +342,7 @@ class PrinterService @Inject constructor(
             PrinterConnectionType.WIFI -> "${printer.address}:${printer.port ?: DEFAULT_PORT}"
             PrinterConnectionType.BLUETOOTH -> printer.address
             PrinterConnectionType.USB -> printer.address
+            PrinterConnectionType.INTERNAL -> "internal"
         }
 
     private fun isCachedSocketClosed(printer: SavedPrinter): Boolean =
@@ -340,6 +352,8 @@ class PrinterService @Inject constructor(
             // "Closed" also when the printer was unplugged — forces a clean reconnect
             // (and a fresh permission check) on the next print instead of a dead write.
             PrinterConnectionType.USB -> !usbPrinters.isOpen(printer.id) || usbPrinters.findDevice(printer.address) == null
+            // No hay socket que se caiga: el servicio se re-liga solo.
+            PrinterConnectionType.INTERNAL -> !innerPrinter.isAvailable
         }
 
     private suspend fun sendDataWiFi(data: ByteArray, printer: SavedPrinter) = withContext(Dispatchers.IO) {
@@ -428,6 +442,7 @@ class PrinterService @Inject constructor(
     fun startDiscovery() {
         _isDiscovering.value = true
         _discoveredPrinters.value = emptyList()
+        addInternalPrinter()
         startUsbDiscovery()
         startNetworkDiscovery()
         startBluetoothDiscovery()
@@ -439,6 +454,38 @@ class PrinterService @Inject constructor(
         discoveryTimeoutJob = serviceScope.launch {
             delay(DISCOVERY_WINDOW_MS)
             stopDiscovery()
+        }
+    }
+
+    /**
+     * La impresora integrada no se "descubre": o el equipo la trae o no. Se
+     * ofrece de entrada, sin esperar la ventana de búsqueda — antes el POS con
+     * impresora incluida terminaba la búsqueda sin resultados y parecía descompuesta.
+     */
+    private fun addInternalPrinter() {
+        innerPrinter.bind()
+        serviceScope.launch {
+            // El bind es ASÍNCRONO: preguntar de inmediato siempre da false y la
+            // búsqueda volvería a salir vacía. Se espera dentro de la ventana de
+            // búsqueda; si no responde, este equipo simplemente no la trae.
+            repeat(BIND_WAIT_TRIES) {
+                if (innerPrinter.isAvailable) {
+                    val internal = DiscoveredPrinter(
+                        id = "internal",
+                        name = "Impresora integrada",
+                        connectionType = PrinterConnectionType.INTERNAL,
+                        address = "internal",
+                        paperWidthMm = innerPrinter.paperWidthMm,
+                    )
+                    val current = _discoveredPrinters.value.toMutableList()
+                    if (current.none { it.id == internal.id }) {
+                        current.add(0, internal)
+                        _discoveredPrinters.value = current
+                    }
+                    return@launch
+                }
+                delay(BIND_WAIT_STEP_MS)
+            }
         }
     }
 

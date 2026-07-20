@@ -11,6 +11,9 @@ enum class PrinterConnectionType(val value: String) {
     WIFI("wifi"),
     BLUETOOTH("bluetooth"),
     USB("usb"),
+
+    /** Impresora térmica soldada al POS (Sunmi). No es un periférico buscable. */
+    INTERNAL("internal"),
     ;
 
     val displayName: String
@@ -18,6 +21,7 @@ enum class PrinterConnectionType(val value: String) {
             WIFI -> "WiFi"
             BLUETOOTH -> "Bluetooth"
             USB -> "USB"
+            INTERNAL -> "Integrada"
         }
 }
 
@@ -78,6 +82,7 @@ data class SavedPrinter(
         get() = when (connectionType) {
             "bluetooth" -> PrinterConnectionType.BLUETOOTH
             "usb" -> PrinterConnectionType.USB
+            "internal" -> PrinterConnectionType.INTERNAL
             else -> PrinterConnectionType.WIFI
         }
 
@@ -92,6 +97,9 @@ data class SavedPrinter(
     val displayAddress: String
         get() = when {
             connectionTypeEnum == PrinterConnectionType.USB -> "USB"
+            // "internal" es un identificador interno, no una dirección que le
+            // sirva a nadie: va soldada al equipo.
+            connectionTypeEnum == PrinterConnectionType.INTERNAL -> "Impresora integrada"
             port != null -> "$address:$port"
             else -> address
         }
@@ -108,6 +116,8 @@ data class DiscoveredPrinter(
     val address: String,
     val port: Int? = null,
     val signalStrength: Int? = null, // Bluetooth RSSI
+    /** Lo reporta el hardware (impresora integrada); null = usar el default. */
+    val paperWidthMm: Int? = null,
 ) {
     val displayName: String
         get() = name.ifEmpty { address }
@@ -117,6 +127,10 @@ data class DiscoveredPrinter(
         connectionType = connectionType.value,
         address = address,
         port = port,
+        // 🔴 Adivinar el ancho corta el ticket: 80 mm de ESC/POS en un cabezal
+        // de 58 mm sale con las líneas partidas. Se respeta lo que reporta el
+        // hardware cuando lo sabe.
+        paperWidthMm = paperWidthMm ?: 80,
     )
 }
 

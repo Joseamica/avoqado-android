@@ -304,6 +304,7 @@ private fun SavedPrinterRow(
                     PrinterConnectionType.WIFI -> Icons.Filled.Wifi
                     PrinterConnectionType.BLUETOOTH -> Icons.Filled.Bluetooth
                     PrinterConnectionType.USB -> Icons.Filled.Usb
+                        PrinterConnectionType.INTERNAL -> Icons.Filled.Print
                 },
                 contentDescription = null,
                 tint = if (status.isConnected) Success
@@ -387,6 +388,7 @@ private fun DiscoveredPrinterRow(
                     PrinterConnectionType.WIFI -> Icons.Filled.Wifi
                     PrinterConnectionType.BLUETOOTH -> Icons.Filled.Bluetooth
                     PrinterConnectionType.USB -> Icons.Filled.Usb
+                        PrinterConnectionType.INTERNAL -> Icons.Filled.Print
                 },
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,

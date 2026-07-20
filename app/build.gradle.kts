@@ -157,6 +157,14 @@ dependencies {
     // QR para la pantalla del cliente (recibo digital) — misma versión que avoqado-tpv.
     implementation("com.google.zxing:core:3.5.3")
 
+    // Impresora TÉRMICA INTEGRADA de los POS Sunmi (D3, T3, V2…). No es un
+    // periférico: no aparece por USB, Bluetooth ni red — vive detrás del
+    // servicio AIDL `woyou.aidlservice.jiuiv5`. Se usa el SDK oficial en vez de
+    // escribir el AIDL a mano porque el orden de los métodos define los
+    // transaction ids: equivocarse no falla, invoca OTRA función de la impresora.
+    // En equipos no-Sunmi el bind falla y todo queda igual que antes.
+    implementation("com.sunmi:printerlibrary:1.0.24")
+
     // Room
     implementation(libs.room.runtime)
     implementation(libs.room.ktx)
