@@ -254,9 +254,14 @@ class CreateReservationViewModel @Inject constructor(
         // Slot en el pasado (p.ej. tocaron las 15:00 del calendario a las 18:52):
         // avisar SIN pegarle al server — el 422 de anticipación mínima igual lo
         // atraparíamos, pero este caso se explica solo y ahorra el round-trip.
+        // WALK-IN exento: la persona está aquí AHORA — su hora es "ya" por
+        // definición (y con gracia de 5 min para que los segundos que corren
+        // entre abrir el form y picar Crear no conviertan "ahora" en "pasado").
         val d = _draft.value
         if (!_isEditing.value &&
-            java.time.LocalDateTime.of(d.date, d.time).isBefore(java.time.LocalDateTime.now(zone))
+            d.channel != ReservationChannel.WALK_IN &&
+            java.time.LocalDateTime.of(d.date, d.time)
+                .isBefore(java.time.LocalDateTime.now(zone).minusMinutes(5))
         ) {
             _result.value = Result.failure(Exception("Ese horario ya pasó — elige una fecha y hora futura."))
             return
