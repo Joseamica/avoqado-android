@@ -224,8 +224,14 @@ private fun MainScaffold(
     var moreTabReselectionTick by remember { mutableIntStateOf(0) }
 
     if (isTablet) {
-        // iPad-style: custom capsule tab bar at bottom
-        var selectedTab by remember { mutableStateOf(startTab) }
+        // iPad-style: custom capsule tab bar at bottom.
+        // 🔴 DERIVADO de la navegación real (como ya hacía la barra de teléfono):
+        // con un `remember` paralelo, cambiar de modo/sucursal navegaba al tab
+        // nuevo pero la píldora se quedaba en el tab viejo ("Más" resaltado
+        // sobre la pantalla de Mesas).
+        val selectedTab = visibleTabs.firstOrNull { tab ->
+            currentDestination?.hierarchy?.any { it.route == tab.route } == true
+        } ?: startTab
 
         Scaffold(
             contentWindowInsets = WindowInsets.statusBars,
@@ -238,7 +244,6 @@ private fun MainScaffold(
                         if (tab == MainTab.MORE && selectedTab == MainTab.MORE) {
                             moreTabReselectionTick++
                         }
-                        selectedTab = tab
                         navigateToTab(tab)
                     },
                     onClockTap = { showTimeClock = true },
