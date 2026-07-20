@@ -100,6 +100,18 @@ class ReservationRepository @Inject constructor(
         return result
     }
 
+    /** Horas reservables del día en la zona del venue (server = fuente de verdad). */
+    suspend fun availableSlots(
+        date: java.time.LocalDate,
+        durationMin: Int?,
+        zone: java.time.ZoneId,
+    ): Result<List<java.time.LocalTime>> =
+        api.availability(date.toString(), durationMin).map { isoList ->
+            isoList.mapNotNull { iso ->
+                runCatching { java.time.Instant.parse(iso).atZone(zone).toLocalTime() }.getOrNull()
+            }
+        }
+
     suspend fun createReservation(request: CreateReservationRequest): Result<Reservation?> {
         if (!connectivity.isOnline()) {
             pendingDao.enqueue(

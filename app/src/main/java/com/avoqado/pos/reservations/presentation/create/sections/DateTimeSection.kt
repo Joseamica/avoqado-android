@@ -32,6 +32,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.runtime.LaunchedEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.reservations.presentation.create.CreateReservationViewModel
@@ -64,14 +65,22 @@ fun DateTimeSection(viewModel: CreateReservationViewModel) {
             .replaceFirstChar { it.uppercase() }
     }
 
-    val slots = remember {
-        buildList {
+    // Slots del SERVER (horario real, aviso mínimo, pacing) — el picker no debe
+    // ofrecer horas que la configuración no permite. Mientras carga (o si el
+    // endpoint falla) cae a la grilla estática, filtrada al menos a futuro
+    // cuando el día es hoy.
+    val serverSlots by viewModel.availableSlots.collectAsStateWithLifecycle()
+    LaunchedEffect(draft.date, draft.durationMinutes) { viewModel.loadSlots() }
+    val slots = remember(serverSlots, draft.date) {
+        serverSlots ?: buildList {
             var t = LocalTime.of(9, 0)
             val end = LocalTime.of(22, 0)
             while (t.isBefore(end)) {
                 add(t)
                 t = t.plusMinutes(15)
             }
+        }.filter { t ->
+            draft.date != java.time.LocalDate.now(zone) || t.isAfter(java.time.LocalTime.now(zone))
         }
     }
     val slotRows = remember(slots) { slots.chunked(4) }
@@ -119,6 +128,16 @@ fun DateTimeSection(viewModel: CreateReservationViewModel) {
             SectionHeader("HORA")
             Spacer(Modifier.height(AvoqadoTheme.spacing.sm))
         }
+        if (serverSlots?.isEmpty() == true) {
+            item("no-slots") {
+                Text(
+                    text = "No hay horarios disponibles este día — prueba otra fecha.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = AvoqadoTheme.spacing.lg),
+                )
+            }
+        }
 
         items(slotRows.size) { index ->
             val rowSlots = slotRows[index]
@@ -146,9 +165,13 @@ fun DateTimeSection(viewModel: CreateReservationViewModel) {
     }
 
     if (showDatePicker) {
+        // 🔴 Material3 DatePicker habla en MEDIANOCHE UTC (entrada y salida).
+        // Interpretarlo en la zona del venue (UTC-6) corría el día: elegir el
+        // 20 devolvía el 19 a las 18:00 → toLocalDate() = 19 — la fecha "no
+        // cambiaba" y una cita podía caer en el día equivocado.
         val pickerState = rememberDatePickerState(
             initialSelectedDateMillis = draft.date
-                .atStartOfDay(zone)
+                .atStartOfDay(java.time.ZoneOffset.UTC)
                 .toInstant()
                 .toEpochMilli(),
         )
@@ -158,7 +181,7 @@ fun DateTimeSection(viewModel: CreateReservationViewModel) {
                 TextButton(onClick = {
                     pickerState.selectedDateMillis?.let { millis ->
                         val newDate = Instant.ofEpochMilli(millis)
-                            .atZone(zone)
+                            .atZone(java.time.ZoneOffset.UTC)
                             .toLocalDate()
                         viewModel.update { it.copy(date = newDate) }
                     }

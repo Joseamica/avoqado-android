@@ -55,6 +55,25 @@ class CreateReservationViewModel @Inject constructor(
     private val _isEditing = MutableStateFlow(false)
     val isEditing: StateFlow<Boolean> = _isEditing.asStateFlow()
 
+    // Slots REALMENTE reservables del día seleccionado — el server aplica
+    // horario de operación, intervalo, pacing y aviso mínimo, así que el
+    // picker no ofrece horas imposibles. null = cargando o endpoint caído
+    // (la sección cae a la grilla estática filtrada a futuro).
+    private val _availableSlots = MutableStateFlow<List<java.time.LocalTime>?>(null)
+    val availableSlots: StateFlow<List<java.time.LocalTime>?> = _availableSlots.asStateFlow()
+    private var slotsJob: kotlinx.coroutines.Job? = null
+
+    fun loadSlots() {
+        val d = _draft.value
+        slotsJob?.cancel()
+        slotsJob = viewModelScope.launch {
+            _availableSlots.value = null
+            repository.availableSlots(d.date, d.durationMinutes, zone)
+                .onSuccess { _availableSlots.value = it }
+            // onFailure: queda null → fallback estático en la UI.
+        }
+    }
+
     private var editingId: String? = null
     private var promoteWaitlistId: String? = null
 

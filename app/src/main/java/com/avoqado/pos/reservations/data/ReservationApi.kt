@@ -38,6 +38,27 @@ class ReservationApi @Inject constructor(
         return "${baseUrlProvider()}/dashboard/venues/$v/reservations"
     }
 
+    /**
+     * Slots REALMENTE reservables del día (el server aplica horario de
+     * operación, intervalo, pacing y aviso mínimo). El picker de Crear cita
+     * los consume para no ofrecer horas imposibles.
+     */
+    suspend fun availability(date: String, durationMin: Int?): Result<List<String>> = call {
+        val params = buildList {
+            add("date=$date")
+            durationMin?.let { add("duration=$it") }
+        }.joinToString("&")
+        Request.Builder().url("${base() ?: error("No venue")}/availability?$params").get().build()
+    }.mapCatching { body ->
+        val obj = json.parseToJsonElement(body) as? JsonObject ?: error("Unexpected availability shape")
+        val arr = obj["slots"] as? JsonArray ?: error("Unexpected availability shape")
+        arr.mapNotNull { slot ->
+            (slot as? JsonObject)?.get("startsAt")?.let { el ->
+                el.toString().trim('"')
+            }
+        }
+    }
+
     suspend fun list(filters: ReservationFilters): Result<ReservationListResponse> = call {
         val url = "${base() ?: error("No venue")}?${filters.toQueryString()}"
         Request.Builder().url(url).get().build()
