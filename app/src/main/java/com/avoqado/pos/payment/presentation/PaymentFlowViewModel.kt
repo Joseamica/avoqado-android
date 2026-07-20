@@ -73,8 +73,12 @@ class PaymentFlowViewModel @Inject constructor(
     private val _state = MutableStateFlow<PaymentFlowState>(PaymentFlowState.Loading)
     val state: StateFlow<PaymentFlowState> = _state.asStateFlow()
 
-    /** Hay pantalla de cliente: propina y calificación las captura ÉL. */
-    val customerDisplayActive: StateFlow<Boolean> = customerDisplay.isPresenting
+    /**
+     * Propina y calificación las captura el CLIENTE en su pantalla: requiere
+     * pantalla montada Y que el negocio lo haya activado en Ajustes (tener el
+     * hardware no garantiza que el cliente esté enfrente).
+     */
+    val customerDisplayActive: StateFlow<Boolean> = customerDisplay.customerCapturesInput
 
     private val _onlineTerminals = MutableStateFlow<List<OnlineTerminal>>(emptyList())
     val onlineTerminals: StateFlow<List<OnlineTerminal>> = _onlineTerminals.asStateFlow()

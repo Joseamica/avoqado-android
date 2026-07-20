@@ -31,6 +31,8 @@ class MoreMenuViewModel @Inject constructor(
     val posModeManager: PosModeManager,
     val addonsManager: AddonsManager,
     val activeCartState: ActiveCartState,
+    val customerDisplayPrefs: com.avoqado.pos.customerdisplay.CustomerDisplayPrefs,
+    val customerDisplayState: com.avoqado.pos.customerdisplay.CustomerDisplayState,
     val venueSwitchState: com.avoqado.pos.settings.domain.VenueSwitchState,
 ) : ViewModel() {
 

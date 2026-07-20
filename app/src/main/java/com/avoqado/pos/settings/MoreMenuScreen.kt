@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.HourglassEmpty
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.LocalOffer
+import androidx.compose.material.icons.filled.Monitor
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.automirrored.filled.PlaylistAddCheck
 import androidx.compose.material.icons.filled.Assignment
@@ -81,6 +82,7 @@ import com.avoqado.pos.printing.presentation.PrinterSettingsSheet
 import com.avoqado.pos.reports.presentation.ReportsScreen
 import com.avoqado.pos.reservations.domain.VenueMode
 import com.avoqado.pos.settings.presentation.ChangeModeSheet
+import com.avoqado.pos.settings.presentation.CustomerDisplaySheet
 import com.avoqado.pos.settings.presentation.CustomizeMenuSheet
 import com.avoqado.pos.settings.presentation.SetupWizardScreen
 import com.avoqado.pos.settings.presentation.SupportScreen
@@ -116,6 +118,8 @@ fun MoreMenuScreen(
     var showChangeMode by remember { mutableStateOf(false) }
     var showAddons by remember { mutableStateOf(false) }
     var showKDS by remember { mutableStateOf(false) }
+    var showCustomerDisplay by remember { mutableStateOf(false) }
+    val customerDisplayDetected by viewModel.customerDisplayState.isPresenting.collectAsState()
     val closeAllOverlays = {
         showVenueSwitcher = false
         showTimeClock = false
@@ -135,6 +139,7 @@ fun MoreMenuScreen(
         showChangeMode = false
         showAddons = false
         showKDS = false
+        showCustomerDisplay = false
     }
 
     LaunchedEffect(moreTabReselectionTick) {
@@ -513,6 +518,13 @@ fun MoreMenuScreen(
             onClick = { showPrinter = true },
             dense = denseMenu,
         )
+        MenuRow(
+            icon = Icons.Filled.Monitor,
+            label = "Pantalla del cliente",
+            subtitle = if (customerDisplayDetected) "Detectada" else "No detectada",
+            onClick = { showCustomerDisplay = true },
+            dense = denseMenu,
+        )
 
         Spacer(modifier = Modifier.height(sectionGap))
 
@@ -823,6 +835,15 @@ fun MoreMenuScreen(
             title = "Configuracion PIN",
             message = "La configuracion de PIN estara disponible proximamente.",
             onDismiss = { showPinSettings = false },
+        )
+    }
+
+    // Customer Display Sheet (POS de doble pantalla)
+    if (showCustomerDisplay) {
+        CustomerDisplaySheet(
+            prefs = viewModel.customerDisplayPrefs,
+            displayState = viewModel.customerDisplayState,
+            onDismiss = { showCustomerDisplay = false },
         )
     }
 

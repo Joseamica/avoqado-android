@@ -4,6 +4,7 @@ import android.app.Presentation
 import android.content.Context
 import android.os.Bundle
 import android.view.Display
+import android.view.WindowManager
 import androidx.compose.ui.platform.ComposeView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
@@ -45,6 +46,17 @@ class CustomerDisplayPresentation(
         savedStateController.performRestore(null)
         lifecycleRegistry.currentState = Lifecycle.State.CREATED
         super.onCreate(savedInstanceState)
+
+        // 🔴 Un Presentation es un Dialog y por defecto es TOUCH MODAL: reclama
+        // los toques de FUERA de su ventana. En el T3 Pro eso CONGELABA la caja
+        // — el estado táctil de la pantalla principal se quedaba atrapado en la
+        // ventana del cliente (región táctil [-1280,-800][2560,1600]) y ningún
+        // botón del cajero respondía.
+        // NOT_FOCUSABLE trae NOT_TOUCH_MODAL: la ventana del cliente ya solo
+        // puede recibir toques DENTRO de su pantalla, nunca robarle los suyos
+        // al cajero. Además, un letrero de cara al público jamás debe quitarle
+        // el foco de teclado a la caja.
+        window?.addFlags(WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE)
 
         val composeView = ComposeView(context).apply {
             setViewTreeLifecycleOwner(this@CustomerDisplayPresentation)

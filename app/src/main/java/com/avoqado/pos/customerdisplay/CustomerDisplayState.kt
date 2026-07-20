@@ -59,16 +59,43 @@ class CustomerDisplayState @Inject constructor() {
     val content: StateFlow<CustomerContent> = _content.asStateFlow()
 
     /**
-     * true cuando hay una pantalla de cliente montada AHORA. El flujo de pago
-     * lo usa para decidir quién captura propina y calificación: con doble
-     * pantalla las captura el CLIENTE (el cajero solo espera), y en un equipo
-     * de una sola pantalla todo sigue como siempre.
+     * true cuando hay una pantalla de cliente montada AHORA. Sirve para la UI
+     * de ajustes ("¿la detectamos?"); NO basta por sí sola para mover la
+     * captura de propina/calificación al cliente — ver customerCapturesInput.
      */
     private val _isPresenting = MutableStateFlow(false)
     val isPresenting: StateFlow<Boolean> = _isPresenting.asStateFlow()
 
-    fun setPresenting(presenting: Boolean) {
-        _isPresenting.value = presenting
+    /**
+     * Quién captura propina y calificación. Solo el CLIENTE cuando hay pantalla
+     * montada Y el negocio activó la opción en Ajustes.
+     *
+     * 🔴 Tener doble pantalla NO implica que el cliente esté enfrente: el mismo
+     * equipo se usa en mostradores donde la segunda pantalla mira a la pared o
+     * al propio cajero. Si diéramos por hecho que sí, el cobro se quedaría
+     * esperando un toque que nadie va a dar. Por eso apagado por defecto: se
+     * prende cuando el negocio confirma que el cliente alcanza la pantalla.
+     */
+    private var presenting = false
+    private var enabledByUser = false
+
+    private val _customerCapturesInput = MutableStateFlow(false)
+    val customerCapturesInput: StateFlow<Boolean> = _customerCapturesInput.asStateFlow()
+
+    fun setPresenting(value: Boolean) {
+        presenting = value
+        _isPresenting.value = value
+        recompute()
+    }
+
+    /** Lo prende/apaga el negocio desde Ajustes → Pantalla del cliente. */
+    fun setCustomerCaptureEnabled(value: Boolean) {
+        enabledByUser = value
+        recompute()
+    }
+
+    private fun recompute() {
+        _customerCapturesInput.value = presenting && enabledByUser
     }
 
     /** Callbacks de VUELTA: lo que el cliente toca en su pantalla. */

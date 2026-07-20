@@ -25,6 +25,10 @@ import javax.inject.Singleton
 class CustomerDisplayManager @Inject constructor(
     @ApplicationContext private val appContext: Context,
     private val state: CustomerDisplayState,
+    // Se inyecta para FORZAR su construcción: es quien carga el ajuste guardado
+    // dentro del state. Sin esto el ajuste solo se aplicaría si alguien abre
+    // la pantalla de Ajustes.
+    @Suppress("unused") private val prefs: CustomerDisplayPrefs,
 ) {
     private val tag = "🖥️CustomerDisplay"
     private val handler = Handler(Looper.getMainLooper())
