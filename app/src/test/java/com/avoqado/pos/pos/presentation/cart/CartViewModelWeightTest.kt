@@ -90,6 +90,7 @@ class CartViewModelWeightTest {
         captureReferralUseCase = captureReferralUseCase,
         planManager = PlanManager(secureStorage),
         tableSession = com.avoqado.pos.tables.data.TableSession(),
+        customerDisplay = com.avoqado.pos.customerdisplay.CustomerDisplayState(),
     )
 
     private val jamon = Product(

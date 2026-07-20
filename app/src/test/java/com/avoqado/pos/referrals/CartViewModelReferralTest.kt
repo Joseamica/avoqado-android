@@ -125,6 +125,7 @@ class CartViewModelReferralTest {
         // Relaxed SecureStorage mock → planTier null → fail-open (allowed).
         planManager = PlanManager(secureStorage),
         tableSession = com.avoqado.pos.tables.data.TableSession(),
+        customerDisplay = com.avoqado.pos.customerdisplay.CustomerDisplayState(),
     )
 
     private suspend fun selectCustomer(viewModel: CartViewModel, id: String = "cust-7") {

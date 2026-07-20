@@ -67,6 +67,7 @@ class PaymentFlowViewModel @Inject constructor(
     private val secureStorage: SecureStorage,
     private val printConfigRepository: PrintConfigRepository,
     private val comandaPrinter: ComandaPrinter,
+    private val customerDisplay: com.avoqado.pos.customerdisplay.CustomerDisplayState,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<PaymentFlowState>(PaymentFlowState.Loading)
@@ -111,6 +112,12 @@ class PaymentFlowViewModel @Inject constructor(
     private var paymentGeneration = 0
 
     init {
+        // La pantalla del cliente llama a los MISMOS métodos que el cajero
+        // (submitRating/submitTip): la calificación y la propina no tienen dos
+        // caminos, solo dos superficies de entrada.
+        customerDisplay.onRatingPicked = { submitRating(it) }
+        customerDisplay.onTipPicked = { submitTip(it) }
+
         viewModelScope.launch {
             _state.collect { st ->
                 if (st is PaymentFlowState.Success || st is PaymentFlowState.Error) {
@@ -119,8 +126,61 @@ class PaymentFlowViewModel @Inject constructor(
                 if (st is PaymentFlowState.Success) {
                     paymentIdempotencyKey = null
                 }
+                mirrorToCustomerDisplay(st)
             }
         }
+    }
+
+    /**
+     * Espejo del flujo de pago a la pantalla del cliente. Traduce estado →
+     * contenido; NO decide nada ni calcula montos (llegan ya resueltos).
+     */
+    private fun mirrorToCustomerDisplay(st: PaymentFlowState) {
+        customerDisplay.show(
+            when (st) {
+                is PaymentFlowState.CollectingRating ->
+                    com.avoqado.pos.customerdisplay.CustomerContent.Rating(st.amount)
+
+                is PaymentFlowState.CollectingTip ->
+                    com.avoqado.pos.customerdisplay.CustomerContent.Tip(
+                        amountCents = st.amount,
+                        suggestions = settings.tipSuggestions,
+                        selectedTipCents = null,
+                    )
+
+                is PaymentFlowState.Confirming ->
+                    com.avoqado.pos.customerdisplay.CustomerContent.Charging(
+                        totalCents = st.amount + st.tip,
+                        message = "Confirmando tu pago…",
+                    )
+
+                is PaymentFlowState.SentToTerminal ->
+                    com.avoqado.pos.customerdisplay.CustomerContent.Charging(
+                        totalCents = st.totalAmount,
+                        message = "Sigue las instrucciones en la terminal",
+                    )
+
+                is PaymentFlowState.Processing ->
+                    com.avoqado.pos.customerdisplay.CustomerContent.Charging(
+                        totalCents = st.totalAmount,
+                        message = "Procesando tu pago…",
+                    )
+
+                is PaymentFlowState.Success ->
+                    com.avoqado.pos.customerdisplay.CustomerContent.Done(
+                        totalCents = st.totalAmount,
+                        // Sin llave de recibo no se dibuja QR: mejor nada que un
+                        // código que no lleva a ningún lado.
+                        receiptUrl = st.receiptAccessKey?.let { key ->
+                            com.avoqado.pos.core.data.network.ApiConstants.BASE_URL + "/public/receipt/" + key
+                        },
+                    )
+
+                // El resto (selección de método, efectivo, terminal, error) es
+                // trabajo del cajero: el cliente sigue viendo su total.
+                else -> return
+            },
+        )
     }
     private var selectedTerminalId: String? = null
     private var lastPaymentId: String? = null

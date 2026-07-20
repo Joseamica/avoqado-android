@@ -154,6 +154,8 @@ dependencies {
     implementation(libs.camerax.lifecycle)
     implementation(libs.camerax.view)
     implementation(libs.barcode.scanning)
+    // QR para la pantalla del cliente (recibo digital) — misma versión que avoqado-tpv.
+    implementation("com.google.zxing:core:3.5.3")
 
     // Room
     implementation(libs.room.runtime)

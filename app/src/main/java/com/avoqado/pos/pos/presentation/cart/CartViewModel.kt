@@ -104,6 +104,7 @@ class CartViewModel @Inject constructor(
     private val captureReferralUseCase: CaptureReferralUseCase,
     private val planManager: PlanManager,
     private val tableSession: com.avoqado.pos.tables.data.TableSession,
+    private val customerDisplay: com.avoqado.pos.customerdisplay.CustomerDisplayState,
 ) : ViewModel() {
 
     private val _cartState = MutableStateFlow(defaultCartState())
@@ -163,6 +164,10 @@ class CartViewModel @Inject constructor(
         viewModelScope.launch {
             _cartState.collect { state ->
                 activeCartState.update(state.itemCount, state.totalDisplay)
+                // Espejo a la pantalla del cliente (POS de doble pantalla): el
+                // cliente ve su carrito en vivo mientras el cajero teclea.
+                // No-op en equipos de una sola pantalla.
+                customerDisplay.showCart(state)
             }
         }
     }
