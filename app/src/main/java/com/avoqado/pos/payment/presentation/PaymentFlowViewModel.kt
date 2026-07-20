@@ -1135,6 +1135,7 @@ class PaymentFlowViewModel @Inject constructor(
                 modifiers = selectedModifiers.map { it.modifierName }.ifEmpty { null },
                 note = itemNote,
                 isCortesia = isCortesia,
+                weightSummary = weightSummary,
             )
         }
 
@@ -1214,6 +1215,7 @@ class PaymentFlowViewModel @Inject constructor(
                 note = item.itemNote,
                 isCortesia = item.isCortesia,
                 discountId = item.itemDiscountId,
+                weightQuantity = item.weightKg,
             )
         }
 

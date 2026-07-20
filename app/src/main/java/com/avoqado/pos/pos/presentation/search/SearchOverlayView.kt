@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -24,7 +25,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -38,6 +38,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.unit.dp
+import com.avoqado.pos.designsystem.components.SearchPillField
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.pos.data.model.Product
 import com.avoqado.pos.pos.presentation.cart.CartViewModel
@@ -59,6 +60,7 @@ fun SearchOverlayView(
     }
 
     Scaffold(
+        contentWindowInsets = WindowInsets(0),
         topBar = {
             TopAppBar(
                 title = { Text("Buscar") },
@@ -71,6 +73,7 @@ fun SearchOverlayView(
                         modifier = Modifier.padding(start = AvoqadoTheme.spacing.sm),
                     )
                 },
+                windowInsets = WindowInsets(0),
             )
         },
     ) { padding ->
@@ -80,15 +83,12 @@ fun SearchOverlayView(
                 .padding(padding)
                 .padding(horizontal = AvoqadoTheme.spacing.lg),
         ) {
-            OutlinedTextField(
-                value = query,
-                onValueChange = { viewModel.updateSearchQuery(it) },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .focusRequester(focusRequester),
-                placeholder = { Text("Buscar productos...") },
-                leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
-                singleLine = true,
+            SearchPillField(
+                query = query,
+                onQueryChange = { viewModel.updateSearchQuery(it) },
+                placeholder = "Buscar productos...",
+                modifier = Modifier.fillMaxWidth(),
+                textFieldModifier = Modifier.focusRequester(focusRequester),
             )
 
             if (query.isNotBlank() && results.isEmpty()) {

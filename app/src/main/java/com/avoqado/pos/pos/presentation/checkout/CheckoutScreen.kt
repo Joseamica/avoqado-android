@@ -72,6 +72,7 @@ import com.avoqado.pos.pos.presentation.cart.StaffSelectorSheet
 import com.avoqado.pos.pos.presentation.product.CreateProductView
 import com.avoqado.pos.pos.presentation.product.ProductDetailPanel
 import com.avoqado.pos.pos.presentation.product.ProductGridView
+import com.avoqado.pos.pos.presentation.product.WeightCapturePanel
 import com.avoqado.pos.pos.presentation.scanner.BarcodeScannerView
 import com.avoqado.pos.core.domain.RoleManager
 import com.avoqado.pos.pos.presentation.search.SearchOverlayView
@@ -134,6 +135,8 @@ fun CheckoutScreen(
         }
     }
     var selectedProduct by remember { mutableStateOf<Product?>(null) }
+    // Venta por peso (báscula): producto por peso pendiente de capturar peso.
+    var weightProduct by remember { mutableStateOf<Product?>(null) }
     var selectedTab by remember { mutableStateOf(InputTab.KEYPAD) }
     var showSearch by remember { mutableStateOf(false) }
     var amountCents by remember { mutableIntStateOf(0) }
@@ -229,7 +232,7 @@ fun CheckoutScreen(
                     SearchOverlayView(
                         viewModel = cartViewModel,
                         onProductTap = { product ->
-                            handleProductTap(product, cartViewModel, { selectedProduct = it })
+                            handleProductTap(product, cartViewModel, { selectedProduct = it }, { weightProduct = it })
                             showSearch = false
                         },
                         onCreateProduct = if (roleManager?.canCreateProducts != false) {
@@ -289,7 +292,7 @@ fun CheckoutScreen(
                                     isConfirmingPayLater = isSubmittingPayLater,
                                     onCreateItem = { showCreateProduct = true },
                                     onProductTap = { product ->
-                                        handleProductTap(product, cartViewModel, { selectedProduct = it })
+                                        handleProductTap(product, cartViewModel, { selectedProduct = it }, { weightProduct = it })
                                     },
                                     canCreateProducts = roleManager?.canCreateProducts ?: true,
                                 )
@@ -302,6 +305,7 @@ fun CheckoutScreen(
                                             product,
                                             cartViewModel,
                                             { selectedProduct = it },
+                                            { weightProduct = it },
                                         )
                                     },
                                     onPackTap = { cartViewModel.addCreditPack(it) },
@@ -397,7 +401,7 @@ fun CheckoutScreen(
                     SearchOverlayView(
                         viewModel = cartViewModel,
                         onProductTap = { product ->
-                            handleProductTap(product, cartViewModel, { selectedProduct = it })
+                            handleProductTap(product, cartViewModel, { selectedProduct = it }, { weightProduct = it })
                             showSearch = false
                         },
                         onCreateProduct = if (roleManager?.canCreateProducts != false) {
@@ -457,7 +461,7 @@ fun CheckoutScreen(
                                     isConfirmingPayLater = isSubmittingPayLater,
                                     onCreateItem = { showCreateProduct = true },
                                     onProductTap = { product ->
-                                        handleProductTap(product, cartViewModel, { selectedProduct = it })
+                                        handleProductTap(product, cartViewModel, { selectedProduct = it }, { weightProduct = it })
                                     },
                                     canCreateProducts = roleManager?.canCreateProducts ?: true,
                                 )
@@ -470,6 +474,7 @@ fun CheckoutScreen(
                                             product,
                                             cartViewModel,
                                             { selectedProduct = it },
+                                            { weightProduct = it },
                                         )
                                     },
                                     onPackTap = { cartViewModel.addCreditPack(it) },
@@ -517,6 +522,18 @@ fun CheckoutScreen(
                 selectedProduct = null
             },
             onDismiss = { selectedProduct = null },
+        )
+    }
+
+    // Venta por peso: panel de captura de peso (báscula/manual) para productos soldByWeight.
+    weightProduct?.let { product ->
+        WeightCapturePanel(
+            product = product,
+            isTablet = isTablet,
+            onAdd = { weightKg ->
+                cartViewModel.addProductByWeight(product, weightKg)
+            },
+            onDismiss = { weightProduct = null },
         )
     }
 
@@ -630,7 +647,7 @@ fun CheckoutScreen(
                         product.sku == barcode || product.barcode == barcode || product.gtin == barcode
                     }
                     if (matched != null) {
-                        handleProductTap(matched, cartViewModel, { selectedProduct = it })
+                        handleProductTap(matched, cartViewModel, { selectedProduct = it }, { weightProduct = it })
                     } else {
                         unknownBarcode = barcode
                     }
@@ -664,7 +681,7 @@ fun CheckoutScreen(
                     showCreateProduct = false
                     createProductInitialName = ""
                     createProductInitialGtin = ""
-                    handleProductTap(product, cartViewModel, { selectedProduct = it })
+                    handleProductTap(product, cartViewModel, { selectedProduct = it }, { weightProduct = it })
                 },
                 onDismiss = {
                     showCreateProduct = false
@@ -958,11 +975,14 @@ private fun handleProductTap(
     product: Product,
     cartViewModel: CartViewModel,
     onSelectForDetail: (Product) -> Unit,
+    onSelectForWeight: (Product) -> Unit,
 ) {
-    if (product.hasModifiers) {
-        onSelectForDetail(product)
-    } else {
-        cartViewModel.addProduct(product)
+    when {
+        // Venta por peso MANDA sobre los modificadores (MVP): el tap SIEMPRE abre la captura de
+        // peso, nunca el panel de modificadores, aunque el producto tenga grupos.
+        product.soldByWeight -> onSelectForWeight(product)
+        product.hasModifiers -> onSelectForDetail(product)
+        else -> cartViewModel.addProduct(product)
     }
 }
 
@@ -1161,6 +1181,14 @@ private fun CartItemDetailContent(
                     text = item.name,
                     style = MaterialTheme.typography.titleLarge,
                 )
+                // Venta por peso: subtítulo "0.435 kg × $420.00/kg" en vez del resumen de modificadores.
+                item.weightSummary?.let { summary ->
+                    Text(
+                        text = summary,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 item.modifiersSummary?.let { summary ->
                     Text(
                         text = summary,
@@ -1189,7 +1217,8 @@ private fun CartItemDetailContent(
 
         HorizontalDivider()
 
-        // Quantity selector
+        // Quantity selector — oculto en líneas por peso (D9: cada pesada es 1 línea con cantidad 1).
+        if (item.weightKg == null) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1248,6 +1277,7 @@ private fun CartItemDetailContent(
         }
 
         HorizontalDivider()
+        } // fin del bloque de cantidad (oculto para líneas por peso)
 
         // Note section
         Row(

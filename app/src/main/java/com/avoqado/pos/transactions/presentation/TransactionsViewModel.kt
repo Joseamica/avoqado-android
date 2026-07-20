@@ -4,8 +4,12 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
+import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.domain.RoleManager
 import com.avoqado.pos.payment.data.OrderRepository
+import com.avoqado.pos.printing.data.PrinterService
+import com.avoqado.pos.printing.data.model.ReceiptData
+import com.avoqado.pos.printing.data.model.ReceiptItem
 import com.avoqado.pos.transactions.data.RefundItem
 import com.avoqado.pos.transactions.data.RefundRepository
 import com.avoqado.pos.transactions.data.TransactionRepository
@@ -39,6 +43,8 @@ class TransactionsViewModel @Inject constructor(
     val cashDrawerRepository: CashDrawerRepository,
     val roleManager: RoleManager,
     private val orderRepository: OrderRepository,
+    private val printerService: PrinterService,
+    private val secureStorage: SecureStorage,
 ) : ViewModel() {
 
     val transactions = repository.transactions
@@ -65,6 +71,13 @@ class TransactionsViewModel @Inject constructor(
 
     private val _isLoadingDetail = MutableStateFlow(false)
     val isLoadingDetail: StateFlow<Boolean> = _isLoadingDetail.asStateFlow()
+
+    // Print receipt (Ventas → detalle → "Imprimir")
+    private val _isPrintingReceipt = MutableStateFlow(false)
+    val isPrintingReceipt: StateFlow<Boolean> = _isPrintingReceipt.asStateFlow()
+
+    private val _printReceiptResult = MutableStateFlow<String?>(null)
+    val printReceiptResult: StateFlow<String?> = _printReceiptResult.asStateFlow()
 
     // Refund
     private val _showRefundSheet = MutableStateFlow(false)
@@ -179,6 +192,8 @@ class TransactionsViewModel @Inject constructor(
         _selectedTransactionId.value = transactionId
         _isLoadingDetail.value = true
         _selectedTransaction.value = null
+        // Don't carry the previous sale's "Recibo impreso" message into this one.
+        _printReceiptResult.value = null
 
         viewModelScope.launch {
             val detail = repository.fetchTransactionDetail(transactionId)
@@ -190,7 +205,38 @@ class TransactionsViewModel @Inject constructor(
     fun clearSelection() {
         _selectedTransactionId.value = null
         _selectedTransaction.value = null
+        _printReceiptResult.value = null
     }
+
+    // MARK: - Print Receipt
+
+    /** Reprints a past sale's receipt on the configured RECEIPT printer(s) —
+     *  same manualPrintReceipt path the payment-success screen uses. */
+    fun printTransactionReceipt(transaction: Transaction) {
+        viewModelScope.launch {
+            _isPrintingReceipt.value = true
+            _printReceiptResult.value = null
+            try {
+                val count = printerService.manualPrintReceipt(transaction.toReceiptData(venueName))
+                _printReceiptResult.value = if (count > 0) {
+                    "Recibo impreso"
+                } else {
+                    "No hay impresora de recibos configurada"
+                }
+            } catch (e: Exception) {
+                _printReceiptResult.value = "Error al imprimir: ${e.message ?: "desconocido"}"
+            } finally {
+                _isPrintingReceipt.value = false
+            }
+        }
+    }
+
+    fun clearPrintReceiptResult() {
+        _printReceiptResult.value = null
+    }
+
+    private val venueName: String
+        get() = secureStorage.venueName ?: "Avoqado"
 
     // MARK: - Unassociated Refund
 
@@ -311,4 +357,44 @@ class TransactionsViewModel @Inject constructor(
             _isSendingReceipt.value = false
         }
     }
+}
+
+// MARK: - Transaction → ReceiptData
+
+/** Maps a past sale to the printable receipt shape used by PrinterService.
+ *  Amounts arrive in pesos (Double) and ReceiptData wants cents. */
+private fun Transaction.toReceiptData(venueName: String): ReceiptData {
+    fun cents(value: Double): Int = kotlin.math.round(value * 100).toInt()
+
+    val receiptItems = if (items.isNotEmpty()) {
+        items.map { item ->
+            ReceiptItem(
+                name = item.productName.ifEmpty { "Artículo" },
+                quantity = item.quantity,
+                unitPrice = cents(item.unitPrice),
+                totalPrice = cents(item.amount),
+                modifiers = item.modifiers.map { it.name }.filter { it.isNotEmpty() }.ifEmpty { null },
+            )
+        }
+    } else {
+        // Sales without line items (quick amounts / older records): one summary line.
+        listOf(ReceiptItem(name = "Venta", quantity = 1, unitPrice = cents(amount), totalPrice = cents(amount)))
+    }
+
+    return ReceiptData(
+        orderNumber = orderNumber ?: id.takeLast(4),
+        orderType = "En tienda",
+        items = receiptItems,
+        subtotal = cents(amount),
+        taxAmount = 0,
+        tipAmount = if (tipAmount > 0) cents(tipAmount) else null,
+        total = cents(totalAmount),
+        paymentMethod = methodDescription,
+        venueName = venueName,
+        cashierName = staffName,
+        customerName = customerName,
+        // Print the SALE's timestamp, not "now" — this is a reprint of a past sale.
+        date = parsedDateTime?.toInstant()?.let { java.util.Date.from(it) } ?: java.util.Date(),
+        transactionId = referenceNumber ?: id,
+    )
 }

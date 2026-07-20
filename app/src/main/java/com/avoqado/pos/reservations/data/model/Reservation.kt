@@ -28,6 +28,10 @@ data class Reservation(
     val classSession: ClassSessionLite? = null,
     val assignedStaffId: String? = null,
     val assignedStaff: StaffLite? = null,
+    // Populated on the check-in response for multi-service bookings — one entry per booked
+    // service. `id` IS the productId. Null/empty on older responses or single-service bookings
+    // (those still resolve via [productId]/[product] above); default keeps decoding additive-safe.
+    val services: List<ReservationServiceLite>? = null,
     val depositAmount: String? = null,    // BigDecimal as string
     val depositStatus: DepositStatus? = null,
     val depositPaidAt: String? = null,
@@ -76,6 +80,20 @@ data class ProductLite(
     val name: String,
     val durationMinutes: Int? = null,
     val price: String? = null,
+)
+
+/**
+ * One booked service on a multi-service reservation, as returned in the check-in response's
+ * `services[]` array. `id` IS the productId (server does not send a separate field). No
+ * `categoryId`/modifiers/quantity here — those are resolved client-side (categoryId via
+ * [com.avoqado.pos.pos.data.ProductsRepository]) or defaulted (quantity = 1) when building a
+ * printable comanda line.
+ */
+@Serializable
+data class ReservationServiceLite(
+    val id: String,
+    val name: String,
+    val duration: Int? = null,
 )
 
 @Serializable

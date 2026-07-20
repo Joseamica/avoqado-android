@@ -198,6 +198,8 @@ class ESCPOSPrinter(
                 item.name,
                 item.formattedPrice,
             )
+            // Venta por peso: peso × precio/kg bajo el nombre (mismo estilo que los modificadores).
+            item.weightSummary?.let { printLine("  $it") }
             item.modifiers?.forEach { modifier ->
                 printLine("  + $modifier")
             }

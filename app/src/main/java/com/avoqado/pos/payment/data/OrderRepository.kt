@@ -93,7 +93,16 @@ class OrderRepository @Inject constructor(
                                     val productId = item.productId?.takeIf { it.isNotBlank() }
                                     if (productId != null) {
                                         put("productId", productId)
-                                        put("quantity", item.quantity)
+                                        // Venta por peso: quantity SIEMPRE 1 y el peso (kg) viaja en
+                                        // weightQuantity; el server recalcula el total desde el
+                                        // precio/kg. Se omite weightQuantity en líneas normales.
+                                        val weightQuantity = item.weightQuantity
+                                        if (weightQuantity != null) {
+                                            put("quantity", 1)
+                                            put("weightQuantity", weightQuantity)
+                                        } else {
+                                            put("quantity", item.quantity)
+                                        }
 
                                         val modifierIds = item.modifiers
                                             .map { it.modifierId }

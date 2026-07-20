@@ -49,6 +49,7 @@ fun SearchPillField(
     onQueryChange: (String) -> Unit,
     placeholder: String,
     modifier: Modifier = Modifier,
+    textFieldModifier: Modifier = Modifier,
     height: Dp = 44.dp,
 ) {
     Row(
@@ -88,7 +89,7 @@ fun SearchPillField(
                     color = MaterialTheme.colorScheme.onSurface,
                 ),
                 cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                modifier = Modifier.fillMaxWidth(),
+                modifier = textFieldModifier.fillMaxWidth(),
             )
         }
 

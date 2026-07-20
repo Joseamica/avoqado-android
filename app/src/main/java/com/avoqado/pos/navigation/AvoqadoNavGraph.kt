@@ -1,6 +1,7 @@
 package com.avoqado.pos.navigation
 
 import android.app.Activity
+import androidx.compose.animation.core.tween
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
@@ -21,7 +22,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
@@ -779,42 +779,48 @@ private fun TabletTabBar(
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surface)
+            .background(MaterialTheme.colorScheme.surfaceContainerLow)
             .navigationBarsPadding()
-            // md (no sm): con sm la pastilla del tab seleccionado tocaba el
-            // hairline superior de la barra.
-            .padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.md),
+            .padding(horizontal = AvoqadoTheme.spacing.lg),
     ) {
-        // Top border
-        Box(
+        Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(0.5.dp)
-                .background(MaterialTheme.colorScheme.outline)
-                .align(Alignment.TopCenter),
-        )
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
+                .height(AvoqadoTheme.dimensions.touchTarget),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            // Clock button (left)
+            // El área táctil conserva 44dp, pero el círculo visible baja a 36dp
+            // para mantener compacta la barra.
             Box(
                 modifier = Modifier
-                    .size(44.dp)
+                    .size(AvoqadoTheme.dimensions.touchTarget)
                     .clip(CircleShape)
-                    .background(MaterialTheme.colorScheme.surfaceContainerHigh)
                     .clickable(onClick = onClockTap),
                 contentAlignment = Alignment.Center,
             ) {
-                Icon(
-                    Icons.Filled.Schedule,
-                    contentDescription = "Reloj checador",
-                    tint = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.size(AvoqadoTheme.dimensions.iconLarge),
-                )
+                Box(
+                    modifier = Modifier
+                        .size(AvoqadoTheme.dimensions.buttonSmall)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.surfaceContainer),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Filled.Schedule,
+                        contentDescription = "Reloj checador",
+                        tint = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.size(AvoqadoTheme.dimensions.iconMedium),
+                    )
+                }
             }
 
+            Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
+            Box(
+                modifier = Modifier
+                    .width(0.5.dp)
+                    .height(AvoqadoTheme.dimensions.buttonSmall)
+                    .background(MaterialTheme.colorScheme.outlineVariant),
+            )
             Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.md))
 
             // Tabs LIBRES sobre la barra, a todo el ancho restante y
@@ -846,33 +852,44 @@ private fun TabBarItem(
     onClick: () -> Unit,
     badgeCount: Int = 0,
 ) {
-    // Pastilla gris sobre la barra clara (Square); antes era pastilla blanca
-    // dentro de la cápsula gris que ya no existe.
     val bgColor by animateColorAsState(
-        targetValue = if (isSelected) MaterialTheme.colorScheme.surfaceContainerHigh else Color.Transparent,
+        targetValue = if (isSelected) MaterialTheme.colorScheme.surfaceContainer else Color.Transparent,
+        animationSpec = tween(durationMillis = 150),
         label = "tab_bg",
     )
     val contentColor by animateColorAsState(
         targetValue = if (isSelected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
+        animationSpec = tween(durationMillis = 150),
         label = "tab_content",
     )
 
-    Row(
+    Box(
         modifier = Modifier
             .clip(RoundedCornerShape(50))
-            .defaultMinSize(minHeight = 44.dp)
+            .height(AvoqadoTheme.dimensions.touchTarget)
             .widthIn(min = 72.dp)
-            .background(bgColor, RoundedCornerShape(50))
-            .clickable(onClick = onClick)
-            .padding(
-                horizontal = AvoqadoTheme.spacing.md,
-                vertical = AvoqadoTheme.spacing.sm,
-            ),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.Center,
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
     ) {
-        if (badgeCount > 0) {
-            BadgedBox(badge = { Badge { Text("$badgeCount") } }) {
+        Row(
+            modifier = Modifier
+                .height(AvoqadoTheme.dimensions.buttonSmall)
+                .clip(RoundedCornerShape(50))
+                .background(bgColor)
+                .padding(horizontal = AvoqadoTheme.spacing.md),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.Center,
+        ) {
+            if (badgeCount > 0) {
+                BadgedBox(badge = { Badge { Text("$badgeCount") } }) {
+                    Icon(
+                        imageVector = if (isSelected) tab.selectedIcon else tab.unselectedIcon,
+                        contentDescription = tab.label,
+                        tint = contentColor,
+                        modifier = Modifier.size(AvoqadoTheme.dimensions.iconMedium),
+                    )
+                }
+            } else {
                 Icon(
                     imageVector = if (isSelected) tab.selectedIcon else tab.unselectedIcon,
                     contentDescription = tab.label,
@@ -880,24 +897,17 @@ private fun TabBarItem(
                     modifier = Modifier.size(AvoqadoTheme.dimensions.iconMedium),
                 )
             }
-        } else {
-            Icon(
-                imageVector = if (isSelected) tab.selectedIcon else tab.unselectedIcon,
-                contentDescription = tab.label,
-                tint = contentColor,
-                modifier = Modifier.size(AvoqadoTheme.dimensions.iconMedium),
+
+            Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.xs))
+            Text(
+                text = tab.shortLabel,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
+                color = contentColor,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
-
-        Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.xs))
-        Text(
-            text = tab.shortLabel,
-            style = MaterialTheme.typography.labelLarge,
-            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
-            color = contentColor,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
     }
 }
 

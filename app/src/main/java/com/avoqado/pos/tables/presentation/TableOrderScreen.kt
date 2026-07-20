@@ -1,12 +1,15 @@
 package com.avoqado.pos.tables.presentation
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -1542,32 +1545,73 @@ internal enum class PanelTab(val label: String) { CUENTA("Cuenta"), ACCIONES("Ac
 
 @Composable
 internal fun PanelTabsRow(selected: PanelTab, onSelect: (PanelTab) -> Unit) {
-    Row(
+    Box(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = AvoqadoTheme.spacing.md)
-            .padding(top = AvoqadoTheme.spacing.sm),
-        horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.lg),
+            .height(AvoqadoTheme.dimensions.touchTarget)
+            .background(MaterialTheme.colorScheme.surfaceContainerLow),
     ) {
-        PanelTab.entries.forEach { tab ->
-            val isSelected = selected == tab
-            Column(modifier = Modifier.clickable { onSelect(tab) }) {
-                Text(
-                    text = tab.label,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
-                    color = if (isSelected) MaterialTheme.colorScheme.onSurface
-                    else MaterialTheme.colorScheme.onSurfaceVariant,
+        HorizontalDivider(
+            modifier = Modifier.align(Alignment.BottomCenter),
+            thickness = 0.5.dp,
+            color = MaterialTheme.colorScheme.outlineVariant,
+        )
+
+        Row(
+            modifier = Modifier
+                .fillMaxHeight()
+                .padding(horizontal = AvoqadoTheme.spacing.md),
+            horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.xs),
+        ) {
+            PanelTab.entries.forEach { tab ->
+                val isSelected = selected == tab
+                val contentColor by animateColorAsState(
+                    targetValue = if (isSelected) {
+                        MaterialTheme.colorScheme.onSurface
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    animationSpec = tween(durationMillis = 150),
+                    label = "panel_tab_content",
                 )
-                Spacer(modifier = Modifier.height(4.dp))
+                val indicatorColor by animateColorAsState(
+                    targetValue = if (isSelected) MaterialTheme.colorScheme.onSurface else Color.Transparent,
+                    animationSpec = tween(durationMillis = 150),
+                    label = "panel_tab_indicator",
+                )
+
                 Box(
                     modifier = Modifier
-                        .width(64.dp)
-                        .height(2.dp)
-                        .background(
-                            if (isSelected) MaterialTheme.colorScheme.onSurface else Color.Transparent,
-                        ),
-                )
+                        .width(AvoqadoTheme.dimensions.touchTarget * 2)
+                        .fillMaxHeight()
+                        .clip(RoundedCornerShape(50))
+                        .clickable { onSelect(tab) },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .width(IntrinsicSize.Max)
+                            .fillMaxHeight(),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Spacer(modifier = Modifier.weight(1f))
+                        Text(
+                            text = tab.label,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
+                            color = contentColor,
+                            maxLines = 1,
+                        )
+                        Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xs))
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(2.dp)
+                                .clip(RoundedCornerShape(50))
+                                .background(indicatorColor),
+                        )
+                    }
+                }
             }
         }
     }

@@ -39,7 +39,8 @@ class ActivateReservationsViewModelTest {
     @Test
     fun `activate persists reservationsEnabled and switches to RESERVATIONS mode`() = runTest(dispatcher) {
         val storage = storageWith(planTier = null) // fail-open: plan unknown
-        val vm = ActivateReservationsViewModel(storage, PlanManager(storage))
+        val posModeManager: com.avoqado.pos.settings.domain.PosModeManager = mockk(relaxed = true)
+        val vm = ActivateReservationsViewModel(storage, PlanManager(storage), posModeManager)
 
         vm.activate()
         advanceUntilIdle()
@@ -48,13 +49,15 @@ class ActivateReservationsViewModelTest {
         assertTrue(s.didSucceed)
         assertEquals(false, s.isActivating)
         verify { storage.reservationsEnabled = true }
-        verify { storage.venueMode = VenueMode.RESERVATIONS.storageValue }
+        // El modo vive en PosModeManager (selector único); el VenueMode legacy
+        // ya no se escribe — escribir solo el legacy dejaba Calendario invisible.
+        verify { posModeManager.switchMode(com.avoqado.pos.settings.domain.PosMode.RESERVATIONS) }
     }
 
     @Test
     fun `activate ignored after success`() = runTest(dispatcher) {
         val storage = storageWith(planTier = null)
-        val vm = ActivateReservationsViewModel(storage, PlanManager(storage))
+        val vm = ActivateReservationsViewModel(storage, PlanManager(storage), mockk(relaxed = true))
 
         vm.activate(); advanceUntilIdle()
         vm.activate(); advanceUntilIdle()
@@ -68,7 +71,7 @@ class ActivateReservationsViewModelTest {
     @Test
     fun `activate refuses on FREE plan and never flips local toggle`() = runTest(dispatcher) {
         val storage = storageWith(planTier = "FREE")
-        val vm = ActivateReservationsViewModel(storage, PlanManager(storage))
+        val vm = ActivateReservationsViewModel(storage, PlanManager(storage), mockk(relaxed = true))
 
         assertFalse(vm.hasReservationsFeature)
 
@@ -79,13 +82,13 @@ class ActivateReservationsViewModelTest {
         assertFalse(s.didSucceed)
         assertNotNull(s.error)
         verify(exactly = 0) { storage.reservationsEnabled = true }
-        verify(exactly = 0) { storage.venueMode = VenueMode.RESERVATIONS.storageValue }
+        verify(exactly = 0) { storage.reservationsEnabled = true }
     }
 
     @Test
     fun `activate works on PRO plan`() = runTest(dispatcher) {
         val storage = storageWith(planTier = "PRO")
-        val vm = ActivateReservationsViewModel(storage, PlanManager(storage))
+        val vm = ActivateReservationsViewModel(storage, PlanManager(storage), mockk(relaxed = true))
 
         assertTrue(vm.hasReservationsFeature)
 
@@ -99,7 +102,7 @@ class ActivateReservationsViewModelTest {
     @Test
     fun `activate works on exempt FREE venue (grandfathered)`() = runTest(dispatcher) {
         val storage = storageWith(planTier = "FREE", planExempt = true)
-        val vm = ActivateReservationsViewModel(storage, PlanManager(storage))
+        val vm = ActivateReservationsViewModel(storage, PlanManager(storage), mockk(relaxed = true))
 
         assertTrue(vm.hasReservationsFeature)
 
@@ -112,7 +115,7 @@ class ActivateReservationsViewModelTest {
     @Test
     fun `requiredTierLabel is Pro`() {
         val storage = storageWith(planTier = "FREE")
-        val vm = ActivateReservationsViewModel(storage, PlanManager(storage))
+        val vm = ActivateReservationsViewModel(storage, PlanManager(storage), mockk(relaxed = true))
         assertEquals("Pro", vm.requiredTierLabel)
     }
 }

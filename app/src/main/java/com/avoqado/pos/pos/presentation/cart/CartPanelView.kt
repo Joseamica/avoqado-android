@@ -731,6 +731,17 @@ private fun CartItemRow(
                 }
             }
 
+            // Venta por peso: "0.435 kg × $420.00/kg" bajo el nombre.
+            item.weightSummary?.let { summary ->
+                Text(
+                    text = summary,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+
             // Modifiers summary
             item.modifiersSummary?.let { summary ->
                 Text(

@@ -1,6 +1,7 @@
 package com.avoqado.pos.pos.data.model
 
 import java.util.UUID
+import kotlin.math.roundToInt
 
 sealed class CartItemType {
     data class ProductItem(val productId: String) : CartItemType()
@@ -30,6 +31,12 @@ data class CartItem(
     var isCortesia: Boolean = false,
     var cortesiaReason: String? = null,
     var itemDiscountId: String? = null,
+    /**
+     * Venta por peso (báscula): kg con 3 decimales. Cuando está presente, [unitPrice] es el precio
+     * POR KG en centavos, [quantity] queda fija en 1 y el total de línea = round(weightKg × unitPrice)
+     * (half-up, igual que el server). Una línea con peso JAMÁS se fusiona con otra (D9).
+     */
+    val weightKg: Double? = null,
 ) {
     val modifiersPrice: Int
         get() = selectedModifiers.sumOf { it.priceInCents } * quantity
@@ -38,16 +45,25 @@ data class CartItem(
         get() = priceAdjustment ?: unitPrice
 
     val totalPrice: Int
-        get() = if (isCortesia) {
-            0
-        } else {
-            (effectiveUnitPrice + selectedModifiers.sumOf { it.priceInCents }) * quantity
+        get() = when {
+            isCortesia -> 0
+            // Peso: round HALF-UP al centavo (roundToInt = Math.round, ties hacia arriba) — misma
+            // aritmética que el server (price × kg a 2 dec). quantity queda en 1 en líneas pesadas.
+            weightKg != null ->
+                (weightKg * effectiveUnitPrice).roundToInt() + selectedModifiers.sumOf { it.priceInCents }
+            else -> (effectiveUnitPrice + selectedModifiers.sumOf { it.priceInCents }) * quantity
         }
 
     val modifiersSummary: String?
         get() {
             val names = selectedModifiers.map { it.modifierName }
             return if (names.isEmpty()) null else names.joinToString(", ")
+        }
+
+    /** "0.435 kg × $420.00/kg" — subtítulo de la línea pesada en carrito/recibo. Null si no hay peso. */
+    val weightSummary: String?
+        get() = weightKg?.let {
+            "${formatWeightKg(it)} kg × $${String.format(java.util.Locale.US, "%.2f", effectiveUnitPrice / 100.0)}/kg"
         }
 
     val hasCustomizations: Boolean

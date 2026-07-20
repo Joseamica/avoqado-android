@@ -86,6 +86,14 @@ data class OrderItemRequest(
      * iOS's `PaymentItem.discountId` (PaymentModels.swift), sent as-is on the
      * `/mobile/venues/:venueId/orders` payload. */
     val discountId: String? = null,
+    /**
+     * Venta por peso: kg con 3 decimales (ej. 0.435), SIEMPRE con productId real y quantity = 1.
+     * El server recalcula total = Product.price × weightQuantity (half-up a 2 dec) — el cliente
+     * nunca manda precio para líneas con productId. Se OMITE del payload cuando es null (líneas
+     * normales idénticas a antes). Rechaza 400: producto por peso sin weightQuantity, peso en
+     * producto normal, quantity≠1 en pesado, o fuera de 0.001–99.999 kg.
+     */
+    val weightQuantity: Double? = null,
 )
 
 @Serializable

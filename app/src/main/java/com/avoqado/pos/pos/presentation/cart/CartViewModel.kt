@@ -402,6 +402,29 @@ class CartViewModel @Inject constructor(
         Log.d("🛒", "Added product with modifiers: ${product.name} x$quantity (${modifiers.size} mods)")
     }
 
+    /**
+     * Venta por peso (báscula): agrega una línea pesada. Cada pesada es SIEMPRE una línea NUEVA
+     * — jamás se fusiona con otra (D9): dos pesadas del mismo jamón (0.435 y 0.512 kg) son ventas
+     * distintas. quantity queda fija en 1; [unitPrice] guarda el precio POR KG y el total de línea
+     * lo calcula [CartItem.totalPrice] (round(weightKg × precio/kg)). El aviso de stock lo da el
+     * panel de captura (no bloquea aquí — el backend es la autoridad al cobrar).
+     */
+    fun addProductByWeight(product: Product, weightKg: Double) {
+        if (weightKg <= 0) return
+        val newItem = CartItem(
+            type = CartItemType.ProductItem(product.id),
+            name = product.name,
+            unitPrice = product.priceInCents, // precio POR KG
+            quantity = 1,
+            imageUrl = product.imageUrl,
+            colorHex = product.color,
+            categoryId = product.categoryId,
+            weightKg = weightKg,
+        )
+        _cartState.update { it.copy(items = it.items + newItem) }
+        Log.d("🛒", "Added weighted product: ${product.name} (${weightKg} kg)")
+    }
+
     /** Cumplimiento de la venta rápida (selector en el header del carrito). */
     fun setOrderType(orderType: String) {
         _cartState.update { it.copy(orderType = orderType) }
@@ -879,6 +902,7 @@ class CartViewModel @Inject constructor(
                 note = item.itemNote,
                 isCortesia = item.isCortesia,
                 discountId = item.itemDiscountId,
+                weightQuantity = item.weightKg,
             )
         }
 

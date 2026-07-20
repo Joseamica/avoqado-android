@@ -23,6 +23,14 @@ data class Product(
     val gtin: String? = null,
     val type: String? = null,
     /**
+     * Venta por peso (charcutería/granel): cuando es true el producto se cobra por peso —
+     * [priceValue] es el precio POR KG y el tap abre el panel de captura de peso en vez de
+     * agregarlo con cantidad 1. Parseo leniente/aditivo (default false si el server no lo manda).
+     */
+    val soldByWeight: Boolean = false,
+    /** Unidad de medida ("KILOGRAM" para productos por peso). Etiqueta informativa del server. */
+    val unit: String? = null,
+    /**
      * Service duration in minutes, populated by the server for SERVICE / APPOINTMENTS_SERVICE /
      * CLASS products. Used by the reservations flow to seed the booking length; null on
      * non-bookable products like RETAIL.

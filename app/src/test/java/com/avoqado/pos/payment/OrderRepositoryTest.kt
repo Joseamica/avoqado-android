@@ -177,6 +177,56 @@ class OrderRepositoryTest {
     }
 
     @Test
+    fun `buildCreateOrderPayload emits weightQuantity and forces quantity 1 for weighted lines`() {
+        val request = CreateOrderRequest(
+            items = listOf(
+                OrderItemRequest(
+                    productId = "jamon_serrano",
+                    name = "Jamón serrano",
+                    quantity = 1,
+                    unitPrice = 42000, // precio por kg (el server lo ignora en líneas con productId)
+                    weightQuantity = 0.435,
+                ),
+            ),
+            subtotal = 18270,
+            tip = 0,
+            total = 18270,
+            paymentMethod = "CASH",
+        )
+
+        val payload = OrderRepository.buildCreateOrderPayload(request = request, staffId = "staff_1")
+
+        assertTrue(payload.contains("\"productId\":\"jamon_serrano\""))
+        assertTrue(payload.contains("\"weightQuantity\":0.435"))
+        assertTrue(payload.contains("\"quantity\":1"))
+        // Nunca se manda precio en líneas con productId (el server recalcula desde price/kg).
+        assertFalse(payload.contains("\"unitPrice\""))
+    }
+
+    @Test
+    fun `buildCreateOrderPayload omits weightQuantity for normal product lines`() {
+        val request = CreateOrderRequest(
+            items = listOf(
+                OrderItemRequest(
+                    productId = "burger",
+                    name = "Hamburguesa",
+                    quantity = 3,
+                    unitPrice = 15000,
+                ),
+            ),
+            subtotal = 45000,
+            tip = 0,
+            total = 45000,
+            paymentMethod = "CASH",
+        )
+
+        val payload = OrderRepository.buildCreateOrderPayload(request = request, staffId = "staff_1")
+
+        assertFalse(payload.contains("weightQuantity"))
+        assertTrue(payload.contains("\"quantity\":3"))
+    }
+
+    @Test
     fun `buildCreateOrderPayload includes customerId when provided`() {
         val request = CreateOrderRequest(
             items = listOf(

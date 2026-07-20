@@ -281,10 +281,20 @@ private fun LoadedDetailView(
             // reports, cash closeout, settlement, and available balance because the
             // backend aggregation queries don't handle Payments with negative amounts +
             // status='REFUNDED'. Re-enable only after the 5 server bugs are fixed.
+            val isPrintingReceipt by viewModel.isPrintingReceipt.collectAsState()
+            val printReceiptResult by viewModel.printReceiptResult.collectAsState()
+
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
+                // Direct print — visible action, Square-style (not hidden in a dialog).
+                ActionButton(
+                    label = if (isPrintingReceipt) "Imprimiendo…" else "Imprimir",
+                    modifier = Modifier.weight(1f),
+                    enabled = !isPrintingReceipt,
+                    onClick = { viewModel.printTransactionReceipt(transaction) },
+                )
                 ActionButton(
                     label = "Recibo nuevo",
                     modifier = Modifier.weight(1f),
@@ -301,6 +311,22 @@ private fun LoadedDetailView(
                         onClick = { showRefundSheet = true },
                     )
                 }
+            }
+
+            // Print status
+            if (isPrintingReceipt || printReceiptResult != null) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    text = if (isPrintingReceipt) "Imprimiendo recibo…" else printReceiptResult.orEmpty(),
+                    fontSize = metrics.smallSize,
+                    color = when {
+                        isPrintingReceipt -> MaterialTheme.colorScheme.onSurfaceVariant
+                        printReceiptResult == "Recibo impreso" -> Color(0xFF10B981)
+                        else -> MaterialTheme.colorScheme.error
+                    },
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth(),
+                )
             }
 
             Spacer(modifier = Modifier.height(metrics.sectionTopSpacing))

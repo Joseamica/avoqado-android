@@ -206,6 +206,8 @@ data class ReceiptItem(
     val modifiers: List<String>? = null,
     val note: String? = null,
     val isCortesia: Boolean = false,
+    /** Venta por peso: "0.435 kg × $420.00/kg" — se imprime bajo el nombre. Null si no hay peso. */
+    val weightSummary: String? = null,
 ) {
     val formattedPrice: String
         get() = if (isCortesia) {
