@@ -28,6 +28,19 @@
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
     <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
 
+    <!-- 🔴 DISTRIBUCIÓN: estos dos los IMPLICA Play a partir de permisos, y sin
+         declararlos opcionales EXCLUYEN hardware de mostrador del catálogo
+         ("Esta app solo está disponible para tus otros dispositivos").
+         - wifi: lo implican ACCESS_WIFI_STATE + CHANGE_WIFI_MULTICAST_STATE, que
+           usamos SOLO para descubrir impresoras por mDNS (NsdManager). mDNS
+           funciona igual sobre Ethernet, y la app opera sin descubrimiento
+           (impresora USB o por IP), así que un POS solo-Ethernet debe poder
+           instalarla.
+         - fingerprint: lo mete androidx.biometric (USE_FINGERPRINT). El login
+           biométrico es opcional — hay contraseña y passkey. -->
+    <uses-feature android:name="android.hardware.wifi" android:required="false" />
+    <uses-feature android:name="android.hardware.fingerprint" android:required="false" />
+
     <application
         android:name=".AvoqadoApp"
         android:allowBackup="false"
