@@ -371,6 +371,15 @@ private fun EmptyFloor() {
 
 // MARK: - Floor canvas (positioned tables)
 
+/**
+ * Ancho real de una mesa en el plano. Vive en UN solo lugar a propósito: el
+ * bug de las mesas cortadas nació de que el dibujo usaba 1.5× para las
+ * rectangulares y el cálculo de posición asumía el tamaño base. Si vuelve a
+ * haber dos fórmulas, vuelve el corte.
+ */
+private fun tableNodeWidth(table: DiningTable, size: Dp): Dp =
+    if (table.shape.uppercase(Locale.US) == "RECTANGLE") size * 1.5f else size
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun FloorCanvas(
@@ -399,18 +408,21 @@ private fun FloorCanvas(
             val spanY = (maxY - minY).takeIf { it > 0f } ?: 1f
 
             val tableSize = 64.dp
-            val availW = maxWidth - tableSize
             val availH = maxHeight - tableSize
 
             positioned.forEach { table ->
                 val fx = (table.positionX!! - minX) / spanX
                 val fy = (table.positionY!! - minY) / spanY
+                // 🔴 El ancho se descuenta POR MESA, no con el tamaño base: una
+                // mesa RECTANGLE mide 1.5× y la que caía pegada a la derecha se
+                // salía media mesa del plano (se veía cortada; las redondas no,
+                // porque esas sí miden lo que se descontaba).
                 TableNode(
                     table = table,
                     size = tableSize,
                     selected = table.id in selectedIds,
                     modifier = Modifier
-                        .offset(x = availW * fx, y = availH * fy)
+                        .offset(x = (maxWidth - tableNodeWidth(table, tableSize)) * fx, y = availH * fy)
                         .combinedClickable(
                             onClick = { onTap(table) },
                             onLongClick = { onLongPress(table) },
@@ -507,7 +519,7 @@ private fun TableNode(table: DiningTable, size: Dp, selected: Boolean = false, m
 
     Column(
         modifier = modifier
-            .size(width = if (table.shape.uppercase(Locale.US) == "RECTANGLE") size * 1.5f else size, height = size)
+            .size(width = tableNodeWidth(table, size), height = size)
             .clip(shape)
             .background(fill)
             .border(
