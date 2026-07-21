@@ -374,10 +374,17 @@ class TablesViewModel @Inject constructor(
             var ok = 0
             var fail = 0
             var firstError: String? = null
-            sources.forEach { table ->
-                val order = table.currentOrder ?: return@forEach
-                if (order.id == targetOrder.id) return@forEach
-                repository.mergeOrders(vId, targetOrder.id, order.id).fold(
+            // 🔴 TODAS las cuentas abiertas, no solo la "actual" de cada mesa.
+            // Unir el cheque actual dejaba la mesa origen OCUPADA con sus otros
+            // cheques —el server la re-apunta a una cuenta hermana— y entonces
+            // "unir mesas" no unía nada visible. Se incluyen también las
+            // hermanas del DESTINO para que quede UNA sola cuenta.
+            val orderIds = (sources + target)
+                .flatMap { openOrderIds(it) }
+                .distinct()
+                .filter { it != targetOrder.id }
+            orderIds.forEach { sourceOrderId ->
+                repository.mergeOrders(vId, targetOrder.id, sourceOrderId).fold(
                     onSuccess = { ok++ },
                     onFailure = { e ->
                         fail++
@@ -389,6 +396,11 @@ class TablesViewModel @Inject constructor(
             onDone(ok, fail, firstError)
         }
     }
+
+    /** Cuentas abiertas de la mesa; cae a la actual si el server no mandó la lista. */
+    private fun openOrderIds(table: DiningTable): List<String> =
+        if (table.openOrders.isNotEmpty()) table.openOrders.map { it.id }
+        else listOfNotNull(table.currentOrder?.id)
 
     // MARK: - Pre-bill
 

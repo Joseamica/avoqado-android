@@ -267,7 +267,7 @@ fun TablesScreen(
             text = {
                 Column {
                     Text(
-                        "¿En qué mesa se queda la cuenta? Las demás se cierran y sus artículos pasan a ella.",
+                        "¿En qué mesa se queda la cuenta? Las otras mesas se liberan y TODOS sus artículos pasan a ella, en una sola cuenta.",
                         style = MaterialTheme.typography.bodyMedium,
                     )
                     Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
