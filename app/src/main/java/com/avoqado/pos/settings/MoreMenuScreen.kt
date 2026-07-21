@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.HourglassEmpty
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.LocalOffer
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Monitor
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.automirrored.filled.PlaylistAddCheck
@@ -83,6 +84,7 @@ import com.avoqado.pos.reports.presentation.ReportsScreen
 import com.avoqado.pos.reservations.domain.VenueMode
 import com.avoqado.pos.settings.presentation.ChangeModeSheet
 import com.avoqado.pos.settings.presentation.CustomerDisplaySheet
+import com.avoqado.pos.settings.presentation.KioskSheet
 import com.avoqado.pos.settings.presentation.CustomizeMenuSheet
 import com.avoqado.pos.settings.presentation.SetupWizardScreen
 import com.avoqado.pos.settings.presentation.SupportScreen
@@ -119,6 +121,8 @@ fun MoreMenuScreen(
     var showAddons by remember { mutableStateOf(false) }
     var showKDS by remember { mutableStateOf(false) }
     var showCustomerDisplay by remember { mutableStateOf(false) }
+    var showKiosk by remember { mutableStateOf(false) }
+    val kioskEnabled by viewModel.kioskManager.enabled.collectAsState()
     val customerDisplayDetected by viewModel.customerDisplayState.isPresenting.collectAsState()
     val closeAllOverlays = {
         showVenueSwitcher = false
@@ -140,6 +144,7 @@ fun MoreMenuScreen(
         showAddons = false
         showKDS = false
         showCustomerDisplay = false
+        showKiosk = false
     }
 
     LaunchedEffect(moreTabReselectionTick) {
@@ -519,6 +524,13 @@ fun MoreMenuScreen(
             dense = denseMenu,
         )
         MenuRow(
+            icon = Icons.Filled.Lock,
+            label = "Modo kiosco",
+            subtitle = if (kioskEnabled) "Activado - la app está fijada" else "Salir de la app",
+            onClick = { showKiosk = true },
+            dense = denseMenu,
+        )
+        MenuRow(
             icon = Icons.Filled.Monitor,
             label = "Pantalla del cliente",
             subtitle = if (customerDisplayDetected) "Detectada" else "No detectada",
@@ -835,6 +847,14 @@ fun MoreMenuScreen(
             title = "Configuracion PIN",
             message = "La configuracion de PIN estara disponible proximamente.",
             onDismiss = { showPinSettings = false },
+        )
+    }
+
+    // Kiosk Sheet (fijar la app + salida explícita)
+    if (showKiosk) {
+        KioskSheet(
+            kiosk = viewModel.kioskManager,
+            onDismiss = { showKiosk = false },
         )
     }
 
