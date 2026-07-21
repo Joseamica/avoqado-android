@@ -353,6 +353,43 @@ class TablesViewModel @Inject constructor(
         }
     }
 
+    /**
+     * "Unir mesas": vuelca las cuentas de las otras mesas seleccionadas en la
+     * de [target], y el server cierra las de origen. Sirve para el caso real de
+     * dos mesas que se juntan y piden una sola cuenta.
+     *
+     * 🔴 Secuencial y no en paralelo A PROPÓSITO: el server revalida dentro de
+     * la transacción y rechaza fusiones cruzadas concurrentes. En paralelo, dos
+     * merges sobre la misma cuenta destino se pisarían y una fallaría con
+     * "la cuenta cambió mientras se fusionaba".
+     *
+     * Se informa cuántas entraron y cuántas no: si una falla (p. ej. traía un
+     * descuento), las demás YA se fusionaron y decir solo "no se pudo" seria
+     * mentira sobre el estado de las cuentas.
+     */
+    fun bulkUnir(target: DiningTable, sources: List<DiningTable>, onDone: (Int, Int, String?) -> Unit) {
+        val vId = venueId ?: return
+        val targetOrder = target.currentOrder ?: return
+        viewModelScope.launch {
+            var ok = 0
+            var fail = 0
+            var firstError: String? = null
+            sources.forEach { table ->
+                val order = table.currentOrder ?: return@forEach
+                if (order.id == targetOrder.id) return@forEach
+                repository.mergeOrders(vId, targetOrder.id, order.id).fold(
+                    onSuccess = { ok++ },
+                    onFailure = { e ->
+                        fail++
+                        if (firstError == null) firstError = e.message
+                    },
+                )
+            }
+            repository.refresh(vId)
+            onDone(ok, fail, firstError)
+        }
+    }
+
     // MARK: - Pre-bill
 
     /** Prints the pre-cuenta (items + total, no payment info) on the RECEIPT printer. */

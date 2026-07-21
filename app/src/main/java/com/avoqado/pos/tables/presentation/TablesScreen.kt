@@ -28,10 +28,16 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.CallMerge
+import androidx.compose.material.icons.filled.Cancel
+import androidx.compose.material.icons.filled.CardGiftcard
+import androidx.compose.material.icons.filled.DriveFileMove
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.TableRestaurant
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -134,6 +140,7 @@ fun TablesScreen(
     var showBulkCortesia by remember { mutableStateOf(false) }
     var showBulkAsignar by remember { mutableStateOf(false) }
     var showBulkMover by remember { mutableStateOf(false) }
+    var showBulkUnir by remember { mutableStateOf(false) }
     val bulkCtx = androidx.compose.ui.platform.LocalContext.current
     fun exitSelection() { selectionMode = false; selectedIds = emptySet() }
     val selectedOccupied = tables.filter { it.id in selectedIds && it.isOccupied }
@@ -161,13 +168,20 @@ fun TablesScreen(
                 modifier = Modifier.weight(1f),
             )
             if (selectionMode) {
-                // Barra de acciones masivas (Square): grises hasta seleccionar.
-                val hasSel = selectedOccupied.isNotEmpty()
-                TextButton(onClick = { if (selectedOccupied.size == 1) showBulkMover = true }, enabled = selectedOccupied.size == 1) { Text("Mover") }
-                TextButton(onClick = { if (hasSel) showBulkAsignar = true }, enabled = hasSel) { Text("Asignar") }
-                TextButton(onClick = { if (hasSel) showBulkAnular = true }, enabled = hasSel) { Text("Anular") }
-                TextButton(onClick = { if (hasSel) showBulkCortesia = true }, enabled = hasSel) { Text("Cortesía") }
-                PrimaryButton(text = "Listo", onClick = { exitSelection() })
+                // Las acciones viven ABAJO (BulkActionBar): aquí solo cuántas
+                // llevas y la salida. Antes los cinco botones se apretaban
+                // contra el título y quedaban ilegibles en pantallas angostas.
+                Text(
+                    text = when (selectedOccupied.size) {
+                        0 -> "Ninguna seleccionada"
+                        1 -> "1 seleccionada"
+                        else -> "${selectedOccupied.size} seleccionadas"
+                    },
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.md))
+                TextButton(onClick = { exitSelection() }) { Text("Listo") }
             } else {
                 val occupied = tables.count { it.isOccupied }
                 if (tables.isNotEmpty()) {
@@ -230,7 +244,56 @@ fun TablesScreen(
                     modifier = Modifier.weight(1f),
                 )
             }
+
+            if (selectionMode) {
+                BulkActionBar(
+                    selectedCount = selectedOccupied.size,
+                    onUnir = { showBulkUnir = true },
+                    onMover = { showBulkMover = true },
+                    onAsignar = { showBulkAsignar = true },
+                    onAnular = { showBulkAnular = true },
+                    onCortesia = { showBulkCortesia = true },
+                )
+            }
         }
+    }
+
+    if (showBulkUnir) {
+        // Hay que elegir CUÁL mesa se queda con la cuenta: el server cierra las
+        // otras, así que la decisión no puede ser implícita.
+        AlertDialog(
+            onDismissRequest = { showBulkUnir = false },
+            title = { Text("Unir ${selectedOccupied.size} cuentas") },
+            text = {
+                Column {
+                    Text(
+                        "¿En qué mesa se queda la cuenta? Las demás se cierran y sus artículos pasan a ella.",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+                    selectedOccupied.forEach { table ->
+                        TextButton(
+                            onClick = {
+                                showBulkUnir = false
+                                val sources = selectedOccupied.filter { it.id != table.id }
+                                viewModel.bulkUnir(table, sources) { ok, fail, err ->
+                                    val msg = when {
+                                        fail == 0 -> "Cuentas unidas en la mesa ${table.number}"
+                                        ok == 0 -> err ?: "No se pudieron unir"
+                                        else -> "$ok unidas, $fail no: ${err ?: "error"}"
+                                    }
+                                    android.widget.Toast.makeText(bulkCtx, msg, android.widget.Toast.LENGTH_LONG).show()
+                                    exitSelection()
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                        ) { Text("Mesa ${table.number}", modifier = Modifier.fillMaxWidth()) }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = { TextButton(onClick = { showBulkUnir = false }) { Text("Cancelar") } },
+        )
     }
 
     if (showBulkAnular) {
@@ -370,6 +433,66 @@ private fun EmptyFloor() {
 }
 
 // MARK: - Floor canvas (positioned tables)
+
+/**
+ * Acciones masivas del plano (estilo Square): abajo, con icono y etiqueta, no
+ * apretadas contra el título. Cada acción dice POR QUÉ está deshabilitada en
+ * vez de solo verse gris — "Mover" pide exactamente una mesa y "Unir" al menos
+ * dos, y eso no se adivina viendo un botón apagado.
+ */
+@Composable
+private fun BulkActionBar(
+    selectedCount: Int,
+    onUnir: () -> Unit,
+    onMover: () -> Unit,
+    onAsignar: () -> Unit,
+    onAnular: () -> Unit,
+    onCortesia: () -> Unit,
+) {
+    val hasSel = selectedCount > 0
+    Column {
+        HorizontalDivider()
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = AvoqadoTheme.spacing.sm),
+            horizontalArrangement = Arrangement.SpaceEvenly,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            BulkAction("Unir", Icons.Filled.CallMerge, selectedCount >= 2, onUnir)
+            BulkAction("Mover", Icons.Filled.DriveFileMove, selectedCount == 1, onMover)
+            BulkAction("Asignar", Icons.Filled.Person, hasSel, onAsignar)
+            BulkAction("Cortesía", Icons.Filled.CardGiftcard, hasSel, onCortesia)
+            BulkAction("Anular", Icons.Filled.Cancel, hasSel, onAnular, destructive = true)
+        }
+    }
+}
+
+@Composable
+private fun BulkAction(
+    label: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    destructive: Boolean = false,
+) {
+    val tint = when {
+        !enabled -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
+        destructive -> MaterialTheme.colorScheme.error
+        else -> MaterialTheme.colorScheme.onSurface
+    }
+    Column(
+        modifier = Modifier
+            .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(horizontal = AvoqadoTheme.spacing.md, vertical = AvoqadoTheme.spacing.sm),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(AvoqadoTheme.dimensions.iconLarge))
+        Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxs))
+        Text(text = label, style = MaterialTheme.typography.labelMedium, color = tint)
+    }
+}
 
 /**
  * Ancho real de una mesa en el plano. Vive en UN solo lugar a propósito: el
