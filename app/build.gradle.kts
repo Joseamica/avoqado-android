@@ -35,12 +35,14 @@ check(debugBaseUrl != releaseBaseUrl) {
 
 android {
     namespace = "com.avoqado.pos"
-    compileSdk = 35
+    // Android 16 (API 36). Play RECHAZA actualizaciones que no lo targeteen a
+    // partir del 30/08/2026 — no es opcional ni cosmético.
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "com.avoqado.pos"
         minSdk = 26
-        targetSdk = 35
+        targetSdk = 36
         versionCode = 22
         versionName = "2.8.3"
 
