@@ -63,6 +63,12 @@ sealed interface CustomerContent {
 @Singleton
 class CustomerDisplayState @Inject constructor() {
 
+    /** Nombre del NEGOCIO para la pantalla en reposo (no la marca de Avoqado). */
+    private val _venueName = MutableStateFlow<String?>(null)
+    val venueName: StateFlow<String?> = _venueName.asStateFlow()
+
+    fun setVenueName(name: String?) { _venueName.value = name }
+
     private val _content = MutableStateFlow<CustomerContent>(CustomerContent.Idle)
     val content: StateFlow<CustomerContent> = _content.asStateFlow()
 

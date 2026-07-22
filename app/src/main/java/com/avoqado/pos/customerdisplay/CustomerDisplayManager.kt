@@ -25,6 +25,7 @@ import javax.inject.Singleton
 class CustomerDisplayManager @Inject constructor(
     @ApplicationContext private val appContext: Context,
     private val state: CustomerDisplayState,
+    private val secureStorage: com.avoqado.pos.core.data.local.SecureStorage,
     // Se inyecta para FORZAR su construcción: es quien carga el ajuste guardado
     // dentro del state. Sin esto el ajuste solo se aplicaría si alguien abre
     // la pantalla de Ajustes.
@@ -49,6 +50,8 @@ class CustomerDisplayManager @Inject constructor(
 
     /** Llamar desde MainActivity.onStart. */
     fun attach(activity: Activity) {
+        // La marca en reposo es del NEGOCIO, no de Avoqado.
+        state.setVenueName(secureStorage.venueName)
         hostActivity = activity
         val dm = activity.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager ?: return
         displayManager = dm

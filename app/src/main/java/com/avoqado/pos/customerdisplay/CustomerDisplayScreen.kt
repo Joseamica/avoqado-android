@@ -34,6 +34,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 
 /**
@@ -48,6 +49,7 @@ fun CustomerDisplayScreen(
     onTip: (Int) -> Unit,
 ) {
     val content by state.content.collectAsState()
+    val venueName by state.venueName.collectAsState()
 
     Box(
         modifier = Modifier
@@ -55,7 +57,7 @@ fun CustomerDisplayScreen(
             .background(MaterialTheme.colorScheme.background),
     ) {
         when (val c = content) {
-            is CustomerContent.Idle -> IdleBranding()
+            is CustomerContent.Idle -> IdleBranding(venueName)
             is CustomerContent.Cart -> CartMirror(c)
             is CustomerContent.Rating -> RatingPrompt(c, onRating)
             is CustomerContent.Tip -> TipPrompt(c, onTip)
@@ -66,25 +68,45 @@ fun CustomerDisplayScreen(
     }
 }
 
+
+/**
+ * 🔴 Escala propia, NO la de Material. La escala tipográfica de Material está
+ * pensada para UI que se mira a un brazo de distancia; esto es SEÑALIZACIÓN
+ * que el cliente lee desde el otro lado del mostrador, en una pantalla de
+ * 1280x800. Con los estilos normales todo salía chico y flotando en una banda
+ * central, con el 60% de la pantalla vacío.
+ */
+private val CdTitle = 40.sp        // pregunta principal
+private val CdAmount = 76.sp       // el número que importa
+private val CdBody = 26.sp         // apoyo
+private val CdActionMain = 44.sp   // porcentaje dentro del botón
+private val CdActionSub = 26.sp    // monto dentro del botón
+
 // MARK: - Sin venta: la marca
 
 @Composable
-private fun IdleBranding() {
+private fun IdleBranding(venueName: String?) {
     Column(
         modifier = Modifier.fillMaxSize().padding(AvoqadoTheme.spacing.xxl),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
+        // 🔴 La marca del NEGOCIO, no la nuestra. El cliente está en la taquería,
+        // no en Avoqado; ver nuestro logo en el mostrador ajeno es raro y le
+        // roba presencia a quien paga la terminal. Caemos a "Avoqado" solo si
+        // todavía no sabemos el venue.
         Text(
-            text = "Avoqado",
-            style = MaterialTheme.typography.displayMedium,
+            text = venueName?.takeIf { it.isNotBlank() } ?: "Avoqado",
+            fontSize = CdTitle,
+            lineHeight = CdTitle * 1.2f,
             fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center,
             color = MaterialTheme.colorScheme.onBackground,
         )
-        Spacer(Modifier.height(AvoqadoTheme.spacing.md))
+        Spacer(Modifier.height(AvoqadoTheme.spacing.lg))
         Text(
             text = "Bienvenido",
-            style = MaterialTheme.typography.headlineSmall,
+            fontSize = CdBody,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
@@ -199,20 +221,25 @@ private fun RatingPrompt(c: CustomerContent.Rating, onRating: (Int) -> Unit) {
     ) {
         Text(
             text = "¿Cómo estuvo tu experiencia?",
-            style = MaterialTheme.typography.headlineMedium,
+            fontSize = CdTitle,
+            lineHeight = CdTitle * 1.2f,
             fontWeight = FontWeight.Bold,
             textAlign = TextAlign.Center,
         )
         Spacer(Modifier.height(AvoqadoTheme.spacing.xxl))
-        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.lg)) {
             (1..5).forEach { star ->
+                // Área de toque generosa: la usa un desconocido, de pie y de
+                // paso. 64dp era el mínimo de una UI de app, no de señalización.
                 Icon(
                     imageVector = Icons.Filled.Star,
                     contentDescription = "$star estrellas",
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier
-                        .size(64.dp)
-                        .clickable { onRating(star) },
+                        .size(104.dp)
+                        .clip(RoundedCornerShape(16.dp))
+                        .clickable { onRating(star) }
+                        .padding(AvoqadoTheme.spacing.sm),
                 )
             }
         }
@@ -230,44 +257,57 @@ private fun TipPrompt(c: CustomerContent.Tip, onTip: (Int) -> Unit) {
     ) {
         Text(
             text = "¿Deseas dejar propina?",
-            style = MaterialTheme.typography.headlineMedium,
+            fontSize = CdTitle,
+            lineHeight = CdTitle * 1.2f,
             fontWeight = FontWeight.Bold,
             textAlign = TextAlign.Center,
         )
-        Spacer(Modifier.height(AvoqadoTheme.spacing.md))
+        Spacer(Modifier.height(AvoqadoTheme.spacing.sm))
         Text(
             text = money(c.amountCents),
-            style = MaterialTheme.typography.displaySmall,
+            fontSize = CdAmount,
+            lineHeight = CdAmount * 1.1f,
             fontWeight = FontWeight.Bold,
         )
-        Spacer(Modifier.height(AvoqadoTheme.spacing.xxl))
-        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md)) {
+        Spacer(Modifier.height(AvoqadoTheme.spacing.xl))
+        // Los botones ocupan el ANCHO de la pantalla. Antes medían ~115px en
+        // una pantalla de 1280 y quedaban pegados entre sí: un blanco difícil
+        // para alguien que toca de paso, y errarle cuesta dinero al mesero.
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.lg),
+        ) {
             c.suggestions.forEach { percent ->
                 val tipCents = c.amountCents * percent / 100
                 Card(
                     modifier = Modifier
+                        .weight(1f)
+                        .height(150.dp)
                         .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.lg))
                         .clickable { onTip(tipCents) },
                 ) {
                     Column(
-                        modifier = Modifier.padding(AvoqadoTheme.spacing.xl),
+                        modifier = Modifier.fillMaxSize(),
                         horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.Center,
                     ) {
-                        Text("$percent%", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                        Text(money(tipCents), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text("$percent%", fontSize = CdActionMain, fontWeight = FontWeight.Bold)
+                        Text(money(tipCents), fontSize = CdActionSub, color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
             }
         }
         Spacer(Modifier.height(AvoqadoTheme.spacing.lg))
+        // "Sin propina" es una salida legítima, no letra chica gris.
         Text(
             text = "Sin propina",
-            style = MaterialTheme.typography.titleMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            fontSize = CdBody,
+            fontWeight = FontWeight.SemiBold,
+            color = MaterialTheme.colorScheme.onSurface,
             modifier = Modifier
                 .clip(RoundedCornerShape(50))
                 .clickable { onTip(0) }
-                .padding(horizontal = AvoqadoTheme.spacing.xl, vertical = AvoqadoTheme.spacing.md),
+                .padding(horizontal = AvoqadoTheme.spacing.xxl, vertical = AvoqadoTheme.spacing.lg),
         )
     }
 }
@@ -289,7 +329,8 @@ private fun TotalOnly(c: CustomerContent.Total) {
         Spacer(Modifier.height(AvoqadoTheme.spacing.md))
         Text(
             text = money(c.totalCents),
-            style = MaterialTheme.typography.displayMedium,
+            fontSize = CdAmount,
+            lineHeight = CdAmount * 1.1f,
             fontWeight = FontWeight.Bold,
         )
     }
@@ -306,7 +347,8 @@ private fun ChargingPrompt(c: CustomerContent.Charging) {
     ) {
         Text(
             text = money(c.totalCents),
-            style = MaterialTheme.typography.displayMedium,
+            fontSize = CdAmount,
+            lineHeight = CdAmount * 1.1f,
             fontWeight = FontWeight.Bold,
         )
         Spacer(Modifier.height(AvoqadoTheme.spacing.lg))
@@ -337,7 +379,8 @@ private fun DonePrompt(c: CustomerContent.Done) {
         Spacer(Modifier.height(AvoqadoTheme.spacing.md))
         Text(
             text = money(c.totalCents),
-            style = MaterialTheme.typography.displaySmall,
+            fontSize = CdAmount,
+            lineHeight = CdAmount * 1.1f,
             fontWeight = FontWeight.Bold,
         )
         // El QR del recibo digital se dibuja solo cuando el server dio una URL;
