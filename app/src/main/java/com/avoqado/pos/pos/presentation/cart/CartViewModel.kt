@@ -172,6 +172,16 @@ class CartViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Re-sincroniza la pantalla del cliente con el carrito ACTUAL. Se llama al
+     * cerrar el pago: si el carrito quedó vacío vuelve al logo del negocio, si
+     * quedó saldo muestra ese carrito. Sin esto "Gracias" se quedaba pegado —
+     * el StateFlow del carrito deduplica y no re-emite un vacío que ya era vacío.
+     */
+    fun refreshCustomerDisplay() {
+        customerDisplay.showCart(_cartState.value)
+    }
+
     val products = productsRepository.products
     val categories = productsRepository.categories
     val isLoading = productsRepository.isLoading

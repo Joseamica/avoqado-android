@@ -220,6 +220,10 @@ class SecureStorage @Inject constructor(
             plainPrefs.edit().putString(KEY_VENUES_LIST, json.encodeToString(value)).apply()
         }
 
+    /** Logo del venue ACTUAL (para la pantalla del cliente en reposo). Null si no tiene. */
+    val venueLogo: String?
+        get() = venueId?.let { id -> venuesList.firstOrNull { it.id == id }?.logo }
+
     var biometricVenuesList: List<StoredVenue>
         get() {
             val raw = plainPrefs.getString(KEY_BIOMETRIC_VENUES_LIST, null) ?: return emptyList()

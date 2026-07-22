@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -25,6 +26,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -50,6 +54,7 @@ fun CustomerDisplayScreen(
 ) {
     val content by state.content.collectAsState()
     val venueName by state.venueName.collectAsState()
+    val venueLogoUrl by state.venueLogoUrl.collectAsState()
 
     Box(
         modifier = Modifier
@@ -57,7 +62,7 @@ fun CustomerDisplayScreen(
             .background(MaterialTheme.colorScheme.background),
     ) {
         when (val c = content) {
-            is CustomerContent.Idle -> IdleBranding(venueName)
+            is CustomerContent.Idle -> IdleBranding(venueName, venueLogoUrl)
             is CustomerContent.Cart -> CartMirror(c)
             is CustomerContent.Rating -> RatingPrompt(c, onRating)
             is CustomerContent.Tip -> TipPrompt(c, onTip)
@@ -85,7 +90,7 @@ private val CdActionSub = 26.sp    // monto dentro del botón
 // MARK: - Sin venta: la marca
 
 @Composable
-private fun IdleBranding(venueName: String?) {
+private fun IdleBranding(venueName: String?, logoUrl: String?) {
     Column(
         modifier = Modifier.fillMaxSize().padding(AvoqadoTheme.spacing.xxl),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -93,23 +98,44 @@ private fun IdleBranding(venueName: String?) {
     ) {
         // 🔴 La marca del NEGOCIO, no la nuestra. El cliente está en la taquería,
         // no en Avoqado; ver nuestro logo en el mostrador ajeno es raro y le
-        // roba presencia a quien paga la terminal. Caemos a "Avoqado" solo si
-        // todavía no sabemos el venue.
-        Text(
-            text = venueName?.takeIf { it.isNotBlank() } ?: "Avoqado",
-            fontSize = CdTitle,
-            lineHeight = CdTitle * 1.2f,
-            fontWeight = FontWeight.Bold,
-            textAlign = TextAlign.Center,
-            color = MaterialTheme.colorScheme.onBackground,
-        )
-        Spacer(Modifier.height(AvoqadoTheme.spacing.lg))
-        Text(
-            text = "Bienvenido",
-            fontSize = CdBody,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        // roba presencia a quien paga la terminal.
+        if (!logoUrl.isNullOrBlank()) {
+            // Con logo: es el "wallpaper" del negocio. Grande, sin texto que
+            // compita. Si la imagen falla (sin red), cae al nombre.
+            var failed by remember(logoUrl) { mutableStateOf(false) }
+            if (!failed) {
+                coil.compose.AsyncImage(
+                    model = logoUrl,
+                    contentDescription = venueName,
+                    modifier = Modifier.fillMaxWidth(0.6f).heightIn(max = 420.dp),
+                    contentScale = androidx.compose.ui.layout.ContentScale.Fit,
+                    onError = { failed = true },
+                )
+            } else {
+                VenueNameBrand(venueName)
+            }
+        } else {
+            VenueNameBrand(venueName)
+        }
     }
+}
+
+@Composable
+private fun VenueNameBrand(venueName: String?) {
+    Text(
+        text = venueName?.takeIf { it.isNotBlank() } ?: "Avoqado",
+        fontSize = CdTitle,
+        lineHeight = CdTitle * 1.2f,
+        fontWeight = FontWeight.Bold,
+        textAlign = TextAlign.Center,
+        color = MaterialTheme.colorScheme.onBackground,
+    )
+    Spacer(Modifier.height(AvoqadoTheme.spacing.lg))
+    Text(
+        text = "Bienvenido",
+        fontSize = CdBody,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
 }
 
 // MARK: - Carrito en vivo

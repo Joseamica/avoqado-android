@@ -768,10 +768,14 @@ fun CheckoutScreen(
                     checkoutScope.launch { cartViewModel.captureReferralOnPayment(orderId = null) }
                     showPaymentFlow = false
                     pendingSplitConfig = SplitConfig()
+                    // El "Gracias" del cliente vuelve al logo del negocio (o al
+                    // carrito si quedó saldo) en cuanto se cierra el pago.
+                    cartViewModel.refreshCustomerDisplay()
                 },
                 onCancel = {
                     showPaymentFlow = false
                     pendingSplitConfig = SplitConfig()
+                    cartViewModel.refreshCustomerDisplay()
                 },
                 splitConfig = pendingSplitConfig,
             )

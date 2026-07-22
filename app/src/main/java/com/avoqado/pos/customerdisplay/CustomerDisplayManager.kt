@@ -83,8 +83,8 @@ class CustomerDisplayManager @Inject constructor(
 
     /** Llamar desde MainActivity.onStart. */
     fun attach(activity: Activity) {
-        // La marca en reposo es del NEGOCIO, no de Avoqado.
-        state.setVenueName(secureStorage.venueName)
+        // La marca en reposo es del NEGOCIO (logo si hay, si no el nombre).
+        state.setVenueBranding(secureStorage.venueName, secureStorage.venueLogo)
         hostActivity = activity
         val dm = activity.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager ?: return
         displayManager = dm

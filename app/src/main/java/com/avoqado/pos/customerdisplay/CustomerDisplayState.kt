@@ -4,6 +4,7 @@ import com.avoqado.pos.pos.data.model.CartItem
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -63,11 +64,26 @@ sealed interface CustomerContent {
 @Singleton
 class CustomerDisplayState @Inject constructor() {
 
-    /** Nombre del NEGOCIO para la pantalla en reposo (no la marca de Avoqado). */
+    /** Marca del NEGOCIO en reposo: logo si lo hay, si no el nombre. No la de Avoqado. */
     private val _venueName = MutableStateFlow<String?>(null)
     val venueName: StateFlow<String?> = _venueName.asStateFlow()
 
-    fun setVenueName(name: String?) { _venueName.value = name }
+    private val _venueLogoUrl = MutableStateFlow<String?>(null)
+    val venueLogoUrl: StateFlow<String?> = _venueLogoUrl.asStateFlow()
+
+    fun setVenueBranding(name: String?, logoUrl: String?) {
+        _venueName.value = name
+        _venueLogoUrl.value = logoUrl
+    }
+
+    // Auto-regreso del "Gracias" al reposo (screensaver). Sin esto la pantalla
+    // se quedaba PEGADA en "Gracias por tu compra" hasta la siguiente venta —
+    // el StateFlow del carrito deduplica, así que si ya estaba vacío al pagar,
+    // nunca re-emite el Idle. El timeout es la red que lo cierra siempre.
+    private val timerScope = kotlinx.coroutines.CoroutineScope(
+        kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Main.immediate,
+    )
+    private var revertJob: kotlinx.coroutines.Job? = null
 
     private val _content = MutableStateFlow<CustomerContent>(CustomerContent.Idle)
     val content: StateFlow<CustomerContent> = _content.asStateFlow()
@@ -118,10 +134,23 @@ class CustomerDisplayState @Inject constructor() {
 
     fun show(content: CustomerContent) {
         _content.value = content
+        // Cualquier cambio cancela el timer previo. Si lo nuevo es "Gracias",
+        // se programa el regreso al reposo tras un rato (suficiente para leer el
+        // QR del recibo); una nueva venta lo interrumpe antes con su carrito.
+        revertJob?.cancel()
+        if (content is CustomerContent.Done) {
+            revertJob = timerScope.launch {
+                kotlinx.coroutines.delay(DONE_TIMEOUT_MS)
+                _content.value = CustomerContent.Idle
+            }
+        }
     }
 
     /** Carrito vacío = volver a la marca (no dejar un carrito fantasma). */
     fun showCart(state: com.avoqado.pos.pos.presentation.cart.CartState) {
+        // Una venta nueva cancela el timer del "Gracias": si no, el timer viejo
+        // borraría este carrito 30 s después.
+        revertJob?.cancel()
         _content.value = if (state.items.isEmpty()) {
             CustomerContent.Idle
         } else {
@@ -136,8 +165,15 @@ class CustomerDisplayState @Inject constructor() {
     }
 
     fun idle() {
+        revertJob?.cancel()
         _content.value = CustomerContent.Idle
         onRatingPicked = null
         onTipPicked = null
+    }
+
+    private companion object {
+        // 30 s: alcanza para que el cliente escanee el QR del recibo y luego
+        // vuelve solo a la marca del negocio.
+        const val DONE_TIMEOUT_MS = 30_000L
     }
 }
