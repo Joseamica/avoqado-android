@@ -72,6 +72,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.avoqado.pos.designsystem.components.SearchPillField
+import com.avoqado.pos.designsystem.components.AvoqadoLoadingState
 import com.avoqado.pos.designsystem.theme.AvoqadoAdaptiveSizeClass
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.transactions.data.model.AmountOperator
@@ -356,12 +357,7 @@ private fun TransactionListPanel(
         // Content
         when {
             isLoading && transactions.isEmpty() -> {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    CircularProgressIndicator()
-                }
+                AvoqadoLoadingState(message = "Cargando transacciones...")
             }
             filteredTransactions.isEmpty() -> {
                 EmptyState(

@@ -22,6 +22,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import com.avoqado.pos.designsystem.components.AvoqadoBrandLoader
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -77,7 +78,7 @@ fun CustomerCreditsSection(
             isLoading -> Box(
                 modifier = Modifier.fillMaxWidth().padding(AvoqadoTheme.spacing.lg),
                 contentAlignment = Alignment.Center,
-            ) { CircularProgressIndicator() }
+            ) { AvoqadoBrandLoader(size = 48.dp) }
 
             balances.isEmpty() -> Text(
                 text = "Sin paquetes activos",

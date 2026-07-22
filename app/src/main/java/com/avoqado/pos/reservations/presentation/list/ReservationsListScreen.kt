@@ -1,5 +1,7 @@
 package com.avoqado.pos.reservations.presentation.list
 
+import com.avoqado.pos.designsystem.components.AvoqadoBrandLoader
+
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.WindowInsets
@@ -73,7 +75,10 @@ fun ReservationsListScreen(
         ) {
             when {
                 state.isLoading && state.items.isEmpty() ->
-                    CircularProgressIndicator(Modifier.align(Alignment.Center))
+                    AvoqadoBrandLoader(
+                        modifier = Modifier.align(Alignment.Center),
+                        size = 72.dp,
+                    )
 
                 state.items.isEmpty() ->
                     Text(

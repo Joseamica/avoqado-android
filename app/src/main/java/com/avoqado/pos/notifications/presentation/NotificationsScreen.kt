@@ -50,6 +50,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.avoqado.pos.designsystem.components.AvoqadoBrandLoader
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.notifications.data.model.AppNotification
 import com.avoqado.pos.notifications.data.model.NotificationCategory
@@ -143,7 +144,7 @@ fun NotificationsScreen(
                     contentAlignment = Alignment.Center,
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        CircularProgressIndicator()
+                        AvoqadoBrandLoader(size = 72.dp)
                         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
                         Text(
                             text = "Cargando notificaciones...",

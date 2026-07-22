@@ -54,6 +54,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
+import com.avoqado.pos.designsystem.components.AvoqadoBrandLoader
 import com.avoqado.pos.pos.data.model.Product
 import com.avoqado.pos.pos.data.model.ProductCategory
 import com.avoqado.pos.pos.presentation.cart.CartViewModel
@@ -128,7 +129,7 @@ fun ProductGridView(
             isLoading && allProducts.isEmpty() -> {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        CircularProgressIndicator()
+                        AvoqadoBrandLoader(size = 72.dp)
                         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
                         Text(
                             text = "Cargando productos...",

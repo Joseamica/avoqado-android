@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:drawable="@color/avoqado_launch_background" />
+    <item
+        android:width="116dp"
+        android:height="116dp"
+        android:drawable="@drawable/avoqado_splash_seed"
+        android:gravity="center" />
+</layer-list>

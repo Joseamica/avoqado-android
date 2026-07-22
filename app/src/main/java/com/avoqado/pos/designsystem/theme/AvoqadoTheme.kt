@@ -82,9 +82,10 @@ fun AvoqadoTheme(
     val colorScheme = if (darkTheme) DarkColorScheme else LightColorScheme
 
     val view = LocalView.current
-    if (!view.isInEditMode) {
+    val activity = view.context as? Activity
+    if (!view.isInEditMode && activity != null) {
         SideEffect {
-            val window = (view.context as Activity).window
+            val window = activity.window
             // Let enableEdgeToEdge() handle transparent bars
             // Only control icon appearance (light/dark)
             WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = !darkTheme

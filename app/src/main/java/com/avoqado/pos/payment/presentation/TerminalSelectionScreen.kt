@@ -30,6 +30,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.unit.dp
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
+import com.avoqado.pos.designsystem.components.AvoqadoBrandLoader
 import com.avoqado.pos.designsystem.theme.Success
 import com.avoqado.pos.payment.data.OnlineTerminal
 
@@ -74,7 +75,7 @@ fun TerminalSelectionScreen(
         if (terminals.isEmpty()) {
             // Loading state
             Spacer(modifier = Modifier.weight(1f))
-            CircularProgressIndicator()
+            AvoqadoBrandLoader(size = 56.dp)
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
             Text(
                 text = "Buscando terminales...",

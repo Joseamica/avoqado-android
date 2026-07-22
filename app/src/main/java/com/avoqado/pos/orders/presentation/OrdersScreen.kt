@@ -26,6 +26,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import com.avoqado.pos.designsystem.components.CircleBackButton
+import com.avoqado.pos.designsystem.components.AvoqadoBrandLoader
 import androidx.compose.material.icons.filled.AttachMoney
 import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.CheckCircle
@@ -173,7 +174,7 @@ private fun PhoneOrdersLayout(
     } else if (selectedOrderId != null && selectedOrder == null) {
         // Loading detail
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            CircularProgressIndicator()
+            AvoqadoBrandLoader(size = 72.dp)
         }
     } else {
         OrderListView(
@@ -250,7 +251,7 @@ private fun OrderListView(
                     modifier = Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center,
                 ) {
-                    CircularProgressIndicator()
+                    AvoqadoBrandLoader(size = 72.dp)
                 }
             }
             orders.isEmpty() -> {
@@ -326,7 +327,10 @@ private fun OrderDetailPanel(
     ) {
         when {
             isLoadingDetail -> {
-                CircularProgressIndicator(modifier = Modifier.align(Alignment.Center))
+                AvoqadoBrandLoader(
+                    modifier = Modifier.align(Alignment.Center),
+                    size = 72.dp,
+                )
             }
             selectedOrder != null -> {
                 OrderDetailView(

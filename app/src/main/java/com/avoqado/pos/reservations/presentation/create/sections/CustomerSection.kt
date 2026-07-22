@@ -26,6 +26,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import com.avoqado.pos.designsystem.components.AvoqadoBrandLoader
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -113,7 +114,7 @@ fun CustomerSection(
                             .padding(vertical = AvoqadoTheme.spacing.xxl),
                         contentAlignment = Alignment.Center,
                     ) {
-                        CircularProgressIndicator()
+                        AvoqadoBrandLoader(size = 48.dp)
                     }
                 }
             }

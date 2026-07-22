@@ -40,6 +40,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.avoqado.pos.customers.data.model.Customer
 import com.avoqado.pos.designsystem.components.CloseButton
+import com.avoqado.pos.designsystem.components.AvoqadoBrandLoader
 import com.avoqado.pos.designsystem.components.SearchPillField
 import com.avoqado.pos.designsystem.theme.AvoqadoAdaptiveSizeClass
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
@@ -166,7 +167,7 @@ fun CustomersView(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center,
                 ) {
-                    CircularProgressIndicator()
+                    AvoqadoBrandLoader(size = 72.dp)
                     Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
                     Text(
                         text = "Cargando clientes...",

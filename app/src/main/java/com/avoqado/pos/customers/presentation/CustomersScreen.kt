@@ -59,6 +59,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.avoqado.pos.customers.data.model.Customer
 import com.avoqado.pos.designsystem.components.CircleBackButton
+import com.avoqado.pos.designsystem.components.AvoqadoBrandLoader
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 
 // MARK: - Entry Point
@@ -238,7 +239,7 @@ private fun TabletCustomersLayout(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center,
                     ) {
-                        CircularProgressIndicator()
+                        AvoqadoBrandLoader(size = 72.dp)
                         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
                         Text(
                             text = "Cargando clientes...",
@@ -482,7 +483,7 @@ private fun PhoneCustomersLayout(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.Center,
                 ) {
-                    CircularProgressIndicator()
+                    AvoqadoBrandLoader(size = 72.dp)
                     Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
                     Text(
                         text = "Cargando clientes...",

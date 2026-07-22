@@ -24,6 +24,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.material.icons.Icons
 import com.avoqado.pos.designsystem.components.AvoqadoDialog
+import com.avoqado.pos.designsystem.components.AvoqadoBrandLoader
 import com.avoqado.pos.designsystem.components.AvoqadoPhoneInput
 import com.avoqado.pos.designsystem.components.AvoqadoPillTextField
 import com.avoqado.pos.designsystem.components.AvoqadoSuccessToast
@@ -152,8 +153,9 @@ fun TransactionDetailPanel(
         CompositionLocalProvider(LocalDetailMetrics provides metrics) {
             when {
                 isLoadingDetail -> {
-                    CircularProgressIndicator(
+                    AvoqadoBrandLoader(
                         modifier = Modifier.align(Alignment.Center),
+                        size = 72.dp,
                     )
                 }
                 transaction != null -> {

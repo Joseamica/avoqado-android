@@ -35,6 +35,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.avoqado.pos.core.util.VenueDateTimeFormatter
 import com.avoqado.pos.designsystem.components.AvoqadoFullscreenHeader
+import com.avoqado.pos.designsystem.components.AvoqadoBrandLoader
 import com.avoqado.pos.designsystem.components.AvoqadoSuccessToast
 import com.avoqado.pos.reservations.data.model.displayLabel
 import com.avoqado.pos.reservations.domain.ReservationAction
@@ -85,7 +86,10 @@ fun ReservationDetailScreen(
     ) { padding ->
         Box(Modifier.padding(padding).fillMaxSize()) {
             when {
-                state.isLoading -> CircularProgressIndicator(Modifier.align(Alignment.Center))
+                state.isLoading -> AvoqadoBrandLoader(
+                    modifier = Modifier.align(Alignment.Center),
+                    size = 72.dp,
+                )
                 state.reservation == null -> Text("No se pudo cargar la reserva", Modifier.align(Alignment.Center))
                 else -> {
                     val r = state.reservation!!

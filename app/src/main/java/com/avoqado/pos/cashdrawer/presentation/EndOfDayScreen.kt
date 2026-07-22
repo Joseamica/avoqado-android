@@ -38,6 +38,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.avoqado.pos.cashdrawer.data.EndOfDaySummary
 import com.avoqado.pos.designsystem.components.CircleBackButton
+import com.avoqado.pos.designsystem.components.AvoqadoBrandLoader
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import java.util.Locale
 
@@ -107,7 +108,7 @@ fun EndOfDayScreen(
                 modifier = Modifier.fillMaxSize(),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center,
-            ) { CircularProgressIndicator() }
+            ) { AvoqadoBrandLoader(size = 72.dp) }
             return
         }
 

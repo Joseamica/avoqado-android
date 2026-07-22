@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- **Loader y splash de marca Avoqado**: las cargas bloqueantes ahora dibujan el isotipo desde la semilla y hacen crecer el trazo verde desde el pico inferior. El arranque nativo muestra la semilla de inmediato y Compose continúa la animación sin cambiar el flujo de navegación; los spinners compactos de botones y paginación permanecen nativos. Incluye modo sin movimiento para accesibilidad.
+
 ### Fixed
 - **Bottom navbar tabs ahora se actualizan al cambiar de role sin force-stop**: tras logout → login con otro role (ej. ADMIN → WAITER), el navbar quedaba con los tabs del role anterior. Tap en un tab no permitido (Inventario para WAITER) crasheaba con `IllegalArgumentException: Navigation destination route=inventory cannot be found`. Causa: `AppState.visibleTabs` combinaba solo `_reservationsEnabled` y `_venueMode`; cuando esos valores no cambiaban entre sesiones, `StateFlow` (distinct-by-equality) no re-emitía aunque `roleManager.role` ya reportaba el nuevo role. Fix: agregar `_roleVersion: MutableStateFlow<Int>` al combine y bump en `refreshTabs()` (ya llamado desde `onLoginSuccess()`). Archivo: `app/src/main/java/com/avoqado/pos/auth/presentation/AppState.kt`.
 - **Venue-switch ahora recomputa tabs**: al cambiar de venue desde Más → Sucursal a otro con role distinto, `MoreMenuViewModel.switchVenue()` actualizaba `secureStorage.userRole` pero no notificaba a `AppState`, dejando los tabs del venue anterior. Fix: `switchVenue(venue, onSwitched)` ahora acepta un callback que `MoreMenuScreen` cablea a `onTabsShouldRefresh` (= `appState.refreshTabs()`). Archivos: `MoreMenuViewModel.kt`, `MoreMenuScreen.kt`.

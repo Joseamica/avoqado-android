@@ -51,6 +51,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.avoqado.pos.designsystem.components.CircleBackButton
+import com.avoqado.pos.designsystem.components.AvoqadoBrandLoader
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.estimates.data.model.Estimate
 import com.avoqado.pos.estimates.data.model.EstimateStatus
@@ -212,7 +213,7 @@ private fun TabletEstimatesLayout(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.Center,
                         ) {
-                            CircularProgressIndicator()
+                            AvoqadoBrandLoader(size = 72.dp)
                             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
                             Text(
                                 text = "Cargando presupuestos...",
@@ -452,7 +453,7 @@ private fun PhoneEstimatesLayout(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         verticalArrangement = Arrangement.Center,
                     ) {
-                        CircularProgressIndicator()
+                        AvoqadoBrandLoader(size = 72.dp)
                         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
                         Text(
                             text = "Cargando presupuestos...",

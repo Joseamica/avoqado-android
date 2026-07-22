@@ -67,6 +67,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.avoqado.pos.designsystem.components.TierBadge
+import com.avoqado.pos.designsystem.components.AvoqadoLoadingState
 import com.avoqado.pos.designsystem.theme.ActionPurple
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Info
@@ -116,12 +117,7 @@ fun ReportsScreen(
 
         when {
             isLoading && reportData == null -> {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    CircularProgressIndicator()
-                }
+                AvoqadoLoadingState(message = "Cargando informes...")
             }
             else -> {
                 LazyColumn(

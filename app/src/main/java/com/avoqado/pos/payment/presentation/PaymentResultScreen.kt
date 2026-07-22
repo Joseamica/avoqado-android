@@ -46,6 +46,7 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import com.avoqado.pos.R
 import com.avoqado.pos.designsystem.components.AvoqadoDialog
+import com.avoqado.pos.designsystem.components.AvoqadoBrandLoader
 import com.avoqado.pos.designsystem.components.AvoqadoErrorToast
 import com.avoqado.pos.designsystem.components.AvoqadoPhoneInput
 import com.avoqado.pos.designsystem.components.AvoqadoPillTextField
@@ -537,7 +538,7 @@ fun PaymentProcessingView(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        CircularProgressIndicator(modifier = Modifier.size(64.dp))
+        AvoqadoBrandLoader(size = 96.dp)
 
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
 
@@ -630,7 +631,7 @@ fun PaymentLoadingView() {
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        CircularProgressIndicator(modifier = Modifier.size(48.dp))
+        AvoqadoBrandLoader(size = 72.dp)
 
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
 

@@ -20,8 +20,8 @@ fun AvoqadoLoadingState(
     modifier: Modifier = Modifier,
     compact: Boolean = false,
 ) {
-    val spinnerSize = if (compact) 20.dp else 24.dp
-    val spinnerStroke = if (compact) 2.dp else 2.5.dp
+    val spinnerSize = 20.dp
+    val spinnerStroke = 2.dp
     val textStyle = if (compact) MaterialTheme.typography.labelMedium else MaterialTheme.typography.bodySmall
 
     Box(
@@ -32,10 +32,14 @@ fun AvoqadoLoadingState(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
         ) {
-            CircularProgressIndicator(
-                modifier = Modifier.size(spinnerSize),
-                strokeWidth = spinnerStroke,
-            )
+            if (compact) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(spinnerSize),
+                    strokeWidth = spinnerStroke,
+                )
+            } else {
+                AvoqadoBrandLoader(size = 72.dp)
+            }
             Text(
                 text = message,
                 style = textStyle,
