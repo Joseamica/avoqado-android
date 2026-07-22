@@ -438,14 +438,37 @@ private fun DonePrompt(c: CustomerContent.Done) {
         )
         // El QR del recibo digital se dibuja solo cuando el server dio una URL;
         // sin ella la pantalla NO miente con un código que no lleva a nada.
+        // El cliente escanea con SU teléfono y ahí elige cómo quiere el recibo
+        // (WhatsApp, correo), califica y factura. Teclear en esta pantalla NO es
+        // posible: el teclado de Android sale en la pantalla del cajero, no en la
+        // del cliente (verificado en hardware). Por eso todo se hace vía el QR.
         c.receiptUrl?.let { url ->
             Spacer(Modifier.height(AvoqadoTheme.spacing.xl))
-            QrCode(content = url, size = 220.dp)
-            Spacer(Modifier.height(AvoqadoTheme.spacing.md))
             Text(
-                text = "Escanea para tu recibo",
-                style = MaterialTheme.typography.bodyLarge,
+                text = "Escanea tu recibo",
+                fontSize = CdTitle,
+                lineHeight = CdTitle * 1.15f,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center,
+            )
+            Spacer(Modifier.height(AvoqadoTheme.spacing.lg))
+            // Fondo blanco fijo con marco: el QR debe escanear igual en modo
+            // oscuro (un QR claro sobre fondo oscuro no lee en muchos teléfonos).
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(24.dp))
+                    .background(Color.White)
+                    .padding(AvoqadoTheme.spacing.lg),
+            ) {
+                QrCode(content = url, size = 300.dp)
+            }
+            Spacer(Modifier.height(AvoqadoTheme.spacing.lg))
+            Text(
+                text = "Recíbelo por WhatsApp o correo,\ncalifícanos y factura",
+                fontSize = CdBody,
+                lineHeight = CdBody * 1.3f,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
             )
         }
     }
