@@ -198,7 +198,13 @@ private fun CartMirror(cart: CustomerContent.Cart) {
         ) {
             if (cart.discountCents > 0) {
                 TotalRow("Subtotal", money(cart.subtotalCents))
-                TotalRow("Descuento", "−${money(cart.discountCents)}")
+                // El descuento se DESTACA en verde: que el cliente vea que le
+                // rebajaron, no que pase como una línea gris más.
+                TotalRow(
+                    label = "Descuento",
+                    value = "−${money(cart.discountCents)}",
+                    highlight = true,
+                )
             }
             if (cart.taxCents > 0) TotalRow("Impuestos", money(cart.taxCents))
             Spacer(Modifier.height(AvoqadoTheme.spacing.xs))
@@ -220,18 +226,23 @@ private fun CartMirror(cart: CustomerContent.Cart) {
 }
 
 @Composable
-private fun TotalRow(label: String, value: String) {
+private fun TotalRow(label: String, value: String, highlight: Boolean = false) {
+    val color = if (highlight) com.avoqado.pos.designsystem.theme.Success
+                else MaterialTheme.colorScheme.onSurfaceVariant
+    val weight = if (highlight) FontWeight.Bold else FontWeight.Normal
     Row(modifier = Modifier.fillMaxWidth()) {
         Text(
             text = label,
             style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = color,
+            fontWeight = weight,
             modifier = Modifier.weight(1f),
         )
         Text(
             text = value,
             style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            color = color,
+            fontWeight = weight,
         )
     }
 }
