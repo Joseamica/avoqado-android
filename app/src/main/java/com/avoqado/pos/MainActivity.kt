@@ -40,8 +40,14 @@ class MainActivity : FragmentActivity() {
     /** Modo kiosco: sin él el navbar del sistema se asoma al pasar el mouse. */
     @Inject lateinit var kiosk: com.avoqado.pos.settings.domain.KioskManager
 
+    /** Impresora integrada de los POS Sunmi: se liga al arrancar para que la
+     *  primera impresión no tenga que esperar el bind (asíncrono). En equipos
+     *  sin ella el bind no conecta y no pasa nada. */
+    @Inject lateinit var innerPrinter: com.avoqado.pos.printing.data.SunmiInnerPrinter
+
     override fun onStart() {
         super.onStart()
+        innerPrinter.bind()
         customerDisplay.attach(this)
     }
 

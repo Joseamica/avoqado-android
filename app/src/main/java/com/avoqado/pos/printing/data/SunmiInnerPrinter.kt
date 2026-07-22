@@ -80,11 +80,37 @@ class SunmiInnerPrinter @Inject constructor(
     }
 
     /**
+     * Garantiza el bind ANTES de imprimir. El bind es asíncrono y sólo se hacía
+     * al BUSCAR impresoras — así que tras reiniciar la app (o si el servicio se
+     * cayó) la impresora guardada salía "no disponible" e imprimir fallaba con
+     * "no hay impresora de recibos configurada", aunque la búsqueda sí la veía.
+     * Aquí se liga y se espera a que responda (hasta ~2 s). En equipos no-Sunmi
+     * el bind nunca conecta y devuelve false sin trabar nada.
+     */
+    suspend fun ensureBound(): Boolean {
+        if (service != null) return true
+        bind()
+        repeat(BIND_WAIT_TRIES) {
+            if (service != null) return true
+            kotlinx.coroutines.delay(BIND_WAIT_STEP_MS)
+        }
+        return service != null
+    }
+
+    /**
      * Manda ESC/POS crudo y ESPERA el resultado del hardware. Suspende hasta que
      * el servicio confirma: si devolviéramos antes, un ticket sin papel o con la
      * tapa abierta se reportaría como impreso.
      */
-    suspend fun printRaw(data: ByteArray): Unit = suspendCancellableCoroutine { cont ->
+    suspend fun printRaw(data: ByteArray) {
+        // Liga a demanda: si el servicio se cayó o nunca se bindeó esta sesión,
+        // lo intenta ahora en vez de fallar de una. Esta era la causa raíz de
+        // "no hay impresora de recibos configurada" tras reiniciar la app.
+        ensureBound()
+        printRawInternal(data)
+    }
+
+    private suspend fun printRawInternal(data: ByteArray): Unit = suspendCancellableCoroutine { cont ->
         val svc = service
         if (svc == null) {
             cont.resumeWithException(PrinterException.ConnectionFailed("La impresora integrada no está disponible"))
@@ -125,5 +151,11 @@ class SunmiInnerPrinter @Inject constructor(
                 },
             )
         }.onFailure { if (cont.isActive) cont.resumeWithException(it) }
+    }
+
+    private companion object {
+        // Espera al bind del servicio (asíncrono): 10 × 200 ms = 2 s.
+        const val BIND_WAIT_TRIES = 10
+        const val BIND_WAIT_STEP_MS = 200L
     }
 }

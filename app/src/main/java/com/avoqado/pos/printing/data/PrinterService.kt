@@ -191,9 +191,11 @@ class PrinterService @Inject constructor(
                 PrinterConnectionType.WIFI -> connectWiFi(printer)
                 PrinterConnectionType.BLUETOOTH -> connectBluetooth(printer)
                 PrinterConnectionType.USB -> connectUsb(printer)
-                // Va soldada: no hay nada que "conectar", el bind ya ocurrió.
+                // Va soldada: "conectar" = asegurar el bind del servicio (que es
+                // asíncrono y pudo no haber ocurrido esta sesión). No adivina que
+                // ya está: lo garantiza.
                 PrinterConnectionType.INTERNAL ->
-                    if (!innerPrinter.isAvailable) {
+                    if (!innerPrinter.ensureBound()) {
                         throw PrinterException.ConnectionFailed("La impresora integrada no está disponible")
                     }
             }
