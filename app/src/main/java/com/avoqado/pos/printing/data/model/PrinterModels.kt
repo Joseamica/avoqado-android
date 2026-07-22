@@ -190,6 +190,8 @@ data class ReceiptData(
     val transactionId: String? = null,
     val cashTendered: Int? = null, // cents
     val changeAmount: Int? = null, // cents
+    /** URL del recibo digital para el QR (escanear → recibo, calificar, facturar). */
+    val receiptUrl: String? = null,
 ) {
     val isCashPayment: Boolean
         get() = paymentMethod == "Efectivo"

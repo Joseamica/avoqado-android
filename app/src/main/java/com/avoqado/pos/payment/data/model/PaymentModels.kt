@@ -113,6 +113,9 @@ data class CreateOrderResponse(
 @Serializable
 data class OrderData(
     val id: String,
+    // Folio real que asigna el backend (p.ej. "ORD-123"). Antes se imprimía
+    // takeLast(4) del id interno — que no es un folio y salía "---".
+    val orderNumber: String? = null,
     val totalAmount: Int? = null,
     val status: String? = null,
 )

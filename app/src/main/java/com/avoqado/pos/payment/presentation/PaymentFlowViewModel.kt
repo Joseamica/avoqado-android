@@ -96,6 +96,7 @@ class PaymentFlowViewModel @Inject constructor(
     private var currentRating: Int? = null
     private var currentTipCents: Int = 0
     private var createdOrderId: String? = null
+    private var createdOrderNumber: String? = null  // folio real del backend
 
     /// Re-entrancy guard: a fast double-tap on a cash preset or a terminal row
     /// used to enter processCashPayment/confirmPayment TWICE — both saw
@@ -398,6 +399,7 @@ class PaymentFlowViewModel @Inject constructor(
         currentRating = null
         currentTipCents = 0
         createdOrderId = null
+        createdOrderNumber = null
 
         // TABLE_SERVICE (PRO) seam — a PAYING table session means this payment
         // settles the table's EXISTING order: preset its id so (a) the card path
@@ -583,6 +585,7 @@ class PaymentFlowViewModel @Inject constructor(
                                     return@fold
                                 }
                                 createdOrderId = orderId
+                                createdOrderNumber = response.data?.orderNumber
                                 processPaymentMethod(total)
                             },
                             onFailure = { error ->
@@ -1260,8 +1263,17 @@ class PaymentFlowViewModel @Inject constructor(
         val receiptTax = if (cart != null && isFullPayment) cart.taxCents else 0
         val resolvedChange = changeCents ?: successState?.changeAmount
 
+        // Folio real del backend; solo si falta cae a los últimos 4 del id (mejor
+        // algo que "---", pero lo normal es el folio).
+        val folio = createdOrderNumber?.takeIf { it.isNotBlank() }
+            ?: createdOrderId?.takeLast(4)
+            ?: "---"
+        // URL del recibo digital para el QR (misma que la pantalla del cliente).
+        val receiptUrl = lastReceiptAccessKey?.takeIf { it.isNotBlank() }?.let { key ->
+            com.avoqado.pos.core.data.network.ApiConstants.BASE_URL + "/public/receipt/" + key
+        }
         return ReceiptData(
-            orderNumber = createdOrderId?.takeLast(4) ?: "---",
+            orderNumber = folio,
             orderType = "En tienda",
             items = receiptItems,
             subtotal = receiptSubtotal,
@@ -1278,6 +1290,7 @@ class PaymentFlowViewModel @Inject constructor(
             cashTendered = if (resolvedMethod == PaymentMethod.CASH) resolvedChange?.let { receiptTotal + it } else null,
             changeAmount = resolvedChange,
             transactionId = lastPaymentId,
+            receiptUrl = receiptUrl,
         )
     }
 

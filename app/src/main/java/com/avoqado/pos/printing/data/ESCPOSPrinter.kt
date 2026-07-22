@@ -141,6 +141,31 @@ class ESCPOSPrinter(
         appendCommand(OPEN_CASH_DRAWER)
     }
 
+    /**
+     * Imprime un código QR con los comandos NATIVOS de ESC/POS (`GS ( k`,
+     * modelo 2). Es lo que soportan las Epson de red/Bluetooth y la mayoría de
+     * cabezales térmicos; en la integrada de Sunmi hay que probarlo (si no lo
+     * dibuja, se cae a ráster — pero primero lo nativo, que es nítido y liviano).
+     *
+     * `moduleSize` = tamaño del punto (1–16). 6–8 da un QR cómodo de escanear en
+     * 80 mm sin comerse el rollo.
+     */
+    fun printQr(data: String, moduleSize: Int = 7) {
+        val bytes = data.toByteArray(Charsets.ISO_8859_1)
+        // Modelo 2
+        appendCommand(byteArrayOf(0x1D, 0x28, 0x6B, 0x04, 0x00, 0x31, 0x41, 0x32, 0x00))
+        // Tamaño de módulo
+        appendCommand(byteArrayOf(0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x43, moduleSize.coerceIn(1, 16).toByte()))
+        // Corrección de errores M (más tolerante a manchas del cabezal que L)
+        appendCommand(byteArrayOf(0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x45, 0x31))
+        // Cargar datos: pL,pH = longitud + 3
+        val len = bytes.size + 3
+        appendCommand(byteArrayOf(0x1D, 0x28, 0x6B, (len and 0xFF).toByte(), ((len shr 8) and 0xFF).toByte(), 0x31, 0x50, 0x30))
+        appendCommand(bytes)
+        // Imprimir el símbolo del buffer
+        appendCommand(byteArrayOf(0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x51, 0x30))
+    }
+
     // MARK: - Formatting Helpers
 
     fun printDivider(char: Char = '-') {
@@ -272,6 +297,18 @@ class ESCPOSPrinter(
                     }
                 }
             }
+        }
+
+        // QR del recibo digital: escanear → recibo, calificar, facturar.
+        // Es lo que hace avoqado-tpv. Sin llave no se dibuja nada.
+        receipt.receiptUrl?.takeIf { it.isNotBlank() }?.let { url ->
+            printLine()
+            printDivider()
+            setAlignment(TextAlignment.CENTER)
+            printLine("Escanea para tu recibo y factura")
+            printLine()
+            printQr(url)
+            printLine()
         }
 
         // Footer
