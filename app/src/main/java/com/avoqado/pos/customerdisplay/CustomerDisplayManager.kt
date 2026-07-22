@@ -21,6 +21,31 @@ import javax.inject.Singleton
  * Se conecta/desconecta en caliente: si desenchufan el monitor y lo vuelven a
  * enchufar a media venta, la pantalla se rehace sola con el estado vigente.
  */
+/** Datos mínimos de una pantalla candidata; separado de [Display] para poder testear la decisión. */
+internal data class CandidateDisplay(val displayId: Int, val ownerPackage: String?)
+
+/**
+ * Decisión PURA de cuál pantalla usar (sin Android): física primero, luego
+ * virtual que no sea de captura/remoto, ante la duda ninguna. Top-level e
+ * `internal` para tener test unitario del caso AnyDesk sin hardware.
+ */
+internal fun chooseCustomerDisplayId(
+    candidates: List<CandidateDisplay>,
+    remoteCaptureHints: List<String>,
+): Int? {
+    if (candidates.isEmpty()) return null
+    // Física = sin dueño. Si hay, gana siempre (es la pantalla real del cliente).
+    val physical = candidates.filter { it.ownerPackage == null }
+    if (physical.isNotEmpty()) return physical.minByOrNull { it.displayId }?.displayId
+    // Todas virtuales (T3 Pro): descartar las de captura/remoto por dueño.
+    return candidates
+        .filter { d ->
+            val owner = d.ownerPackage?.lowercase().orEmpty()
+            remoteCaptureHints.none { owner.contains(it) }
+        }
+        .minByOrNull { it.displayId }?.displayId
+}
+
 @Singleton
 class CustomerDisplayManager @Inject constructor(
     @ApplicationContext private val appContext: Context,
@@ -32,6 +57,14 @@ class CustomerDisplayManager @Inject constructor(
     @Suppress("unused") private val prefs: CustomerDisplayPrefs,
 ) {
     private val tag = "🖥️CustomerDisplay"
+
+    // Apps cuya pantalla virtual es una CAPTURA de la caja, no un display de
+    // cliente. Se comparan como substring del paquete (en minúsculas), así que
+    // basta la raíz de la marca para cubrir sus variantes.
+    private val REMOTE_CAPTURE_HINTS = listOf(
+        "anydesk", "teamviewer", "rustdesk", "vnc", "scrcpy",
+        "airdroid", "splashtop", "screencap", "screenrecord",
+    )
     private val handler = Handler(Looper.getMainLooper())
 
     private var displayManager: DisplayManager? = null
@@ -71,9 +104,11 @@ class CustomerDisplayManager @Inject constructor(
         val activity = hostActivity ?: return
         // PRESENTATION = pantallas pensadas para mostrar contenido a terceros;
         // es justo la categoría en la que caen los displays de cliente.
-        val target = displayManager
+        val candidates = displayManager
             ?.getDisplays(DisplayManager.DISPLAY_CATEGORY_PRESENTATION)
-            ?.firstOrNull()
+            ?.toList()
+            .orEmpty()
+        val target = pickCustomerDisplay(candidates)
 
         if (target == null) {
             if (presentation != null) Log.i(tag, "Segunda pantalla desconectada")
@@ -100,6 +135,42 @@ class CustomerDisplayManager @Inject constructor(
             state.setPresenting(false)
         }
     }
+
+    /**
+     * Elige la pantalla del cliente entre las candidatas.
+     *
+     * 🔴 El problema real: una app de control remoto (AnyDesk, TeamViewer…)
+     * crea una pantalla VIRTUAL para capturar la caja, y esa también se anuncia
+     * como "de presentación". Con `firstOrNull()` le atinábamos a la buena por
+     * PURA SUERTE (orden de enumeración): si la captura enumera primero,
+     * montaríamos la interfaz del cliente DENTRO de la captura y su pantalla
+     * física se quedaría en negro mientras alguien está conectado por remoto.
+     *
+     * No sirve "rechazar todas las virtuales": en el Sunmi T3 Pro la pantalla
+     * del cliente ES virtual (la crea `com.sunmi.usbscreen`). Lo que distingue
+     * a la buena de la captura es QUIÉN la creó:
+     *   - física (HDMI del D3, Elo…): sin dueño → siempre la mejor opción.
+     *   - virtual de un servicio de pantalla del vendor (Sunmi): válida.
+     *   - virtual de una app de captura/remoto: se descarta.
+     * Ante la duda (dueño desconocido) NO montamos: mejor nada que dentro de la
+     * captura de otro.
+     */
+    private fun pickCustomerDisplay(candidates: List<Display>): Display? {
+        val chosenId = chooseCustomerDisplayId(
+            candidates.map { CandidateDisplay(it.displayId, ownerPackage(it)) },
+            REMOTE_CAPTURE_HINTS,
+        ) ?: return null
+        return candidates.firstOrNull { it.displayId == chosenId }
+    }
+
+    /**
+     * Paquete que creó una pantalla VIRTUAL; null en las físicas.
+     * `getOwnerPackageName()` es @hide, por eso reflexión — envuelta para que si
+     * un OEM la bloquea, caigamos al comportamiento previo en vez de crashear.
+     */
+    private fun ownerPackage(display: Display): String? = runCatching {
+        Display::class.java.getMethod("getOwnerPackageName").invoke(display) as? String
+    }.getOrNull()
 
     private fun dismiss() {
         runCatching { presentation?.dismiss() }
