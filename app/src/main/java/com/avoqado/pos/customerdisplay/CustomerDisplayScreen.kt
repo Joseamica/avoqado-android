@@ -418,8 +418,15 @@ private fun ChargingPrompt(c: CustomerContent.Charging) {
 
 @Composable
 private fun DonePrompt(c: CustomerContent.Done) {
+    // El QR del recibo digital solo existe cuando el server dio una URL; sin ella
+    // la pantalla NO miente con un código que no lleva a nada. El cliente escanea
+    // con SU teléfono y ahí elige cómo quiere el recibo (WhatsApp, correo),
+    // califica y factura. Teclear en esta pantalla NO es posible: el teclado de
+    // Android sale en la del cajero, no en la del cliente (verificado en hardware).
+    val url: String? = c.receiptUrl
+
     Column(
-        modifier = Modifier.fillMaxSize().padding(AvoqadoTheme.spacing.xxl),
+        modifier = Modifier.fillMaxSize().padding(AvoqadoTheme.spacing.lg),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
@@ -429,40 +436,36 @@ private fun DonePrompt(c: CustomerContent.Done) {
             fontWeight = FontWeight.Bold,
             textAlign = TextAlign.Center,
         )
-        Spacer(Modifier.height(AvoqadoTheme.spacing.md))
+        Spacer(Modifier.height(AvoqadoTheme.spacing.sm))
+        // Con QR el monto se achica para que quepan encabezado + QR + subtítulo
+        // en los 800px de alto de la pantalla del cliente; sin QR luce en grande.
         Text(
             text = money(c.totalCents),
-            fontSize = CdAmount,
-            lineHeight = CdAmount * 1.1f,
+            fontSize = if (url != null) 52.sp else CdAmount,
+            lineHeight = (if (url != null) 52.sp else CdAmount) * 1.1f,
             fontWeight = FontWeight.Bold,
         )
-        // El QR del recibo digital se dibuja solo cuando el server dio una URL;
-        // sin ella la pantalla NO miente con un código que no lleva a nada.
-        // El cliente escanea con SU teléfono y ahí elige cómo quiere el recibo
-        // (WhatsApp, correo), califica y factura. Teclear en esta pantalla NO es
-        // posible: el teclado de Android sale en la pantalla del cajero, no en la
-        // del cliente (verificado en hardware). Por eso todo se hace vía el QR.
-        c.receiptUrl?.let { url ->
-            Spacer(Modifier.height(AvoqadoTheme.spacing.xl))
+        url?.let { link ->
+            Spacer(Modifier.height(AvoqadoTheme.spacing.md))
             Text(
                 text = "Escanea tu recibo",
-                fontSize = CdTitle,
-                lineHeight = CdTitle * 1.15f,
+                fontSize = CdActionMain,
+                lineHeight = CdActionMain * 1.15f,
                 fontWeight = FontWeight.Bold,
                 textAlign = TextAlign.Center,
             )
-            Spacer(Modifier.height(AvoqadoTheme.spacing.lg))
+            Spacer(Modifier.height(AvoqadoTheme.spacing.md))
             // Fondo blanco fijo con marco: el QR debe escanear igual en modo
             // oscuro (un QR claro sobre fondo oscuro no lee en muchos teléfonos).
             Box(
                 modifier = Modifier
                     .clip(RoundedCornerShape(24.dp))
                     .background(Color.White)
-                    .padding(AvoqadoTheme.spacing.lg),
+                    .padding(AvoqadoTheme.spacing.md),
             ) {
-                QrCode(content = url, size = 300.dp)
+                QrCode(content = link, size = 240.dp)
             }
-            Spacer(Modifier.height(AvoqadoTheme.spacing.lg))
+            Spacer(Modifier.height(AvoqadoTheme.spacing.md))
             Text(
                 text = "Recíbelo por WhatsApp o correo,\ncalifícanos y factura",
                 fontSize = CdBody,
