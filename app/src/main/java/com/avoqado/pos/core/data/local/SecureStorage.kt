@@ -220,9 +220,18 @@ class SecureStorage @Inject constructor(
             plainPrefs.edit().putString(KEY_VENUES_LIST, json.encodeToString(value)).apply()
         }
 
+    /** Venue ACTUAL resuelto desde la lista (por venueId). Fuente robusta para
+     *  la pantalla del cliente: el campo suelto `venueName` a veces viene vacío. */
+    private val currentVenue: StoredVenue?
+        get() = venueId?.let { id -> venuesList.firstOrNull { it.id == id } }
+
     /** Logo del venue ACTUAL (para la pantalla del cliente en reposo). Null si no tiene. */
     val venueLogo: String?
-        get() = venueId?.let { id -> venuesList.firstOrNull { it.id == id }?.logo }
+        get() = currentVenue?.logo
+
+    /** Nombre a mostrar del venue: el de la lista si el campo suelto viene vacío. */
+    val venueDisplayName: String?
+        get() = venueName?.takeIf { it.isNotBlank() } ?: currentVenue?.name
 
     var biometricVenuesList: List<StoredVenue>
         get() {

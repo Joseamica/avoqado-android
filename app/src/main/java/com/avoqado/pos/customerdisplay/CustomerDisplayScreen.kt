@@ -25,6 +25,14 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
@@ -91,51 +99,59 @@ private val CdActionSub = 26.sp    // monto dentro del botón
 
 @Composable
 private fun IdleBranding(venueName: String?, logoUrl: String?) {
+    // Screensaver del negocio: entra con un fade + leve zoom, y luego "respira"
+    // muy despacio (escala sutil) para que la pantalla no se vea muerta ni queme
+    // pixeles. Nada llamativo — es un letrero en reposo, no una animación.
+    val enter = remember { Animatable(0f) }
+    LaunchedEffect(Unit) { enter.animateTo(1f, tween(900)) }
+    val breathe by rememberInfiniteTransition(label = "breathe").animateFloat(
+        initialValue = 1f,
+        targetValue = 1.04f,
+        animationSpec = infiniteRepeatable(tween(4000), RepeatMode.Reverse),
+        label = "scale",
+    )
+    val name = venueName?.takeIf { it.isNotBlank() } ?: "Avoqado"
+
     Column(
-        modifier = Modifier.fillMaxSize().padding(AvoqadoTheme.spacing.xxl),
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(AvoqadoTheme.spacing.xxl)
+            .graphicsLayer {
+                alpha = enter.value
+                val s = (0.96f + 0.04f * enter.value) * breathe
+                scaleX = s; scaleY = s
+            },
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
         // 🔴 La marca del NEGOCIO, no la nuestra. El cliente está en la taquería,
-        // no en Avoqado; ver nuestro logo en el mostrador ajeno es raro y le
-        // roba presencia a quien paga la terminal.
-        if (!logoUrl.isNullOrBlank()) {
-            // Con logo: es el "wallpaper" del negocio. Grande, sin texto que
-            // compita. Si la imagen falla (sin red), cae al nombre.
-            var failed by remember(logoUrl) { mutableStateOf(false) }
-            if (!failed) {
-                coil.compose.AsyncImage(
-                    model = logoUrl,
-                    contentDescription = venueName,
-                    modifier = Modifier.fillMaxWidth(0.6f).heightIn(max = 420.dp),
-                    contentScale = androidx.compose.ui.layout.ContentScale.Fit,
-                    onError = { failed = true },
-                )
-            } else {
-                VenueNameBrand(venueName)
-            }
-        } else {
-            VenueNameBrand(venueName)
+        // no en Avoqado. Logo Y nombre juntos: el logo manda, el nombre lo ancla.
+        var logoFailed by remember(logoUrl) { mutableStateOf(false) }
+        if (!logoUrl.isNullOrBlank() && !logoFailed) {
+            coil.compose.AsyncImage(
+                model = logoUrl,
+                contentDescription = name,
+                modifier = Modifier.fillMaxWidth(0.5f).heightIn(max = 360.dp),
+                contentScale = androidx.compose.ui.layout.ContentScale.Fit,
+                onError = { logoFailed = true },
+            )
+            Spacer(Modifier.height(AvoqadoTheme.spacing.xl))
         }
+        Text(
+            text = name,
+            fontSize = CdTitle,
+            lineHeight = CdTitle * 1.2f,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center,
+            color = MaterialTheme.colorScheme.onBackground,
+        )
+        Spacer(Modifier.height(AvoqadoTheme.spacing.md))
+        Text(
+            text = "Bienvenido",
+            fontSize = CdBody,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
-}
-
-@Composable
-private fun VenueNameBrand(venueName: String?) {
-    Text(
-        text = venueName?.takeIf { it.isNotBlank() } ?: "Avoqado",
-        fontSize = CdTitle,
-        lineHeight = CdTitle * 1.2f,
-        fontWeight = FontWeight.Bold,
-        textAlign = TextAlign.Center,
-        color = MaterialTheme.colorScheme.onBackground,
-    )
-    Spacer(Modifier.height(AvoqadoTheme.spacing.lg))
-    Text(
-        text = "Bienvenido",
-        fontSize = CdBody,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-    )
 }
 
 // MARK: - Carrito en vivo
