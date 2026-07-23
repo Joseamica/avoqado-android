@@ -125,6 +125,15 @@ class PaymentFlowViewModel @Inject constructor(
         // caminos, solo dos superficies de entrada.
         customerDisplay.onRatingPicked = { submitRating(it) }
         customerDisplay.onTipPicked = { submitTip(it) }
+        // El cliente teclea su WhatsApp/correo en SU pantalla (teclado propio) y
+        // dispara los MISMOS envíos que el cajero. Solo aplica en pantallas táctiles
+        // (la detección de hardware ya apaga la interacción donde el dedo no llega).
+        customerDisplay.onWhatsAppSubmit = { sendReceiptWhatsApp(it) }
+        customerDisplay.onEmailSubmit = { sendReceiptEmail(it) }
+        // OJO: el espejo del estado de envío (enviando/enviado/error) vive en un
+        // init MÁS ABAJO, después de declarar los StateFlow que colecta. Aquí
+        // arriba crashea: viewModelScope usa Main.immediate y correría el collect
+        // de inmediato, cuando _whatsAppSending/etc aún son null.
 
         viewModelScope.launch {
             _state.collect { st ->
@@ -138,6 +147,13 @@ class PaymentFlowViewModel @Inject constructor(
             }
         }
     }
+
+    /** Los mensajes de éxito de envío contienen "enviado"; los de error, no. */
+    private fun receiptSendFrom(msg: String) =
+        if (msg.contains("enviado", ignoreCase = true))
+            com.avoqado.pos.customerdisplay.CustomerDisplayState.ReceiptSend.Sent
+        else
+            com.avoqado.pos.customerdisplay.CustomerDisplayState.ReceiptSend.Error
 
     /**
      * Espejo del flujo de pago a la pantalla del cliente. Traduce estado →
@@ -257,6 +273,25 @@ class PaymentFlowViewModel @Inject constructor(
 
     fun clearEmailResult() {
         _emailResult.value = null
+    }
+
+    // Espejo del estado de envío del recibo hacia la pantalla del cliente
+    // (enviando/enviado/error). En un init APARTE porque viewModelScope usa
+    // Main.immediate y colecta de inmediato: debe correr DESPUÉS de declarar
+    // los StateFlow de arriba, o sería null (crash de orden de init).
+    init {
+        viewModelScope.launch {
+            _whatsAppSending.collect { if (it) customerDisplay.setReceiptSend(com.avoqado.pos.customerdisplay.CustomerDisplayState.ReceiptSend.Sending) }
+        }
+        viewModelScope.launch {
+            _emailSending.collect { if (it) customerDisplay.setReceiptSend(com.avoqado.pos.customerdisplay.CustomerDisplayState.ReceiptSend.Sending) }
+        }
+        viewModelScope.launch {
+            _whatsAppResult.collect { r -> r?.let { customerDisplay.setReceiptSend(receiptSendFrom(it)) } }
+        }
+        viewModelScope.launch {
+            _emailResult.collect { r -> r?.let { customerDisplay.setReceiptSend(receiptSendFrom(it)) } }
+        }
     }
 
     // Manual receipt reprint state

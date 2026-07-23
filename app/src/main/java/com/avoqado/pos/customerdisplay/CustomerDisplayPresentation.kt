@@ -70,6 +70,8 @@ class CustomerDisplayPresentation(
                         state = state,
                         onRating = { state.onRatingPicked?.invoke(it) },
                         onTip = { state.onTipPicked?.invoke(it) },
+                        onWhatsApp = { state.onWhatsAppSubmit?.invoke(it) },
+                        onEmail = { state.onEmailSubmit?.invoke(it) },
                     )
                 }
             }

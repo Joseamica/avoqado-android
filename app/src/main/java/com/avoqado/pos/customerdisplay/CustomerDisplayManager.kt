@@ -126,7 +126,13 @@ class CustomerDisplayManager @Inject constructor(
                 presentation = it
                 isActive = true
                 state.setPresenting(true)
-                Log.i(tag, "Pantalla del cliente montada en display ${target.displayId} (${target.name})")
+                // Detección automática por hardware: una pantalla FÍSICA (sin dueño)
+                // sí entrega toques a la app; una virtual de Sunmi (NP511 del T3 Pro)
+                // NO. De esto depende delegar propina/calificación y mostrar el
+                // teclado del cliente sin que quede muerto en pantallas no táctiles.
+                val touchCapable = ownerPackage(target) == null
+                state.setTouchCapable(touchCapable)
+                Log.i(tag, "Pantalla del cliente montada en display ${target.displayId} (${target.name}), táctil=$touchCapable")
             }
         }.onFailure {
             // Nunca tumbar la caja por culpa de la pantalla del cliente.

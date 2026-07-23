@@ -59,10 +59,17 @@ fun CustomerDisplayScreen(
     state: CustomerDisplayState,
     onRating: (Int) -> Unit,
     onTip: (Int) -> Unit,
+    onWhatsApp: (String) -> Unit = {},
+    onEmail: (String) -> Unit = {},
 ) {
     val content by state.content.collectAsState()
     val venueName by state.venueName.collectAsState()
     val venueLogoUrl by state.venueLogoUrl.collectAsState()
+    // Solo donde el dedo del cliente sí llega a la app (pantalla física táctil):
+    // ahí ofrecemos que él mismo teclee su WhatsApp/correo. En pantallas no
+    // táctiles queda el QR (lo hace en su teléfono).
+    val canInteract by state.customerCapturesInput.collectAsState()
+    val receiptSend by state.receiptSend.collectAsState()
 
     Box(
         modifier = Modifier
@@ -76,7 +83,7 @@ fun CustomerDisplayScreen(
             is CustomerContent.Tip -> TipPrompt(c, onTip)
             is CustomerContent.Total -> TotalOnly(c)
             is CustomerContent.Charging -> ChargingPrompt(c)
-            is CustomerContent.Done -> DonePrompt(c)
+            is CustomerContent.Done -> DonePrompt(c, canInteract, receiptSend, onWhatsApp, onEmail) { state.keepAlive() }
         }
     }
 }
@@ -465,14 +472,29 @@ private fun ChargingPrompt(c: CustomerContent.Charging) {
 // MARK: - Gracias + recibo
 
 @Composable
-private fun DonePrompt(c: CustomerContent.Done) {
-    // El QR del recibo digital solo existe cuando el server dio una URL; sin ella
-    // la pantalla NO miente con un código que no lleva a nada. El cliente escanea
-    // con SU teléfono y ahí elige cómo quiere el recibo (WhatsApp, correo),
-    // califica y factura. Teclear en esta pantalla NO es posible: el teclado de
-    // Android sale en la del cajero, no en la del cliente (verificado en hardware).
-    val url: String? = c.receiptUrl
+private fun DonePrompt(
+    c: CustomerContent.Done,
+    canInteract: Boolean,
+    receiptSend: CustomerDisplayState.ReceiptSend,
+    onWhatsApp: (String) -> Unit,
+    onEmail: (String) -> Unit,
+    onKeepAlive: () -> Unit,
+) {
+    val url = c.receiptUrl
+    // Pantalla TÁCTIL + hay recibo → el cliente elige y TECLEA aquí mismo su
+    // WhatsApp/correo (teclado propio). Si no es táctil (o no hay recibo), queda
+    // el QR: el cliente lo hace en su teléfono. La detección de táctil es por
+    // hardware (ver CustomerDisplayState.setTouchCapable).
+    if (canInteract && url != null) {
+        DoneInteractive(c.totalCents, url, receiptSend, onWhatsApp, onEmail, onKeepAlive)
+    } else {
+        DoneQrOnly(c)
+    }
+}
 
+@Composable
+private fun DoneQrOnly(c: CustomerContent.Done) {
+    val url: String? = c.receiptUrl
     Column(
         modifier = Modifier.fillMaxSize().padding(AvoqadoTheme.spacing.lg),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -485,8 +507,6 @@ private fun DonePrompt(c: CustomerContent.Done) {
             textAlign = TextAlign.Center,
         )
         Spacer(Modifier.height(AvoqadoTheme.spacing.sm))
-        // Con QR el monto se achica para que quepan encabezado + QR + subtítulo
-        // en los 800px de alto de la pantalla del cliente; sin QR luce en grande.
         Text(
             text = money(c.totalCents),
             fontSize = if (url != null) 52.sp else CdAmount,
@@ -503,8 +523,6 @@ private fun DonePrompt(c: CustomerContent.Done) {
                 textAlign = TextAlign.Center,
             )
             Spacer(Modifier.height(AvoqadoTheme.spacing.md))
-            // Fondo blanco fijo con marco: el QR debe escanear igual en modo
-            // oscuro (un QR claro sobre fondo oscuro no lee en muchos teléfonos).
             Box(
                 modifier = Modifier
                     .clip(RoundedCornerShape(24.dp))
@@ -522,6 +540,299 @@ private fun DonePrompt(c: CustomerContent.Done) {
                 textAlign = TextAlign.Center,
             )
         }
+    }
+}
+
+private enum class DoneMode { Options, WhatsApp, Email }
+
+@Composable
+private fun DoneInteractive(
+    totalCents: Int,
+    url: String,
+    receiptSend: CustomerDisplayState.ReceiptSend,
+    onWhatsApp: (String) -> Unit,
+    onEmail: (String) -> Unit,
+    onKeepAlive: () -> Unit,
+) {
+    var mode by remember { mutableStateOf(DoneMode.Options) }
+    var input by remember { mutableStateOf("") }
+    // Cada interacción reinicia el temporizador de regreso al reposo: mientras el
+    // cliente teclea, la pantalla NO se le desaparece.
+    fun touched() = onKeepAlive()
+
+    // Enviado con éxito: confirmación y ya (el timer de la pantalla la regresa
+    // sola al reposo).
+    if (receiptSend == CustomerDisplayState.ReceiptSend.Sent) {
+        SentConfirmation()
+        return
+    }
+
+    when (mode) {
+        DoneMode.Options -> DoneOptions(
+            totalCents = totalCents,
+            url = url,
+            onWhatsApp = { touched(); input = ""; mode = DoneMode.WhatsApp },
+            onEmail = { touched(); input = ""; mode = DoneMode.Email },
+        )
+        DoneMode.WhatsApp -> EntryPad(
+            title = "Tu WhatsApp",
+            value = input,
+            placeholder = "10 dígitos",
+            numeric = true,
+            sending = receiptSend == CustomerDisplayState.ReceiptSend.Sending,
+            error = receiptSend == CustomerDisplayState.ReceiptSend.Error,
+            canSend = input.length >= 10,
+            onKey = { touched(); if (input.length < 15) input += it },
+            onDelete = { touched(); input = input.dropLast(1) },
+            onBack = { touched(); mode = DoneMode.Options },
+            onSend = { touched(); onWhatsApp(input) },
+        )
+        DoneMode.Email -> EntryPad(
+            title = "Tu correo",
+            value = input,
+            placeholder = "correo@ejemplo.com",
+            numeric = false,
+            sending = receiptSend == CustomerDisplayState.ReceiptSend.Sending,
+            error = receiptSend == CustomerDisplayState.ReceiptSend.Error,
+            canSend = input.contains("@") && input.substringAfter("@").contains("."),
+            onKey = { touched(); input += it },
+            onDelete = { touched(); input = input.dropLast(1) },
+            onBack = { touched(); mode = DoneMode.Options },
+            onSend = { touched(); onEmail(input) },
+        )
+    }
+}
+
+@Composable
+private fun SentConfirmation() {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(AvoqadoTheme.spacing.xxl),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Text(text = "✓", fontSize = 96.sp, color = com.avoqado.pos.designsystem.theme.Success, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(AvoqadoTheme.spacing.lg))
+        Text(
+            text = "¡Recibo enviado!",
+            fontSize = CdTitle,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(AvoqadoTheme.spacing.sm))
+        Text(
+            text = "Gracias por tu compra",
+            fontSize = CdBody,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun DoneOptions(
+    totalCents: Int,
+    url: String,
+    onWhatsApp: () -> Unit,
+    onEmail: () -> Unit,
+) {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(AvoqadoTheme.spacing.lg),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Text(
+            text = "¡Gracias por tu compra!",
+            style = MaterialTheme.typography.headlineMedium,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(AvoqadoTheme.spacing.xs))
+        Text(text = money(totalCents), fontSize = 44.sp, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(AvoqadoTheme.spacing.md))
+        Text(
+            text = "¿Cómo quieres tu recibo?",
+            fontSize = CdActionMain,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center,
+        )
+        Spacer(Modifier.height(AvoqadoTheme.spacing.lg))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
+        ) {
+            BigChoice("📱", "WhatsApp", Modifier.weight(1f), onWhatsApp)
+            BigChoice("✉️", "Correo", Modifier.weight(1f), onEmail)
+        }
+        Spacer(Modifier.height(AvoqadoTheme.spacing.lg))
+        Text(
+            text = "o escanéalo con tu teléfono",
+            fontSize = CdBody,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(AvoqadoTheme.spacing.sm))
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(20.dp))
+                .background(Color.White)
+                .padding(AvoqadoTheme.spacing.sm),
+        ) {
+            QrCode(content = url, size = 150.dp)
+        }
+    }
+}
+
+@Composable
+private fun BigChoice(emoji: String, label: String, modifier: Modifier, onClick: () -> Unit) {
+    Column(
+        modifier = modifier
+            .height(150.dp)
+            .clip(RoundedCornerShape(20.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+            .clickable(onClick = onClick),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Text(text = emoji, fontSize = 52.sp)
+        Spacer(Modifier.height(AvoqadoTheme.spacing.sm))
+        Text(text = label, fontSize = CdActionSub, fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable
+private fun EntryPad(
+    title: String,
+    value: String,
+    placeholder: String,
+    numeric: Boolean,
+    sending: Boolean,
+    error: Boolean,
+    canSend: Boolean,
+    onKey: (String) -> Unit,
+    onDelete: () -> Unit,
+    onBack: () -> Unit,
+    onSend: () -> Unit,
+) {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(AvoqadoTheme.spacing.lg),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Spacer(Modifier.height(AvoqadoTheme.spacing.md))
+        Text(text = title, fontSize = CdActionMain, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(AvoqadoTheme.spacing.sm))
+        // Lo tecleado, grande; si está vacío, la pista.
+        Text(
+            text = value.ifBlank { placeholder },
+            fontSize = 40.sp,
+            fontWeight = FontWeight.Bold,
+            color = if (value.isBlank()) MaterialTheme.colorScheme.onSurfaceVariant
+                    else MaterialTheme.colorScheme.onSurface,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        if (error) {
+            Spacer(Modifier.height(AvoqadoTheme.spacing.xs))
+            Text(
+                text = "No se pudo enviar. Revisa e intenta de nuevo.",
+                fontSize = CdBody,
+                color = MaterialTheme.colorScheme.error,
+                textAlign = TextAlign.Center,
+            )
+        }
+        Spacer(Modifier.height(AvoqadoTheme.spacing.md))
+        if (numeric) NumericPad(onKey, onDelete) else EmailPad(onKey, onDelete)
+        Spacer(Modifier.height(AvoqadoTheme.spacing.md))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
+        ) {
+            PadButton(
+                label = "Atrás",
+                modifier = Modifier.weight(1f),
+                filled = false,
+                enabled = !sending,
+                onClick = onBack,
+            )
+            PadButton(
+                label = if (sending) "Enviando…" else "Enviar",
+                modifier = Modifier.weight(2f),
+                filled = true,
+                enabled = canSend && !sending,
+                onClick = onSend,
+            )
+        }
+    }
+}
+
+@Composable
+private fun NumericPad(onKey: (String) -> Unit, onDelete: () -> Unit) {
+    val rows = listOf(listOf("1", "2", "3"), listOf("4", "5", "6"), listOf("7", "8", "9"))
+    Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+        rows.forEach { row ->
+            Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                row.forEach { k -> Key(k, Modifier.weight(1f)) { onKey(k) } }
+            }
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+            Spacer(Modifier.weight(1f))
+            Key("0", Modifier.weight(1f)) { onKey("0") }
+            Key("⌫", Modifier.weight(1f), onClick = onDelete)
+        }
+    }
+}
+
+@Composable
+private fun EmailPad(onKey: (String) -> Unit, onDelete: () -> Unit) {
+    val rows = listOf(
+        "1234567890".map { it.toString() },
+        "qwertyuiop".map { it.toString() },
+        "asdfghjkl".map { it.toString() },
+        "zxcvbnm".map { it.toString() },
+        listOf("@", ".", "_", "-"),
+    )
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        rows.forEach { row ->
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                row.forEach { k -> Key(k, Modifier.weight(1f), small = true) { onKey(k) } }
+                if (row === rows.last()) Key("⌫", Modifier.weight(1f), small = true, onClick = onDelete)
+            }
+        }
+    }
+}
+
+@Composable
+private fun Key(label: String, modifier: Modifier, small: Boolean = false, onClick: () -> Unit) {
+    Box(
+        modifier = modifier
+            .height(if (small) 72.dp else 96.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+            .clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(text = label, fontSize = if (small) 26.sp else 34.sp, fontWeight = FontWeight.SemiBold)
+    }
+}
+
+@Composable
+private fun PadButton(label: String, modifier: Modifier, filled: Boolean, enabled: Boolean, onClick: () -> Unit) {
+    val bg = when {
+        !enabled -> MaterialTheme.colorScheme.surfaceContainer
+        filled -> MaterialTheme.colorScheme.primary
+        else -> MaterialTheme.colorScheme.surfaceContainerHigh
+    }
+    val fg = when {
+        !enabled -> MaterialTheme.colorScheme.onSurfaceVariant
+        filled -> MaterialTheme.colorScheme.onPrimary
+        else -> MaterialTheme.colorScheme.onSurface
+    }
+    Box(
+        modifier = modifier
+            .height(84.dp)
+            .clip(RoundedCornerShape(18.dp))
+            .background(bg)
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(text = label, fontSize = CdActionSub, fontWeight = FontWeight.Bold, color = fg)
     }
 }
 

@@ -119,6 +119,7 @@ class CustomerDisplayState @Inject constructor() {
      */
     private var presenting = false
     private var enabledByUser = false
+    private var touchCapable = false
 
     private val _customerCapturesInput = MutableStateFlow(false)
     val customerCapturesInput: StateFlow<Boolean> = _customerCapturesInput.asStateFlow()
@@ -135,13 +136,37 @@ class CustomerDisplayState @Inject constructor() {
         recompute()
     }
 
+    /**
+     * ¿La pantalla del cliente puede RECIBIR toques que lleguen a la app?
+     * Detección automática por hardware (la pone el manager): una pantalla FÍSICA
+     * (HDMI del D3, Elo…) sí; una pantalla inteligente USB de Sunmi (T3 Pro, NP511)
+     * NO — su firmware se queda los toques y nunca llegan al Android del POS. Sin
+     * esto delegábamos propina/calificación a una pantalla que nadie podía tocar y
+     * el cobro se quedaba esperando; con esto solo se delega/se muestra teclado
+     * donde el dedo sí sirve. Ver reference_sunmi-t3pro-customer-display-touch.
+     */
+    fun setTouchCapable(value: Boolean) {
+        touchCapable = value
+        recompute()
+    }
+
     private fun recompute() {
-        _customerCapturesInput.value = presenting && enabledByUser
+        _customerCapturesInput.value = presenting && enabledByUser && touchCapable
     }
 
     /** Callbacks de VUELTA: lo que el cliente toca en su pantalla. */
     var onRatingPicked: ((Int) -> Unit)? = null
     var onTipPicked: ((Int) -> Unit)? = null
+
+    /** El cliente eligió recibir su recibo por WhatsApp / correo (tecleado en SU pantalla). */
+    var onWhatsAppSubmit: ((String) -> Unit)? = null
+    var onEmailSubmit: ((String) -> Unit)? = null
+
+    /** Feedback del envío del recibo para mostrarlo en la pantalla del cliente. */
+    enum class ReceiptSend { Idle, Sending, Sent, Error }
+    private val _receiptSend = MutableStateFlow(ReceiptSend.Idle)
+    val receiptSend: StateFlow<ReceiptSend> = _receiptSend.asStateFlow()
+    fun setReceiptSend(value: ReceiptSend) { _receiptSend.value = value }
 
     fun show(content: CustomerContent) {
         _content.value = content
@@ -150,11 +175,28 @@ class CustomerDisplayState @Inject constructor() {
         // QR del recibo); una nueva venta lo interrumpe antes con su carrito.
         revertJob?.cancel()
         if (content is CustomerContent.Done) {
-            revertJob = timerScope.launch {
-                kotlinx.coroutines.delay(DONE_TIMEOUT_MS)
-                _content.value = CustomerContent.Idle
-            }
+            // Recibo nuevo: el envío arranca en limpio (ni "enviando" ni "enviado"
+            // heredados de la venta anterior).
+            _receiptSend.value = ReceiptSend.Idle
+            scheduleRevert()
         }
+    }
+
+    private fun scheduleRevert() {
+        revertJob?.cancel()
+        revertJob = timerScope.launch {
+            kotlinx.coroutines.delay(DONE_TIMEOUT_MS)
+            _content.value = CustomerContent.Idle
+        }
+    }
+
+    /**
+     * El cliente sigue interactuando en la pantalla "Gracias" (tecleando su
+     * WhatsApp/correo): reinicia el temporizador de regreso al reposo para que NO
+     * se le desaparezca a media captura. Solo aplica mientras se muestra "Gracias".
+     */
+    fun keepAlive() {
+        if (_content.value is CustomerContent.Done) scheduleRevert()
     }
 
     /** Carrito vacío = volver a la marca (no dejar un carrito fantasma). */
