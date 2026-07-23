@@ -707,13 +707,17 @@ class PaymentFlowViewModel @Inject constructor(
                         idempotencyKey = sessionIdempotencyKey(),
                     )
                     payResult.fold(
-                        onSuccess = { paymentId ->
-                            lastPaymentId = paymentId
+                        onSuccess = { result ->
+                            lastPaymentId = result.paymentId
+                            // accessKey del recibo → QR en pantalla del cliente y recibo
+                            // impreso, igual que en tarjeta. Se setea ANTES de imprimir y
+                            // de armar el estado Success para que el QR ya esté disponible.
+                            result.receiptAccessKey?.let { lastReceiptAccessKey = it }
                             recordCashSale(total, orderId)
                             _state.value = PaymentFlowState.Success(
                                 totalAmount = total,
                                 method = PaymentMethod.CASH,
-                                paymentId = paymentId,
+                                paymentId = result.paymentId,
                             )
                             createKDSOrderAndPrint(PaymentMethod.CASH)
                         },
@@ -861,14 +865,16 @@ class PaymentFlowViewModel @Inject constructor(
                             idempotencyKey = sessionIdempotencyKey(),
                         )
                         fastResult.fold(
-                            onSuccess = { paymentId ->
-                                lastPaymentId = paymentId
+                            onSuccess = { fast ->
+                                lastPaymentId = fast.paymentId
+                                // accessKey del recibo → QR en pantalla del cliente y recibo impreso.
+                                fast.receiptAccessKey?.let { lastReceiptAccessKey = it }
                                 recordCashSale(total, null)
                                 _state.value = PaymentFlowState.Success(
                                     totalAmount = total,
                                     method = PaymentMethod.CASH,
                                     changeAmount = result.changeCents,
-                                    paymentId = paymentId,
+                                    paymentId = fast.paymentId,
                                 )
                             },
                             onFailure = { error ->
@@ -929,14 +935,16 @@ class PaymentFlowViewModel @Inject constructor(
             idempotencyKey = sessionIdempotencyKey(),
         )
         payResult.fold(
-            onSuccess = { paymentId ->
-                lastPaymentId = paymentId
+            onSuccess = { result ->
+                lastPaymentId = result.paymentId
+                // accessKey del recibo → QR en pantalla del cliente y recibo impreso.
+                result.receiptAccessKey?.let { lastReceiptAccessKey = it }
                 recordCashSale(total, orderId)
                 _state.value = PaymentFlowState.Success(
                     totalAmount = total,
                     method = PaymentMethod.CASH,
                     changeAmount = changeCents,
-                    paymentId = paymentId,
+                    paymentId = result.paymentId,
                 )
                 createKDSOrderAndPrint(PaymentMethod.CASH, changeCents)
             },

@@ -72,6 +72,25 @@ class OrderRepository @Inject constructor(
             }
         }
 
+        /**
+         * accessKey del recibo digital que ahora devuelve el pago en efectivo
+         * (payCashOrder → payment.digitalReceipt.accessKey). Con él el cliente
+         * arma la URL pública del recibo y dibuja el QR (pantalla del cliente +
+         * recibo impreso), igual que en tarjeta. Busca en payment y data para
+         * cubrir el pay de orden y el fast, sin romper si el server no lo manda.
+         */
+        fun extractReceiptAccessKeyFromResponse(responseBody: String): String? {
+            return try {
+                val root = idExtractorJson.parseToJsonElement(responseBody).jsonObject
+                val key = root["payment"]?.jsonObject?.get("digitalReceipt")?.jsonObject?.get("accessKey")?.jsonPrimitive?.contentOrNull
+                    ?: root["data"]?.jsonObject?.get("digitalReceipt")?.jsonObject?.get("accessKey")?.jsonPrimitive?.contentOrNull
+                    ?: root["digitalReceipt"]?.jsonObject?.get("accessKey")?.jsonPrimitive?.contentOrNull
+                key?.takeIf { it.isNotBlank() }
+            } catch (_: Exception) {
+                null
+            }
+        }
+
         fun hasProductItems(request: CreateOrderRequest): Boolean {
             return request.items.any { !it.productId.isNullOrBlank() }
         }
@@ -259,7 +278,7 @@ class OrderRepository @Inject constructor(
         tip: Int = 0,
         splitType: String = "FULLPAYMENT",
         idempotencyKey: String = java.util.UUID.randomUUID().toString(),
-    ): Result<String?> {
+    ): Result<CashPayResult> {
         val venueId = secureStorage.venueId ?: return Result.failure(Exception("No venue"))
         if (staffId.isBlank()) return Result.failure(Exception("No staff"))
 
@@ -291,8 +310,9 @@ class OrderRepository @Inject constructor(
             if (code in 200..299) {
                 Log.d("💵", "✅ Fast cash payment recorded: $amount cents, body: ${body.take(200)}")
                 val paymentId = extractPaymentIdFromResponse(body)
-                Log.d("💵", "Extracted paymentId: $paymentId")
-                Result.success(paymentId)
+                val accessKey = extractReceiptAccessKeyFromResponse(body)
+                Log.d("💵", "Extracted paymentId: $paymentId, receiptAccessKey: $accessKey")
+                Result.success(CashPayResult(paymentId, accessKey))
             } else {
                 Log.e("💵", "❌ Fast cash payment failed ($code): $body")
                 Result.failure(ServerException(code, "Error al registrar pago rápido ($code)"))
@@ -305,6 +325,9 @@ class OrderRepository @Inject constructor(
 
     // MARK: - Record Cash Payment
 
+    /** paymentId + accessKey del recibo digital (para el QR en efectivo). */
+    data class CashPayResult(val paymentId: String?, val receiptAccessKey: String?)
+
     suspend fun recordCashPayment(
         orderId: String,
         amount: Int,
@@ -312,7 +335,7 @@ class OrderRepository @Inject constructor(
         tip: Int = 0,
         splitType: String = "FULLPAYMENT",
         idempotencyKey: String = java.util.UUID.randomUUID().toString(),
-    ): Result<String?> {
+    ): Result<CashPayResult> {
         val venueId = secureStorage.venueId ?: return Result.failure(Exception("No venue"))
         if (staffId.isBlank()) return Result.failure(Exception("No staff"))
 
@@ -344,8 +367,9 @@ class OrderRepository @Inject constructor(
             if (code in 200..299) {
                 Log.d("💵", "✅ Cash payment recorded for order: $orderId")
                 val paymentId = extractPaymentIdFromResponse(body)
-                Log.d("💵", "   paymentId: $paymentId")
-                Result.success(paymentId)
+                val accessKey = extractReceiptAccessKeyFromResponse(body)
+                Log.d("💵", "   paymentId: $paymentId, receiptAccessKey: $accessKey")
+                Result.success(CashPayResult(paymentId, accessKey))
             } else {
                 Log.e("💵", "❌ Cash payment failed ($code): $body")
                 Result.failure(ServerException(code, "Error al registrar pago ($code)"))
