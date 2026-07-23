@@ -1229,6 +1229,22 @@ class PaymentFlowViewModel @Inject constructor(
                 printerService.autoPrintReceipt(receipt)
             }
 
+            // Cajón de dinero: en EFECTIVO se abre SOLO (conducta estándar de POS)
+            // si la impresora de recibos tiene el auto-open activado. Va aquí —
+            // antes del return por carrito vacío — para que aplique también a un
+            // cobro en efectivo de monto personalizado (sin productos). Nunca
+            // rompe el cobro: cualquier fallo del cajón/impresora solo se loguea.
+            if (method == PaymentMethod.CASH) {
+                runCatching {
+                    val receiptPrinter = printerService.getDefaultPrinter(
+                        com.avoqado.pos.printing.data.model.PrinterRole.RECEIPT,
+                    )
+                    if (receiptPrinter != null && receiptPrinter.autoOpenCashDrawer) {
+                        printerService.openCashDrawer(receiptPrinter)
+                    }
+                }.onFailure { Log.w("💰", "No se pudo abrir el cajón en venta de efectivo: ${it.message}") }
+            }
+
             // Auto-print kitchen ticket(s)
             if (realItems.isEmpty()) return@launch
             val orderNumber = createdOrderId?.takeLast(4) ?: "Q-${(1000..9999).random()}"

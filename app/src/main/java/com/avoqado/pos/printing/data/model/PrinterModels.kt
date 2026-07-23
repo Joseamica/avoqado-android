@@ -74,6 +74,10 @@ data class SavedPrinter(
     val isEnabled: Boolean = true,
     val autoPrintReceipts: Boolean = false,
     val autoPrintKitchenTickets: Boolean = false,
+    // Abrir el cajón de dinero automáticamente al COBRAR EN EFECTIVO (conducta
+    // estándar de POS). Prendido por default; se apaga desde la config de la
+    // impresora de recibos. Solo aplica a la impresora con rol RECEIPT.
+    val autoOpenCashDrawer: Boolean = true,
     val numberOfCopies: Int = 1,
     val dateAdded: Long = System.currentTimeMillis(),
     val lastConnected: Long? = null,

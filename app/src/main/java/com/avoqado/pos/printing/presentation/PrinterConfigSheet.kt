@@ -74,6 +74,7 @@ fun PrinterConfigSheet(
     var paperWidthMm by remember { mutableIntStateOf(printer.paperWidthMm) }
     var autoPrintReceipts by remember { mutableStateOf(printer.autoPrintReceipts) }
     var autoPrintKitchenTickets by remember { mutableStateOf(printer.autoPrintKitchenTickets) }
+    var autoOpenCashDrawer by remember { mutableStateOf(printer.autoOpenCashDrawer) }
     var numberOfCopies by remember { mutableIntStateOf(printer.numberOfCopies) }
     var isPrinting by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
@@ -87,6 +88,7 @@ fun PrinterConfigSheet(
                 paperWidthMm = paperWidthMm,
                 autoPrintReceipts = autoPrintReceipts,
                 autoPrintKitchenTickets = autoPrintKitchenTickets,
+                autoOpenCashDrawer = autoOpenCashDrawer,
                 numberOfCopies = numberOfCopies,
             ),
         )
@@ -259,6 +261,27 @@ fun PrinterConfigSheet(
                         saveChanges()
                     },
                 )
+            }
+
+            // Cajón de dinero: solo tiene sentido en la impresora de recibos (por
+            // ahí va el pulso al cajón). Conducta estándar de POS: al cobrar en
+            // efectivo, el cajón se abre solo.
+            if (selectedRoles.contains("receipt")) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = AvoqadoTheme.spacing.sm),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text("Abrir cajón en ventas de efectivo", modifier = Modifier.weight(1f))
+                    Switch(
+                        checked = autoOpenCashDrawer,
+                        onCheckedChange = {
+                            autoOpenCashDrawer = it
+                            saveChanges()
+                        },
+                    )
+                }
             }
 
             // Copies
