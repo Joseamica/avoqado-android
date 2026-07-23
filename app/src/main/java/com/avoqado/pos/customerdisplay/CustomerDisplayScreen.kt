@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -47,6 +48,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.avoqado.pos.designsystem.components.Countries
+import com.avoqado.pos.designsystem.components.Country
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 
 /**
@@ -556,6 +559,9 @@ private fun DoneInteractive(
 ) {
     var mode by remember { mutableStateOf(DoneMode.Options) }
     var input by remember { mutableStateOf("") }
+    // Mismo país/lada que el cajero (misma lista de Countries). México por default.
+    var country by remember { mutableStateOf(com.avoqado.pos.designsystem.components.Countries.pinned[0]) }
+    var showCountryPicker by remember { mutableStateOf(false) }
     // Cada interacción reinicia el temporizador de regreso al reposo: mientras el
     // cliente teclea, la pantalla NO se le desaparece.
     fun touched() = onKeepAlive()
@@ -574,19 +580,28 @@ private fun DoneInteractive(
             onWhatsApp = { touched(); input = ""; mode = DoneMode.WhatsApp },
             onEmail = { touched(); input = ""; mode = DoneMode.Email },
         )
-        DoneMode.WhatsApp -> EntryPad(
-            title = "Tu WhatsApp",
-            value = input,
-            placeholder = "10 dígitos",
-            numeric = true,
-            sending = receiptSend == CustomerDisplayState.ReceiptSend.Sending,
-            error = receiptSend == CustomerDisplayState.ReceiptSend.Error,
-            canSend = input.length >= 10,
-            onKey = { touched(); if (input.length < 15) input += it },
-            onDelete = { touched(); input = input.dropLast(1) },
-            onBack = { touched(); mode = DoneMode.Options },
-            onSend = { touched(); onWhatsApp(input) },
-        )
+        DoneMode.WhatsApp -> Box(modifier = Modifier.fillMaxSize()) {
+            PhoneEntryPad(
+                country = country,
+                national = input,
+                sending = receiptSend == CustomerDisplayState.ReceiptSend.Sending,
+                error = receiptSend == CustomerDisplayState.ReceiptSend.Error,
+                // E.164 mínimo/razonable: 8–15 dígitos nacionales (MX = 10).
+                canSend = input.length in 8..15,
+                onPickCountry = { touched(); showCountryPicker = true },
+                onKey = { touched(); if (input.length < 15) input += it },
+                onDelete = { touched(); input = input.dropLast(1) },
+                onBack = { touched(); mode = DoneMode.Options },
+                // Mismo formato que el cajero: "+{lada}{dígitos}".
+                onSend = { touched(); onWhatsApp("+${country.dialCode}$input") },
+            )
+            if (showCountryPicker) {
+                CountryPicker(
+                    onPick = { touched(); country = it; showCountryPicker = false },
+                    onClose = { touched(); showCountryPicker = false },
+                )
+            }
+        }
         DoneMode.Email -> EntryPad(
             title = "Tu correo",
             value = input,
@@ -758,6 +773,152 @@ private fun EntryPad(
                 enabled = canSend && !sending,
                 onClick = onSend,
             )
+        }
+    }
+}
+
+@Composable
+private fun PhoneEntryPad(
+    country: Country,
+    national: String,
+    sending: Boolean,
+    error: Boolean,
+    canSend: Boolean,
+    onPickCountry: () -> Unit,
+    onKey: (String) -> Unit,
+    onDelete: () -> Unit,
+    onBack: () -> Unit,
+    onSend: () -> Unit,
+) {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(AvoqadoTheme.spacing.lg),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Spacer(Modifier.height(AvoqadoTheme.spacing.md))
+        Text(text = "Tu WhatsApp", fontSize = CdActionMain, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(AvoqadoTheme.spacing.md))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            // Chip de país + lada, tocable → abre el selector.
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(14.dp))
+                    .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                    .clickable(onClick = onPickCountry)
+                    .padding(horizontal = AvoqadoTheme.spacing.md, vertical = AvoqadoTheme.spacing.md),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
+            ) {
+                Text(text = country.flag, fontSize = 30.sp)
+                Text(text = "+${country.dialCode}", fontSize = 30.sp, fontWeight = FontWeight.Bold)
+                Text(text = "▾", fontSize = 26.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            // Número nacional tecleado.
+            Text(
+                text = national.ifBlank { "número" },
+                fontSize = 36.sp,
+                fontWeight = FontWeight.Bold,
+                color = if (national.isBlank()) MaterialTheme.colorScheme.onSurfaceVariant
+                        else MaterialTheme.colorScheme.onSurface,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.weight(1f),
+            )
+        }
+        if (error) {
+            Spacer(Modifier.height(AvoqadoTheme.spacing.xs))
+            Text(
+                text = "No se pudo enviar. Revisa e intenta de nuevo.",
+                fontSize = CdBody,
+                color = MaterialTheme.colorScheme.error,
+                textAlign = TextAlign.Center,
+            )
+        }
+        Spacer(Modifier.height(AvoqadoTheme.spacing.md))
+        NumericPad(onKey, onDelete)
+        Spacer(Modifier.height(AvoqadoTheme.spacing.md))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
+        ) {
+            PadButton("Atrás", Modifier.weight(1f), filled = false, enabled = !sending, onClick = onBack)
+            PadButton(
+                label = if (sending) "Enviando…" else "Enviar",
+                modifier = Modifier.weight(2f),
+                filled = true,
+                enabled = canSend && !sending,
+                onClick = onSend,
+            )
+        }
+    }
+}
+
+@Composable
+private fun CountryPicker(onPick: (Country) -> Unit, onClose: () -> Unit) {
+    // Overlay a pantalla completa con un scrim; la lista se toca con el dedo.
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(Color(0x99000000))
+            .clickable(onClick = onClose),
+        contentAlignment = Alignment.Center,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth(0.9f)
+                .fillMaxHeight(0.9f)
+                .clip(RoundedCornerShape(24.dp))
+                .background(MaterialTheme.colorScheme.surface)
+                // Consumir el clic para que tocar dentro NO cierre.
+                .clickable(enabled = false) {},
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(AvoqadoTheme.spacing.lg),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = "Elige tu país",
+                    fontSize = CdActionMain,
+                    fontWeight = FontWeight.Bold,
+                    modifier = Modifier.weight(1f),
+                )
+                Box(
+                    modifier = Modifier
+                        .size(64.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                        .clickable(onClick = onClose),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(text = "✕", fontSize = 30.sp)
+                }
+            }
+            HorizontalDivider()
+            LazyColumn(modifier = Modifier.weight(1f)) {
+                items(Countries.all, key = { it.isoCode + it.dialCode }) { c ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onPick(c) }
+                            .padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.md),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
+                    ) {
+                        Text(text = c.flag, fontSize = 32.sp)
+                        Text(text = c.name, fontSize = 26.sp, modifier = Modifier.weight(1f))
+                        Text(
+                            text = "+${c.dialCode}",
+                            fontSize = 26.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    HorizontalDivider()
+                }
+            }
         }
     }
 }
