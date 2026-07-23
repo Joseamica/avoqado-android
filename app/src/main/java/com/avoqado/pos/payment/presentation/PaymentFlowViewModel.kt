@@ -718,6 +718,7 @@ class PaymentFlowViewModel @Inject constructor(
                                 totalAmount = total,
                                 method = PaymentMethod.CASH,
                                 paymentId = result.paymentId,
+                                receiptAccessKey = result.receiptAccessKey,
                             )
                             createKDSOrderAndPrint(PaymentMethod.CASH)
                         },
@@ -875,6 +876,7 @@ class PaymentFlowViewModel @Inject constructor(
                                     method = PaymentMethod.CASH,
                                     changeAmount = result.changeCents,
                                     paymentId = fast.paymentId,
+                                    receiptAccessKey = fast.receiptAccessKey,
                                 )
                             },
                             onFailure = { error ->
@@ -945,6 +947,7 @@ class PaymentFlowViewModel @Inject constructor(
                     method = PaymentMethod.CASH,
                     changeAmount = changeCents,
                     paymentId = result.paymentId,
+                    receiptAccessKey = result.receiptAccessKey,
                 )
                 createKDSOrderAndPrint(PaymentMethod.CASH, changeCents)
             },
