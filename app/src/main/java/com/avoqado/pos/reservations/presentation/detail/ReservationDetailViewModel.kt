@@ -11,6 +11,7 @@ import com.avoqado.pos.printing.routing.PrintConfigRepository
 import com.avoqado.pos.printing.routing.PrintRoutingMapper
 import com.avoqado.pos.printing.routing.RoutableItem
 import com.avoqado.pos.reservations.data.ReservationRepository
+import com.avoqado.pos.reservations.data.ReservationApiException
 import com.avoqado.pos.reservations.data.model.Reservation
 import com.avoqado.pos.reservations.domain.ReservationAction
 import com.avoqado.pos.reservations.domain.ReservationsCapability
@@ -38,6 +39,10 @@ class ReservationDetailViewModel @Inject constructor(
 
     private val _state = MutableStateFlow(ReservationDetailUiState(capability = capabilityProvider.get()))
     val state: StateFlow<ReservationDetailUiState> = _state.asStateFlow()
+
+    private val _overCapacityConfirmation = MutableStateFlow<String?>(null)
+    val overCapacityConfirmation: StateFlow<String?> = _overCapacityConfirmation.asStateFlow()
+    private var pendingOverCapacityReschedule: ReservationRepository.ActionPayload.Reschedule? = null
 
     init {
         reload()
@@ -76,6 +81,20 @@ class ReservationDetailViewModel @Inject constructor(
         _state.update { it.copy(pendingAction = action, error = null, justCompletedAction = null) }
         viewModelScope.launch {
             val r = repository.runAction(reservationId, action, payload)
+            val apiError = r.exceptionOrNull() as? ReservationApiException
+            if (
+                action == ReservationAction.RESCHEDULE &&
+                payload is ReservationRepository.ActionPayload.Reschedule &&
+                apiError?.code == "OVER_CAPACITY_CONFIRMATION_REQUIRED"
+            ) {
+                pendingOverCapacityReschedule = payload
+                _overCapacityConfirmation.value = buildString {
+                    append(apiError.message)
+                    apiError.preview?.let { append("\nOcupación: $it.") }
+                }
+                _state.update { it.copy(reservation = before, pendingAction = null, error = null) }
+                return@launch
+            }
             _state.update { current ->
                 if (r.isSuccess) {
                     val updated = r.getOrNull() ?: before
@@ -88,6 +107,18 @@ class ReservationDetailViewModel @Inject constructor(
                 r.getOrNull()?.let { updated -> printCheckInComandas(updated) }
             }
         }
+    }
+
+    fun confirmOverCapacityReschedule() {
+        val payload = pendingOverCapacityReschedule ?: return
+        pendingOverCapacityReschedule = null
+        _overCapacityConfirmation.value = null
+        runAction(ReservationAction.RESCHEDULE, payload.copy(allowOverCapacity = true))
+    }
+
+    fun dismissOverCapacityReschedule() {
+        pendingOverCapacityReschedule = null
+        _overCapacityConfirmation.value = null
     }
 
     fun consumeError() = _state.update { it.copy(error = null) }

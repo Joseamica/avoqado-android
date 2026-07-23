@@ -33,6 +33,8 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.avoqado.pos.reservations.data.ReservationRepository
 import com.avoqado.pos.reservations.domain.ReservationAction
+import com.avoqado.pos.designsystem.components.AvoqadoDialog
+import com.avoqado.pos.designsystem.components.PrimaryButton
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
@@ -49,6 +51,7 @@ fun RescheduleSheet(
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val state by viewModel.state.collectAsState()
+    val overCapacityConfirmation by viewModel.overCapacityConfirmation.collectAsState()
     val reservation = state.reservation
 
     var date by remember { mutableStateOf(LocalDate.now(venueTimezone)) }
@@ -130,6 +133,28 @@ fun RescheduleSheet(
                 onDismiss = { if (state.pendingAction != ReservationAction.RESCHEDULE) pendingConfirm = null },
             )
         }
+    }
+
+    if (overCapacityConfirmation != null) {
+        AvoqadoDialog(
+            title = "Horario lleno",
+            description = overCapacityConfirmation,
+            onDismiss = viewModel::dismissOverCapacityReschedule,
+            actionButton = {
+                PrimaryButton(
+                    text = "Sobre-agendar",
+                    onClick = viewModel::confirmOverCapacityReschedule,
+                    isLoading = state.pendingAction == ReservationAction.RESCHEDULE,
+                )
+            },
+            content = {
+                Text(
+                    text = "Los conflictos personales del profesionista no se pueden omitir.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            },
+        )
     }
 
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {

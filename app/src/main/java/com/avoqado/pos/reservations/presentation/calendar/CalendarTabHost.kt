@@ -39,6 +39,8 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.avoqado.pos.designsystem.components.AvoqadoSuccessToast
+import com.avoqado.pos.designsystem.components.AvoqadoDialog
+import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.reservations.data.model.Reservation
 import com.avoqado.pos.reservations.presentation.components.ActionSheetCenter
 import com.avoqado.pos.reservations.presentation.components.ActionSheetItem
@@ -73,6 +75,8 @@ fun CalendarTabHost(
     }
     var rescheduleSuccessLabel by remember { mutableStateOf<String?>(null) }
     val rescheduleSubmitting by viewModel.rescheduleSubmitting.collectAsStateWithLifecycle()
+    val rescheduleOverCapacityConfirmation by
+        viewModel.rescheduleOverCapacityConfirmation.collectAsStateWithLifecycle()
     val snackbar = remember { SnackbarHostState() }
     val scope = rememberCoroutineScope()
 
@@ -201,6 +205,28 @@ fun CalendarTabHost(
                 }
             },
             onDismiss = { if (!rescheduleSubmitting) pendingReschedule = null },
+        )
+    }
+
+    if (rescheduleOverCapacityConfirmation != null) {
+        AvoqadoDialog(
+            title = "Horario lleno",
+            description = rescheduleOverCapacityConfirmation,
+            onDismiss = viewModel::dismissRescheduleOverCapacity,
+            actionButton = {
+                PrimaryButton(
+                    text = "Sobre-agendar",
+                    onClick = viewModel::confirmRescheduleOverCapacity,
+                    isLoading = rescheduleSubmitting,
+                )
+            },
+            content = {
+                Text(
+                    text = "Los conflictos personales del profesionista no se pueden omitir.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            },
         )
     }
 

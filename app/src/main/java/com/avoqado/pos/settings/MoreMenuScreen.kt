@@ -1,6 +1,7 @@
 package com.avoqado.pos.settings
 
 import android.content.pm.PackageManager
+import androidx.core.content.pm.PackageInfoCompat
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -159,7 +160,7 @@ fun MoreMenuScreen(
     val versionName = remember {
         try {
             val pInfo = context.packageManager.getPackageInfo(context.packageName, 0)
-            "Version ${pInfo.versionName} (${pInfo.longVersionCode})"
+            "Version ${pInfo.versionName} (${PackageInfoCompat.getLongVersionCode(pInfo)})"
         } catch (_: PackageManager.NameNotFoundException) {
             "Avoqado v1.0.0"
         }

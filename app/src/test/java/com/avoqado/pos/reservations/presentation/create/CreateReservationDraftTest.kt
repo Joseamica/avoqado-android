@@ -26,4 +26,26 @@ class CreateReservationDraftTest {
         assertEquals("c1", req.customerId)
         assertEquals("p1", req.productId)
     }
+
+    @Test
+    fun `staff aware appointment request opts into base window and over capacity consent`() {
+        val draft = CreateReservationDraft(
+            customerId = "c1",
+            productId = "p1",
+            productType = "APPOINTMENTS_SERVICE",
+            durationMinutes = 60,
+            date = LocalDate.of(2026, 7, 22),
+            time = LocalTime.of(10, 0),
+        )
+
+        val request = draft.toRequest(
+            zone = ZoneId.of("America/Mexico_City"),
+            useBaseWindow = true,
+            allowOverCapacity = true,
+        )
+
+        assertEquals(listOf("p1"), request.productIds)
+        assertEquals("base", request.windowSemantics)
+        assertEquals(true, request.allowOverCapacity)
+    }
 }

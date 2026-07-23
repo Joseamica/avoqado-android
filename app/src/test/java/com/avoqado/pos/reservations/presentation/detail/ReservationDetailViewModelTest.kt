@@ -9,6 +9,7 @@ import com.avoqado.pos.printing.routing.PrintConfigRepository
 import com.avoqado.pos.printing.routing.StationInfo
 import com.avoqado.pos.printing.routing.TicketPlan
 import com.avoqado.pos.reservations.data.ReservationRepository
+import com.avoqado.pos.reservations.data.ReservationApiException
 import com.avoqado.pos.reservations.data.model.ProductLite
 import com.avoqado.pos.reservations.data.model.Reservation
 import com.avoqado.pos.reservations.data.model.ReservationChannel
@@ -137,6 +138,49 @@ class ReservationDetailViewModelTest {
         assertNull(s.pendingAction)
         assertEquals(ReservationStatus.PENDING, s.reservation?.status)
         assertTrue(s.error!!.contains("409"))
+    }
+
+    @Test
+    fun `reschedule over capacity asks for confirmation and retries with consent`() = runTest(dispatcher) {
+        val repo: ReservationRepository = mockk()
+        every { repo.changes } returns kotlinx.coroutines.flow.MutableSharedFlow<Unit>()
+        coEvery { repo.fetchOne("r1") } returns Result.success(stub())
+        val first = ReservationRepository.ActionPayload.Reschedule(
+            startsAt = "2026-04-30T15:00:00.000Z",
+            endsAt = "2026-04-30T16:00:00.000Z",
+        )
+        coEvery { repo.runAction("r1", ReservationAction.RESCHEDULE, first) } returns Result.failure(
+            ReservationApiException(
+                status = 409,
+                message = "El horario está lleno",
+                code = "OVER_CAPACITY_CONFIRMATION_REQUIRED",
+                preview = "2 de 1",
+            ),
+        )
+        coEvery {
+            repo.runAction(
+                "r1",
+                ReservationAction.RESCHEDULE,
+                first.copy(allowOverCapacity = true),
+            )
+        } returns Result.success(stub())
+
+        val vm = buildVm(repo)
+        advanceUntilIdle()
+        vm.runAction(ReservationAction.RESCHEDULE, first)
+        advanceUntilIdle()
+
+        assertEquals("El horario está lleno\nOcupación: 2 de 1.", vm.overCapacityConfirmation.value)
+        assertNull(vm.state.value.error)
+
+        vm.confirmOverCapacityReschedule()
+        advanceUntilIdle()
+
+        assertNull(vm.overCapacityConfirmation.value)
+        assertEquals(ReservationAction.RESCHEDULE, vm.state.value.justCompletedAction)
+        coVerify(exactly = 1) {
+            repo.runAction("r1", ReservationAction.RESCHEDULE, first.copy(allowOverCapacity = true))
+        }
     }
 
     @Test

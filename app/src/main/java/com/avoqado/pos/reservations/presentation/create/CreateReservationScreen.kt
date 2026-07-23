@@ -80,6 +80,10 @@ fun CreateReservationScreen(
     val isSubmitting by viewModel.isSubmitting.collectAsStateWithLifecycle()
     val result by viewModel.result.collectAsStateWithLifecycle()
     val isEditing by viewModel.isEditing.collectAsStateWithLifecycle()
+    val staffAware by viewModel.staffAware.collectAsStateWithLifecycle()
+    val eligibleStaffAvailable by viewModel.eligibleStaffAvailable.collectAsStateWithLifecycle()
+    val requiresSlotReselection by viewModel.requiresSlotReselection.collectAsStateWithLifecycle()
+    val overCapacityConfirmation by viewModel.overCapacityConfirmation.collectAsStateWithLifecycle()
 
     var showSuccess by remember { mutableStateOf(false) }
     var submitError by remember { mutableStateOf<String?>(null) }
@@ -94,6 +98,10 @@ fun CreateReservationScreen(
 
     val title = if (isEditing) "Editar reserva" else "Crear cita"
     val actionLabel = if (isEditing) "Guardar" else "Crear"
+    val staffAwareAppointment = staffAware && draft.productType == "APPOINTMENTS_SERVICE"
+    val canSubmit = draft.canSubmit && (
+        isEditing || !staffAwareAppointment || (eligibleStaffAvailable && !requiresSlotReselection)
+    )
 
     Scaffold(
         contentWindowInsets = WindowInsets(0),
@@ -103,7 +111,7 @@ fun CreateReservationScreen(
                 onNav = onClose,
                 primaryActionText = actionLabel,
                 onPrimaryAction = { viewModel.submit() },
-                primaryActionEnabled = draft.canSubmit && !isSubmitting,
+                primaryActionEnabled = canSubmit && !isSubmitting,
                 showDivider = true,
             )
         },
@@ -181,6 +189,28 @@ fun CreateReservationScreen(
                 PrimaryButton(text = "Entendido", onClick = { submitError = null })
             },
             content = {},
+        )
+    }
+
+    if (overCapacityConfirmation != null) {
+        AvoqadoDialog(
+            title = "Horario lleno",
+            description = overCapacityConfirmation,
+            onDismiss = viewModel::dismissOverCapacityConfirmation,
+            actionButton = {
+                PrimaryButton(
+                    text = "Sobre-agendar",
+                    onClick = viewModel::confirmOverCapacity,
+                    isLoading = isSubmitting,
+                )
+            },
+            content = {
+                Text(
+                    text = "El profesionista y los demás conflictos duros seguirán protegidos.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            },
         )
     }
 

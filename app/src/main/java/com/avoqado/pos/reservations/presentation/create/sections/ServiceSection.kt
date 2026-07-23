@@ -140,13 +140,7 @@ fun ServiceSection(
                     product = product,
                     isSelected = draft.productId == product.id,
                     onClick = {
-                        viewModel.update {
-                            it.copy(
-                                productId = product.id,
-                                productName = product.name,
-                                durationMinutes = product.duration ?: 60,
-                            )
-                        }
+                        viewModel.selectProduct(product)
                         onServicePicked?.invoke()
                     },
                 )

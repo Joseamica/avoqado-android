@@ -54,6 +54,8 @@ fun DetailsSection(viewModel: CreateReservationViewModel) {
     val draft by viewModel.draft.collectAsStateWithLifecycle()
     val tables by viewModel.tables.collectAsStateWithLifecycle()
     val staff by viewModel.staff.collectAsStateWithLifecycle()
+    val staffAware by viewModel.staffAware.collectAsStateWithLifecycle()
+    val eligibleStaffAvailable by viewModel.eligibleStaffAvailable.collectAsStateWithLifecycle()
 
     LazyColumn(
         modifier = Modifier
@@ -87,9 +89,7 @@ fun DetailsSection(viewModel: CreateReservationViewModel) {
                             contentDescription = "Disminuir",
                             enabled = draft.partySize > 1,
                             onClick = {
-                                viewModel.update {
-                                    it.copy(partySize = (it.partySize - 1).coerceAtLeast(1))
-                                }
+                                viewModel.updatePartySize(draft.partySize - 1)
                             },
                         )
                         Text(
@@ -102,9 +102,7 @@ fun DetailsSection(viewModel: CreateReservationViewModel) {
                             contentDescription = "Aumentar",
                             enabled = draft.partySize < 50,
                             onClick = {
-                                viewModel.update {
-                                    it.copy(partySize = (it.partySize + 1).coerceAtMost(50))
-                                }
+                                viewModel.updatePartySize(draft.partySize + 1)
                             },
                         )
                     }
@@ -153,9 +151,7 @@ fun DetailsSection(viewModel: CreateReservationViewModel) {
                             FilterChip(
                                 selected = draft.assignedStaffId == null,
                                 onClick = {
-                                    viewModel.update {
-                                        it.copy(assignedStaffId = null, assignedStaffName = null)
-                                    }
+                                    viewModel.selectStaff(null)
                                 },
                                 label = { Text("Cualquiera") },
                             )
@@ -164,17 +160,30 @@ fun DetailsSection(viewModel: CreateReservationViewModel) {
                             FilterChip(
                                 selected = draft.assignedStaffId == member.id,
                                 onClick = {
-                                    viewModel.update {
-                                        it.copy(
-                                            assignedStaffId = member.id,
-                                            assignedStaffName = member.fullName,
-                                        )
-                                    }
+                                    viewModel.selectStaff(member)
                                 },
                                 label = { Text(member.fullName) },
                             )
                         }
                     }
+                }
+            }
+        }
+
+        if (staffAware && draft.productType == "APPOINTMENTS_SERVICE" && !eligibleStaffAvailable) {
+            item("staff-empty") {
+                Card(
+                    shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.lg),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                    elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        text = "Este servicio no tiene profesionistas configurados. Asígnalos desde el dashboard antes de crear la cita.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(AvoqadoTheme.spacing.lg),
+                    )
                 }
             }
         }

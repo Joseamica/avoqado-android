@@ -4,9 +4,12 @@ import android.util.Log
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.reservations.data.model.CancelReservationRequest
 import com.avoqado.pos.reservations.data.model.CreateReservationRequest
+import com.avoqado.pos.reservations.data.model.ProductStaffContract
 import com.avoqado.pos.reservations.data.model.Reservation
+import com.avoqado.pos.reservations.data.model.ReservationAvailabilitySlot
 import com.avoqado.pos.reservations.data.model.ReservationFilters
 import com.avoqado.pos.reservations.data.model.ReservationListResponse
+import com.avoqado.pos.reservations.data.model.ReservationSettingsContract
 import com.avoqado.pos.reservations.data.model.RescheduleRequest
 import com.avoqado.pos.reservations.data.model.UpdateReservationRequest
 import kotlinx.coroutines.Dispatchers
@@ -15,6 +18,10 @@ import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -43,21 +50,39 @@ class ReservationApi @Inject constructor(
      * operación, intervalo, pacing y aviso mínimo). El picker de Crear cita
      * los consume para no ofrecer horas imposibles.
      */
-    suspend fun availability(date: String, durationMin: Int?): Result<List<String>> = call {
+    suspend fun availability(
+        date: String,
+        durationMin: Int?,
+        productId: String? = null,
+        staffId: String? = null,
+        includeFull: Boolean = false,
+        windowSemantics: String? = null,
+    ): Result<List<ReservationAvailabilitySlot>> = call {
         val params = buildList {
             add("date=$date")
             durationMin?.let { add("duration=$it") }
+            productId?.let {
+                add("productId=$it")
+                if (windowSemantics == "base") add("productIds=$it")
+            }
+            staffId?.let { add("staffId=$it") }
+            if (includeFull) add("includeFull=true")
+            windowSemantics?.let { add("windowSemantics=$it") }
         }.joinToString("&")
         Request.Builder().url("${base() ?: error("No venue")}/availability?$params").get().build()
     }.mapCatching { body ->
         val obj = json.parseToJsonElement(body) as? JsonObject ?: error("Unexpected availability shape")
         val arr = obj["slots"] as? JsonArray ?: error("Unexpected availability shape")
-        arr.mapNotNull { slot ->
-            (slot as? JsonObject)?.get("startsAt")?.let { el ->
-                el.toString().trim('"')
-            }
-        }
+        json.decodeFromJsonElement(ListSerializer(ReservationAvailabilitySlot.serializer()), arr)
     }
+
+    suspend fun settings(): Result<ReservationSettingsContract> = call {
+        Request.Builder().url("${base() ?: error("No venue")}/settings").get().build()
+    }.mapCatching { json.decodeFromString(ReservationSettingsContract.serializer(), it) }
+
+    suspend fun productStaff(productId: String): Result<ProductStaffContract> = call {
+        Request.Builder().url("${base() ?: error("No venue")}/products/$productId/staff").get().build()
+    }.mapCatching { json.decodeFromString(ProductStaffContract.serializer(), it) }
 
     suspend fun list(filters: ReservationFilters): Result<ReservationListResponse> = call {
         val url = "${base() ?: error("No venue")}?${filters.toQueryString()}"
@@ -125,7 +150,35 @@ class ReservationApi @Inject constructor(
             body
         } else {
             Log.e(tag, "${req.method} ${req.url} -> $code: ${body.take(300)}")
-            error(apiErrorMessage(code, body))
+            throw reservationApiException(code, body)
         }
     }
+}
+
+class ReservationApiException(
+    val status: Int,
+    override val message: String,
+    val code: String? = null,
+    val preview: String? = null,
+) : Exception(message)
+
+private fun reservationApiException(status: Int, body: String): ReservationApiException {
+    val payload = runCatching { Json.parseToJsonElement(body).jsonObject }.getOrNull()
+    val details = payload?.get("details") as? JsonObject
+    val previewElement = details?.get("preview")
+    val preview = when (previewElement) {
+        is kotlinx.serialization.json.JsonPrimitive -> previewElement.contentOrNull
+        is JsonObject -> {
+            val occupancy = previewElement["occupancy"]?.jsonPrimitive?.intOrNull
+            val limit = previewElement["limit"]?.jsonPrimitive?.intOrNull
+            if (occupancy != null && limit != null) "$occupancy de $limit" else null
+        }
+        else -> null
+    }
+    return ReservationApiException(
+        status = status,
+        message = apiErrorMessage(status, body),
+        code = payload?.get("code")?.jsonPrimitive?.contentOrNull,
+        preview = preview,
+    )
 }
