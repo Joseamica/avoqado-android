@@ -45,11 +45,22 @@ sealed interface CustomerContent {
 
     /**
      * Le toca al CAJERO (elegir método, capturar efectivo, escoger terminal).
-     * El cliente ve su total y NADA que se pueda tocar: dejar aquí la pantalla
+     * El cliente ve el DESGLOSE tipo recibo (productos + subtotal + descuento +
+     * propina + total) y NADA que se pueda tocar: dejar aquí la pantalla
      * anterior significaba dejarle vivos los botones de propina — un segundo
      * toque re-abría la propina con el cajero ya en otra pantalla.
+     *
+     * `items` vacío ⇒ se cae al modo "solo total" en grande (p. ej. montos
+     * personalizados sin productos). La propina se muestra solo si `tipCents>0`.
      */
-    data class Total(val totalCents: Int) : CustomerContent
+    data class Total(
+        val totalCents: Int,
+        val items: List<CartItem> = emptyList(),
+        val subtotalCents: Int = 0,
+        val discountCents: Int = 0,
+        val taxCents: Int = 0,
+        val tipCents: Int = 0,
+    ) : CustomerContent
 
     /** Gracias + QR del recibo digital. */
     data class Done(val totalCents: Int, val receiptUrl: String?) : CustomerContent

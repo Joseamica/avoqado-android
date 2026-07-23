@@ -158,9 +158,37 @@ private fun IdleBranding(venueName: String?, logoUrl: String?) {
 
 @Composable
 private fun CartMirror(cart: CustomerContent.Cart) {
+    // Mientras el cajero teclea: mismo desglose, sin propina (aún no se pide).
+    ReceiptBreakdown(
+        title = "Tu compra",
+        items = cart.items,
+        subtotalCents = cart.subtotalCents,
+        discountCents = cart.discountCents,
+        taxCents = cart.taxCents,
+        tipCents = 0,
+        totalCents = cart.totalCents,
+    )
+}
+
+/**
+ * Desglose tipo recibo para la pantalla del cliente: lista de productos arriba
+ * y, abajo, subtotal + descuento + impuestos + propina + total. Cada línea
+ * opcional aparece solo cuando aplica (descuento/impuesto/propina > 0). Lo usan
+ * tanto el espejo del carrito como el paso de cobro.
+ */
+@Composable
+private fun ReceiptBreakdown(
+    title: String,
+    items: List<com.avoqado.pos.pos.data.model.CartItem>,
+    subtotalCents: Int,
+    discountCents: Int,
+    taxCents: Int,
+    tipCents: Int,
+    totalCents: Int,
+) {
     Column(modifier = Modifier.fillMaxSize()) {
         Text(
-            text = "Tu compra",
+            text = title,
             style = MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.Bold,
             modifier = Modifier.padding(
@@ -180,7 +208,7 @@ private fun CartMirror(cart: CustomerContent.Cart) {
             ),
             verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
         ) {
-            items(cart.items, key = { it.id }) { item ->
+            items(items, key = { it.id }) { item ->
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         text = "${item.quantity}×",
@@ -212,17 +240,23 @@ private fun CartMirror(cart: CustomerContent.Cart) {
                 .padding(AvoqadoTheme.spacing.xl),
             verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.xs),
         ) {
-            if (cart.discountCents > 0) {
-                TotalRow("Subtotal", money(cart.subtotalCents))
+            // Subtotal se muestra cuando hay algo que restar/sumar aparte (para
+            // que "Total" no sea idéntico y confunda).
+            if (discountCents > 0 || tipCents > 0) {
+                TotalRow("Subtotal", money(subtotalCents))
+            }
+            if (discountCents > 0) {
                 // El descuento se DESTACA en verde: que el cliente vea que le
                 // rebajaron, no que pase como una línea gris más.
                 TotalRow(
                     label = "Descuento",
-                    value = "−${money(cart.discountCents)}",
+                    value = "−${money(discountCents)}",
                     highlight = true,
                 )
             }
-            if (cart.taxCents > 0) TotalRow("Impuestos", money(cart.taxCents))
+            if (taxCents > 0) TotalRow("Impuestos", money(taxCents))
+            // Propina: solo si el cliente dejó algo.
+            if (tipCents > 0) TotalRow("Propina", money(tipCents))
             Spacer(Modifier.height(AvoqadoTheme.spacing.xs))
             Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text(
@@ -232,7 +266,7 @@ private fun CartMirror(cart: CustomerContent.Cart) {
                     modifier = Modifier.weight(1f),
                 )
                 Text(
-                    text = money(cart.totalCents),
+                    text = money(totalCents),
                     style = MaterialTheme.typography.headlineMedium,
                     fontWeight = FontWeight.Bold,
                 )
@@ -369,6 +403,20 @@ private fun TipPrompt(c: CustomerContent.Tip, onTip: (Int) -> Unit) {
 
 @Composable
 private fun TotalOnly(c: CustomerContent.Total) {
+    // Con productos: desglose tipo recibo (lo que el cliente revisa antes de
+    // pagar). Sin productos (monto personalizado): el total en grande y ya.
+    if (c.items.isNotEmpty()) {
+        ReceiptBreakdown(
+            title = "Tu compra",
+            items = c.items,
+            subtotalCents = c.subtotalCents,
+            discountCents = c.discountCents,
+            taxCents = c.taxCents,
+            tipCents = c.tipCents,
+            totalCents = c.totalCents,
+        )
+        return
+    }
     Column(
         modifier = Modifier.fillMaxSize().padding(AvoqadoTheme.spacing.xxl),
         horizontalAlignment = Alignment.CenterHorizontally,

@@ -188,14 +188,14 @@ class PaymentFlowViewModel @Inject constructor(
                 // Antes esto era `return` (no actualizar) y la pantalla del
                 // cliente se quedaba con la propina puesta y sus botones VIVOS
                 // después de que el cajero ya había avanzado.
-                is PaymentFlowState.SelectingPaymentMethod ->
-                    com.avoqado.pos.customerdisplay.CustomerContent.Total(st.amount)
-
-                is PaymentFlowState.CollectingCashAmount ->
-                    com.avoqado.pos.customerdisplay.CustomerContent.Total(st.total)
-
-                is PaymentFlowState.SelectingTerminal ->
-                    com.avoqado.pos.customerdisplay.CustomerContent.Total(st.totalAmount)
+                // Turno del cajero: el cliente ve el DESGLOSE tipo recibo
+                // (productos + subtotal + descuento + propina + total), armado
+                // desde el carrito + propina actuales, no un total pelón.
+                is PaymentFlowState.SelectingPaymentMethod,
+                is PaymentFlowState.CollectingCashAmount,
+                is PaymentFlowState.SelectingTerminal,
+                ->
+                    checkoutBreakdown()
 
                 // Sin venta que mostrar (cargando, error): de vuelta a la marca.
                 is PaymentFlowState.Loading,
@@ -204,6 +204,29 @@ class PaymentFlowViewModel @Inject constructor(
                     com.avoqado.pos.customerdisplay.CustomerContent.Idle
             },
         )
+    }
+
+    /**
+     * Desglose tipo recibo para la pantalla del cliente durante el cobro. Espeja
+     * el carrito (productos, subtotal, descuento, impuestos) y le suma la propina
+     * ya elegida. Sin productos (monto personalizado) se cae a "solo total".
+     * Cero fuente de verdad: los montos vienen ya calculados de CartState.
+     */
+    private fun checkoutBreakdown(): com.avoqado.pos.customerdisplay.CustomerContent.Total {
+        val cart = cartState
+        val tip = currentTipCents
+        return if (cart != null && cart.items.isNotEmpty()) {
+            com.avoqado.pos.customerdisplay.CustomerContent.Total(
+                totalCents = cart.totalCents + tip,
+                items = cart.items,
+                subtotalCents = cart.subtotalCents,
+                discountCents = cart.discountCents,
+                taxCents = cart.taxCents,
+                tipCents = tip,
+            )
+        } else {
+            com.avoqado.pos.customerdisplay.CustomerContent.Total(totalCents = currentBaseAmount() + tip)
+        }
     }
     private var selectedTerminalId: String? = null
     private var lastPaymentId: String? = null
