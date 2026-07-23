@@ -13,6 +13,7 @@ import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -74,10 +75,18 @@ class ReservationApiTest {
     @Test
     fun `reschedule posts isoDate body`() = runTest {
         server.enqueue(MockResponse().setBody(File("src/test/resources/fixtures/reservation_single.json").readText()))
-        val result = api.reschedule("res-1", RescheduleRequest(startsAt = "2026-04-30T15:00:00.000Z", endsAt = "2026-04-30T16:00:00.000Z"))
+        val result = api.reschedule(
+            "res-1",
+            RescheduleRequest(
+                startsAt = "2026-04-30T15:00:00.000Z",
+                endsAt = "2026-04-30T16:00:00.000Z",
+                allowOverCapacity = true,
+            ),
+        )
         assertTrue(result.isSuccess)
         val body = server.takeRequest().body.readUtf8()
         assertTrue(body.contains("2026-04-30T15:00"))
+        assertTrue(body.contains("\"allowOverCapacity\":true"))
     }
 
     @Test
@@ -85,5 +94,58 @@ class ReservationApiTest {
         server.enqueue(MockResponse().setResponseCode(403).setBody("""{"message":"Forbidden"}"""))
         val result = api.get("res-1")
         assertTrue(result.isFailure)
+    }
+
+    @Test
+    fun `availability preserves full slots and sends staff aware contract`() = runTest {
+        server.enqueue(MockResponse().setBody("""
+            {"date":"2026-07-22","slots":[
+              {"startsAt":"2026-07-22T15:00:00.000Z","endsAt":"2026-07-22T16:00:00.000Z","available":true},
+              {"startsAt":"2026-07-22T16:00:00.000Z","endsAt":"2026-07-22T17:00:00.000Z","available":false,"reason":"FULL"}
+            ]}
+        """.trimIndent()))
+
+        val result = api.availability(
+            date = "2026-07-22",
+            durationMin = 60,
+            productId = "product-1",
+            staffId = "staff-1",
+            includeFull = true,
+            windowSemantics = "base",
+        ).getOrThrow()
+
+        assertEquals(2, result.size)
+        assertTrue(result[0].available)
+        assertFalse(result[1].available)
+        assertEquals("FULL", result[1].reason)
+        val path = server.takeRequest().path.orEmpty()
+        assertTrue(path.contains("productId=product-1"))
+        assertTrue(path.contains("productIds=product-1"))
+        assertTrue(path.contains("staffId=staff-1"))
+        assertTrue(path.contains("includeFull=true"))
+        assertTrue(path.contains("windowSemantics=base"))
+    }
+
+    @Test
+    fun `settings and product staff decode opt in contract`() = runTest {
+        server.enqueue(MockResponse().setBody("""{"scheduling":{"capacityMode":"per_staff"},"publicBooking":{"showStaffPicker":false}}"""))
+        server.enqueue(MockResponse().setBody("""{"productId":"product-1","staffVenueIds":["sv-1"],"staff":[{"staffVenueId":"sv-1","staffId":"staff-1"}],"explicit":true}"""))
+
+        val settings = api.settings().getOrThrow()
+        val mapping = api.productStaff("product-1").getOrThrow()
+
+        assertTrue(settings.isStaffAware)
+        assertEquals(listOf("staff-1"), mapping.staff.map { it.staffId })
+    }
+
+    @Test
+    fun `structured business error keeps status code and details`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(409).setBody("""{"message":"Confirma sobrecupo","code":"OVER_CAPACITY_CONFIRMATION_REQUIRED","details":{"preview":"2 de 1"}}"""))
+
+        val error = api.get("res-1").exceptionOrNull() as ReservationApiException
+
+        assertEquals(409, error.status)
+        assertEquals("OVER_CAPACITY_CONFIRMATION_REQUIRED", error.code)
+        assertEquals("2 de 1", error.preview)
     }
 }

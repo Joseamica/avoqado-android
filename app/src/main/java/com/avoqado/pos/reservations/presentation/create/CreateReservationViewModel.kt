@@ -12,6 +12,8 @@ import com.avoqado.pos.pos.data.StaffMember
 import com.avoqado.pos.pos.data.StaffRepository
 import com.avoqado.pos.pos.data.model.Product
 import com.avoqado.pos.reservations.data.ReservationRepository
+import com.avoqado.pos.reservations.data.ReservationApiException
+import com.avoqado.pos.reservations.data.ReservationTimeSlot
 import com.avoqado.pos.reservations.data.WaitlistRepository
 import com.avoqado.pos.reservations.data.model.Reservation
 import com.avoqado.pos.reservations.data.model.ReservationChannel
@@ -57,20 +59,61 @@ class CreateReservationViewModel @Inject constructor(
 
     // Slots REALMENTE reservables del día seleccionado — el server aplica
     // horario de operación, intervalo, pacing y aviso mínimo, así que el
-    // picker no ofrece horas imposibles. null = cargando o endpoint caído
-    // (la sección cae a la grilla estática filtrada a futuro).
-    private val _availableSlots = MutableStateFlow<List<java.time.LocalTime>?>(null)
-    val availableSlots: StateFlow<List<java.time.LocalTime>?> = _availableSlots.asStateFlow()
+    // picker no ofrece horas imposibles. null = cargando. En modo legacy la
+    // sección conserva su fallback estático; en modo staff-aware una falla se
+    // expone por separado para no ofrecer horas que el server no confirmó.
+    private val _availableSlots = MutableStateFlow<List<ReservationTimeSlot>?>(null)
+    val availableSlots: StateFlow<List<ReservationTimeSlot>?> = _availableSlots.asStateFlow()
+
+    private val _slotLoadError = MutableStateFlow<String?>(null)
+    val slotLoadError: StateFlow<String?> = _slotLoadError.asStateFlow()
     private var slotsJob: kotlinx.coroutines.Job? = null
+
+    private val _staffAware = MutableStateFlow(false)
+    val staffAware: StateFlow<Boolean> = _staffAware.asStateFlow()
+
+    private val _eligibleStaffAvailable = MutableStateFlow(true)
+    val eligibleStaffAvailable: StateFlow<Boolean> = _eligibleStaffAvailable.asStateFlow()
+
+    private val _requiresSlotReselection = MutableStateFlow(false)
+    val requiresSlotReselection: StateFlow<Boolean> = _requiresSlotReselection.asStateFlow()
+
+    private val _overCapacityConfirmation = MutableStateFlow<String?>(null)
+    val overCapacityConfirmation: StateFlow<String?> = _overCapacityConfirmation.asStateFlow()
+
+    private var allStaff: List<StaffMember> = emptyList()
+    private var staffMappingJob: kotlinx.coroutines.Job? = null
+
+    private fun usesStaffAwareAppointment(draft: CreateReservationDraft = _draft.value): Boolean =
+        _staffAware.value && draft.productType == "APPOINTMENTS_SERVICE"
 
     fun loadSlots() {
         val d = _draft.value
         slotsJob?.cancel()
         slotsJob = viewModelScope.launch {
             _availableSlots.value = null
-            repository.availableSlots(d.date, d.durationMinutes, zone)
+            _slotLoadError.value = null
+            if (usesStaffAwareAppointment(d) && !_eligibleStaffAvailable.value) {
+                _availableSlots.value = emptyList()
+                return@launch
+            }
+            repository.availableSlots(
+                date = d.date,
+                durationMin = d.durationMinutes,
+                zone = zone,
+                productId = d.productId,
+                staffId = d.assignedStaffId,
+                includeFull = usesStaffAwareAppointment(d),
+                windowSemantics = "base".takeIf { usesStaffAwareAppointment(d) },
+            )
                 .onSuccess { _availableSlots.value = it }
-            // onFailure: queda null → fallback estático en la UI.
+                .onFailure {
+                    if (usesStaffAwareAppointment(d)) {
+                        _slotLoadError.value = "No se pudieron cargar los horarios. Reintenta."
+                    }
+                }
+            // Legacy: null conserva el fallback estático de la UI. Staff-aware:
+            // null + slotLoadError bloquea selección y muestra un reintento.
         }
     }
 
@@ -100,12 +143,25 @@ class CreateReservationViewModel @Inject constructor(
     init {
         seedFromNavArgs(savedStateHandle)
         loadCustomers()
-        viewModelScope.launch { productsRepository.fetchProducts() }
+        viewModelScope.launch {
+            productsRepository.fetchProducts()
+            reconcileSelectedProduct()
+        }
+        viewModelScope.launch {
+            repository.reservationSettings().onSuccess { settings ->
+                _staffAware.value = settings.isStaffAware
+                refreshStaffForCurrentProduct()
+                loadSlots()
+            }
+        }
         viewModelScope.launch {
             tablesRepository.fetchTables().onSuccess { _tables.value = it }
         }
         viewModelScope.launch {
-            staffRepository.getActiveStaff().onSuccess { _staff.value = it }
+            staffRepository.getActiveStaff().onSuccess {
+                allStaff = it
+                refreshStaffForCurrentProduct()
+            }
         }
     }
 
@@ -199,6 +255,94 @@ class CreateReservationViewModel @Inject constructor(
         _draft.update(transform)
     }
 
+    fun selectProduct(product: Product) {
+        _draft.update {
+            it.copy(
+                productId = product.id,
+                productName = product.name,
+                productType = product.type,
+                durationMinutes = product.duration ?: 60,
+                assignedStaffId = null,
+                assignedStaffName = null,
+            )
+        }
+        _requiresSlotReselection.value = usesStaffAwareAppointment()
+        refreshStaffForCurrentProduct()
+        loadSlots()
+    }
+
+    fun selectStaff(member: StaffMember?) {
+        _draft.update {
+            it.copy(
+                assignedStaffId = member?.id,
+                assignedStaffName = member?.fullName,
+            )
+        }
+        if (usesStaffAwareAppointment()) _requiresSlotReselection.value = true
+        loadSlots()
+    }
+
+    fun selectDate(date: LocalDate) {
+        _draft.update { it.copy(date = date) }
+        if (usesStaffAwareAppointment()) _requiresSlotReselection.value = true
+        loadSlots()
+    }
+
+    fun selectTime(time: LocalTime) {
+        _draft.update { it.copy(time = time) }
+        _requiresSlotReselection.value = false
+    }
+
+    fun updatePartySize(partySize: Int) {
+        _draft.update { it.copy(partySize = partySize.coerceIn(1, 50)) }
+        if (usesStaffAwareAppointment()) _requiresSlotReselection.value = true
+        loadSlots()
+    }
+
+    private fun reconcileSelectedProduct() {
+        val productId = _draft.value.productId ?: return
+        val fresh = productsRepository.getProduct(productId) ?: return
+        _draft.update {
+            it.copy(
+                productName = fresh.name,
+                productType = fresh.type,
+                durationMinutes = fresh.duration ?: it.durationMinutes,
+            )
+        }
+        refreshStaffForCurrentProduct()
+    }
+
+    private fun refreshStaffForCurrentProduct() {
+        staffMappingJob?.cancel()
+        val d = _draft.value
+        if (!usesStaffAwareAppointment(d) || d.productId == null) {
+            _staff.value = allStaff
+            _eligibleStaffAvailable.value = true
+            return
+        }
+        staffMappingJob = viewModelScope.launch {
+            repository.productStaff(d.productId)
+                .onSuccess { mapping ->
+                    val eligibleIds = mapping.staff.mapTo(mutableSetOf()) { it.staffId }
+                    val eligible = allStaff.filter { it.id in eligibleIds }
+                    _staff.value = eligible
+                    // Mapping existence is authoritative. A user without
+                    // teams:read may not have names in allStaff, but can still
+                    // choose "Cualquiera" and let the server auto-assign.
+                    _eligibleStaffAvailable.value = eligibleIds.isNotEmpty()
+                    if (_draft.value.assignedStaffId !in eligibleIds) {
+                        _draft.update { it.copy(assignedStaffId = null, assignedStaffName = null) }
+                    }
+                }
+                .onFailure {
+                    // Permission/network fallback: keep the legacy roster visible;
+                    // the transactional create remains authoritative.
+                    _staff.value = allStaff
+                    _eligibleStaffAvailable.value = true
+                }
+        }
+    }
+
     private fun loadCustomers() {
         viewModelScope.launch {
             _isLoadingCustomers.value = true
@@ -242,8 +386,9 @@ class CreateReservationViewModel @Inject constructor(
         _customerError.value = null
     }
 
-    fun submit() {
+    fun submit(allowOverCapacity: Boolean = false) {
         if (_isSubmitting.value) return
+        _overCapacityConfirmation.value = null
         // 🔴 Cada intento arranca LIMPIO. El gate del final (que protege el
         // fallo de promoción de waitlist de ESTE intento) veía el failure
         // ATORADO del intento anterior y bloqueaba todos los updates: del
@@ -258,6 +403,14 @@ class CreateReservationViewModel @Inject constructor(
         // definición (y con gracia de 5 min para que los segundos que corren
         // entre abrir el form y picar Crear no conviertan "ahora" en "pasado").
         val d = _draft.value
+        if (!_isEditing.value && usesStaffAwareAppointment(d) && _requiresSlotReselection.value) {
+            _result.value = Result.failure(Exception("Selecciona nuevamente un horario disponible."))
+            return
+        }
+        if (!_isEditing.value && usesStaffAwareAppointment(d) && !_eligibleStaffAvailable.value) {
+            _result.value = Result.failure(Exception("Este servicio no tiene profesionistas configurados."))
+            return
+        }
         if (!_isEditing.value &&
             d.channel != ReservationChannel.WALK_IN &&
             java.time.LocalDateTime.of(d.date, d.time)
@@ -268,10 +421,38 @@ class CreateReservationViewModel @Inject constructor(
         }
         viewModelScope.launch {
             _isSubmitting.value = true
+            val requestDraft = d
+            val useBaseWindow = usesStaffAwareAppointment(requestDraft)
             val r = if (_isEditing.value && editingId != null) {
-                repository.updateReservation(editingId!!, _draft.value.toUpdateRequest())
+                repository.updateReservation(editingId!!, requestDraft.toUpdateRequest())
             } else {
-                repository.createReservation(_draft.value.toRequest(zone))
+                repository.createReservation(
+                    requestDraft.toRequest(
+                        zone = zone,
+                        useBaseWindow = useBaseWindow,
+                        allowOverCapacity = allowOverCapacity,
+                    ),
+                )
+            }
+            val apiError = r.exceptionOrNull() as? ReservationApiException
+            if (apiError?.code == "OVER_CAPACITY_CONFIRMATION_REQUIRED") {
+                _isSubmitting.value = false
+                _overCapacityConfirmation.value = buildString {
+                    append(apiError.message)
+                    apiError.preview?.let { append("\nOcupación: $it.") }
+                }
+                return@launch
+            }
+            if (apiError?.code == "APPOINTMENT_WINDOW_CHANGED") {
+                productsRepository.fetchProducts()
+                reconcileSelectedProduct()
+                _requiresSlotReselection.value = true
+                loadSlots()
+                _isSubmitting.value = false
+                _result.value = Result.failure(
+                    Exception("La duración del servicio cambió. Elige un horario disponible nuevamente."),
+                )
+                return@launch
             }
             r.onSuccess { created ->
                 val pid = promoteWaitlistId
@@ -292,5 +473,14 @@ class CreateReservationViewModel @Inject constructor(
                 _result.value = r.map { it ?: error("Empty reservation") }
             }
         }
+    }
+
+    fun confirmOverCapacity() {
+        if (_overCapacityConfirmation.value == null) return
+        submit(allowOverCapacity = true)
+    }
+
+    fun dismissOverCapacityConfirmation() {
+        _overCapacityConfirmation.value = null
     }
 }

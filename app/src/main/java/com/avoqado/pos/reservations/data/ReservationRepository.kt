@@ -3,9 +3,11 @@ package com.avoqado.pos.reservations.data
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.reservations.data.model.CancelReservationRequest
 import com.avoqado.pos.reservations.data.model.CreateReservationRequest
+import com.avoqado.pos.reservations.data.model.ProductStaffContract
 import com.avoqado.pos.reservations.data.model.Reservation
 import com.avoqado.pos.reservations.data.model.ReservationFilters
 import com.avoqado.pos.reservations.data.model.ReservationListResponse
+import com.avoqado.pos.reservations.data.model.ReservationSettingsContract
 import com.avoqado.pos.reservations.data.model.RescheduleRequest
 import com.avoqado.pos.reservations.data.model.UpdateReservationRequest
 import com.avoqado.pos.reservations.domain.ReservationAction
@@ -20,6 +22,14 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.serialization.json.Json
 import javax.inject.Inject
 import javax.inject.Singleton
+
+data class ReservationTimeSlot(
+    val time: java.time.LocalTime,
+    val available: Boolean,
+    val reason: String? = null,
+) {
+    val isFull: Boolean get() = !available && reason == "FULL"
+}
 
 @Singleton
 class ReservationRepository @Inject constructor(
@@ -105,12 +115,26 @@ class ReservationRepository @Inject constructor(
         date: java.time.LocalDate,
         durationMin: Int?,
         zone: java.time.ZoneId,
-    ): Result<List<java.time.LocalTime>> =
-        api.availability(date.toString(), durationMin).map { isoList ->
-            isoList.mapNotNull { iso ->
-                runCatching { java.time.Instant.parse(iso).atZone(zone).toLocalTime() }.getOrNull()
+        productId: String? = null,
+        staffId: String? = null,
+        includeFull: Boolean = false,
+        windowSemantics: String? = null,
+    ): Result<List<ReservationTimeSlot>> =
+        api.availability(date.toString(), durationMin, productId, staffId, includeFull, windowSemantics).map { slots ->
+            slots.mapNotNull { slot ->
+                runCatching {
+                    ReservationTimeSlot(
+                        time = java.time.Instant.parse(slot.startsAt).atZone(zone).toLocalTime(),
+                        available = slot.available,
+                        reason = slot.reason,
+                    )
+                }.getOrNull()
             }
         }
+
+    suspend fun reservationSettings(): Result<ReservationSettingsContract> = api.settings()
+
+    suspend fun productStaff(productId: String): Result<ProductStaffContract> = api.productStaff(productId)
 
     suspend fun createReservation(request: CreateReservationRequest): Result<Reservation?> {
         if (!connectivity.isOnline()) {
@@ -158,8 +182,15 @@ class ReservationRepository @Inject constructor(
             val endsAt: String,
             val notificationChannel: com.avoqado.pos.reservations.data.model.RescheduleNotificationChannel? = null,
             val customMessage: String? = null,
+            val allowOverCapacity: Boolean? = null,
         ) : ActionPayload {
-            fun toRequest() = RescheduleRequest(startsAt, endsAt, notificationChannel, customMessage)
+            fun toRequest() = RescheduleRequest(
+                startsAt,
+                endsAt,
+                notificationChannel,
+                customMessage,
+                allowOverCapacity,
+            )
             override fun toJson(json: Json): String =
                 json.encodeToString(RescheduleRequest.serializer(), toRequest())
         }

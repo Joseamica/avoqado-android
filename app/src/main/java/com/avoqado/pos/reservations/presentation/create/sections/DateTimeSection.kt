@@ -5,6 +5,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -35,6 +36,8 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.runtime.LaunchedEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
+import com.avoqado.pos.designsystem.theme.Warning
+import com.avoqado.pos.reservations.data.ReservationTimeSlot
 import com.avoqado.pos.reservations.presentation.create.CreateReservationViewModel
 import java.time.Instant
 import java.time.LocalTime
@@ -66,21 +69,26 @@ fun DateTimeSection(viewModel: CreateReservationViewModel) {
     }
 
     // Slots del SERVER (horario real, aviso mínimo, pacing) — el picker no debe
-    // ofrecer horas que la configuración no permite. Mientras carga (o si el
-    // endpoint falla) cae a la grilla estática, filtrada al menos a futuro
-    // cuando el día es hoy.
+    // ofrecer horas que la configuración no permite. Sólo el contrato legacy
+    // conserva la grilla estática; staff-aware bloquea ante una falla y ofrece
+    // reintento para no mostrar horarios sin confirmar.
     val serverSlots by viewModel.availableSlots.collectAsStateWithLifecycle()
-    LaunchedEffect(draft.date, draft.durationMinutes) { viewModel.loadSlots() }
-    val slots = remember(serverSlots, draft.date) {
-        serverSlots ?: buildList {
+    val slotLoadError by viewModel.slotLoadError.collectAsStateWithLifecycle()
+    val staffAware by viewModel.staffAware.collectAsStateWithLifecycle()
+    val usesStaffAwareContract = staffAware && draft.productType == "APPOINTMENTS_SERVICE"
+    LaunchedEffect(draft.date, draft.durationMinutes, draft.productId, draft.assignedStaffId, draft.partySize) {
+        viewModel.loadSlots()
+    }
+    val slots = remember(serverSlots, draft.date, usesStaffAwareContract) {
+        serverSlots ?: if (usesStaffAwareContract) emptyList() else buildList {
             var t = LocalTime.of(9, 0)
             val end = LocalTime.of(22, 0)
             while (t.isBefore(end)) {
-                add(t)
+                add(ReservationTimeSlot(time = t, available = true))
                 t = t.plusMinutes(15)
             }
-        }.filter { t ->
-            draft.date != java.time.LocalDate.now(zone) || t.isAfter(java.time.LocalTime.now(zone))
+        }.filter { slot ->
+            draft.date != java.time.LocalDate.now(zone) || slot.time.isAfter(java.time.LocalTime.now(zone))
         }
     }
     val slotRows = remember(slots) { slots.chunked(4) }
@@ -128,7 +136,29 @@ fun DateTimeSection(viewModel: CreateReservationViewModel) {
             SectionHeader("HORA")
             Spacer(Modifier.height(AvoqadoTheme.spacing.sm))
         }
-        if (serverSlots?.isEmpty() == true) {
+        if (usesStaffAwareContract && slotLoadError != null) {
+            item("slots-error") {
+                Column(modifier = Modifier.padding(vertical = AvoqadoTheme.spacing.md)) {
+                    Text(
+                        text = slotLoadError.orEmpty(),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                    TextButton(onClick = viewModel::loadSlots) {
+                        Text("Reintentar")
+                    }
+                }
+            }
+        } else if (usesStaffAwareContract && serverSlots == null) {
+            item("loading-slots") {
+                Text(
+                    text = "Cargando horarios…",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = AvoqadoTheme.spacing.lg),
+                )
+            }
+        } else if (serverSlots?.isEmpty() == true) {
             item("no-slots") {
                 Text(
                     text = "No hay horarios disponibles este día — prueba otra fecha.",
@@ -147,9 +177,9 @@ fun DateTimeSection(viewModel: CreateReservationViewModel) {
             ) {
                 rowSlots.forEach { slot ->
                     TimeSlotPill(
-                        time = slot,
-                        selected = slot == draft.time,
-                        onClick = { viewModel.update { it.copy(time = slot) } },
+                        slot = slot,
+                        selected = slot.time == draft.time,
+                        onClick = { viewModel.selectTime(slot.time) },
                         modifier = Modifier.weight(1f),
                     )
                 }
@@ -183,7 +213,7 @@ fun DateTimeSection(viewModel: CreateReservationViewModel) {
                         val newDate = Instant.ofEpochMilli(millis)
                             .atZone(java.time.ZoneOffset.UTC)
                             .toLocalDate()
-                        viewModel.update { it.copy(date = newDate) }
+                        viewModel.selectDate(newDate)
                     }
                     showDatePicker = false
                 }) { Text("Aceptar") }
@@ -213,22 +243,28 @@ private fun SectionHeader(text: String) {
 
 @Composable
 private fun TimeSlotPill(
-    time: LocalTime,
+    slot: ReservationTimeSlot,
     selected: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val containerColor = if (selected) {
+    val containerColor = if (slot.isFull) {
+        Warning.copy(alpha = if (selected) 0.2f else 0.08f)
+    } else if (selected) {
         MaterialTheme.colorScheme.primary
     } else {
         MaterialTheme.colorScheme.surface
     }
-    val contentColor = if (selected) {
+    val contentColor = if (slot.isFull) {
+        Warning
+    } else if (selected) {
         MaterialTheme.colorScheme.onPrimary
     } else {
         MaterialTheme.colorScheme.onSurface
     }
-    val borderColor = if (selected) {
+    val borderColor = if (slot.isFull) {
+        Warning
+    } else if (selected) {
         MaterialTheme.colorScheme.primary
     } else {
         MaterialTheme.colorScheme.outlineVariant
@@ -242,11 +278,19 @@ private fun TimeSlotPill(
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Text(
-            text = time.format(DateTimeFormatter.ofPattern("HH:mm")),
-            style = MaterialTheme.typography.bodyLarge,
-            color = contentColor,
-        )
+        androidx.compose.foundation.layout.Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            Text(
+                text = slot.time.format(DateTimeFormatter.ofPattern("HH:mm")),
+                style = MaterialTheme.typography.bodyLarge,
+                color = contentColor,
+            )
+            if (slot.isFull) {
+                Text(
+                    text = "Lleno",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = contentColor,
+                )
+            }
+        }
     }
 }
-

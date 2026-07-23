@@ -11,6 +11,7 @@ data class RescheduleRequest(
     val endsAt: String,
     val notificationChannel: RescheduleNotificationChannel? = null,
     val customMessage: String? = null,
+    val allowOverCapacity: Boolean? = null,
 )
 
 @Serializable

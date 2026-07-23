@@ -6,6 +6,7 @@ import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.reservations.data.ClassSessionRepository
 import com.avoqado.pos.reservations.data.ReservationRepository
+import com.avoqado.pos.reservations.data.ReservationApiException
 import com.avoqado.pos.reservations.data.model.Reservation
 import com.avoqado.pos.reservations.data.model.ReservationStatus
 import com.avoqado.pos.reservations.data.model.RescheduleNotificationChannel
@@ -112,6 +113,21 @@ class CalendarViewModel @Inject constructor(
     private val _rescheduleSubmitting = MutableStateFlow(false)
     val rescheduleSubmitting: StateFlow<Boolean> = _rescheduleSubmitting.asStateFlow()
 
+    private val _rescheduleOverCapacityConfirmation = MutableStateFlow<String?>(null)
+    val rescheduleOverCapacityConfirmation: StateFlow<String?> =
+        _rescheduleOverCapacityConfirmation.asStateFlow()
+
+    private data class PendingRescheduleRetry(
+        val reservationId: String,
+        val newStarts: ZonedDateTime,
+        val newEnds: ZonedDateTime,
+        val channel: RescheduleNotificationChannel?,
+        val customMessage: String?,
+        val onResult: (Boolean, String?) -> Unit,
+    )
+
+    private var pendingRescheduleRetry: PendingRescheduleRetry? = null
+
     fun reschedule(
         reservationId: String,
         newStarts: ZonedDateTime,
@@ -120,21 +136,58 @@ class CalendarViewModel @Inject constructor(
         customMessage: String?,
         onResult: (Boolean, String?) -> Unit,
     ) {
+        performReschedule(
+            PendingRescheduleRetry(
+                reservationId,
+                newStarts,
+                newEnds,
+                channel,
+                customMessage,
+                onResult,
+            ),
+            allowOverCapacity = false,
+        )
+    }
+
+    private fun performReschedule(request: PendingRescheduleRetry, allowOverCapacity: Boolean) {
         _rescheduleSubmitting.value = true
         viewModelScope.launch {
             val result = repository.runAction(
-                reservationId = reservationId,
+                reservationId = request.reservationId,
                 action = ReservationAction.RESCHEDULE,
                 payload = ReservationRepository.ActionPayload.Reschedule(
-                    startsAt = newStarts.withZoneSameInstant(ZoneOffset.UTC).format(DateTimeFormatter.ISO_INSTANT),
-                    endsAt = newEnds.withZoneSameInstant(ZoneOffset.UTC).format(DateTimeFormatter.ISO_INSTANT),
-                    notificationChannel = channel,
-                    customMessage = customMessage,
+                    startsAt = request.newStarts.withZoneSameInstant(ZoneOffset.UTC).format(DateTimeFormatter.ISO_INSTANT),
+                    endsAt = request.newEnds.withZoneSameInstant(ZoneOffset.UTC).format(DateTimeFormatter.ISO_INSTANT),
+                    notificationChannel = request.channel,
+                    customMessage = request.customMessage,
+                    allowOverCapacity = true.takeIf { allowOverCapacity },
                 ),
             )
             _rescheduleSubmitting.value = false
-            onResult(result.isSuccess, result.exceptionOrNull()?.message)
+            val apiError = result.exceptionOrNull() as? ReservationApiException
+            if (!allowOverCapacity && apiError?.code == "OVER_CAPACITY_CONFIRMATION_REQUIRED") {
+                pendingRescheduleRetry = request
+                _rescheduleOverCapacityConfirmation.value = buildString {
+                    append(apiError.message)
+                    apiError.preview?.let { append("\nOcupación: $it.") }
+                }
+                return@launch
+            }
+            pendingRescheduleRetry = null
+            _rescheduleOverCapacityConfirmation.value = null
+            request.onResult(result.isSuccess, result.exceptionOrNull()?.message)
         }
+    }
+
+    fun confirmRescheduleOverCapacity() {
+        val request = pendingRescheduleRetry ?: return
+        _rescheduleOverCapacityConfirmation.value = null
+        performReschedule(request, allowOverCapacity = true)
+    }
+
+    fun dismissRescheduleOverCapacity() {
+        pendingRescheduleRetry = null
+        _rescheduleOverCapacityConfirmation.value = null
     }
 
     private fun fetch(showLoading: Boolean = true) {

@@ -4,6 +4,7 @@ import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.reservations.data.ClassSessionRepository
 import com.avoqado.pos.reservations.data.ReservationRepository
+import com.avoqado.pos.reservations.data.ReservationApiException
 import com.avoqado.pos.reservations.data.model.Reservation
 import com.avoqado.pos.reservations.data.model.ReservationChannel
 import com.avoqado.pos.reservations.data.model.ReservationStatus
@@ -23,6 +24,10 @@ import org.junit.Assert.*
 import org.junit.Before
 import org.junit.Test
 import java.time.LocalDate
+import java.time.ZoneId
+import java.time.ZonedDateTime
+import com.avoqado.pos.reservations.domain.ReservationAction
+import io.mockk.coVerify
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class CalendarViewModelTest {
@@ -89,5 +94,57 @@ class CalendarViewModelTest {
         advanceUntilIdle()
 
         assertEquals(1, vm.state.value.reservations.size)
+    }
+
+    @Test
+    fun `drag reschedule over capacity retries only after operator consent`() = runTest(dispatcher) {
+        val repo: ReservationRepository = mockk()
+        every { repo.pendingActionsCount } returns kotlinx.coroutines.flow.flowOf(0)
+        every { repo.changes } returns kotlinx.coroutines.flow.MutableSharedFlow<Unit>()
+        coEvery { repo.fetchCalendar(any(), any()) } returns Result.success(emptyList())
+        val storage: SecureStorage = mockk()
+        every { storage.venueTimezone } returns "America/Mexico_City"
+        every { storage.calendarViewForCurrentVenue } returns null
+        every { storage.showClassSessionsForCurrentVenue } returns false
+        val connectivity: ConnectivityMonitor = mockk(relaxed = true)
+        every { connectivity.isConnected } returns MutableStateFlow(true)
+        every { connectivity.isServerReachable } returns MutableStateFlow(true)
+        val classRepo: ClassSessionRepository = mockk(relaxed = true)
+        every { classRepo.changes } returns kotlinx.coroutines.flow.MutableSharedFlow()
+        coEvery { classRepo.fetchList(any(), any()) } returns Result.success(emptyList())
+        val starts = ZonedDateTime.of(2026, 4, 30, 15, 0, 0, 0, ZoneId.of("America/Mexico_City"))
+        val ends = starts.plusHours(1)
+        coEvery {
+            repo.runAction("r1", ReservationAction.RESCHEDULE, match {
+                it is ReservationRepository.ActionPayload.Reschedule && it.allowOverCapacity != true
+            })
+        } returns Result.failure(
+            ReservationApiException(409, "El horario está lleno", "OVER_CAPACITY_CONFIRMATION_REQUIRED", "2 de 1"),
+        )
+        coEvery {
+            repo.runAction("r1", ReservationAction.RESCHEDULE, match {
+                it is ReservationRepository.ActionPayload.Reschedule && it.allowOverCapacity == true
+            })
+        } returns Result.success(stub("r1", ReservationStatus.CONFIRMED))
+
+        val vm = CalendarViewModel(repo, classRepo, storage, connectivity)
+        advanceUntilIdle()
+        var finalSuccess: Boolean? = null
+        vm.reschedule("r1", starts, ends, null, null) { success, _ -> finalSuccess = success }
+        advanceUntilIdle()
+
+        assertNotNull(vm.rescheduleOverCapacityConfirmation.value)
+        assertNull(finalSuccess)
+
+        vm.confirmRescheduleOverCapacity()
+        advanceUntilIdle()
+
+        assertEquals(true, finalSuccess)
+        assertNull(vm.rescheduleOverCapacityConfirmation.value)
+        coVerify(exactly = 1) {
+            repo.runAction("r1", ReservationAction.RESCHEDULE, match {
+                it is ReservationRepository.ActionPayload.Reschedule && it.allowOverCapacity == true
+            })
+        }
     }
 }

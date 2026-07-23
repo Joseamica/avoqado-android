@@ -13,6 +13,9 @@ data class CreateReservationRequest(
     val endsAt: String,
     val duration: Int, // minutes — server requires this and validates against (endsAt - startsAt)
     val productId: String? = null,
+    val productIds: List<String>? = null,
+    val windowSemantics: String? = null,
+    val allowOverCapacity: Boolean? = null,
     val classSessionId: String? = null,
     val tableId: String? = null,
     val assignedStaffId: String? = null,

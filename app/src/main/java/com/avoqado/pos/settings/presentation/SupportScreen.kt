@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Build
 import android.widget.Toast
+import androidx.core.content.pm.PackageInfoCompat
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.expandVertically
 import androidx.compose.animation.shrinkVertically
@@ -717,7 +718,7 @@ private fun AboutContent() {
     val versionCode = remember {
         try {
             val pInfo = context.packageManager.getPackageInfo(context.packageName, 0)
-            pInfo.longVersionCode.toString()
+            PackageInfoCompat.getLongVersionCode(pInfo).toString()
         } catch (_: PackageManager.NameNotFoundException) {
             "1"
         }

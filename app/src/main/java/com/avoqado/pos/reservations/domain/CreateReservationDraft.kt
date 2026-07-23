@@ -19,6 +19,7 @@ data class CreateReservationDraft(
     val isGuest: Boolean = false,
     val productId: String? = null,
     val productName: String? = null,
+    val productType: String? = null,
     val durationMinutes: Int = 60,
     val date: LocalDate = LocalDate.now(VenueTimeZone.zoneId()),
     val time: LocalTime = LocalTime.of(9, 0),
@@ -38,7 +39,11 @@ data class CreateReservationDraft(
             return hasCustomer && hasProduct
         }
 
-    fun toRequest(zone: ZoneId): CreateReservationRequest {
+    fun toRequest(
+        zone: ZoneId,
+        useBaseWindow: Boolean = false,
+        allowOverCapacity: Boolean = false,
+    ): CreateReservationRequest {
         val startLocal = ZonedDateTime.of(date, time, zone)
         val endLocal = startLocal.plusMinutes(durationMinutes.toLong())
         val iso = DateTimeFormatter.ISO_INSTANT
@@ -52,6 +57,9 @@ data class CreateReservationDraft(
             endsAt = iso.format(endLocal.toInstant()),
             duration = durationMinutes,
             productId = productId,
+            productIds = if (useBaseWindow) productId?.let(::listOf) else null,
+            windowSemantics = if (useBaseWindow) "base" else null,
+            allowOverCapacity = true.takeIf { allowOverCapacity },
             tableId = tableId,
             assignedStaffId = assignedStaffId,
             channel = channel.name,
