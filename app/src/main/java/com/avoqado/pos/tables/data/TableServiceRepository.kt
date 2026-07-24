@@ -29,11 +29,33 @@ class TableServiceRepository @Inject constructor(
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
+    /**
+     * Propiedad de mesa ("Solo el propietario puede modificar sus mesas").
+     * El server manda el switch + si YO puedo saltármelo (tables:manage-all)
+     * como siblings del listado de mesas. Default = regla apagada (histórico).
+     */
+    data class TableOwnership(
+        val enforced: Boolean = false,
+        val staffId: String? = null,
+        val canManageAll: Boolean = true,
+    ) {
+        /** ¿Esta cuenta es intocable para mí? (la regla la refuerza el server; esto pinta la UI) */
+        fun isLockedForMe(ownerId: String?): Boolean = enforced && !canManageAll && ownerId != null && ownerId != staffId
+    }
+
+    private val _ownership = MutableStateFlow(TableOwnership())
+    val ownership: StateFlow<TableOwnership> = _ownership.asStateFlow()
+
     suspend fun refresh(venueId: String): Result<List<DiningTable>> = runCatching {
         _isLoading.value = true
         try {
             val response = apiService.getTables(venueId)
             _tables.value = response.data
+            _ownership.value = TableOwnership(
+                enforced = response.settings?.enforceTableOwnership == true,
+                staffId = response.viewer?.staffId,
+                canManageAll = response.viewer?.canManageAllTables ?: true,
+            )
             Log.d(TAG, "✅ ${response.data.size} tables (${response.data.count { it.isOccupied }} occupied)")
             response.data
         } finally {

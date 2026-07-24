@@ -62,6 +62,23 @@ class TableOrderViewModel @Inject constructor(
     private val _check = MutableStateFlow<OrderDetail?>(null)
     val check: StateFlow<OrderDetail?> = _check.asStateFlow()
 
+    /**
+     * Propiedad de mesa ("Solo el propietario puede modificar sus mesas"):
+     * el cheque es de OTRO mesero, el switch del venue está encendido y yo no
+     * tengo 'tables:manage-all' → la pantalla se pinta read-only. El server
+     * refuerza la regla de todos modos (403 TABLE_OWNED_BY_OTHER).
+     */
+    val readOnlyCheck: StateFlow<Boolean> =
+        combine(_check, repository.ownership) { check, ownership ->
+            ownership.isLockedForMe(check?.waiter?.id)
+        }.stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, false)
+
+    /** Nombre del dueño para el banner "Mesa de {mesero} — solo lectura". */
+    val lockOwnerName: StateFlow<String?> =
+        combine(_check, repository.ownership) { check, ownership ->
+            if (ownership.isLockedForMe(check?.waiter?.id)) check?.waiter?.name else null
+        }.stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, null)
+
     private val _isLoadingCheck = MutableStateFlow(false)
     val isLoadingCheck: StateFlow<Boolean> = _isLoadingCheck.asStateFlow()
 

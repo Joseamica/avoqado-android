@@ -24,6 +24,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Print
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
@@ -116,6 +117,10 @@ fun TableOrderScreen(
     val selectedMenuId by viewModel.selectedMenuId.collectAsState()
     val menuCategoryIds by viewModel.menuCategoryIds.collectAsState()
     val floorTables by viewModel.floorTables.collectAsState()
+    // Propiedad de mesa: cheque de otro mesero + switch del venue encendido y
+    // sin 'tables:manage-all' → pantalla read-only (el server refuerza con 403).
+    val readOnlyCheck by viewModel.readOnlyCheck.collectAsState()
+    val lockOwnerName by viewModel.lockOwnerName.collectAsState()
 
     val context = LocalContext.current
     var selectedProduct by remember { mutableStateOf<Product?>(null) }
@@ -190,11 +195,24 @@ fun TableOrderScreen(
     }
     BackHandler { requestExit() }
 
+    /** Read-only por propiedad de mesa: avisa y bloquea la acción. */
+    fun blockIfReadOnly(): Boolean {
+        if (!readOnlyCheck) return false
+        android.widget.Toast.makeText(
+            context,
+            "Mesa de ${lockOwnerName ?: "otro mesero"} — solo lectura",
+            android.widget.Toast.LENGTH_SHORT,
+        ).show()
+        return true
+    }
+
     fun handleProductTap(product: Product) {
+        if (blockIfReadOnly()) return
         if (product.hasModifiers) selectedProduct = product else viewModel.addProduct(product)
     }
 
     fun fireSend() {
+        if (blockIfReadOnly()) return
         // Square: Enviar se queda en la mesa — el panel muestra la ronda recién
         // enviada como bloque nuevo; se sale con Regresar/Guardar.
         viewModel.sendRound { _, msg ->
@@ -203,6 +221,7 @@ fun TableOrderScreen(
     }
 
     fun firePagar() {
+        if (blockIfReadOnly()) return
         if (viewModel.preparePagar()) {
             paymentSeedCents = viewModel.tableSession.current()?.totalCents ?: 0
             pendingSplitConfig = com.avoqado.pos.payment.presentation.SplitConfig()
@@ -216,16 +235,21 @@ fun TableOrderScreen(
         // Square: el header (regresar + mesa + comensales) vive en la COLUMNA
         // IZQUIERDA — el panel del cheque gana toda la altura en tablet.
         val contextBar: @Composable () -> Unit = {
-            TableContextBar(
-                label = active.label,
-                covers = floorTable?.currentOrder?.covers,
-                openedAt = floorTable?.currentOrder?.createdAt,
-                onBack = { requestExit() },
-                // Multi-cheque: cuál de las cuentas de la mesa estamos viendo.
-                checkIndex = floorTable?.openOrders?.indexOfFirst { it.id == active.orderId }?.takeIf { it >= 0 },
-                checkCount = floorTable?.openOrders?.size ?: 0,
-                onSwitchCheck = { showCheckSwitcher = true },
-            )
+            Column {
+                TableContextBar(
+                    label = active.label,
+                    covers = floorTable?.currentOrder?.covers,
+                    openedAt = floorTable?.currentOrder?.createdAt,
+                    onBack = { requestExit() },
+                    // Multi-cheque: cuál de las cuentas de la mesa estamos viendo.
+                    checkIndex = floorTable?.openOrders?.indexOfFirst { it.id == active.orderId }?.takeIf { it >= 0 },
+                    checkCount = floorTable?.openOrders?.size ?: 0,
+                    onSwitchCheck = { showCheckSwitcher = true },
+                )
+                if (readOnlyCheck) {
+                    ReadOnlyOwnershipBanner(ownerName = lockOwnerName)
+                }
+            }
         }
 
         if (isTablet) {
@@ -260,7 +284,7 @@ fun TableOrderScreen(
                 )
                 Box(modifier = Modifier.weight(0.5f).fillMaxHeight()) {
                     Column(modifier = Modifier.fillMaxSize()) {
-                        PanelTabsRow(selected = panelTab, onSelect = { panelTab = it })
+                        PanelTabsRow(selected = panelTab, onSelect = { if (it == PanelTab.CUENTA || !blockIfReadOnly()) panelTab = it })
                         when (panelTab) {
                             PanelTab.CUENTA -> TableCheckPanel(
                                 check = check,
@@ -278,7 +302,7 @@ fun TableOrderScreen(
                                     val maxSeats = (check?.covers ?: floorTable?.currentOrder?.covers ?: 4).coerceAtLeast(1)
                                     viewModel.cyclePendingSeat(id, maxSeats)
                                 },
-                                onSentItemTap = { item -> if (!item.isCortesia) compTarget = item },
+                                onSentItemTap = { item -> if (!item.isCortesia && !blockIfReadOnly()) compTarget = item },
                                 onCourseMenu = { c -> courseMenuTarget = c to true },
                                 pendingCount = viewModel.pendingCount,
                                 pendingTotalCents = viewModel.pendingTotalCents,
@@ -398,7 +422,7 @@ fun TableOrderScreen(
                             Spacer(modifier = Modifier.weight(1f))
                         }
                         HorizontalDivider()
-                        PanelTabsRow(selected = panelTab, onSelect = { panelTab = it })
+                        PanelTabsRow(selected = panelTab, onSelect = { if (it == PanelTab.CUENTA || !blockIfReadOnly()) panelTab = it })
                         when (panelTab) {
                             PanelTab.CUENTA -> TableCheckPanel(
                                 check = check,
@@ -416,7 +440,7 @@ fun TableOrderScreen(
                                     val maxSeats = (check?.covers ?: floorTable?.currentOrder?.covers ?: 4).coerceAtLeast(1)
                                     viewModel.cyclePendingSeat(id, maxSeats)
                                 },
-                                onSentItemTap = { item -> if (!item.isCortesia) compTarget = item },
+                                onSentItemTap = { item -> if (!item.isCortesia && !blockIfReadOnly()) compTarget = item },
                                 onCourseMenu = { c -> courseMenuTarget = c to true },
                                 pendingCount = viewModel.pendingCount,
                                 pendingTotalCents = viewModel.pendingTotalCents,
@@ -1537,6 +1561,34 @@ private fun elapsedSince(iso: String?, nowMs: Long): String? {
     val start = parseIsoMs(iso) ?: return null
     val minutes = ((nowMs - start).coerceAtLeast(0L) / 60_000L).toInt()
     return "${minutes / 60}:${String.format(Locale.US, "%02d", minutes % 60)}"
+}
+
+// MARK: - Propiedad de mesa (read-only)
+
+/** Banner "Mesa de {mesero} — solo lectura". Informativo, no bloqueante (naranja
+ *  suave, nunca modal): las acciones ya están gateadas y el server refuerza. */
+@Composable
+internal fun ReadOnlyOwnershipBanner(ownerName: String?) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.sm),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
+    ) {
+        Icon(
+            Icons.Outlined.Lock,
+            contentDescription = null,
+            modifier = Modifier.size(16.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            text = "Mesa de ${ownerName ?: "otro mesero"} — solo lectura",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
 }
 
 // MARK: - Right-panel tabs (Square: Cuenta · Acciones)

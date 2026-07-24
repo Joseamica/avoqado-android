@@ -39,6 +39,9 @@ data class OpenCheckSummary(
     val itemCount: Int = 0,
     val version: Int = 1,
     val name: String? = null,
+    /** Dueño de la cuenta — se compara contra el staffId propio para pintar
+     *  read-only cuando enforceTableOwnership está encendido. */
+    val waiterId: String? = null,
     val waiterName: String? = null,
     val createdAt: String? = null,
 ) {
@@ -82,7 +85,28 @@ data class TableWaiter(val id: String, val name: String)
 // MARK: - Request/response envelopes
 
 @Serializable
-data class TablesResponse(val success: Boolean = true, val data: List<DiningTable> = emptyList())
+data class TablesResponse(
+    val success: Boolean = true,
+    val data: List<DiningTable> = emptyList(),
+    /** Propiedad de mesa (PRO) — siblings aditivos; servers viejos no los mandan. */
+    val settings: TableServiceSettings? = null,
+    val viewer: TableServiceViewer? = null,
+)
+
+/** VenueSettings que afectan al módulo de mesas. */
+@Serializable
+data class TableServiceSettings(
+    /** "Solo el propietario puede modificar sus mesas" (switch PRO del venue). */
+    val enforceTableOwnership: Boolean = false,
+)
+
+/** Quién soy yo para el server y si puedo saltarme la regla de propiedad. */
+@Serializable
+data class TableServiceViewer(
+    val staffId: String? = null,
+    /** Permiso 'tables:manage-all' (MANAGER+ por default). */
+    val canManageAllTables: Boolean = true,
+)
 
 @Serializable
 data class OpenTableRequest(val covers: Int = 1)
@@ -212,6 +236,8 @@ data class OrderDetail(
     val payments: List<OrderDetailPayment> = emptyList(),
     /** Optimistic concurrency del add-round: refresca la sesión y evita el 409 fantasma. */
     val version: Int? = null,
+    /** Dueño del cheque — read-only de propiedad de mesa (aditivo del server). */
+    val waiter: TableWaiter? = null,
     val items: List<OrderDetailItem> = emptyList(),
 )
 

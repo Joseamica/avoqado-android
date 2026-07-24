@@ -120,7 +120,7 @@ class TablesViewModel @Inject constructor(
                     onReady()
                 },
                 onFailure = { e ->
-                    _actionState.value = TableActionState.Error(e.message ?: "No se pudo abrir la mesa")
+                    _actionState.value = TableActionState.Error(friendlyTableError(e, "No se pudo abrir la mesa"))
                 },
             )
         }
@@ -438,6 +438,23 @@ class TablesViewModel @Inject constructor(
                 _actionState.value = TableActionState.Error("No se pudo imprimir: ${e.message ?: "desconocido"}")
             }
         }
+    }
+
+    /**
+     * Propiedad de mesa: el server responde 403 TABLE_OWNED_BY_OTHER con un
+     * mensaje ya humano ("Solo Juan Pérez puede modificar esta mesa") — úsalo
+     * tal cual en vez del texto genérico de HttpException.
+     */
+    private fun friendlyTableError(e: Throwable, fallback: String): String {
+        val http = e as? retrofit2.HttpException ?: return e.message ?: fallback
+        if (http.code() == 403) {
+            val serverMessage = runCatching {
+                val body = http.response()?.errorBody()?.string()
+                if (body.isNullOrBlank()) null else org.json.JSONObject(body).optString("message").takeIf { it.isNotBlank() }
+            }.getOrNull()
+            return serverMessage ?: "Esta mesa pertenece a otro mesero"
+        }
+        return e.message ?: fallback
     }
 
     companion object {
