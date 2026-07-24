@@ -55,6 +55,7 @@ const val LOCAL_PRINTER_UNAVAILABLE = "__LOCAL_PRINTER_UNAVAILABLE__"
 @HiltViewModel
 class PaymentFlowViewModel @Inject constructor(
     private val tableSession: com.avoqado.pos.tables.data.TableSession,
+    private val syncOutbox: com.avoqado.pos.core.data.sync.SyncOutbox,
     private val orderRepository: OrderRepository,
     private val cashPaymentRepository: CashPaymentRepository,
     private val terminalPaymentService: TerminalPaymentService,
@@ -986,6 +987,37 @@ class PaymentFlowViewModel @Inject constructor(
     ) {
         // Send amount WITHOUT tip, tip separately
         val subtotal = total - currentTipCents
+
+        // Offline-first Corte C: mesa abierta SIN red (sesión provisional) —
+        // la orden aún no existe en el server, así que el cobro va como intent
+        // PAY_CASH al outbox con el UUID local. El reducer lo aplicará DESPUÉS
+        // del OPEN_TABLE/ADD_ITEMS del mismo dispositivo (FIFO). Regla
+        // "Backgrounded": si el replay lo rechaza, la cuenta queda visible en
+        // cuarentena — jamás se pierde una venta en silencio.
+        val provisionalSession = tableSession.current()?.takeIf { it.isProvisional && it.orderId == orderId }
+        if (provisionalSession != null) {
+            val vId = secureStorage.venueId
+            if (vId != null) {
+                syncOutbox.enqueue(
+                    vId,
+                    com.avoqado.pos.core.data.sync.SyncIntentTypes.PAY_CASH,
+                    kotlinx.serialization.json.buildJsonObject {
+                        put("localOrderId", kotlinx.serialization.json.JsonPrimitive(orderId))
+                        put("amountCents", kotlinx.serialization.json.JsonPrimitive(subtotal))
+                        put("tipCents", kotlinx.serialization.json.JsonPrimitive(currentTipCents))
+                    },
+                )
+                recordCashSale(total, orderId)
+                _state.value = PaymentFlowState.Success(
+                    totalAmount = total,
+                    method = PaymentMethod.CASH,
+                    changeAmount = changeCents,
+                    isQueued = true,
+                )
+                createKDSOrderAndPrint(PaymentMethod.CASH, changeCents)
+                return
+            }
+        }
         val payResult = orderRepository.recordCashPayment(
             orderId = orderId,
             amount = subtotal,
