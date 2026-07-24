@@ -23,7 +23,46 @@ private const val TAG = "TableServiceRepository"
 class TableServiceRepository @Inject constructor(
     private val apiService: ApiService,
     private val payloadCache: com.avoqado.pos.core.data.local.PayloadCache,
+    private val syncOutbox: com.avoqado.pos.core.data.sync.SyncOutbox,
+    private val tableSession: TableSession,
 ) {
+    // MARK: - Offline fallback (Corte B2)
+
+    /** Red caída/timeout — nunca un rechazo de negocio del server. */
+    private fun isNetworkError(e: Throwable): Boolean = when (e) {
+        is java.io.IOException -> true
+        is retrofit2.HttpException -> e.code() in 502..504
+        else -> false
+    }
+
+    /**
+     * Offline-first Corte B2: si la acción falló POR RED, se vuelve intent
+     * (write-ahead al outbox) y la UI sigue como si hubiera funcionado —
+     * offline es estado normal, no error. Los rechazos de NEGOCIO del server
+     * (403/409/4xx) siguen propagándose tal cual.
+     */
+    private suspend fun <T> Result<T>.orQueueOffline(
+        venueId: String,
+        type: String,
+        offlineValue: T,
+        payload: kotlinx.serialization.json.JsonObjectBuilder.() -> Unit,
+    ): Result<T> = recoverCatching { e ->
+        if (!isNetworkError(e)) throw e
+        syncOutbox.enqueue(venueId, type, kotlinx.serialization.json.buildJsonObject(payload))
+        Log.w(TAG, "📴 $type sin red — encolado al outbox")
+        offlineValue
+    }
+
+    /** orderId real, o localOrderId si la sesión activa es provisional. */
+    private fun kotlinx.serialization.json.JsonObjectBuilder.putOrderRef(orderId: String) {
+        val session = tableSession.current()
+        if (session?.isProvisional == true && session.orderId == orderId) {
+            put("localOrderId", kotlinx.serialization.json.JsonPrimitive(orderId))
+        } else {
+            put("orderId", kotlinx.serialization.json.JsonPrimitive(orderId))
+        }
+    }
+
     /** Blob que espejamos a disco: mesas + regla de propiedad (Corte A offline). */
     @kotlinx.serialization.Serializable
     private data class TablesCacheBlob(
@@ -151,12 +190,18 @@ class TableServiceRepository @Inject constructor(
     suspend fun moveOrder(venueId: String, orderId: String, targetTableId: String): Result<Unit> = runCatching {
         apiService.moveOrder(venueId, orderId, MoveOrderRequest(targetTableId))
         Unit
+    }.orQueueOffline(venueId, "MOVE_ORDER", Unit) {
+        putOrderRef(orderId)
+        put("targetTableId", kotlinx.serialization.json.JsonPrimitive(targetTableId))
     }.onFailure { Log.e(TAG, "❌ moveOrder failed: ${it.message}") }
 
     /** "Asignar": reassigns the OPEN check to another waiter (tips/corte follow). */
     suspend fun assignOrder(venueId: String, orderId: String, staffId: String): Result<Unit> = runCatching {
         apiService.assignOrder(venueId, orderId, AssignOrderRequest(staffId))
         Unit
+    }.orQueueOffline(venueId, "ASSIGN_ORDER", Unit) {
+        putOrderRef(orderId)
+        put("staffId", kotlinx.serialization.json.JsonPrimitive(staffId))
     }.onFailure { Log.e(TAG, "❌ assignOrder failed: ${it.message}") }
 
     /** Menús del venue con su horario y cuál aplica ahora. Cache-first al fallar red. */
@@ -185,6 +230,9 @@ class TableServiceRepository @Inject constructor(
     suspend fun applyServiceCharge(venueId: String, orderId: String, serviceChargeId: String): Result<Unit> = runCatching {
         apiService.applyServiceCharge(venueId, orderId, ApplyServiceChargeRequest(serviceChargeId))
         Unit
+    }.orQueueOffline(venueId, "APPLY_SERVICE_CHARGE", Unit) {
+        putOrderRef(orderId)
+        put("serviceChargeId", kotlinx.serialization.json.JsonPrimitive(serviceChargeId))
     }.onFailure { Log.e(TAG, "❌ applyServiceCharge failed: ${it.message}") }
 
     /** Quita un cobro por servicio aplicado. */
@@ -227,6 +275,9 @@ class TableServiceRepository @Inject constructor(
     suspend fun applyOrderDiscount(venueId: String, orderId: String, discountId: String): Result<Unit> = runCatching {
         apiService.applyOrderDiscount(venueId, orderId, ApplyOrderDiscountRequest(discountId))
         Unit
+    }.orQueueOffline(venueId, "APPLY_DISCOUNT", Unit) {
+        putOrderRef(orderId)
+        put("discountId", kotlinx.serialization.json.JsonPrimitive(discountId))
     }.onFailure { Log.e(TAG, "❌ applyOrderDiscount failed: ${it.message}") }
 
     /** Quita un descuento aplicado de la cuenta. */
@@ -239,12 +290,20 @@ class TableServiceRepository @Inject constructor(
     suspend fun compWholeOrder(venueId: String, orderId: String, reason: String): Result<Unit> = runCatching {
         apiService.compWholeOrder(venueId, orderId, CompItemRequest(reason))
         Unit
+    }.orQueueOffline(venueId, "COMP_ORDER", Unit) {
+        putOrderRef(orderId)
+        put("reason", kotlinx.serialization.json.JsonPrimitive(reason))
     }.onFailure { Log.e(TAG, "❌ compWholeOrder failed: ${it.message}") }
 
     /** Detalles del cheque: nombre/notas/comensales/cliente (null = sin cambio). */
     suspend fun updateOrderDetails(venueId: String, orderId: String, request: OrderDetailsRequest): Result<Unit> = runCatching {
         apiService.updateOrderDetails(venueId, orderId, request)
         Unit
+    }.orQueueOffline(venueId, "UPDATE_DETAILS", Unit) {
+        putOrderRef(orderId)
+        cacheJson.encodeToJsonElement(OrderDetailsRequest.serializer(), request)
+            .let { it as kotlinx.serialization.json.JsonObject }
+            .forEach { (k, v) -> if (v !is kotlinx.serialization.json.JsonNull) put(k, v) }
     }.onFailure { Log.e(TAG, "❌ updateOrderDetails failed: ${it.message}") }
 
     /** "Dar de cortesía": comps one line of the open order (stays on the check, costs 0). */
@@ -257,11 +316,16 @@ class TableServiceRepository @Inject constructor(
     suspend fun cancelOrder(venueId: String, orderId: String, reason: String): Result<Unit> = runCatching {
         apiService.cancelOrder(venueId, orderId, CancelOrderRequest(reason))
         Unit
+    }.orQueueOffline(venueId, "CANCEL_ORDER", Unit) {
+        putOrderRef(orderId)
+        put("reason", kotlinx.serialization.json.JsonPrimitive(reason))
     }.onFailure { Log.e(TAG, "❌ cancelOrder failed: ${it.message}") }
 
     /** Releases the table (the server rejects clearing a table with an unpaid order). */
     suspend fun clearTable(venueId: String, tableId: String): Result<Unit> = runCatching {
         apiService.clearTable(venueId, tableId)
         Unit
+    }.orQueueOffline(venueId, "CLEAR_TABLE", Unit) {
+        put("tableId", kotlinx.serialization.json.JsonPrimitive(tableId))
     }.onFailure { Log.e(TAG, "❌ clearTable failed: ${it.message}") }
 }
