@@ -269,22 +269,58 @@ class TableServiceRepository @Inject constructor(
         Unit
     }.onFailure { Log.e(TAG, "❌ redeemLoyaltyPoints failed: ${it.message}") }
 
-    /** "Fusionar cuentas": vuelca [sourceOrderId] en [orderId] y cierra el origen. */
+    /**
+     * "Fusionar cuentas": vuelca [sourceOrderId] en [orderId] y cierra el origen.
+     * Sin red cae al outbox: el reducer resuelve ambos cheques y valida propiedad
+     * de mesa en los DOS — absorber el cheque de otro mesero es modificar el suyo.
+     */
     suspend fun mergeOrders(venueId: String, orderId: String, sourceOrderId: String): Result<Unit> = runCatching {
         apiService.mergeOrders(venueId, orderId, MergeOrdersRequest(sourceOrderId))
         Unit
+    }.orQueueOffline(venueId, "MERGE_ORDERS", Unit) {
+        putOrderRef(orderId)
+        put("sourceOrderId", kotlinx.serialization.json.JsonPrimitive(sourceOrderId))
     }.onFailure { Log.e(TAG, "❌ mergeOrders failed: ${it.message}") }
 
-    /** "Dividir por puesto": un cheque por asiento (atómico en el server). */
+    /**
+     * "Dividir por puesto": un cheque por asiento (atómico en el server).
+     * ONLINE-ONLY a propósito: crea N cheques de golpe y cada uno necesitaría su
+     * propio id local para que un cobro posterior aterrice bien. Separar
+     * artículos ([splitOrder]) sí funciona offline.
+     */
     suspend fun splitOrderBySeat(venueId: String, orderId: String): Result<Unit> = runCatching {
         apiService.splitOrderBySeat(venueId, orderId)
         Unit
     }.onFailure { Log.e(TAG, "❌ splitOrderBySeat failed: ${it.message}") }
 
-    /** Separa artículos en una cuenta NUEVA de la misma mesa (Square). */
+    /**
+     * Separa artículos en una cuenta NUEVA de la misma mesa (Square).
+     *
+     * Sin red cae al outbox como SPLIT_ORDER. Dos detalles que importan:
+     * - `itemRefs` (no `itemIds`): el reducer acepta id de server O externalId,
+     *   así que la misma forma sirve para líneas que aún no sincronizan.
+     * - `newLocalOrderId`: id local del cheque NUEVO. El reducer lo mapea al id
+     *   real al aplicar el split, para que un cobro posterior sobre el cheque
+     *   separado aterrice ahí y no en el original (igual que abrir mesa).
+     */
     suspend fun splitOrder(venueId: String, orderId: String, itemIds: List<String>): Result<Unit> = runCatching {
         apiService.splitOrder(venueId, orderId, SplitOrderRequest(itemIds))
         Unit
+    }.orQueueOffline(venueId, "SPLIT_ORDER", Unit) {
+        putOrderRef(orderId)
+        put(
+            "itemRefs",
+            kotlinx.serialization.json.buildJsonArray {
+                itemIds.forEach { id ->
+                    add(
+                        kotlinx.serialization.json.buildJsonObject {
+                            put("id", kotlinx.serialization.json.JsonPrimitive(id))
+                        },
+                    )
+                }
+            },
+        )
+        put("newLocalOrderId", kotlinx.serialization.json.JsonPrimitive(java.util.UUID.randomUUID().toString()))
     }.onFailure { Log.e(TAG, "❌ splitOrder failed: ${it.message}") }
 
     /** Aplica un descuento de catálogo (scope ORDER) a la cuenta abierta. */

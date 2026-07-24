@@ -449,6 +449,19 @@ class TableOrderViewModel @Inject constructor(
     }
 
     /**
+     * Separar/fusionar SÍ funcionan sin red (caen al outbox), pero necesitan que
+     * el cheque ya exista en el server: se referencian artículos y cuentas por su
+     * id real. Una sesión PROVISIONAL (mesa abierta offline que aún no sincroniza)
+     * todavía no tiene ninguno, así que ahí sí hay que esperar.
+     */
+    private fun requireSyncedCheck(accion: String): Boolean {
+        val session = tableSession.current() ?: return false
+        if (!session.isProvisional) return true
+        _actionMessage.value = "Esta mesa aún no se sincroniza — $accion se habilita cuando vuelva la señal"
+        return false
+    }
+
+    /**
      * Offline-first: la ronda se guarda como intent ADD_ITEMS (write-ahead),
      * se imprime la comanda por LAN al instante y las líneas quedan en
      * [queued] ("Por sincronizar") hasta que el ack del replay las confirme.
@@ -824,15 +837,19 @@ class TableOrderViewModel @Inject constructor(
      * sobre esa cuenta) — el mensaje se muestra tal cual al mesero.
      */
     fun mergeFrom(sourceOrderId: String, onDone: (Boolean, String) -> Unit) {
-        if (!requireOnline("fusionar cuentas")) { onDone(false, "Sin conexión — fusionar cuentas necesita internet"); return }
+        if (!requireSyncedCheck("fusionar cuentas")) {
+            onDone(false, "Esta mesa aún no se sincroniza — fusionar cuentas se habilita cuando vuelva la señal")
+            return
+        }
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
+        val offline = !connectivityMonitor.isConnected.value
         viewModelScope.launch {
             repository.mergeOrders(vId, session.orderId, sourceOrderId).fold(
                 onSuccess = {
                     loadCheck()
                     repository.refresh(vId)
-                    onDone(true, "Cuentas fusionadas")
+                    onDone(true, if (offline) "Cuentas fusionadas — se sincroniza al volver la señal" else "Cuentas fusionadas")
                 },
                 onFailure = { e -> onDone(false, e.message ?: "No se pudo fusionar") },
             )
@@ -867,14 +884,19 @@ class TableOrderViewModel @Inject constructor(
     /** Multi-cheque: separa artículos ya enviados en una cuenta NUEVA de la
      *  misma mesa (Square's separate checks). La sesión sigue en la original. */
     fun splitItems(itemIds: List<String>) {
-        if (!requireOnline("dividir la cuenta")) return
+        if (!requireSyncedCheck("dividir la cuenta")) return
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
         if (itemIds.isEmpty()) return
+        val offline = !connectivityMonitor.isConnected.value
         viewModelScope.launch {
             repository.splitOrder(vId, session.orderId, itemIds).fold(
                 onSuccess = {
-                    _actionMessage.value = "Cuenta separada — ${itemIds.size} artículo(s) movidos"
+                    _actionMessage.value = if (offline) {
+                        "Cuenta separada — ${itemIds.size} artículo(s); se sincroniza al volver la señal"
+                    } else {
+                        "Cuenta separada — ${itemIds.size} artículo(s) movidos"
+                    }
                     loadCheck()
                     repository.refresh(vId)
                 },
