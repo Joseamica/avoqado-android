@@ -129,6 +129,7 @@ class PaymentFlowViewModelTest {
             printConfigRepository = printConfigRepository,
             comandaPrinter = comandaPrinter,
             tableSession = com.avoqado.pos.tables.data.TableSession(),
+            syncOutbox = mockk(relaxed = true),
             customerDisplay = com.avoqado.pos.customerdisplay.CustomerDisplayState(),
         )
     }
