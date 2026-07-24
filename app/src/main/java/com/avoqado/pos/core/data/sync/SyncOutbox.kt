@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -109,13 +110,22 @@ class SyncOutbox @Inject constructor(
 
         connectivityJob?.cancel()
         connectivityJob = scope.launch {
-            var wasDisconnected = false
-            connectivityMonitor.isConnected.collect { connected ->
-                if (!connected) {
-                    wasDisconnected = true
-                } else if (wasDisconnected) {
-                    wasDisconnected = false
-                    Log.d(TAG, "Reconexión detectada — replay del outbox")
+            var wasDown = false
+            // "Plenamente conectado" = red física Y servidor alcanzable. Escuchar
+            // AMBAS señales es clave: en el outage tipo Toast/Square (internet o
+            // el server de Avoqado caído pero el WiFi del local vivo) la red
+            // física NUNCA cambia — solo isServerReachable lo hace. Sin esto el
+            // replay esperaría hasta el timer de seguridad (verificado en la
+            // T3 Pro: sin el fix, la cola no se reproducía al volver el server).
+            combine(
+                connectivityMonitor.isConnected,
+                connectivityMonitor.isServerReachable,
+            ) { net, server -> net && server }.collect { fullyConnected ->
+                if (!fullyConnected) {
+                    wasDown = true
+                } else if (wasDown) {
+                    wasDown = false
+                    Log.d(TAG, "Reconexión detectada (red+server) — replay del outbox")
                     delay(2_000) // estabilización de red (patrón PaymentSyncService)
                     replayNow(venueId)
                 }
