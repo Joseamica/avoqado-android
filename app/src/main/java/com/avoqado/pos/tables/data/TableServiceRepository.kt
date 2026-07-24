@@ -53,6 +53,12 @@ class TableServiceRepository @Inject constructor(
         offlineValue
     }
 
+    /**
+     * Referencia a una línea del cheque: id real del server, o el externalId
+     * determinista de una línea enviada sin red que aún no sincroniza.
+     */
+    data class SplitItemRef(val serverId: String?, val externalId: String?)
+
     /** orderId real, o localOrderId si la sesión activa es provisional. */
     private fun kotlinx.serialization.json.JsonObjectBuilder.putOrderRef(orderId: String) {
         val session = tableSession.current()
@@ -284,13 +290,26 @@ class TableServiceRepository @Inject constructor(
 
     /**
      * "Dividir por puesto": un cheque por asiento (atómico en el server).
-     * ONLINE-ONLY a propósito: crea N cheques de golpe y cada uno necesitaría su
-     * propio id local para que un cobro posterior aterrice bien. Separar
-     * artículos ([splitOrder]) sí funciona offline.
+     *
+     * Sin red cae al outbox como SPLIT_BY_SEAT con un id local POR ASIENTO:
+     * crea N cheques de golpe y cada uno puede recibir un cobro después, así que
+     * un solo id local no alcanzaría para saber a cuál aterriza cada pago. Los
+     * asientos que el server no llegue a crear (el más bajo se queda en la
+     * cuenta original) simplemente no se mapean.
      */
-    suspend fun splitOrderBySeat(venueId: String, orderId: String): Result<Unit> = runCatching {
+    suspend fun splitOrderBySeat(venueId: String, orderId: String, seats: List<Int>): Result<Unit> = runCatching {
         apiService.splitOrderBySeat(venueId, orderId)
         Unit
+    }.orQueueOffline(venueId, "SPLIT_BY_SEAT", Unit) {
+        putOrderRef(orderId)
+        put(
+            "seatLocalOrderIds",
+            kotlinx.serialization.json.buildJsonObject {
+                seats.forEach { seat ->
+                    put(seat.toString(), kotlinx.serialization.json.JsonPrimitive(java.util.UUID.randomUUID().toString()))
+                }
+            },
+        )
     }.onFailure { Log.e(TAG, "❌ splitOrderBySeat failed: ${it.message}") }
 
     /**
@@ -303,25 +322,65 @@ class TableServiceRepository @Inject constructor(
      *   real al aplicar el split, para que un cobro posterior sobre el cheque
      *   separado aterrice ahí y no en el original (igual que abrir mesa).
      */
-    suspend fun splitOrder(venueId: String, orderId: String, itemIds: List<String>): Result<Unit> = runCatching {
-        apiService.splitOrder(venueId, orderId, SplitOrderRequest(itemIds))
-        Unit
-    }.orQueueOffline(venueId, "SPLIT_ORDER", Unit) {
-        putOrderRef(orderId)
-        put(
-            "itemRefs",
-            kotlinx.serialization.json.buildJsonArray {
-                itemIds.forEach { id ->
-                    add(
-                        kotlinx.serialization.json.buildJsonObject {
-                            put("id", kotlinx.serialization.json.JsonPrimitive(id))
+    suspend fun splitOrder(venueId: String, orderId: String, refs: List<SplitItemRef>): Result<Unit> {
+        suspend fun enqueueSplit() {
+            syncOutbox.enqueue(
+                venueId,
+                "SPLIT_ORDER",
+                kotlinx.serialization.json.buildJsonObject {
+                    putOrderRef(orderId)
+                    put(
+                        "itemRefs",
+                        kotlinx.serialization.json.buildJsonArray {
+                            refs.forEach { ref ->
+                                add(
+                                    kotlinx.serialization.json.buildJsonObject {
+                                        if (ref.serverId != null) {
+                                            put("id", kotlinx.serialization.json.JsonPrimitive(ref.serverId))
+                                        } else {
+                                            put("externalId", kotlinx.serialization.json.JsonPrimitive(ref.externalId.orEmpty()))
+                                        }
+                                    },
+                                )
+                            }
                         },
                     )
-                }
-            },
-        )
-        put("newLocalOrderId", kotlinx.serialization.json.JsonPrimitive(java.util.UUID.randomUUID().toString()))
-    }.onFailure { Log.e(TAG, "❌ splitOrder failed: ${it.message}") }
+                    put("newLocalOrderId", kotlinx.serialization.json.JsonPrimitive(java.util.UUID.randomUUID().toString()))
+                },
+            )
+        }
+
+        // Si alguna línea todavía no sincroniza, la ruta online NO puede
+        // expresarla (exige itemIds reales): va derecho al outbox en vez de
+        // intentar una llamada que sabemos que no puede funcionar.
+        val serverIds = refs.mapNotNull { it.serverId }
+        if (serverIds.size != refs.size) {
+            return runCatching {
+                enqueueSplit()
+                Log.w(TAG, "📴 SPLIT_ORDER con líneas sin sincronizar — encolado al outbox")
+            }
+        }
+
+        return runCatching {
+            apiService.splitOrder(venueId, orderId, SplitOrderRequest(serverIds))
+            Unit
+        }.orQueueOffline(venueId, "SPLIT_ORDER", Unit) {
+            putOrderRef(orderId)
+            put(
+                "itemRefs",
+                kotlinx.serialization.json.buildJsonArray {
+                    serverIds.forEach { id ->
+                        add(
+                            kotlinx.serialization.json.buildJsonObject {
+                                put("id", kotlinx.serialization.json.JsonPrimitive(id))
+                            },
+                        )
+                    }
+                },
+            )
+            put("newLocalOrderId", kotlinx.serialization.json.JsonPrimitive(java.util.UUID.randomUUID().toString()))
+        }.onFailure { Log.e(TAG, "❌ splitOrder failed: ${it.message}") }
+    }
 
     /** Aplica un descuento de catálogo (scope ORDER) a la cuenta abierta. */
     suspend fun applyOrderDiscount(venueId: String, orderId: String, discountId: String): Result<Unit> = runCatching {

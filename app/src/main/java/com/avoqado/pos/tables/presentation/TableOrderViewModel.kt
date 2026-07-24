@@ -17,6 +17,7 @@ import com.avoqado.pos.printing.routing.PrintRoutingMapper
 import com.avoqado.pos.printing.routing.RoutableItem
 import com.avoqado.pos.tables.data.AddOrderItemRequest
 import com.avoqado.pos.tables.data.OrderDetail
+import com.avoqado.pos.tables.data.OrderDetailItem
 import com.avoqado.pos.tables.data.TableServiceRepository
 import com.avoqado.pos.tables.data.TableSession
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -60,7 +61,18 @@ class TableOrderViewModel @Inject constructor(
     private val wireJson = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
 
     /** A not-yet-sent line: the cart item + the course it will fire under. */
-    data class PendingLine(val item: CartItem, val course: String?, val seat: Int? = null)
+    data class PendingLine(
+        val item: CartItem,
+        val course: String?,
+        val seat: Int? = null,
+        /**
+         * Sólo en líneas enviadas SIN red: el `sync:<intentId>:<idx>` que el
+         * reducer le va a poner a esta fila al aplicar el ADD_ITEMS. Es el
+         * único identificador que existe antes de sincronizar, y es lo que
+         * permite separar un cheque que todavía no tiene ids de server.
+         */
+        val externalId: String? = null,
+    )
 
     /** Floor snapshot — the header reads covers/openedAt for the active table. */
     val floorTables: StateFlow<List<com.avoqado.pos.tables.data.DiningTable>> = repository.tables
@@ -448,18 +460,10 @@ class TableOrderViewModel @Inject constructor(
         return false
     }
 
-    /**
-     * Separar/fusionar SÍ funcionan sin red (caen al outbox), pero necesitan que
-     * el cheque ya exista en el server: se referencian artículos y cuentas por su
-     * id real. Una sesión PROVISIONAL (mesa abierta offline que aún no sincroniza)
-     * todavía no tiene ninguno, así que ahí sí hay que esperar.
-     */
-    private fun requireSyncedCheck(accion: String): Boolean {
-        val session = tableSession.current() ?: return false
-        if (!session.isProvisional) return true
-        _actionMessage.value = "Esta mesa aún no se sincroniza — $accion se habilita cuando vuelva la señal"
-        return false
-    }
+    // Separar y fusionar YA no exigen que el cheque exista en el server: las
+    // líneas enviadas sin red se referencian por su externalId y el cheque
+    // provisional por su localOrderId, así que el reducer resuelve ambos. Por
+    // eso aquí no hay guard: ver splitItems / mergeFrom.
 
     /**
      * Offline-first: la ronda se guarda como intent ADD_ITEMS (write-ahead),
@@ -487,8 +491,12 @@ class TableOrderViewModel @Inject constructor(
                 ),
             )
         }
-        syncOutbox.enqueue(vId, com.avoqado.pos.core.data.sync.SyncIntentTypes.ADD_ITEMS, payload)
-        _queued.value = _queued.value + lines
+        val intentId = syncOutbox.enqueue(vId, com.avoqado.pos.core.data.sync.SyncIntentTypes.ADD_ITEMS, payload)
+        // Espejo EXACTO del externalId que el reducer inyecta por índice
+        // (sync.mobile.service.ts: `sync:${intent.id}:${idx}`). Guardarlo aquí
+        // es lo que deja separar el cheque antes de que sincronice.
+        val stamped = lines.mapIndexed { idx, line -> line.copy(externalId = "sync:$intentId:$idx") }
+        _queued.value = _queued.value + stamped
         _pending.value = emptyList()
         _isSending.value = false
         onDone(true, "Sin conexión — ronda guardada e impresa; se sincronizará sola")
@@ -837,10 +845,6 @@ class TableOrderViewModel @Inject constructor(
      * sobre esa cuenta) — el mensaje se muestra tal cual al mesero.
      */
     fun mergeFrom(sourceOrderId: String, onDone: (Boolean, String) -> Unit) {
-        if (!requireSyncedCheck("fusionar cuentas")) {
-            onDone(false, "Esta mesa aún no se sincroniza — fusionar cuentas se habilita cuando vuelva la señal")
-            return
-        }
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
         val offline = !connectivityMonitor.isConnected.value
@@ -866,15 +870,18 @@ class TableOrderViewModel @Inject constructor(
      * las nuevas viven como cheques hermanos de la misma mesa.
      */
     fun splitBySeat(onDone: (Boolean, String) -> Unit) {
-        if (!requireOnline("dividir la cuenta")) { onDone(false, "Sin conexión — dividir la cuenta necesita internet"); return }
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
+        // Un id local por asiento con artículos: sin red, cada cheque creado
+        // necesita el suyo para que un cobro posterior aterrice en el correcto.
+        val seats = (_check.value?.items ?: emptyList()).mapNotNull { it.seat }.distinct().sorted()
+        val offline = !connectivityMonitor.isConnected.value
         viewModelScope.launch {
-            repository.splitOrderBySeat(vId, session.orderId).fold(
+            repository.splitOrderBySeat(vId, session.orderId, seats).fold(
                 onSuccess = {
                     repository.refresh(vId)
                     tableSession.clear()
-                    onDone(true, "Cuenta dividida por puesto")
+                    onDone(true, if (offline) "Cuenta dividida por puesto — se sincroniza al volver la señal" else "Cuenta dividida por puesto")
                 },
                 onFailure = { e -> onDone(false, e.message ?: "No se pudo dividir por puesto") },
             )
@@ -883,14 +890,49 @@ class TableOrderViewModel @Inject constructor(
 
     /** Multi-cheque: separa artículos ya enviados en una cuenta NUEVA de la
      *  misma mesa (Square's separate checks). La sesión sigue en la original. */
+    /**
+     * Lo que se puede separar: las líneas del cheque (ids reales del server) MÁS
+     * las enviadas sin red, identificadas por su externalId. Sin esto una mesa
+     * abierta offline no tenía NADA que separar — el cheque del server todavía
+     * no existe.
+     */
+    val splittableItems: StateFlow<List<OrderDetailItem>> =
+        combine(_check, _queued) { check, queued ->
+            val fromServer = check?.items ?: emptyList()
+            val fromOutbox = queued.mapNotNull { line ->
+                val ext = line.externalId ?: return@mapNotNull null
+                OrderDetailItem(
+                    id = ext,
+                    productId = (line.item.type as? CartItemType.ProductItem)?.productId,
+                    productName = line.item.name,
+                    quantity = line.item.quantity,
+                    unitPrice = line.item.unitPrice / 100.0,
+                    total = line.item.unitPrice / 100.0 * line.item.quantity,
+                    notes = line.item.itemNote,
+                    course = line.course,
+                    seat = line.seat,
+                )
+            }
+            fromServer + fromOutbox
+        }.stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, emptyList())
+
     fun splitItems(itemIds: List<String>) {
-        if (!requireSyncedCheck("dividir la cuenta")) return
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
         if (itemIds.isEmpty()) return
+        // Una línea seleccionada es "del outbox" si su id es un externalId que
+        // pusimos al encolarla; si no, es un id real del server.
+        val offlineIds = _queued.value.mapNotNull { it.externalId }.toSet()
+        val refs = itemIds.map { id ->
+            if (id in offlineIds) {
+                TableServiceRepository.SplitItemRef(serverId = null, externalId = id)
+            } else {
+                TableServiceRepository.SplitItemRef(serverId = id, externalId = null)
+            }
+        }
         val offline = !connectivityMonitor.isConnected.value
         viewModelScope.launch {
-            repository.splitOrder(vId, session.orderId, itemIds).fold(
+            repository.splitOrder(vId, session.orderId, refs).fold(
                 onSuccess = {
                     _actionMessage.value = if (offline) {
                         "Cuenta separada — ${itemIds.size} artículo(s); se sincroniza al volver la señal"

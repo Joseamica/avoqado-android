@@ -105,6 +105,7 @@ fun TableOrderScreen(
     // de cuenta necesita reemplazarlo al cambiar de cheque.
     var session by remember { mutableStateOf(viewModel.tableSession.current()) }
     val check by viewModel.check.collectAsState()
+    val splittableItems by viewModel.splittableItems.collectAsState()
     val isLoadingCheck by viewModel.isLoadingCheck.collectAsState()
     val pendingLines by viewModel.pending.collectAsState()
     val queuedLines by viewModel.queued.collectAsState()
@@ -865,7 +866,7 @@ fun TableOrderScreen(
 
     if (showSplitCheckDialog) {
         SplitCheckDialog(
-            items = check?.items ?: emptyList(),
+            items = splittableItems,
             onDismiss = { showSplitCheckDialog = false },
             onConfirm = { ids ->
                 showSplitCheckDialog = false
