@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- SOLO DEBUG: permite http:// en claro para apuntar la app DEV a un server
+     local de desarrollo (p.ej. http://<ip-de-la-mac>:3001). El build de
+     release NO hereda esto — producción sigue siendo https únicamente. -->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application android:usesCleartextTraffic="true" />
+</manifest>
