@@ -45,12 +45,16 @@ data class SyncIntentsRequest(
 @Serializable
 data class SyncAck(
     val id: String,
-    val status: String, // ACKED | REJECTED
+    val status: String, // ACKED | REJECTED | RETRY
     val errorCode: String? = null,
     val message: String? = null,
     val result: JsonObject? = null,
 ) {
     val isAcked: Boolean get() = status == "ACKED"
+
+    /** Condición TRANSITORIA (conflicto de versión, etc.): el intent se queda
+     *  PENDING y se reintenta — NO es un rechazo terminal, NO va a cuarentena. */
+    val isRetry: Boolean get() = status == "RETRY"
 }
 
 @Serializable

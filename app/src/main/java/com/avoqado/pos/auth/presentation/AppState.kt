@@ -101,6 +101,14 @@ class AppState @Inject constructor(
             initialValue = false,
         )
 
+    /**
+     * Operaciones offline RECHAZADAS por el server al reconectar (cuarentena):
+     * un cobro/ronda que el reducer refutó necesita revisión del gerente.
+     * Persiste aunque vuelva la conexión — es la superficie que arregla el
+     * "rechazo silencioso" (el contador antes no lo consumía nadie).
+     */
+    val syncRejectedCount: StateFlow<Int> = syncOutbox.rejectedCount
+
     private val _reservationsEnabled = MutableStateFlow(secureStorage.reservationsEnabled)
 
     // Bumped on login/logout/venue-switch so the visibleTabs combine re-emits

@@ -105,6 +105,7 @@ fun AvoqadoNavGraph(
     val pendingPaymentCount by appState.pendingPaymentCount.collectAsState()
     val showOfflineBanner by appState.showOfflineBanner.collectAsState()
     val offlinePendingCount by appState.offlinePendingCount.collectAsState()
+    val syncRejectedCount by appState.syncRejectedCount.collectAsState()
     val visibleTabs by appState.visibleTabs.collectAsState()
     val contentKey by appState.contentKey.collectAsState()
     val isSwitchingContext by appState.venueSwitchState.isSwitching.collectAsState()
@@ -127,6 +128,7 @@ fun AvoqadoNavGraph(
                     pendingPaymentCount = pendingPaymentCount,
                     showOfflineBanner = showOfflineBanner,
                     offlinePendingCount = offlinePendingCount,
+                    syncRejectedCount = syncRejectedCount,
                     onTabsShouldRefresh = { appState.refreshTabs() },
                 )
             }
@@ -180,6 +182,7 @@ private fun MainScaffold(
     pendingPaymentCount: Int = 0,
     showOfflineBanner: Boolean = false,
     offlinePendingCount: Int = 0,
+    syncRejectedCount: Int = 0,
     onTabsShouldRefresh: () -> Unit = {},
 ) {
     // Status bar icons: follow theme (light icons on dark, dark icons on light)
@@ -194,6 +197,12 @@ private fun MainScaffold(
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = navBackStackEntry?.destination
     val startTab = visibleTabs.firstOrNull() ?: MainTab.NOTIFICATIONS
+
+    // Cuarentena de sincronización: hoja de resolución de rechazos.
+    var showQuarantineSheet by remember { mutableStateOf(false) }
+    if (showQuarantineSheet) {
+        com.avoqado.pos.sync.presentation.QuarantineSheet(onDismissSheet = { showQuarantineSheet = false })
+    }
 
     val context = LocalContext.current
     val entryPoint = remember {
@@ -239,7 +248,12 @@ private fun MainScaffold(
 
         Scaffold(
             contentWindowInsets = WindowInsets.statusBars,
-            topBar = { ConnectivityBanner(visible = showOfflineBanner, pendingSync = offlinePendingCount) },
+            topBar = {
+                androidx.compose.foundation.layout.Column {
+                    ConnectivityBanner(visible = showOfflineBanner, pendingSync = offlinePendingCount)
+                    com.avoqado.pos.sync.presentation.QuarantineBanner(count = syncRejectedCount) { showQuarantineSheet = true }
+                }
+            },
             bottomBar = {
                 TabletTabBar(
                     visibleTabs = visibleTabs,
@@ -491,7 +505,12 @@ private fun MainScaffold(
     } else {
         // iPhone-style: standard NavigationBar
         Scaffold(
-            topBar = { ConnectivityBanner(visible = showOfflineBanner, pendingSync = offlinePendingCount) },
+            topBar = {
+                androidx.compose.foundation.layout.Column {
+                    ConnectivityBanner(visible = showOfflineBanner, pendingSync = offlinePendingCount)
+                    com.avoqado.pos.sync.presentation.QuarantineBanner(count = syncRejectedCount) { showQuarantineSheet = true }
+                }
+            },
             bottomBar = {
                 NavigationBar {
                     visibleTabs.forEach { tab ->

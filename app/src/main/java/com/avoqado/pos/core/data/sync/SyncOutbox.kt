@@ -155,12 +155,13 @@ class SyncOutbox @Inject constructor(
      */
     suspend fun enqueue(venueId: String, type: String, payload: JsonObject): String {
         val id = UUID.randomUUID().toString()
-        val seq = dao.maxSeq() + 1
-        dao.insert(
+        // seq asignado ATÓMICAMENTE (maxSeq+insert en una transacción) — evita
+        // seq duplicado que desordenaría el replay.
+        val seq = dao.insertWithNextSeq(
             SyncIntentEntity(
                 id = id,
                 venueId = venueId,
-                seq = seq,
+                seq = 0, // reemplazado dentro de insertWithNextSeq
                 type = type,
                 payloadJson = json.encodeToString(JsonObject.serializer(), payload),
             ),
@@ -202,7 +203,18 @@ class SyncOutbox @Inject constructor(
                     break
                 }
 
+                var sawRetry = false
                 for (ack in response.data) {
+                    if (ack.isRetry) {
+                        // Transitorio: el intent se queda PENDING (no lo resolvemos).
+                        // El server ya cortó el batch aquí (FIFO), así que salimos
+                        // del while para NO re-leer el mismo PENDING en caliente;
+                        // el próximo trigger (timer/reconexión) reintenta.
+                        sawRetry = true
+                        Log.d(TAG, "🔁 Intent ${ack.id} RETRY (${ack.errorCode}) — sigue pendiente, reintentaré")
+                        _acks.emit(ack)
+                        break
+                    }
                     dao.resolve(
                         id = ack.id,
                         status = if (ack.isAcked) SyncIntentEntity.STATUS_ACKED else SyncIntentEntity.STATUS_REJECTED,
@@ -217,6 +229,7 @@ class SyncOutbox @Inject constructor(
                 }
                 refreshCounts(venueId)
                 Log.d(TAG, "✅ Replay de ${batch.size} intents aplicado")
+                if (sawRetry) break // no hot-loop sobre el mismo PENDING
             }
         }
     }
@@ -224,6 +237,28 @@ class SyncOutbox @Inject constructor(
     private suspend fun refreshCounts(venueId: String) {
         _pendingCount.value = dao.pendingCount(venueId)
         _rejectedCount.value = dao.rejectedCount(venueId)
+    }
+
+    // MARK: - Cuarentena (operaciones rechazadas, visibles al gerente)
+
+    /** Un intent rechazado, ya legible para la pantalla de resolución. */
+    data class QuarantinedIntent(
+        val id: String,
+        val type: String,
+        val errorCode: String?,
+        val message: String?,
+        val createdAt: Long,
+    )
+
+    suspend fun rejectedIntents(venueId: String): List<QuarantinedIntent> =
+        dao.rejectedIntents(venueId).map {
+            QuarantinedIntent(it.id, it.type, it.errorCode, it.message, it.createdAt)
+        }
+
+    /** El gerente resolvió el rechazo a mano y lo descarta de la cuarentena. */
+    suspend fun dismissRejected(venueId: String, id: String) {
+        dao.dismiss(id)
+        refreshCounts(venueId)
     }
 
     companion object {

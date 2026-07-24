@@ -56,6 +56,19 @@ interface SyncIntentDao {
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insert(entity: SyncIntentEntity): Long
 
+    /**
+     * Asigna seq atómicamente: `maxSeq()+1` e insert en UNA transacción, para
+     * que dos enqueues casi simultáneos no lean el mismo max y colisionen el
+     * seq (lo que desordenaría el replay: un ADD_ITEMS podría ordenarse antes
+     * de su OPEN_TABLE). @Transaction serializa el par. Devuelve el seq usado.
+     */
+    @androidx.room.Transaction
+    suspend fun insertWithNextSeq(entity: SyncIntentEntity): Long {
+        val seq = maxSeq() + 1
+        insert(entity.copy(seq = seq))
+        return seq
+    }
+
     @Query("SELECT * FROM pos_sync_intents WHERE venue_id = :venueId AND status = 'PENDING' ORDER BY seq ASC LIMIT :limit")
     suspend fun pendingFifo(venueId: String, limit: Int = 50): List<SyncIntentEntity>
 
@@ -64,6 +77,14 @@ interface SyncIntentDao {
 
     @Query("SELECT COUNT(*) FROM pos_sync_intents WHERE venue_id = :venueId AND status = 'REJECTED'")
     suspend fun rejectedCount(venueId: String): Int
+
+    /** Cuarentena: intents rechazados, más recientes primero, para la pantalla de resolución. */
+    @Query("SELECT * FROM pos_sync_intents WHERE venue_id = :venueId AND status = 'REJECTED' ORDER BY created_at DESC")
+    suspend fun rejectedIntents(venueId: String): List<SyncIntentEntity>
+
+    /** El gerente descartó un rechazo tras resolverlo manualmente. */
+    @Query("DELETE FROM pos_sync_intents WHERE id = :id")
+    suspend fun dismiss(id: String)
 
     @Query("SELECT COALESCE(MAX(seq), 0) FROM pos_sync_intents")
     suspend fun maxSeq(): Long
