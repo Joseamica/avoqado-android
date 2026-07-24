@@ -824,6 +824,7 @@ class TableOrderViewModel @Inject constructor(
      * sobre esa cuenta) — el mensaje se muestra tal cual al mesero.
      */
     fun mergeFrom(sourceOrderId: String, onDone: (Boolean, String) -> Unit) {
+        if (!requireOnline("fusionar cuentas")) { onDone(false, "Sin conexión — fusionar cuentas necesita internet"); return }
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
         viewModelScope.launch {
@@ -866,6 +867,7 @@ class TableOrderViewModel @Inject constructor(
     /** Multi-cheque: separa artículos ya enviados en una cuenta NUEVA de la
      *  misma mesa (Square's separate checks). La sesión sigue en la original. */
     fun splitItems(itemIds: List<String>) {
+        if (!requireOnline("dividir la cuenta")) return
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
         if (itemIds.isEmpty()) return
