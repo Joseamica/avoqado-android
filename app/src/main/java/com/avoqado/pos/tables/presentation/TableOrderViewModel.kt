@@ -50,6 +50,7 @@ class TableOrderViewModel @Inject constructor(
     private val printerService: PrinterService,
     private val secureStorage: SecureStorage,
     private val syncOutbox: com.avoqado.pos.core.data.sync.SyncOutbox,
+    private val productsRepository: com.avoqado.pos.pos.data.ProductsRepository,
     /** "Marcar entrada/salida" (Acciones) reusa el reloj checador tal cual. */
     val timeEntryRepository: com.avoqado.pos.timeclock.data.TimeEntryRepository,
 ) : ViewModel() {
@@ -467,6 +468,12 @@ class TableOrderViewModel @Inject constructor(
         _isSending.value = false
         onDone(true, "Sin conexión — ronda guardada e impresa; se sincronizará sola")
         printRoundComandas(vId, session, lines, refreshFloor = false)
+        // Corte E: la venta offline descuenta el stock local aproximado.
+        productsRepository.applyLocalSale(
+            lines.mapNotNull { line ->
+                (line.item.type as? CartItemType.ProductItem)?.let { it.productId to line.item.quantity }
+            },
+        )
     }
 
     /** Comandas por curso a las estaciones LAN (funciona con o sin internet —

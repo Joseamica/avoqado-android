@@ -123,6 +123,37 @@ class ProductsRepository @Inject constructor(
         }
     }
 
+    /**
+     * Offline-first Corte E: una venta SIN red descuenta el stock local de los
+     * productos con seguimiento — la aproximación "~X restantes" se mantiene
+     * honesta entre syncs (el conteo EXACTO lo recalcula el server al
+     * reconciliar; el próximo fetch pisa esta aproximación). También se
+     * persiste al cache para que un reinicio offline no la pierda.
+     */
+    suspend fun applyLocalSale(items: List<Pair<String, Int>>) {
+        if (items.isEmpty()) return
+        val sold = items.groupBy({ it.first }, { it.second }).mapValues { (_, v) -> v.sum() }
+        _products.value = _products.value.map { p ->
+            val qty = sold[p.id] ?: return@map p
+            if (p.trackInventory == true && p.availableQuantity != null) {
+                p.copy(availableQuantity = p.availableQuantity - qty)
+            } else {
+                p
+            }
+        }
+        secureStorage.venueId?.let { venue ->
+            payloadCache.save(
+                com.avoqado.pos.core.data.local.PayloadCache.TYPE_PRODUCTS,
+                venue,
+                json.encodeToString(
+                    kotlinx.serialization.builtins.ListSerializer(Product.serializer()),
+                    _products.value,
+                ),
+            )
+        }
+        Log.d("📦", "📴 Stock local descontado: ${sold.size} producto(s)")
+    }
+
     fun getProduct(productId: String): Product? {
         return _products.value.find { it.id == productId }
     }
