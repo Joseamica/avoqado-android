@@ -30,6 +30,7 @@ object DatabaseModule {
             AvoqadoDatabaseMigrations.MIGRATION_1_2,
             AvoqadoDatabaseMigrations.MIGRATION_2_3,
             AvoqadoDatabaseMigrations.MIGRATION_3_4,
+            AvoqadoDatabaseMigrations.MIGRATION_4_5,
         )
             .build()
     }
@@ -57,5 +58,10 @@ object DatabaseModule {
     @Provides
     fun providePendingReservationActionDao(database: AvoqadoDatabase): PendingReservationActionDao {
         return database.pendingReservationActionDao()
+    }
+
+    @Provides
+    fun provideCachedPayloadDao(database: AvoqadoDatabase): com.avoqado.pos.core.data.local.database.CachedPayloadDao {
+        return database.cachedPayloadDao()
     }
 }

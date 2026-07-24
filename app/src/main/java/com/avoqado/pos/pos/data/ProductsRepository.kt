@@ -26,6 +26,7 @@ import javax.inject.Singleton
 class ProductsRepository @Inject constructor(
     private val secureStorage: SecureStorage,
     private val client: OkHttpClient,
+    private val payloadCache: com.avoqado.pos.core.data.local.PayloadCache,
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -41,8 +42,31 @@ class ProductsRepository @Inject constructor(
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
 
+    /**
+     * Offline-first (Corte A): hidrata productos/categorías desde el espejo en
+     * disco. Instantáneo y sin red — el fetch de red lo refresca después. Solo
+     * pisa el estado si está vacío (nunca degrada datos frescos a cache viejo).
+     */
+    private suspend fun hydrateFromCache(venue: String) {
+        if (_products.value.isNotEmpty()) return
+        val cached = payloadCache.load(com.avoqado.pos.core.data.local.PayloadCache.TYPE_PRODUCTS, venue) ?: return
+        runCatching {
+            val products = json.decodeFromString<List<Product>>(cached.json)
+            if (products.isNotEmpty() && _products.value.isEmpty()) {
+                _products.value = products
+                _categories.value = products
+                    .mapNotNull { it.category }
+                    .distinctBy { it.id }
+                    .sortedBy { it.sortOrder ?: 0 }
+                Log.d("📦", "🗂️ Catálogo hidratado del cache: ${products.size} productos (hace ${cached.ageMinutes} min)")
+            }
+        }.onFailure { Log.e("📦", "❌ Cache de productos corrupto: ${it.message}") }
+    }
+
     suspend fun fetchProducts(venueId: String? = null) {
         val venue = venueId ?: secureStorage.venueId ?: return
+        // Cache primero: la UI pinta al instante aunque no haya red.
+        hydrateFromCache(venue)
         _isLoading.value = true
         _error.value = null
         Log.d("📦", "Fetching products for venue: $venue")
@@ -70,13 +94,29 @@ class ProductsRepository @Inject constructor(
                     .sortedBy { it.sortOrder ?: 0 }
                 _categories.value = cats
 
+                // Espejo en disco: el próximo arranque sin red carga esto.
+                payloadCache.save(
+                    com.avoqado.pos.core.data.local.PayloadCache.TYPE_PRODUCTS,
+                    venue,
+                    json.encodeToString(
+                        kotlinx.serialization.builtins.ListSerializer(Product.serializer()),
+                        activeProducts,
+                    ),
+                )
+
                 Log.d("📦", "✅ Loaded ${activeProducts.size} products, ${cats.size} categories")
             } else {
                 _error.value = "Error al cargar productos (${response.code})"
                 Log.e("📦", "❌ Products fetch failed: ${response.code}")
             }
         } catch (e: Exception) {
-            _error.value = "Error de conexión al cargar productos"
+            // Sin red: si el cache ya hidrató, el catálogo sigue completo y NO
+            // se muestra error de pantalla — solo queda el log.
+            if (_products.value.isNotEmpty()) {
+                Log.w("📦", "⚠️ Sin red, operando con catálogo cacheado (${_products.value.size} productos)")
+            } else {
+                _error.value = "Error de conexión al cargar productos"
+            }
             Log.e("📦", "❌ Products fetch error: ${e.message}")
         } finally {
             _isLoading.value = false

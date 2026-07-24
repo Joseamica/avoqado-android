@@ -107,4 +107,22 @@ object AvoqadoDatabaseMigrations {
             )
         }
     }
+
+    // v5 — offline-first Corte A: espejo en disco de payloads de solo-lectura
+    // (catálogo, mesas, menús) para que un reinicio en modo avión cargue todo.
+    val MIGRATION_4_5 = object : Migration(4, 5) {
+        override fun migrate(database: SupportSQLiteDatabase) {
+            database.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS `cached_payloads` (
+                    `cache_key` TEXT NOT NULL,
+                    `venue_id` TEXT NOT NULL,
+                    `json` TEXT NOT NULL,
+                    `updated_at` INTEGER NOT NULL,
+                    PRIMARY KEY(`cache_key`)
+                )
+                """.trimIndent(),
+            )
+        }
+    }
 }

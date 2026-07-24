@@ -22,7 +22,19 @@ private const val TAG = "TableServiceRepository"
 @Singleton
 class TableServiceRepository @Inject constructor(
     private val apiService: ApiService,
+    private val payloadCache: com.avoqado.pos.core.data.local.PayloadCache,
 ) {
+    /** Blob que espejamos a disco: mesas + regla de propiedad (Corte A offline). */
+    @kotlinx.serialization.Serializable
+    private data class TablesCacheBlob(
+        val tables: List<DiningTable> = emptyList(),
+        val enforced: Boolean = false,
+        val staffId: String? = null,
+        val canManageAll: Boolean = true,
+    )
+
+    private val cacheJson = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+
     private val _tables = MutableStateFlow<List<DiningTable>>(emptyList())
     val tables: StateFlow<List<DiningTable>> = _tables.asStateFlow()
 
@@ -56,12 +68,46 @@ class TableServiceRepository @Inject constructor(
                 staffId = response.viewer?.staffId,
                 canManageAll = response.viewer?.canManageAllTables ?: true,
             )
+            // Espejo en disco (Corte A): plano + regla de propiedad sobreviven
+            // un reinicio sin red.
+            payloadCache.save(
+                com.avoqado.pos.core.data.local.PayloadCache.TYPE_TABLES,
+                venueId,
+                cacheJson.encodeToString(
+                    TablesCacheBlob.serializer(),
+                    TablesCacheBlob(
+                        tables = response.data,
+                        enforced = _ownership.value.enforced,
+                        staffId = _ownership.value.staffId,
+                        canManageAll = _ownership.value.canManageAll,
+                    ),
+                ),
+            )
             Log.d(TAG, "✅ ${response.data.size} tables (${response.data.count { it.isOccupied }} occupied)")
             response.data
         } finally {
             _isLoading.value = false
         }
-    }.onFailure { Log.e(TAG, "❌ refresh failed: ${it.message}") }
+    }.onFailure {
+        Log.e(TAG, "❌ refresh failed: ${it.message}")
+        // Sin red: hidratar el plano del espejo en disco para que las mesas
+        // sigan visibles (frescura marcada; el server sigue siendo la verdad).
+        hydrateFromCache(venueId)
+    }
+
+    /** Hidrata mesas + regla de propiedad del cache SOLO si el estado está vacío. */
+    private suspend fun hydrateFromCache(venueId: String) {
+        if (_tables.value.isNotEmpty()) return
+        val cached = payloadCache.load(com.avoqado.pos.core.data.local.PayloadCache.TYPE_TABLES, venueId) ?: return
+        runCatching {
+            val blob = cacheJson.decodeFromString(TablesCacheBlob.serializer(), cached.json)
+            if (blob.tables.isNotEmpty() && _tables.value.isEmpty()) {
+                _tables.value = blob.tables
+                _ownership.value = TableOwnership(blob.enforced, blob.staffId, blob.canManageAll)
+                Log.d(TAG, "🗂️ Plano hidratado del cache: ${blob.tables.size} mesas (hace ${cached.ageMinutes} min)")
+            }
+        }.onFailure { Log.e(TAG, "❌ Cache de mesas corrupto: ${it.message}") }
+    }
 
     /** Opens a table (reuses its active order or creates an empty one). Returns the order. */
     suspend fun openTable(venueId: String, tableId: String, covers: Int): Result<OpenedOrder> = runCatching {
@@ -104,9 +150,21 @@ class TableServiceRepository @Inject constructor(
         Unit
     }.onFailure { Log.e(TAG, "❌ assignOrder failed: ${it.message}") }
 
-    /** Menús del venue con su horario y cuál aplica ahora. */
+    /** Menús del venue con su horario y cuál aplica ahora. Cache-first al fallar red. */
     suspend fun getMenus(venueId: String): Result<MenusPayload> = runCatching {
-        apiService.getMenus(venueId).data ?: MenusPayload()
+        val payload = apiService.getMenus(venueId).data ?: MenusPayload()
+        payloadCache.save(
+            com.avoqado.pos.core.data.local.PayloadCache.TYPE_MENUS,
+            venueId,
+            cacheJson.encodeToString(MenusPayload.serializer(), payload),
+        )
+        payload
+    }.recoverCatching { e ->
+        // Sin red: los menús cacheados siguen sirviendo (horarios se evalúan local).
+        val cached = payloadCache.load(com.avoqado.pos.core.data.local.PayloadCache.TYPE_MENUS, venueId)
+            ?: throw e
+        Log.w(TAG, "⚠️ getMenus sin red — usando cache (hace ${cached.ageMinutes} min)")
+        cacheJson.decodeFromString(MenusPayload.serializer(), cached.json)
     }.onFailure { Log.e(TAG, "❌ getMenus failed: ${it.message}") }
 
     /** Catálogo de cobros por servicio del venue. */
