@@ -95,6 +95,15 @@ class TableServiceRepository @Inject constructor(
         hydrateFromCache(venueId)
     }
 
+    /**
+     * Offline-first: marca la mesa OCUPADA en el estado local (optimista) al
+     * abrirla sin red — el plano refleja la apertura al instante; el server la
+     * confirmará en el replay.
+     */
+    fun markTableOccupiedLocally(tableId: String) {
+        _tables.value = _tables.value.map { if (it.id == tableId) it.copy(status = "OCCUPIED") else it }
+    }
+
     /** Hidrata mesas + regla de propiedad del cache SOLO si el estado está vacío. */
     private suspend fun hydrateFromCache(venueId: String) {
         if (_tables.value.isNotEmpty()) return

@@ -125,4 +125,28 @@ object AvoqadoDatabaseMigrations {
             )
         }
     }
+
+    // v6 — offline-first Corte B: outbox de intents (comandas/mesas offline)
+    // reproducido contra POST /mobile/venues/:id/sync/intents al reconectar.
+    val MIGRATION_5_6 = object : Migration(5, 6) {
+        override fun migrate(database: SupportSQLiteDatabase) {
+            database.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS `pos_sync_intents` (
+                    `id` TEXT NOT NULL,
+                    `venue_id` TEXT NOT NULL,
+                    `seq` INTEGER NOT NULL,
+                    `type` TEXT NOT NULL,
+                    `payload_json` TEXT NOT NULL,
+                    `status` TEXT NOT NULL,
+                    `error_code` TEXT,
+                    `message` TEXT,
+                    `result_json` TEXT,
+                    `created_at` INTEGER NOT NULL,
+                    PRIMARY KEY(`id`)
+                )
+                """.trimIndent(),
+            )
+        }
+    }
 }

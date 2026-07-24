@@ -22,8 +22,10 @@ import com.avoqado.pos.reservations.data.PendingReservationActionEntity
         PendingReservationActionEntity::class,
         // v5 — offline-first Corte A: espejo en disco de payloads de lectura
         CachedPayloadEntity::class,
+        // v6 — offline-first Corte B: outbox de intents (comandas/mesas offline)
+        SyncIntentEntity::class,
     ],
-    version = 5,
+    version = 6,
     exportSchema = true,
 )
 abstract class AvoqadoDatabase : RoomDatabase() {
@@ -33,4 +35,5 @@ abstract class AvoqadoDatabase : RoomDatabase() {
     abstract fun inventoryTransferDao(): InventoryTransferDao
     abstract fun pendingReservationActionDao(): PendingReservationActionDao
     abstract fun cachedPayloadDao(): CachedPayloadDao
+    abstract fun syncIntentDao(): SyncIntentDao
 }

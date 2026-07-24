@@ -85,6 +85,14 @@ interface ApiService {
         @Body request: Any,
     ): Any
 
+    // MARK: - Offline-first sync (Corte B/D)
+
+    @POST("mobile/venues/{venueId}/sync/intents")
+    suspend fun syncIntents(
+        @Path("venueId") venueId: String,
+        @Body request: com.avoqado.pos.core.data.sync.SyncIntentsRequest,
+    ): com.avoqado.pos.core.data.sync.SyncIntentsResponse
+
     // MARK: - Table Service (TABLE_SERVICE, PRO)
 
     @GET("mobile/venues/{venueId}/tables")

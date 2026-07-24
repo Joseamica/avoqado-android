@@ -42,6 +42,7 @@ class TablesViewModel @Inject constructor(
     val tableSession: TableSession,
     private val printerService: PrinterService,
     private val secureStorage: SecureStorage,
+    private val syncOutbox: com.avoqado.pos.core.data.sync.SyncOutbox,
 ) : ViewModel() {
 
     val tables: StateFlow<List<DiningTable>> = repository.tables
@@ -120,10 +121,58 @@ class TablesViewModel @Inject constructor(
                     onReady()
                 },
                 onFailure = { e ->
-                    _actionState.value = TableActionState.Error(friendlyTableError(e, "No se pudo abrir la mesa"))
+                    // Offline-first Corte B: sin red la mesa se abre PROVISIONAL —
+                    // intent al outbox (write-ahead), folio particionado, sesión
+                    // con UUID local que el ack promoverá al id del server.
+                    // Errores de NEGOCIO (403/409/4xx) NO abren offline.
+                    if (isNetworkError(e)) {
+                        openTableOffline(vId, table, covers)
+                        _actionState.value = TableActionState.Idle
+                        _selectedTableId.value = null
+                        onReady()
+                    } else {
+                        _actionState.value = TableActionState.Error(friendlyTableError(e, "No se pudo abrir la mesa"))
+                    }
                 },
             )
         }
+    }
+
+    /** Apertura provisional sin red (el server la confirma en el replay). */
+    private suspend fun openTableOffline(vId: String, table: DiningTable, covers: Int) {
+        val localOrderId = java.util.UUID.randomUUID().toString()
+        val folio = syncOutbox.nextLocalFolio(vId)
+        syncOutbox.enqueue(
+            vId,
+            com.avoqado.pos.core.data.sync.SyncIntentTypes.OPEN_TABLE,
+            kotlinx.serialization.json.buildJsonObject {
+                put("tableId", kotlinx.serialization.json.JsonPrimitive(table.id))
+                put("covers", kotlinx.serialization.json.JsonPrimitive(covers))
+                put("localOrderId", kotlinx.serialization.json.JsonPrimitive(localOrderId))
+            },
+        )
+        tableSession.start(
+            TableSession.Active(
+                tableId = table.id,
+                tableNumber = table.number,
+                areaName = table.areaName,
+                orderId = localOrderId,
+                orderNumber = folio,
+                version = 1,
+                totalCents = 0,
+                mode = TableSession.Mode.ORDERING,
+                isProvisional = true,
+            ),
+        )
+        repository.markTableOccupiedLocally(table.id)
+        android.util.Log.w("TablesViewModel", "📴 Mesa ${table.number} abierta OFFLINE (folio $folio)")
+    }
+
+    /** Red caída/timeout — nunca un rechazo de negocio del server. */
+    private fun isNetworkError(e: Throwable): Boolean = when (e) {
+        is java.io.IOException -> true // ConnectException, SocketTimeout, UnknownHost...
+        is retrofit2.HttpException -> e.code() in 502..504
+        else -> false
     }
 
     /** Occupied table → ORDERING session over its existing order (add a round). */

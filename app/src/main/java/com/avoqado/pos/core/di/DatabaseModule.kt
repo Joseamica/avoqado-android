@@ -31,6 +31,7 @@ object DatabaseModule {
             AvoqadoDatabaseMigrations.MIGRATION_2_3,
             AvoqadoDatabaseMigrations.MIGRATION_3_4,
             AvoqadoDatabaseMigrations.MIGRATION_4_5,
+            AvoqadoDatabaseMigrations.MIGRATION_5_6,
         )
             .build()
     }
@@ -63,5 +64,10 @@ object DatabaseModule {
     @Provides
     fun provideCachedPayloadDao(database: AvoqadoDatabase): com.avoqado.pos.core.data.local.database.CachedPayloadDao {
         return database.cachedPayloadDao()
+    }
+
+    @Provides
+    fun provideSyncIntentDao(database: AvoqadoDatabase): com.avoqado.pos.core.data.local.database.SyncIntentDao {
+        return database.syncIntentDao()
     }
 }

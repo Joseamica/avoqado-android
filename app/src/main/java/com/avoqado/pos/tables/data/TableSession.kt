@@ -41,6 +41,9 @@ class TableSession @Inject constructor() {
         /** "Dividir la cuenta" from the check panel: the register auto-opens
          *  the split sheet on arrival (consumed once by CheckoutScreen). */
         val openSplitOnArrival: Boolean = false,
+        /** Offline-first: la mesa se abrió SIN red — orderId es un UUID local
+         *  hasta que el ack de OPEN_TABLE lo promueva al id real del server. */
+        val isProvisional: Boolean = false,
     ) {
         val label: String get() = "Mesa $tableNumber" + (areaName?.let { " · $it" } ?: "")
     }
@@ -70,5 +73,21 @@ class TableSession @Inject constructor() {
 
     fun clear() {
         _active.value = null
+    }
+
+    /**
+     * Offline-first: el ack de OPEN_TABLE llegó — intercambia el UUID local por
+     * el id real del server y la sesión deja de ser provisional. No-op si la
+     * sesión activa ya es otra.
+     */
+    fun promoteProvisional(localOrderId: String, orderId: String, orderNumber: String?, version: Int) {
+        val current = _active.value ?: return
+        if (current.orderId != localOrderId) return
+        _active.value = current.copy(
+            orderId = orderId,
+            orderNumber = orderNumber ?: current.orderNumber,
+            version = version,
+            isProvisional = false,
+        )
     }
 }

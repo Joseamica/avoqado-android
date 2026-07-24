@@ -32,6 +32,7 @@ import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.MoreHoriz
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
@@ -106,6 +107,7 @@ fun TableOrderScreen(
     val check by viewModel.check.collectAsState()
     val isLoadingCheck by viewModel.isLoadingCheck.collectAsState()
     val pendingLines by viewModel.pending.collectAsState()
+    val queuedLines by viewModel.queued.collectAsState()
     val selectedCourse by viewModel.selectedCourse.collectAsState()
     val extraCourses by viewModel.extraCourses.collectAsState()
     val hideSent by viewModel.hideSent.collectAsState()
@@ -290,6 +292,7 @@ fun TableOrderScreen(
                                 check = check,
                                 isLoadingCheck = isLoadingCheck,
                                 pendingLines = pendingLines,
+                                queuedLines = queuedLines,
                                 selectedCourse = selectedCourse,
                                 extraCourses = extraCourses,
                                 hideSent = hideSent,
@@ -428,6 +431,7 @@ fun TableOrderScreen(
                                 check = check,
                                 isLoadingCheck = isLoadingCheck,
                                 pendingLines = pendingLines,
+                                queuedLines = queuedLines,
                                 selectedCourse = selectedCourse,
                                 extraCourses = extraCourses,
                                 hideSent = hideSent,
@@ -1083,6 +1087,8 @@ internal fun TableCheckPanel(
     check: OrderDetail?,
     isLoadingCheck: Boolean,
     pendingLines: List<TableOrderViewModel.PendingLine>,
+    /** Offline-first: rondas enviadas SIN red (impresas + en outbox), esperando sync. */
+    queuedLines: List<TableOrderViewModel.PendingLine> = emptyList(),
     selectedCourse: String?,
     extraCourses: List<String>,
     hideSent: Boolean,
@@ -1104,8 +1110,11 @@ internal fun TableCheckPanel(
 ) {
     val sentItems = check?.items.orEmpty()
     val hasPending = pendingLines.isNotEmpty()
-    val subtotalCents = checkTotalCents(check) + pendingTotalCents
-    val itemCount = sentItems.sumOf { it.quantity } + pendingCount
+    // Las rondas offline aún no existen en el server: su importe se suma local
+    // para que el subtotal visible nunca mienta mientras esperan sync.
+    val queuedCents = queuedLines.sumOf { it.item.effectiveUnitPrice * it.item.quantity }
+    val subtotalCents = checkTotalCents(check) + pendingTotalCents + queuedCents
+    val itemCount = sentItems.sumOf { it.quantity } + pendingCount + queuedLines.sumOf { it.item.quantity }
 
     Column(modifier = Modifier.fillMaxSize()) {
         Column(
@@ -1139,6 +1148,12 @@ internal fun TableCheckPanel(
                     SentCard(sentItems = sentItems, onSentItemTap = onSentItemTap, onCourseMenu = onCourseMenu)
                     Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
                 }
+            }
+
+            // ── Offline: rondas impresas esperando sincronizar ───────────
+            if (queuedLines.isNotEmpty()) {
+                QueuedRoundsCard(queuedLines = queuedLines)
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
             }
 
             // ── White card: pending course slots ─────────────────────────
@@ -1588,6 +1603,53 @@ internal fun ReadOnlyOwnershipBanner(ownerName: String?) {
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+    }
+}
+
+// MARK: - Offline: rondas esperando sincronizar
+
+/** Rondas enviadas SIN red: ya se imprimieron en cocina y viven en el outbox.
+ *  Relojito, nunca error — offline es estado normal, no falla. */
+@Composable
+internal fun QueuedRoundsCard(queuedLines: List<TableOrderViewModel.PendingLine>) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(AvoqadoTheme.spacing.md))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .padding(AvoqadoTheme.spacing.lg),
+        verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
+        ) {
+            Icon(
+                Icons.Default.Schedule,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = "Por sincronizar — enviado a cocina",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        queuedLines.forEach { line ->
+            Row(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = "${line.item.quantity}× ${line.item.name}" + (line.course?.let { " · $it" } ?: ""),
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    text = centsDisplay(line.item.effectiveUnitPrice * line.item.quantity),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
     }
 }
 

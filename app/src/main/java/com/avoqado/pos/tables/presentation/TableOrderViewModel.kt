@@ -49,9 +49,13 @@ class TableOrderViewModel @Inject constructor(
     private val comandaPrinter: ComandaPrinter,
     private val printerService: PrinterService,
     private val secureStorage: SecureStorage,
+    private val syncOutbox: com.avoqado.pos.core.data.sync.SyncOutbox,
     /** "Marcar entrada/salida" (Acciones) reusa el reloj checador tal cual. */
     val timeEntryRepository: com.avoqado.pos.timeclock.data.TimeEntryRepository,
 ) : ViewModel() {
+
+    /** Json para serializar payloads de intents (mismas opciones que la red). */
+    private val wireJson = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
 
     /** A not-yet-sent line: the cart item + the course it will fire under. */
     data class PendingLine(val item: CartItem, val course: String?, val seat: Int? = null)
@@ -85,6 +89,36 @@ class TableOrderViewModel @Inject constructor(
     private val _pending = MutableStateFlow<List<PendingLine>>(emptyList())
     val pending: StateFlow<List<PendingLine>> = _pending.asStateFlow()
 
+    /**
+     * Offline-first: rondas ya "enviadas" SIN red — impresas en cocina y
+     * encoladas al outbox, esperando ack del replay ("Por sincronizar").
+     */
+    private val _queued = MutableStateFlow<List<PendingLine>>(emptyList())
+    val queued: StateFlow<List<PendingLine>> = _queued.asStateFlow()
+
+    /** Pendientes de sincronizar del outbox (badge global de la pantalla). */
+    val outboxPending: StateFlow<Int> = syncOutbox.pendingCount
+
+    init {
+        // Offline-first: cuando el replay confirma intents de ESTA sesión, el
+        // server ya absorbió las rondas — vaciamos "Por sincronizar" y
+        // recargamos el cheque (server reconciliation). La promoción de la
+        // sesión provisional la hace TableSyncCoordinator.
+        viewModelScope.launch {
+            syncOutbox.acks.collect { ack ->
+                if (!ack.isAcked) return@collect
+                val session = tableSession.current() ?: return@collect
+                val result = ack.result ?: return@collect
+                val ackOrder = result["orderId"]?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.content }
+                val localRef = result["localOrderId"]?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.content }
+                if (ackOrder == session.orderId || localRef == session.orderId) {
+                    _queued.value = emptyList()
+                    loadCheck()
+                }
+            }
+        }
+    }
+
     /** Selected course slot (null = "Inmediato"). New grid picks land here. */
     private val _selectedCourse = MutableStateFlow<String?>(null)
     val selectedCourse: StateFlow<String?> = _selectedCourse.asStateFlow()
@@ -113,6 +147,13 @@ class TableOrderViewModel @Inject constructor(
 
     fun loadCheck() {
         val session = tableSession.current() ?: return
+        // Sesión provisional (mesa abierta offline): la orden aún no existe en
+        // el server — no hay cheque que cargar ni error que mostrar. El panel
+        // vive de pending + queued hasta que el ack promueva la sesión.
+        if (session.isProvisional) {
+            _check.value = null
+            return
+        }
         val vId = venueId ?: return
         viewModelScope.launch {
             _isLoadingCheck.value = true
@@ -347,6 +388,13 @@ class TableOrderViewModel @Inject constructor(
                     )
                 }
             }
+            // Offline-first Corte B: una sesión PROVISIONAL (mesa abierta sin
+            // red) nunca toca el server directo — su orden aún no existe allá.
+            if (session.isProvisional) {
+                enqueueRoundOffline(vId, session, lines, requests, onDone)
+                return@launch
+            }
+
             repository.addRound(vId, session.orderId, requests, session.version).fold(
                 onSuccess = { updated ->
                     // Saved — hand control back IMMEDIATELY; printing and the
@@ -358,51 +406,108 @@ class TableOrderViewModel @Inject constructor(
                     _isSending.value = false
                     onDone(true, "Ronda enviada a cocina — Mesa ${session.tableNumber}")
                     loadCheck()
-
-                    launch {
-                        printConfigRepository.refresh(vId)
-                        val config = printConfigRepository.getCurrentConfig()
-                        if (config.stations.any { it.active }) {
-                            // One comanda batch per course so each ticket reads
-                            // "Mesa 8 · Aperitivos" like the single-course flow.
-                            // Comandas route catalog products only — custom
-                            // amounts ride to the check but never to kitchen.
-                            val kitchenLines = lines.filter { it.item.type is CartItemType.ProductItem }
-                            kitchenLines.groupBy { it.course }.forEach { (course, courseLines) ->
-                                val routable = courseLines.map { line ->
-                                    RoutableItem(
-                                        orderItemId = line.item.id,
-                                        productId = (line.item.type as? CartItemType.ProductItem)?.productId,
-                                        categoryId = line.item.categoryId,
-                                        productName = line.item.name,
-                                        quantity = line.item.quantity,
-                                        modifiers = line.item.selectedModifiers.map { it.modifierName },
-                                        notes = line.item.itemNote,
-                                    )
-                                }
-                                val plans = PrintRoutingMapper.buildComandas(routable, config)
-                                comandaPrinter.printComandas(
-                                    plans = plans,
-                                    config = config,
-                                    orderNumber = session.orderNumber,
-                                    orderType = "Mesa ${session.tableNumber}" + (course?.let { " · $it" } ?: ""),
-                                )
-                            }
-                        }
-                        repository.refresh(vId)
-                    }
+                    printRoundComandas(vId, session, lines, refreshFloor = true)
                 },
                 onFailure = { e ->
-                    _isSending.value = false
-                    repository.refresh(vId)
-                    val msg = if (e.message?.contains("409") == true) {
-                        "La orden cambió en otro dispositivo — vuelve a abrir la mesa"
+                    if (isNetworkError(e)) {
+                        // Sin red: write-ahead al outbox + impresión LAN local.
+                        // La comanda sale YA; el server se entera en el replay.
+                        enqueueRoundOffline(vId, session, lines, requests, onDone)
                     } else {
-                        e.message ?: "No se pudo enviar la ronda"
+                        _isSending.value = false
+                        repository.refresh(vId)
+                        val msg = if (e.message?.contains("409") == true) {
+                            "La orden cambió en otro dispositivo — vuelve a abrir la mesa"
+                        } else {
+                            e.message ?: "No se pudo enviar la ronda"
+                        }
+                        onDone(false, msg)
                     }
-                    onDone(false, msg)
                 },
             )
+        }
+    }
+
+    /** Red caída/timeout — nunca un rechazo de negocio del server. */
+    private fun isNetworkError(e: Throwable): Boolean = when (e) {
+        is java.io.IOException -> true
+        is retrofit2.HttpException -> e.code() in 502..504
+        else -> false
+    }
+
+    /**
+     * Offline-first: la ronda se guarda como intent ADD_ITEMS (write-ahead),
+     * se imprime la comanda por LAN al instante y las líneas quedan en
+     * [queued] ("Por sincronizar") hasta que el ack del replay las confirme.
+     */
+    private suspend fun enqueueRoundOffline(
+        vId: String,
+        session: TableSession.Active,
+        lines: List<PendingLine>,
+        requests: List<AddOrderItemRequest>,
+        onDone: (Boolean, String) -> Unit,
+    ) {
+        val payload = kotlinx.serialization.json.buildJsonObject {
+            if (session.isProvisional) {
+                put("localOrderId", kotlinx.serialization.json.JsonPrimitive(session.orderId))
+            } else {
+                put("orderId", kotlinx.serialization.json.JsonPrimitive(session.orderId))
+            }
+            put(
+                "items",
+                wireJson.encodeToJsonElement(
+                    kotlinx.serialization.builtins.ListSerializer(AddOrderItemRequest.serializer()),
+                    requests,
+                ),
+            )
+        }
+        syncOutbox.enqueue(vId, com.avoqado.pos.core.data.sync.SyncIntentTypes.ADD_ITEMS, payload)
+        _queued.value = _queued.value + lines
+        _pending.value = emptyList()
+        _isSending.value = false
+        onDone(true, "Sin conexión — ronda guardada e impresa; se sincronizará sola")
+        printRoundComandas(vId, session, lines, refreshFloor = false)
+    }
+
+    /** Comandas por curso a las estaciones LAN (funciona con o sin internet —
+     *  la config de ruteo usa su cache si el refresh de red falla). */
+    private fun printRoundComandas(
+        vId: String,
+        session: TableSession.Active,
+        lines: List<PendingLine>,
+        refreshFloor: Boolean,
+    ) {
+        viewModelScope.launch {
+            runCatching { printConfigRepository.refresh(vId) }
+            val config = printConfigRepository.getCurrentConfig()
+            if (config.stations.any { it.active }) {
+                // One comanda batch per course so each ticket reads
+                // "Mesa 8 · Aperitivos" like the single-course flow.
+                // Comandas route catalog products only — custom
+                // amounts ride to the check but never to kitchen.
+                val kitchenLines = lines.filter { it.item.type is CartItemType.ProductItem }
+                kitchenLines.groupBy { it.course }.forEach { (course, courseLines) ->
+                    val routable = courseLines.map { line ->
+                        RoutableItem(
+                            orderItemId = line.item.id,
+                            productId = (line.item.type as? CartItemType.ProductItem)?.productId,
+                            categoryId = line.item.categoryId,
+                            productName = line.item.name,
+                            quantity = line.item.quantity,
+                            modifiers = line.item.selectedModifiers.map { it.modifierName },
+                            notes = line.item.itemNote,
+                        )
+                    }
+                    val plans = PrintRoutingMapper.buildComandas(routable, config)
+                    comandaPrinter.printComandas(
+                        plans = plans,
+                        config = config,
+                        orderNumber = session.orderNumber,
+                        orderType = "Mesa ${session.tableNumber}" + (course?.let { " · $it" } ?: ""),
+                    )
+                }
+            }
+            if (refreshFloor) repository.refresh(vId)
         }
     }
 

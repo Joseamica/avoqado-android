@@ -30,6 +30,8 @@ class AppState @Inject constructor(
     private val planManager: PlanManager,
     private val tpvSettingsRepository: TpvSettingsRepository,
     private val paymentSyncService: PaymentSyncService,
+    private val syncOutbox: com.avoqado.pos.core.data.sync.SyncOutbox,
+    private val tableSyncCoordinator: com.avoqado.pos.tables.data.TableSyncCoordinator,
     private val posModeManager: PosModeManager,
     val venueSwitchState: com.avoqado.pos.settings.domain.VenueSwitchState,
     connectivityMonitor: ConnectivityMonitor,
@@ -38,7 +40,16 @@ class AppState @Inject constructor(
     init {
         if (secureStorage.isLoggedIn) {
             paymentSyncService.start()
+            startOfflineOutbox()
             refreshPlanAndSettings()
+        }
+    }
+
+    /** Offline-first Corte B: replay del outbox de comandas + reconciliación. */
+    private fun startOfflineOutbox() {
+        secureStorage.venueId?.let { venueId ->
+            syncOutbox.start(venueId)
+            tableSyncCoordinator.start()
         }
     }
 
@@ -177,6 +188,7 @@ class AppState @Inject constructor(
     fun onLoginSuccess() {
         _isLoggedIn.value = true
         paymentSyncService.start()
+        startOfflineOutbox()
         refreshTabs()
         // Pull venue settings (incl. the plan block) right after login so
         // plan gates apply without waiting for a venue switch.
@@ -185,6 +197,7 @@ class AppState @Inject constructor(
 
     fun onLogout() {
         paymentSyncService.stop()
+        syncOutbox.stop()
         secureStorage.clearSession()
         _isLoggedIn.value = false
     }
