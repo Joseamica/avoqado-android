@@ -24,6 +24,7 @@ import javax.inject.Singleton
 class DiscountsRepository @Inject constructor(
     private val secureStorage: SecureStorage,
     private val client: OkHttpClient,
+    private val payloadCache: com.avoqado.pos.core.data.local.PayloadCache,
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -48,11 +49,22 @@ class DiscountsRepository @Inject constructor(
                 val body = response.body?.string() ?: return
                 val result = json.decodeFromString<DiscountsResponse>(body)
                 _discounts.value = result.data.filter { it.active }
+                // Offline-first: el picker de Descuentos necesita el catálogo sin red.
+                payloadCache.save("discounts", venue, body)
                 Log.d("📦", "✅ Loaded ${_discounts.value.size} discounts")
             } else {
                 Log.e("📦", "❌ Discounts fetch failed: ${response.code}")
             }
         } catch (e: Exception) {
+            // Sin red: hidratar del cache si el estado está vacío.
+            if (_discounts.value.isEmpty()) {
+                payloadCache.load("discounts", venue)?.let { cached ->
+                    runCatching { json.decodeFromString<DiscountsResponse>(cached.json) }.getOrNull()?.let { result ->
+                        _discounts.value = result.data.filter { it.active }
+                        Log.w("📦", "⚠️ Descuentos sin red — cache (hace ${cached.ageMinutes} min)")
+                    }
+                }
+            }
             Log.e("📦", "❌ Discounts fetch error: ${e.message}")
         }
     }

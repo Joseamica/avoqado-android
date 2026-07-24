@@ -221,9 +221,25 @@ class TableServiceRepository @Inject constructor(
         cacheJson.decodeFromString(MenusPayload.serializer(), cached.json)
     }.onFailure { Log.e(TAG, "❌ getMenus failed: ${it.message}") }
 
-    /** Catálogo de cobros por servicio del venue. */
+    /** Catálogo de cobros por servicio del venue. Cache-first al fallar red. */
     suspend fun getServiceCharges(venueId: String): Result<List<ServiceChargeOption>> = runCatching {
-        apiService.getServiceCharges(venueId).data
+        val charges = apiService.getServiceCharges(venueId).data
+        payloadCache.save(
+            "service_charges",
+            venueId,
+            cacheJson.encodeToString(
+                kotlinx.serialization.builtins.ListSerializer(ServiceChargeOption.serializer()),
+                charges,
+            ),
+        )
+        charges
+    }.recoverCatching { e ->
+        val cached = payloadCache.load("service_charges", venueId) ?: throw e
+        Log.w(TAG, "⚠️ getServiceCharges sin red — cache (hace ${cached.ageMinutes} min)")
+        cacheJson.decodeFromString(
+            kotlinx.serialization.builtins.ListSerializer(ServiceChargeOption.serializer()),
+            cached.json,
+        )
     }.onFailure { Log.e(TAG, "❌ getServiceCharges failed: ${it.message}") }
 
     /** Aplica un cobro por servicio a la cuenta (SUMA al total). */

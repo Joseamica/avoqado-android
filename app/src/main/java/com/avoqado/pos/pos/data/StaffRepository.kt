@@ -39,6 +39,7 @@ private data class StaffListResponse(
 class StaffRepository @Inject constructor(
     private val secureStorage: SecureStorage,
     private val client: OkHttpClient,
+    private val payloadCache: com.avoqado.pos.core.data.local.PayloadCache,
 ) {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = false }
 
@@ -58,12 +59,22 @@ class StaffRepository @Inject constructor(
 
             if (code in 200..299) {
                 val decoded = json.decodeFromString<StaffListResponse>(body)
+                // Offline-first: el picker de "Asignar" necesita esta lista sin red.
+                payloadCache.save("staff", venueId, body)
                 Result.success(decoded.data.filter { it.active })
             } else {
                 Log.e("👥", "Fetch staff failed: $code - $body")
                 Result.failure(Exception("Error al cargar staff ($code)"))
             }
         } catch (e: Exception) {
+            // Sin red: la lista cacheada sigue sirviendo (snapshot honesto).
+            val cached = payloadCache.load("staff", venueId)
+            if (cached != null) {
+                runCatching { json.decodeFromString<StaffListResponse>(cached.json) }.getOrNull()?.let { decoded ->
+                    Log.w("👥", "⚠️ Staff sin red — usando cache (hace ${cached.ageMinutes} min)")
+                    return Result.success(decoded.data.filter { it.active })
+                }
+            }
             Log.e("👥", "Fetch staff error: ${e.message}")
             Result.failure(e)
         }
