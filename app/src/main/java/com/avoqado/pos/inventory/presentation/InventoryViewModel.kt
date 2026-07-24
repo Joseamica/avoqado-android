@@ -31,6 +31,9 @@ enum class InventorySection(val label: String) {
     COUNTS("Conteos"),
     PURCHASE_ORDERS("Ordenes de compra"),
     TRANSFERS("Transferencias"),
+    // Traslados de insumos ENTRE sucursales (CEDIS) — distinto del legacy
+    // TRANSFERS, que es la vista de auditoría de movimientos internos.
+    INTER_VENUE("Traslados"),
     METRICS("Metricas"),
 }
 

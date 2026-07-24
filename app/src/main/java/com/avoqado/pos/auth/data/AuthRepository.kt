@@ -182,4 +182,5 @@ private fun VenueData.toStoredVenue() = StoredVenue(
     role = role,
     timezone = timezone,
     permissions = permissions,
+    organizationId = organizationId,
 )

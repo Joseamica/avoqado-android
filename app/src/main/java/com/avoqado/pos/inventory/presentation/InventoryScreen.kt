@@ -72,6 +72,7 @@ import com.avoqado.pos.inventory.presentation.purchaseorders.PurchaseOrderDetail
 import com.avoqado.pos.inventory.presentation.purchaseorders.PurchaseOrdersView
 import com.avoqado.pos.inventory.presentation.transfers.TransferDetailView
 import com.avoqado.pos.inventory.presentation.transfers.TransfersView
+import com.avoqado.pos.inventory.presentation.traslados.InterVenueTransfersView
 
 // MARK: - Entry Point
 
@@ -457,6 +458,9 @@ private val inventoryGatedSections = setOf(
     InventorySection.COUNTS,
     InventorySection.PURCHASE_ORDERS,
     InventorySection.TRANSFERS,
+    // Traslados entre sucursales: el backend los gatea con INVENTORY_TRACKING
+    // (inventory.routes.ts monta checkFeatureAccess sobre todo el router).
+    InventorySection.INTER_VENUE,
     InventorySection.METRICS,
 )
 
@@ -505,6 +509,9 @@ private fun SectionContent(
             }
             InventorySection.TRANSFERS -> {
                 TransfersView(viewModel = viewModel)
+            }
+            InventorySection.INTER_VENUE -> {
+                InterVenueTransfersView()
             }
             InventorySection.METRICS -> {
                 InventoryMetricsView(viewModel = viewModel)

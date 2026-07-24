@@ -36,6 +36,9 @@ data class VenueData(
     val role: String? = null,
     val timezone: String? = null,
     val permissions: List<String> = emptyList(),
+    // Para agrupar venues por organización (picker de traslados CEDIS). Opcional:
+    // un server viejo que no lo mande deja null y el picker degrada a "todos".
+    val organizationId: String? = null,
 )
 
 @Serializable

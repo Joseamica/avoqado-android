@@ -91,7 +91,7 @@ class PaymentFlowViewModelTest {
 
         coEvery {
             orderRepository.recordFastCashPayment(any(), any(), any(), any(), any())
-        } returns Result.success("fast-pay-1")
+        } returns Result.success(OrderRepository.CashPayResult(paymentId = "fast-pay-1", receiptAccessKey = null))
 
         coEvery {
             cashDrawerRepository.addCashSale(any(), any())
@@ -221,7 +221,7 @@ class PaymentFlowViewModelTest {
     fun `start payment flow resets previous tip before next custom payment`() = runTest {
         coEvery {
             orderRepository.recordFastCashPayment(any(), any(), any(), any(), any())
-        } returns Result.success("fast-pay-2")
+        } returns Result.success(OrderRepository.CashPayResult(paymentId = "fast-pay-2", receiptAccessKey = null))
 
         val firstCart = CartState(
             items = listOf(
@@ -263,7 +263,7 @@ class PaymentFlowViewModelTest {
         } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-legacy")))
         coEvery {
             orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any())
-        } returns Result.success("payment-legacy")
+        } returns Result.success(OrderRepository.CashPayResult(paymentId = "payment-legacy", receiptAccessKey = null))
         // Default from setup(): printConfigRepository.getCurrentConfig() returns PrintConfig() (no stations)
 
         val cart = CartState(
@@ -288,7 +288,7 @@ class PaymentFlowViewModelTest {
         } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-routed")))
         coEvery {
             orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any())
-        } returns Result.success("payment-routed")
+        } returns Result.success(OrderRepository.CashPayResult(paymentId = "payment-routed", receiptAccessKey = null))
 
         val station = StationInfo(id = "st_cocina", name = "Cocina", printerId = "pr_1", active = true)
         val config = PrintConfig(stations = listOf(station), defaultStationId = "st_cocina")

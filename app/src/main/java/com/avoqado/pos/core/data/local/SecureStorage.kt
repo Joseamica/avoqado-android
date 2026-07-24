@@ -427,6 +427,9 @@ data class StoredVenue(
     val role: String? = null,
     val timezone: String? = null,
     val permissions: List<String> = emptyList(),
+    // Organización dueña del venue (para agrupar en el picker de traslados CEDIS).
+    // Default null: el JSON ya persistido de sesiones viejas decodifica sin él.
+    val organizationId: String? = null,
 ) {
     val displayRole: String
         get() = when (role?.uppercase()) {

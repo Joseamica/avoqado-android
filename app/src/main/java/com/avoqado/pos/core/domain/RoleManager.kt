@@ -52,4 +52,19 @@ class RoleManager @Inject constructor(
     /** Kitchen display: WAITER, CASHIER, MANAGER, ADMIN, OWNER, SUPERADMIN */
     val canAccessKDS: Boolean
         get() = role in setOf("WAITER", "CASHIER", "MANAGER", "ADMIN", "OWNER", "SUPERADMIN")
+
+    // MARK: - Traslados entre sucursales (CEDIS)
+    // Espejo de DEFAULT_PERMISSIONS del server (avoqado-server/src/lib/permissions.ts):
+    // MANAGER tiene los 5 permisos inventory-transfers:* explícitos; ADMIN y OWNER
+    // llevan el wildcard inventory-transfers:*. El server es la autoridad — esto
+    // sólo decide qué UI pintar (Android no lee el array de permisos; deuda documentada).
+
+    /** Ver traslados (inventory-transfers:read): MANAGER, ADMIN, OWNER, SUPERADMIN */
+    val canViewInventoryTransfers: Boolean
+        get() = role in setOf("MANAGER", "ADMIN", "OWNER", "SUPERADMIN")
+
+    /** Decidir traslados — aprobar/rechazar/despachar/recibir/cancelar
+     *  (inventory-transfers:approve|dispatch|receive): MANAGER, ADMIN, OWNER, SUPERADMIN */
+    val canDecideInventoryTransfers: Boolean
+        get() = role in setOf("MANAGER", "ADMIN", "OWNER", "SUPERADMIN")
 }
