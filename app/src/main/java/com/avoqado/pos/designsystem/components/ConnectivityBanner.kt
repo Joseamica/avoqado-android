@@ -23,6 +23,8 @@ import com.avoqado.pos.designsystem.theme.Error
 fun ConnectivityBanner(
     visible: Boolean,
     modifier: Modifier = Modifier,
+    /** Operaciones offline esperando replay (outbox + cola de pagos). */
+    pendingSync: Int = 0,
 ) {
     AnimatedVisibility(
         visible = visible,
@@ -33,11 +35,17 @@ fun ConnectivityBanner(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(Error),
+                // Naranja, no rojo: offline es estado NORMAL de operación, no
+                // una falla — el POS sigue vendiendo (spec offline-first §6).
+                .background(com.avoqado.pos.designsystem.theme.Warning),
             contentAlignment = Alignment.Center,
         ) {
             Text(
-                text = "Sin conexión",
+                text = if (pendingSync > 0) {
+                    "Sin conexión — $pendingSync por sincronizar (todo se guarda aquí)"
+                } else {
+                    "Sin conexión — las ventas se guardan en el dispositivo"
+                },
                 color = Color.White,
                 style = MaterialTheme.typography.labelMedium,
                 fontWeight = FontWeight.SemiBold,

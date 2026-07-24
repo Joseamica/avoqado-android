@@ -80,6 +80,17 @@ class AppState @Inject constructor(
 
     val pendingPaymentCount: StateFlow<Int> = paymentSyncService.pendingCount
 
+    /** Operaciones offline esperando replay: outbox de mesas + cola de pagos. */
+    val offlinePendingCount: StateFlow<Int> = combine(
+        syncOutbox.pendingCount,
+        paymentSyncService.pendingCount,
+    ) { intents, payments -> intents + payments }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000),
+            initialValue = 0,
+        )
+
     val showOfflineBanner: StateFlow<Boolean> = combine(
         connectivityMonitor.isConnected,
         connectivityMonitor.isServerReachable,

@@ -104,6 +104,7 @@ fun AvoqadoNavGraph(
     val isLoggedIn by appState.isLoggedIn.collectAsState()
     val pendingPaymentCount by appState.pendingPaymentCount.collectAsState()
     val showOfflineBanner by appState.showOfflineBanner.collectAsState()
+    val offlinePendingCount by appState.offlinePendingCount.collectAsState()
     val visibleTabs by appState.visibleTabs.collectAsState()
     val contentKey by appState.contentKey.collectAsState()
     val isSwitchingContext by appState.venueSwitchState.isSwitching.collectAsState()
@@ -125,6 +126,7 @@ fun AvoqadoNavGraph(
                     roleManager = appState.roleManager,
                     pendingPaymentCount = pendingPaymentCount,
                     showOfflineBanner = showOfflineBanner,
+                    offlinePendingCount = offlinePendingCount,
                     onTabsShouldRefresh = { appState.refreshTabs() },
                 )
             }
@@ -177,6 +179,7 @@ private fun MainScaffold(
     roleManager: RoleManager,
     pendingPaymentCount: Int = 0,
     showOfflineBanner: Boolean = false,
+    offlinePendingCount: Int = 0,
     onTabsShouldRefresh: () -> Unit = {},
 ) {
     // Status bar icons: follow theme (light icons on dark, dark icons on light)
@@ -236,7 +239,7 @@ private fun MainScaffold(
 
         Scaffold(
             contentWindowInsets = WindowInsets.statusBars,
-            topBar = { ConnectivityBanner(visible = showOfflineBanner) },
+            topBar = { ConnectivityBanner(visible = showOfflineBanner, pendingSync = offlinePendingCount) },
             bottomBar = {
                 TabletTabBar(
                     visibleTabs = visibleTabs,
@@ -488,7 +491,7 @@ private fun MainScaffold(
     } else {
         // iPhone-style: standard NavigationBar
         Scaffold(
-            topBar = { ConnectivityBanner(visible = showOfflineBanner) },
+            topBar = { ConnectivityBanner(visible = showOfflineBanner, pendingSync = offlinePendingCount) },
             bottomBar = {
                 NavigationBar {
                     visibleTabs.forEach { tab ->

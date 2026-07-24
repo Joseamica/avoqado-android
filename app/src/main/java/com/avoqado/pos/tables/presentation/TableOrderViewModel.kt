@@ -51,6 +51,7 @@ class TableOrderViewModel @Inject constructor(
     private val secureStorage: SecureStorage,
     private val syncOutbox: com.avoqado.pos.core.data.sync.SyncOutbox,
     private val productsRepository: com.avoqado.pos.pos.data.ProductsRepository,
+    private val connectivityMonitor: com.avoqado.pos.core.util.ConnectivityMonitor,
     /** "Marcar entrada/salida" (Acciones) reusa el reloj checador tal cual. */
     val timeEntryRepository: com.avoqado.pos.timeclock.data.TimeEntryRepository,
 ) : ViewModel() {
@@ -437,6 +438,17 @@ class TableOrderViewModel @Inject constructor(
     }
 
     /**
+     * Acciones ONLINE-ONLY a propósito (dividir/fusionar/quitar aplicados/
+     * cortesía de item/lealtad): sin red se avisa amable ANTES de intentar —
+     * nada de errores crudos. Se "rehabilitan" solas: el check es al tocar.
+     */
+    private fun requireOnline(accion: String): Boolean {
+        if (connectivityMonitor.isConnected.value) return true
+        _actionMessage.value = "Sin conexión — $accion necesita internet; se habilita al volver la señal"
+        return false
+    }
+
+    /**
      * Offline-first: la ronda se guarda como intent ADD_ITEMS (write-ahead),
      * se imprime la comanda por LAN al instante y las líneas quedan en
      * [queued] ("Por sincronizar") hasta que el ack del replay las confirme.
@@ -522,6 +534,7 @@ class TableOrderViewModel @Inject constructor(
 
     /** "Dar de cortesía" on an already-sent line. */
     fun compSentItem(itemId: String, reason: String) {
+        if (!requireOnline("la cortesía de un artículo enviado")) return
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
         viewModelScope.launch {
@@ -628,6 +641,7 @@ class TableOrderViewModel @Inject constructor(
 
     /** Quita un descuento aplicado del cheque. */
     fun removeDiscount(orderDiscountId: String) {
+        if (!requireOnline("quitar un descuento aplicado")) return
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
         viewModelScope.launch {
@@ -722,6 +736,7 @@ class TableOrderViewModel @Inject constructor(
     }
 
     fun removeServiceCharge(orderServiceChargeId: String) {
+        if (!requireOnline("quitar un cargo aplicado")) return
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
         viewModelScope.launch {
@@ -764,6 +779,7 @@ class TableOrderViewModel @Inject constructor(
      * devuelve los puntos solo.
      */
     fun redeemPoints(points: Int) {
+        if (!requireOnline("canjear puntos")) return
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
         val customerId = _check.value?.customerId ?: return
@@ -832,6 +848,7 @@ class TableOrderViewModel @Inject constructor(
      * las nuevas viven como cheques hermanos de la misma mesa.
      */
     fun splitBySeat(onDone: (Boolean, String) -> Unit) {
+        if (!requireOnline("dividir la cuenta")) { onDone(false, "Sin conexión — dividir la cuenta necesita internet"); return }
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
         viewModelScope.launch {
