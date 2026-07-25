@@ -112,6 +112,25 @@ class TablesViewModel @Inject constructor(
         if (_actionState.value is TableActionState.Working) return
         viewModelScope.launch {
             _actionState.value = TableActionState.Working
+
+            // 🛰️ Hub LAN: pedir la mesa ANTES de abrirla. Sin internet esto es
+            // lo único que impide que dos meseros abran la misma mesa a la vez
+            // — el server no se entera hasta el replay. Si no hay hub (isla),
+            // se sigue igual que siempre: el hub PREVIENE conflictos, no
+            // autoriza ventas, así que jamás puede frenar un cobro.
+            val lease = lanHub.acquire(
+                tableId = table.id,
+                staffId = secureStorage.selectedStaffIdForCurrentVenue.orEmpty(),
+                staffName = secureStorage.selectedStaffNameForCurrentVenue
+                    ?: secureStorage.userFirstName.orEmpty(),
+            )
+            if (lease is com.avoqado.pos.core.data.lan.LeaseOutcome.Taken) {
+                _actionState.value = TableActionState.Error(
+                    "${lease.holderName} está atendiendo esta mesa en otro dispositivo",
+                )
+                return@launch
+            }
+
             repository.openTable(vId, table.id, covers).fold(
                 onSuccess = { order ->
                     tableSession.start(
@@ -307,6 +326,7 @@ class TablesViewModel @Inject constructor(
                     repository.refresh(vId)
                     // The cancelled order must never keep steering a session.
                     if (tableSession.current()?.orderId == order.id) tableSession.clear()
+                    lanHub.release(table.id)
                     _actionState.value = TableActionState.Success("Cuenta anulada — Mesa ${table.number} liberada")
                     _selectedTableId.value = null
                 },
@@ -319,7 +339,12 @@ class TablesViewModel @Inject constructor(
     }
 
     fun exitTableMode() {
+        val tableId = tableSession.current()?.tableId
         tableSession.clear()
+        // Salir del panel sin cobrar NO debe dejar la mesa retenida: se suelta
+        // ya, en vez de hacer esperar 30s al TTL. La cuenta sigue abierta en el
+        // server; lo que se libera es el permiso de edición en la LAN.
+        if (tableId != null) viewModelScope.launch { lanHub.release(tableId) }
     }
 
     // MARK: - After payment (called from the Checkout completion in PAYING mode)
@@ -334,7 +359,12 @@ class TablesViewModel @Inject constructor(
             // keep the session alive so the next payment stays routed to it.
             val cleared = repository.clearTable(vId, session.tableId).isSuccess
             repository.refresh(vId)
-            if (cleared) tableSession.clear()
+            if (cleared) {
+                tableSession.clear()
+                // 🛰️ Soltar el lease: si no, la mesa queda "de este mesero"
+                // hasta que caduque el TTL y nadie más la puede abrir en 30s.
+                lanHub.release(session.tableId)
+            }
         }
     }
 
@@ -352,6 +382,7 @@ class TablesViewModel @Inject constructor(
                     onSuccess = {
                         repository.clearTable(vId, table.id)
                         if (tableSession.current()?.orderId == order.id) tableSession.clear()
+                        lanHub.release(table.id)
                         ok++
                     },
                     onFailure = { fail++ },
