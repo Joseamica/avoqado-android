@@ -318,6 +318,10 @@ fun TableOrderScreen(
                             PanelTab.ACCIONES -> TableActionsPanel(
                                 hasPending = pendingLines.isNotEmpty(),
                                 hasSent = !check?.items.isNullOrEmpty(),
+                                // Separar SÍ funciona sin red: las líneas enviadas
+                                // offline se referencian por su externalId. Sin esto
+                                // el botón quedaba gris justo cuando más se necesita.
+                                canSeparar = splittableItems.isNotEmpty(),
                                 onClearPending = { viewModel.clearPending(); panelTab = PanelTab.CUENTA },
                                 onAnular = { showAnularDialog = true },
                                 onPrintPreBill = { viewModel.printPreBill() },
@@ -457,6 +461,10 @@ fun TableOrderScreen(
                             PanelTab.ACCIONES -> TableActionsPanel(
                                 hasPending = pendingLines.isNotEmpty(),
                                 hasSent = !check?.items.isNullOrEmpty(),
+                                // Separar SÍ funciona sin red: las líneas enviadas
+                                // offline se referencian por su externalId. Sin esto
+                                // el botón quedaba gris justo cuando más se necesita.
+                                canSeparar = splittableItems.isNotEmpty(),
                                 onClearPending = { viewModel.clearPending(); panelTab = PanelTab.CUENTA },
                                 onAnular = { showAnularDialog = true },
                                 onPrintPreBill = { viewModel.printPreBill() },
@@ -1739,6 +1747,8 @@ internal fun PanelTabsRow(selected: PanelTab, onSelect: (PanelTab) -> Unit) {
 internal fun TableActionsPanel(
     hasPending: Boolean,
     hasSent: Boolean,
+    /** Hay algo que separar: líneas del server O enviadas sin red (externalId). */
+    canSeparar: Boolean = hasSent,
     onClearPending: () -> Unit,
     onAnular: () -> Unit,
     onPrintPreBill: () -> Unit,
@@ -1818,7 +1828,7 @@ internal fun TableActionsPanel(
         Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
             ActionPill(
                 label = "Separar en otra cuenta",
-                enabled = hasSent,
+                enabled = canSeparar,
                 onClick = onSepararCuenta,
                 modifier = Modifier.weight(1f),
             )
