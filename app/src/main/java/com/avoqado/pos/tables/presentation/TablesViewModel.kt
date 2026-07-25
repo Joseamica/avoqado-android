@@ -43,7 +43,18 @@ class TablesViewModel @Inject constructor(
     private val printerService: PrinterService,
     private val secureStorage: SecureStorage,
     private val syncOutbox: com.avoqado.pos.core.data.sync.SyncOutbox,
+    private val lanHub: com.avoqado.pos.core.data.lan.LanHubService,
 ) : ViewModel() {
+
+    init {
+        // Hub LAN (PREMIUM OFFLINE_LAN_HUB): se enciende al entrar al plano,
+        // que es el único lugar donde reparte algo. Si el plan no lo incluye o
+        // no hay venue todavía, no arranca y el POS trabaja como isla — que es
+        // el comportamiento de siempre, no una degradación.
+        if (planManager.hasFeature("OFFLINE_LAN_HUB")) {
+            lanHub.start()
+        }
+    }
 
     val tables: StateFlow<List<DiningTable>> = repository.tables
     val isLoading: StateFlow<Boolean> = repository.isLoading
