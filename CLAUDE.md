@@ -85,6 +85,25 @@ create purchase order, receive stock, transfer inventory, issue refund, sync off
 Do **not** fire for: validation errors, network failures, or any non-success state — toast is
 green-check celebration only. Errors stay inline in the originating dialog/sheet.
 
+## 🔴 Offline-first y Hub LAN — LEE ESTO antes de tocar sync, mesas o impresión
+
+Reglas completas: **`.claude/rules/offline-first-y-hub-lan.md`**
+Guía de instalación en un local: **`docs/INSTALACION-HUB-LAN.md`**
+
+Lo mínimo que tienes que saber:
+
+- Los 14 tipos de intent se espejan por nombre EXACTO entre server, Android e
+  iOS. Agregar uno = tocar los tres + el MCP `pos_sync_status`, en el MISMO cambio.
+- Hay TRES estados de ack: `ACKED`, `REJECTED` (permanente → cuarentena) y
+  `RETRY` (transitorio → el cliente reintenta). Convertir un transitorio en
+  REJECTED pierde el intent para siempre.
+- Un fallo de RED se convierte en intent; un rechazo de NEGOCIO se propaga tal
+  cual. Y **nunca pintes un éxito encolado como pantalla de Error.**
+- El hub LAN (PREMIUM `OFFLINE_LAN_HUB`) PREVIENE conflictos, **no autoriza
+  ventas**: si no está disponible se degrada a modo isla y jamás bloquea un cobro.
+- `PrintConfigRepository` es cache-first: un refresh fallido NUNCA debe borrar la
+  config buena, o el local deja de imprimir comandas.
+
 ## Build Commands
 
 ```bash
