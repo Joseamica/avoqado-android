@@ -24,6 +24,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Print
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -106,6 +107,8 @@ fun TableOrderScreen(
     var session by remember { mutableStateOf(viewModel.tableSession.current()) }
     val check by viewModel.check.collectAsState()
     val splittableItems by viewModel.splittableItems.collectAsState()
+    val isConnected by viewModel.isConnected.collectAsState()
+    val blockedNotice by viewModel.blockedNotice.collectAsState()
     val isLoadingCheck by viewModel.isLoadingCheck.collectAsState()
     val pendingLines by viewModel.pending.collectAsState()
     val queuedLines by viewModel.queued.collectAsState()
@@ -322,6 +325,10 @@ fun TableOrderScreen(
                                 // offline se referencian por su externalId. Sin esto
                                 // el botón quedaba gris justo cuando más se necesita.
                                 canSeparar = splittableItems.isNotEmpty(),
+                                isOffline = !isConnected,
+                                onBlocked = { motivo -> viewModel.showBlockedReason(motivo) },
+                                blockedNotice = blockedNotice,
+                                onDismissNotice = { viewModel.dismissBlockedNotice() },
                                 onClearPending = { viewModel.clearPending(); panelTab = PanelTab.CUENTA },
                                 onAnular = { showAnularDialog = true },
                                 onPrintPreBill = { viewModel.printPreBill() },
@@ -465,6 +472,10 @@ fun TableOrderScreen(
                                 // offline se referencian por su externalId. Sin esto
                                 // el botón quedaba gris justo cuando más se necesita.
                                 canSeparar = splittableItems.isNotEmpty(),
+                                isOffline = !isConnected,
+                                onBlocked = { motivo -> viewModel.showBlockedReason(motivo) },
+                                blockedNotice = blockedNotice,
+                                onDismissNotice = { viewModel.dismissBlockedNotice() },
                                 onClearPending = { viewModel.clearPending(); panelTab = PanelTab.CUENTA },
                                 onAnular = { showAnularDialog = true },
                                 onPrintPreBill = { viewModel.printPreBill() },
@@ -1749,6 +1760,13 @@ internal fun TableActionsPanel(
     hasSent: Boolean,
     /** Hay algo que separar: líneas del server O enviadas sin red (externalId). */
     canSeparar: Boolean = hasSent,
+    /** Sin conexión: cambia el motivo del bloqueo y pinta el ícono de nube. */
+    isOffline: Boolean = false,
+    /** Se dispara al tocar un botón gris, con el motivo en lenguaje de mesero. */
+    onBlocked: (String) -> Unit = {},
+    /** Motivo del último botón gris tocado. Persiste hasta cerrarlo. */
+    blockedNotice: String? = null,
+    onDismissNotice: () -> Unit = {},
     onClearPending: () -> Unit,
     onAnular: () -> Unit,
     onPrintPreBill: () -> Unit,
@@ -1782,10 +1800,38 @@ internal fun TableActionsPanel(
             .padding(AvoqadoTheme.spacing.md),
         verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
     ) {
+        // El "por qué está gris" aparece AQUÍ, junto al botón que el mesero
+        // acaba de tocar, y se queda hasta que lo cierre.
+        blockedNotice?.let { motivo ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(MaterialTheme.colorScheme.secondaryContainer)
+                    .clickable(onClick = onDismissNotice)
+                    .padding(AvoqadoTheme.spacing.md),
+                horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    text = motivo,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    text = "Entendido",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                )
+            }
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
             ActionPill(
                 label = "Borrar nuevos artículos",
                 enabled = hasPending,
+                blockedReason = "No hay artículos nuevos que borrar.",
+                onBlocked = onBlocked,
                 onClick = onClearPending,
                 modifier = Modifier.weight(1f),
             )
@@ -1815,12 +1861,21 @@ internal fun TableActionsPanel(
             ActionPill(
                 label = "Cortesía en la cuenta",
                 enabled = hasSent,
+                blockedReason = "Primero envía la ronda a cocina. La cortesía se aplica sobre lo ya enviado.",
+                onBlocked = onBlocked,
                 onClick = onCompWhole,
                 modifier = Modifier.weight(1f),
             )
             ActionPill(
                 label = "Dividir la cuenta",
                 enabled = hasSent,
+                blockedReason = if (isOffline) {
+                    "Dividir por puesto necesita internet. Se habilita solo cuando vuelva la señal."
+                } else {
+                    "Primero envía la ronda a cocina."
+                },
+                blockedByConnection = isOffline,
+                onBlocked = onBlocked,
                 onClick = onDividir,
                 modifier = Modifier.weight(1f),
             )
@@ -1829,6 +1884,8 @@ internal fun TableActionsPanel(
             ActionPill(
                 label = "Separar en otra cuenta",
                 enabled = canSeparar,
+                blockedReason = "Primero envía a cocina lo que quieras separar.",
+                onBlocked = onBlocked,
                 onClick = onSepararCuenta,
                 modifier = Modifier.weight(1f),
             )
@@ -1843,6 +1900,8 @@ internal fun TableActionsPanel(
             ActionPill(
                 label = "Ordenar carrito",
                 enabled = hasPending,
+                blockedReason = "No hay artículos nuevos que ordenar.",
+                onBlocked = onBlocked,
                 onClick = onOrdenarCarrito,
                 modifier = Modifier.weight(1f),
             )
@@ -1969,6 +2028,17 @@ internal fun TableActionsPanel(
     }
 }
 
+/**
+ * 🔴 UX de meseros: un botón gris que NO explica por qué está gris es el peor
+ * estado posible. El mesero toca, no pasa nada, y no sabe si está roto, si se
+ * equivocó, o si es temporal — y en plena comida no puede ponerse a investigar.
+ *
+ * Por eso un pill deshabilitado SIGUE siendo tocable: al tocarlo dispara
+ * [onBlocked] con el motivo en lenguaje de mesero. Se distinguen dos causas,
+ * porque piden reacciones distintas:
+ *   - [blockedByConnection] = "espera, vuelve solo"  → ícono de nube tachada
+ *   - motivo de estado       = "te falta un paso"    → sin ícono
+ */
 @Composable
 private fun ActionPill(
     label: String,
@@ -1976,6 +2046,11 @@ private fun ActionPill(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     destructive: Boolean = false,
+    /** Por qué está gris, en lenguaje de mesero. Null = gris mudo (evitar). */
+    blockedReason: String? = null,
+    /** True cuando el bloqueo es por falta de internet (pinta el ícono). */
+    blockedByConnection: Boolean = false,
+    onBlocked: (String) -> Unit = {},
 ) {
     val contentColor = when {
         !enabled -> MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f)
@@ -1986,10 +2061,27 @@ private fun ActionPill(
         modifier = modifier
             .clip(RoundedCornerShape(50))
             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (enabled) 1f else 0.5f))
-            .clickable(enabled = enabled, onClick = onClick)
+            .clickable(
+                // Deshabilitado PERO tocable si hay motivo: el toque explica.
+                enabled = enabled || blockedReason != null,
+                onClick = { if (enabled) onClick() else blockedReason?.let(onBlocked) },
+            )
             .padding(horizontal = AvoqadoTheme.spacing.md, vertical = AvoqadoTheme.spacing.lg),
         contentAlignment = Alignment.Center,
     ) {
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.xs),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+        if (!enabled && blockedByConnection) {
+            // El mesero aprende el símbolo en un turno y deja de intentarlo.
+            Icon(
+                imageVector = Icons.Filled.CloudOff,
+                contentDescription = "Necesita internet",
+                tint = contentColor,
+                modifier = Modifier.size(14.dp),
+            )
+        }
         Text(
             text = label,
             style = MaterialTheme.typography.bodyMedium,
@@ -1997,6 +2089,7 @@ private fun ActionPill(
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
         )
+        }
     }
 }
 

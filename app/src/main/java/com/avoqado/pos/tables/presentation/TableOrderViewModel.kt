@@ -454,6 +454,31 @@ class TableOrderViewModel @Inject constructor(
      * cortesía de item/lealtad): sin red se avisa amable ANTES de intentar —
      * nada de errores crudos. Se "rehabilitan" solas: el check es al tocar.
      */
+    /** Conectividad, para que la UI distinga "espera" de "te falta un paso". */
+    val isConnected: StateFlow<Boolean> = connectivityMonitor.isConnected
+
+    /**
+     * Un botón gris que no explica por qué está gris es el peor estado posible
+     * para un mesero: toca, no pasa nada, y no sabe si está roto. Esto le da
+     * la razón en su idioma.
+     */
+    private val _blockedNotice = MutableStateFlow<String?>(null)
+
+    /**
+     * Aviso de "por qué está gris este botón". PERSISTE hasta que el mesero lo
+     * cierra o hace otra cosa — a diferencia de un Toast, que se evapora en 3
+     * segundos y en plena comida nadie alcanza a leer.
+     */
+    val blockedNotice: StateFlow<String?> = _blockedNotice.asStateFlow()
+
+    fun showBlockedReason(motivo: String) {
+        _blockedNotice.value = motivo
+    }
+
+    fun dismissBlockedNotice() {
+        _blockedNotice.value = null
+    }
+
     private fun requireOnline(accion: String): Boolean {
         if (connectivityMonitor.isConnected.value) return true
         _actionMessage.value = "Sin conexión — $accion necesita internet; se habilita al volver la señal"
