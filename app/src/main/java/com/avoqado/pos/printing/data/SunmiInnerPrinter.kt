@@ -43,6 +43,49 @@ class SunmiInnerPrinter @Inject constructor(
     val isAvailable: Boolean get() = service != null
 
     /**
+     * ¿Este equipo trae impresora FÍSICA?
+     *
+     * El bind AIDL NO alcanza para saberlo: Sunmi preinstala
+     * `woyou.aidlservice.jiuiv5` en TODA su gama, así que en una T3 Pro —que no
+     * tiene cabezal— el bind también responde `true` y la app terminaba
+     * ofreciendo "Impresora integrada" en un equipo sin impresora. Configurada
+     * ahí, la comanda se enruta a un destino inexistente y la cocina nunca se
+     * entera: el fallo se ve al momento de servir, no al configurar.
+     *
+     * Medido en hardware (T3 PRO SUPER, 2026-07-28): `updatePrinterState()`
+     * devuelve 505 ("no printer detected") con modal/serial VACÍOS.
+     *
+     * 🔴 El sesgo es DELIBERADO hacia ofrecerla: sólo se descarta con evidencia
+     * POSITIVA de ausencia. Sin papel, tapa abierta, sobrecalentada o un error
+     * transitorio son estados de una impresora que SÍ existe — descartarla ahí
+     * dejaría al local sin comandas, que es justo el fallo que no se vale
+     * cometer. Ante cualquier duda (excepción, valor desconocido): se ofrece.
+     */
+    val hasPhysicalPrinter: Boolean
+        get() {
+            val svc = service ?: return false
+            val state = runCatching { svc.updatePrinterState() }.getOrNull()
+            if (state == NO_PRINTER_DETECTED) return false
+            // El servicio corre pero no hay cabezal detrás: sin estado legible
+            // Y sin modelo, no hay nada que respalde que exista.
+            val modal = runCatching { svc.printerModal }.getOrNull()
+            if (state == null && modal.isNullOrBlank()) return false
+            return true
+        }
+
+    /** Para el log de arranque: deja rastro de por qué se ofreció o no. */
+    private fun hardwareDescription(): String {
+        val svc = service ?: return "sin servicio"
+        val state = runCatching { svc.updatePrinterState() }.getOrNull()
+        val modal = runCatching { svc.printerModal }.getOrNull().orEmpty()
+        return if (hasPhysicalPrinter) {
+            "impresora física presente (state=$state modal=${modal.ifBlank { "?" }})"
+        } else {
+            "SIN impresora física (state=$state) — no se ofrecerá la integrada"
+        }
+    }
+
+    /**
      * Ancho real del cabezal, PREGUNTADO al hardware (1 = 58 mm, 2 = 80 mm).
      * Adivinarlo parte el ticket: 80 mm de ESC/POS en un cabezal de 58 mm sale
      * con las líneas cortadas. Ante la duda, 58: sobra papel en vez de perderse
@@ -55,6 +98,7 @@ class SunmiInnerPrinter @Inject constructor(
         override fun onConnected(printerService: SunmiPrinterService?) {
             service = printerService
             Log.i(tag, "Impresora integrada conectada")
+            Log.i(tag, "Hardware: ${hardwareDescription()}")
         }
 
         override fun onDisconnected() {
@@ -62,6 +106,10 @@ class SunmiInnerPrinter @Inject constructor(
             Log.i(tag, "Impresora integrada desconectada")
         }
     }
+
+    /** Sólo para tests: inyecta el servicio sin pasar por el bind del SO. */
+    @androidx.annotation.VisibleForTesting
+    internal fun attachServiceForTest(svc: SunmiPrinterService?) { service = svc }
 
     /** Llamar al arranque. Sin equipo Sunmi lanza excepción y se ignora. */
     fun bind() {
@@ -157,5 +205,8 @@ class SunmiInnerPrinter @Inject constructor(
         // Espera al bind del servicio (asíncrono): 10 × 200 ms = 2 s.
         const val BIND_WAIT_TRIES = 10
         const val BIND_WAIT_STEP_MS = 200L
+
+        /** Código del SDK de Sunmi: el servicio existe pero no hay cabezal. */
+        const val NO_PRINTER_DETECTED = 505
     }
 }

@@ -194,10 +194,20 @@ class PrinterService @Inject constructor(
                 // Va soldada: "conectar" = asegurar el bind del servicio (que es
                 // asíncrono y pudo no haber ocurrido esta sesión). No adivina que
                 // ya está: lo garantiza.
-                PrinterConnectionType.INTERNAL ->
+                PrinterConnectionType.INTERNAL -> {
                     if (!innerPrinter.ensureBound()) {
                         throw PrinterException.ConnectionFailed("La impresora integrada no está disponible")
                     }
+                    // Residuo de equipos configurados ANTES de detectar el
+                    // hardware: una T3 pudo guardar la "integrada" que nunca
+                    // tuvo. Falla RUIDOSO — tragarse la comanda es peor: la
+                    // cocina no se entera y sólo se descubre al servir.
+                    if (!innerPrinter.hasPhysicalPrinter) {
+                        throw PrinterException.ConnectionFailed(
+                            "Este equipo no tiene impresora integrada. Elige otra impresora en Ajustes › Impresora.",
+                        )
+                    }
+                }
             }
             updateStatus(printer.id, PrinterStatus.Connected)
             updateLastConnected(printer)
@@ -480,7 +490,10 @@ class PrinterService @Inject constructor(
             // búsqueda volvería a salir vacía. Se espera dentro de la ventana de
             // búsqueda; si no responde, este equipo simplemente no la trae.
             repeat(BIND_WAIT_TRIES) {
-                if (innerPrinter.isAvailable) {
+                // hasPhysicalPrinter, no isAvailable: el bind tiene éxito
+                // también en los Sunmi SIN impresora (T3), y ofrecerla ahí
+                // manda las comandas a un destino que no existe.
+                if (innerPrinter.hasPhysicalPrinter) {
                     val internal = DiscoveredPrinter(
                         id = "internal",
                         name = "Impresora integrada",
