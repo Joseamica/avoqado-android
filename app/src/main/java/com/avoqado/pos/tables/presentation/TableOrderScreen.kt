@@ -6,6 +6,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -230,10 +231,13 @@ fun TableOrderScreen(
         if (blockIfReadOnly()) return
         if (viewModel.preparePagar()) {
             paymentSeedCents = viewModel.tableSession.current()?.totalCents ?: 0
+            if (paymentSeedCents <= 0) paymentSeedCents = viewModel.payableTotalCents
             pendingSplitConfig = com.avoqado.pos.payment.presentation.SplitConfig()
             showPayment = true
         } else {
-            android.widget.Toast.makeText(context, "La cuenta no tiene cargos todavía", android.widget.Toast.LENGTH_SHORT).show()
+            // Aviso PERSISTENTE, no Toast: en la Sunmi los Toast quedan detrás
+            // de la pantalla del cliente y el toque parecía no hacer nada.
+            viewModel.showBlockedReason("Esta cuenta todavía no tiene cargos. Agrega artículos y envíalos antes de cobrar.")
         }
     }
 
@@ -315,6 +319,9 @@ fun TableOrderScreen(
                                 pendingTotalCents = viewModel.pendingTotalCents,
                                 onEnviar = { fireSend() },
                                 onPrintCuenta = { viewModel.printPreBill() },
+                                onBlocked = { viewModel.showBlockedReason(it) },
+                                blockedNotice = blockedNotice,
+                                onDismissNotice = { viewModel.dismissBlockedNotice() },
                                 onPagar = { firePagar() },
                                 onGuardar = { requestExit() },
                             )
@@ -462,6 +469,9 @@ fun TableOrderScreen(
                                 pendingTotalCents = viewModel.pendingTotalCents,
                                 onEnviar = { showPhoneCheck = false; fireSend() },
                                 onPrintCuenta = { viewModel.printPreBill() },
+                                onBlocked = { viewModel.showBlockedReason(it) },
+                                blockedNotice = blockedNotice,
+                                onDismissNotice = { viewModel.dismissBlockedNotice() },
                                 onPagar = { showPhoneCheck = false; firePagar() },
                                 onGuardar = { showPhoneCheck = false; requestExit() },
                             )
@@ -816,6 +826,7 @@ fun TableOrderScreen(
                 showSplitModes = false
                 if (viewModel.preparePagar()) {
                     paymentSeedCents = viewModel.tableSession.current()?.totalCents ?: 0
+            if (paymentSeedCents <= 0) paymentSeedCents = viewModel.payableTotalCents
                     showSplitImporte = true
                 } else {
                     android.widget.Toast.makeText(context, "La cuenta no tiene cargos todavía", android.widget.Toast.LENGTH_SHORT).show()
@@ -1123,6 +1134,14 @@ internal fun TableCheckPanel(
     pendingCount: Int,
     pendingTotalCents: Int,
     onEnviar: () -> Unit,
+    /**
+     * Un botón gris SIN explicación es un toque mudo: el mesero no sabe si la app
+     * falló o si le falta un paso. Todo CTA deshabilitado aquí sigue siendo
+     * tappable y dice POR QUÉ. Mismo criterio que los ActionPill.
+     */
+    onBlocked: (String) -> Unit = {},
+    blockedNotice: String? = null,
+    onDismissNotice: () -> Unit = {},
     /** Ícono de impresora junto a Pagar/Guardar (Square) — imprime la pre-cuenta. */
     onPrintCuenta: () -> Unit = {},
     onPagar: () -> Unit,
@@ -1257,6 +1276,11 @@ internal fun TableCheckPanel(
 
         // ── CTA hierarchy swap (Square) ─────────────────────────────────
         HorizontalDivider()
+        if (blockedNotice != null) {
+            Box(modifier = Modifier.padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.sm)) {
+                BlockedNoticeCard(blockedNotice, onDismissNotice)
+            }
+        }
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1264,12 +1288,18 @@ internal fun TableCheckPanel(
             horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
         ) {
             if (hasPending) {
-                OutlinedButton(
-                    onClick = onPagar,
-                    enabled = false,
-                    modifier = Modifier.weight(0.35f).height(AvoqadoTheme.dimensions.buttonLarge),
-                    shape = RoundedCornerShape(50),
-                ) { Text("Pagar") }
+                BlockedTapOverlay(
+                    reason = "Primero envía los productos a cocina. Toca «Enviar» y después podrás cobrar.",
+                    onBlocked = onBlocked,
+                    modifier = Modifier.weight(0.35f),
+                ) {
+                    OutlinedButton(
+                        onClick = onPagar,
+                        enabled = false,
+                        modifier = Modifier.fillMaxWidth().height(AvoqadoTheme.dimensions.buttonLarge),
+                        shape = RoundedCornerShape(50),
+                    ) { Text("Pagar") }
+                }
                 PrimaryButton(
                     text = if (isSending) "Enviando..." else "Enviar",
                     onClick = { if (!isSending) onEnviar() },
@@ -1286,12 +1316,19 @@ internal fun TableCheckPanel(
                 ) {
                     Icon(Icons.Outlined.Print, contentDescription = "Imprimir cuenta")
                 }
-                PrimaryButton(
-                    text = "Pagar ${centsDisplay(subtotalCents)}",
-                    onClick = onPagar,
-                    enabled = subtotalCents > 0,
+                BlockedTapOverlay(
+                    reason = "Esta cuenta todavía no tiene cargos. Agrega productos y envíalos antes de cobrar."
+                        .takeIf { subtotalCents <= 0 },
+                    onBlocked = onBlocked,
                     modifier = Modifier.weight(0.5f),
-                )
+                ) {
+                    PrimaryButton(
+                        text = "Pagar ${centsDisplay(subtotalCents)}",
+                        onClick = onPagar,
+                        enabled = subtotalCents > 0,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
                 OutlinedButton(
                     onClick = onGuardar,
                     modifier = Modifier.weight(0.5f).height(AvoqadoTheme.dimensions.buttonLarge),
@@ -1569,6 +1606,66 @@ private fun TableSearchBar(onSearchTap: () -> Unit) {
 
 // MARK: - Helpers
 
+/**
+ * El "por qué está gris". Se renderiza en AMBAS pestañas (Cuenta y Acciones):
+ * vivía solo en Acciones, así que tocar un CTA bloqueado desde la Cuenta
+ * escribía el motivo en un sitio que el mesero nunca veía — un toque mudo
+ * con más pasos. Persistente: se queda hasta que lo cierren.
+ */
+@Composable
+private fun BlockedNoticeCard(motivo: String?, onDismiss: () -> Unit) {
+    motivo ?: return
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colorScheme.secondaryContainer)
+            .clickable(onClick = onDismiss)
+            .padding(AvoqadoTheme.spacing.md),
+        horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = motivo,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSecondaryContainer,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            text = "Entendido",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSecondaryContainer,
+        )
+    }
+}
+
+/**
+ * Deja tappable un control deshabilitado para poder decir POR QUÉ lo está.
+ * La capa va DESPUÉS del contenido: un botón `enabled=false` consume el
+ * pointer, así que el overlay tiene que quedar encima para recibir el toque.
+ */
+@Composable
+private fun BlockedTapOverlay(
+    reason: String?,
+    onBlocked: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    content: @Composable () -> Unit,
+) {
+    Box(modifier = modifier) {
+        content()
+        if (reason != null) {
+            Box(
+                modifier = Modifier
+                    .matchParentSize()
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                    ) { onBlocked(reason) },
+            )
+        }
+    }
+}
+
 private fun checkTotalCents(check: OrderDetail?): Int =
     check?.let { kotlin.math.round(it.total * 100).toInt() } ?: 0
 
@@ -1802,30 +1899,7 @@ internal fun TableActionsPanel(
     ) {
         // El "por qué está gris" aparece AQUÍ, junto al botón que el mesero
         // acaba de tocar, y se queda hasta que lo cierre.
-        blockedNotice?.let { motivo ->
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(MaterialTheme.colorScheme.secondaryContainer)
-                    .clickable(onClick = onDismissNotice)
-                    .padding(AvoqadoTheme.spacing.md),
-                horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = motivo,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSecondaryContainer,
-                    modifier = Modifier.weight(1f),
-                )
-                Text(
-                    text = "Entendido",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.onSecondaryContainer,
-                )
-            }
-        }
+        BlockedNoticeCard(blockedNotice, onDismissNotice)
         Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
             ActionPill(
                 label = "Borrar nuevos artículos",

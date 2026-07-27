@@ -42,6 +42,14 @@ import kotlin.math.round
  * The quick-sale register knows nothing about any of this — table ordering
  * lives here; paying still rides the proven PAYING seam through the register.
  */
+/**
+ * Qué se cobra: lo que el server ya conoce MÁS lo que salió por el outbox sin red.
+ * `sessionTotalCents` es sólo el último recurso — vale 0 en las mesas provisionales,
+ * y confiar en él dejaba el botón "Pagar" muerto sin internet (bug 2026-07-27).
+ */
+internal fun payableCents(fromCheckCents: Int, queuedCents: Int, sessionTotalCents: Int): Int =
+    (fromCheckCents + queuedCents).takeIf { it > 0 } ?: sessionTotalCents
+
 @HiltViewModel
 class TableOrderViewModel @Inject constructor(
     private val repository: TableServiceRepository,
@@ -1151,6 +1159,27 @@ class TableOrderViewModel @Inject constructor(
      * PAYING seam seeds and charges exactly what's owed. Returns false when
      * there's nothing to charge.
      */
+    /**
+     * Total COBRABLE, misma fuente que muestra la UI: lo del cheque del server
+     * MÁS lo enviado sin red (que el server todavía no conoce).
+     *
+     * 🔴 Existe porque el botón "Pagar" se habilitaba con este total pero
+     * preparePagar() leía `session.totalCents`, que en una mesa PROVISIONAL
+     * nace en 0 y nunca se actualiza. Resultado: el botón decía "Pagar $119.00",
+     * el mesero tocaba y NO PASABA NADA — sin red no se podía cobrar una mesa.
+     * Encontrado en la Sunmi T3 Pro el 2026-07-28.
+     */
+    val payableTotalCents: Int
+        get() {
+            val session = tableSession.current()
+            val fromCheck = _check.value?.takeIf { it.id == session?.orderId }?.let { check ->
+                val paid = check.payments.filter { it.status == "COMPLETED" }.sumOf { it.amount + it.tipAmount }
+                round((check.total - paid) * 100).toInt()
+            } ?: 0
+            val fromQueued = _queued.value.sumOf { it.item.effectiveUnitPrice * it.item.quantity }
+            return fromCheck + fromQueued
+        }
+
     fun preparePagar(): Boolean {
         val session = tableSession.current() ?: return false
         // 🔴 MONEY: si ya hubo pagos parciales (split), Pagar debe cobrar SOLO lo
@@ -1158,12 +1187,17 @@ class TableOrderViewModel @Inject constructor(
         // Solo confiar en el cheque si ES el de esta sesión (cambiar de cuenta
         // dispara loadCheck async — cobrar el total del cheque ANTERIOR contra
         // el orderId nuevo sería dinero equivocado; auditoría 2026-07-18).
-        val totalCents = _check.value?.takeIf { it.id == session.orderId }?.let { check ->
+        val totalFromCheck = _check.value?.takeIf { it.id == session.orderId }?.let { check ->
             // amount + tipAmount: el server mete las propinas de pagos previos
             // DENTRO de order.total, así que se restan completas.
             val paid = check.payments.filter { it.status == "COMPLETED" }.sumOf { it.amount + it.tipAmount }
             round((check.total - paid) * 100).toInt()
-        } ?: session.totalCents
+        } ?: 0
+        // Sin red el cheque del server no existe: se cobra lo enviado por el
+        // outbox. `session.totalCents` NO sirve aquí — nace en 0 en las mesas
+        // provisionales y dejaba el cobro muerto.
+        val queuedCents = _queued.value.sumOf { it.item.effectiveUnitPrice * it.item.quantity }
+        val totalCents = payableCents(totalFromCheck, queuedCents, session.totalCents)
         if (totalCents <= 0) return false
         tableSession.start(session.copy(mode = TableSession.Mode.PAYING, totalCents = totalCents))
         return true
