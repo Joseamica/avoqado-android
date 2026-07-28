@@ -553,7 +553,16 @@ class TableOrderViewModel @Inject constructor(
         viewModelScope.launch {
             runCatching { printConfigRepository.refresh(vId) }
             val config = printConfigRepository.getCurrentConfig()
-            if (config.stations.any { it.active }) {
+            // 🔴 SIN guard por estaciones. Antes esto exigía al menos una
+            // estación activa, así que un local sin estaciones configuradas —o
+            // un POS recién instalado que nunca pudo bajarlas— NO imprimía NADA,
+            // aunque tuviera su impresora de cocina conectada y con rol. La
+            // cocina no se enteraba del pedido y nadie lo notaba hasta el
+            // reclamo. El motor de ruteo YA es fail-open (los items sin estación
+            // forman un ticket "SIN ESTACIÓN") y printComandas cae a la
+            // impresora KITCHEN local, así que dejarlo pasar es lo correcto:
+            // en este dominio el fail-safe jamás puede ser no imprimir.
+            run {
                 // One comanda batch per course so each ticket reads
                 // "Mesa 8 · Aperitivos" like the single-course flow.
                 // Comandas route catalog products only — custom
@@ -1014,8 +1023,12 @@ class TableOrderViewModel @Inject constructor(
         viewModelScope.launch {
             printConfigRepository.refresh(vId)
             val config = printConfigRepository.getCurrentConfig()
-            if (!config.stations.any { it.active }) {
-                _actionMessage.value = "No hay estaciones de impresión activas"
+            // Sin estaciones NO se aborta: el motor de ruteo es fail-open (los
+            // items caen en un ticket "SIN ESTACIÓN") y ComandaPrinter usa la
+            // impresora KITCHEN local. Abortar aquí dejaba a un local sin
+            // estaciones configuradas sin poder reimprimir NADA.
+            if (!config.stations.any { it.active } && printerService.getDefaultPrinter(PrinterRole.KITCHEN) == null) {
+                _actionMessage.value = "No hay ninguna impresora de cocina configurada"
                 return@launch
             }
             sentItems.groupBy { it.course }.forEach { (course, courseItems) ->
@@ -1055,8 +1068,12 @@ class TableOrderViewModel @Inject constructor(
         viewModelScope.launch {
             printConfigRepository.refresh(vId)
             val config = printConfigRepository.getCurrentConfig()
-            if (!config.stations.any { it.active }) {
-                _actionMessage.value = "No hay estaciones de impresión activas"
+            // Sin estaciones NO se aborta: el motor de ruteo es fail-open (los
+            // items caen en un ticket "SIN ESTACIÓN") y ComandaPrinter usa la
+            // impresora KITCHEN local. Abortar aquí dejaba a un local sin
+            // estaciones configuradas sin poder reimprimir NADA.
+            if (!config.stations.any { it.active } && printerService.getDefaultPrinter(PrinterRole.KITCHEN) == null) {
+                _actionMessage.value = "No hay ninguna impresora de cocina configurada"
                 return@launch
             }
             val routable = courseItems.map { item ->

@@ -9,6 +9,10 @@ import android.bluetooth.BluetoothSocket
 import android.content.Context
 import android.content.pm.PackageManager
 import android.net.nsd.NsdManager
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import android.net.nsd.NsdServiceInfo
 import android.os.Build
 import android.util.Log
@@ -55,6 +59,9 @@ private const val CONNECTION_TIMEOUT_MS = 10_000L
 /** How long a discovery scan runs before auto-stopping. mDNS browsing never
  *  "finishes" on its own, so without this the UI spinner spins forever. */
 private const val DISCOVERY_WINDOW_MS = 12_000L
+
+/** Respiro antes de reintentar un resolve que chocó dentro del SO. */
+private const val RESOLVE_RETRY_MS = 250L
 
 /** Espera al bind del servicio de la impresora integrada: 10 × 200 ms = 2 s. */
 private const val BIND_WAIT_TRIES = 10
@@ -131,6 +138,21 @@ class PrinterService @Inject constructor(
     private val usbPrinters = UsbPrinterManager(context)
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
+
+    /**
+     * 🔴 Los resolves de mDNS van EN SERIE, uno a la vez.
+     *
+     * `NsdManager.resolveService` revienta con FAILURE_ALREADY_ACTIVE (3) si
+     * hay otro en curso, y el fallo es SILENCIOSO: la impresora simplemente no
+     * aparece. Medido en la Sunmi (2026-07-28): de 4 anuncios encontrados, 3
+     * fallaron con error 3 y sólo 1 llegó a la lista.
+     *
+     * En un local con impresora de cocina + barra + caja eso significa ver UNA
+     * sola y no poder configurar el resto — y no hay alta manual por IP que
+     * salve la situación. Es el mismo tropiezo que ya costó una ronda de
+     * diagnóstico en el hub LAN (`LanDiscovery`).
+     */
+    private val resolveMutex = Mutex()
     private var discoveryTimeoutJob: Job? = null
 
     private val json = Json { ignoreUnknownKeys = true }
@@ -560,30 +582,11 @@ class PrinterService @Inject constructor(
 
                     override fun onServiceFound(serviceInfo: NsdServiceInfo) {
                         Log.d(TAG, "Found printer: ${serviceInfo.serviceName}")
-                        // Resolve service to get IP
-                        nsdManager?.resolveService(serviceInfo, object : NsdManager.ResolveListener {
-                            override fun onResolveFailed(si: NsdServiceInfo, errorCode: Int) {
-                                Log.w(TAG, "Resolve failed for ${si.serviceName}: $errorCode")
-                            }
-
-                            override fun onServiceResolved(si: NsdServiceInfo) {
-                                val address = si.host?.hostAddress ?: return
-                                val port = si.port
-                                val printer = DiscoveredPrinter(
-                                    id = "${si.serviceName}_${address}",
-                                    name = si.serviceName,
-                                    connectionType = PrinterConnectionType.WIFI,
-                                    address = address,
-                                    port = port,
-                                )
-                                val current = _discoveredPrinters.value.toMutableList()
-                                if (current.none { it.id == printer.id }) {
-                                    current.add(printer)
-                                    _discoveredPrinters.value = current
-                                }
-                                Log.d(TAG, "Resolved printer: ${si.serviceName} at $address:$port")
-                            }
-                        })
+                        // EN SERIE (ver resolveMutex): en paralelo, todos menos
+                        // uno mueren con FAILURE_ALREADY_ACTIVE y se pierden.
+                        serviceScope.launch {
+                            resolveMutex.withLock { resolveOne(serviceInfo) }
+                        }
                     }
 
                     override fun onServiceLost(serviceInfo: NsdServiceInfo) {
@@ -672,6 +675,56 @@ class PrinterService @Inject constructor(
      */
     private fun isSunmiInner(name: String?): Boolean =
         name?.replace(" ", "")?.equals("innerprinter", ignoreCase = true) == true
+
+    /**
+     * Un resolve, esperando su turno. Suspende hasta que el SO responde, así
+     * el `withLock` de arriba garantiza que nunca hay dos a la vez.
+     *
+     * Reintenta UNA vez ante FAILURE_ALREADY_ACTIVE: aunque serialicemos lo
+     * nuestro, el resolve anterior puede seguir liberándose dentro del SO y
+     * perder una impresora por 100 ms sería el mismo fallo silencioso.
+     */
+    private suspend fun resolveOne(serviceInfo: NsdServiceInfo, attempt: Int = 0) {
+        val resolved = suspendCancellableCoroutine<NsdServiceInfo?> { cont ->
+            val listener = object : NsdManager.ResolveListener {
+                override fun onResolveFailed(si: NsdServiceInfo, errorCode: Int) {
+                    Log.w(TAG, "Resolve failed for ${si.serviceName}: $errorCode")
+                    if (cont.isActive) cont.resume(null) {}
+                }
+
+                override fun onServiceResolved(si: NsdServiceInfo) {
+                    if (cont.isActive) cont.resume(si) {}
+                }
+            }
+            runCatching { nsdManager?.resolveService(serviceInfo, listener) }
+                .onFailure { if (cont.isActive) cont.resume(null) {} }
+        }
+
+        if (resolved == null) {
+            if (attempt == 0) {
+                delay(RESOLVE_RETRY_MS)
+                resolveOne(serviceInfo, attempt + 1)
+            }
+            return
+        }
+
+        val address = resolved.host?.hostAddress ?: return
+        val printer = DiscoveredPrinter(
+            id = "${resolved.serviceName}_$address",
+            name = resolved.serviceName,
+            connectionType = PrinterConnectionType.WIFI,
+            address = address,
+            port = resolved.port,
+        )
+        val current = _discoveredPrinters.value.toMutableList()
+        // Dedup por DIRECCIÓN: la misma impresora se anuncia en varios tipos de
+        // servicio (_printer, _pdl-datastream, _ipp) y saldría repetida.
+        if (current.none { it.address == printer.address && it.connectionType == PrinterConnectionType.WIFI }) {
+            current.add(printer)
+            _discoveredPrinters.value = current
+        }
+        Log.d(TAG, "Resolved printer: ${resolved.serviceName} at $address:${resolved.port}")
+    }
 
     private fun stopNetworkDiscovery() {
         try {
