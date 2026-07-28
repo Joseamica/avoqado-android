@@ -6,6 +6,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.window.DialogWindowProvider
 import androidx.core.view.WindowCompat
@@ -748,6 +749,12 @@ fun TableOrderScreen(
             // bar de la app. Además la ventana se encogía (1920x972 en vez de
             // 1080) para dejarle sitio, recortando el contenido.
             ImmersiveDialogWindow()
+            // Oculta el tab bar de la app mientras dura el cobro: asomaba por
+            // debajo del diálogo y era tocable a media transacción.
+            DisposableEffect(Unit) {
+                com.avoqado.pos.payment.domain.PaymentOverlayState.setPaying(true)
+                onDispose { com.avoqado.pos.payment.domain.PaymentOverlayState.setPaying(false) }
+            }
             Box(
                 modifier = Modifier
                     .fillMaxSize()

@@ -196,6 +196,9 @@ private fun MainScaffold(
     val navController = rememberNavController()
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = navBackStackEntry?.destination
+    // El cobro se abre en un Dialog que NO cubre la pantalla completa: sin esto
+    // el tab bar asomaba por debajo y era tocable a media transacción.
+    val isPaying by com.avoqado.pos.payment.domain.PaymentOverlayState.isPaying.collectAsState()
     val startTab = visibleTabs.firstOrNull() ?: MainTab.NOTIFICATIONS
 
     // Cuarentena de sincronización: hoja de resolución de rechazos.
@@ -255,7 +258,9 @@ private fun MainScaffold(
                 }
             },
             bottomBar = {
-                TabletTabBar(
+                // Durante el cobro el tab bar se esconde: el diálogo del pago no
+                // cubre la pantalla completa y este quedaba asomando y tocable.
+                if (!isPaying) TabletTabBar(
                     visibleTabs = visibleTabs,
                     selectedTab = selectedTab,
                     onTabSelected = { tab ->
@@ -512,7 +517,9 @@ private fun MainScaffold(
                 }
             },
             bottomBar = {
-                NavigationBar {
+                // Mismo criterio que el layout de tablet: durante el cobro no se
+                // muestra, porque asoma por debajo del diálogo del pago.
+                if (!isPaying) NavigationBar {
                     visibleTabs.forEach { tab ->
                         val selected = currentDestination?.hierarchy?.any { it.route == tab.route } == true
                         NavigationBarItem(

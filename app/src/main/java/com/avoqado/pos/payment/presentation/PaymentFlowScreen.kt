@@ -86,11 +86,13 @@ fun PaymentFlowScreen(
                         subtitle = "Pídele que use la pantalla frente a él",
                         skipLabel = "Continuar sin calificación",
                         onSkip = { viewModel.submitRating(null) },
+                        onCancel = onCancel,
                     )
                 } else {
                     RatingScreen(
                         onRatingSubmitted = { viewModel.submitRating(it) },
                         onSkip = { viewModel.submitRating(null) },
+                        onCancel = onCancel,
                     )
                 }
             }
@@ -105,6 +107,7 @@ fun PaymentFlowScreen(
                         subtitle = "Pídele que use la pantalla frente a él",
                         skipLabel = "Continuar sin propina",
                         onSkip = { viewModel.submitTip(0) },
+                        onCancel = onCancel,
                     )
                 } else {
                     // Sin pantalla de cliente: método de pago con la hoja de

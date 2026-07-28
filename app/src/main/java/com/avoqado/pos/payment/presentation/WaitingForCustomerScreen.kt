@@ -17,6 +17,15 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.material3.Icon
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -43,6 +52,8 @@ fun WaitingForCustomerScreen(
     skipLabel: String,
     onSkip: () -> Unit,
     secondsBeforeSkip: Int = 8,
+    /** Salir del cobro — sin esto el mesero queda atrapado (ver RatingScreen). */
+    onCancel: (() -> Unit)? = null,
 ) {
     var canSkip by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
@@ -50,12 +61,34 @@ fun WaitingForCustomerScreen(
         canSkip = true
     }
 
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background),
+    ) {
+    if (onCancel != null) {
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(AvoqadoTheme.spacing.lg)
+                .size(32.dp)
+                .clip(RoundedCornerShape(50))
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .clickable(onClick = onCancel),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.Filled.Close,
+                contentDescription = "Cerrar",
+                modifier = Modifier.size(18.dp),
+            )
+        }
+    }
     Column(
         // Fondo opaco: esta pantalla SIEMPRE va sola; si algo queda debajo, el
         // cajero ve dos interfaces encimadas.
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
             .padding(AvoqadoTheme.spacing.xxl),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
@@ -82,5 +115,6 @@ fun WaitingForCustomerScreen(
                 Text(skipLabel, style = MaterialTheme.typography.titleMedium)
             }
         }
+    }
     }
 }

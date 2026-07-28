@@ -21,6 +21,11 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -32,9 +37,36 @@ import com.avoqado.pos.designsystem.theme.Warning
 fun RatingScreen(
     onRatingSubmitted: (Int) -> Unit,
     onSkip: () -> Unit,
+    /**
+     * Salir del cobro. Sin esto el mesero quedaba ATRAPADO: esta pantalla no
+     * tenía X, el back está deshabilitado en el diálogo del pago, y las
+     * estrellas sólo avanzan. Para salir había que atravesar propina y método
+     * de pago — tres pantallas, con el cliente enfrente. Square muestra la X
+     * en todos los pasos del cobro por esto mismo.
+     */
+    onCancel: (() -> Unit)? = null,
 ) {
     var rating by remember { mutableIntStateOf(0) }
 
+    Box(modifier = Modifier.fillMaxSize()) {
+    if (onCancel != null) {
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
+                .padding(AvoqadoTheme.spacing.lg)
+                .size(32.dp)
+                .clip(RoundedCornerShape(50))
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .clickable(onClick = onCancel),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.Filled.Close,
+                contentDescription = "Cerrar",
+                modifier = Modifier.size(18.dp),
+            )
+        }
+    }
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -75,5 +107,6 @@ fun RatingScreen(
         TextButton(onClick = onSkip) {
             Text("Omitir")
         }
+    }
     }
 }
