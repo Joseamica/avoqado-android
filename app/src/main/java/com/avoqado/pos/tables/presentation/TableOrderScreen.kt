@@ -350,7 +350,13 @@ fun TableOrderScreen(
                                 // Separar SÍ funciona sin red: las líneas enviadas
                                 // offline se referencian por su externalId. Sin esto
                                 // el botón quedaba gris justo cuando más se necesita.
-                                canSeparar = splittableItems.isNotEmpty(),
+                                // Hacen falta 2: uno se va y otro se queda.
+                                canSeparar = splittableItems.size >= 2,
+                                separarBlockedReason = if (splittableItems.isEmpty()) {
+                                    "Primero envía a cocina lo que quieras separar."
+                                } else {
+                                    "Necesitas al menos 2 artículos: uno se va a la cuenta nueva y otro se queda en esta."
+                                },
                                 isOffline = !isConnected,
                                 onBlocked = { motivo -> viewModel.showBlockedReason(motivo) },
                                 blockedNotice = blockedNotice,
@@ -501,7 +507,13 @@ fun TableOrderScreen(
                                 // Separar SÍ funciona sin red: las líneas enviadas
                                 // offline se referencian por su externalId. Sin esto
                                 // el botón quedaba gris justo cuando más se necesita.
-                                canSeparar = splittableItems.isNotEmpty(),
+                                // Hacen falta 2: uno se va y otro se queda.
+                                canSeparar = splittableItems.size >= 2,
+                                separarBlockedReason = if (splittableItems.isEmpty()) {
+                                    "Primero envía a cocina lo que quieras separar."
+                                } else {
+                                    "Necesitas al menos 2 artículos: uno se va a la cuenta nueva y otro se queda en esta."
+                                },
                                 isOffline = !isConnected,
                                 onBlocked = { motivo -> viewModel.showBlockedReason(motivo) },
                                 blockedNotice = blockedNotice,
@@ -1961,6 +1973,8 @@ internal fun TableActionsPanel(
     hasSent: Boolean,
     /** Hay algo que separar: líneas del server O enviadas sin red (externalId). */
     canSeparar: Boolean = hasSent,
+    /** Por qué no se puede separar: distingue "nada enviado" de "un solo artículo". */
+    separarBlockedReason: String = "Primero envía a cocina lo que quieras separar.",
     /** Sin conexión: cambia el motivo del bloqueo y pinta el ícono de nube. */
     isOffline: Boolean = false,
     /** Se dispara al tocar un botón gris, con el motivo en lenguaje de mesero. */
@@ -2062,7 +2076,11 @@ internal fun TableActionsPanel(
             ActionPill(
                 label = "Separar en otra cuenta",
                 enabled = canSeparar,
-                blockedReason = "Primero envía a cocina lo que quieras separar.",
+                // 🔴 Separar exige AL MENOS DOS artículos: uno se va a la cuenta
+                // nueva y otro tiene que quedarse. Con uno solo, el diálogo abría
+                // y "Separar (0)" NUNCA podía habilitarse — el mesero quedaba en
+                // un callejón sin salida. (Encontrado en la D3, mesa M2.)
+                blockedReason = separarBlockedReason,
                 onBlocked = onBlocked,
                 onClick = onSepararCuenta,
                 modifier = Modifier.weight(1f),
