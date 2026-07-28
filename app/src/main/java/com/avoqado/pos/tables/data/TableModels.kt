@@ -57,7 +57,17 @@ data class DiningTable(
         get() = currentOrder?.let { o ->
             // La misma orden ya viene en la lista casi siempre; se prefiere esa
             // para no duplicar la fuente de verdad de total/versión.
-            openOrders.firstOrNull { it.id == o.id } ?: OpenCheckSummary(
+            openOrders.firstOrNull { it.id == o.id }
+                // 🔴 El puntero apunta a una orden que YA NO ESTÁ ABIERTA.
+                // Pasa al cobrar una cuenta dividida: `currentOrderId` se queda
+                // en la que se acaba de pagar y el server la manda igual (no
+                // filtra por estado). El mesero veía "Pagar $310.50" de algo ya
+                // cobrado y NO podía llegar a los $144 que faltaban.
+                // Si hay otra cuenta abierta, ESA manda. (Medido en D3, M2.)
+                ?: openOrders.firstOrNull()
+                // Sólo si no hay ninguna abierta se cree al puntero: backend
+                // viejo que no manda `openOrders`.
+                ?: OpenCheckSummary(
                 id = o.id,
                 orderNumber = o.orderNumber,
                 covers = o.covers,

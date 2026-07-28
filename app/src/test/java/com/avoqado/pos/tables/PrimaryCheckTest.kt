@@ -115,6 +115,24 @@ class PrimaryCheckTest {
     // MARK: - Mesa realmente libre
 
     @Test
+    fun `puntero a una cuenta YA PAGADA cede ante la que sigue abierta`() {
+        // 🔴 Caso real (D3, mesa M2): se dividió la cuenta y se cobró una de las
+        // dos. `currentOrderId` se quedó apuntando a la ya PAGADA —el server la
+        // manda igual, no filtra por estado— así que el mesero veía
+        // "Pagar $310.50" de algo cobrado y NO podía llegar a los $144 vivos.
+        val m2 = DiningTable(
+            id = "t2",
+            number = "M2",
+            status = "AVAILABLE",
+            // el puntero: la cuenta pagada, que YA NO está en openOrders
+            currentOrder = order("pagada", "ORD-PAGADA", 310.50),
+            openOrders = listOf(check("viva", "ORD-VIVA", 144.0)),
+        )
+        assertEquals("viva", m2.primaryCheck?.id)
+        assertEquals(144.0, m2.primaryCheck?.total ?: 0.0, 0.001)
+    }
+
+    @Test
     fun `mesa libre no inventa cuenta`() {
         val libre = DiningTable(id = "t", number = "M6", status = "AVAILABLE")
         assertTrue(libre.isAvailable)
