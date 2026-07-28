@@ -189,7 +189,17 @@ class PrinterService @Inject constructor(
         try {
             when (printer.connectionTypeEnum) {
                 PrinterConnectionType.WIFI -> connectWiFi(printer)
-                PrinterConnectionType.BLUETOOTH -> connectBluetooth(printer)
+                PrinterConnectionType.BLUETOOTH -> {
+                    // Residuo: equipos que ya guardaron el "InnerPrinter" por BT
+                    // antes de este fix. El socket abre y los bytes se pierden,
+                    // así que el silencio parecería "impreso". Mejor gritar.
+                    if (isSunmiInner(printer.name) && !innerPrinter.hasPhysicalPrinter) {
+                        throw PrinterException.ConnectionFailed(
+                            "Este equipo no tiene impresora integrada. Elige otra impresora en Ajustes › Impresora.",
+                        )
+                    }
+                    connectBluetooth(printer)
+                }
                 PrinterConnectionType.USB -> connectUsb(printer)
                 // Va soldada: "conectar" = asegurar el bind del servicio (que es
                 // asíncrono y pudo no haber ocurrido esta sesión). No adivina que
@@ -625,6 +635,17 @@ class PrinterService @Inject constructor(
                         it.contains("tm-") || it.contains("tsp") || it.contains("sp7")
                 } ?: false
 
+                // La impresora interna de Sunmi TAMBIÉN se anuncia por Bluetooth
+                // ("InnerPrinter"). En una T3 Pro —que no trae cabezal— seguía
+                // apareciendo aquí aunque el AIDL ya diga que no existe, y hasta
+                // quedaba configurada como impresora de recibos mostrando
+                // "Conectada": los tickets se iban a la nada. Cerrar sólo la
+                // puerta AIDL no bastaba; es el MISMO hardware por otra vía.
+                if (isSunmiInner(device.name) && !innerPrinter.hasPhysicalPrinter) {
+                    Log.i(TAG, "Omito ${device.name} por BT: este equipo no trae impresora integrada")
+                    continue
+                }
+
                 if (isPrinterClass || looksLikePrinter) {
                     val printer = DiscoveredPrinter(
                         id = "bt_${device.address}",
@@ -643,6 +664,14 @@ class PrinterService @Inject constructor(
             Log.e(TAG, "Bluetooth discovery error: ${e.message}")
         }
     }
+
+    /**
+     * El dispositivo Bluetooth que ES la impresora interna de Sunmi. Se
+     * identifica por NOMBRE, no por MAC: la MAC (00:11:22:33:44:55) es un
+     * patrón de ejemplo que Sunmi reutiliza y podría cambiar entre modelos.
+     */
+    private fun isSunmiInner(name: String?): Boolean =
+        name?.replace(" ", "")?.equals("innerprinter", ignoreCase = true) == true
 
     private fun stopNetworkDiscovery() {
         try {
