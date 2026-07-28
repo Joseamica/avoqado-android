@@ -5,6 +5,9 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.clickable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.ui.platform.LocalView
@@ -299,7 +302,16 @@ fun TableOrderScreen(
                         .background(MaterialTheme.colorScheme.outlineVariant),
                 )
                 Box(modifier = Modifier.weight(0.5f).fillMaxHeight()) {
-                    Column(modifier = Modifier.fillMaxSize()) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            // 🔴 Sin esto las pestañas nacen en y=0, DEBAJO de la
+                            // barra de estado (31px en la D3): el 60% del botón
+                            // "Acciones"/"Cliente" no recibía el toque y el
+                            // mesero no tenía forma de saber por qué. Medido en
+                            // hardware el 2026-07-28.
+                            .windowInsetsPadding(WindowInsets.statusBars),
+                    ) {
                         PanelTabsRow(selected = panelTab, onSelect = { if (it == PanelTab.CUENTA || !blockIfReadOnly()) panelTab = it })
                         when (panelTab) {
                             PanelTab.CUENTA -> TableCheckPanel(

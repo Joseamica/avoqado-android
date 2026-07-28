@@ -4,6 +4,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -110,7 +113,13 @@ fun CartPanelView(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .background(MaterialTheme.colorScheme.surface),
+                .background(MaterialTheme.colorScheme.surface)
+                // 🔴 El panel nacía en y=0 y la barra de estado (31px en la D3)
+                // se comía los toques: "Agregar cliente" quedaba 100%
+                // inaccesible y el menú "..." perdía un tercio de su área.
+                // El panel izquierdo sí respetaba el margen, así que el defecto
+                // sólo se veía de este lado. Medido en hardware el 2026-07-28.
+                .windowInsetsPadding(WindowInsets.statusBars),
         ) {
             // Customer Header (matching iOS: "Agregar cliente" + ... menu)
             CustomerHeader(
