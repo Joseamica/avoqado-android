@@ -106,11 +106,23 @@ class MainActivity : FragmentActivity() {
         }
     }
 
+    /**
+     * Pantalla completa de POS: se ocultan AMBAS barras del sistema.
+     *
+     * Antes sólo se escondía la de navegación, así que arriba quedaba la barra
+     * de estado con el reloj y los iconos. En un POS eso no aporta nada y sí
+     * estorba: en la D3 se comía los toques de media pantalla —"Agregar
+     * cliente" era 100% inalcanzable y el 60% de las pestañas del cheque no
+     * respondía— porque los paneles nacen en y=0 (ver 691e18f).
+     *
+     * Sigue siendo transient: un swipe desde el borde las trae de vuelta unos
+     * segundos, así que el operador nunca queda encerrado sin salida.
+     */
     private fun hideNavigationBar() {
         WindowCompat.getInsetsController(window, window.decorView).apply {
             systemBarsBehavior =
                 WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-            hide(WindowInsetsCompat.Type.navigationBars())
+            hide(WindowInsetsCompat.Type.systemBars())
         }
     }
 }
