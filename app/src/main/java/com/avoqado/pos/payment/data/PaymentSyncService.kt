@@ -249,7 +249,13 @@ class PaymentSyncService @Inject constructor(
                 put("amount", payment.amountCents)
                 put("tip", payment.tipCents)
                 put("status", "COMPLETED")
-                put("method", "CASH")
+                // El método REAL de la cola, no un "CASH" fijo: reproducir un
+                // cobro con terminal ajena como efectivo descuadra el arqueo.
+                val manual = runCatching {
+                    com.avoqado.pos.payment.domain.ManualPaymentMethod.valueOf(payment.method)
+                }.getOrNull()
+                put("method", manual?.serverMethod ?: "CASH")
+                manual?.externalSource?.let { put("externalSource", it) }
                 put("splitType", "FULLPAYMENT")
                 put("staffId", payment.staffId)
                 put("source", "AVOQADO_ANDROID")

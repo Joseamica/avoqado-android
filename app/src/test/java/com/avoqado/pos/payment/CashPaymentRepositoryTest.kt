@@ -83,6 +83,51 @@ class CashPaymentRepositoryTest {
     // MARK: - queueCashPayment tests
 
     @Test
+    fun `cobro con terminal ajena se encola con su metodo, NO como efectivo`() = runTest {
+        // Sin esto, un cobro con tarjeta hecho sin red se reproducía al
+        // reconectar como CASH y el corte pedía dinero que nunca entró al
+        // cajón (el arqueo filtra por method=CASH).
+        val orderRequest = CreateOrderRequest(items = emptyList(), subtotal = 11900, total = 11900, paymentMethod = "CASH")
+
+        repository.queueCashPayment(
+            orderRequest,
+            "user-456",
+            null,
+            null,
+            null,
+            manualMethod = com.avoqado.pos.payment.domain.ManualPaymentMethod.CARD_EXTERNAL,
+        )
+
+        coVerify { dao.insert(match { it.method == "CARD_EXTERNAL" }) }
+    }
+
+    @Test
+    fun `transferencia se encola como transferencia`() = runTest {
+        val orderRequest = CreateOrderRequest(items = emptyList(), subtotal = 5000, total = 5000, paymentMethod = "CASH")
+
+        repository.queueCashPayment(
+            orderRequest,
+            "user-456",
+            null,
+            null,
+            null,
+            manualMethod = com.avoqado.pos.payment.domain.ManualPaymentMethod.TRANSFER,
+        )
+
+        coVerify { dao.insert(match { it.method == "TRANSFER" }) }
+    }
+
+    @Test
+    fun `los metodos manuales mapean a nombres que el server conoce`() {
+        // Espejo EXACTO del enum PaymentMethod del server y de iOS: un nombre
+        // que el server no conozca se rechaza y el cobro cae en cuarentena.
+        val validos = setOf("CASH", "CREDIT_CARD", "DEBIT_CARD", "BANK_TRANSFER", "OTHER")
+        com.avoqado.pos.payment.domain.ManualPaymentMethod.entries.forEach { m ->
+            assertTrue("${m.name} manda ${m.serverMethod}, que el server no acepta", m.serverMethod in validos)
+        }
+    }
+
+    @Test
     fun `queueCashPayment inserts entity into DAO`() = runTest {
         val orderRequest = CreateOrderRequest(
             items = emptyList(),

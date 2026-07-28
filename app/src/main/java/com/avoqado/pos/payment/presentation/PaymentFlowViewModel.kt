@@ -552,7 +552,30 @@ class PaymentFlowViewModel @Inject constructor(
     }
 
     /** Cash preset tapped directly from payment method screen (iOS-style direct confirm) */
+    /**
+     * Cobro registrado a mano: el dinero NO pasó por Avoqado (terminal ajena,
+     * transferencia). null = efectivo. Se limpia con la sesión de cobro para
+     * que el siguiente cliente no herede el método del anterior.
+     */
+    private var manualMethod: com.avoqado.pos.payment.domain.ManualPaymentMethod? = null
+
+    /**
+     * El mesero declara que ya le pagaron por otro medio. No hay teclado ni
+     * cambio: el monto es exactamente el total, así que se cobra de una.
+     */
+    /** Etiqueta del cobro manual para la pantalla de éxito y el recibo. */
+    val manualMethodLabel: String? get() = manualMethod?.label
+
+    fun confirmManualMethod(method: com.avoqado.pos.payment.domain.ManualPaymentMethod) {
+        manualMethod = method
+        selectedMethod = PaymentMethod.CASH
+        val total = currentBaseAmount() + currentTipCents
+        lastCashTenderedCents = total
+        processCashPayment(total)
+    }
+
     fun confirmCashPreset(tenderedCents: Int) {
+        manualMethod = null
         selectedMethod = PaymentMethod.CASH
         lastCashTenderedCents = tenderedCents
         processCashPayment(tenderedCents)
@@ -560,6 +583,7 @@ class PaymentFlowViewModel @Inject constructor(
 
     /** Custom cash amount confirmed from bottom sheet keypad */
     fun confirmCashCustom(tenderedCents: Int) {
+        manualMethod = null
         selectedMethod = PaymentMethod.CASH
         lastCashTenderedCents = tenderedCents
         processCashPayment(tenderedCents)
@@ -661,6 +685,7 @@ class PaymentFlowViewModel @Inject constructor(
                                             changeCents = null,
                                             rating = currentRating,
                                             orderId = null,
+                                            manualMethod = manualMethod,
                                         )
                                         // Record cash sale in drawer (defensive: same fix as B4)
                                         recordCashSale(total, null)
@@ -764,6 +789,7 @@ class PaymentFlowViewModel @Inject constructor(
                         tip = currentTipCents,
                         splitType = _splitType.value,
                         idempotencyKey = sessionIdempotencyKey(),
+                        manualMethod = manualMethod,
                     )
                     payResult.fold(
                         onSuccess = { result ->
@@ -796,6 +822,7 @@ class PaymentFlowViewModel @Inject constructor(
                                     changeCents = null,
                                     rating = currentRating,
                                     orderId = orderId,
+                                    manualMethod = manualMethod,
                                 )
                                 recordCashSale(total, orderId)
                                 _state.value = PaymentFlowState.Success(
@@ -893,6 +920,7 @@ class PaymentFlowViewModel @Inject constructor(
                                             changeCents = result.changeCents,
                                             rating = currentRating,
                                             orderId = null,
+                                            manualMethod = manualMethod,
                                         )
                                         // FIX B4: Record cash sale in drawer even on offline queue
                                         recordCashSale(total, null)
@@ -923,6 +951,7 @@ class PaymentFlowViewModel @Inject constructor(
                             tip = currentTipCents,
                             splitType = _splitType.value,
                             idempotencyKey = sessionIdempotencyKey(),
+                            manualMethod = manualMethod,
                         )
                         fastResult.fold(
                             onSuccess = { fast ->
@@ -952,6 +981,7 @@ class PaymentFlowViewModel @Inject constructor(
                                             changeCents = result.changeCents,
                                             rating = currentRating,
                                             orderId = null,
+                                            manualMethod = manualMethod,
                                         )
                                     }
                                     recordCashSale(total, null)
@@ -1005,6 +1035,12 @@ class PaymentFlowViewModel @Inject constructor(
                         put("localOrderId", kotlinx.serialization.json.JsonPrimitive(orderId))
                         put("amountCents", kotlinx.serialization.json.JsonPrimitive(subtotal))
                         put("tipCents", kotlinx.serialization.json.JsonPrimitive(currentTipCents))
+                        // Sin esto, un cobro con terminal ajena hecho sin red
+                        // se reproduciría como EFECTIVO y descuadraría el corte.
+                        manualMethod?.let { m ->
+                            put("method", kotlinx.serialization.json.JsonPrimitive(m.serverMethod))
+                            m.externalSource?.let { put("externalSource", kotlinx.serialization.json.JsonPrimitive(it)) }
+                        }
                     },
                 )
                 recordCashSale(total, orderId)
@@ -1025,6 +1061,7 @@ class PaymentFlowViewModel @Inject constructor(
             tip = currentTipCents,
             splitType = _splitType.value,
             idempotencyKey = sessionIdempotencyKey(),
+            manualMethod = manualMethod,
         )
         payResult.fold(
             onSuccess = { result ->
@@ -1052,6 +1089,7 @@ class PaymentFlowViewModel @Inject constructor(
                         changeCents = changeCents,
                         rating = currentRating,
                         orderId = orderId,
+                        manualMethod = manualMethod,
                     )
                     recordCashSale(total, orderId)
                     _state.value = PaymentFlowState.Success(
@@ -1398,13 +1436,13 @@ class PaymentFlowViewModel @Inject constructor(
             tipAmount = if (currentTipCents > 0) currentTipCents else null,
             discountAmount = if (receiptDiscount > 0) receiptDiscount else null,
             total = receiptTotal,
-            paymentMethod = when (resolvedMethod) {
+            paymentMethod = manualMethod?.label ?: when (resolvedMethod) {
                 PaymentMethod.CASH -> "Efectivo"
                 PaymentMethod.CARD -> "Tarjeta"
                 null -> null
             },
             venueName = secureStorage.venueName ?: "Avoqado",
-            cashTendered = if (resolvedMethod == PaymentMethod.CASH) resolvedChange?.let { receiptTotal + it } else null,
+            cashTendered = if (resolvedMethod == PaymentMethod.CASH && manualMethod == null) resolvedChange?.let { receiptTotal + it } else null,
             changeAmount = resolvedChange,
             transactionId = lastPaymentId,
             receiptUrl = receiptUrl,

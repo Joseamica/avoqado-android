@@ -278,6 +278,12 @@ class OrderRepository @Inject constructor(
         tip: Int = 0,
         splitType: String = "FULLPAYMENT",
         idempotencyKey: String = java.util.UUID.randomUUID().toString(),
+        /**
+         * Cobro registrado a mano (tarjeta de una terminal ajena,
+         * transferencia). null = efectivo, que es como se comportaba antes.
+         * ADITIVO: el server usa CASH cuando no llega.
+         */
+        manualMethod: com.avoqado.pos.payment.domain.ManualPaymentMethod? = null,
     ): Result<CashPayResult> {
         val venueId = secureStorage.venueId ?: return Result.failure(Exception("No venue"))
         if (staffId.isBlank()) return Result.failure(Exception("No staff"))
@@ -289,7 +295,8 @@ class OrderRepository @Inject constructor(
                 append("\"amount\":$amount,")
                 append("\"tip\":$tip,")
                 append("\"status\":\"COMPLETED\",")
-                append("\"method\":\"CASH\",")
+                append("\"method\":\"${manualMethod?.serverMethod ?: "CASH"}\",")
+                manualMethod?.externalSource?.let { append("\"externalSource\":\"$it\",") }
                 append("\"splitType\":\"$splitType\",")
                 append("\"staffId\":\"$staffId\",")
                 append("\"source\":\"AVOQADO_ANDROID\",")
@@ -335,6 +342,12 @@ class OrderRepository @Inject constructor(
         tip: Int = 0,
         splitType: String = "FULLPAYMENT",
         idempotencyKey: String = java.util.UUID.randomUUID().toString(),
+        /**
+         * Cobro registrado a mano (tarjeta de una terminal ajena,
+         * transferencia). null = efectivo, que es como se comportaba antes.
+         * ADITIVO: el server usa CASH cuando no llega.
+         */
+        manualMethod: com.avoqado.pos.payment.domain.ManualPaymentMethod? = null,
     ): Result<CashPayResult> {
         val venueId = secureStorage.venueId ?: return Result.failure(Exception("No venue"))
         if (staffId.isBlank()) return Result.failure(Exception("No staff"))
@@ -346,7 +359,8 @@ class OrderRepository @Inject constructor(
                 append("\"amount\":$amount,")
                 append("\"tip\":$tip,")
                 append("\"status\":\"COMPLETED\",")
-                append("\"method\":\"CASH\",")
+                append("\"method\":\"${manualMethod?.serverMethod ?: "CASH"}\",")
+                manualMethod?.externalSource?.let { append("\"externalSource\":\"$it\",") }
                 append("\"splitType\":\"$splitType\",")
                 append("\"staffId\":\"$staffId\",")
                 append("\"source\":\"AVOQADO_ANDROID\",")

@@ -40,6 +40,13 @@ class CashPaymentRepository @Inject constructor(
         changeCents: Int?,
         rating: Int?,
         orderId: String? = null,
+        /**
+         * Cobro registrado a mano (terminal ajena, transferencia). null =
+         * efectivo. Se PERSISTE: sin esto, un cobro con tarjeta hecho sin red
+         * se reproducía como efectivo al reconectar y el corte pedía dinero
+         * que nunca entró al cajón.
+         */
+        manualMethod: com.avoqado.pos.payment.domain.ManualPaymentMethod? = null,
     ): String {
         val localId = UUID.randomUUID().toString()
         val hasOrderItems = OrderRepository.hasProductItems(orderRequest)
@@ -50,7 +57,9 @@ class CashPaymentRepository @Inject constructor(
             staffId = staffId,
             amountCents = orderRequest.total - orderRequest.tip,
             tipCents = orderRequest.tip,
-            method = "CASH",
+            // Se guarda el nombre del método MANUAL (o "CASH"); el sync lo
+            // traduce al enum del server al reproducirlo.
+            method = manualMethod?.name ?: "CASH",
             paymentType = paymentType,
             orderId = orderId,
             orderNumber = null,

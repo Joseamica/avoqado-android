@@ -62,6 +62,12 @@ import com.avoqado.pos.payment.data.model.PaymentMethod
 fun PaymentResultScreen(
     totalCents: Int,
     method: PaymentMethod,
+    /**
+     * Etiqueta real cuando el cobro se registró a mano (terminal ajena,
+     * transferencia). Sin esto la pantalla decía "Efectivo" en un cobro con
+     * tarjeta — la misma mentira que descuadra el corte.
+     */
+    methodLabel: String? = null,
     changeCents: Int = 0,
     isQueued: Boolean = false,
     paymentId: String? = null,
@@ -192,12 +198,12 @@ fun PaymentResultScreen(
             )
 
             Text(
-                text = method.displayName,
+                text = methodLabel ?: method.displayName,
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
 
-            if (method == PaymentMethod.CASH && changeCents > 0) {
+            if (method == PaymentMethod.CASH && methodLabel == null && changeCents > 0) {
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
                 Text(
                     text = "Cambio: $${String.format("%.2f", changeCents / 100.0)}",

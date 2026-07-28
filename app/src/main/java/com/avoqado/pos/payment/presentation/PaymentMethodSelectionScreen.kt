@@ -67,11 +67,14 @@ fun PaymentMethodSelectionScreen(
     onRetryTerminals: () -> Unit = {},
     /** Mesas (Square): link "Dividir importe" arriba — null lo oculta (retail). */
     onSplitImporte: (() -> Unit)? = null,
+    /** Cobro que NO pasó por Avoqado (terminal ajena, transferencia). */
+    onManualMethodSelected: ((com.avoqado.pos.payment.domain.ManualPaymentMethod) -> Unit)? = null,
 ) {
     val amountCents = paymentContext.totalCents
     val suggestions = remember(amountCents) { calculateCashSuggestions(amountCents) }
     var showCustomCashSheet by remember { mutableStateOf(false) }
     var showItemsSheet by remember { mutableStateOf(false) }
+    var showManualMethodSheet by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier.fillMaxSize(),
@@ -266,7 +269,51 @@ fun PaymentMethodSelectionScreen(
             }
 
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+            // "Ya me pagó de otra forma": el dinero NO pasó por Avoqado.
+            // Antes el mesero sólo podía marcarlo como efectivo, y el corte
+            // terminaba pidiendo dinero que nunca entró al cajón.
+            if (onManualMethodSelected != null) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { showManualMethodSheet = true }
+                        .padding(vertical = AvoqadoTheme.spacing.md),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Ya pagó de otra forma",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Medium,
+                        )
+                        Text(
+                            text = "Tarjeta de otra terminal, transferencia…",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Icon(
+                        Icons.Filled.ChevronRight,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            }
         }
+    }
+
+    if (showManualMethodSheet && onManualMethodSelected != null) {
+        ManualMethodSheet(
+            amountCents = amountCents,
+            onSelect = { method ->
+                showManualMethodSheet = false
+                onManualMethodSelected(method)
+            },
+            onDismiss = { showManualMethodSheet = false },
+        )
     }
 
     // Custom cash amount bottom sheet
@@ -290,6 +337,72 @@ fun PaymentMethodSelectionScreen(
 }
 
 // MARK: - Custom Cash Bottom Sheet (matching iOS "Monto recibido")
+
+/**
+ * Registrar un cobro que NO pasó por Avoqado. Sin teclado ni cambio: el monto
+ * es exactamente el total, así que un toque cierra la venta.
+ *
+ * NO pregunta débito o crédito a propósito — el mesero no siempre lo sabe y un
+ * dato inventado es peor que uno genérico.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ManualMethodSheet(
+    amountCents: Int,
+    onSelect: (com.avoqado.pos.payment.domain.ManualPaymentMethod) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = AvoqadoTheme.spacing.lg)
+                .padding(bottom = AvoqadoTheme.spacing.xl),
+            verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
+        ) {
+            Text(
+                text = "¿Cómo pagó el cliente?",
+                style = MaterialTheme.typography.titleLarge,
+                fontWeight = FontWeight.SemiBold,
+            )
+            Text(
+                text = "Se registra ${formatAmount(amountCents)} como cobrado. No entra al corte de efectivo.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = AvoqadoTheme.spacing.sm),
+            )
+            com.avoqado.pos.payment.domain.ManualPaymentMethod.entries.forEach { method ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable { onSelect(method) }
+                        .padding(AvoqadoTheme.spacing.md),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = method.label,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Medium,
+                        )
+                        Text(
+                            text = method.description,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Icon(
+                        Icons.Filled.ChevronRight,
+                        contentDescription = null,
+                        modifier = Modifier.size(20.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+    }
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable

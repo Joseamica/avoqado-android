@@ -114,6 +114,7 @@ fun PaymentFlowScreen(
                         onMethodSelected = { viewModel.selectPaymentMethod(it) },
                         onCashPresetSelected = { viewModel.confirmCashPreset(it) },
                         onCashCustomSelected = { viewModel.confirmCashCustom(it) },
+                        onManualMethodSelected = { viewModel.confirmManualMethod(it) },
                         onCancel = onCancel,
                         terminalsUnavailable = terminalAvailability == PaymentFlowViewModel.TerminalAvailability.NONE,
                         onRetryTerminals = { viewModel.probeTerminalAvailability() },
@@ -134,6 +135,7 @@ fun PaymentFlowScreen(
                     onMethodSelected = { viewModel.selectPaymentMethod(it) },
                     onCashPresetSelected = { viewModel.confirmCashPreset(it) },
                     onCashCustomSelected = { viewModel.confirmCashCustom(it) },
+                        onManualMethodSelected = { viewModel.confirmManualMethod(it) },
                     onCancel = onCancel,
                     terminalsUnavailable = terminalAvailability == PaymentFlowViewModel.TerminalAvailability.NONE,
                     onRetryTerminals = { viewModel.probeTerminalAvailability() },
@@ -191,6 +193,7 @@ fun PaymentFlowScreen(
 
                     PaymentResultScreen(
                         totalCents = currentState.totalAmount,
+                        methodLabel = viewModel.manualMethodLabel,
                         method = currentState.method,
                         changeCents = currentState.changeAmount,
                         isQueued = currentState.isQueued,
