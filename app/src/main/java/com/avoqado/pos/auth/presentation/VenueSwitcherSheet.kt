@@ -98,7 +98,7 @@ fun VenueSwitcherSheet(
             },
             title = { Text("Carrito en progreso") },
             text = {
-                Text("Tienes $cartItemCount articulo${if (cartItemCount == 1) "" else "s"} en el carrito ($cartTotal). ¿Que deseas hacer?")
+                Text("Tienes $cartItemCount artículo${if (cartItemCount == 1) "" else "s"} en el carrito ($cartTotal). ¿Que deseas hacer?")
             },
             confirmButton = {
                 TextButton(onClick = {

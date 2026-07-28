@@ -109,7 +109,7 @@ fun KDSScreen(
                     )
                     Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
                     Text(
-                        text = "Los nuevos pedidos apareceran aqui",
+                        text = "Los nuevos pedidos aparecerán aquí",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -240,7 +240,7 @@ private fun KDSTopBar(
         ) {
             Icon(
                 imageVector = Icons.Filled.Settings,
-                contentDescription = "Configuracion",
+                contentDescription = "Configuración",
                 modifier = Modifier.size(AvoqadoTheme.dimensions.iconLarge),
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )

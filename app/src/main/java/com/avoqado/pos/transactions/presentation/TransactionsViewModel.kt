@@ -264,7 +264,7 @@ class TransactionsViewModel @Inject constructor(
             return
         }
         if (reason.isBlank()) {
-            _refundState.value = RefundUiState.Error("Ingresa una razon para el reembolso")
+            _refundState.value = RefundUiState.Error("Ingresa una razón para el reembolso")
             return
         }
 

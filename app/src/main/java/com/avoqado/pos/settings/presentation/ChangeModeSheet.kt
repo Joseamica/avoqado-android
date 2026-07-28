@@ -65,7 +65,7 @@ fun ChangeModeSheet(
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
 
             Text(
-                text = "Elige el modo de operacion para este dispositivo",
+                text = "Elige el modo de operación para este dispositivo",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

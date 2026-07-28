@@ -171,7 +171,7 @@ fun CreditPackFormSheet(
                 OutlinedTextField(
                     value = description,
                     onValueChange = { description = it },
-                    label = { Text("Descripcion (opcional)") },
+                    label = { Text("Descripción (opcional)") },
                     modifier = Modifier.fillMaxWidth(),
                     minLines = 2,
                     maxLines = 4,
@@ -197,8 +197,8 @@ fun CreditPackFormSheet(
                 OutlinedTextField(
                     value = validityDays,
                     onValueChange = { validityDays = it },
-                    label = { Text("Dias de validez") },
-                    placeholder = { Text("Sin limite") },
+                    label = { Text("Días de validez") },
+                    placeholder = { Text("Sin límite") },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,

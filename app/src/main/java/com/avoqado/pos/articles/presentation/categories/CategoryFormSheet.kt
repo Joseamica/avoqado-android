@@ -74,7 +74,7 @@ fun CategoryFormSheet(
     }
 
     AvoqadoFullScreenModal(
-        title = if (isEditing) "Editar categoria" else "Nueva categoria",
+        title = if (isEditing) "Editar categoría" else "Nueva categoría",
         onDismiss = onDismiss,
         primaryActionText = if (isEditing) "Guardar" else "Crear",
         onPrimaryAction = {
@@ -111,7 +111,7 @@ fun CategoryFormSheet(
             OutlinedTextField(
                 value = name,
                 onValueChange = { name = it },
-                label = { Text("Nombre de la categoria") },
+                label = { Text("Nombre de la categoría") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 isError = name.isBlank(),
@@ -121,7 +121,7 @@ fun CategoryFormSheet(
             OutlinedTextField(
                 value = description,
                 onValueChange = { description = it },
-                label = { Text("Descripcion (opcional)") },
+                label = { Text("Descripción (opcional)") },
                 modifier = Modifier.fillMaxWidth(),
                 minLines = 2,
                 maxLines = 4,

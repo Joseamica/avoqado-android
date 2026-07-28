@@ -1130,7 +1130,7 @@ class PaymentFlowViewModel @Inject constructor(
                 onFailure = { e ->
                     val msg = when (e) {
                         is OrderRepository.ServerException -> "Error del servidor (${e.code}). Intenta de nuevo."
-                        is java.net.UnknownHostException -> "Sin conexion a internet"
+                        is java.net.UnknownHostException -> "Sin conexión a internet"
                         is java.net.SocketTimeoutException -> "Tiempo de espera agotado"
                         else -> e.message ?: "Error al enviar recibo"
                     }
@@ -1162,7 +1162,7 @@ class PaymentFlowViewModel @Inject constructor(
                 onFailure = { e ->
                     val msg = when (e) {
                         is OrderRepository.ServerException -> "Error del servidor (${e.code}). Intenta de nuevo."
-                        is java.net.UnknownHostException -> "Sin conexion a internet"
+                        is java.net.UnknownHostException -> "Sin conexión a internet"
                         is java.net.SocketTimeoutException -> "Tiempo de espera agotado"
                         else -> e.message ?: "Error al enviar recibo"
                     }

@@ -191,7 +191,7 @@ private fun UnassociatedRefundContent(
 
         // Reason field
         Text(
-            text = "Razon",
+            text = "Razón",
             style = MaterialTheme.typography.bodyMedium,
             fontWeight = FontWeight.Medium,
             color = MaterialTheme.colorScheme.onSurface,
@@ -367,7 +367,7 @@ private fun UnassociatedRefundContent(
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Text(
-                text = "Metodo: Efectivo",
+                text = "Método: Efectivo",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurface,
             )

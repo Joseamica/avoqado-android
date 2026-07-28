@@ -98,7 +98,7 @@ fun StockCountReviewView(
         TextField(
             value = searchText,
             onValueChange = { searchText = it },
-            placeholder = { Text("Buscar articulos") },
+            placeholder = { Text("Buscar artículos") },
             leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
             modifier = Modifier
                 .fillMaxWidth()
@@ -121,7 +121,7 @@ fun StockCountReviewView(
                     .padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.sm),
             ) {
                 Text(
-                    text = "Articulo",
+                    text = "Artículo",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.weight(2f),

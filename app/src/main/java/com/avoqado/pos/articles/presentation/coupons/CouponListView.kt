@@ -186,7 +186,7 @@ fun CouponListView(viewModel: ArticlesViewModel) {
                 Text(text = "Eliminar cupon")
             },
             text = {
-                Text(text = "Esta accion no se puede deshacer")
+                Text(text = "Esta acción no se puede deshacer")
             },
             confirmButton = {
                 TextButton(onClick = {

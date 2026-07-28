@@ -112,7 +112,7 @@ fun ReceiveStockSheet(
                     ),
             ) {
                 Text(
-                    text = "Articulo",
+                    text = "Artículo",
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,

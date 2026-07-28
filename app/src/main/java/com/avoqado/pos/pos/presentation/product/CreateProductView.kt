@@ -196,7 +196,7 @@ fun CreateProductView(
                 verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.lg),
             ) {
                 Text(
-                    text = if (productType == "CLASS") "Crear clase nueva" else "Crear articulo nuevo",
+                    text = if (productType == "CLASS") "Crear clase nueva" else "Crear artículo nuevo",
                     style = MaterialTheme.typography.headlineMedium,
                     fontWeight = FontWeight.Bold,
                 )
@@ -243,7 +243,7 @@ fun CreateProductView(
                         }
                     } else {
                         Text(
-                            text = "Categoria *",
+                            text = "Categoría *",
                             style = MaterialTheme.typography.bodyLarge,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -319,7 +319,7 @@ fun CreateProductView(
                         .padding(bottom = AvoqadoTheme.spacing.xxxl),
                 ) {
                     Text(
-                        text = "Seleccionar categoria",
+                        text = "Seleccionar categoría",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold,
                         modifier = Modifier.padding(
@@ -330,7 +330,7 @@ fun CreateProductView(
 
                     if (menuCategories.isEmpty()) {
                         Text(
-                            text = "No hay categorias disponibles",
+                            text = "No hay categorías disponibles",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.padding(AvoqadoTheme.spacing.xl),

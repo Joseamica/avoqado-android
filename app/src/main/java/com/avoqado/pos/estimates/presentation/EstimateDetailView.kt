@@ -70,7 +70,7 @@ fun EstimateDetailView(
                     DetailInfoRow("Correo", estimate.customerEmail)
                 }
                 if (estimate.customerPhone != null) {
-                    DetailInfoRow("Telefono", estimate.customerPhone)
+                    DetailInfoRow("Teléfono", estimate.customerPhone)
                 }
             }
 
@@ -78,10 +78,10 @@ fun EstimateDetailView(
         }
 
         // Items section
-        DetailSectionCard(title = "Articulos") {
+        DetailSectionCard(title = "Artículos") {
             if (estimate.items.isNullOrEmpty()) {
                 Text(
-                    text = "Sin articulos",
+                    text = "Sin artículos",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(AvoqadoTheme.spacing.lg),
@@ -102,7 +102,7 @@ fun EstimateDetailView(
                     ) {
                         Column(modifier = Modifier.weight(1f)) {
                             Text(
-                                text = item.productName ?: "Articulo",
+                                text = item.productName ?: "Artículo",
                                 style = MaterialTheme.typography.bodyMedium,
                                 fontWeight = FontWeight.SemiBold,
                                 color = MaterialTheme.colorScheme.onSurface,

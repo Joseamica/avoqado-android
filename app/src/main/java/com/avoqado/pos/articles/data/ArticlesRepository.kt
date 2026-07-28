@@ -974,12 +974,12 @@ class ArticlesRepository @Inject constructor(
                 true
             } else {
                 Log.e(TAG, "❌ createProductOption error: HTTP $code")
-                _errorMessage.value = "Error al crear opcion de producto"
+                _errorMessage.value = "Error al crear opción de producto"
                 false
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ createProductOption exception: ${e.message}", e)
-            _errorMessage.value = "Error al crear opcion de producto"
+            _errorMessage.value = "Error al crear opción de producto"
             false
         }
     }
@@ -1000,12 +1000,12 @@ class ArticlesRepository @Inject constructor(
                 true
             } else {
                 Log.e(TAG, "❌ deleteProductOption error: HTTP $code")
-                _errorMessage.value = "Error al eliminar opcion de producto"
+                _errorMessage.value = "Error al eliminar opción de producto"
                 false
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ deleteProductOption exception: ${e.message}", e)
-            _errorMessage.value = "Error al eliminar opcion de producto"
+            _errorMessage.value = "Error al eliminar opción de producto"
             false
         }
     }

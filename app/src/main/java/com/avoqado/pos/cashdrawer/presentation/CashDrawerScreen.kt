@@ -933,7 +933,7 @@ private fun HistoryContent(
             )
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
             Text(
-                text = "Aqui apareceran las cajas cerradas.",
+                text = "Aquí aparecerán las cajas cerradas.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,

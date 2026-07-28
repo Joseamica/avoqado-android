@@ -160,7 +160,7 @@ fun MoreMenuScreen(
     val versionName = remember {
         try {
             val pInfo = context.packageManager.getPackageInfo(context.packageName, 0)
-            "Version ${pInfo.versionName} (${PackageInfoCompat.getLongVersionCode(pInfo)})"
+            "Versión ${pInfo.versionName} (${PackageInfoCompat.getLongVersionCode(pInfo)})"
         } catch (_: PackageManager.NameNotFoundException) {
             "Avoqado v1.0.0"
         }
@@ -460,7 +460,7 @@ fun MoreMenuScreen(
         if (viewModel.canCreateProducts) {
             MenuRow(
                 icon = Icons.Filled.LocalOffer,
-                label = "Articulos",
+                label = "Artículos",
                 onClick = { showArticles = true },
                 dense = denseMenu,
             )
@@ -485,13 +485,13 @@ fun MoreMenuScreen(
         )
         MenuRow(
             icon = Icons.Filled.Settings,
-            label = "Configuracion PIN",
+            label = "Configuración PIN",
             onClick = { showPinSettings = true },
             dense = denseMenu,
         )
         MenuRow(
             icon = Icons.AutoMirrored.Filled.PlaylistAddCheck,
-            label = "Configuracion",
+            label = "Configuración",
             onClick = { showSetupWizard = true },
             dense = denseMenu,
         )
@@ -550,7 +550,7 @@ fun MoreMenuScreen(
             horizontalArrangement = Arrangement.Center,
         ) {
             Text(
-                text = "Cerrar sesion $venueName",
+                text = "Cerrar sesión $venueName",
                 style = MaterialTheme.typography.bodyMedium,
                 textDecoration = TextDecoration.Underline,
                 color = MaterialTheme.colorScheme.onSurface,
@@ -837,7 +837,7 @@ fun MoreMenuScreen(
     if (showPermissions) {
         PlaceholderSheet(
             title = "Permisos",
-            message = "La gestion de permisos estara disponible proximamente.",
+            message = "La gestion de permisos estará disponible próximamente.",
             onDismiss = { showPermissions = false },
         )
     }
@@ -845,8 +845,8 @@ fun MoreMenuScreen(
     // PIN Settings Placeholder Sheet
     if (showPinSettings) {
         PlaceholderSheet(
-            title = "Configuracion PIN",
-            message = "La configuracion de PIN estara disponible proximamente.",
+            title = "Configuración PIN",
+            message = "La configuración de PIN estará disponible próximamente.",
             onDismiss = { showPinSettings = false },
         )
     }

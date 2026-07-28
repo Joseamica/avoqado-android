@@ -153,7 +153,7 @@ fun CreateEstimateSheet(
                 OutlinedTextField(
                     value = customerPhone,
                     onValueChange = { customerPhone = it },
-                    label = { Text("Telefono (opcional)") },
+                    label = { Text("Teléfono (opcional)") },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
@@ -202,7 +202,7 @@ fun CreateEstimateSheet(
                             OutlinedTextField(
                                 value = item.productName,
                                 onValueChange = { items[index] = item.copy(productName = it) },
-                                label = { Text("Articulo") },
+                                label = { Text("Artículo") },
                                 modifier = Modifier.fillMaxWidth(),
                                 singleLine = true,
                             )

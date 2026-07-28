@@ -189,7 +189,7 @@ fun CreditPackListView(viewModel: ArticlesViewModel) {
                 Text(text = "Eliminar paquete")
             },
             text = {
-                Text(text = "Esta accion no se puede deshacer")
+                Text(text = "Esta acción no se puede deshacer")
             },
             confirmButton = {
                 TextButton(onClick = {
@@ -286,7 +286,7 @@ private fun CreditPackCard(
                     modifier = Modifier.size(if (denseMode) 14.dp else 16.dp),
                 )
                 Text(
-                    text = " ${pack.itemCount} articulos",
+                    text = " ${pack.itemCount} artículos",
                     style = if (denseMode) MaterialTheme.typography.labelSmall else MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -298,7 +298,7 @@ private fun CreditPackCard(
                     modifier = Modifier.size(if (denseMode) 14.dp else 16.dp),
                 )
                 Text(
-                    text = " ${pack.validityDays ?: "∞"} dias",
+                    text = " ${pack.validityDays ?: "∞"} días",
                     style = if (denseMode) MaterialTheme.typography.labelSmall else MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

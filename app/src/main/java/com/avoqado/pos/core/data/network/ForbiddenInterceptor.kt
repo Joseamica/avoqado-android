@@ -46,9 +46,9 @@ class ForbiddenInterceptor(
             val body = response.peekBody(4096).string()
             val message = try {
                 val parsed = json.decodeFromString<ForbiddenResponse>(body)
-                parsed.message ?: "No tienes permisos para esta accion"
+                parsed.message ?: "No tienes permisos para esta acción"
             } catch (_: Exception) {
-                "No tienes permisos para esta accion"
+                "No tienes permisos para esta acción"
             }
             Log.w("🔒 RBAC", "403 Forbidden: $message")
             errorNotifier.notify(message)

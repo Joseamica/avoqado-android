@@ -5,6 +5,7 @@ import com.avoqado.pos.core.data.network.ApiConstants
 import com.avoqado.pos.core.data.network.ApiService
 import com.avoqado.pos.core.data.network.AuthInterceptor
 import com.avoqado.pos.core.data.network.ConnectivityInterceptor
+import com.avoqado.pos.core.data.network.DeviceHeadersInterceptor
 import com.avoqado.pos.core.data.network.ErrorNotifier
 import com.avoqado.pos.core.data.network.ForbiddenInterceptor
 import com.avoqado.pos.core.data.network.TokenRefreshAuthenticator
@@ -38,6 +39,7 @@ object NetworkModule {
     @Singleton
     fun provideOkHttpClient(
         authInterceptor: AuthInterceptor,
+        deviceHeadersInterceptor: DeviceHeadersInterceptor,
         tokenRefreshAuthenticator: TokenRefreshAuthenticator,
         errorNotifier: ErrorNotifier,
         connectivityMonitor: ConnectivityMonitor,
@@ -53,6 +55,10 @@ object NetworkModule {
 
         return OkHttpClient.Builder()
             .addInterceptor(authInterceptor)
+            // Registro pasivo de dispositivos (estilo Square Device Management): manda
+            // los headers X-Device-* para que el server registre este aparato en el
+            // venue. Si falla, el request sigue sin ellos — nunca bloquea un cobro.
+            .addInterceptor(deviceHeadersInterceptor)
             .addInterceptor(ForbiddenInterceptor(errorNotifier))
             .addInterceptor(ConnectivityInterceptor(connectivityMonitor))
             .addInterceptor(logging)

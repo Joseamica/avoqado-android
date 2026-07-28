@@ -648,7 +648,7 @@ private fun CustomerDetailPanel(
             if (customer.phone != null) {
                 DetailRow(
                     icon = Icons.Filled.Phone,
-                    label = "Telefono",
+                    label = "Teléfono",
                     value = customer.phone,
                 )
             }
@@ -667,7 +667,7 @@ private fun CustomerDetailPanel(
             }
             if (customer.phone == null && customer.email == null) {
                 Text(
-                    text = "Sin informacion de contacto",
+                    text = "Sin información de contacto",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(AvoqadoTheme.spacing.lg),
@@ -704,7 +704,7 @@ private fun CustomerDetailPanel(
                 )
                 DetailRow(
                     icon = Icons.Filled.Person,
-                    label = "Ultima visita",
+                    label = "Última visita",
                     value = formatDate(customer.lastVisit),
                 )
             }

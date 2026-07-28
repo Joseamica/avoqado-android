@@ -24,7 +24,7 @@ enum class PaymentStatus(val label: String) {
 }
 
 enum class OrderType(val label: String) {
-    DINE_IN("Para comer aqui"),
+    DINE_IN("Para comer aquí"),
     TAKEOUT("Para llevar"),
     DELIVERY("Entrega"),
     PICKUP("Recoger");

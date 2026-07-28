@@ -92,15 +92,15 @@ class CustomersRepository @Inject constructor(
     private fun translateError(body: String): String {
         return when {
             body.contains("email or phone must be provided") ->
-                "Debes proporcionar al menos un correo o telefono."
+                "Debes proporcionar al menos un correo o teléfono."
             body.contains("email already exists") || body.contains("already registered") ->
                 "Este correo electronico ya esta registrado."
             body.contains("phone already exists") ->
-                "Este numero de telefono ya esta registrado."
+                "Este número de teléfono ya esta registrado."
             body.contains("invalid email") ->
                 "El correo electronico no es valido."
             body.contains("invalid phone") ->
-                "El numero de telefono no es valido."
+                "El número de teléfono no es valido."
             else -> "Error al crear cliente"
         }
     }

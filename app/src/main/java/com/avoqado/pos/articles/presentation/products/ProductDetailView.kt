@@ -162,7 +162,7 @@ fun ProductDetailView(
     }
 
     AvoqadoFullScreenModal(
-        title = if (product == null) "Nuevo articulo" else "Editar articulo",
+        title = if (product == null) "Nuevo artículo" else "Editar artículo",
         onDismiss = onDismiss,
         primaryActionText = if (product == null) "Crear" else "Guardar",
         onPrimaryAction = { onSave() },
@@ -210,7 +210,7 @@ fun ProductDetailView(
                             Text("Nombre")
                         },
                         placeholder = {
-                            Text("Nombre del articulo *")
+                            Text("Nombre del artículo *")
                         },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
@@ -220,7 +220,7 @@ fun ProductDetailView(
                         value = description,
                         onValueChange = { description = it },
                         label = {
-                            Text("Descripcion (opcional)")
+                            Text("Descripción (opcional)")
                         },
                         modifier = Modifier.fillMaxWidth(),
                         minLines = 3,
@@ -239,7 +239,7 @@ fun ProductDetailView(
                         onSelected = { type = it },
                     )
                     Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
-                    // Category dropdown — includes a "Sin categoria" null option
+                    // Category dropdown — includes a "Sin categoría" null option
                     CategoryDropdownSelector(
                         categories = categories,
                         selectedId = categoryId,
@@ -255,7 +255,7 @@ fun ProductDetailView(
                         OutlinedTextField(
                             value = durationMinutes,
                             onValueChange = { durationMinutes = it },
-                            label = { Text("Duracion (minutos)") },
+                            label = { Text("Duración (minutos)") },
                             placeholder = { Text("Ej: 30, 60, 90") },
                             modifier = Modifier.fillMaxWidth(),
                             singleLine = true,
@@ -296,7 +296,7 @@ fun ProductDetailView(
                     OutlinedTextField(
                         value = gtin,
                         onValueChange = { gtin = it },
-                        label = { Text("Codigo de barras") },
+                        label = { Text("Código de barras") },
                         modifier = Modifier.fillMaxWidth(),
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
@@ -352,7 +352,7 @@ fun ProductDetailView(
                 SectionCard(title = "INVENTARIO") {
                     SwitchRow(
                         label = "Rastrear inventario",
-                        subtitle = "Controla existencias de este articulo",
+                        subtitle = "Controla existencias de este artículo",
                         checked = trackInventory,
                         onCheckedChange = { trackInventory = it },
                     )
@@ -369,7 +369,7 @@ fun ProductDetailView(
                         if (inventoryMethod == InventoryMethod.RECIPE) {
                             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
                             Text(
-                                text = "La receta se configura despues de crear el articulo desde la seccion de inventario",
+                                text = "La receta se configura después de crear el artículo desde la sección de inventario",
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -436,7 +436,7 @@ fun ProductDetailView(
                     Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                         TextButton(onClick = { showDeleteDialog = true }) {
                             Text(
-                                text = "Eliminar articulo",
+                                text = "Eliminar artículo",
                                 color = MaterialTheme.colorScheme.error,
                             )
                         }
@@ -453,8 +453,8 @@ fun ProductDetailView(
     if (showDeleteDialog && product != null) {
         AlertDialog(
             onDismissRequest = { showDeleteDialog = false },
-            title = { Text("Eliminar articulo") },
-            text = { Text("Esta accion no se puede deshacer. El articulo sera eliminado permanentemente.") },
+            title = { Text("Eliminar artículo") },
+            text = { Text("Esta acción no se puede deshacer. El artículo sera eliminado permanentemente.") },
             confirmButton = {
                 TextButton(onClick = {
                     viewModel.deleteProduct(product.id)
@@ -646,7 +646,7 @@ private fun CategoryDropdownSelector(
     onSelected: (String?) -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
-    val selectedName = categories.find { it.id == selectedId }?.name ?: "Sin categoria"
+    val selectedName = categories.find { it.id == selectedId }?.name ?: "Sin categoría"
 
     ExposedDropdownMenuBox(
         expanded = expanded,
@@ -657,7 +657,7 @@ private fun CategoryDropdownSelector(
             value = selectedName,
             onValueChange = {},
             readOnly = true,
-            label = { Text("Categoria") },
+            label = { Text("Categoría") },
             trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
             modifier = Modifier
                 .fillMaxWidth()
@@ -667,11 +667,11 @@ private fun CategoryDropdownSelector(
             expanded = expanded,
             onDismissRequest = { expanded = false },
         ) {
-            // "Sin categoria" option (null)
+            // "Sin categoría" option (null)
             DropdownMenuItem(
                 text = {
                     Text(
-                        text = "Sin categoria",
+                        text = "Sin categoría",
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 },

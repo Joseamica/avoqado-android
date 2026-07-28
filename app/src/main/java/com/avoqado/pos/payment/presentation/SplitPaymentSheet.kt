@@ -305,7 +305,7 @@ private fun ByProductContent(
                 .height(48.dp),
         ) {
             Text(
-                text = "Confirmar seleccion",
+                text = "Confirmar selección",
                 style = MaterialTheme.typography.bodyLarge,
                 fontWeight = FontWeight.SemiBold,
             )
@@ -357,7 +357,7 @@ private fun EqualPartsContent(
 
         // People counter
         Text(
-            text = "Numero de personas",
+            text = "Número de personas",
             style = MaterialTheme.typography.bodyMedium,
             fontWeight = FontWeight.Medium,
             color = MaterialTheme.colorScheme.onSurface,

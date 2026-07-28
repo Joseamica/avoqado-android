@@ -124,7 +124,7 @@ fun CouponFormSheet(
                 OutlinedTextField(
                     value = code,
                     onValueChange = { code = it.uppercase() },
-                    label = { Text("Codigo") },
+                    label = { Text("Código") },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(
@@ -133,7 +133,7 @@ fun CouponFormSheet(
                     isError = code.isBlank(),
                 )
                 Text(
-                    text = "3-30 caracteres, letras y numeros",
+                    text = "3-30 caracteres, letras y números",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

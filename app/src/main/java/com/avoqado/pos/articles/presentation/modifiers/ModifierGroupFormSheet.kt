@@ -92,7 +92,7 @@ fun ModifierGroupFormSheet(
         AlertDialog(
             onDismissRequest = { showDeleteModifierDialog = null },
             title = { Text("Eliminar modificador") },
-            text = { Text("Esta accion no se puede deshacer") },
+            text = { Text("Esta acción no se puede deshacer") },
             confirmButton = {
                 TextButton(
                     onClick = {

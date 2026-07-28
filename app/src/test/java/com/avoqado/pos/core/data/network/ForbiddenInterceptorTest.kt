@@ -54,7 +54,7 @@ class ForbiddenInterceptorTest {
 
         client.newCall(Request.Builder().url(server.url("/")).build()).execute()
 
-        assertEquals("No tienes permisos para esta accion", errorNotifier.forbiddenError.value)
+        assertEquals("No tienes permisos para esta acción", errorNotifier.forbiddenError.value)
     }
 
     @Test
@@ -67,7 +67,7 @@ class ForbiddenInterceptorTest {
 
         client.newCall(Request.Builder().url(server.url("/")).build()).execute()
 
-        assertEquals("No tienes permisos para esta accion", errorNotifier.forbiddenError.value)
+        assertEquals("No tienes permisos para esta acción", errorNotifier.forbiddenError.value)
     }
 
     @Test

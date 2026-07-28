@@ -194,7 +194,7 @@ fun CustomersView(
                     Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
                     Text(
                         text = if (canCreateCustomer) {
-                            "Crea un nuevo cliente con esta informacion"
+                            "Crea un nuevo cliente con esta información"
                         } else {
                             "No se encontraron resultados"
                         },

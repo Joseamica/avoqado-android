@@ -108,7 +108,7 @@ fun MosaicConfigView(
             )
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxs))
             Text(
-                text = "Selecciona los productos que apareceran en la cuadricula rapida",
+                text = "Selecciona los productos que aparecerán en la cuadricula rápida",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

@@ -238,7 +238,7 @@ fun PrinterSettingsSheet(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Text(
-                        text = "Conecta la impresora por USB, o asegurate que este encendida y en la misma red WiFi o emparejada por Bluetooth",
+                        text = "Conecta la impresora por USB, o asegúrate que esté encendida y en la misma red WiFi o emparejada por Bluetooth",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

@@ -252,7 +252,7 @@ fun StockCountingView(
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
 
                 PrimaryButton(
-                    text = "Siguiente articulo",
+                    text = "Siguiente artículo",
                     onClick = { viewModel.moveToNextItem() },
                     enabled = selectedIndex < countItems.size - 1,
                     modifier = Modifier.padding(horizontal = AvoqadoTheme.spacing.lg),
@@ -370,7 +370,7 @@ private fun SearchBar(
         TextField(
             value = searchText,
             onValueChange = onSearchChange,
-            placeholder = { Text("Buscar articulos") },
+            placeholder = { Text("Buscar artículos") },
             leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
             modifier = Modifier.weight(1f),
             singleLine = true,
@@ -385,7 +385,7 @@ private fun SearchBar(
 
         if (isCycle) {
             IconButton(onClick = onAddItems) {
-                Icon(Icons.Filled.Add, contentDescription = "Agregar articulos")
+                Icon(Icons.Filled.Add, contentDescription = "Agregar artículos")
             }
         }
     }
@@ -435,13 +435,13 @@ private fun ItemListPanel(
                             tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f),
                         )
                         Text(
-                            text = "Busca o agrega articulos para contar",
+                            text = "Busca o agrega artículos para contar",
                             style = MaterialTheme.typography.bodyLarge,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         if (isCycle) {
                             PrimaryButton(
-                                text = "Agregar articulos",
+                                text = "Agregar artículos",
                                 onClick = onAddItems,
                                 )
                         }
@@ -844,7 +844,7 @@ private fun AddItemsPopup(
                 Spacer(modifier = Modifier.weight(1f))
 
                 Text(
-                    text = "Agregar articulos",
+                    text = "Agregar artículos",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                 )

@@ -93,7 +93,7 @@ fun CategoryListView(viewModel: ArticlesViewModel) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                text = "Categorias",
+                text = "Categorías",
                 style = if (denseListMode) MaterialTheme.typography.titleSmall else MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onSurface,
             )
@@ -110,7 +110,7 @@ fun CategoryListView(viewModel: ArticlesViewModel) {
             ) {
                 Icon(
                     imageVector = Icons.Filled.Add,
-                    contentDescription = "Nueva categoria",
+                    contentDescription = "Nueva categoría",
                     tint = MaterialTheme.colorScheme.onPrimary,
                     modifier = Modifier.size(if (denseListMode) 18.dp else 20.dp),
                 )
@@ -120,7 +120,7 @@ fun CategoryListView(viewModel: ArticlesViewModel) {
         // MARK: - Content
         if (isLoading && categories.isEmpty()) {
             AvoqadoLoadingState(
-                message = "Cargando categorias...",
+                message = "Cargando categorías...",
                 compact = denseListMode,
             )
         } else if (categories.isEmpty()) {
@@ -141,13 +141,13 @@ fun CategoryListView(viewModel: ArticlesViewModel) {
                         modifier = Modifier.size(48.dp),
                     )
                     Text(
-                        text = "No hay categorias",
+                        text = "No hay categorías",
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onSurface,
                         textAlign = TextAlign.Center,
                     )
                     Text(
-                        text = "Crea tu primera categoria para empezar",
+                        text = "Crea tu primera categoría para empezar",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center,
@@ -176,10 +176,10 @@ fun CategoryListView(viewModel: ArticlesViewModel) {
         AlertDialog(
             onDismissRequest = { deletingCategory = null },
             title = {
-                Text(text = "Eliminar categoria")
+                Text(text = "Eliminar categoría")
             },
             text = {
-                Text(text = "Esta accion no se puede deshacer")
+                Text(text = "Esta acción no se puede deshacer")
             },
             confirmButton = {
                 TextButton(onClick = {
@@ -261,7 +261,7 @@ private fun CategoryRow(
             horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.xs),
         ) {
             Text(
-                text = "${category.productCount} articulos",
+                text = "${category.productCount} artículos",
                 style = if (denseMode) MaterialTheme.typography.labelSmall else MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.End,

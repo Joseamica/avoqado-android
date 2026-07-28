@@ -142,7 +142,7 @@ fun OptionsView(
                         horizontalPadding = contentHorizontalPadding,
                         rowVerticalPadding = rowVerticalPadding,
                         onEdit = {
-                            Toast.makeText(context, "Proximamente", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "Próximamente", Toast.LENGTH_SHORT).show()
                         },
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)

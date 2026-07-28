@@ -256,7 +256,7 @@ private fun ShortcutsMainGrid(
         ),
         if (canCreateProducts) ShortcutItem(
             id = "createitem",
-            name = "Crear articulo",
+            name = "Crear artículo",
             icon = Icons.Filled.LocalOffer,
             color = ActionColors.createItem,
             screen = ShortcutsScreen.CREATE_ITEM,
@@ -277,7 +277,7 @@ private fun ShortcutsMainGrid(
         ),
         ShortcutItem(
             id = "voiditems",
-            name = "Anular articulos",
+            name = "Anular artículos",
             icon = Icons.Filled.Delete,
             color = ActionColors.voidItems,
             screen = ShortcutsScreen.VOID_ITEMS,
@@ -293,7 +293,7 @@ private fun ShortcutsMainGrid(
         ),
         ShortcutItem(
             id = "paylater",
-            name = "Pagar despues",
+            name = "Pagar después",
             icon = Icons.Filled.Schedule,
             color = ActionColors.payLater,
             screen = ShortcutsScreen.PAY_LATER,
@@ -817,8 +817,8 @@ private fun DiscountCard(
             Text(
                 text = when (discount.discountScope) {
                     com.avoqado.pos.pos.data.model.DiscountScope.ORDER -> "Aplica a toda la orden"
-                    com.avoqado.pos.pos.data.model.DiscountScope.ITEM -> "Aplica a articulos especificos"
-                    com.avoqado.pos.pos.data.model.DiscountScope.CATEGORY -> "Aplica a categorias"
+                    com.avoqado.pos.pos.data.model.DiscountScope.ITEM -> "Aplica a artículos especificos"
+                    com.avoqado.pos.pos.data.model.DiscountScope.CATEGORY -> "Aplica a categorías"
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -858,7 +858,7 @@ private fun CouponsSubView(
             verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.lg),
         ) {
             Text(
-                text = "Ingresa el codigo del cupon",
+                text = "Ingresa el código del cupon",
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.SemiBold,
             )
@@ -870,7 +870,7 @@ private fun CouponsSubView(
                     validatedCoupon = null
                     errorMessage = null
                 },
-                label = { Text("Codigo de cupon") },
+                label = { Text("Código de cupon") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
             )
@@ -992,7 +992,7 @@ private fun VoidItemsSubView(
     var voidReason by remember { mutableStateOf("") }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        BreadcrumbHeader(title = "Anular articulos", onBack = onBack)
+        BreadcrumbHeader(title = "Anular artículos", onBack = onBack)
 
         Column(
             modifier = Modifier
@@ -1002,7 +1002,7 @@ private fun VoidItemsSubView(
             verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
         ) {
             Text(
-                text = "Selecciona los articulos a anular",
+                text = "Selecciona los artículos a anular",
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.SemiBold,
             )
@@ -1028,7 +1028,7 @@ private fun VoidItemsSubView(
                 OutlinedTextField(
                     value = voidReason,
                     onValueChange = { voidReason = it },
-                    label = { Text("Razon de anulacion (requerido)") },
+                    label = { Text("Razón de anulacion (requerido)") },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
                 )
@@ -1039,7 +1039,7 @@ private fun VoidItemsSubView(
             HorizontalDivider()
             Box(modifier = Modifier.padding(AvoqadoTheme.spacing.lg)) {
                 PrimaryButton(
-                    text = "Anular ${selectedItemIds.size} articulo${if (selectedItemIds.size == 1) "" else "s"}",
+                    text = "Anular ${selectedItemIds.size} artículo${if (selectedItemIds.size == 1) "" else "s"}",
                     onClick = {
                         if (voidReason.isNotBlank()) {
                             selectedItemIds.forEach { id ->
@@ -1139,7 +1139,7 @@ private fun CortesiaSubView(
             )
 
             Text(
-                text = "Se aplicara un descuento del 100% al pedido actual",
+                text = "Se aplicará un descuento del 100% al pedido actual",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -1171,7 +1171,7 @@ private fun CortesiaSubView(
             OutlinedTextField(
                 value = cortesiaReason,
                 onValueChange = { cortesiaReason = it },
-                label = { Text("Razon de cortesia (opcional)") },
+                label = { Text("Razón de cortesia (opcional)") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
             )
@@ -1233,7 +1233,7 @@ private fun PayLaterFullScreenModal(
     isConfirmingPayLater: Boolean,
 ) {
     AvoqadoFullScreenModal(
-        title = "Pagar despues",
+        title = "Pagar después",
         onDismiss = onDismiss,
         primaryActionText = if (selectedCustomerName.isNullOrBlank()) null else {
             if (isConfirmingPayLater) "Continuando..." else "Continuar"
@@ -1256,7 +1256,7 @@ private fun PayLaterFullScreenModal(
             )
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
             Text(
-                text = "Pagar despues",
+                text = "Pagar después",
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold,
             )
@@ -1333,7 +1333,7 @@ private fun CreateItemSubView(
     onCreateNew: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxSize()) {
-        BreadcrumbHeader(title = "Crear articulo", onBack = onBack)
+        BreadcrumbHeader(title = "Crear artículo", onBack = onBack)
 
         Column(
             modifier = Modifier
@@ -1342,7 +1342,7 @@ private fun CreateItemSubView(
             verticalArrangement = Arrangement.spacedBy(0.dp),
         ) {
             Text(
-                text = "Elegir opcion",
+                text = "Elegir opción",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.padding(bottom = AvoqadoTheme.spacing.lg),
@@ -1364,7 +1364,7 @@ private fun CreateItemSubView(
                     tint = MaterialTheme.colorScheme.onSurface,
                 )
                 Text(
-                    text = "Crear articulo nuevo",
+                    text = "Crear artículo nuevo",
                     style = MaterialTheme.typography.bodyLarge,
                     modifier = Modifier.weight(1f),
                 )
@@ -1394,12 +1394,12 @@ private fun CreateItemSubView(
                 )
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "Agregar variante a un articulo existente",
+                        text = "Agregar variante a un artículo existente",
                         style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Text(
-                        text = "Proximamente",
+                        text = "Próximamente",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f),
                     )
@@ -1498,7 +1498,7 @@ private fun SavedCartCard(
                 fontWeight = FontWeight.SemiBold,
             )
             Text(
-                text = "${cart.items.size} articulo${if (cart.items.size == 1) "" else "s"}",
+                text = "${cart.items.size} artículo${if (cart.items.size == 1) "" else "s"}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

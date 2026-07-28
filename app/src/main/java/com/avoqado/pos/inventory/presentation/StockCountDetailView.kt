@@ -96,7 +96,7 @@ fun StockCountDetailView(
             horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.xl),
         ) {
             Text(
-                text = "${count.items.size} articulos",
+                text = "${count.items.size} artículos",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -143,7 +143,7 @@ fun StockCountDetailView(
                     .padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.sm),
             ) {
                 Text(
-                    text = "Articulo",
+                    text = "Artículo",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.weight(2f),

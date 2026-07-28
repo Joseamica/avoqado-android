@@ -246,7 +246,7 @@ fun CartPanelView(
                             Box {
                                 Icon(
                                     Icons.Filled.MoreHoriz,
-                                    contentDescription = "Opciones de seccion",
+                                    contentDescription = "Opciones de sección",
                                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                     modifier = Modifier
                                         .size(20.dp)
@@ -526,7 +526,7 @@ private fun CustomerHeader(
             ) {
                 if (hasItems) {
                     Text(
-                        text = "$itemCount articulo${if (itemCount == 1) "" else "s"}",
+                        text = "$itemCount artículo${if (itemCount == 1) "" else "s"}",
                         style = if (useDenseTabletLayout) {
                             MaterialTheme.typography.bodySmall
                         } else {

@@ -11,7 +11,7 @@ data class Addon(
 enum class AddonCategory(val displayName: String) {
     RECOMMENDED("Recomendaciones para tu negocio"),
     REACH_CLIENTS("Llegar a mas clientes"),
-    SELL_ONLINE("Vender en linea"),
+    SELL_ONLINE("Vender en línea"),
     BOOST_SALES("Aumentar las ventas"),
 }
 
@@ -39,14 +39,14 @@ val allAddons = listOf(
     ),
     Addon(
         id = "online_store",
-        name = "Tienda en linea",
+        name = "Tienda en línea",
         description = "Publica tus productos en una tienda web sincronizada con tu inventario.",
         iconName = "ShoppingCart",
         category = AddonCategory.SELL_ONLINE,
     ),
     Addon(
         id = "invoicing",
-        name = "Facturacion",
+        name = "Facturación",
         description = "Genera facturas electronicas CFDI desde la app.",
         iconName = "Receipt",
         category = AddonCategory.RECOMMENDED,
@@ -68,7 +68,7 @@ val allAddons = listOf(
     Addon(
         id = "appointments",
         name = "Citas",
-        description = "Permite a tus clientes agendar citas en linea.",
+        description = "Permite a tus clientes agendar citas en línea.",
         iconName = "CalendarMonth",
         category = AddonCategory.BOOST_SALES,
     ),

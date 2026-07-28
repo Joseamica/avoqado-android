@@ -20,6 +20,7 @@ import androidx.compose.material.icons.filled.PointOfSale
 import androidx.compose.material.icons.filled.Receipt
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -34,6 +35,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.avoqado.pos.cashdrawer.data.EndOfDaySummary
@@ -114,16 +116,34 @@ fun EndOfDayScreen(
 
         val s = summary
         if (s == null) {
+            // El cierre del día se arma en el server (necesita TODAS las ventas del
+            // día, no sólo las de este POS), así que sin conexión no hay nada que
+            // mostrar. Decir sólo "no se pudo cargar" deja al dueño sin saber si es
+            // un problema suyo, de la app, o de la red — y sin forma de reintentar.
             Column(
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(AvoqadoTheme.spacing.xxl),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.Center,
             ) {
                 Text(
                     text = "No se pudo cargar el cierre del día",
                     style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    color = MaterialTheme.colorScheme.onSurface,
                 )
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+                Text(
+                    text = "Necesita conexión: reúne las ventas de todo el día, no sólo " +
+                        "las de este equipo. El corte de la caja sí funciona sin conexión.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                )
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
+                Button(onClick = { viewModel.loadEndOfDay() }) {
+                    Text("Reintentar")
+                }
             }
             return
         }

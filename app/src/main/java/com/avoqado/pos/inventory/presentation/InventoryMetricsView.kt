@@ -83,7 +83,7 @@ fun InventoryMetricsView(viewModel: InventoryViewModel) {
 
     // Group by category
     val categoryValues = stockItems
-        .groupBy { it.categoryName ?: "Sin categoria" }
+        .groupBy { it.categoryName ?: "Sin categoría" }
         .map { (category, items) ->
             category to items.sumOf { it.onHand }
         }
@@ -182,7 +182,7 @@ fun InventoryMetricsView(viewModel: InventoryViewModel) {
         item {
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
             Text(
-                text = "Valor por categoria",
+                text = "Valor por categoría",
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurface,

@@ -27,7 +27,7 @@ private const val TAG = "📦 InventoryVM"
 // MARK: - Sidebar sections (matching Square inventory screenshot)
 
 enum class InventorySection(val label: String) {
-    OVERVIEW("Descripcion general"),
+    OVERVIEW("Descripción general"),
     COUNTS("Conteos"),
     PURCHASE_ORDERS("Ordenes de compra"),
     TRANSFERS("Transferencias"),

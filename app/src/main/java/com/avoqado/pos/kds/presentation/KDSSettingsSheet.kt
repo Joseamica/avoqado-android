@@ -42,7 +42,7 @@ fun KDSSettingsSheet(
                 .padding(horizontal = AvoqadoTheme.spacing.lg),
         ) {
             Text(
-                text = "Configuracion de cocina",
+                text = "Configuración de cocina",
                 style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.Bold,
                 modifier = Modifier.padding(bottom = AvoqadoTheme.spacing.lg),
@@ -50,7 +50,7 @@ fun KDSSettingsSheet(
 
             // Sound toggle
             SettingsRow(
-                title = "Sonido de notificacion",
+                title = "Sonido de notificación",
                 subtitle = "Reproducir sonido al recibir un nuevo pedido",
                 isChecked = settings.soundEnabled,
                 onToggle = onToggleSound,
@@ -61,7 +61,7 @@ fun KDSSettingsSheet(
             // Auto-bump toggle
             SettingsRow(
                 title = "Auto-completar",
-                subtitle = "Completar pedidos listos automaticamente despues de 2 minutos",
+                subtitle = "Completar pedidos listos automáticamente después de 2 minutos",
                 isChecked = settings.autoBumpEnabled,
                 onToggle = onToggleAutoBump,
             )

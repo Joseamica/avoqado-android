@@ -109,7 +109,7 @@ class TimeEntryRepository @Inject constructor(
                 Log.d("⏰", "✅ Time clock action: $action")
                 Result.success(Unit)
             } else {
-                Result.failure(Exception(parseErrorMessage(responseBody, "Error en accion: $action")))
+                Result.failure(Exception(parseErrorMessage(responseBody, "Error en acción: $action")))
             }
         } catch (e: Exception) {
             Log.e("⏰", "Time clock error: ${e.message}")

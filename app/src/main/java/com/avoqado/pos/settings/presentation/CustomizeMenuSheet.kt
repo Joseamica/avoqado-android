@@ -39,11 +39,11 @@ private val menuItems = listOf(
     MenuItemConfig("menu_reports", "Informes"),
     MenuItemConfig("menu_orders", "Pedidos"),
     MenuItemConfig("menu_cashdrawer", "Caja"),
-    MenuItemConfig("menu_articles", "Articulos"),
+    MenuItemConfig("menu_articles", "Artículos"),
     MenuItemConfig("menu_customers", "Clientes"),
     MenuItemConfig("menu_estimates", "Presupuestos"),
     MenuItemConfig("menu_permissions", "Permisos"),
-    MenuItemConfig("menu_pin_settings", "Configuracion PIN"),
+    MenuItemConfig("menu_pin_settings", "Configuración PIN"),
     MenuItemConfig("menu_printer", "Impresora"),
     MenuItemConfig("menu_addons", "Complementos"),
 )

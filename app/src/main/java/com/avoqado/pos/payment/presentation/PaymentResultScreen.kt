@@ -181,7 +181,7 @@ fun PaymentResultScreen(
                             modifier = Modifier.size(20.dp),
                         )
                         Text(
-                            text = "Se sincronizara cuando haya conexion",
+                            text = "Se sincronizará cuando haya conexión",
                             style = MaterialTheme.typography.bodySmall,
                             color = Warning,
                         )

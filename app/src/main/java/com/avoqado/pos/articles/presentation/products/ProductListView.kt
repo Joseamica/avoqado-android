@@ -117,7 +117,7 @@ fun ProductListView(viewModel: ArticlesViewModel) {
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                text = "Todos los articulos",
+                text = "Todos los artículos",
                 style = if (denseListMode) MaterialTheme.typography.titleSmall else MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onSurface,
             )
@@ -134,7 +134,7 @@ fun ProductListView(viewModel: ArticlesViewModel) {
             ) {
                 Icon(
                     imageVector = Icons.Filled.Add,
-                    contentDescription = "Crear articulo",
+                    contentDescription = "Crear artículo",
                     tint = MaterialTheme.colorScheme.onPrimary,
                     modifier = Modifier.size(if (denseListMode) 18.dp else 20.dp),
                 )
@@ -145,7 +145,7 @@ fun ProductListView(viewModel: ArticlesViewModel) {
         SearchPillField(
             query = searchQuery,
             onQueryChange = { viewModel.updateSearch(it) },
-            placeholder = "Buscar articulos...",
+            placeholder = "Buscar artículos...",
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = contentHorizontalPadding, vertical = AvoqadoTheme.spacing.xs),
@@ -155,7 +155,7 @@ fun ProductListView(viewModel: ArticlesViewModel) {
         // MARK: - Content
         if (isLoading && products.isEmpty()) {
             AvoqadoLoadingState(
-                message = "Cargando articulos...",
+                message = "Cargando artículos...",
                 compact = denseListMode,
             )
         } else if (filteredProducts.isEmpty() && searchQuery.isNotBlank()) {
@@ -177,13 +177,13 @@ fun ProductListView(viewModel: ArticlesViewModel) {
                         modifier = Modifier.size(48.dp),
                     )
                     Text(
-                        text = "No hay articulos",
+                        text = "No hay artículos",
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.onSurface,
                         textAlign = TextAlign.Center,
                     )
                     Text(
-                        text = "Crea tu primer articulo para empezar",
+                        text = "Crea tu primer artículo para empezar",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         textAlign = TextAlign.Center,
@@ -246,7 +246,7 @@ fun ProductListView(viewModel: ArticlesViewModel) {
                         onPrintLabel = {
                             Toast.makeText(
                                 context,
-                                "Impresion no disponible",
+                                "Impresión no disponible",
                                 Toast.LENGTH_SHORT,
                             ).show()
                         },
@@ -261,10 +261,10 @@ fun ProductListView(viewModel: ArticlesViewModel) {
         AlertDialog(
             onDismissRequest = { deletingProduct = null },
             title = {
-                Text(text = "Eliminar articulo")
+                Text(text = "Eliminar artículo")
             },
             text = {
-                Text(text = "Esta accion no se puede deshacer")
+                Text(text = "Esta acción no se puede deshacer")
             },
             confirmButton = {
                 TextButton(onClick = {

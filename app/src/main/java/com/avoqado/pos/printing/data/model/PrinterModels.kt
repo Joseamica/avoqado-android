@@ -164,8 +164,8 @@ sealed class PrinterStatus {
 
 sealed class PrinterException(message: String) : Exception(message) {
     class NotConnected : PrinterException("Impresora no conectada")
-    class ConnectionFailed(reason: String) : PrinterException("Error de conexion: $reason")
-    class PrintFailed(reason: String) : PrinterException("Error de impresion: $reason")
+    class ConnectionFailed(reason: String) : PrinterException("Error de conexión: $reason")
+    class PrintFailed(reason: String) : PrinterException("Error de impresión: $reason")
     class Timeout : PrinterException("Tiempo de espera agotado")
     class PrinterNotFound : PrinterException("Impresora no encontrada")
     class BluetoothUnavailable : PrinterException("Bluetooth no disponible")

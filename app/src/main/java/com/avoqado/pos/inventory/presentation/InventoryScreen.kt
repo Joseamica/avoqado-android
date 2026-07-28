@@ -584,7 +584,7 @@ private fun StockOverviewContent(
                         Toast
                             .makeText(
                                 context,
-                                "Impresion no disponible",
+                                "Impresión no disponible",
                                 Toast.LENGTH_SHORT,
                             )
                             .show()
@@ -629,7 +629,7 @@ private fun StockOverviewContent(
                     )
                     Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
                     Text(
-                        text = "Sin articulos con inventario",
+                        text = "Sin artículos con inventario",
                         style = MaterialTheme.typography.titleLarge,
                         color = MaterialTheme.colorScheme.onSurface,
                     )
@@ -642,7 +642,7 @@ private fun StockOverviewContent(
                         )
                     } else {
                         Text(
-                            text = "Los productos con seguimiento de inventario apareceran aqui",
+                            text = "Los productos con seguimiento de inventario aparecerán aquí",
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -852,7 +852,7 @@ private fun StockCountRow(
                 fontWeight = FontWeight.Medium,
             )
             Text(
-                text = "${count.statusDisplay} - ${count.itemCount} articulos",
+                text = "${count.statusDisplay} - ${count.itemCount} artículos",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

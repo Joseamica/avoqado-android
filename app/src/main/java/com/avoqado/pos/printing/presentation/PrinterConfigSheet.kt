@@ -229,7 +229,7 @@ fun PrinterConfigSheet(
             HorizontalDivider(modifier = Modifier.padding(vertical = AvoqadoTheme.spacing.md))
 
             // -- AUTO PRINT --
-            SectionHeader("Impresion automatica")
+            SectionHeader("Impresión automática")
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
 
             Row(
@@ -238,7 +238,7 @@ fun PrinterConfigSheet(
                     .padding(vertical = AvoqadoTheme.spacing.sm),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("Imprimir recibos automaticamente", modifier = Modifier.weight(1f))
+                Text("Imprimir recibos automáticamente", modifier = Modifier.weight(1f))
                 Switch(
                     checked = autoPrintReceipts,
                     onCheckedChange = {
@@ -254,7 +254,7 @@ fun PrinterConfigSheet(
                     .padding(vertical = AvoqadoTheme.spacing.sm),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text("Imprimir comandas automaticamente", modifier = Modifier.weight(1f))
+                Text("Imprimir comandas automáticamente", modifier = Modifier.weight(1f))
                 Switch(
                     checked = autoPrintKitchenTickets,
                     onCheckedChange = {
@@ -329,13 +329,13 @@ fun PrinterConfigSheet(
 
             // -- TEST PRINT --
             PrimaryButton(
-                text = if (isPrinting) "Imprimiendo..." else "Imprimir pagina de prueba",
+                text = if (isPrinting) "Imprimiendo..." else "Imprimir página de prueba",
                 onClick = {
                     isPrinting = true
                     scope.launch {
                         try {
                             printerService.printTestPage(printer)
-                            feedbackMessage = "Pagina de prueba enviada"
+                            feedbackMessage = "Página de prueba enviada"
                         } catch (e: Exception) {
                             feedbackMessage = "Error: ${e.message}"
                         }
@@ -397,7 +397,7 @@ fun PrinterConfigSheet(
         AlertDialog(
             onDismissRequest = { showDeleteConfirm = false },
             title = { Text("Eliminar impresora?") },
-            text = { Text("Esta accion no se puede deshacer.") },
+            text = { Text("Esta acción no se puede deshacer.") },
             confirmButton = {
                 TextButton(onClick = {
                     printerService.deletePrinter(printer)

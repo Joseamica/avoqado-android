@@ -108,7 +108,7 @@ fun SetupWizardScreen(
             CircleBackButton(onClick = onDismiss)
             Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.md))
             Text(
-                text = "Configuracion",
+                text = "Configuración",
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onSurface,
@@ -174,7 +174,7 @@ fun SetupWizardScreen(
             ) {
                 Column(modifier = Modifier.padding(AvoqadoTheme.spacing.lg)) {
                     Text(
-                        text = "Progreso de configuracion",
+                        text = "Progreso de configuración",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurface,

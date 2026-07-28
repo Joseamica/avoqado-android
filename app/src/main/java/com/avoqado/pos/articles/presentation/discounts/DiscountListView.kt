@@ -183,7 +183,7 @@ fun DiscountListView(viewModel: ArticlesViewModel) {
                 Text(text = "Eliminar descuento")
             },
             text = {
-                Text(text = "Esta accion no se puede deshacer")
+                Text(text = "Esta acción no se puede deshacer")
             },
             confirmButton = {
                 TextButton(onClick = {

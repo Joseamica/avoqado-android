@@ -3190,7 +3190,7 @@ private fun SplitCheckDialog(
                             },
                         )
                         Column(modifier = Modifier.weight(1f)) {
-                            Text("${item.quantity}× ${item.productName ?: "Artículo"}", style = MaterialTheme.typography.bodyMedium)
+                            Text("${item.quantity}× ${item.productName ?: "Articulo"}", style = MaterialTheme.typography.bodyMedium)
                             item.seat?.let { Text("Asiento $it", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
                         }
                         Text("$${String.format(java.util.Locale.US, "%.2f", item.total)}")

@@ -891,7 +891,7 @@ class CartViewModel @Inject constructor(
     suspend fun createPayLaterOrder(customerId: String): Result<String> {
         val currentCart = _cartState.value
         if (currentCart.isEmpty) {
-            return Result.failure(Exception("No hay articulos en el carrito"))
+            return Result.failure(Exception("No hay artículos en el carrito"))
         }
         if (customerId.isBlank()) {
             return Result.failure(Exception("Selecciona un cliente para diferir el pago"))

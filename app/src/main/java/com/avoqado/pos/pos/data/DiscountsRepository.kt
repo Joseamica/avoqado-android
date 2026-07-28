@@ -122,7 +122,7 @@ class DiscountsRepository @Inject constructor(
             }
         } catch (e: Exception) {
             Log.e("🎟️", "Coupon validation error: ${e.message}")
-            CouponResult.Error("Error de conexion")
+            CouponResult.Error("Error de conexión")
         }
     }
 

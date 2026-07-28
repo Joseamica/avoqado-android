@@ -66,7 +66,7 @@ private data class BreakType(
 private val defaultBreakTypes = listOf(
     BreakType("meal", "Descanso para comer", "30 min"),
     BreakType("rest", "Descanso", "20 min"),
-    BreakType("quick", "Descanso rapido", "10 min"),
+    BreakType("quick", "Descanso rápido", "10 min"),
 )
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -162,7 +162,7 @@ fun TimeClockSheet(
                     Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xs))
 
                     Text(
-                        text = "${pin.length} digitos (minimo 4)",
+                        text = "${pin.length} digitos (mínimo 4)",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

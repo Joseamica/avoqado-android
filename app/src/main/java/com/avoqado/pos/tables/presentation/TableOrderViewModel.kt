@@ -486,9 +486,14 @@ class TableOrderViewModel @Inject constructor(
     }
 
     /**
-     * Acciones ONLINE-ONLY a propósito (dividir/fusionar/quitar aplicados/
-     * cortesía de item/lealtad): sin red se avisa amable ANTES de intentar —
-     * nada de errores crudos. Se "rehabilitan" solas: el check es al tocar.
+     * Acciones ONLINE-ONLY a propósito (quitar descuento/cargo YA aplicado,
+     * cortesía de UN item ya enviado, canje de lealtad): sin red se avisa
+     * amable ANTES de intentar — nada de errores crudos. Se "rehabilitan"
+     * solas: el check es al tocar.
+     *
+     * Dividir y fusionar NO están en esta lista: sí funcionan sin red (ver el
+     * comentario de [splitItems] / [mergeFrom] más abajo y los intents
+     * SPLIT_ORDER / MERGE_ORDERS). No les agregues un requireOnline.
      */
     /** Conectividad, para que la UI distinga "espera" de "te falta un paso". */
     val isConnected: StateFlow<Boolean> = connectivityMonitor.isConnected

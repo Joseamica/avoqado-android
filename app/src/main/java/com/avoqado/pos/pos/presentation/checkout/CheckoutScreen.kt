@@ -212,7 +212,7 @@ fun CheckoutScreen(
                     showPayLaterSuccessToast = true
                 },
                 onFailure = { error ->
-                    payLaterError = error.message ?: "No se pudo registrar la venta como pagar despues"
+                    payLaterError = error.message ?: "No se pudo registrar la venta como pagar después"
                 },
             )
         }
@@ -1303,7 +1303,7 @@ private fun CartItemDetailContent(
             Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.md))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "Nota del articulo",
+                    text = "Nota del artículo",
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 item.itemNote?.let { note ->
@@ -1379,7 +1379,7 @@ private fun CartItemDetailContent(
                 .padding(AvoqadoTheme.spacing.xl),
         ) {
             Text(
-                text = "Eliminar articulo",
+                text = "Eliminar artículo",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.error,
             )
@@ -1462,7 +1462,7 @@ private fun SearchBarView(
         ) {
             Icon(
                 Icons.Filled.QrCodeScanner,
-                contentDescription = "Escanear codigo de barras",
+                contentDescription = "Escanear código de barras",
                 tint = MaterialTheme.colorScheme.onSurface,
             )
         }

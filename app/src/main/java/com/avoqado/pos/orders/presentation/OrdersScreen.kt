@@ -1018,7 +1018,7 @@ private fun OrderSearchBar(
             onValueChange = onValueChange,
             placeholder = {
                 Text(
-                    "Buscar por numero de orden...",
+                    "Buscar por número de orden...",
                     style = MaterialTheme.typography.bodyMedium,
                 )
             },

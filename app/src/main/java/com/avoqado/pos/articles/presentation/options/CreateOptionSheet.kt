@@ -47,7 +47,7 @@ fun CreateOptionSheet(
     val values = remember { mutableStateListOf("") }
 
     AvoqadoFullScreenModal(
-        title = "Nueva opcion",
+        title = "Nueva opción",
         onDismiss = onDismiss,
         primaryActionText = if (isSaving) "Creando..." else "Crear",
         onPrimaryAction = {
@@ -70,7 +70,7 @@ fun CreateOptionSheet(
             OutlinedTextField(
                 value = optionName,
                 onValueChange = { optionName = it },
-                label = { Text("Nombre de la opcion") },
+                label = { Text("Nombre de la opción") },
                 placeholder = { Text("Ej: Talla, Color, Material") },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,

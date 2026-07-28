@@ -155,20 +155,41 @@ fun DailyReportView(
             ReportSectionTitle(text = "Resumen de ventas")
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
 
-            ReportRow(label = "Ventas totales", value = formatCurrency(totalSalesCents))
+            // Sin el desglose del server sólo se conoce el efectivo, así que la
+            // etiqueta lo dice: llamarle "Ventas totales" a una cifra que excluye
+            // tarjeta le hace creer al dueño que vendió menos de lo que vendió.
+            ReportRow(
+                label = if (hasServerBreakdown) "Ventas totales" else "Ventas en efectivo",
+                value = formatCurrency(totalSalesCents),
+            )
             ReportRow(label = "No. de transacciones", value = "$transactionCount")
             ReportRow(label = "Ticket promedio", value = formatCurrency(avgTicketCents))
 
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
 
             // Payment method breakdown
-            ReportSectionTitle(text = "Desglose por metodo de pago")
+            ReportSectionTitle(text = "Desglose por método de pago")
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
 
             ReportRow(label = "Efectivo", value = formatCurrency(displayCashCents))
-            ReportRow(label = "Tarjeta", value = formatCurrency(cardCents))
-            if (otherCents != 0) {
-                ReportRow(label = "Otros", value = formatCurrency(otherCents))
+            if (hasServerBreakdown) {
+                ReportRow(label = "Tarjeta", value = formatCurrency(cardCents))
+                if (otherCents != 0) {
+                    ReportRow(label = "Otros", value = formatCurrency(otherCents))
+                }
+            } else {
+                // Sin conexión no se pudo consultar el desglose. Pintar "Tarjeta $0.00"
+                // aquí sería MENTIR: el POS no sabe cuánto se cobró con tarjeta, y el
+                // dueño cerraría su turno creyendo que no hubo ni un cobro con terminal.
+                // El efectivo de arriba sí es confiable — sale del cajón, no del server.
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+                Text(
+                    text = "Sin conexión: sólo se muestra el efectivo, que es lo que hay " +
+                        "en el cajón. Los cobros con tarjeta y otros medios aparecerán en " +
+                        "el corte al recuperar la conexión.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
 
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
@@ -258,7 +279,7 @@ fun DailyReportView(
             // Print button
             Button(
                 onClick = {
-                    Toast.makeText(context, "Impresion no disponible", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, "Impresión no disponible", Toast.LENGTH_SHORT).show()
                 },
                 shape = RoundedCornerShape(50),
                 colors = ButtonDefaults.buttonColors(

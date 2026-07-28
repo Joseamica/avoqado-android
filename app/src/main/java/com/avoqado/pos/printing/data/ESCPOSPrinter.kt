@@ -233,7 +233,7 @@ class ESCPOSPrinter(
 
         // Items header
         setBold(true)
-        printThreeColumns("Cant", "Articulo", "Precio")
+        printThreeColumns("Cant", "Artículo", "Precio")
         setBold(false)
         printDivider()
 
@@ -434,7 +434,7 @@ class ESCPOSPrinter(
 
         setAlignment(TextAlignment.LEFT)
         printLine("Ancho de papel: ${paperWidth.displayName}")
-        printLine("Caracteres por linea: ${paperWidth.charsPerLine}")
+        printLine("Caracteres por línea: ${paperWidth.charsPerLine}")
         printLine()
 
         printLine("Texto normal")
@@ -452,7 +452,7 @@ class ESCPOSPrinter(
         printDivider()
 
         printTwoColumns("Columna izq", "Columna der")
-        printThreeColumns("1", "Articulo de prueba", "$99.00")
+        printThreeColumns("1", "Artículo de prueba", "$99.00")
 
         printLine()
         printDivider()

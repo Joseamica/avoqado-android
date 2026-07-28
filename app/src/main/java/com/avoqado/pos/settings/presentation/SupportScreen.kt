@@ -336,7 +336,7 @@ private fun WhatsAppContactCard() {
                     color = Color.White.copy(alpha = 0.9f),
                 )
                 Text(
-                    text = "Respuesta rapida de lunes a viernes, 9am - 6pm",
+                    text = "Respuesta rápida de lunes a viernes, 9am - 6pm",
                     style = MaterialTheme.typography.bodySmall,
                     color = Color.White.copy(alpha = 0.8f),
                 )
@@ -373,7 +373,7 @@ private val faqItems = listOf(
     ),
     FaqItem(
         question = "Como configuro la terminal de pago?",
-        answer = "La terminal PAX se conecta automaticamente via Bluetooth. Asegurate de que este encendida y en modo de emparejamiento.",
+        answer = "La terminal PAX se conecta automáticamente via Bluetooth. Asegúrate de que esté encendida y en modo de emparejamiento.",
     ),
     FaqItem(
         question = "Como cambio de sucursal?",
@@ -535,7 +535,7 @@ private fun TutorialsContent() {
                         ),
                 ) {
                     Text(
-                        text = "Proximamente",
+                        text = "Próximamente",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -581,12 +581,12 @@ private fun HardwareContent() {
                     color = MaterialTheme.colorScheme.onSurface,
                 )
                 Text(
-                    text = "Terminal de pago con pantalla tactil. Acepta tarjetas de credito, debito y pagos sin contacto.",
+                    text = "Terminal de pago con pantalla táctil. Acepta tarjetas de crédito, débito y pagos sin contacto.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Text(
-                    text = "Conexion: Bluetooth",
+                    text = "Conexión: Bluetooth",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -615,7 +615,7 @@ private fun HardwareContent() {
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Text(
-                    text = "Conexion: Bluetooth",
+                    text = "Conexión: Bluetooth",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -677,7 +677,7 @@ private fun FeedbackContent() {
                 onValueChange = { feedbackText = it },
                 placeholder = {
                     Text(
-                        "Escribe tus comentarios aqui...",
+                        "Escribe tus comentarios aquí...",
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 },
@@ -742,8 +742,8 @@ private fun AboutContent() {
 
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
 
-        AboutRow(label = "Aplicacion", value = "Avoqado POS")
-        AboutRow(label = "Version", value = versionName)
+        AboutRow(label = "Aplicación", value = "Avoqado POS")
+        AboutRow(label = "Versión", value = versionName)
         AboutRow(label = "Build", value = versionCode)
         AboutRow(label = "Dispositivo", value = deviceModel)
         AboutRow(label = "Sistema operativo", value = androidVersion)
@@ -812,7 +812,7 @@ private fun LegalContent() {
         LegalRow(
             title = "Licencias de terceros",
             onClick = {
-                Toast.makeText(context, "Proximamente", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, "Próximamente", Toast.LENGTH_SHORT).show()
             },
         )
     }

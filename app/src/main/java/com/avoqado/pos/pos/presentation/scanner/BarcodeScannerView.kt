@@ -206,7 +206,7 @@ fun BarcodeScannerView(
 
                 // Scanning hint (bottom-center)
                 Text(
-                    text = "Apunta la camara al codigo de barras",
+                    text = "Apunta la camara al código de barras",
                     style = MaterialTheme.typography.bodyMedium,
                     color = Color.White,
                     modifier = Modifier
@@ -224,7 +224,7 @@ fun BarcodeScannerView(
                 verticalArrangement = Arrangement.Center,
             ) {
                 Text(
-                    text = "Se necesita acceso a la camara para escanear codigos de barras",
+                    text = "Se necesita acceso a la camara para escanear códigos de barras",
                     style = MaterialTheme.typography.bodyMedium,
                     color = Color.White,
                 )

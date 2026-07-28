@@ -275,7 +275,7 @@ class PaymentSyncService @Inject constructor(
             return handleSyncResult(payment, code, responseBody)
 
         } catch (e: java.net.UnknownHostException) {
-            handleNetworkError(payment, "Sin conexion")
+            handleNetworkError(payment, "Sin conexión")
             return false
         } catch (e: java.net.ConnectException) {
             handleNetworkError(payment, "No se pudo conectar al servidor")
@@ -319,7 +319,7 @@ class PaymentSyncService @Inject constructor(
                 else -> OrderResolution.RetryableFailure("Order recreate server error ($code)")
             }
         } catch (e: java.net.UnknownHostException) {
-            OrderResolution.RetryableFailure("Sin conexion")
+            OrderResolution.RetryableFailure("Sin conexión")
         } catch (e: java.net.ConnectException) {
             OrderResolution.RetryableFailure("No se pudo conectar al servidor")
         } catch (e: java.io.IOException) {
@@ -371,7 +371,7 @@ class PaymentSyncService @Inject constructor(
                 false
             }
             else -> {
-                handleNetworkError(payment, "Codigo inesperado: $code")
+                handleNetworkError(payment, "Código inesperado: $code")
                 false
             }
         }
