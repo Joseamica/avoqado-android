@@ -186,7 +186,18 @@ class TableOrderViewModel @Inject constructor(
                     // sin refrescarla, el siguiente Enviar da 409 (auditoría).
                     detail.version?.let { tableSession.updateVersion(it) }
                 },
-                onFailure = { _actionMessage.value = "No se pudo actualizar la cuenta" },
+                onFailure = { e ->
+                    // 🔴 Sin red NO es un error: es el estado normal del local
+                    // en un apagón. Avisarlo aquí hacía que el mesero viera
+                    // "No se pudo actualizar la cuenta" CADA vez que entraba a
+                    // una mesa, con la cuenta perfectamente bien. Ese ruido
+                    // entrena a ignorar los avisos, y el día que salga uno de
+                    // verdad también lo van a ignorar. El banner naranja de
+                    // arriba ya comunica que no hay conexión.
+                    if (!isNetworkError(e)) {
+                        _actionMessage.value = "No se pudo actualizar la cuenta"
+                    }
+                },
             )
             _isLoadingCheck.value = false
             // El saldo de puntos depende del cliente adjunto, que viene en el cheque.
