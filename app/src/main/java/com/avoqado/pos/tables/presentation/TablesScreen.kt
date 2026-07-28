@@ -670,10 +670,12 @@ private fun TableNode(table: DiningTable, size: Dp, selected: Boolean = false, m
             if (table.openOrders.size > 1) {
                 "${table.openOrders.size} cuentas"
             } else {
-                elapsedLabel(table.currentOrder?.createdAt, nowMs) ?: table.currentOrder?.totalDisplay
+                // primaryCheck: con el puntero desincronizado la mesa quedaba sin
+                // hora NI total — un bloque negro sin ninguna pista del saldo.
+                elapsedLabel(table.primaryCheck?.createdAt, nowMs) ?: table.primaryCheck?.totalDisplay
             }
         } else {
-            table.currentOrder?.totalDisplay
+            table.primaryCheck?.totalDisplay
         }
         sub?.let {
             Text(
@@ -717,8 +719,8 @@ private fun TableCard(table: DiningTable, onTap: () -> Unit, onLongPress: () -> 
         Text(
             text = when {
                 occupied -> {
-                    val total = table.currentOrder?.totalDisplay ?: "Ocupada"
-                    val elapsed = elapsedLabel(table.currentOrder?.createdAt, nowMs)
+                    val total = table.primaryCheck?.totalDisplay ?: "Ocupada"
+                    val elapsed = elapsedLabel(table.primaryCheck?.createdAt, nowMs)
                     if (elapsed != null) "$total · $elapsed" else total
                 }
                 table.isReserved -> "Reservada"
@@ -811,6 +813,11 @@ private fun TableCheckSheet(
             // ── Occupied: check summary + the 3 Square actions ───────────
             table.isOccupied -> {
                 val order = table.currentOrder
+                // El dinero se lee del resumen, NO del puntero denormalizado: si
+                // `currentOrder` viene nulo (M9 con 2 cuentas), el sheet escondía
+                // "Cobrar" por completo y decía "Sin productos todavía" sobre una
+                // mesa con $364 vivos.
+                val check = table.primaryCheck
                 // Comp dialog target: the line the user tapped (null = closed).
                 var compTarget by remember { mutableStateOf<com.avoqado.pos.tables.data.TableOrderItem?>(null) }
 
@@ -873,7 +880,13 @@ private fun TableCheckSheet(
                     }
                 } else {
                     Text(
-                        text = "Sin productos todavía — agrega la primera ronda.",
+                        text = if (check != null && check.total > 0) {
+                            // Hay cuenta y hay dinero, sólo no llegaron los renglones:
+                            // decir "sin productos" sería mentir sobre el saldo.
+                            "Cuenta ${check.orderNumber} • ${check.totalDisplay} — ábrela para ver el detalle."
+                        } else {
+                            "Sin productos todavía — agrega la primera ronda."
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -889,12 +902,12 @@ private fun TableCheckSheet(
                 )
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
 
-                if (order != null && order.total > 0) {
+                if (check != null && check.total > 0) {
                     // Una sola puerta de cobro (auditoría): el register sembraba el
                     // TOTAL COMPLETO sin restar pagos parciales. Ahora este botón
                     // abre la pantalla de mesa, cuyo Pagar cobra solo lo restante.
                     PrimaryButton(
-                        text = "Cobrar cuenta • ${order.totalDisplay}",
+                        text = "Cobrar cuenta • ${check.totalDisplay}",
                         onClick = { viewModel.startOrdering(table, onReady = onOpenTableOrder) },
                         fullWidth = true,
                     )

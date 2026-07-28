@@ -207,7 +207,9 @@ class TablesViewModel @Inject constructor(
 
     /** Occupied table → ORDERING session over its existing order (add a round). */
     fun startOrdering(table: DiningTable, onReady: () -> Unit) {
-        val order = table.currentOrder ?: return
+        // primaryCheck, NO currentOrder: una mesa con el puntero desincronizado
+        // se ve ocupada y debe abrirse igual (ver DiningTable.primaryCheck).
+        val order = table.primaryCheck ?: return
         tableSession.start(
             TableSession.Active(
                 tableId = table.id,
@@ -249,7 +251,7 @@ class TablesViewModel @Inject constructor(
      * PaymentFlowViewModel seam. On completion the table is released.
      */
     fun startCobrar(table: DiningTable, onReady: () -> Unit) {
-        val order = table.currentOrder ?: return
+        val order = table.primaryCheck ?: return
 
         // Mid-split re-entry guard: this table's PAYING session already tracks
         // the live remainder — restarting it from the floor plan must NOT reset
@@ -291,7 +293,7 @@ class TablesViewModel @Inject constructor(
      * rejects it once the order is paid.
      */
     fun compItem(table: DiningTable, itemId: String, reason: String) {
-        val order = table.currentOrder ?: return
+        val order = table.primaryCheck ?: return
         val vId = venueId ?: return
         viewModelScope.launch {
             _actionState.value = TableActionState.Working
@@ -314,7 +316,7 @@ class TablesViewModel @Inject constructor(
      * server-side if the order is PAID or a terminal charge is in flight.
      */
     fun anularCuenta(table: DiningTable, reason: String) {
-        val order = table.currentOrder ?: return
+        val order = table.primaryCheck ?: return
         val vId = venueId ?: return
         viewModelScope.launch {
             _actionState.value = TableActionState.Working
@@ -377,7 +379,7 @@ class TablesViewModel @Inject constructor(
             var ok = 0
             var fail = 0
             tables.forEach { table ->
-                val order = table.currentOrder ?: return@forEach
+                val order = table.primaryCheck ?: return@forEach
                 repository.cancelOrder(vId, order.id, reason).fold(
                     onSuccess = {
                         repository.clearTable(vId, table.id)
@@ -400,7 +402,7 @@ class TablesViewModel @Inject constructor(
             var ok = 0
             var fail = 0
             tables.forEach { table ->
-                val order = table.currentOrder ?: return@forEach
+                val order = table.primaryCheck ?: return@forEach
                 repository.assignOrder(vId, order.id, staffId).fold(
                     onSuccess = { ok++ },
                     onFailure = { fail++ },
@@ -418,7 +420,7 @@ class TablesViewModel @Inject constructor(
             var ok = 0
             var fail = 0
             tables.forEach { table ->
-                val order = table.currentOrder ?: return@forEach
+                val order = table.primaryCheck ?: return@forEach
                 repository.compWholeOrder(vId, order.id, reason).fold(
                     onSuccess = { ok++ },
                     onFailure = { fail++ },
@@ -432,7 +434,7 @@ class TablesViewModel @Inject constructor(
     /** Mueve la cuenta de UNA mesa seleccionada a una mesa libre. */
     fun bulkMover(source: DiningTable, targetTableId: String, onDone: (Boolean, String) -> Unit) {
         val vId = venueId ?: return
-        val order = source.currentOrder ?: return
+        val order = source.primaryCheck ?: return
         viewModelScope.launch {
             repository.moveOrder(vId, order.id, targetTableId).fold(
                 onSuccess = {
@@ -460,7 +462,7 @@ class TablesViewModel @Inject constructor(
      */
     fun bulkUnir(target: DiningTable, sources: List<DiningTable>, onDone: (Int, Int, String?) -> Unit) {
         val vId = venueId ?: return
-        val targetOrder = target.currentOrder ?: return
+        val targetOrder = target.primaryCheck ?: return
         viewModelScope.launch {
             var ok = 0
             var fail = 0
@@ -491,13 +493,23 @@ class TablesViewModel @Inject constructor(
     /** Cuentas abiertas de la mesa; cae a la actual si el server no mandó la lista. */
     private fun openOrderIds(table: DiningTable): List<String> =
         if (table.openOrders.isNotEmpty()) table.openOrders.map { it.id }
-        else listOfNotNull(table.currentOrder?.id)
+        else listOfNotNull(table.primaryCheck?.id)
 
     // MARK: - Pre-bill
 
     /** Prints the pre-cuenta (items + total, no payment info) on the RECEIPT printer. */
     fun printPreBill(table: DiningTable) {
-        val order = table.currentOrder ?: return
+        // Único sitio que SÍ necesita la orden completa: una pre-cuenta sin
+        // renglones es un documento de dinero mentiroso, así que no se imprime
+        // desde el resumen. Pero se dice POR QUÉ — el `?: return` mudo dejaba
+        // al mesero picando un botón muerto.
+        val order = table.currentOrder?.takeIf { it.items.isNotEmpty() } ?: run {
+            _actionState.value = TableActionState.Error(
+                if (table.hasOpenCheck) "Abre la cuenta para imprimir la pre-cuenta"
+                else "La mesa no tiene cuenta abierta",
+            )
+            return
+        }
         val printer = printerService.getDefaultPrinter(PrinterRole.RECEIPT) ?: run {
             _actionState.value = TableActionState.Error("No hay impresora de recibos configurada")
             return

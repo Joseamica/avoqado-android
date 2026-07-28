@@ -38,6 +38,38 @@ data class DiningTable(
      */
     val hasOpenCheck: Boolean get() = openOrders.isNotEmpty() || currentOrder != null
 
+    /**
+     * La cuenta sobre la que actúan las acciones de la mesa (abrir, cobrar,
+     * anular, mover, asignar, cortesía). Prefiere el puntero denormalizado
+     * `currentOrder`; si viene nulo cae a la cuenta abierta MÁS ANTIGUA.
+     *
+     * 🔴 El complemento obligatorio de [hasOpenCheck]. Ese arregló cómo se
+     * PINTA la mesa, pero no cómo se ABRE: M9 traía dos órdenes PENDING con
+     * `currentOrderId = NULL` en la base, así que el plano la pintaba ocupada
+     * ("2 cuentas") y tocarla no hacía absolutamente nada — cada acción moría
+     * en un `currentOrder ?: return` mudo. El mesero no tenía forma de llegar a
+     * $364 de cuentas vivas ni de saber por qué.
+     *
+     * Regla: si la mesa se ve ocupada, TIENE que poder abrirse. Las acciones
+     * leen esto, nunca `currentOrder` directo.
+     */
+    val primaryCheck: OpenCheckSummary?
+        get() = currentOrder?.let { o ->
+            // La misma orden ya viene en la lista casi siempre; se prefiere esa
+            // para no duplicar la fuente de verdad de total/versión.
+            openOrders.firstOrNull { it.id == o.id } ?: OpenCheckSummary(
+                id = o.id,
+                orderNumber = o.orderNumber,
+                covers = o.covers,
+                total = o.total,
+                itemCount = o.itemCount,
+                version = o.version,
+                waiterId = o.waiter?.id,
+                waiterName = o.waiter?.name,
+                createdAt = o.createdAt,
+            )
+        } ?: openOrders.firstOrNull()
+
     val isAvailable: Boolean get() = status == "AVAILABLE" && !hasOpenCheck
     val isOccupied: Boolean get() = status == "OCCUPIED" || hasOpenCheck
     val isReserved: Boolean get() = status == "RESERVED"
