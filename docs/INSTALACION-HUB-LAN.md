@@ -153,3 +153,30 @@ que necesitan revisión"* con el motivo. Nada se pierde en silencio.
 [ ] Prueba con internet desconectado: la comanda SÍ sale impresa
 [ ] Internet reconectado: las ventas suben solas
 ```
+
+## ⚠️ Impresoras: dos cosas que te van a morder en el local
+
+**1. El permiso de "dispositivos cercanos" es obligatorio.** La primera vez que
+abras la pantalla de impresoras, Android pregunta *"¿Permitir que Avoqado
+encuentre dispositivos cercanos?"*. Si alguien toca **NO PERMITIR**, la lista de
+impresoras sale VACÍA para siempre y no hay forma obvia de recuperarlo desde la
+app: hay que ir a Ajustes de Android → Apps → Avoqado → Permisos. Acéptalo tú
+durante la instalación, no lo dejes al personal.
+
+**2. Impresoras que no se anuncian por mDNS no se pueden configurar.** Hoy la app
+SÓLO descubre impresoras que se anuncian solas en la red (Bonjour/mDNS). **No hay
+alta manual por IP.** Si la impresora del local tiene IP fija y no se anuncia, o
+la red las aísla (VLAN, "client isolation" del router), no aparecerá y no hay
+manera de agregarla. Antes de ir:
+
+- Verifica desde una laptop en la MISMA red: `dns-sd -B _printer._tcp` (Mac) —
+  si tu impresora no sale ahí, tampoco va a salir en el POS.
+- Si no se anuncia, revisa en el panel de la impresora que Bonjour/AirPrint esté
+  encendido.
+- Comprueba que el POS y la impresora estén en la MISMA subred/VLAN.
+
+**Verificación rápida de que sí imprime sin internet:** abre una mesa, agrega un
+producto y toca Enviar con el router SIN internet (pero con WiFi). La comanda
+debe salir. Si el equipo nunca se conectó con internet no tendrá el ruteo por
+estaciones y la comanda saldrá marcada **"SIN ESTACIÓN"** en la impresora de
+cocina — eso es correcto y esperado: es mejor una comanda sin dividir que ninguna.
