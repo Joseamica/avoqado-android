@@ -2063,12 +2063,16 @@ internal fun TableActionsPanel(
             ActionPill(
                 label = "Imprimir cuenta",
                 enabled = hasSent,
+                blockedReason = "Todavía no hay nada enviado a cocina, así que no hay cuenta que imprimir.",
+                onBlocked = onBlocked,
                 onClick = onPrintPreBill,
                 modifier = Modifier.weight(1f),
             )
             ActionPill(
                 label = "Volver a imprimir pedido",
                 enabled = hasSent,
+                blockedReason = "Aún no se ha enviado ningún pedido a cocina.",
+                onBlocked = onBlocked,
                 onClick = onReprintComandas,
                 modifier = Modifier.weight(1f),
             )
@@ -2122,6 +2126,10 @@ internal fun TableActionsPanel(
             ActionPill(
                 label = "Recompensas",
                 enabled = hasLoyalty,
+                // Único ActionPill que se quedó sin motivo: el mesero lo tocaba
+                // y no pasaba NADA. El resto ya explicaba por qué estaba gris.
+                blockedReason = "Esta cuenta no tiene puntos para canjear. Agrega el cliente en la pestaña «Cliente».",
+                onBlocked = onBlocked,
                 onClick = onRecompensas,
                 modifier = Modifier.weight(1f),
             )
@@ -2173,6 +2181,8 @@ internal fun TableActionsPanel(
             ActionPill(
                 label = "Caja abierta",
                 enabled = hasCashDrawer,
+                blockedReason = "No hay impresora de recibos con cajón configurada. Ve a Más › Impresora.",
+                onBlocked = onBlocked,
                 onClick = onCajaAbierta,
                 modifier = Modifier.weight(1f),
             )
