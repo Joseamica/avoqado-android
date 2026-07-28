@@ -6,6 +6,8 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.ui.semantics.Role
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
@@ -65,21 +67,32 @@ fun ModifierGroupSection(
                 it.groupId == group.id && it.modifierId == modifier.id
             }
 
+            // 🔴 TODA la fila selecciona, no sólo el control. Un radio mide ~20dp
+            // y el mesero captura con el dedo y con prisa: tocar el nombre del
+            // modificador no hacía NADA y parecía que la app no respondía.
+            // `selectable` da además el rol de accesibilidad correcto.
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(vertical = AvoqadoTheme.spacing.xxs),
+                    .selectable(
+                        selected = isSelected,
+                        role = if (group.multipleSelect) Role.Checkbox else Role.RadioButton,
+                        onClick = { onModifierToggled(modifier, !isSelected) },
+                    )
+                    .padding(vertical = AvoqadoTheme.spacing.xs),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 if (group.multipleSelect) {
                     Checkbox(
                         checked = isSelected,
-                        onCheckedChange = { onModifierToggled(modifier, it) },
+                        // null: el click lo maneja la fila — evita doble manejo
+                        // y que el control se coma el toque.
+                        onCheckedChange = null,
                     )
                 } else {
                     RadioButton(
                         selected = isSelected,
-                        onClick = { onModifierToggled(modifier, !isSelected) },
+                        onClick = null,
                     )
                 }
 

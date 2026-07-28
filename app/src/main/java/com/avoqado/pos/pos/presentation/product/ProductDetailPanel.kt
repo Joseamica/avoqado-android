@@ -8,6 +8,10 @@ import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -104,6 +108,10 @@ fun ProductDetailPanel(
                     .align(Alignment.CenterEnd)
                     .width(400.dp)
                     .fillMaxHeight()
+                    // 🔴 Sin esto el contenido se mete DEBAJO de la barra de
+                    // estado: en la D3 el precio del producto chocaba con el
+                    // reloj y el primer modificador salía cortado.
+                    .windowInsetsPadding(WindowInsets.statusBars)
                     .shadow(8.dp)
                     .background(MaterialTheme.colorScheme.surface)
                     .clickable(enabled = false, onClick = {}), // prevent click-through
@@ -170,13 +178,10 @@ private fun ProductDetailContent(
     }
 
     // Validate: can add to cart? (required modifier groups must be satisfied)
-    val canAddToCart = product.sortedModifierGroups.all { group ->
-        if (!group.required) true
-        else {
-            val count = selectedModifiers.count { it.groupId == group.id }
-            count >= (group.minSelections ?: 1)
-        }
-    }
+    val missingRequiredGroups = product.sortedModifierGroups.filter { group ->
+        group.required && selectedModifiers.count { it.groupId == group.id } < (group.minSelections ?: 1)
+    }.map { it.name }
+    val canAddToCart = missingRequiredGroups.isEmpty()
 
     Box(modifier = Modifier.fillMaxSize()) {
         // Animated content switching between main view and sub-views
@@ -197,6 +202,7 @@ private fun ProductDetailContent(
                         selectedDiscountId = selectedDiscountId,
                         displayPrice = displayPrice,
                         canAddToCart = canAddToCart,
+                        missingRequiredGroups = missingRequiredGroups,
                         onDismiss = onDismiss,
                         onQuantityChange = { quantity = it.coerceAtLeast(1) },
                         onModifierToggled = { modifier, isSelected, group ->
@@ -317,13 +323,27 @@ private fun MainDetailView(
     selectedDiscountId: String?,
     displayPrice: String,
     canAddToCart: Boolean,
+    /** Nombres de los grupos obligatorios que faltan — para decirlo, no callarlo. */
+    missingRequiredGroups: List<String> = emptyList(),
     onDismiss: () -> Unit,
     onQuantityChange: (Int) -> Unit,
     onModifierToggled: (com.avoqado.pos.pos.data.model.Modifier, Boolean, com.avoqado.pos.pos.data.model.ProductModifierGroup) -> Unit,
     onNavigate: (DetailSubView) -> Unit,
     onAddToCart: () -> Unit,
 ) {
+    var showMissingRequired by remember { mutableStateOf(false) }
+
     Column(modifier = Modifier.fillMaxSize()) {
+        if (showMissingRequired && missingRequiredGroups.isNotEmpty()) {
+            Text(
+                text = "Falta elegir: ${missingRequiredGroups.joinToString(", ")}",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = AvoqadoTheme.spacing.md, vertical = AvoqadoTheme.spacing.xs),
+            )
+        }
         // Scrollable content
         Column(
             modifier = Modifier
@@ -539,13 +559,28 @@ private fun MainDetailView(
                 }
             }
 
-            // Add to cart button
-            PrimaryButton(
-                text = "Agregar al carrito",
-                onClick = onAddToCart,
-                enabled = canAddToCart,
-                modifier = Modifier.weight(1f),
-            )
+            // Add to cart button — bloqueado NO significa mudo: si faltan
+            // modificadores obligatorios, el toque lo dice. El "Requerido 0/1"
+            // vive arriba del panel, lejos del botón que el mesero acaba de
+            // tocar, así que sin esto parecía que la app no respondía.
+            Box(modifier = Modifier.weight(1f)) {
+                PrimaryButton(
+                    text = "Agregar al carrito",
+                    onClick = onAddToCart,
+                    enabled = canAddToCart,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (!canAddToCart) {
+                    Box(
+                        modifier = Modifier
+                            .matchParentSize()
+                            .clickable(
+                                interactionSource = remember { MutableInteractionSource() },
+                                indication = null,
+                            ) { showMissingRequired = true },
+                    )
+                }
+            }
         }
     }
 }
