@@ -155,7 +155,49 @@ class SunmiInnerPrinter @Inject constructor(
         // lo intenta ahora en vez de fallar de una. Esta era la causa raíz de
         // "no hay impresora de recibos configurada" tras reiniciar la app.
         ensureBound()
-        printRawInternal(data)
+        try {
+            printRawInternal(data)
+        } catch (e: PrinterException) {
+            // 🔴 AUTO-RECUPERACIÓN. El servicio AIDL de Sunmi se cuelga solo en
+            // estado 3 y deja de imprimir en silencio; re-ligarlo lo devuelve a
+            // estado 1 (medido en una D3 con impresora real). Antes de darle un
+            // error al mesero —que no puede hacer nada con él a media comida—
+            // la app se recupera sola y reintenta UNA vez.
+            //
+            // Sólo para estados recuperables: sin papel o tapa abierta necesitan
+            // una mano humana y su mensaje debe llegar tal cual.
+            if (!isRecoverable(e.message)) throw e
+            Log.w(tag, "Impresora en mal estado (${e.message}) — re-ligo el servicio y reintento")
+            unbind()
+            if (!ensureBound()) throw e
+            printRawInternal(data)
+        }
+    }
+
+    /** Estados que se arreglan re-ligando el servicio, sin tocar el hardware. */
+    private fun isRecoverable(message: String?): Boolean =
+        message?.contains("no responde") == true
+
+    /**
+     * Traduce el estado del cabezal a algo que un mesero pueda ACCIONAR, o null
+     * si se puede imprimir.
+     *
+     * Medido en una D3 con impresora real (2026-07-28): el servicio AIDL de
+     * Sunmi se quedó en estado 3 ("comunicación anormal") solo, sin que nadie
+     * tocara nada — y en ese estado `sendRAWData` NO imprime, NO devuelve error
+     * y la app seguía diciendo "Conectada". O sea: la comanda no sale y NADIE se
+     * entera hasta que el cliente reclama. Reiniciar el servicio lo devolvió a
+     * estado 1 y el papel salió.
+     */
+    private fun stateProblem(state: Int?): String? = when (state) {
+        null, 1, 2 -> null // normal / preparando / no legible → adelante
+        4 -> "La impresora no tiene papel. Cambia el rollo."
+        5 -> "La impresora está sobrecalentada. Espera un momento."
+        6 -> "La tapa de la impresora está abierta. Ciérrala."
+        7 -> "El cortador de la impresora está atascado."
+        9 -> "La impresora no encuentra la marca del papel."
+        NO_PRINTER_DETECTED -> "Este equipo no tiene impresora integrada."
+        else -> "La impresora no responde (estado $state)."
     }
 
     private suspend fun printRawInternal(data: ByteArray): Unit = suspendCancellableCoroutine { cont ->
@@ -171,7 +213,14 @@ class SunmiInnerPrinter @Inject constructor(
             // Los ejemplos oficiales de Sunmi lo llaman siempre; nosotros no, y
             // ese fue exactamente el síntoma.
             svc.printerInit(null)
-            Log.i(tag, "estado impresora = ${runCatching { svc.updatePrinterState() }.getOrNull()}")
+            val state = runCatching { svc.updatePrinterState() }.getOrNull()
+            Log.i(tag, "estado impresora = $state")
+            // 🔴 Sin esto el fallo es MUDO: con el servicio en estado 3 no sale
+            // papel, no hay excepción y el ticket se da por impreso.
+            stateProblem(state)?.let { motivo ->
+                cont.resumeWithException(PrinterException.ConnectionFailed(motivo))
+                return@runCatching
+            }
             svc.sendRAWData(
                 data,
                 object : InnerResultCallback() {
