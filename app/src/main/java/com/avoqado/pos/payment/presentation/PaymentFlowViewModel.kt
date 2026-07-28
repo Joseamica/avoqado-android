@@ -1211,6 +1211,15 @@ class PaymentFlowViewModel @Inject constructor(
     }
 
     private fun recordCashSale(amountCents: Int, orderId: String? = null) {
+        // Un cobro declarado a mano (terminal ajena, transferencia) NUNCA entró al
+        // cajón. Meterlo como venta en efectivo le inventa al cajero un faltante por
+        // ese monto al cerrar el turno — justo el descuadre que el método manual vino
+        // a evitar. El cobro sí se registra en el server con su método real; lo único
+        // que NO debe tocar es el arqueo de efectivo.
+        manualMethod?.let { declarado ->
+            Log.d("💰", "Cobro '${declarado.label}' fuera de Avoqado: no entra al arqueo de efectivo")
+            return
+        }
         viewModelScope.launch {
             try {
                 // addCashSale returns null gracefully when no drawer is open

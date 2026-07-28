@@ -65,7 +65,7 @@ fun SetupWizardScreen(
             isCompleted = true,
         ),
         SetupTask(
-            title = "Configurar metodo de pago",
+            title = "Configurar método de pago",
             description = "Conecta una terminal de pago o habilita pagos en efectivo",
             isCompleted = true,
         ),

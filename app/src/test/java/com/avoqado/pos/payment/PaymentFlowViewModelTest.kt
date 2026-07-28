@@ -25,6 +25,7 @@ import com.avoqado.pos.pos.presentation.cart.CartState
 import com.avoqado.pos.printing.data.ComandaPrinter
 import com.avoqado.pos.printing.data.PrinterService
 import com.avoqado.pos.printing.routing.PrintConfig
+import com.avoqado.pos.payment.domain.ManualPaymentMethod
 import com.avoqado.pos.printing.routing.PrintConfigRepository
 import com.avoqado.pos.printing.routing.StationInfo
 import com.avoqado.pos.printing.routing.TicketPlan
@@ -515,5 +516,66 @@ class PaymentFlowViewModelTest {
         viewModel.startPaymentFlow(cart)
 
         assertEquals(500, viewModel.currentTipPercentageBaseCents())
+    }
+
+    /**
+     * Un cobro con terminal ajena NO entró al cajón. Si se registra como venta en
+     * efectivo, al cerrar el turno el cajero aparece con un faltante por ese monto
+     * — el descuadre exacto que el método manual vino a evitar. Se vio en hardware:
+     * la caja decía "Venta en efectivo +$8.00" tras cobrar con tarjeta externa.
+     */
+    @Test
+    fun `cobro declarado a mano NO entra al arqueo de efectivo`() = runTest {
+        every {
+            tpvSettingsRepository.getCurrentSettings()
+        } returns TpvSettings(showReviewScreen = false, showTipScreen = false)
+
+        // El stub del setup cubre la sobrecarga sin manualMethod (5 args); el cobro
+        // manual la llama con 6.
+        coEvery {
+            orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), any())
+        } returns Result.success(OrderRepository.CashPayResult(paymentId = "manual-1", receiptAccessKey = null))
+
+        val cart = CartState(
+            items = listOf(
+                CartItem(
+                    id = "line-1",
+                    type = CartItemType.CustomAmount,
+                    name = "Venta rápida",
+                    unitPrice = 800,
+                ),
+            ),
+        )
+
+        viewModel.startPaymentFlow(cart)
+        viewModel.confirmManualMethod(ManualPaymentMethod.CARD_EXTERNAL)
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) { cashDrawerRepository.addCashSale(any(), any()) }
+    }
+
+    /** El efectivo real SÍ tiene que seguir entrando al arqueo. */
+    @Test
+    fun `cobro en efectivo si entra al arqueo`() = runTest {
+        every {
+            tpvSettingsRepository.getCurrentSettings()
+        } returns TpvSettings(showReviewScreen = false, showTipScreen = false)
+
+        val cart = CartState(
+            items = listOf(
+                CartItem(
+                    id = "line-1",
+                    type = CartItemType.CustomAmount,
+                    name = "Venta rápida",
+                    unitPrice = 800,
+                ),
+            ),
+        )
+
+        viewModel.startPaymentFlow(cart)
+        viewModel.confirmCashPreset(tenderedCents = 800)
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { cashDrawerRepository.addCashSale(800, any()) }
     }
 }

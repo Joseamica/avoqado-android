@@ -145,7 +145,7 @@ fun EndOfDayScreen(
             ReportRow(label = "Propinas", value = money(s.sales.tipsCents))
 
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
-            ReportSectionTitle(text = "Desglose por metodo de pago")
+            ReportSectionTitle(text = "Desglose por método de pago")
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
             if (s.sales.tenders.isEmpty()) {
                 ReportRow(label = "Sin ventas hoy", value = money(0))
