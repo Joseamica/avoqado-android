@@ -162,7 +162,7 @@ fun TimeClockSheet(
                     Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xs))
 
                     Text(
-                        text = "${pin.length} digitos (mínimo 4)",
+                        text = "${pin.length} dígitos (mínimo 4)",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -217,8 +217,22 @@ fun TimeClockSheet(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
                     ) {
-                        val statusColor = if (staff.onBreak) Warning else Success
-                        val statusText = if (staff.onBreak) "En descanso" else "Trabajando"
+                        // El chip tiene que mirar PRIMERO si marcó entrada: antes sólo
+                        // miraba onBreak, así que a quien apenas llega —sin registro
+                        // alguno— lo saludaba con un punto verde y "Trabajando", justo
+                        // encima del botón "Entrada". Un empleado que confía en eso se
+                        // va sin marcar y pierde su turno del día.
+                        val statusColor = when {
+                            !staff.clockedIn -> MaterialTheme.colorScheme.onSurfaceVariant
+                            staff.onBreak -> Warning
+                            else -> Success
+                        }
+                        // Mismo texto que iOS, que ya lo hacía bien.
+                        val statusText = when {
+                            !staff.clockedIn -> "No tienes entrada registrada"
+                            staff.onBreak -> "En descanso"
+                            else -> "Trabajando"
+                        }
 
                         Box(
                             modifier = Modifier
@@ -231,6 +245,20 @@ fun TimeClockSheet(
                             color = statusColor,
                             fontWeight = FontWeight.Medium,
                         )
+                    }
+
+                    // Desde qué hora lleva trabajando, como en iOS. Sin esto el
+                    // empleado no tiene forma de notar una entrada de ayer que quedó
+                    // abierta, y descubre el problema hasta que le pagan mal.
+                    staff.clockInTime?.takeIf { staff.clockedIn }?.let { iso ->
+                        formatClockInTime(iso)?.let { hora ->
+                            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxs))
+                            Text(
+                                text = "Entrada: $hora",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
 
                     // Role display
@@ -409,4 +437,19 @@ fun TimeClockSheet(
             Spacer(modifier = Modifier.height(if (compactSheetLayout) AvoqadoTheme.spacing.lg else AvoqadoTheme.spacing.xxxl))
         }
     }
+}
+
+/**
+ * "2026-07-28T21:39:00.000Z" → "15:39" en la zona del local.
+ *
+ * Devuelve null si el server manda algo que no se puede leer: es preferible no
+ * pintar la hora a pintar una equivocada en un dato que decide cuánto se le
+ * paga a alguien.
+ */
+private fun formatClockInTime(iso: String): String? = try {
+    java.time.Instant.parse(iso)
+        .atZone(com.avoqado.pos.core.util.VenueTimeZone.zoneId())
+        .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"))
+} catch (_: Exception) {
+    null
 }

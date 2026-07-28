@@ -27,6 +27,9 @@ data class CurrentEntryPayload(
     val id: String,
     val status: String,
     val isOnBreak: Boolean = false,
+    // El server ya lo manda desde siempre; Android lo ignoraba y por eso, a
+    // diferencia de iOS, no podía decir desde qué hora lleva trabajando.
+    val clockInTime: String? = null,
 )
 
 @Serializable
@@ -36,6 +39,8 @@ data class StaffData(
     val role: String? = null,
     val clockedIn: Boolean = false,
     val onBreak: Boolean = false,
+    /** ISO del inicio del turno activo. null cuando no ha marcado entrada. */
+    val clockInTime: String? = null,
 )
 
 @Serializable
@@ -69,5 +74,6 @@ fun StaffIdentifyResponse.toStaffDataOrNull(): StaffData? {
         role = staffPayload.role,
         clockedIn = currentEntryPayload != null,
         onBreak = currentEntryPayload?.isOnBreak == true || currentEntryPayload?.status == "ON_BREAK",
+        clockInTime = currentEntryPayload?.clockInTime,
     )
 }

@@ -33,7 +33,7 @@ class TimeEntryRepository @Inject constructor(
         val normalizedPin = pin.trim()
 
         if (!pinRegex.matches(normalizedPin)) {
-            return Result.failure(Exception("Ingresa un PIN valido de 4 a 10 digitos"))
+            return Result.failure(Exception("Ingresa un PIN válido de 4 a 10 dígitos"))
         }
 
         return try {
@@ -63,7 +63,7 @@ class TimeEntryRepository @Inject constructor(
             }
         } catch (e: Exception) {
             Log.e("⏰", "Identify staff error: ${e.message}")
-            Result.failure(e)
+            Result.failure(Exception(humanNetworkMessage(e)))
         }
     }
 
@@ -86,7 +86,7 @@ class TimeEntryRepository @Inject constructor(
         val normalizedPin = pin.trim()
 
         if (!pinRegex.matches(normalizedPin)) {
-            return Result.failure(Exception("Ingresa un PIN valido de 4 a 10 digitos"))
+            return Result.failure(Exception("Ingresa un PIN válido de 4 a 10 dígitos"))
         }
 
         return try {
@@ -113,9 +113,30 @@ class TimeEntryRepository @Inject constructor(
             }
         } catch (e: Exception) {
             Log.e("⏰", "Time clock error: ${e.message}")
-            Result.failure(e)
+            Result.failure(Exception(humanNetworkMessage(e)))
         }
     }
+}
+
+/**
+ * Traduce el fallo de red al idioma del empleado.
+ *
+ * Antes se le enseñaba la excepción cruda —"Failed to connect to
+ * /10.55.2.158:3000"— a quien sólo quiere marcar su entrada: no entiende qué
+ * pasó, no sabe si quedó registrado, y no tiene idea de qué hacer. El reloj es
+ * de los pocos flujos que EXIGEN internet (el turno se lleva en el server, no
+ * en este equipo), así que decirlo claro es lo único útil.
+ */
+private fun humanNetworkMessage(e: Exception): String = when (e) {
+    is java.net.UnknownHostException,
+    is java.net.ConnectException,
+    is java.net.SocketTimeoutException,
+    is java.io.IOException,
+    ->
+        "Sin conexión. El reloj necesita internet para registrar tu turno; " +
+            "revisa la red e inténtalo de nuevo."
+    else -> e.message?.takeIf { it.isNotBlank() && !it.contains("Failed to connect", ignoreCase = true) }
+        ?: "No se pudo completar la acción. Inténtalo de nuevo."
 }
 
 @Serializable
