@@ -736,15 +736,41 @@ fun TableOrderScreen(
         // 🔴 Semilla ESTABLE (auditoría): construir el CartState inline generaba
         // un id nuevo por recompose y PaymentFlowScreen (LaunchedEffect(cartState))
         // REINICIABA el flujo — hasta con un cargo en vuelo en la terminal.
-        val paymentCart = remember(paymentSeedCents, session?.orderId) {
+        // 🔴 El desglose del cobro mostraba "Subtotal $107.10 / Total $107.10"
+        // con un descuento de $11.90 aplicado: la línea se sembraba con el
+        // total YA descontado, así que el descuento era INVISIBLE para el
+        // cliente que lo pidió, y dos renglones idénticos no dicen nada.
+        //
+        // Se siembra el subtotal REAL y el descuento como línea aparte. El
+        // total no cambia (subtotal - descuento = lo mismo que antes), así que
+        // no toca lo que se cobra: sólo lo que se ve.
+        val descuentoCents = remember(check?.discountAmount) {
+            check?.discountAmount?.let { kotlin.math.round(it * 100).toInt() } ?: 0
+        }
+        val paymentCart = remember(paymentSeedCents, session?.orderId, descuentoCents) {
+            val cobrable = paymentSeedCents
+            // Sólo se desglosa cuando el descuento CABE en lo que se va a
+            // cobrar. En un pago parcial/split la semilla es menor que el
+            // cheque completo y desglosarlo daría un total equivocado.
+            val desglosable = descuentoCents > 0 && descuentoCents < cobrable
             com.avoqado.pos.pos.presentation.cart.CartState(
                 items = listOf(
                     com.avoqado.pos.pos.data.model.CartItem(
                         type = com.avoqado.pos.pos.data.model.CartItemType.CustomAmount,
                         name = "Cuenta Mesa ${session?.tableNumber ?: ""}",
-                        unitPrice = paymentSeedCents,
+                        unitPrice = if (desglosable) cobrable + descuentoCents else cobrable,
                     ),
                 ),
+                orderDiscount = if (desglosable) {
+                    com.avoqado.pos.pos.data.model.Discount(
+                        id = "order-discount",
+                        name = check?.discounts?.firstOrNull()?.name ?: "Descuento",
+                        value = descuentoCents / 100.0,
+                        type = "FIXED",
+                    )
+                } else {
+                    null
+                },
             )
         }
         androidx.compose.ui.window.Dialog(
