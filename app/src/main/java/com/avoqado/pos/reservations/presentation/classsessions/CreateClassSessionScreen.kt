@@ -178,6 +178,7 @@ fun CreateClassSessionScreen(
             onDismissRequest = { activeSheet = null },
             sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         ) {
+            com.avoqado.pos.designsystem.components.ImmersiveWindow()
             SheetHeader(sheet.title)
             when (sheet) {
                 ClassCreateSheet.PRODUCT -> ProductPickerSection(
@@ -194,6 +195,7 @@ fun CreateClassSessionScreen(
     }
 
     if (showCreateProduct) {
+        com.avoqado.pos.designsystem.components.ImmersiveWindow()
         ModalBottomSheet(
             onDismissRequest = { showCreateProduct = false },
             sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),

@@ -83,6 +83,7 @@ fun SplitPaymentSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
     ) {
+        com.avoqado.pos.designsystem.components.ImmersiveWindow()
         Column(
             modifier = Modifier
                 .fillMaxWidth()

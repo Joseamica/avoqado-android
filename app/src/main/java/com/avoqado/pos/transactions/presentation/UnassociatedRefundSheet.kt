@@ -81,6 +81,7 @@ fun UnassociatedRefundSheet(
         },
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
     ) {
+        com.avoqado.pos.designsystem.components.ImmersiveWindow()
         UnassociatedRefundContent(
             refundState = refundState,
             onProcess = { amount, reason, items ->

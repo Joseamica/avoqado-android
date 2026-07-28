@@ -181,6 +181,7 @@ fun InventoryScreen(
         ModalBottomSheet(
             onDismissRequest = { viewModel.closeCountTypeSheet() },
         ) {
+            com.avoqado.pos.designsystem.components.ImmersiveWindow()
             StockCountTypeSheet(viewModel = viewModel)
         }
     }

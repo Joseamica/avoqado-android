@@ -131,6 +131,7 @@ fun ProductDetailPanel(
             onDismissRequest = onDismiss,
             sheetState = sheetState,
         ) {
+            com.avoqado.pos.designsystem.components.ImmersiveWindow()
             ProductDetailContent(
                 product = product,
                 discounts = discounts,

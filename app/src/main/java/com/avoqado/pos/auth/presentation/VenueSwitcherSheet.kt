@@ -53,6 +53,7 @@ fun VenueSwitcherSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
     ) {
+        com.avoqado.pos.designsystem.components.ImmersiveWindow()
         Column(
             modifier = Modifier
                 .fillMaxWidth()

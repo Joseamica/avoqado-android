@@ -147,6 +147,7 @@ fun ClassSessionDetailScreen(
             onDismissRequest = { showAdd = false },
             sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         ) {
+            com.avoqado.pos.designsystem.components.ImmersiveWindow()
             AddAttendeeSheet(
                 viewModel = viewModel,
                 onDone = { showAdd = false },

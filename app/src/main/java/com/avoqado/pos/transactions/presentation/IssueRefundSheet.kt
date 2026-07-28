@@ -133,6 +133,7 @@ fun IssueRefundSheet(
         sheetState = sheetState,
         containerColor = MaterialTheme.colorScheme.surface,
     ) {
+        com.avoqado.pos.designsystem.components.ImmersiveWindow()
         // Three-band layout so footer (amount summary + Reembolsar) stays
         // visible on small tablets (≈9"): fixed header + scrollable middle
         // (weight=1f) + fixed footer. Also capped width for landscape.

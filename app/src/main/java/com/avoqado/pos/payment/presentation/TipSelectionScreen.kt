@@ -98,6 +98,7 @@ fun TipSelectionSheet(
         onDismissRequest = { /* explicit choice required — see confirmValueChange */ },
         sheetState = sheetState,
     ) {
+        com.avoqado.pos.designsystem.components.ImmersiveWindow()
         Column(
             modifier = Modifier
                 .fillMaxWidth()

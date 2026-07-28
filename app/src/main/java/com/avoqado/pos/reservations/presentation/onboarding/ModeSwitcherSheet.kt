@@ -28,6 +28,7 @@ fun ModeSwitcherSheet(
 ) {
     val state = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     ModalBottomSheet(onDismissRequest = onDismiss, sheetState = state) {
+        com.avoqado.pos.designsystem.components.ImmersiveWindow()
         Column(Modifier.padding(20.dp)) {
             Text(
                 "Cambiar de modo",

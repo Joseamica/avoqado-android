@@ -121,6 +121,7 @@ fun PrinterSettingsSheet(
         },
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
     ) {
+        com.avoqado.pos.designsystem.components.ImmersiveWindow()
         Column(
             modifier = Modifier
                 .fillMaxWidth()

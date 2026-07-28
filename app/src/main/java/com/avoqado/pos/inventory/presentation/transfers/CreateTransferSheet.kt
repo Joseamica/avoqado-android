@@ -92,6 +92,7 @@ fun CreateTransferSheet(
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         containerColor = MaterialTheme.colorScheme.surface,
     ) {
+        com.avoqado.pos.designsystem.components.ImmersiveWindow()
         Column(
             modifier = Modifier
                 .fillMaxWidth()

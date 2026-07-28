@@ -178,6 +178,7 @@ private fun CountryPickerSheet(
         sheetState = sheetState,
         containerColor = MaterialTheme.colorScheme.surfaceContainer,
     ) {
+        com.avoqado.pos.designsystem.components.ImmersiveWindow()
         LazyColumn(
             modifier = Modifier.fillMaxWidth(),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(

@@ -340,6 +340,7 @@ private fun PickerSheet(
         dragHandle = null,
         containerColor = MaterialTheme.colorScheme.surface,
     ) {
+        com.avoqado.pos.designsystem.components.ImmersiveWindow()
         Column(
             modifier = Modifier.fillMaxHeight(0.95f),
         ) {

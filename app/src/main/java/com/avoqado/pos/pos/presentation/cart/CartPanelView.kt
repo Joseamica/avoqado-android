@@ -930,6 +930,7 @@ private fun CartOptionsSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
     ) {
+        com.avoqado.pos.designsystem.components.ImmersiveWindow()
         Column(modifier = Modifier.fillMaxWidth()) {
             CartOptionButton(
                 icon = Icons.Filled.Delete,

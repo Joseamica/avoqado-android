@@ -394,6 +394,7 @@ fun TablesScreen(
                 onDismissRequest = { viewModel.selectTable(null) },
                 sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
             ) {
+                com.avoqado.pos.designsystem.components.ImmersiveWindow()
                 TableCheckSheet(
                     table = table,
                     viewModel = viewModel,

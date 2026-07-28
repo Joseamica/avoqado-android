@@ -56,6 +56,7 @@ fun QuarantineSheet(
     LaunchedEffect(Unit) { viewModel.load() }
 
     ModalBottomSheet(onDismissRequest = onDismissSheet, sheetState = sheetState) {
+        com.avoqado.pos.designsystem.components.ImmersiveWindow()
         Column(modifier = Modifier.padding(horizontal = AvoqadoTheme.spacing.lg).padding(bottom = AvoqadoTheme.spacing.xl)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
                 Icon(Icons.Filled.WarningAmber, contentDescription = null, tint = Warning, modifier = Modifier.size(24.dp))

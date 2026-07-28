@@ -760,6 +760,7 @@ private fun FilterSheets(
                 onDismissRequest = { viewModel.setActiveFilter(null) },
                 sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
             ) {
+                com.avoqado.pos.designsystem.components.ImmersiveWindow()
                 FilterCheckboxContent(
                     title = "Método",
                     options = viewModel.methodOptions(),
@@ -774,6 +775,7 @@ private fun FilterSheets(
                 onDismissRequest = { viewModel.setActiveFilter(null) },
                 sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
             ) {
+                com.avoqado.pos.designsystem.components.ImmersiveWindow()
                 FilterCheckboxContent(
                     title = "Mesero",
                     options = viewModel.staffOptions(),
