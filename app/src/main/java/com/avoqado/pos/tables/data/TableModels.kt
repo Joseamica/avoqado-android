@@ -23,8 +23,23 @@ data class DiningTable(
     /** Multi-cheque: TODAS las cuentas abiertas de la mesa (resumen ligero). */
     val openOrders: List<OpenCheckSummary> = emptyList(),
 ) {
-    val isAvailable: Boolean get() = status == "AVAILABLE"
-    val isOccupied: Boolean get() = status == "OCCUPIED"
+    /**
+     * ¿Hay dinero vivo en esta mesa? Se mira la CUENTA, no el campo `status`.
+     *
+     * 🔴 Encontrado en la D3 el 2026-07-28: M2 tenía una orden PENDING de
+     * $603.50 y `Table.status = AVAILABLE`, así que el plano la pintaba LIBRE
+     * mientras mostraba "$603.50" en la misma tarjeta. Un mesero sienta gente
+     * nueva ahí y la cuenta anterior queda huérfana — nadie la cobra. M9 ya
+     * tenía DOS órdenes abiertas por exactamente eso.
+     *
+     * No se encontró qué desincroniza `status` (abrir mesa marca OCCUPIED y
+     * liberar rechaza si hay impagas), así que esto es defensa en profundidad:
+     * pase lo que pase en la base, una mesa con cuenta abierta se ve ocupada.
+     */
+    val hasOpenCheck: Boolean get() = openOrders.isNotEmpty() || currentOrder != null
+
+    val isAvailable: Boolean get() = status == "AVAILABLE" && !hasOpenCheck
+    val isOccupied: Boolean get() = status == "OCCUPIED" || hasOpenCheck
     val isReserved: Boolean get() = status == "RESERVED"
     val hasPosition: Boolean get() = positionX != null && positionY != null
 }

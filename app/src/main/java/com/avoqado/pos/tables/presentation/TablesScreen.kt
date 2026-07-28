@@ -95,7 +95,12 @@ private fun elapsedLabel(createdAt: String?, nowMs: Long): String? {
         }
     }
     val minutes = ((nowMs - startMs).coerceAtLeast(0L) / 60_000L).toInt()
-    return "${minutes / 60}:${String.format(Locale.US, "%02d", minutes % 60)}"
+    val hours = minutes / 60
+    // Pasado un día, "116:03" deja de comunicar (se lee como 116 minutos) y
+    // además ESCONDE el problema real: una mesa lleva días sin cerrarse.
+    // Mostrar "4d 20h" lo hace evidente de un vistazo.
+    if (hours >= 24) return "${hours / 24}d ${hours % 24}h"
+    return "$hours:${String.format(Locale.US, "%02d", minutes % 60)}"
 }
 
 /** Shared 30s clock for the floor's timers. */
