@@ -6,6 +6,11 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.window.DialogWindowProvider
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -320,6 +325,7 @@ fun TableOrderScreen(
                                 onEnviar = { fireSend() },
                                 onPrintCuenta = { viewModel.printPreBill() },
                                 onBlocked = { viewModel.showBlockedReason(it) },
+                                printBlockedReason = viewModel.printPreBillBlockedReason,
                                 blockedNotice = blockedNotice,
                                 onDismissNotice = { viewModel.dismissBlockedNotice() },
                                 onPagar = { firePagar() },
@@ -470,6 +476,7 @@ fun TableOrderScreen(
                                 onEnviar = { showPhoneCheck = false; fireSend() },
                                 onPrintCuenta = { viewModel.printPreBill() },
                                 onBlocked = { viewModel.showBlockedReason(it) },
+                                printBlockedReason = viewModel.printPreBillBlockedReason,
                                 blockedNotice = blockedNotice,
                                 onDismissNotice = { viewModel.dismissBlockedNotice() },
                                 onPagar = { showPhoneCheck = false; firePagar() },
@@ -735,6 +742,12 @@ fun TableOrderScreen(
                 dismissOnClickOutside = false,
             ),
         ) {
+            // 🔴 Un Dialog de Compose abre su PROPIA ventana, y esa ventana NO
+            // hereda el modo inmersivo de la Activity: la barra de navegación
+            // de Android reaparecía justo durante el COBRO, encimada con el tab
+            // bar de la app. Además la ventana se encogía (1920x972 en vez de
+            // 1080) para dejarle sitio, recortando el contenido.
+            ImmersiveDialogWindow()
             Box(
                 modifier = Modifier
                     .fillMaxSize()
@@ -1140,6 +1153,8 @@ internal fun TableCheckPanel(
      * tappable y dice POR QUÉ. Mismo criterio que los ActionPill.
      */
     onBlocked: (String) -> Unit = {},
+    /** Por qué el botón de imprimir la pre-cuenta no está disponible (null = sí). */
+    printBlockedReason: String? = null,
     blockedNotice: String? = null,
     onDismissNotice: () -> Unit = {},
     /** Ícono de impresora junto a Pagar/Guardar (Square) — imprime la pre-cuenta. */
@@ -1308,13 +1323,24 @@ internal fun TableCheckPanel(
                 )
             } else {
                 // Square: ícono de impresora a la izquierda de los CTAs.
-                OutlinedIconButton(
-                    onClick = onPrintCuenta,
-                    enabled = subtotalCents > 0,
-                    modifier = Modifier.size(AvoqadoTheme.dimensions.buttonLarge),
-                    shape = RoundedCornerShape(50),
+                // Se ve deshabilitado, pero sigue siendo tappable para poder
+                // decir POR QUÉ. Sin impresora configurada el botón lucía
+                // activo y el toque no hacía nada visible.
+                val printBlocked = printBlockedReason
+                    ?: "Aún no hay nada que imprimir: esta cuenta no tiene cargos."
+                        .takeIf { subtotalCents <= 0 }
+                BlockedTapOverlay(
+                    reason = printBlocked,
+                    onBlocked = onBlocked,
                 ) {
-                    Icon(Icons.Outlined.Print, contentDescription = "Imprimir cuenta")
+                    OutlinedIconButton(
+                        onClick = onPrintCuenta,
+                        enabled = printBlocked == null,
+                        modifier = Modifier.size(AvoqadoTheme.dimensions.buttonLarge),
+                        shape = RoundedCornerShape(50),
+                    ) {
+                        Icon(Icons.Outlined.Print, contentDescription = "Imprimir cuenta")
+                    }
                 }
                 BlockedTapOverlay(
                     reason = "Esta cuenta todavía no tiene cargos. Agrega productos y envíalos antes de cobrar."
@@ -1605,6 +1631,39 @@ private fun TableSearchBar(onSearchTap: () -> Unit) {
 }
 
 // MARK: - Helpers
+
+/**
+ * Aplica el modo inmersivo a la ventana del Dialog que la contiene.
+ *
+ * Los Dialog de Compose crean una ventana aparte que arranca con las system
+ * bars visibles, sin importar lo que haga la Activity. En un POS eso significa
+ * que el cliente ve —y puede tocar— los botones de Android en plena pantalla de
+ * cobro.
+ *
+ * ⚠️ LÍMITE CONOCIDO: esto quita la barra de Android, pero la ventana del
+ * Dialog sigue naciendo con 1920x972 en la Sunmi (reserva el sitio de las
+ * barras aunque estén ocultas), así que por esos 108px de abajo todavía asoma
+ * el tab bar de la app. Probados SIN éxito: `setLayout(MATCH_PARENT)` y
+ * `FLAG_LAYOUT_NO_LIMITS` — ninguno cambió el tamaño. Lo que probablemente lo
+ * cierra es dejar de presentar el cobro como Dialog y hacerlo una ruta/pantalla
+ * normal, que es refactor mayor.
+ */
+@Composable
+private fun ImmersiveDialogWindow() {
+    val dialogWindow = (LocalView.current.parent as? DialogWindowProvider)?.window
+    LaunchedEffect(dialogWindow) {
+        val window = dialogWindow ?: return@LaunchedEffect
+        // La ventana del Dialog nace ENCOGIDA (1920x972 en la Sunmi) porque
+        // reserva sitio para las system bars. Sin esto, por debajo del cobro
+        // asomaba el tab bar de la app y el mesero podía tocar "Inventario" a
+        // media transacción.
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            hide(WindowInsetsCompat.Type.navigationBars())
+        }
+    }
+}
 
 /**
  * El "por qué está gris". Se renderiza en AMBAS pestañas (Cuenta y Acciones):

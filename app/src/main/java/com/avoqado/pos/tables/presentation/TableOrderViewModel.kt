@@ -334,6 +334,23 @@ class TableOrderViewModel @Inject constructor(
     val hasCashDrawer: Boolean
         get() = printerService.getDefaultPrinter(PrinterRole.RECEIPT) != null
 
+    /**
+     * Por qué NO se puede imprimir la pre-cuenta ahora, o null si sí se puede.
+     *
+     * El botón se habilitaba sólo por el subtotal, así que sin impresora
+     * configurada se veía activo y el toque no hacía nada visible (el aviso
+     * salía por Toast, que en la Sunmi queda DETRÁS de la pantalla del
+     * cliente). Un botón que se ve disponible y no responde parece app rota.
+     */
+    val printPreBillBlockedReason: String?
+        get() = when {
+            printerService.getDefaultPrinter(PrinterRole.RECEIPT) == null ->
+                "No hay impresora de recibos configurada. Ve a Más › Impresora para elegir una."
+            _check.value == null ->
+                "La cuenta todavía no se puede leer del servidor. Sin conexión no se imprime la pre-cuenta."
+            else -> null
+        }
+
     /** "Caja abierta": pulso ESC/POS al cajón por la impresora de recibos. */
     fun openCashDrawer() {
         val printer = printerService.getDefaultPrinter(PrinterRole.RECEIPT) ?: run {
@@ -1146,11 +1163,14 @@ class TableOrderViewModel @Inject constructor(
     /** Pre-cuenta on the RECEIPT printer, from the freshly loaded check. */
     fun printPreBill() {
         val session = tableSession.current() ?: return
-        val order = _check.value ?: return
-        val printer = printerService.getDefaultPrinter(PrinterRole.RECEIPT) ?: run {
-            _actionMessage.value = "No hay impresora de recibos configurada"
+        // Nada de `?: return` mudo: si no se puede, se DICE por qué. Antes, sin
+        // red el cheque venía null y el botón simplemente no hacía nada.
+        printPreBillBlockedReason?.let {
+            showBlockedReason(it)
             return
         }
+        val order = _check.value ?: return
+        val printer = printerService.getDefaultPrinter(PrinterRole.RECEIPT) ?: return
         viewModelScope.launch {
             try {
                 fun cents(v: Double) = round(v * 100).toInt()
