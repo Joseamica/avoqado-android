@@ -89,24 +89,40 @@ fun AddWaitlistSheet(
         title = "Agregar a la lista de espera",
         onDismiss = onDismiss,
         actionButton = {
-            PrimaryButton(
-                text = "Agregar",
-                onClick = {
-                    val instant = ZonedDateTime.of(date, time, zone).toInstant()
-                    val iso = DateTimeFormatter.ISO_INSTANT.format(instant)
-                    val req = AddToWaitlistRequest(
-                        customerId = if (!isGuest) customerId else null,
-                        guestName = if (isGuest) name else null,
-                        guestPhone = if (isGuest && phone.isNotBlank()) "+${country.dialCode}$phone" else null,
-                        partySize = partySize,
-                        desiredStartAt = iso,
-                        notes = notes.ifBlank { null },
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                // Un botón gris sin explicación deja al mesero adivinando —y con un
+                // cliente esperando enfrente. Decirle qué falta cuesta una línea.
+                if (!canSubmit) {
+                    Text(
+                        text = if (isGuest) {
+                            "Escribe el nombre del cliente para agregarlo"
+                        } else {
+                            "Busca y elige un cliente para agregarlo"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    onSubmit(req)
-                },
-                enabled = canSubmit,
-                fullWidth = true,
-            )
+                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+                }
+                PrimaryButton(
+                    text = "Agregar",
+                    onClick = {
+                        val instant = ZonedDateTime.of(date, time, zone).toInstant()
+                        val iso = DateTimeFormatter.ISO_INSTANT.format(instant)
+                        val req = AddToWaitlistRequest(
+                            customerId = if (!isGuest) customerId else null,
+                            guestName = if (isGuest) name else null,
+                            guestPhone = if (isGuest && phone.isNotBlank()) "+${country.dialCode}$phone" else null,
+                            partySize = partySize,
+                            desiredStartAt = iso,
+                            notes = notes.ifBlank { null },
+                        )
+                        onSubmit(req)
+                    },
+                    enabled = canSubmit,
+                    fullWidth = true,
+                )
+            }
         },
     ) {
         Column(

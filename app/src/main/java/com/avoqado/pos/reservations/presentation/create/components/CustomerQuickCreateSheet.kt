@@ -12,6 +12,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -66,6 +67,20 @@ fun CustomerQuickCreateSheet(
             onDismiss()
         },
         actionButton = {
+          Column(horizontalAlignment = Alignment.CenterHorizontally) {
+            // La regla no es adivinable (nombre Y ademas telefono O correo), asi que
+            // el boton gris solo se veia roto. Decir que falta cuesta una linea.
+            if (!canSubmit && !isCreating) {
+                Text(
+                    text = when {
+                        firstName.isBlank() -> "Escribe al menos el nombre del cliente"
+                        else -> "Agrega un teléfono o un correo para poder avisarle"
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+            }
             PrimaryButton(
                 text = "Crear",
                 onClick = {
@@ -87,6 +102,7 @@ fun CustomerQuickCreateSheet(
                 isLoading = isCreating,
                 fullWidth = true,
             )
+          }
         },
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md)) {
