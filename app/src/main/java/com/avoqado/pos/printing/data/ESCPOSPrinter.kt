@@ -67,6 +67,124 @@ class ESCPOSPrinter(
         // Sunmi, que arranca en multibyte GB18030; sin esto el code page de
         // arriba no aplica y se come el ticket entero.
         val SINGLE_BYTE_MODE = byteArrayOf(0x1C, 0x2E)
+
+        // MARK: - Códigos de barras 1D — modelo de ancho
+
+        /** ~20 mm a 203 dpi. Un código bajito sólo se lee si la pistola entra derecha. */
+        const val DEFAULT_BARCODE_HEIGHT_DOTS = 162
+
+        /** Default de ESC/POS. Con 10 dígitos en CODE128-C cabe en 58 mm. */
+        const val DEFAULT_MODULE_WIDTH = 3
+
+        /** `GS w` sólo acepta 2..6 en las Epson y en los clones que las copian. */
+        const val MIN_MODULE_WIDTH = 2
+        const val MAX_MODULE_WIDTH = 6
+
+        /**
+         * Zona muda a CADA lado, en módulos. Es parte del símbolo, no un margen
+         * estético: sin ella el decodificador no encuentra dónde empieza la
+         * primera barra y falla en silencio.
+         */
+        const val QUIET_ZONE_MODULES = 10
+
+        /**
+         * Razón ancho:angosto que se asume para CODE39. ESC/POS no la fija y
+         * cada fabricante usa la suya (2:1, 2.5:1, 3:1). Se toma la MÁS ancha:
+         * suponer de menos imprime un código cortado, y un código cortado no se
+         * lee — suponer de más sólo lo hace más flaco de lo necesario.
+         */
+        const val CODE39_WIDE_RATIO = 3
+
+        /** CODE39 sin los `*`: los delimitadores los agrega la impresora sola. */
+        private const val CODE39_CHARSET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%+-./"
+
+        /**
+         * Ancho TOTAL del símbolo en módulos, zonas mudas incluidas.
+         *
+         * CODE128: cada carácter —arranque, datos y verificador— son 11 módulos,
+         * y el de paro 13. En modo C un carácter son DOS dígitos, así que los 10
+         * del vale son 5 caracteres de datos:
+         *
+         *     11 (arranque) + 5×11 (datos) + 11 (verificador) + 13 (paro) = 90
+         *
+         * El verificador lo calcula la impresora: se cuenta para el ancho pero
+         * no se manda.
+         *
+         * CODE39: 9 elementos por carácter (6 angostos + 3 anchos) más un
+         * espacio de separación entre caracteres. Los delimitadores `*` los pone
+         * la impresora, pero ocupan papel igual — por eso van +2 caracteres.
+         */
+        fun barcodeWidthInModules(data: String, symbology: BarcodeSymbology): Int {
+            val symbolModules = when (symbology) {
+                BarcodeSymbology.CODE128_C -> 11 * (1 + data.length / 2 + 1) + 13
+                BarcodeSymbology.CODE39 -> {
+                    val perChar = 6 + 3 * CODE39_WIDE_RATIO
+                    (data.length + 2) * (perChar + 1) - 1
+                }
+            }
+            return symbolModules + 2 * QUIET_ZONE_MODULES
+        }
+
+        /**
+         * Baja el ancho de módulo hasta que el código quepa en el papel.
+         *
+         * Un vale de 10 dígitos con `moduleWidth = 4` mide 440 puntos y el rollo
+         * de 58 mm imprime 384: la impresora no avisa nada, corta las últimas
+         * barras y la pistola nunca pita. Más vale un código flaco que sí se lee
+         * que uno holgado que sale mocho.
+         *
+         * Nunca baja de `MIN_MODULE_WIDTH`. Si ni al mínimo cabe —CODE39 con 10
+         * dígitos en 58 mm— imprime igual al mínimo: negarse a imprimir dejaría
+         * al cliente sin vale y sin poder pagar, y con el HRI abajo el cajero
+         * todavía puede teclear el código a mano.
+         */
+        fun fittingModuleWidth(
+            data: String,
+            symbology: BarcodeSymbology,
+            requested: Int,
+            paper: PaperWidth,
+        ): Int {
+            val modules = barcodeWidthInModules(data, symbology)
+            val start = requested.coerceIn(MIN_MODULE_WIDTH, MAX_MODULE_WIDTH)
+            for (width in start downTo MIN_MODULE_WIDTH) {
+                if (modules * width <= paper.dots) return width
+            }
+            return MIN_MODULE_WIDTH
+        }
+
+        /**
+         * Traduce el payload a los bytes que espera `GS k`, o `null` si no es
+         * representable en esa simbología. Nunca devuelve una trama a medias: o
+         * sale completa o no sale.
+         */
+        internal fun encodeBarcodeData(data: String, symbology: BarcodeSymbology): ByteArray? {
+            if (data.isEmpty()) return null
+            return when (symbology) {
+                BarcodeSymbology.CODE128_C -> {
+                    // El modo C sólo sabe de dígitos y de a pares. Un payload con
+                    // letras o de largo impar significa que alguien cambió el
+                    // formato del vale (`9PPNNNNNNC`, 10 dígitos) sin cambiar la
+                    // simbología. Se rechaza: forzar la letra a dígito imprimiría
+                    // un código que escanea OTRO número — el peor de los fallos,
+                    // porque escanea bien y cobra la cuenta equivocada.
+                    if (data.length % 2 != 0) return null
+                    if (!data.all { it in '0'..'9' }) return null
+                    val pairs = ByteArray(data.length / 2) { i ->
+                        ((data[2 * i] - '0') * 10 + (data[2 * i + 1] - '0')).toByte()
+                    }
+                    if (pairs.size + 2 > 255) return null
+                    // `{C` (0x7B 0x43) selecciona el modo C. Cada par viaja como
+                    // el BYTE CRUDO 0..99, no como texto: "00" es 0x00.
+                    byteArrayOf(0x7B, 0x43) + pairs
+                }
+
+                BarcodeSymbology.CODE39 -> {
+                    if (data.length > 255) return null
+                    if (!data.all { it in CODE39_CHARSET }) return null
+                    data.toByteArray(Charsets.US_ASCII)
+                }
+            }
+        }
     }
 
     // MARK: - Buffer Management
@@ -164,6 +282,91 @@ class ESCPOSPrinter(
         appendCommand(bytes)
         // Imprimir el símbolo del buffer
         appendCommand(byteArrayOf(0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x51, 0x30))
+    }
+
+    // MARK: - Códigos de barras 1D (vale de área)
+
+    /**
+     * Simbologías 1D del vale de área. `functionCode` es la `m` del comando
+     * `GS k` en su **función B** (`GS k m n d1…dn`), la que lleva la longitud
+     * explícita.
+     */
+    enum class BarcodeSymbology(internal val functionCode: Int) {
+        /**
+         * CODE128 en **modo C**: empaqueta DOS dígitos por símbolo, así que los
+         * 10 del vale ocupan la mitad de papel que en CODE39. Es el default
+         * porque la pistola del cliente de Culiacán lo lee — probado contra su
+         * hardware el 2026-07-28.
+         */
+        CODE128_C(73),
+
+        /**
+         * CODE39 — la simbología de su sistema actual (los asteriscos del texto
+         * legible son su firma). Queda como respaldo configurable por si aparece
+         * una pistola vieja que no lea 128. Ojo: con 10 dígitos NO cabe en 58 mm
+         * ni al ancho de módulo mínimo (ver `barcodeWidthInModules`); necesita
+         * rollo de 80 mm.
+         */
+        CODE39(69),
+    }
+
+    /** `GS H` — dónde imprime la impresora el texto legible (HRI) del código. */
+    enum class HriPosition(internal val value: Int) {
+        NONE(0),
+        ABOVE(1),
+        BELOW(2),
+        BOTH(3),
+    }
+
+    /**
+     * Imprime un código de barras 1D con `GS k` NATIVO de ESC/POS — mismo
+     * criterio que `printQr`: lo nativo sale nítido, no depende de rasterizar y
+     * pesa unos cuantos bytes.
+     *
+     * Se usa la **función B** (`GS k m n d1…dn`, con longitud explícita) y no la
+     * función A (terminada en NUL) porque CODE128 modo C manda el par "00" como
+     * un byte `0x00`: con la variante terminada en NUL un código como
+     * `9470000013` se cortaría a la mitad y la impresora escupiría el resto como
+     * texto suelto.
+     *
+     * Devuelve `false` **sin escribir un solo byte** cuando el payload no es
+     * codificable. NO lanza: aquí el fail-safe no puede ser dejar el ticket a
+     * medias, porque sin vale impreso el cliente no puede pagar. El que llama
+     * cae a texto plano y el cajero lo teclea:
+     *
+     * ```
+     * if (!printer.printBarcode(codigo)) printer.printLine(codigo)
+     * ```
+     *
+     * No alinea ni alimenta papel: eso lo decide el que arma el vale, igual que
+     * con el QR.
+     */
+    fun printBarcode(
+        data: String,
+        symbology: BarcodeSymbology = BarcodeSymbology.CODE128_C,
+        heightDots: Int = DEFAULT_BARCODE_HEIGHT_DOTS,
+        moduleWidth: Int = DEFAULT_MODULE_WIDTH,
+        hriPosition: HriPosition = HriPosition.BELOW,
+    ): Boolean {
+        // Codificar ANTES de tocar el buffer. Si se emitieran primero GS h/GS w/
+        // GS H y después resultara que el payload no sirve, el ticket se quedaría
+        // con tres comandos huérfanos que además cambian el estado de la
+        // impresora para todo lo que venga detrás.
+        val payload = encodeBarcodeData(data, symbology) ?: return false
+
+        val height = heightDots.coerceIn(1, 255)
+        val width = fittingModuleWidth(data, symbology, moduleWidth, paperWidth)
+
+        // GS h n — altura del código en puntos
+        appendCommand(byteArrayOf(0x1D, 0x68, height.toByte()))
+        // GS w n — ancho de la barra angosta, ya ajustado al papel
+        appendCommand(byteArrayOf(0x1D, 0x77, width.toByte()))
+        // GS H n — posición del texto legible
+        appendCommand(byteArrayOf(0x1D, 0x48, hriPosition.value.toByte()))
+        // GS k m n — cabecera; los datos van aparte porque pueden traer 0x00
+        appendCommand(byteArrayOf(0x1D, 0x6B, symbology.functionCode.toByte(), payload.size.toByte()))
+        appendCommand(payload)
+        return true
     }
 
     // MARK: - Formatting Helpers

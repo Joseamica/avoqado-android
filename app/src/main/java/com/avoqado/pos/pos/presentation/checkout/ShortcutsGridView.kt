@@ -85,6 +85,7 @@ import com.avoqado.pos.pos.data.model.SavedCart
 import com.avoqado.pos.pos.data.model.SelectedModifier
 import com.avoqado.pos.pos.presentation.cart.CartState
 import com.avoqado.pos.pos.presentation.cart.CartViewModel
+import com.avoqado.pos.core.data.network.ServerErrorText
 
 // MARK: - Shortcut Action Colors (Square-style muted tones)
 
@@ -890,7 +891,7 @@ private fun CouponsSubView(
                                 errorMessage = result.reason
                             }
                             is DiscountsRepository.CouponResult.Error -> {
-                                errorMessage = result.message
+                                errorMessage = ServerErrorText.humanize(result.message)
                             }
                         }
                         isValidating = false

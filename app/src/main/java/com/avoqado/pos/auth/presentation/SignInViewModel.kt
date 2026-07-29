@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import com.avoqado.pos.core.data.network.ServerErrorText
 
 enum class SignInStep { EMAIL, PASSWORD }
 
@@ -91,7 +92,7 @@ class SignInViewModel @Inject constructor(
                     onSuccess()
                 }
                 is LoginResult.Error -> {
-                    _uiState.update { it.copy(isLoading = false, errorMessage = result.message) }
+                    _uiState.update { it.copy(isLoading = false, errorMessage = ServerErrorText.humanize(result.message)) }
                 }
             }
         }

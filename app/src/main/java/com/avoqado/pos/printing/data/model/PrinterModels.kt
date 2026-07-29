@@ -58,6 +58,20 @@ enum class PaperWidth(val mm: Int) {
             MM58 -> 32
             MM80 -> 48
         }
+
+    /**
+     * Puntos IMPRIMIBLES a 203 dpi. No es `mm × 8`: el rollo de 58 mm imprime
+     * sobre 48 mm (384 puntos) y el de 80 mm sobre 72 mm (576) — el resto se lo
+     * come el mecanismo. Medir contra el ancho del papel en lugar del área
+     * imprimible es justo lo que hace que un código de barras salga cortado del
+     * lado derecho, y un código cortado NO se lee: la pistola no marca error,
+     * simplemente no pita y el cajero no sabe por qué.
+     */
+    val dots: Int
+        get() = when (this) {
+            MM58 -> 384
+            MM80 -> 576
+        }
 }
 
 // MARK: - Saved Printer (persisted to SharedPreferences)

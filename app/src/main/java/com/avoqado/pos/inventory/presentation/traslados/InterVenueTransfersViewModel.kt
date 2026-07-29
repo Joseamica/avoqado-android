@@ -23,6 +23,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import com.avoqado.pos.core.data.network.ServerErrorText
 
 /** Sub-pantalla activa dentro de la sección Traslados. */
 sealed interface TrasladosScreen {
@@ -157,7 +158,7 @@ class InterVenueTransfersViewModel @Inject constructor(
             _isLoading.value = true
             api.list()
                 .onSuccess { page -> _transfers.value = page.items }
-                .onFailure { _error.value = it.message }
+                .onFailure { _error.value = ServerErrorText.humanize(it.message) }
             _isLoading.value = false
         }
     }
@@ -167,7 +168,7 @@ class InterVenueTransfersViewModel @Inject constructor(
             _isLoading.value = true
             api.get(transferId)
                 .onSuccess { _detail.value = it }
-                .onFailure { _error.value = it.message }
+                .onFailure { _error.value = ServerErrorText.humanize(it.message) }
             _isLoading.value = false
         }
     }
@@ -240,7 +241,7 @@ class InterVenueTransfersViewModel @Inject constructor(
         viewModelScope.launch {
             api.rawMaterials(venueId)
                 .onSuccess { _sourceMaterials.value = it }
-                .onFailure { _error.value = it.message }
+                .onFailure { _error.value = ServerErrorText.humanize(it.message) }
         }
     }
 
@@ -248,7 +249,7 @@ class InterVenueTransfersViewModel @Inject constructor(
         viewModelScope.launch {
             api.rawMaterials(currentVenueId)
                 .onSuccess { _destinationMaterials.value = it }
-                .onFailure { _error.value = it.message }
+                .onFailure { _error.value = ServerErrorText.humanize(it.message) }
         }
     }
 
@@ -303,7 +304,7 @@ class InterVenueTransfersViewModel @Inject constructor(
                     _screen.value = TrasladosScreen.Detail(updated.id)
                     refresh()
                 }
-                .onFailure { _error.value = it.message }
+                .onFailure { _error.value = ServerErrorText.humanize(it.message) }
             _isMutating.value = false
         }
     }

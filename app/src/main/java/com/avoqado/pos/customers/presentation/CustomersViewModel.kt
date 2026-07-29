@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import com.avoqado.pos.core.data.network.ServerErrorText
 
 @HiltViewModel
 class CustomersViewModel @Inject constructor(
@@ -73,7 +74,7 @@ class CustomersViewModel @Inject constructor(
                     onSuccess(customer)
                 },
                 onFailure = {
-                    _error.value = it.message
+                    _error.value = ServerErrorText.humanize(it.message)
                 },
             )
             _isSaving.value = false

@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import com.avoqado.pos.core.data.network.ServerErrorText
 
 private const val TAG = "📦 InventoryVM"
 
@@ -236,7 +237,7 @@ class InventoryViewModel @Inject constructor(
                     onSuccess()
                 }.onFailure { e ->
                     Log.e(TAG, "❌ Create PO failed: ${e.message}")
-                    _errorMessage.value = e.message ?: "Error al crear orden de compra"
+                    _errorMessage.value = ServerErrorText.humanize(e.message, "Error al crear orden de compra")
                 }
             } finally {
                 _isSaving.value = false
@@ -262,7 +263,7 @@ class InventoryViewModel @Inject constructor(
                     onSuccess()
                 }.onFailure { e ->
                     Log.e(TAG, "❌ Receive PO failed: ${e.message}")
-                    _errorMessage.value = e.message ?: "Error al recibir mercancía"
+                    _errorMessage.value = ServerErrorText.humanize(e.message, "Error al recibir mercancía")
                 }
             } finally {
                 _isSaving.value = false
@@ -292,7 +293,7 @@ class InventoryViewModel @Inject constructor(
                     onSuccess()
                 }.onFailure { e ->
                     Log.e(TAG, "❌ Update PO status failed: ${e.message}")
-                    _errorMessage.value = e.message ?: "Error al actualizar estado de la orden de compra"
+                    _errorMessage.value = ServerErrorText.humanize(e.message, "Error al actualizar estado de la orden de compra")
                 }
             } finally {
                 _isSaving.value = false
@@ -323,7 +324,7 @@ class InventoryViewModel @Inject constructor(
                     onSuccess()
                 }.onFailure { e ->
                     Log.e(TAG, "❌ Create transfer failed: ${e.message}")
-                    _errorMessage.value = e.message ?: "Error al crear transferencia"
+                    _errorMessage.value = ServerErrorText.humanize(e.message, "Error al crear transferencia")
                 }
             } finally {
                 _isSaving.value = false
@@ -353,7 +354,7 @@ class InventoryViewModel @Inject constructor(
                     onSuccess()
                 }.onFailure { e ->
                     Log.e(TAG, "Update transfer status failed: ${e.message}")
-                    _errorMessage.value = e.message ?: "Error al actualizar estado de transferencia"
+                    _errorMessage.value = ServerErrorText.humanize(e.message, "Error al actualizar estado de transferencia")
                 }
             } finally {
                 _isSaving.value = false
@@ -406,7 +407,7 @@ class InventoryViewModel @Inject constructor(
                     Log.d(TAG, "✅ Full count started with ${count.items.size} items")
                 },
                 onFailure = { e ->
-                    _errorMessage.value = e.message ?: "Error al crear conteo"
+                    _errorMessage.value = ServerErrorText.humanize(e.message, "Error al crear conteo")
                     Log.e(TAG, "❌ Start full count failed: ${e.message}")
                 },
             )
@@ -558,7 +559,7 @@ class InventoryViewModel @Inject constructor(
                             }
                         },
                         onFailure = { e ->
-                            _errorMessage.value = e.message ?: "Error al crear conteo"
+                            _errorMessage.value = ServerErrorText.humanize(e.message, "Error al crear conteo")
                         },
                     )
                 } else {
@@ -590,7 +591,7 @@ class InventoryViewModel @Inject constructor(
                     Log.d(TAG, "✅ Stock count confirmed")
                 }
             } catch (e: Exception) {
-                _errorMessage.value = e.message ?: "Error al confirmar conteo"
+                _errorMessage.value = ServerErrorText.humanize(e.message, "Error al confirmar conteo")
                 Log.e(TAG, "❌ Confirm count error: ${e.message}")
             } finally {
                 _isSaving.value = false
