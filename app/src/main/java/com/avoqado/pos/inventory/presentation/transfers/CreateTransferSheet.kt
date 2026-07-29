@@ -56,6 +56,7 @@ import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.inventory.data.CreateTransferItemRequest
 import com.avoqado.pos.inventory.data.model.StockItem
 import com.avoqado.pos.inventory.presentation.InventoryViewModel
+import androidx.compose.ui.text.style.TextAlign
 
 // MARK: - Create Transfer Sheet
 
@@ -225,6 +226,32 @@ fun CreateTransferSheet(
 
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
 
+            // Qué falta para poder crear. Antes el botón se apagaba en silencio y
+            // podían faltar TRES cosas distintas —origen, destino o artículos— sin
+            // que nada lo dijera. El caso de origen == destino era el peor: todo
+            // parecía lleno y el botón seguía muerto.
+            val faltaParaCrear: String? = when {
+                isSaving -> null
+                fromLocation.isBlank() && toLocation.isBlank() ->
+                    "Elige la ubicación de origen y la de destino"
+                fromLocation.isBlank() -> "Elige la ubicación de origen"
+                toLocation.isBlank() -> "Elige la ubicación de destino"
+                fromLocation.trim().lowercase() == toLocation.trim().lowercase() ->
+                    "El origen y el destino no pueden ser la misma ubicación"
+                selectedItems.isEmpty() -> "Agrega al menos un artículo para transferir"
+                else -> null
+            }
+            faltaParaCrear?.let { falta ->
+                Text(
+                    text = falta,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+            }
+
             // Create button
             PrimaryButton(
                 text = if (isSaving) "Creando..." else "Crear transferencia",
@@ -245,8 +272,9 @@ fun CreateTransferSheet(
                         onSuccess = { onDismiss() },
                     )
                 },
-                enabled = fromLocation.isNotBlank() && toLocation.isNotBlank() &&
-                    fromLocation.trim().lowercase() != toLocation.trim().lowercase() && !isSaving,
+                // Se exige al menos un artículo: una transferencia sin líneas no
+                // mueve nada y sólo ensucia el historial de inventario.
+                enabled = faltaParaCrear == null,
                 fullWidth = true,
             )
 
