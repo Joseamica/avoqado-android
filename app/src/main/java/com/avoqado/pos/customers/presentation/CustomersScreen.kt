@@ -186,6 +186,17 @@ private fun TabletCustomersLayout(
                                 },
                             )
                         }
+                        // "Actualizar" existe también para que el menú NUNCA quede
+                        // vacío: "Crear cliente" está detrás de un permiso, así que a
+                        // un mesero el botón "..." le abría la nada y parecía roto.
+                        // iOS ya lo tenía; esto es la paridad que faltaba.
+                        DropdownMenuItem(
+                            text = { Text("Actualizar") },
+                            onClick = {
+                                showMenu = false
+                                viewModel.fetchCustomers()
+                            },
+                        )
                     }
                 }
             }
