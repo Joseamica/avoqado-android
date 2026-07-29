@@ -167,7 +167,7 @@ fun CreateEstimateSheet(
                     horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
                     Text(
-                        text = "ARTICULOS",
+                        text = "ARTÍCULOS",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

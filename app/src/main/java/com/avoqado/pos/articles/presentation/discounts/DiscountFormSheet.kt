@@ -231,7 +231,7 @@ fun DiscountFormSheet(
             if (scope == DiscountScope.ITEM) {
                 Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
                     Text(
-                        text = "ARTICULOS OBJETIVO",
+                        text = "ARTÍCULOS OBJETIVO",
                         style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

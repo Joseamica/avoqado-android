@@ -117,7 +117,7 @@ fun CouponFormSheet(
             // MARK: - CODIGO section
             Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
                 Text(
-                    text = "CODIGO",
+                    text = "CÓDIGO",
                     style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

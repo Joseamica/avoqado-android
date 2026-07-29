@@ -230,7 +230,7 @@ fun ProductDetailView(
 
             // MARK: 3. TIPO Y CATEGORIA
             item {
-                SectionCard(title = "TIPO Y CATEGORIA") {
+                SectionCard(title = "TIPO Y CATEGORÍA") {
                     DropdownSelector(
                         label = "Tipo",
                         options = ProductType.entries,
@@ -251,7 +251,7 @@ fun ProductDetailView(
             // MARK: 3.5. DURACION (services only)
             if (type == ProductType.APPOINTMENTS_SERVICE) {
                 item {
-                    SectionCard(title = "DURACION DEL SERVICIO") {
+                    SectionCard(title = "DURACIÓN DEL SERVICIO") {
                         OutlinedTextField(
                             value = durationMinutes,
                             onValueChange = { durationMinutes = it },

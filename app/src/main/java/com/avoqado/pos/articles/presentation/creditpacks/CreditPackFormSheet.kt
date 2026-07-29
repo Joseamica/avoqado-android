@@ -217,7 +217,7 @@ fun CreditPackFormSheet(
             // MARK: - ARTICULOS INCLUIDOS
             Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
                 Text(
-                    text = "ARTICULOS INCLUIDOS",
+                    text = "ARTÍCULOS INCLUIDOS",
                     style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

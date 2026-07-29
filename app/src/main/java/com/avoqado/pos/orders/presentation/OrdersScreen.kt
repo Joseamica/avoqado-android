@@ -479,7 +479,7 @@ private fun OrderStatusSection(order: OrderDetail) {
 @Composable
 private fun OrderItemsSection(items: List<OrderDetailItem>) {
     Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
-        DetailSectionHeader(title = "ARTICULOS")
+        DetailSectionHeader(title = "ARTÍCULOS")
 
         Card(
             colors = CardDefaults.cardColors(
@@ -736,7 +736,7 @@ private fun OrderPaymentsSection(payments: List<OrderPaymentInfo>) {
 @Composable
 private fun OrderInfoSection(order: OrderDetail) {
     Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
-        DetailSectionHeader(title = "INFORMACION")
+        DetailSectionHeader(title = "INFORMACIÓN")
 
         Card(
             colors = CardDefaults.cardColors(
