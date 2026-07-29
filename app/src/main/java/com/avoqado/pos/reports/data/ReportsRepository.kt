@@ -30,6 +30,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.serialization.json.contentOrNull
 
 private const val TAG = "📊 ReportsRepo"
 
@@ -119,8 +120,8 @@ class ReportsRepository @Inject constructor(
             val result = data["byPeriod"]?.jsonArray?.mapNotNull { element ->
                 try {
                     val obj = element.jsonObject
-                    val period = obj["period"]?.jsonPrimitive?.content ?: ""
-                    val periodLabel = obj["periodLabel"]?.jsonPrimitive?.content ?: ""
+                    val period = obj["period"]?.jsonPrimitive?.contentOrNull ?: ""
+                    val periodLabel = obj["periodLabel"]?.jsonPrimitive?.contentOrNull ?: ""
                     val metrics = obj["metrics"]?.jsonObject
                     val grossSales = metrics?.get("grossSales")?.jsonPrimitive?.doubleOrNull ?: 0.0
                     val transactionCount = metrics?.get("transactionCount")?.jsonPrimitive?.intOrNull ?: 0
@@ -304,8 +305,8 @@ class ReportsRepository @Inject constructor(
 
     private fun parsePaymentMethodBreakdown(obj: JsonObject): PaymentMethodBreakdown {
         return PaymentMethodBreakdown(
-            id = obj["id"]?.jsonPrimitive?.content ?: "",
-            method = obj["method"]?.jsonPrimitive?.content ?: "",
+            id = obj["id"]?.jsonPrimitive?.contentOrNull ?: "",
+            method = obj["method"]?.jsonPrimitive?.contentOrNull ?: "",
             amount = obj["amount"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
             count = obj["count"]?.jsonPrimitive?.intOrNull ?: 0,
             percentage = obj["percentage"]?.jsonPrimitive?.doubleOrNull ?: 0.0,

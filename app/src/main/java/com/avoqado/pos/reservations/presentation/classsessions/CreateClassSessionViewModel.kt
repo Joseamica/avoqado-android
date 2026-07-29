@@ -27,6 +27,7 @@ import java.time.ZoneId
 import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 import javax.inject.Inject
+import kotlinx.serialization.json.contentOrNull
 
 enum class RecurrenceEndMode { COUNT, DATE }
 
@@ -185,7 +186,7 @@ class CreateClassSessionViewModel @Inject constructor(
             ?.jsonArray
             ?: return null
         return spots.count { spot ->
-            spot.jsonObject["enabled"]?.jsonPrimitive?.content?.toBooleanStrictOrNull() != false
+            spot.jsonObject["enabled"]?.jsonPrimitive?.contentOrNull?.toBooleanStrictOrNull() != false
         }.takeIf { it > 0 }
     }
 }

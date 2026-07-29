@@ -24,6 +24,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlinx.serialization.json.contentOrNull
 
 private const val TAG = "💰 CashDrawerRepo"
 
@@ -111,7 +112,7 @@ class CashDrawerRepository @Inject constructor(
             val arr = root["data"]?.jsonObject?.get("tenderBreakdown")?.jsonArray ?: return emptyList()
             arr.mapNotNull { el ->
                 val obj = el.jsonObject
-                val method = obj["method"]?.jsonPrimitive?.content ?: return@mapNotNull null
+                val method = obj["method"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
                 val dollars = obj["total"]?.jsonPrimitive?.double ?: 0.0
                 TenderRow(method = method, totalCents = (dollars * 100).toInt())
             }
@@ -536,27 +537,32 @@ class CashDrawerRepository @Inject constructor(
 
     // MARK: - API Response Parsing Helpers
 
-    private fun parseSessionFromApi(obj: JsonObject): CashDrawerSessionEntity {
-        val id = obj["id"]?.jsonPrimitive?.content ?: UUID.randomUUID().toString()
+    /**
+     * Visible para test: el server manda `null` explícito en los campos opcionales
+     * y `jsonPrimitive.content` los convierte en la CADENA "null" — que luego se
+     * pinta tal cual en pantalla. Pasó con la nota de cierre en el historial.
+     */
+    internal fun parseSessionFromApi(obj: JsonObject): CashDrawerSessionEntity {
+        val id = obj["id"]?.jsonPrimitive?.contentOrNull ?: UUID.randomUUID().toString()
         val startingDollars = obj["startingAmount"]?.jsonPrimitive?.double ?: 0.0
         val actualDollars = obj["actualAmount"]?.jsonPrimitive?.double
         val overShortDollars = (obj["overShort"] ?: obj["overShortAmount"])?.jsonPrimitive?.double
-        val status = obj["status"]?.jsonPrimitive?.content ?: CashDrawerStatus.OPEN.name
+        val status = obj["status"]?.jsonPrimitive?.contentOrNull ?: CashDrawerStatus.OPEN.name
 
         return CashDrawerSessionEntity(
             id = id,
             venueId = venueId,
-            deviceName = obj["deviceName"]?.jsonPrimitive?.content,
-            openedByStaffId = obj["openedByStaffId"]?.jsonPrimitive?.content ?: "",
-            openedByName = obj["openedByName"]?.jsonPrimitive?.content ?: "",
-            openedAt = parseTimestamp(obj["openedAt"]?.jsonPrimitive?.content),
+            deviceName = obj["deviceName"]?.jsonPrimitive?.contentOrNull,
+            openedByStaffId = obj["openedByStaffId"]?.jsonPrimitive?.contentOrNull ?: "",
+            openedByName = obj["openedByName"]?.jsonPrimitive?.contentOrNull ?: "",
+            openedAt = parseTimestamp(obj["openedAt"]?.jsonPrimitive?.contentOrNull),
             startingAmountCents = (startingDollars * 100).toInt(),
-            closedByStaffId = obj["closedByStaffId"]?.jsonPrimitive?.content,
-            closedByName = obj["closedByName"]?.jsonPrimitive?.content,
-            closedAt = obj["closedAt"]?.jsonPrimitive?.content?.let { parseTimestamp(it) },
+            closedByStaffId = obj["closedByStaffId"]?.jsonPrimitive?.contentOrNull,
+            closedByName = obj["closedByName"]?.jsonPrimitive?.contentOrNull,
+            closedAt = obj["closedAt"]?.jsonPrimitive?.contentOrNull?.let { parseTimestamp(it) },
             actualAmountCents = actualDollars?.let { (it * 100).toInt() },
             overShortCents = overShortDollars?.let { (it * 100).toInt() },
-            closingNote = obj["closingNote"]?.jsonPrimitive?.content,
+            closingNote = obj["closingNote"]?.jsonPrimitive?.contentOrNull,
             status = status,
         )
     }
@@ -565,16 +571,16 @@ class CashDrawerRepository @Inject constructor(
         val amountDollars = obj["amount"]?.jsonPrimitive?.double ?: 0.0
 
         return CashDrawerEventEntity(
-            id = obj["id"]?.jsonPrimitive?.content ?: UUID.randomUUID().toString(),
+            id = obj["id"]?.jsonPrimitive?.contentOrNull ?: UUID.randomUUID().toString(),
             sessionId = sessionId,
             venueId = venueId,
-            type = obj["type"]?.jsonPrimitive?.content ?: "",
+            type = obj["type"]?.jsonPrimitive?.contentOrNull ?: "",
             amountCents = (amountDollars * 100).toInt(),
-            note = obj["note"]?.jsonPrimitive?.content,
-            staffId = obj["staffId"]?.jsonPrimitive?.content ?: "",
-            staffName = obj["staffName"]?.jsonPrimitive?.content ?: "",
-            orderId = obj["orderId"]?.jsonPrimitive?.content,
-            createdAt = parseTimestamp(obj["createdAt"]?.jsonPrimitive?.content),
+            note = obj["note"]?.jsonPrimitive?.contentOrNull,
+            staffId = obj["staffId"]?.jsonPrimitive?.contentOrNull ?: "",
+            staffName = obj["staffName"]?.jsonPrimitive?.contentOrNull ?: "",
+            orderId = obj["orderId"]?.jsonPrimitive?.contentOrNull,
+            createdAt = parseTimestamp(obj["createdAt"]?.jsonPrimitive?.contentOrNull),
         )
     }
 
