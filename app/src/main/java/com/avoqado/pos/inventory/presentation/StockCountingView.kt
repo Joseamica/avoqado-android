@@ -184,9 +184,18 @@ fun StockCountingView(
 
                     Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
 
+                    // El botón decía "Guardar conteo" pero su acción era
+                    // `moveToNextItem()`: avanzaba al siguiente artículo sin cerrar
+                    // nada, y en el ÚLTIMO no hacía absolutamente nada. Quien acababa
+                    // de contar su estante tocaba "Guardar", no pasaba nada, y se
+                    // quedaba sin saber si su conteo existía. El layout de teléfono
+                    // ya lo llamaba "Siguiente artículo" — era el nombre, no la lógica.
+                    val esUltimoArticulo = selectedIndex >= countItems.size - 1
                     PrimaryButton(
-                        text = "Guardar conteo",
-                        onClick = { viewModel.moveToNextItem() },
+                        text = if (esUltimoArticulo) "Revisar conteo" else "Siguiente artículo",
+                        onClick = {
+                            if (esUltimoArticulo) viewModel.finishCounting() else viewModel.moveToNextItem()
+                        },
                         enabled = selectedIndex >= 0 && countItems.isNotEmpty(),
                     )
                 }
@@ -251,10 +260,15 @@ fun StockCountingView(
 
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
 
+                // Mismo criterio que el layout de tablet: en el último artículo el
+                // botón cierra el conteo en vez de quedarse apagado sin explicación.
+                val esUltimoArticuloCompacto = selectedIndex >= countItems.size - 1
                 PrimaryButton(
-                    text = "Siguiente artículo",
-                    onClick = { viewModel.moveToNextItem() },
-                    enabled = selectedIndex < countItems.size - 1,
+                    text = if (esUltimoArticuloCompacto) "Revisar conteo" else "Siguiente artículo",
+                    onClick = {
+                        if (esUltimoArticuloCompacto) viewModel.finishCounting() else viewModel.moveToNextItem()
+                    },
+                    enabled = selectedIndex >= 0 && countItems.isNotEmpty(),
                     modifier = Modifier.padding(horizontal = AvoqadoTheme.spacing.lg),
                 )
 
@@ -283,7 +297,14 @@ fun StockCountingView(
     // Add Items Popup
     if (showAddPopup) {
         AddItemsPopup(
-            stockItems = stockItems + countableRawMaterials,
+            // Sólo lo que se puede contar físicamente. Los artículos por RECETA no
+            // tienen existencia propia —se calcula desde sus ingredientes— y el
+            // server los descarta al crear el conteo (`inventoryMethod != RECIPE`).
+            // Ofrecerlos hacía que el gerente contara su estante, confirmara, y el
+            // conteo se guardara VACÍO diciendo "Completado": el trabajo se perdía
+            // sin un solo aviso. Para esos artículos se cuentan sus insumos, que ya
+            // aparecen en esta misma lista.
+            stockItems = stockItems.filter { it.isCountable } + countableRawMaterials,
             existingIds = countItems.map { it.productId }.toSet(),
             onAdd = { selected ->
                 viewModel.addItemsToCycleCount(selected)

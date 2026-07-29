@@ -15,7 +15,19 @@ data class StockItem(
     val onOrder: Double = 0.0,
     val categoryName: String? = null,
     val unit: String? = null,
+    /**
+     * Cómo lleva su existencia este artículo. `RECIPE` significa que NO tiene
+     * stock propio: se calcula desde sus ingredientes, y por eso el server
+     * rechaza contarlo (`inventoryMethod: { not: 'RECIPE' }`).
+     *
+     * El server siempre lo mandó y la app lo ignoraba, así que el conteo ofrecía
+     * artículos que era imposible contar.
+     */
+    val inventoryMethod: String? = null,
 ) {
+    /** Se puede contar físicamente: los de receta no tienen existencia propia. */
+    val isCountable: Boolean get() = inventoryMethod != "RECIPE"
+
     // UI compatibility: existing code references productName
     val productName: String get() = name
 
