@@ -91,7 +91,12 @@ fun CreateReservationScreen(
         result?.onSuccess { showSuccess = true }
         // Failure branch was silently dropped: the button just re-enabled
         // and nothing happened (fields ARE preserved in the VM's draft).
-        result?.onFailure { submitError = it.message ?: "No se pudo guardar la reserva. Intenta de nuevo." }
+        result?.onFailure {
+            submitError = com.avoqado.pos.core.data.network.ServerErrorText.humanize(
+                it.message,
+                "No se pudo guardar la reserva. Intenta de nuevo.",
+            )
+        }
     }
 
     var activeSheet by remember { mutableStateOf<CreateSheet?>(null) }
@@ -124,6 +129,19 @@ fun CreateReservationScreen(
             verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
         ) {
             Spacer(Modifier.height(AvoqadoTheme.spacing.md))
+
+            // Por qué "Crear" está apagado. Sin esto el botón se ve muerto y nada en
+            // pantalla lo conecta con los renglones que faltan por llenar.
+            if (!isEditing && !isSubmitting) {
+                draft.missingToSubmit?.let { falta ->
+                    Text(
+                        text = falta,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = AvoqadoTheme.spacing.lg),
+                    )
+                }
+            }
 
             PickerRow(
                 sectionLabel = "Cliente",

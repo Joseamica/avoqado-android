@@ -44,9 +44,11 @@ class ForbiddenInterceptor(
 
         if (response.code == 403) {
             val body = response.peekBody(4096).string()
+            // El server manda el detalle técnico ("Permission 'x' required"), útil
+            // para logs; a la persona se le enseña algo que pueda accionar.
             val message = try {
                 val parsed = json.decodeFromString<ForbiddenResponse>(body)
-                parsed.message ?: "No tienes permisos para esta acción"
+                ServerErrorText.humanize(parsed.message, "No tienes permisos para esta acción")
             } catch (_: Exception) {
                 "No tienes permisos para esta acción"
             }

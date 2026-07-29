@@ -33,10 +33,26 @@ data class CreateReservationDraft(
     val channel: ReservationChannel = ReservationChannel.DASHBOARD,
 ) {
     val canSubmit: Boolean
+        get() = missingToSubmit == null
+
+    /**
+     * Qué le falta a la cita para poder crearse, en palabras.
+     *
+     * El botón "Crear" se apagaba sin decir por qué: quien abre la pantalla ve dos
+     * renglones que dicen "Seleccionar cliente" y "Seleccionar servicio" y un botón
+     * muerto arriba, sin nada que los conecte. Con un cliente enfrente esperando
+     * mesa, adivinar no es una opción.
+     */
+    val missingToSubmit: String?
         get() {
             val hasCustomer = customerId != null || (isGuest && !guestName.isNullOrBlank())
             val hasProduct = productId != null
-            return hasCustomer && hasProduct
+            return when {
+                !hasCustomer && !hasProduct -> "Elige el cliente y el servicio para crear la cita"
+                !hasCustomer -> "Elige el cliente para crear la cita"
+                !hasProduct -> "Elige el servicio para crear la cita"
+                else -> null
+            }
         }
 
     fun toRequest(
