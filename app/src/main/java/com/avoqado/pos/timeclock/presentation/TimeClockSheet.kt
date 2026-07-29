@@ -161,8 +161,15 @@ fun TimeClockSheet(
 
                     Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xs))
 
+                    // "N dígitos (mínimo 4)" se leía como si 4 fuera el TOPE: con 4
+                    // marcados el texto ya no pedía nada más y nadie intentaba un PIN
+                    // más largo. El rango real es 4 a 10 en todo el stack.
                     Text(
-                        text = "${pin.length} dígitos (mínimo 4)",
+                        text = if (pin.isEmpty()) {
+                            "Entre 4 y 10 dígitos"
+                        } else {
+                            "${pin.length} de 4 a 10 dígitos"
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

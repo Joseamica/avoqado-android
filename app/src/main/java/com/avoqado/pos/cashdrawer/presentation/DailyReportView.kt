@@ -48,6 +48,8 @@ fun DailyReportView(
     // Payment-method breakdown from the server (card + cash + other) for the
     // session window. Empty = not loaded / offline → falls back to cash-only.
     tenderBreakdown: List<com.avoqado.pos.cashdrawer.data.CashDrawerRepository.TenderRow> = emptyList(),
+    isPrinting: Boolean = false,
+    onPrint: () -> Unit = {},
     onDismiss: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -171,13 +173,22 @@ fun DailyReportView(
             ReportSectionTitle(text = "Desglose por método de pago")
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
 
-            ReportRow(label = "Efectivo", value = formatCurrency(displayCashCents))
             if (hasServerBreakdown) {
-                ReportRow(label = "Tarjeta", value = formatCurrency(cardCents))
-                if (otherCents != 0) {
-                    ReportRow(label = "Otros", value = formatCurrency(otherCents))
-                }
+                // Un renglón por método REAL. Antes se colapsaba todo en tres cubetas
+                // (Efectivo / Tarjeta / Otros), así que el dueño no podía distinguir
+                // débito de crédito, ni ver por separado una transferencia o un cobro
+                // con terminal ajena — y el server siempre mandó ese detalle. Para
+                // cuadrar con el banco esa distinción es justo la que importa.
+                tenderBreakdown
+                    .sortedByDescending { it.totalCents }
+                    .forEach { tender ->
+                        ReportRow(
+                            label = tenderLabel(tender.method),
+                            value = formatCurrency(tender.totalCents),
+                        )
+                    }
             } else {
+                ReportRow(label = "Efectivo", value = formatCurrency(displayCashCents))
                 // Sin conexión no se pudo consultar el desglose. Pintar "Tarjeta $0.00"
                 // aquí sería MENTIR: el POS no sabe cuánto se cobró con tarjeta, y el
                 // dueño cerraría su turno creyendo que no hubo ni un cobro con terminal.
@@ -276,11 +287,13 @@ fun DailyReportView(
 
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxxl))
 
-            // Print button
+            // Print button. Antes era un stub que sólo lanzaba un Toast de "no
+            // disponible" — y en la Sunmi el Toast sale detrás de la pantalla del
+            // cliente, así que el cajero veía un botón que no hacía absolutamente
+            // nada. Ahora imprime de verdad, igual que iOS.
             Button(
-                onClick = {
-                    Toast.makeText(context, "Impresión no disponible", Toast.LENGTH_SHORT).show()
-                },
+                onClick = onPrint,
+                enabled = !isPrinting,
                 shape = RoundedCornerShape(50),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = MaterialTheme.colorScheme.primary,
@@ -291,7 +304,7 @@ fun DailyReportView(
                     .height(48.dp),
             ) {
                 Text(
-                    text = "Imprimir corte",
+                    text = if (isPrinting) "Imprimiendo…" else "Imprimir corte",
                     style = MaterialTheme.typography.bodyLarge,
                     fontWeight = FontWeight.SemiBold,
                 )

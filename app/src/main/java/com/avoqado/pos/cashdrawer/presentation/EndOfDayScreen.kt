@@ -49,8 +49,8 @@ private val OkColor = Color(0xFF10B981)
 
 private fun money(cents: Int): String = "$${String.format(Locale.US, "%.2f", cents / 100.0)}"
 
-/** Human label for a PaymentMethod enum value. */
-private fun tenderLabel(method: String): String = when (method) {
+/** Human label for a PaymentMethod enum value. Compartido con el corte de caja. */
+internal fun tenderLabel(method: String): String = when (method) {
     "CASH" -> "Efectivo"
     "CREDIT_CARD" -> "Tarjeta de crédito"
     "DEBIT_CARD" -> "Tarjeta de débito"

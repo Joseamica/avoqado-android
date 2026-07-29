@@ -52,6 +52,10 @@ class CashDrawerRepository @Inject constructor(
     private val venueId: String
         get() = secureStorage.venueId ?: ""
 
+    /** Nombre del local para el encabezado del corte impreso. */
+    val venueName: String
+        get() = secureStorage.venueName?.takeIf { it.isNotBlank() } ?: "Avoqado"
+
     private val staffId: String
         get() = secureStorage.userId ?: ""
 

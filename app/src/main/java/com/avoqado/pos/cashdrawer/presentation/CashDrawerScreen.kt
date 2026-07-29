@@ -113,10 +113,40 @@ private fun TabletCashDrawerLayout(
                 reportSession!!.closedAt ?: System.currentTimeMillis(),
             )
         }
+        val isPrintingCorte by viewModel.isPrintingCorte.collectAsState()
+        val printResult by viewModel.printCorteResult.collectAsState()
+        // El resultado va en diálogo, NO en Toast: en la Sunmi el Toast sale detrás
+        // de la pantalla del cliente y el cajero se queda sin saber si imprimió.
+        printResult?.let { r ->
+            val (titulo, texto) = when (r) {
+                is CashDrawerViewModel.PrintCorteResult.Success ->
+                    "Corte impreso" to "El corte salió en la impresora de recibos."
+                is CashDrawerViewModel.PrintCorteResult.Failure ->
+                    "No se imprimió el corte" to r.reason
+            }
+            AvoqadoDialog(
+                title = titulo,
+                description = texto,
+                onDismiss = { viewModel.clearPrintCorteResult() },
+                actionButton = {
+                    PrimaryButton(text = "Entendido", onClick = { viewModel.clearPrintCorteResult() })
+                },
+                content = {},
+            )
+        }
         DailyReportView(
             session = reportSession!!,
             events = reportEvents,
             tenderBreakdown = tenderBreakdown,
+            isPrinting = isPrintingCorte,
+            onPrint = {
+                viewModel.printCorte(
+                    session = reportSession!!,
+                    events = reportEvents,
+                    tenders = tenderBreakdown,
+                    venueName = viewModel.venueName,
+                )
+            },
             onDismiss = {
                 showDailyReport = false
                 reportSession = null
@@ -303,10 +333,40 @@ private fun PhoneCashDrawerLayout(
                 reportSession!!.closedAt ?: System.currentTimeMillis(),
             )
         }
+        val isPrintingCorte by viewModel.isPrintingCorte.collectAsState()
+        val printResult by viewModel.printCorteResult.collectAsState()
+        // El resultado va en diálogo, NO en Toast: en la Sunmi el Toast sale detrás
+        // de la pantalla del cliente y el cajero se queda sin saber si imprimió.
+        printResult?.let { r ->
+            val (titulo, texto) = when (r) {
+                is CashDrawerViewModel.PrintCorteResult.Success ->
+                    "Corte impreso" to "El corte salió en la impresora de recibos."
+                is CashDrawerViewModel.PrintCorteResult.Failure ->
+                    "No se imprimió el corte" to r.reason
+            }
+            AvoqadoDialog(
+                title = titulo,
+                description = texto,
+                onDismiss = { viewModel.clearPrintCorteResult() },
+                actionButton = {
+                    PrimaryButton(text = "Entendido", onClick = { viewModel.clearPrintCorteResult() })
+                },
+                content = {},
+            )
+        }
         DailyReportView(
             session = reportSession!!,
             events = reportEvents,
             tenderBreakdown = tenderBreakdown,
+            isPrinting = isPrintingCorte,
+            onPrint = {
+                viewModel.printCorte(
+                    session = reportSession!!,
+                    events = reportEvents,
+                    tenders = tenderBreakdown,
+                    venueName = viewModel.venueName,
+                )
+            },
             onDismiss = {
                 showDailyReport = false
                 reportSession = null

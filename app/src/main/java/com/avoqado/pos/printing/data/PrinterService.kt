@@ -353,6 +353,13 @@ class PrinterService @Inject constructor(
         sendData(escpos.getData(), printer)
     }
 
+    /**
+     * Envía bytes ESC/POS ya armados a una impresora. Espejo de `sendPrintData`
+     * de iOS: lo usa quien construye su propio ticket (p. ej. el corte de caja)
+     * en vez de pasar por [printReceipt].
+     */
+    suspend fun sendPrintData(data: ByteArray, printer: SavedPrinter) = sendData(data, printer)
+
     private suspend fun sendData(data: ByteArray, printer: SavedPrinter) {
         // Auto-connect if not connected, or if the cached socket is stale: the
         // status says "connected" but it was opened for a different endpoint

@@ -7,6 +7,9 @@ import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
 import com.avoqado.pos.cashdrawer.data.model.CashDrawerEventEntity
 import com.avoqado.pos.cashdrawer.data.model.CashDrawerEventType
 import com.avoqado.pos.cashdrawer.data.model.CashDrawerSessionEntity
+import com.avoqado.pos.printing.data.ESCPOSPrinter
+import com.avoqado.pos.printing.data.PrinterService
+import com.avoqado.pos.printing.data.model.PrinterRole
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -24,6 +27,7 @@ enum class CashDrawerSection(val label: String) {
 @HiltViewModel
 class CashDrawerViewModel @Inject constructor(
     private val repository: CashDrawerRepository,
+    private val printerService: PrinterService,
 ) : ViewModel() {
 
     // MARK: - State
@@ -242,5 +246,163 @@ class CashDrawerViewModel @Inject constructor(
         return _events.value
             .filter { it.type == CashDrawerEventType.PAY_OUT.name }
             .sumOf { it.amountCents }
+    }
+
+    /** Nombre del local, para el encabezado del corte impreso. */
+    val venueName: String get() = repository.venueName
+
+    // MARK: - Imprimir el corte
+
+    /**
+     * Resultado de intentar imprimir el corte. Se expone como estado para que la
+     * pantalla diga qué pasó: el botón antes sólo lanzaba un Toast de "no
+     * disponible" que además en la Sunmi queda detrás de la pantalla del cliente,
+     * o sea que para el cajero el botón simplemente no hacía nada.
+     */
+    sealed interface PrintCorteResult {
+        data object Success : PrintCorteResult
+        data class Failure(val reason: String) : PrintCorteResult
+    }
+
+    private val _printCorteResult = MutableStateFlow<PrintCorteResult?>(null)
+    val printCorteResult: StateFlow<PrintCorteResult?> = _printCorteResult.asStateFlow()
+
+    private val _isPrintingCorte = MutableStateFlow(false)
+    val isPrintingCorte: StateFlow<Boolean> = _isPrintingCorte.asStateFlow()
+
+    fun clearPrintCorteResult() {
+        _printCorteResult.value = null
+    }
+
+    /**
+     * Imprime el corte de caja en la impresora de recibos.
+     *
+     * El desglose por método sale de [tenders] (lo que mandó el server, con TODOS
+     * los métodos). Si viene vacío —sin conexión— se imprime sólo el efectivo y
+     * se dice en el papel, porque un corte que afirma "Tarjeta $0.00" cuando en
+     * realidad no pudo consultar es peor que uno incompleto y honesto.
+     */
+    fun printCorte(
+        session: CashDrawerSessionEntity,
+        events: List<CashDrawerEventEntity>,
+        tenders: List<CashDrawerRepository.TenderRow>,
+        venueName: String,
+    ) {
+        val printer = printerService.getDefaultPrinter(PrinterRole.RECEIPT)
+        if (printer == null) {
+            _printCorteResult.value = PrintCorteResult.Failure(
+                "No hay impresora de recibos configurada. Ve a Más > Impresora para agregar una.",
+            )
+            return
+        }
+
+        viewModelScope.launch {
+            _isPrintingCorte.value = true
+            try {
+                val data = buildCorteTicket(session, events, tenders, venueName, printer.paperWidth)
+                printerService.sendPrintData(data, printer)
+                _printCorteResult.value = PrintCorteResult.Success
+                Log.d(TAG, "✅ Corte impreso en ${printer.name}")
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ No se pudo imprimir el corte: ${e.message}", e)
+                _printCorteResult.value = PrintCorteResult.Failure(
+                    "No se pudo imprimir: ${e.message ?: "revisa que la impresora esté encendida y conectada"}",
+                )
+            } finally {
+                _isPrintingCorte.value = false
+            }
+        }
+    }
+
+    private fun buildCorteTicket(
+        session: CashDrawerSessionEntity,
+        events: List<CashDrawerEventEntity>,
+        tenders: List<CashDrawerRepository.TenderRow>,
+        venueName: String,
+        paperWidth: com.avoqado.pos.printing.data.model.PaperWidth,
+    ): ByteArray {
+        val zone = com.avoqado.pos.core.util.VenueTimeZone.zoneId()
+        val fecha = java.time.format.DateTimeFormatter.ofPattern("dd MMM yyyy", java.util.Locale("es", "MX"))
+        val hora = java.time.format.DateTimeFormatter.ofPattern("HH:mm", java.util.Locale("es", "MX"))
+        fun money(cents: Int) = "$" + String.format(java.util.Locale.US, "%.2f", cents / 100.0)
+        fun at(millis: Long) = java.time.Instant.ofEpochMilli(millis).atZone(zone)
+
+        fun sumOf(type: CashDrawerEventType) =
+            events.filter { it.type == type.name }.sumOf { it.amountCents }
+
+        val cashSales = sumOf(CashDrawerEventType.CASH_SALE)
+        val payIns = sumOf(CashDrawerEventType.PAY_IN)
+        val payOuts = sumOf(CashDrawerEventType.PAY_OUT)
+        val expected = session.startingAmountCents + cashSales + payIns - payOuts
+        val actual = session.actualAmountCents ?: 0
+        val diff = actual - expected
+        val hasServerBreakdown = tenders.isNotEmpty()
+        val totalSales = if (hasServerBreakdown) tenders.sumOf { it.totalCents } else cashSales
+        val txCount = events.count { it.type == CashDrawerEventType.CASH_SALE.name }
+
+        val p = ESCPOSPrinter(paperWidth)
+        p.reset()
+        p.setAlignment(ESCPOSPrinter.TextAlignment.CENTER)
+        p.setBold(true)
+        p.setLargeText(true)
+        p.printLine("CORTE DE CAJA")
+        p.setLargeText(false)
+        p.printLine(venueName)
+        p.setBold(false)
+        p.printLine(at(session.openedAt).format(fecha))
+        p.printLine(
+            "Apertura: " + at(session.openedAt).format(hora) +
+                "  Cierre: " + (session.closedAt?.let { at(it).format(hora) } ?: "--"),
+        )
+        p.printLine("Operador: ${session.openedByName}")
+        p.printDivider()
+
+        p.setAlignment(ESCPOSPrinter.TextAlignment.LEFT)
+        p.setBold(true)
+        p.printLine(if (hasServerBreakdown) "RESUMEN DE VENTAS" else "RESUMEN DE VENTAS (EFECTIVO)")
+        p.setBold(false)
+        p.printTwoColumns(if (hasServerBreakdown) "Ventas totales" else "Ventas en efectivo", money(totalSales))
+        p.printTwoColumns("Transacciones", "$txCount")
+        p.printTwoColumns("Ticket promedio", money(if (txCount > 0) totalSales / txCount else 0))
+        p.printDivider()
+
+        p.setBold(true)
+        p.printLine("DESGLOSE POR METODO DE PAGO")
+        p.setBold(false)
+        if (hasServerBreakdown) {
+            tenders.sortedByDescending { it.totalCents }.forEach {
+                p.printTwoColumns(tenderLabel(it.method), money(it.totalCents))
+            }
+        } else {
+            p.printTwoColumns("Efectivo", money(cashSales))
+            p.printLine("Sin conexion: solo se muestra el efectivo.")
+            p.printLine("Tarjeta y otros medios apareceran al")
+            p.printLine("recuperar la conexion.")
+        }
+        p.printDivider()
+
+        p.setBold(true)
+        p.printLine("MOVIMIENTOS DE EFECTIVO")
+        p.setBold(false)
+        p.printTwoColumns("Monto inicial", money(session.startingAmountCents))
+        p.printTwoColumns("Ventas en efectivo", "+" + money(cashSales))
+        p.printTwoColumns("Ingresos", "+" + money(payIns))
+        p.printTwoColumns("Egresos", "-" + money(payOuts))
+        p.printDivider()
+        p.setBold(true)
+        p.printTwoColumns("Efectivo esperado", money(expected))
+        p.printTwoColumns("Conteo real", money(actual))
+        p.printTwoColumns(
+            when {
+                diff > 0 -> "Sobrante"
+                diff < 0 -> "Faltante"
+                else -> "Diferencia"
+            },
+            money(kotlin.math.abs(diff)),
+        )
+        p.setBold(false)
+        p.feedLines(3)
+        p.cut()
+        return p.getData()
     }
 }

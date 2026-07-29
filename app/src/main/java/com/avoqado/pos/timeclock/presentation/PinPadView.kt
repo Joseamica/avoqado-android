@@ -47,17 +47,9 @@ fun PinPadView(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             if (pin.isEmpty()) {
-                // Placeholder: show minLength empty dots to hint at minimum length
-                repeat(minLength) {
-                    Box(
-                        modifier = Modifier
-                            .size(dotSize)
-                            .background(
-                                color = MaterialTheme.colorScheme.outline,
-                                shape = CircleShape,
-                            ),
-                    )
-                }
+                // Sin puntos de relleno: cuatro casillas vacías se leen como "el PIN
+                // es de 4", y el rango real es 4 a 10. El texto de abajo lo dice con
+                // palabras. El Row conserva su altura fija, así que nada salta.
             } else {
                 // Show one filled dot per entered digit
                 repeat(pin.length) {
