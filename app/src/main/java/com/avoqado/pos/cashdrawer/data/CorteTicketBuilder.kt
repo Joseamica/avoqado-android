@@ -26,6 +26,16 @@ object CorteTicketBuilder {
         venueName: String,
         paperWidth: com.avoqado.pos.printing.data.model.PaperWidth,
         isPartial: Boolean,
+        /**
+         * 🔴 La impresora INTEGRADA de Sunmi arranca en multibyte (GB18030) y se
+         * come los bytes Latin-1 que le mandamos: el papel sale EN BLANCO y ni
+         * corta. Hay que pasarla a un solo byte con `FS .` ANTES de escribir.
+         *
+         * Esto ya estaba resuelto en el resto de la app vía `escposFor`, y este
+         * builder lo perdió al construir el ESCPOSPrinter por su cuenta. Salió
+         * imprimiendo el primer corte en la D3.
+         */
+        switchToSingleByteFirst: Boolean = false,
     ): ByteArray {
         val zone = com.avoqado.pos.core.util.VenueTimeZone.zoneId()
         val fecha = java.time.format.DateTimeFormatter.ofPattern("dd MMM yyyy", java.util.Locale("es", "MX"))
@@ -46,7 +56,7 @@ object CorteTicketBuilder {
         val totalSales = if (hasServerBreakdown) tenders.sumOf { it.totalCents } else cashSales
         val txCount = events.count { it.type == CashDrawerEventType.CASH_SALE.name }
 
-        val p = ESCPOSPrinter(paperWidth)
+        val p = ESCPOSPrinter(paperWidth, switchToSingleByteFirst)
         p.reset()
         p.setAlignment(ESCPOSPrinter.TextAlignment.CENTER)
         p.setBold(true)

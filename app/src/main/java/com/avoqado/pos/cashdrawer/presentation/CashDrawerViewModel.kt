@@ -304,7 +304,18 @@ class CashDrawerViewModel @Inject constructor(
         viewModelScope.launch {
             _isPrintingCorte.value = true
             try {
-                val data = CorteTicketBuilder.build(session, events, tenders, venueName, printer.paperWidth, isPartial)
+                val data = CorteTicketBuilder.build(
+                    session = session,
+                    events = events,
+                    tenders = tenders,
+                    venueName = venueName,
+                    paperWidth = printer.paperWidth,
+                    isPartial = isPartial,
+                    // La integrada de Sunmi necesita el cambio a un solo byte o el
+                    // papel sale en blanco. Mismo criterio que `escposFor`.
+                    switchToSingleByteFirst =
+                        printer.connectionTypeEnum == com.avoqado.pos.printing.data.model.PrinterConnectionType.INTERNAL,
+                )
                 printerService.sendPrintData(data, printer)
                 _printCorteResult.value = PrintCorteResult.Success(isPartial)
                 Log.d(TAG, "✅ Corte${if (isPartial) " parcial" else ""} impreso en ${printer.name}")

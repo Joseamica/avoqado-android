@@ -204,4 +204,46 @@ class CorteTicketBuilderTest {
         val texto = String(bytes, Charsets.ISO_8859_1)
         assertTrue("el nombre del local conserva sus acentos", texto.contains("Café Ñandú"))
     }
+
+    /**
+     * El corte salió EN BLANCO en la D3 la primera vez que se imprimió de verdad.
+     *
+     * La integrada de Sunmi arranca en multibyte (GB18030) y se traga los bytes
+     * Latin-1 sin pintar nada — ni siquiera corta el papel. Hay que mandarle
+     * `FS .` (0x1C 0x2E) ANTES de escribir. El resto de la app ya lo hacía vía
+     * `escposFor`; este builder lo perdió al construir el printer por su cuenta,
+     * y como el papel avanza igual, el fallo se ve como "imprimió, pero vacío".
+     */
+    @Test
+    fun `para la impresora integrada el ticket empieza pasandola a un solo byte`() {
+        val bytes = CorteTicketBuilder.build(
+            session = cerrada,
+            events = eventos,
+            tenders = tenders,
+            venueName = "Restaurante El Atole",
+            paperWidth = PaperWidth.MM80,
+            isPartial = false,
+            switchToSingleByteFirst = true,
+        )
+        val fsDot = bytes.toList().windowed(2).indexOfFirst { it[0] == 0x1C.toByte() && it[1] == 0x2E.toByte() }
+        assertTrue("debe mandar FS . para salir de multibyte", fsDot >= 0)
+        assertTrue("y debe ir al principio, antes del texto", fsDot < 16)
+    }
+
+    @Test
+    fun `una impresora de red no recibe el cambio a un solo byte`() {
+        // Las Epson de red y Bluetooth ya están en single-byte; mandarles FS . es
+        // ruido que algunas interpretan como datos.
+        val bytes = CorteTicketBuilder.build(
+            session = cerrada,
+            events = eventos,
+            tenders = tenders,
+            venueName = "Restaurante El Atole",
+            paperWidth = PaperWidth.MM80,
+            isPartial = false,
+            switchToSingleByteFirst = false,
+        )
+        val fsDot = bytes.toList().windowed(2).any { it[0] == 0x1C.toByte() && it[1] == 0x2E.toByte() }
+        assertFalse("no debe mandarlo", fsDot)
+    }
 }
