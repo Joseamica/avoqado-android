@@ -107,23 +107,34 @@ class AreaTicketCodeStore internal constructor(
         get() = (MAX_AREA_TICKET_COUNTER - storage.readCounter()).coerceAtLeast(0L)
 
     /**
-     * Guarda la partición que devolvió el server en el login (`POST /mobile/devices/partition`).
+     * Guarda la partición que devolvió el server en el login (`POST /mobile/devices/partition`),
+     * junto con el `lastCounter` que ese mismo endpoint reporta.
      *
-     * - Misma partición → **conserva el contador**. El caso normal de cada login: reiniciarlo
-     *   repetiría todos los códigos ya impresos.
-     * - Partición distinta → arranca el contador en 0. Es un espacio de nombres nuevo, así que
-     *   `9-PP-000001` no puede chocar con nada de la partición anterior. Ambos valores viajan en
-     *   la MISMA escritura atómica: la combinación venenosa sería partición vieja + contador
-     *   reiniciado, y así no puede existir.
+     * El contador que queda es **el MÁXIMO entre el local y el del server**, nunca el menor.
+     * Cada fuente cubre un hueco de la otra:
      *
+     * - **El server cubre la reinstalación.** `allowBackup=false` borra el contador local; si el
+     *   server le devuelve la MISMA partición, arrancar de 0 repetiría todos los códigos que ya
+     *   están impresos y en manos de clientes. El server sí recuerda hasta dónde llegó
+     *   (`Terminal.areaTicketLastCounter`).
+     * - **El local cubre al server desactualizado.** Los vales se acuñan sin pedirle permiso a
+     *   nadie; si unos cuantos no han llegado al server todavía, su `lastCounter` va atrás del
+     *   nuestro y hacerle caso reacuñaría esos códigos.
+     *
+     * Partición distinta → espacio de nombres nuevo: se ignora el contador local y se respeta el
+     * del server (0 si es partición virgen). Ambos valores viajan en la MISMA escritura atómica —
+     * la combinación venenosa sería partición vieja con contador reiniciado, y así no puede existir.
+     *
+     * @param serverLastCounter mayor contador que el server ha visto para esta partición.
      * @return `false` si la partición viene fuera de rango o si el disco no aceptó la escritura.
      *   El llamador debe tratarlo como "sin partición" y reintentar; jamás dar por hecho que quedó.
      */
     @Synchronized
-    fun setPartition(partition: Int): Boolean {
+    fun setPartition(partition: Int, serverLastCounter: Long = 0L): Boolean {
         if (partition !in MIN_AREA_TICKET_PARTITION..MAX_AREA_TICKET_PARTITION) return false
-        val keepCounter = if (storage.readPartition() == partition) storage.readCounter() else 0L
-        return storage.writeDurably(partition, keepCounter)
+        val fromServer = serverLastCounter.coerceIn(0L, MAX_AREA_TICKET_COUNTER)
+        val fromLocal = if (storage.readPartition() == partition) storage.readCounter() else 0L
+        return storage.writeDurably(partition, maxOf(fromLocal, fromServer))
     }
 
     /**

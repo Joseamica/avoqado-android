@@ -314,6 +314,69 @@ POST   /mobile/devices/partition                      → asigna/devuelve partic
 tipo de Android — que hoy es un **`String` suelto** (`PrintJobModels.kt:20`) y debe volverse enum
 antes de agregarle un valor.
 
+### 6.1 🔴 Verificador — **GS1 mod-10**, no Luhn
+
+"mod-10" **no identifica un algoritmo**: Luhn también se llama así. Dos repos que elijan distinto
+se rechazan el **90 % de los vales** entre sí (medido sobre 71,910 códigos), y el síntoma no apunta
+a nada: el cajero escanea, no pasa nada, y nadie sospecha que el dígito se calcula distinto de cada
+lado.
+
+**El algoritmo es GS1 mod-10** (el de EAN/UPC, pesos 3/1), sobre los **9 dígitos de datos**:
+
+1. Numerar de **derecha a izquierda**.
+2. Peso **3** a la posición 1 (la más a la derecha), **1** a la 2, 3 a la 3… alternando.
+3. `C = (10 − (suma mod 10)) mod 10`.
+
+**Ejemplo trabajado — obligatorio como test en los dos repos:**
+
+```
+datos  947000001
+d1..d9 de derecha a izquierda: 1,0,0,0,0,0,7,4,9
+suma = 1·3 + 0·1 + 0·3 + 0·1 + 0·3 + 0·1 + 7·3 + 4·1 + 9·3 = 55
+C    = (10 − (55 mod 10)) mod 10 = 5
+código completo → 9470000015
+```
+
+*(Verificado el 2026-07-28: `src/lib/areaTicketCode.ts` del server y `AreaTicketCode.kt` de Android
+coinciden en los 71,910 códigos del espacio útil. Coincidieron por interpretación, no porque
+estuviera escrito — por eso queda aquí.)*
+
+### 6.2 🔴 Handshake de partición — se toma el MÁXIMO de los dos contadores
+
+`POST /mobile/devices/partition` devuelve `{ partition, lastCounter, fulfillmentAreaId, … }`.
+El cliente guarda **`max(contador local, lastCounter del server)`**, nunca el menor. Cada fuente
+tapa el hueco de la otra:
+
+- **El server cubre la reinstalación.** En Android `allowBackup=false` borra el contador; si el
+  server devuelve la MISMA partición y el cliente arrancara en 0, **repetiría códigos ya impresos
+  y en manos de clientes**. En iOS el agravante es el restore (§5.2).
+- **El local cubre al server desactualizado.** Los vales se acuñan sin pedir permiso; si algunos
+  no han llegado al server, su `lastCounter` va atrás y hacerle caso reacuñaría esos códigos.
+
+Partición distinta → espacio de nombres nuevo: se ignora el contador local y se respeta el del
+server. `lastCounter` fuera de rango se recorta a `0..999_999`, nunca revienta.
+
+**El contador arranca en 1**, no en 0: `lastCounter = 0` en partición virgen → primer vale
+`9-PP-000001`. La validación de replay del server acepta esa base. Son 999,999 vales usables por
+dispositivo — a 300/día son ~9 años.
+
+> **Hueco conocido, NO construido:** no existe la semántica de *"dame partición nueva, la mía se
+> agotó"*. El cliente expone `remainingCodes` y `PartitionExhausted` para avisar antes de
+> bloquear, pero el endpoint no sabe reasignar. A 9 años de distancia, se difiere a propósito.
+
+*(Implementado y verificado 2026-07-28: `AreaTicketCodeStore.setPartition(partition,
+serverLastCounter)` + 5 tests, incluidos reinstalación, server atrasado y valores absurdos.)*
+
+### 6.3 🔴 El estado va en el cuerpo, nunca en el status HTTP
+
+`GET /area-tickets/:code` devuelve **200 en los cuatro casos** —
+`OK` · `ALREADY_PAID` · `DELIVERED` · `NOT_FOUND` — con `state` y un `message` en español.
+
+Es desviación deliberada de REST puro: un 404 real le llega al cliente Android como error de red
+genérico, y el cajero no aprende nada de un vale vencido o ya entregado (§5.1, "nunca un 404 mudo").
+
+**Contrato para los clientes: leer `state` del cuerpo. Nunca ramificar por el status HTTP.**
+
 ---
 
 ## 7. Clientes
@@ -403,7 +466,16 @@ bloquea la venta**.
 ## 11. Supuestos abiertos
 
 1. **Baud rate y trama de la BAR-8RS** — pista física, no se le pregunta al cliente.
-2. **Ancho de papel por área** — se confirma al instalar. CODE128-C con 10 dígitos entra en 58 mm.
+2. 🔴 **Ancho de papel por área — decide si el respaldo CODE39 existe.** *(Hallazgo de la
+   implementación, 2026-07-28.)*
+   - **CODE128-C con 10 dígitos: 90 módulos** (`11 arranque + 5×11 datos + 11 verificador +
+     13 paro`), 110 con zonas mudas. A módulo 3 son 330 puntos → **entra holgado en 58 mm** (384).
+   - **CODE39 con 10 dígitos: ~211 módulos.** Ni al ancho mínimo que acepta `GS w` (2) entra:
+     422 puntos contra 384. **El respaldo CODE39 exige rollo de 80 mm.**
+   - Matiz: ESC/POS **no fija** la razón ancho:angosto de CODE39; cada fabricante usa la suya
+     (2:1, 2.5:1, 3:1). La implementación asume 3:1 (la peor) en `CODE39_WIDE_RATIO`. Con 2:1 sí
+     cabría en 58 mm. **Se decide imprimiendo, no leyendo manuales** — primera prueba contra el
+     hardware real.
 3. **¿El ticket analizado es de su tienda?** RFC de CDMX vs contacto 667. No cambia decisiones.
 
 **Cerrados:** mismo RFC ✅ · 3 áreas + 1 caja ✅ · pistola lee CODE128 ✅ · CFDI no afecta el diseño ✅

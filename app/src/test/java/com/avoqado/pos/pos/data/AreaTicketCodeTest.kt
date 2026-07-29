@@ -322,6 +322,62 @@ class AreaTicketCodeTest {
         assertEquals(AreaTicketMint.MissingPartition, store.mintNext())
     }
 
+    // MARK: - lastCounter del server (§5.2) — se toma el MÁXIMO, nunca el menor
+
+    /**
+     * El caso que motiva todo esto: `allowBackup=false` borra el contador al reinstalar.
+     * Si el server devuelve la misma partición y arrancáramos de 0, el siguiente vale
+     * repetiría un código YA IMPRESO y en manos de un cliente.
+     */
+    @Test
+    fun `reinstall recovers the counter from the server`() {
+        val store = AreaTicketCodeStore(FakeStorage(partition = null)) // disco borrado
+        assertTrue(store.setPartition(47, serverLastCounter = 500L))
+        assertEquals(500L, store.counter)
+        assertEquals(501L, (store.mintNext() as AreaTicketMint.Minted).counter)
+    }
+
+    /**
+     * El inverso: los vales se acuñan sin pedirle permiso al server, así que su
+     * `lastCounter` puede ir ATRÁS del nuestro. Hacerle caso reacuñaría esos códigos.
+     */
+    @Test
+    fun `a stale server counter never rewinds the local one`() {
+        val store = storeWith(partition = 47)
+        repeat(500) { store.mintNext() }
+        assertTrue(store.setPartition(47, serverLastCounter = 300L))
+        assertEquals(500L, store.counter)
+        assertEquals(501L, (store.mintNext() as AreaTicketMint.Minted).counter)
+    }
+
+    @Test
+    fun `a different partition takes the server counter and ignores the local one`() {
+        val store = storeWith(partition = 47)
+        repeat(900) { store.mintNext() }
+        assertTrue(store.setPartition(48, serverLastCounter = 12L))
+        assertEquals(12L, store.counter)
+        val mint = store.mintNext() as AreaTicketMint.Minted
+        assertEquals(48, mint.partition)
+        assertEquals(13L, mint.counter)
+    }
+
+    @Test
+    fun `an absurd server counter is clamped instead of bricking the device`() {
+        val store = AreaTicketCodeStore(FakeStorage(partition = null))
+        assertTrue(store.setPartition(47, serverLastCounter = Long.MAX_VALUE))
+        assertEquals(MAX_AREA_TICKET_COUNTER, store.counter)
+        // Queda agotado, que es correcto — pero no explota ni acuña un código inválido.
+        assertEquals(AreaTicketMint.PartitionExhausted, store.mintNext())
+    }
+
+    @Test
+    fun `a negative server counter is treated as zero`() {
+        val store = AreaTicketCodeStore(FakeStorage(partition = null))
+        assertTrue(store.setPartition(47, serverLastCounter = -99L))
+        assertEquals(0L, store.counter)
+        assertEquals(1L, (store.mintNext() as AreaTicketMint.Minted).counter)
+    }
+
     // MARK: - Durabilidad: primero se graba, después se entrega
 
     @Test
