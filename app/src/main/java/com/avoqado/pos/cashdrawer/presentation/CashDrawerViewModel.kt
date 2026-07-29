@@ -413,7 +413,7 @@ class CashDrawerViewModel @Inject constructor(
         p.printDivider()
 
         p.setBold(true)
-        p.printLine("DESGLOSE POR METODO DE PAGO")
+        p.printLine("DESGLOSE POR MÉTODO DE PAGO")
         p.setBold(false)
         if (hasServerBreakdown) {
             tenders.sortedByDescending { it.totalCents }.forEach {
@@ -421,9 +421,9 @@ class CashDrawerViewModel @Inject constructor(
             }
         } else {
             p.printTwoColumns("Efectivo", money(cashSales))
-            p.printLine("Sin conexion: solo se muestra el efectivo.")
-            p.printLine("Tarjeta y otros medios apareceran al")
-            p.printLine("recuperar la conexion.")
+            p.printLine("Sin conexión: sólo se muestra el efectivo.")
+            p.printLine("Tarjeta y otros medios aparecerán al")
+            p.printLine("recuperar la conexión.")
         }
         p.printDivider()
 

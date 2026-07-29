@@ -509,7 +509,7 @@ fun MoreMenuScreen(
         )
         MenuRow(
             icon = Icons.AutoMirrored.Filled.HelpOutline,
-            label = "Atencion al cliente",
+            label = "Atención al cliente",
             onClick = { showSupport = true },
             dense = denseMenu,
         )
@@ -837,7 +837,7 @@ fun MoreMenuScreen(
     if (showPermissions) {
         PlaceholderSheet(
             title = "Permisos",
-            message = "La gestion de permisos estará disponible próximamente.",
+            message = "La gestión de permisos estará disponible próximamente.",
             onDismiss = { showPermissions = false },
         )
     }
