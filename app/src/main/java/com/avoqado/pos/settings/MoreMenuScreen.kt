@@ -497,7 +497,7 @@ fun MoreMenuScreen(
         )
         MenuRow(
             icon = Icons.Filled.Dashboard,
-            label = "Personalizar menu",
+            label = "Personalizar menú",
             onClick = { showCustomizeMenu = true },
             dense = denseMenu,
         )

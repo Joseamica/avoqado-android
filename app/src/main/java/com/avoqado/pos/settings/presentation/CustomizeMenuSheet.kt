@@ -80,7 +80,7 @@ fun CustomizeMenuSheet(
                 .padding(AvoqadoTheme.spacing.lg),
         ) {
             Text(
-                text = "Personalizar menu",
+                text = "Personalizar menú",
                 style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.Bold,
             )
