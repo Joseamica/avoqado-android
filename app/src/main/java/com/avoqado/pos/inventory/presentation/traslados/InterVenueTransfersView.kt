@@ -563,7 +563,15 @@ private fun CreateTrasladoContent(viewModel: InterVenueTransfersViewModel) {
 
     materialPicker?.let { (index, isSource) ->
         val options = (if (isSource) sourceMaterials else destinationMaterials).map { material ->
-            val stock = material.currentStock?.let { " · stock $it" } ?: ""
+            // La unidad va a la vista porque el server EXIGE que los dos insumos
+            // vinculados usen la misma unidad base, y lo dice sólo después de
+            // enviar. Sin verla aquí, emparejar es prueba y error: eliges,
+            // envías, te rechaza, vuelves a empezar.
+            val abrev = com.avoqado.pos.articles.data.model.MeasurementUnit.abbreviate(material.unit)
+            val unidad = abrev?.let { " $it" } ?: ""
+            val stock = material.currentStock?.let { " · stock $it$unidad" }
+                ?: abrev?.let { " · $it" }
+                ?: ""
             material.id to "${material.name}$stock"
         }
         OptionPickerDialog(

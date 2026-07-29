@@ -50,6 +50,19 @@ enum class MeasurementUnit(val label: String, val abbreviation: String) {
     OUNCE("Onza", "oz"),
     POUND("Libra", "lb"),
     DOZEN("Docena", "doc"),
+    ;
+
+    companion object {
+        /**
+         * "KILOGRAM" → "kg". El server manda el nombre del enum y ponerlo tal cual
+         * en pantalla le enseña al usuario un "KILOGRAM" en inglés y a gritos.
+         * Devuelve el original si no lo conoce, para no esconder una unidad nueva.
+         */
+        fun abbreviate(raw: String?): String? {
+            val key = raw?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+            return entries.firstOrNull { it.name.equals(key, ignoreCase = true) }?.abbreviation ?: key
+        }
+    }
 }
 
 enum class DiscountType(val label: String) {
