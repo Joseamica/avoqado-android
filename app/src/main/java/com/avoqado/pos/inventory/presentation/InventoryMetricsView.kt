@@ -36,6 +36,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Success
+import com.avoqado.pos.designsystem.theme.Error
 import com.avoqado.pos.designsystem.theme.Warning
 import com.avoqado.pos.inventory.data.model.StockItem
 
@@ -77,7 +78,6 @@ fun InventoryMetricsView(viewModel: InventoryViewModel) {
 
     // Compute metrics from stockItems
     val totalTracked = stockItems.size
-    val totalStockValue = stockItems.sumOf { it.onHand * 1.0 } // quantity as value proxy
     val lowStockItems = stockItems.filter { it.isLowStock }
     val outOfStockItems = stockItems.filter { it.onHand <= 0 }
 
@@ -114,9 +114,19 @@ fun InventoryMetricsView(viewModel: InventoryViewModel) {
                     value = "$totalTracked",
                     modifier = Modifier.weight(1f),
                 )
+                // Antes decía "Existencias totales" y sumaba `onHand` de TODO: kilos
+                // de café con piezas de agua y litros de aceite. El resultado es un
+                // número sin unidad que no significa nada — el código lo admitía con
+                // un "quantity as value proxy". La métrica que sí se puede sumar es
+                // contar artículos, y agotados es la que mueve a actuar.
+                //
+                // Un "valor de inventario" en dinero sería lo ideal, pero el endpoint
+                // de stock no manda el costo unitario; eso requiere ampliar el
+                // contrato con el server.
                 MetricCard(
-                    title = "Existencias totales",
-                    value = "${totalStockValue.toInt()}",
+                    title = "Agotados",
+                    value = "${outOfStockItems.size}",
+                    valueColor = if (outOfStockItems.isNotEmpty()) Error else null,
                     modifier = Modifier.weight(1f),
                 )
                 MetricCard(
