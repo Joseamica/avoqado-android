@@ -61,6 +61,10 @@ import com.avoqado.pos.customers.data.model.Customer
 import com.avoqado.pos.designsystem.components.CircleBackButton
 import com.avoqado.pos.designsystem.components.AvoqadoBrandLoader
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
+import java.util.Locale
+import androidx.compose.material.icons.filled.TrendingUp
+import androidx.compose.material.icons.filled.Payments
+import androidx.compose.material.icons.filled.Repeat
 
 // MARK: - Entry Point
 
@@ -680,7 +684,7 @@ private fun CustomerDetailPanel(
         // Activity section
         DetailSectionCard(title = "Actividad") {
             DetailRow(
-                icon = Icons.Filled.Person,
+                icon = Icons.Filled.Repeat,
                 label = "Visitas totales",
                 value = "${customer.totalVisits ?: 0}",
             )
@@ -688,14 +692,20 @@ private fun CustomerDetailPanel(
                 color = MaterialTheme.colorScheme.outlineVariant,
                 modifier = Modifier.padding(start = 48.dp),
             )
+            // Total gastado: es el dato duro del cliente y no estaba a la vista.
             DetailRow(
-                icon = Icons.Filled.Person,
+                icon = Icons.Filled.Payments,
+                label = "Total gastado",
+                value = "$${String.format(Locale.US, "%.2f", customer.totalSpent ?: 0.0)}",
+            )
+            HorizontalDivider(
+                color = MaterialTheme.colorScheme.outlineVariant,
+                modifier = Modifier.padding(start = 48.dp),
+            )
+            DetailRow(
+                icon = Icons.Filled.TrendingUp,
                 label = "Gasto promedio",
-                value = if (customer.averageSpend != null) {
-                    "$${String.format("%.2f", customer.averageSpend)}"
-                } else {
-                    "$0.00"
-                },
+                value = "$${String.format(Locale.US, "%.2f", customer.averageOrderValue ?: 0.0)}",
             )
             if (customer.lastVisit != null) {
                 HorizontalDivider(

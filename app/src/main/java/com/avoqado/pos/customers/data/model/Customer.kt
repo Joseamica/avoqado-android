@@ -13,7 +13,12 @@ data class Customer(
     val birthday: String? = null,
     val lastVisit: String? = null,
     val totalVisits: Int? = null,
-    val averageSpend: Double? = null,
+    // 🔴 El server manda `averageOrderValue` y `totalSpent`; la app pedía un
+    // `averageSpend` que NO existe en el contrato, así que el perfil de un cliente
+    // con $331.10 gastados mostraba "Gasto promedio $0.00". Los nombres se espejan
+    // EXACTO con el server: un typo aquí no falla, sólo miente en silencio.
+    val averageOrderValue: Double? = null,
+    val totalSpent: Double? = null,
     val loyaltyPoints: Int? = null,
     val groups: List<String>? = null,
 ) {
