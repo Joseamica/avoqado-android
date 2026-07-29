@@ -32,7 +32,7 @@ class ForbiddenInterceptorTest {
     }
 
     @Test
-    fun `403 with valid JSON sets error message from response`() {
+    fun `403 traduce el mensaje del server sin perder el codigo del permiso`() {
         server.enqueue(
             MockResponse()
                 .setResponseCode(403)
@@ -41,7 +41,14 @@ class ForbiddenInterceptorTest {
 
         client.newCall(Request.Builder().url(server.url("/")).build()).execute()
 
-        assertEquals("Permission 'orders:create' required", errorNotifier.forbiddenError.value)
+        // El mensaje del server es para depurar ("Permission 'orders:create'
+        // required"); lo que ve el mesero tiene que estar en su idioma y decirle qué
+        // hacer, sin perder el código que el administrador necesita para activarlo.
+        val shown = errorNotifier.forbiddenError.value
+        assertEquals(
+            "No tienes permiso para hacer esto. Pídele a un administrador que te active «orders:create».",
+            shown,
+        )
     }
 
     @Test
