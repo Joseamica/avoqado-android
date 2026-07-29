@@ -3,6 +3,7 @@ package com.avoqado.pos.payment
 import com.avoqado.pos.MainDispatcherRule
 import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
 import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.core.domain.printing.ComandaDispatcher
 import com.avoqado.pos.kds.data.KDSRepository
 import com.avoqado.pos.kds.domain.KDSOrderBus
 import com.avoqado.pos.payment.data.CashPaymentRepository
@@ -21,9 +22,12 @@ import com.avoqado.pos.payment.data.PaymentSyncService
 import com.avoqado.pos.payment.presentation.PaymentFlowViewModel
 import com.avoqado.pos.pos.data.model.CartItem
 import com.avoqado.pos.pos.data.model.CartItemType
+import com.avoqado.pos.pos.data.model.SelectedModifier
 import com.avoqado.pos.pos.presentation.cart.CartState
 import com.avoqado.pos.printing.data.ComandaPrinter
 import com.avoqado.pos.printing.data.PrinterService
+import com.avoqado.pos.printing.data.model.KitchenItem
+import com.avoqado.pos.printing.data.model.KitchenTicketData
 import com.avoqado.pos.printing.routing.PrintConfig
 import com.avoqado.pos.payment.domain.ManualPaymentMethod
 import com.avoqado.pos.printing.routing.PrintConfigRepository
@@ -127,8 +131,12 @@ class PaymentFlowViewModelTest {
             kdsOrderBus = kdsOrderBus,
             printerService = printerService,
             secureStorage = secureStorage,
-            printConfigRepository = printConfigRepository,
-            comandaPrinter = comandaPrinter,
+            // 🔴 NO REGRESIÓN: el despachador va REAL, armado con los mismos mocks de siempre.
+            // Mockearlo escondería justo lo que hay que probar — los tests de abajo siguen
+            // verificando `printerService.autoPrintKitchenTicket` y `comandaPrinter.printComandas`
+            // tal cual los verificaban antes de que ComandaDispatcher existiera, así que si la
+            // extracción cambiara UNA llamada del camino post-pago, truenan.
+            comandaDispatcher = ComandaDispatcher(printConfigRepository, comandaPrinter, printerService),
             tableSession = com.avoqado.pos.tables.data.TableSession(),
             syncOutbox = mockk(relaxed = true),
             customerDisplay = com.avoqado.pos.customerdisplay.CustomerDisplayState(),
@@ -281,6 +289,63 @@ class PaymentFlowViewModelTest {
         assertTrue(viewModel.state.value is PaymentFlowState.Success)
         coVerify(exactly = 1) { printerService.autoPrintKitchenTicket(any()) }
         coVerify(exactly = 0) { comandaPrinter.printComandas(any(), any(), any(), any(), any()) }
+    }
+
+    /**
+     * 🔴 NO REGRESIÓN del ticket legado, renglón por renglón. El de arriba prueba QUE se imprime;
+     * este prueba QUÉ se imprime — encabezado "En tienda", número de orden, y cada [KitchenItem]
+     * con su cantidad, sus modificadores, su nota y su `category` (que sale del `subtitle` del
+     * carrito y el ruteo por estaciones NO lleva). Es el renglón que se pierde primero si alguien
+     * "simplifica" la extracción.
+     */
+    @Test
+    fun `el ticket legado sale identico renglon por renglon, con categoria y modificadores`() = runTest {
+        coEvery {
+            orderRepository.createOrder(any(), any(), any(), any())
+        } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-abcd1234")))
+        coEvery {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any())
+        } returns Result.success(OrderRepository.CashPayResult(paymentId = "payment-legacy-2", receiptAccessKey = null))
+
+        val ticketSlot = slot<KitchenTicketData>()
+        coEvery { printerService.autoPrintKitchenTicket(capture(ticketSlot)) } returns Unit
+
+        val cart = CartState(
+            items = listOf(
+                CartItem(
+                    id = "line-1",
+                    type = CartItemType.ProductItem("prod-1"),
+                    name = "Taco",
+                    subtitle = "Antojitos",
+                    unitPrice = 1000,
+                    quantity = 2,
+                    selectedModifiers = listOf(
+                        SelectedModifier(
+                            groupId = "g1",
+                            groupName = "Extras",
+                            modifierId = "m1",
+                            modifierName = "Sin cebolla",
+                            priceInCents = 0,
+                        ),
+                    ),
+                    itemNote = "bien dorado",
+                ),
+                // Un importe personalizado NUNCA va a cocina — no es un producto.
+                CartItem(id = "line-2", type = CartItemType.CustomAmount, name = "Propina de la casa", unitPrice = 500),
+            ),
+        )
+
+        viewModel.startPaymentFlow(cart)
+        viewModel.confirmCashCustom(2500)
+        advanceUntilIdle()
+
+        val ticket = ticketSlot.captured
+        assertEquals("1234", ticket.orderNumber) // últimos 4 del orderId
+        assertEquals("En tienda", ticket.orderType)
+        assertEquals(
+            listOf(KitchenItem("Taco", 2, listOf("Sin cebolla"), "bien dorado", "Antojitos")),
+            ticket.items,
+        )
     }
 
     @Test

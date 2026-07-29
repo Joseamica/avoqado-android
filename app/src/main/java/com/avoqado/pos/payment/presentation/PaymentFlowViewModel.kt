@@ -26,14 +26,12 @@ import com.avoqado.pos.payment.data.model.PaymentMethod
 import com.avoqado.pos.pos.data.model.CartItemType
 import com.avoqado.pos.pos.presentation.cart.CartState
 import com.avoqado.pos.core.data.local.SecureStorage
-import com.avoqado.pos.printing.data.ComandaPrinter
+import com.avoqado.pos.core.domain.printing.ComandaDispatcher
+import com.avoqado.pos.core.domain.printing.NoStationsFallback
 import com.avoqado.pos.printing.data.PrinterService
 import com.avoqado.pos.printing.data.model.KitchenItem
-import com.avoqado.pos.printing.data.model.KitchenTicketData
 import com.avoqado.pos.printing.data.model.ReceiptData
 import com.avoqado.pos.printing.data.model.ReceiptItem
-import com.avoqado.pos.printing.routing.PrintConfigRepository
-import com.avoqado.pos.printing.routing.PrintRoutingMapper
 import com.avoqado.pos.printing.routing.RoutableItem
 import com.avoqado.pos.tpvsettings.data.TpvSettings
 import com.avoqado.pos.tpvsettings.data.TpvSettingsRepository
@@ -66,8 +64,7 @@ class PaymentFlowViewModel @Inject constructor(
     private val kdsOrderBus: KDSOrderBus,
     private val printerService: PrinterService,
     private val secureStorage: SecureStorage,
-    private val printConfigRepository: PrintConfigRepository,
-    private val comandaPrinter: ComandaPrinter,
+    private val comandaDispatcher: ComandaDispatcher,
     private val customerDisplay: com.avoqado.pos.customerdisplay.CustomerDisplayState,
 ) : ViewModel() {
 
@@ -1328,14 +1325,15 @@ class PaymentFlowViewModel @Inject constructor(
             if (realItems.isEmpty()) return@launch
             val orderNumber = createdOrderId?.takeLast(4) ?: "Q-${(1000..9999).random()}"
 
-            // PRINT_STATIONS — refresh() never throws (fails open to an empty/default
-            // config internally), so a stale/slow/failed fetch just falls back to the
-            // legacy single-ticket path below — safe.
-            secureStorage.venueId?.let { venueId -> printConfigRepository.refresh(venueId) }
-            val printConfig = printConfigRepository.getCurrentConfig()
-
-            if (printConfig.stations.any { it.active }) {
-                val routableItems = realItems.map { item ->
+            // PRINT_STATIONS — el disparo POST-PAGO del mostrador. La secuencia (refrescar config →
+            // rutear → imprimir, o el ticket legado si el venue no tiene estaciones) vive ahora en
+            // [ComandaDispatcher], que es la MISMA pieza que usa el disparo PRE-PAGO del vale de
+            // área (§5.6). Mover el mecanismo no cambió ni una llamada de este camino: mismos
+            // argumentos, mismo orden, mismo ticket legado (con su `category`) — lo fijan
+            // PaymentFlowViewModelTest y ComandaDispatcherTest.
+            comandaDispatcher.dispatch(
+                venueId = secureStorage.venueId,
+                lines = realItems.map { item ->
                     RoutableItem(
                         orderItemId = item.id,
                         productId = (item.type as? CartItemType.ProductItem)?.productId,
@@ -1345,21 +1343,13 @@ class PaymentFlowViewModel @Inject constructor(
                         modifiers = item.selectedModifiers.map { it.modifierName },
                         notes = item.itemNote,
                     )
-                }
-                val plans = PrintRoutingMapper.buildComandas(routableItems, printConfig)
-                comandaPrinter.printComandas(
-                    plans = plans,
-                    config = printConfig,
-                    orderNumber = orderNumber,
-                    orderType = "En tienda",
-                )
-            } else {
-                // No print stations configured for this venue — EXACT legacy behavior:
-                // one kitchen ticket, fanned out to every enabled KITCHEN-role printer.
-                val kitchenTicket = KitchenTicketData(
-                    orderNumber = orderNumber,
-                    orderType = "En tienda",
-                    items = realItems.map { item ->
+                },
+                orderNumber = orderNumber,
+                orderType = "En tienda",
+                // Sin estaciones configuradas: EXACTAMENTE lo de antes — un solo ticket de cocina
+                // abanicado a todas las impresoras con rol KITCHEN.
+                noStationsFallback = NoStationsFallback.LegacySingleTicket(
+                    realItems.map { item ->
                         KitchenItem(
                             name = item.name,
                             quantity = item.quantity,
@@ -1368,9 +1358,8 @@ class PaymentFlowViewModel @Inject constructor(
                             category = item.subtitle,
                         )
                     },
-                )
-                printerService.autoPrintKitchenTicket(kitchenTicket)
-            }
+                ),
+            )
         }
     }
 

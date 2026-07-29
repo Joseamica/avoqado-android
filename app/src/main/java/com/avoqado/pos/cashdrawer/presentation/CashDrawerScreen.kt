@@ -117,8 +117,18 @@ private fun TabletCashDrawerLayout(
         DailyReportView(
             session = reportSession!!,
             events = reportEvents,
+            // Sin esto la PANTALLA del corte decía "Avoqado" mientras el ticket
+            // impreso llevaba el nombre real del negocio: el mismo corte, dos
+            // encabezados distintos según dónde lo mires.
+            venueName = viewModel.venueName,
             tenderBreakdown = tenderBreakdown,
             isPrinting = isPrintingCorte,
+            onRetryBreakdown = {
+                viewModel.loadTenderBreakdown(
+                    reportSession!!.openedAt,
+                    reportSession!!.closedAt ?: System.currentTimeMillis(),
+                )
+            },
             onPrint = {
                 viewModel.printCorte(
                     session = reportSession!!,
@@ -323,8 +333,18 @@ private fun PhoneCashDrawerLayout(
         DailyReportView(
             session = reportSession!!,
             events = reportEvents,
+            // Sin esto la PANTALLA del corte decía "Avoqado" mientras el ticket
+            // impreso llevaba el nombre real del negocio: el mismo corte, dos
+            // encabezados distintos según dónde lo mires.
+            venueName = viewModel.venueName,
             tenderBreakdown = tenderBreakdown,
             isPrinting = isPrintingCorte,
+            onRetryBreakdown = {
+                viewModel.loadTenderBreakdown(
+                    reportSession!!.openedAt,
+                    reportSession!!.closedAt ?: System.currentTimeMillis(),
+                )
+            },
             onPrint = {
                 viewModel.printCorte(
                     session = reportSession!!,

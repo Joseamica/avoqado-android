@@ -50,6 +50,16 @@ fun DailyReportView(
     tenderBreakdown: List<com.avoqado.pos.cashdrawer.data.CashDrawerRepository.TenderRow> = emptyList(),
     isPrinting: Boolean = false,
     onPrint: () -> Unit = {},
+    /**
+     * Reintentar la consulta del desglose por método.
+     *
+     * El corte definitivo es el papel que el negocio ARCHIVA, y basta un bache de
+     * WiFi de segundos para que salga sin el desglose — pasó en la D3: la red se
+     * cayó justo al cerrar la caja y el ticket se imprimió sólo con el efectivo.
+     * Sin una forma de reintentar, la única salida era volver a buscarlo en el
+     * historial sin saber que eso ayudaría.
+     */
+    onRetryBreakdown: () -> Unit = {},
     onDismiss: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -201,6 +211,21 @@ fun DailyReportView(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+                Button(
+                    onClick = onRetryBreakdown,
+                    shape = RoundedCornerShape(50),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                        contentColor = MaterialTheme.colorScheme.onSurface,
+                    ),
+                ) {
+                    Text(
+                        text = "Reintentar",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
