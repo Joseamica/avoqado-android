@@ -260,7 +260,7 @@ class CashDrawerViewModel @Inject constructor(
      * o sea que para el cajero el botón simplemente no hacía nada.
      */
     sealed interface PrintCorteResult {
-        data object Success : PrintCorteResult
+        data class Success(val wasPartial: Boolean) : PrintCorteResult
         data class Failure(val reason: String) : PrintCorteResult
     }
 
@@ -287,6 +287,10 @@ class CashDrawerViewModel @Inject constructor(
         events: List<CashDrawerEventEntity>,
         tenders: List<CashDrawerRepository.TenderRow>,
         venueName: String,
+        // Corte PARCIAL: se saca con la caja todavía abierta para revisar el turno a
+        // media jornada. No cierra nada, no cuenta el dinero y no arroja diferencia
+        // — sólo dice cuánto DEBERÍA haber en el cajón en este momento.
+        isPartial: Boolean = false,
     ) {
         val printer = printerService.getDefaultPrinter(PrinterRole.RECEIPT)
         if (printer == null) {
@@ -299,10 +303,10 @@ class CashDrawerViewModel @Inject constructor(
         viewModelScope.launch {
             _isPrintingCorte.value = true
             try {
-                val data = buildCorteTicket(session, events, tenders, venueName, printer.paperWidth)
+                val data = buildCorteTicket(session, events, tenders, venueName, printer.paperWidth, isPartial)
                 printerService.sendPrintData(data, printer)
-                _printCorteResult.value = PrintCorteResult.Success
-                Log.d(TAG, "✅ Corte impreso en ${printer.name}")
+                _printCorteResult.value = PrintCorteResult.Success(isPartial)
+                Log.d(TAG, "✅ Corte${if (isPartial) " parcial" else ""} impreso en ${printer.name}")
             } catch (e: Exception) {
                 Log.e(TAG, "❌ No se pudo imprimir el corte: ${e.message}", e)
                 _printCorteResult.value = PrintCorteResult.Failure(
@@ -314,12 +318,42 @@ class CashDrawerViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Corte PARCIAL de la caja en curso: lo que el operador saca a media jornada
+     * para revisar cómo va el turno sin cerrarlo.
+     *
+     * Trae el desglose fresco desde la apertura hasta AHORA antes de imprimir —
+     * usar el que quedó cacheado imprimiría una foto vieja, y el punto de una
+     * lectura parcial es justamente saber cómo va en este momento. Si la consulta
+     * falla (sin red) igual se imprime con el efectivo local, que es dato bueno:
+     * negarse a imprimir sería peor que imprimir un corte honestamente parcial.
+     */
+    fun printPartialCorte(
+        session: CashDrawerSessionEntity,
+        events: List<CashDrawerEventEntity>,
+    ) {
+        viewModelScope.launch {
+            val tenders = runCatching {
+                repository.getTenderBreakdown(session.openedAt, System.currentTimeMillis())
+            }.getOrDefault(emptyList())
+            _tenderBreakdown.value = tenders
+            printCorte(
+                session = session,
+                events = events,
+                tenders = tenders,
+                venueName = venueName,
+                isPartial = true,
+            )
+        }
+    }
+
     private fun buildCorteTicket(
         session: CashDrawerSessionEntity,
         events: List<CashDrawerEventEntity>,
         tenders: List<CashDrawerRepository.TenderRow>,
         venueName: String,
         paperWidth: com.avoqado.pos.printing.data.model.PaperWidth,
+        isPartial: Boolean,
     ): ByteArray {
         val zone = com.avoqado.pos.core.util.VenueTimeZone.zoneId()
         val fecha = java.time.format.DateTimeFormatter.ofPattern("dd MMM yyyy", java.util.Locale("es", "MX"))
@@ -345,14 +379,26 @@ class CashDrawerViewModel @Inject constructor(
         p.setAlignment(ESCPOSPrinter.TextAlignment.CENTER)
         p.setBold(true)
         p.setLargeText(true)
-        p.printLine("CORTE DE CAJA")
+        p.printLine(if (isPartial) "CORTE PARCIAL" else "CORTE DE CAJA")
         p.setLargeText(false)
         p.printLine(venueName)
         p.setBold(false)
+        if (isPartial) {
+            // Que quede en el papel: este ticket NO cerró el turno. Sin esto, dos
+            // cortes del mismo día se confunden y alguien cuadra contra el equivocado.
+            p.setBold(true)
+            p.printLine("LA CAJA SIGUE ABIERTA")
+            p.setBold(false)
+        }
         p.printLine(at(session.openedAt).format(fecha))
         p.printLine(
-            "Apertura: " + at(session.openedAt).format(hora) +
-                "  Cierre: " + (session.closedAt?.let { at(it).format(hora) } ?: "--"),
+            if (isPartial) {
+                "Apertura: " + at(session.openedAt).format(hora) +
+                    "  Impreso: " + java.time.ZonedDateTime.now(zone).format(hora)
+            } else {
+                "Apertura: " + at(session.openedAt).format(hora) +
+                    "  Cierre: " + (session.closedAt?.let { at(it).format(hora) } ?: "--")
+            },
         )
         p.printLine("Operador: ${session.openedByName}")
         p.printDivider()
@@ -391,16 +437,24 @@ class CashDrawerViewModel @Inject constructor(
         p.printDivider()
         p.setBold(true)
         p.printTwoColumns("Efectivo esperado", money(expected))
-        p.printTwoColumns("Conteo real", money(actual))
-        p.printTwoColumns(
-            when {
-                diff > 0 -> "Sobrante"
-                diff < 0 -> "Faltante"
-                else -> "Diferencia"
-            },
-            money(kotlin.math.abs(diff)),
-        )
-        p.setBold(false)
+        if (isPartial) {
+            // NADA de "Conteo real" ni de diferencia: el dinero no se ha contado.
+            // Imprimir "Faltante $1,058.00" aquí sería inventar un descuadre.
+            p.setBold(false)
+            p.printLine("Cuenta el cajón y cierra la caja para")
+            p.printLine("obtener el corte definitivo.")
+        } else {
+            p.printTwoColumns("Conteo real", money(actual))
+            p.printTwoColumns(
+                when {
+                    diff > 0 -> "Sobrante"
+                    diff < 0 -> "Faltante"
+                    else -> "Diferencia"
+                },
+                money(kotlin.math.abs(diff)),
+            )
+            p.setBold(false)
+        }
         p.feedLines(3)
         p.cut()
         return p.getData()

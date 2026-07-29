@@ -114,26 +114,6 @@ private fun TabletCashDrawerLayout(
             )
         }
         val isPrintingCorte by viewModel.isPrintingCorte.collectAsState()
-        val printResult by viewModel.printCorteResult.collectAsState()
-        // El resultado va en diálogo, NO en Toast: en la Sunmi el Toast sale detrás
-        // de la pantalla del cliente y el cajero se queda sin saber si imprimió.
-        printResult?.let { r ->
-            val (titulo, texto) = when (r) {
-                is CashDrawerViewModel.PrintCorteResult.Success ->
-                    "Corte impreso" to "El corte salió en la impresora de recibos."
-                is CashDrawerViewModel.PrintCorteResult.Failure ->
-                    "No se imprimió el corte" to r.reason
-            }
-            AvoqadoDialog(
-                title = titulo,
-                description = texto,
-                onDismiss = { viewModel.clearPrintCorteResult() },
-                actionButton = {
-                    PrimaryButton(text = "Entendido", onClick = { viewModel.clearPrintCorteResult() })
-                },
-                content = {},
-            )
-        }
         DailyReportView(
             session = reportSession!!,
             events = reportEvents,
@@ -259,6 +239,12 @@ private fun TabletCashDrawerLayout(
         )
     }
 
+    // Resultado de imprimir el corte. Va aquí, al nivel de la pantalla, porque el
+    // corte parcial se lanza desde la caja en curso — dentro del reporte no se
+    // vería. Y va en diálogo, nunca en Toast: en la Sunmi el Toast queda detrás de
+    // la pantalla del cliente y el cajero no sabría si imprimió.
+    PrintCorteResultDialog(viewModel)
+
     if (drawerError != null) {
         AvoqadoDialog(
             title = "Caja",
@@ -334,26 +320,6 @@ private fun PhoneCashDrawerLayout(
             )
         }
         val isPrintingCorte by viewModel.isPrintingCorte.collectAsState()
-        val printResult by viewModel.printCorteResult.collectAsState()
-        // El resultado va en diálogo, NO en Toast: en la Sunmi el Toast sale detrás
-        // de la pantalla del cliente y el cajero se queda sin saber si imprimió.
-        printResult?.let { r ->
-            val (titulo, texto) = when (r) {
-                is CashDrawerViewModel.PrintCorteResult.Success ->
-                    "Corte impreso" to "El corte salió en la impresora de recibos."
-                is CashDrawerViewModel.PrintCorteResult.Failure ->
-                    "No se imprimió el corte" to r.reason
-            }
-            AvoqadoDialog(
-                title = titulo,
-                description = texto,
-                onDismiss = { viewModel.clearPrintCorteResult() },
-                actionButton = {
-                    PrimaryButton(text = "Entendido", onClick = { viewModel.clearPrintCorteResult() })
-                },
-                content = {},
-            )
-        }
         DailyReportView(
             session = reportSession!!,
             events = reportEvents,
@@ -496,6 +462,12 @@ private fun PhoneCashDrawerLayout(
         )
     }
 
+    // Resultado de imprimir el corte. Va aquí, al nivel de la pantalla, porque el
+    // corte parcial se lanza desde la caja en curso — dentro del reporte no se
+    // vería. Y va en diálogo, nunca en Toast: en la Sunmi el Toast queda detrás de
+    // la pantalla del cliente y el cajero no sabría si imprimió.
+    PrintCorteResultDialog(viewModel)
+
     if (drawerError != null) {
         AvoqadoDialog(
             title = "Caja",
@@ -629,6 +601,7 @@ private fun CurrentDrawerContent(
     val session by viewModel.currentSession.collectAsState()
     val events by viewModel.events.collectAsState()
     val expectedCents by viewModel.expectedAmountCents.collectAsState()
+    val isPrintingCorte by viewModel.isPrintingCorte.collectAsState()
 
     if (session == null) {
         // Empty state
@@ -645,6 +618,8 @@ private fun CurrentDrawerContent(
             onPayIn = onPayIn,
             onPayOut = onPayOut,
             onCloseDrawer = onCloseDrawer,
+            isPrintingCorte = isPrintingCorte,
+            onPrintPartial = { viewModel.printPartialCorte(session!!, events) },
         )
     }
 }
@@ -711,6 +686,8 @@ private fun OpenDrawerContent(
     onPayIn: () -> Unit,
     onPayOut: () -> Unit,
     onCloseDrawer: () -> Unit,
+    isPrintingCorte: Boolean = false,
+    onPrintPartial: () -> Unit = {},
 ) {
     Column(
         modifier = Modifier
@@ -827,6 +804,28 @@ private fun OpenDrawerContent(
                 Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.xxs))
                 Text(
                     text = "Egreso",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+            }
+
+            // Corte PARCIAL: revisar el turno a media jornada sin cerrar la caja.
+            // Antes la única forma de ver un corte era CERRANDO, o sea que para
+            // saber cómo iba el turno había que terminarlo.
+            Button(
+                onClick = onPrintPartial,
+                enabled = !isPrintingCorte,
+                shape = RoundedCornerShape(50),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    contentColor = MaterialTheme.colorScheme.onSurface,
+                ),
+                modifier = Modifier
+                    .weight(1.4f)
+                    .height(44.dp),
+            ) {
+                Text(
+                    text = if (isPrintingCorte) "Imprimiendo…" else "Corte parcial",
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.SemiBold,
                 )
@@ -1131,4 +1130,32 @@ private fun ClosedSessionCard(
 fun formatCurrency(cents: Int): String {
     val pesos = cents / 100.0
     return "$${String.format(Locale.US, "%,.2f", pesos)}"
+}
+
+@Composable
+private fun PrintCorteResultDialog(viewModel: CashDrawerViewModel) {
+    val printResult by viewModel.printCorteResult.collectAsState()
+    printResult?.let { r ->
+        val (titulo, texto) = when (r) {
+            is CashDrawerViewModel.PrintCorteResult.Success ->
+                if (r.wasPartial) {
+                    "Corte parcial impreso" to
+                        "Salió en la impresora de recibos. La caja sigue abierta: " +
+                        "el corte definitivo se genera al cerrarla."
+                } else {
+                    "Corte impreso" to "El corte salió en la impresora de recibos."
+                }
+            is CashDrawerViewModel.PrintCorteResult.Failure ->
+                "No se imprimió el corte" to r.reason
+        }
+        AvoqadoDialog(
+            title = titulo,
+            description = texto,
+            onDismiss = { viewModel.clearPrintCorteResult() },
+            actionButton = {
+                PrimaryButton(text = "Entendido", onClick = { viewModel.clearPrintCorteResult() })
+            },
+            content = {},
+        )
+    }
 }
