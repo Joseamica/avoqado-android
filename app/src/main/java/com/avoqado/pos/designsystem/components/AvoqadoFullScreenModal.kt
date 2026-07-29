@@ -34,6 +34,12 @@ fun AvoqadoFullScreenModal(
     primaryActionText: String? = null,
     onPrimaryAction: (() -> Unit)? = null,
     primaryActionEnabled: Boolean = true,
+    /**
+     * Por qué la acción está apagada, en palabras. Mismo criterio que
+     * [AvoqadoFullscreenHeader]: un botón gris arriba y campos vacíos abajo no se
+     * conectan solos, y quien lo sufre está frente a un cliente.
+     */
+    primaryActionDisabledReason: String? = null,
     content: @Composable () -> Unit,
 ) {
     val compactTypography =
@@ -111,6 +117,21 @@ fun AvoqadoFullScreenModal(
                             }
                         }
                     }
+                }
+
+                if (!primaryActionEnabled && primaryActionDisabledReason != null) {
+                    Text(
+                        text = primaryActionDisabledReason,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(
+                                horizontal = AvoqadoTheme.spacing.lg,
+                                vertical = AvoqadoTheme.spacing.xs,
+                            ),
+                    )
                 }
 
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)

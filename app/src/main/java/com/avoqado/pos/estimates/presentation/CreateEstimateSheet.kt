@@ -114,6 +114,7 @@ fun CreateEstimateSheet(
         primaryActionText = if (isSaving) "Creando..." else "Crear",
         onPrimaryAction = { createEstimate() },
         primaryActionEnabled = items.any { it.productName.isNotBlank() } && !isSaving,
+        primaryActionDisabledReason = if (isSaving) null else "Agrega al menos un artículo para crear el presupuesto",
     ) {
         Column(
             modifier = Modifier

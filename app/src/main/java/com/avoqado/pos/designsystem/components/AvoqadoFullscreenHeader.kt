@@ -43,6 +43,16 @@ fun AvoqadoFullscreenHeader(
     primaryActionText: String? = null,
     onPrimaryAction: (() -> Unit)? = null,
     primaryActionEnabled: Boolean = true,
+    /**
+     * Por qué la acción está apagada, en palabras.
+     *
+     * Un botón gris arriba a la derecha y unos campos vacíos abajo no se conectan
+     * solos: quien abre la pantalla ve un control muerto y no sabe si le falta
+     * llenar algo, si no tiene permiso, o si la app se rompió. Con un cliente
+     * enfrente, adivinar no es una opción. Pasa el motivo y el header lo muestra
+     * bajo la barra hasta que la acción se habilita.
+     */
+    primaryActionDisabledReason: String? = null,
     primaryActionIcon: ImageVector? = null,
     showDivider: Boolean = false,
 ) {
@@ -115,6 +125,22 @@ fun AvoqadoFullscreenHeader(
                 }
             }
         }
+
+        if (!primaryActionEnabled && primaryActionDisabledReason != null) {
+            Text(
+                text = primaryActionDisabledReason,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(
+                        horizontal = AvoqadoTheme.spacing.lg,
+                        vertical = AvoqadoTheme.spacing.xs,
+                    ),
+            )
+        }
+
         if (showDivider) {
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
         }

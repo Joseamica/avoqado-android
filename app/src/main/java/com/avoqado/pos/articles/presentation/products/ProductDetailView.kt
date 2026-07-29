@@ -167,6 +167,7 @@ fun ProductDetailView(
         primaryActionText = if (product == null) "Crear" else "Guardar",
         onPrimaryAction = { onSave() },
         primaryActionEnabled = name.isNotBlank() && !isSaving,
+        primaryActionDisabledReason = if (isSaving) null else "Ponle nombre al artículo",
     ) {
         LazyColumn(
             modifier = Modifier

@@ -172,6 +172,7 @@ fun ModifierGroupFormSheet(
             }
         },
         primaryActionEnabled = groupName.isNotBlank() && !isSaving,
+        primaryActionDisabledReason = if (isSaving) null else "Ponle nombre al grupo de modificadores",
     ) {
         Column(
             modifier = Modifier

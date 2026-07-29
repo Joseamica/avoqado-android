@@ -59,6 +59,11 @@ fun CreateOptionSheet(
             )
         },
         primaryActionEnabled = optionName.isNotBlank() && values.any { it.isNotBlank() } && !isSaving,
+        primaryActionDisabledReason = when {
+            isSaving -> null
+            optionName.isBlank() -> "Ponle nombre a la opción"
+            else -> "Agrega al menos un valor a la opción"
+        },
     ) {
         Column(
             modifier = Modifier
