@@ -42,6 +42,8 @@ import com.avoqado.pos.articles.data.model.ProductOption
 import com.avoqado.pos.articles.presentation.ArticlesViewModel
 import com.avoqado.pos.designsystem.theme.AvoqadoAdaptiveSizeClass
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
+import com.avoqado.pos.designsystem.components.PrimaryButton
+import com.avoqado.pos.designsystem.components.AvoqadoDialog
 
 // MARK: - Options List View
 
@@ -52,6 +54,7 @@ fun OptionsView(
     val options by viewModel.productOptions.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     var showCreateSheet by remember { mutableStateOf(false) }
+    var showEditUnavailable by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val configuration = LocalConfiguration.current
     val adaptive = AvoqadoTheme.adaptive
@@ -141,14 +144,29 @@ fun OptionsView(
                         denseMode = denseListMode,
                         horizontalPadding = contentHorizontalPadding,
                         rowVerticalPadding = rowVerticalPadding,
-                        onEdit = {
-                            Toast.makeText(context, "Próximamente", Toast.LENGTH_SHORT).show()
-                        },
+                        // Editar todavía no existe. El aviso va en diálogo, NO en Toast:
+                        // en la Sunmi el Toast sale detrás de la pantalla del cliente,
+                        // así que tocar la fila no producía NADA visible y parecía rota.
+                        onEdit = { showEditUnavailable = true },
                     )
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 }
             }
         }
+    }
+
+    if (showEditUnavailable) {
+        AvoqadoDialog(
+            title = "Editar opción",
+            description = "Todavía no se puede editar una opción desde el POS. " +
+                "Mientras tanto puedes borrarla y crearla de nuevo, o editarla desde " +
+                "el panel de Avoqado.",
+            onDismiss = { showEditUnavailable = false },
+            actionButton = {
+                PrimaryButton(text = "Entendido", onClick = { showEditUnavailable = false })
+            },
+            content = {},
+        )
     }
 
     if (showCreateSheet) {
