@@ -69,7 +69,7 @@ fun StockCountDetailView(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             TextButton(onClick = onBack) {
-                Text("Atras")
+                Text("Atrás")
             }
 
             Spacer(modifier = Modifier.weight(1f))

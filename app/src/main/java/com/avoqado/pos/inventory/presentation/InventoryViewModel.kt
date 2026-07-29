@@ -30,12 +30,12 @@ private const val TAG = "📦 InventoryVM"
 enum class InventorySection(val label: String) {
     OVERVIEW("Descripción general"),
     COUNTS("Conteos"),
-    PURCHASE_ORDERS("Ordenes de compra"),
+    PURCHASE_ORDERS("Órdenes de compra"),
     TRANSFERS("Transferencias"),
     // Traslados de insumos ENTRE sucursales (CEDIS) — distinto del legacy
     // TRANSFERS, que es la vista de auditoría de movimientos internos.
     INTER_VENUE("Traslados"),
-    METRICS("Metricas"),
+    METRICS("Métricas"),
 }
 
 // Keep InventoryTab for backward compatibility (used in overview content)

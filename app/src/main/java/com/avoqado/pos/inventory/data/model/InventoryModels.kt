@@ -75,7 +75,7 @@ data class StockCount(
 @Serializable
 enum class StockCountType(val label: String, val description: String) {
     FULL("Conteo completo", "Contar todos los productos"),
-    CYCLE("Conteo ciclico", "Contar productos seleccionados"),
+    CYCLE("Conteo cíclico", "Contar productos seleccionados"),
 }
 
 @Serializable

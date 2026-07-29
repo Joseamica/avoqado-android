@@ -253,10 +253,14 @@ fun StatusBadge(
 @Composable
 private fun statusColors(status: String): Pair<Color, Color> {
     return when (status) {
-        "RECEIVED", "COMPLETED" -> Success.copy(alpha = 0.15f) to Success
-        "SENT", "IN_TRANSIT" -> Info.copy(alpha = 0.15f) to Info
-        "PARTIALLY_RECEIVED" -> Warning.copy(alpha = 0.15f) to Warning
-        "CANCELLED" -> Error.copy(alpha = 0.15f) to Error
+        // Nombres EXACTOS del enum del server: "COMPLETED", "IN_TRANSIT" y
+        // "PARTIALLY_RECEIVED" no existen, así que esos estados caían al gris de
+        // borrador y una orden en camino se veía igual que una sin enviar.
+        "RECEIVED" -> Success.copy(alpha = 0.15f) to Success
+        "SENT", "CONFIRMED", "SHIPPED" -> Info.copy(alpha = 0.15f) to Info
+        "PARTIAL", "PENDING_APPROVAL" -> Warning.copy(alpha = 0.15f) to Warning
+        "CANCELLED", "REJECTED" -> Error.copy(alpha = 0.15f) to Error
+        "APPROVED" -> Success.copy(alpha = 0.15f) to Success
         else -> MaterialTheme.colorScheme.surfaceVariant to MaterialTheme.colorScheme.onSurfaceVariant // DRAFT
     }
 }
@@ -264,10 +268,14 @@ private fun statusColors(status: String): Pair<Color, Color> {
 @Composable
 fun statusBadgeColors(status: String): Pair<Color, Color> {
     return when (status) {
-        "RECEIVED", "COMPLETED" -> Success.copy(alpha = 0.15f) to Success
-        "SENT", "IN_TRANSIT" -> Info.copy(alpha = 0.15f) to Info
-        "PARTIALLY_RECEIVED" -> Warning.copy(alpha = 0.15f) to Warning
-        "CANCELLED" -> Error.copy(alpha = 0.15f) to Error
+        // Nombres EXACTOS del enum del server: "COMPLETED", "IN_TRANSIT" y
+        // "PARTIALLY_RECEIVED" no existen, así que esos estados caían al gris de
+        // borrador y una orden en camino se veía igual que una sin enviar.
+        "RECEIVED" -> Success.copy(alpha = 0.15f) to Success
+        "SENT", "CONFIRMED", "SHIPPED" -> Info.copy(alpha = 0.15f) to Info
+        "PARTIAL", "PENDING_APPROVAL" -> Warning.copy(alpha = 0.15f) to Warning
+        "CANCELLED", "REJECTED" -> Error.copy(alpha = 0.15f) to Error
+        "APPROVED" -> Success.copy(alpha = 0.15f) to Success
         else -> MaterialTheme.colorScheme.surfaceVariant to MaterialTheme.colorScheme.onSurfaceVariant // DRAFT
     }
 }

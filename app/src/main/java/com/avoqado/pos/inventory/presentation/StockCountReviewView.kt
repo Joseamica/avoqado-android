@@ -75,7 +75,7 @@ fun StockCountReviewView(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             TextButton(onClick = { viewModel.backToCounting() }) {
-                Text("Atras")
+                Text("Atrás")
             }
 
             Spacer(modifier = Modifier.weight(1f))

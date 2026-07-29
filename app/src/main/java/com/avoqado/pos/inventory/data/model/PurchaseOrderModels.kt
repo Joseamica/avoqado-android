@@ -18,19 +18,34 @@ data class PurchaseOrder(
     val canBeSent: Boolean
         get() = status == "DRAFT"
 
+    /**
+     * 🔴 Los estados se espejan por nombre EXACTO con `PurchaseOrderStatus` del
+     * server (`prisma/schema.prisma`). Antes había DOS que no existen —
+     * "PARTIALLY_RECEIVED" y "COMPLETED"— y faltaban seis que sí. Un nombre que
+     * no coincide no falla: se cae al `else` y sigue de largo en silencio.
+     *
+     * Eso rompía la recepción de mercancía: el server marca las órdenes a medio
+     * recibir como `PARTIAL`, nunca como "PARTIALLY_RECEIVED", así que
+     * `canReceiveStock` daba false y no había forma de recibir lo que faltaba.
+     */
     val canReceiveStock: Boolean
-        get() = status == "SENT" || status == "PARTIALLY_RECEIVED"
+        get() = status in setOf("SENT", "CONFIRMED", "SHIPPED", "PARTIAL")
 
     val canBeCancelled: Boolean
-        get() = status != "RECEIVED" && status != "CANCELLED"
+        get() = status !in setOf("RECEIVED", "CANCELLED", "REJECTED")
 
     val statusDisplay: String
         get() = when (status) {
             "DRAFT" -> "Borrador"
-            "SENT" -> "Enviado"
-            "PARTIALLY_RECEIVED" -> "Parcialmente recibido"
-            "RECEIVED" -> "Recibido"
-            "CANCELLED" -> "Cancelado"
+            "PENDING_APPROVAL" -> "Por aprobar"
+            "REJECTED" -> "Rechazada"
+            "APPROVED" -> "Aprobada"
+            "SENT" -> "Enviada al proveedor"
+            "CONFIRMED" -> "Confirmada"
+            "SHIPPED" -> "En camino"
+            "PARTIAL" -> "Recibida en parte"
+            "RECEIVED" -> "Recibida"
+            "CANCELLED" -> "Cancelada"
             else -> status
         }
 
