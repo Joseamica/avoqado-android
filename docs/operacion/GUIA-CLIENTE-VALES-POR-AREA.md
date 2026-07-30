@@ -1,7 +1,7 @@
 # Guía operativa de vales por área
 
 **Para:** cremería, panadería, cafetería, caja y responsables de turno  
-**Versión:** 1.0 — 29 de julio de 2026  
+**Versión:** 1.1 — 30 de julio de 2026
 **Objetivo:** cobrar en una sola venta productos preparados en distintas áreas y entregarlos una sola vez.
 
 ## El flujo en una frase
@@ -70,7 +70,9 @@ usa para emitir ni cobrar estos vales.
 4. En el panel de peso:
    - coloca únicamente ese producto en la báscula;
    - espera a que la lectura se estabilice;
-   - captura el peso en **Peso (kg)**, por ejemplo `0.435`;
+   - si aparece **Báscula**, espera el estado estable; Avoqado llenará el peso;
+   - si no está conectada, pulsa **Capturar manualmente** y escribe el peso visible en
+     **Peso (kg)**, por ejemplo `0.435`;
    - revisa el precio por kilogramo y el total mostrado;
    - pulsa **Agregar • $…**; el botón muestra el total calculado.
 5. Repite el proceso si el vale tendrá otros productos del mismo mostrador.
@@ -158,19 +160,31 @@ Después de configurarlo, tocar ese producto desde **Cobrar** abrirá directamen
 **Peso**. El teclado grande que aparece en la pestaña **Teclado** sirve para importes libres; no
 debe usarse para pesar.
 
-### Operación disponible desde el primer día
+### Cremería — Rhino BAR-8RS
 
-El flujo de vales funciona aunque una báscula no esté conectada a Avoqado. Mientras se certifica la
-lectura automática de cada modelo, el operador captura en la app el peso que muestra la báscula.
+1. Entra a **Cobrar** y toca un producto configurado como **Se vende por peso**.
+2. Coloca el producto y espera a que la tarjeta de báscula muestre una lectura estable.
+3. Revisa cero/tara, kilogramos y total.
+4. Pulsa **Agregar**. Si el cable o la lectura fallan, usa **Capturar manualmente**.
 
-- **Cremería — Rhino:** pesar el producto, esperar una lectura estable y capturar los kilogramos
-  en Avoqado.
-- **CEDIS — Justa LP7516:** usar para recepción, salida o conteo de inventario según el proceso
-  configurado. No genera por sí sola un vale de venta de cremería.
+### CEDIS — Justa LP7516
 
-Cuando la lectura automática sea habilitada para una báscula, el operador seguirá revisando tres
-cosas antes de aceptar el peso: cero o tara correcta, lectura estable y unidad en kilogramos. Si la
-lectura automática falla, se continúa con captura manual; caja y los vales no se detienen.
+La primera pantalla habilitada es **Inventario → Conteos**; la báscula no crea vales ni ventas.
+
+1. Entra a **Inventario** y abre **Conteos**.
+2. Inicia un conteo completo o cíclico.
+3. Selecciona un insumo cuya unidad sea kilogramo o gramo.
+4. Coloca el producto en la Justa y espera una lectura estable.
+5. Revisa el valor y pulsa **Usar este peso**. Avoqado llena el campo del conteo, pero no lo guarda
+   sin tu confirmación.
+6. Continúa con **Siguiente artículo** y termina con **Revisar conteo**.
+
+Para artículos en piezas, litros u otras unidades se usa el teclado normal. La recepción de órdenes
+de compra permanece manual en esta etapa.
+
+En ambos lugares el operador siempre revisa cero o tara correcta, lectura estable y unidad. Si la
+lectura automática falla, se captura manualmente el peso visible; caja, vales e inventario no se
+detienen.
 
 ## 5. Qué hacer cuando algo no sale como se esperaba
 

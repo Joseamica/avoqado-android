@@ -157,4 +157,75 @@ class ScaleReadingTest {
         assertFalse(tracker.observe(torrey("0.500", now + 2_000)).stable)
         assertTrue(tracker.observe(torrey("0.500", now + 2_250)).stable)
     }
+
+    @Test
+    fun `Rhino BAR-8RS decodes P response and requires matching readings`() {
+        val first = decodeScaleFrame(
+            ScaleProtocol.RHINO_BAR8RS_ASCII,
+            "rhino-cremeria",
+            " 0.096 kg",
+            now,
+        ).reading!!
+        val second = decodeScaleFrame(
+            ScaleProtocol.RHINO_BAR8RS_ASCII,
+            "rhino-cremeria",
+            "0.096 kg",
+            now + 500,
+        ).reading!!
+        val tracker = ScaleStabilityTracker()
+
+        assertEquals("0.096", first.netKg)
+        assertFalse(tracker.observe(first).stable)
+        assertTrue(tracker.observe(second).stable)
+        assertEquals("P", ScaleProtocol.RHINO_BAR8RS_ASCII.pollCommand?.decodeToString())
+        assertEquals(9_600, ScaleProtocol.RHINO_BAR8RS_ASCII.defaultBaudRate)
+    }
+
+    @Test
+    fun `Rhino rejects negative weight and non kilogram units`() {
+        val negative = decodeScaleFrame(
+            ScaleProtocol.RHINO_BAR8RS_ASCII,
+            "rhino",
+            "-0.096 kg",
+            now,
+        )
+        val pounds = decodeScaleFrame(
+            ScaleProtocol.RHINO_BAR8RS_ASCII,
+            "rhino",
+            "0.500 lb",
+            now,
+        )
+
+        assertEquals(ScaleFrameRejection.NEGATIVE_WEIGHT, negative.rejection)
+        assertEquals(ScaleFrameRejection.UNSUPPORTED_UNIT, pounds.rejection)
+    }
+
+    @Test
+    fun `frame assembler tolerates fragmented response without line ending`() {
+        val assembler = ScaleFrameAssembler()
+
+        assertTrue(assembler.append(ScaleProtocol.RHINO_BAR8RS_ASCII, "0.0").isEmpty())
+        assertEquals(
+            listOf("0.096 kg"),
+            assembler.append(ScaleProtocol.RHINO_BAR8RS_ASCII, "96 kg"),
+        )
+    }
+
+    @Test
+    fun `frame assembler separates coalesced responses and LP line endings`() {
+        val polled = ScaleFrameAssembler()
+        val continuous = ScaleFrameAssembler()
+
+        assertEquals(
+            listOf("0.096 kg", "0.097 kg"),
+            polled.append(ScaleProtocol.RHINO_BAR8RS_ASCII, "0.096 kg0.097 kg"),
+        )
+        assertEquals(
+            listOf("ST,GS,+  36.320kg"),
+            continuous.append(
+                ScaleProtocol.JUSTA_LP7516_ASCII,
+                "ST,GS,+  36.320kg\r\n",
+            ),
+        )
+    }
 }

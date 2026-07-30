@@ -3,6 +3,7 @@ package com.avoqado.pos.inventory.presentation
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import android.util.Log
+import com.avoqado.pos.areatickets.data.ScaleIntegrationSettings
 import com.avoqado.pos.inventory.data.CreatePOItemRequest
 import com.avoqado.pos.inventory.data.CreateTransferItemRequest
 import com.avoqado.pos.inventory.data.InventoryRepository
@@ -15,6 +16,7 @@ import com.avoqado.pos.inventory.data.model.StockCountType
 import com.avoqado.pos.inventory.data.model.StockItem
 import com.avoqado.pos.inventory.data.model.StockSortOption
 import com.avoqado.pos.core.domain.PlanManager
+import com.avoqado.pos.scale.ScaleSettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -48,6 +50,7 @@ enum class InventoryTab(val label: String) {
 class InventoryViewModel @Inject constructor(
     private val repository: InventoryRepository,
     private val planManager: PlanManager,
+    private val scaleSettingsRepository: ScaleSettingsRepository,
 ) : ViewModel() {
 
     // MARK: - Plan gating (Phase ① — UI teaser only)
@@ -139,6 +142,10 @@ class InventoryViewModel @Inject constructor(
     private val _countNote = MutableStateFlow("")
     val countNote: StateFlow<String> = _countNote.asStateFlow()
 
+    private val _scaleIntegrationSettings = MutableStateFlow<ScaleIntegrationSettings?>(null)
+    val scaleIntegrationSettings: StateFlow<ScaleIntegrationSettings?> =
+        _scaleIntegrationSettings.asStateFlow()
+
     private val _selectedDetail = MutableStateFlow<StockCount?>(null)
     val selectedDetail: StateFlow<StockCount?> = _selectedDetail.asStateFlow()
 
@@ -148,6 +155,20 @@ class InventoryViewModel @Inject constructor(
 
     fun showError(message: String) {
         _errorMessage.value = message
+    }
+
+    /**
+     * La báscula es una ayuda opcional. Si el local, perfil, permiso o red no están disponibles,
+     * el conteo manual continúa sin mostrar un error bloqueante.
+     */
+    fun loadScaleIntegrationSettings() {
+        viewModelScope.launch {
+            _scaleIntegrationSettings.value = runCatching {
+                scaleSettingsRepository.settings()
+            }.onFailure { error ->
+                Log.w(TAG, "Scale settings unavailable; keeping manual stock count", error)
+            }.getOrNull()
+        }
     }
 
     init {

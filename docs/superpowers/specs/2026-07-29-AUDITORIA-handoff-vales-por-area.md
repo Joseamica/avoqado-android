@@ -299,8 +299,8 @@ La versión anterior declaraba CEDIS fuera de alcance. Eso ya no es válido.
 
 | Ubicación | Báscula | Alcance |
 |---|---|---|
-| CEDIS | Justa LP7516 | Primera etapa; entrada para recepción/despacho/conteo/ajuste |
-| Cremería | Rhino | Primera etapa; peso de renglón del vale |
+| CEDIS | Justa LP7516 | Primera etapa; lectura automática ya conectada al conteo de inventario |
+| Cremería | Rhino BAR-8RS candidato | Primera etapa; peso de renglón del vale |
 
 Las dos requieren descubrimiento físico de:
 
@@ -310,7 +310,33 @@ Las dos requieren descubrimiento físico de:
 - Indicador de peso estable.
 - Unidad, tara, signo y manejo de sobrecarga.
 
-Ninguna debe bloquear vales. Captura manual es el fallback obligatorio.
+Ninguna debe bloquear vales ni inventario. Captura manual es el fallback obligatorio.
+
+### Estado técnico del 2026-07-30
+
+- Android reconoce perfiles independientes por contexto; CEDIS usa `STOCK_COUNT` y cremería
+  `AREA_TICKET_LINE`.
+- `GET /mobile/venues/:venueId/scale-settings` permite que CEDIS obtenga su perfil con
+  `scale:use`, sin depender de `orders:read` ni de que vales por área esté activo.
+- Justa LP7516 soporta dos configuraciones: `REQUEST`, enviando ASCII `R`, y `CONTINUOUS`, sin
+  polling desde Android.
+- El perfil Justa de instalación usa 9600, 8N1. En la báscula se debe configurar `C18=3` para
+  responder a `R` o `C18=4` para salida continua, y `C19=3` para 9600 baud.
+- Rhino BAR-8RS usa el candidato 9600, 8N1, consulta ASCII `P` y respuesta de peso + `kg`. A falta
+  de bit público de estabilidad, Avoqado exige dos lecturas consecutivas equivalentes.
+- USB serial puede fragmentar o juntar respuestas; el ensamblador conserva fragmentos y reconoce
+  tramas con o sin `CR/LF`.
+- El Dashboard crea presets Justa LP7516, Rhino BAR-8RS y Torrey PCR con sus parámetros conocidos.
+- El simulador visible no existe en la interfaz operativa. Las simulaciones están en pruebas
+  unitarias.
+- La lectura de CEDIS sólo llena el conteo cuando el operador pulsa **Usar este peso**. Productos
+  en piezas o litros conservan el teclado normal.
+- Recepción de órdenes de compra sigue manual porque su contrato vigente acepta enteros. No se
+  conectará una lectura decimal allí hasta migrar ese DTO sin alterar inventario existente.
+
+La aceptación de producción sigue requiriendo conectar físicamente cada modelo, confirmar la
+placa/puerto y capturar una trama real. La implementación simulada no se presenta como
+certificación del hardware.
 
 Investigación posterior del 2026-07-29 añadió dos perfiles candidatos de otro cliente:
 

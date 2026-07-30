@@ -13,6 +13,7 @@ import android.util.Log
 import com.avoqado.pos.areatickets.data.ScaleProfile
 import com.avoqado.pos.pos.data.model.NormalizedScaleReading
 import com.avoqado.pos.pos.data.model.ScaleFrameRejection
+import com.avoqado.pos.pos.data.model.ScaleFrameAssembler
 import com.avoqado.pos.pos.data.model.ScaleProtocol
 import com.avoqado.pos.pos.data.model.ScaleStabilityTracker
 import com.avoqado.pos.pos.data.model.decodeScaleFrame
@@ -42,7 +43,6 @@ import kotlinx.serialization.json.jsonPrimitive
 private const val TAG = "UsbSerialScale"
 private const val ACTION_USB_SCALE_PERMISSION = "com.avoqado.pos.USB_SCALE_PERMISSION"
 private const val SERIAL_WRITE_TIMEOUT_MILLIS = 1_000
-private const val TORREY_POLL_INTERVAL_MILLIS = 250L
 
 sealed interface ScaleConnectionState {
     data object NotConfigured : ScaleConnectionState
@@ -82,22 +82,27 @@ class UsbSerialScaleManager @Inject constructor(
 
     private var currentProfile: ScaleProfile? = null
     private var currentProtocol: ScaleProtocol? = null
+    private var currentContext: ScaleUsageContext? = null
     private var serialPort: UsbSerialPort? = null
     private var inputOutputManager: SerialInputOutputManager? = null
     private var pollingJob: Job? = null
-    private val frameBuffer = StringBuilder()
+    private val frameAssembler = ScaleFrameAssembler()
     private var stabilityTracker = ScaleStabilityTracker()
 
-    suspend fun connect(profile: ScaleProfile) = withContext(Dispatchers.IO) {
+    suspend fun connect(
+        profile: ScaleProfile,
+        usageContext: ScaleUsageContext = ScaleUsageContext.AREA_TICKET_LINE,
+    ) = withContext(Dispatchers.IO) {
         disconnect(updateState = false)
         currentProfile = profile
+        currentContext = usageContext
         _state.value = ScaleConnectionState.Connecting(profile.name)
 
         if (!profile.active ||
             profile.transport != "ANDROID_USB_SERIAL" ||
-            "AREA_TICKET_LINE" !in profile.allowedContexts
+            usageContext.wireValue !in profile.allowedContexts
         ) {
-            fail(profile, "Este perfil no está habilitado para pesar productos del vale.")
+            fail(profile, "Este perfil no está habilitado para ${usageContext.operatorLabel}.")
             return@withContext
         }
 
@@ -151,20 +156,23 @@ class UsbSerialScaleManager @Inject constructor(
         runCatching {
             port.open(connection)
             port.setParameters(
-                profile.baudRate ?: protocol.defaultBaudRate(),
+                profile.baudRate ?: protocol.defaultBaudRate,
                 profile.dataBits ?: 8,
                 profile.stopBits.toUsbStopBits(),
                 profile.parity.toUsbParity(),
             )
             serialPort = port
             stabilityTracker = ScaleStabilityTracker()
-            synchronized(frameBuffer) { frameBuffer.clear() }
+            synchronized(frameAssembler) { frameAssembler.clear() }
             inputOutputManager = SerialInputOutputManager(port, this@UsbSerialScaleManager).also {
                 it.start()
             }
             _state.value = ScaleConnectionState.Ready(profile.name)
             startPolling(protocol)
-            Log.i(TAG, "Connected ${profile.name} with ${protocol.profileType}")
+            Log.i(
+                TAG,
+                "Connected ${profile.name} with ${protocol.profileType} for ${usageContext.wireValue}",
+            )
         }.onFailure { error ->
             runCatching { port.close() }
             fail(profile, "No se pudo configurar la báscula: ${error.message ?: "error serial"}")
@@ -180,24 +188,17 @@ class UsbSerialScaleManager @Inject constructor(
         serialPort = null
         currentProfile = null
         currentProtocol = null
+        currentContext = null
         stabilityTracker.reset()
-        synchronized(frameBuffer) { frameBuffer.clear() }
+        synchronized(frameAssembler) { frameAssembler.clear() }
         if (updateState) _state.value = ScaleConnectionState.NotConfigured
     }
 
     override fun onNewData(data: ByteArray) {
+        val protocol = currentProtocol ?: return
         val text = data.toString(StandardCharsets.US_ASCII)
-        val frames = synchronized(frameBuffer) {
-            frameBuffer.append(text)
-            buildList {
-                var separator = frameBuffer.indexOfAny(charArrayOf('\r', '\n'))
-                while (separator >= 0) {
-                    val frame = frameBuffer.substring(0, separator).trim()
-                    frameBuffer.delete(0, separator + 1)
-                    if (frame.isNotEmpty()) add(frame)
-                    separator = frameBuffer.indexOfAny(charArrayOf('\r', '\n'))
-                }
-            }
+        val frames = synchronized(frameAssembler) {
+            frameAssembler.append(protocol, text)
         }
         frames.forEach(::handleFrame)
     }
@@ -222,7 +223,7 @@ class UsbSerialScaleManager @Inject constructor(
         )
         val rawReading = decoded.reading
         if (rawReading != null) {
-            val reading = if (protocol == ScaleProtocol.TORREY_PCR_ASCII) {
+            val reading = if (protocol.requiresSyntheticStability) {
                 stabilityTracker.observe(rawReading)
             } else {
                 rawReading
@@ -249,15 +250,26 @@ class UsbSerialScaleManager @Inject constructor(
     }
 
     private fun startPolling(protocol: ScaleProtocol) {
+        val parserMode = currentProfile
+            ?.frameParser
+            ?.get("mode")
+            ?.jsonPrimitive
+            ?.contentOrNull
+            ?.uppercase()
+        if (parserMode == "CONTINUOUS") return
         val command = protocol.pollCommand ?: return
         pollingJob = scope.launch {
             while (isActive) {
-                runCatching { serialPort?.write(command, SERIAL_WRITE_TIMEOUT_MILLIS) }
+                runCatching {
+                    val port = serialPort
+                        ?: throw IllegalStateException("El puerto serial ya no está disponible.")
+                    port.write(command, SERIAL_WRITE_TIMEOUT_MILLIS)
+                }
                     .onFailure { error ->
                         onRunError(error as? Exception ?: IllegalStateException(error))
                         return@launch
                     }
-                delay(TORREY_POLL_INTERVAL_MILLIS)
+                delay(protocol.pollIntervalMillis)
             }
         }
     }
@@ -322,11 +334,6 @@ private fun ScaleProfile.matches(device: UsbDevice): Boolean {
         expectedProductId != null -> device.productId == expectedProductId
         else -> true
     }
-}
-
-private fun ScaleProtocol.defaultBaudRate(): Int = when (this) {
-    ScaleProtocol.JUSTA_LP7516_ASCII -> 9_600
-    ScaleProtocol.TORREY_PCR_ASCII -> 115_200
 }
 
 private fun Int?.toUsbStopBits(): Int = when (this) {

@@ -42,6 +42,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -73,6 +74,9 @@ import com.avoqado.pos.inventory.presentation.purchaseorders.PurchaseOrdersView
 import com.avoqado.pos.inventory.presentation.transfers.TransferDetailView
 import com.avoqado.pos.inventory.presentation.transfers.TransfersView
 import com.avoqado.pos.inventory.presentation.traslados.InterVenueTransfersView
+import com.avoqado.pos.scale.ScaleCaptureViewModel
+import com.avoqado.pos.scale.ScaleUsageContext
+import com.avoqado.pos.scale.configuredProfileFor
 
 // MARK: - Entry Point
 
@@ -81,6 +85,7 @@ import com.avoqado.pos.inventory.presentation.traslados.InterVenueTransfersView
 fun InventoryScreen(
     isTablet: Boolean,
     viewModel: InventoryViewModel = hiltViewModel(),
+    scaleViewModel: ScaleCaptureViewModel = hiltViewModel(),
 ) {
     val selectedSection by viewModel.selectedSection.collectAsState()
     val selectedPO by viewModel.selectedPurchaseOrder.collectAsState()
@@ -104,10 +109,35 @@ fun InventoryScreen(
     val showReview by viewModel.showReview.collectAsState()
     val showCountTypeSheet by viewModel.showCountTypeSheet.collectAsState()
     val selectedDetail by viewModel.selectedDetail.collectAsState()
+    val scaleSettings by viewModel.scaleIntegrationSettings.collectAsState()
+    val scaleState by scaleViewModel.state.collectAsState()
+
+    LaunchedEffect(showCounting) {
+        if (showCounting) {
+            viewModel.loadScaleIntegrationSettings()
+        } else {
+            scaleViewModel.stop()
+        }
+    }
+    LaunchedEffect(showCounting, scaleSettings) {
+        if (showCounting) {
+            scaleViewModel.start(scaleSettings, ScaleUsageContext.STOCK_COUNT)
+        }
+    }
+    DisposableEffect(Unit) {
+        onDispose { scaleViewModel.stop() }
+    }
 
     // Show counting view (full screen)
     if (showCounting) {
-        StockCountingView(viewModel = viewModel, isTablet = isTablet)
+        StockCountingView(
+            viewModel = viewModel,
+            isTablet = isTablet,
+            scaleState = scaleState,
+            scaleConfigured =
+                scaleSettings?.configuredProfileFor(ScaleUsageContext.STOCK_COUNT) != null,
+            onRetryScale = scaleViewModel::retry,
+        )
         return
     }
 

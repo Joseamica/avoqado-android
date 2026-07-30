@@ -54,6 +54,11 @@ interface ApiService {
         @Path("venueId") venueId: String,
     ): com.avoqado.pos.areatickets.data.AreaTicketEnvelope<com.avoqado.pos.areatickets.data.AreaTicketSettingsData>
 
+    @GET("mobile/venues/{venueId}/scale-settings")
+    suspend fun getScaleSettings(
+        @Path("venueId") venueId: String,
+    ): com.avoqado.pos.areatickets.data.AreaTicketEnvelope<com.avoqado.pos.areatickets.data.ScaleIntegrationSettings>
+
     @POST("mobile/venues/{venueId}/scans/resolve")
     suspend fun resolveAreaTicketScan(
         @Path("venueId") venueId: String,

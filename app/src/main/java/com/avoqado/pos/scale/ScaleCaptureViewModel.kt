@@ -17,45 +17,51 @@ class ScaleCaptureViewModel @Inject constructor(
     val state: StateFlow<ScaleConnectionState> = scaleManager.state
 
     private var profile: ScaleProfile? = null
+    private var usageContext: ScaleUsageContext? = null
     private var connectionJob: Job? = null
 
-    fun start(settings: ScaleIntegrationSettings?) {
-        val configured = settings?.profile?.takeIf {
-            settings.entitled &&
-                settings.enabled &&
-                it.active &&
-                it.transport == "ANDROID_USB_SERIAL" &&
-                "AREA_TICKET_LINE" in it.allowedContexts
-        }
+    fun start(
+        settings: ScaleIntegrationSettings?,
+        context: ScaleUsageContext = ScaleUsageContext.AREA_TICKET_LINE,
+    ) {
+        val configured = settings?.configuredProfileFor(context)
         if (configured == null) {
             stop()
             return
         }
         if (profile?.id == configured.id &&
+            usageContext == context &&
             state.value !is ScaleConnectionState.Problem &&
             state.value !is ScaleConnectionState.NotConfigured
         ) {
             return
         }
         profile = configured
-        connect(configured)
+        usageContext = context
+        connect(configured, context)
     }
 
     fun retry() {
-        profile?.let(::connect)
+        val configured = profile ?: return
+        val context = usageContext ?: return
+        connect(configured, context)
     }
 
     fun stop() {
         connectionJob?.cancel()
         connectionJob = null
         profile = null
+        usageContext = null
         scaleManager.disconnect()
     }
 
-    private fun connect(profile: ScaleProfile) {
+    private fun connect(
+        profile: ScaleProfile,
+        context: ScaleUsageContext,
+    ) {
         connectionJob?.cancel()
         connectionJob = viewModelScope.launch {
-            scaleManager.connect(profile)
+            scaleManager.connect(profile, context)
         }
     }
 

@@ -930,7 +930,7 @@ La integración de báscula es un módulo independiente de `AREA_TICKETS`.
 | Ubicación | Equipo | Uso |
 |---|---|---|
 | CEDIS | Justa LP7516 | Captura de peso en recepción, despacho/remisión, conteo o ajuste de inventario |
-| Cremería/granel | Rhino, perfil por certificar | Captura de peso para productos del vale |
+| Cremería/granel | Rhino BAR-8RS candidato, placa por confirmar | Captura de peso para productos del vale |
 
 Ambos están en alcance. Cada uno tendrá configuración y certificación independientes.
 
@@ -942,9 +942,9 @@ Equipos observados en otro cliente el 2026-07-29:
 | Torrey PCR con torreta | Familia PCR; falta confirmar en la placa si es PCR-20T o PCR-40T | USB serial, comando ASCII `P`, respuesta de peso terminada en `CR`; exigir lecturas consecutivas iguales porque el manual no expone un indicador de estabilidad |
 
 Estos equipos amplían el catálogo de perfiles compatibles, pero no cambian el orden del piloto:
-primero Justa LP7516 y el modelo Rhino del cliente original. “Rhino” por sí solo no identifica un
-protocolo: la marca tiene equipos USB, RS-232 y Ethernet, así que se necesita foto de la placa y de
-los puertos antes de crear el perfil.
+primero Justa LP7516 y Rhino BAR-8RS como candidato para el equipo del cliente original. La
+carcasa observada y la interfaz de la familia coinciden, pero “Rhino” por sí solo no prueba el
+modelo: se necesita confirmar la placa y una respuesta real antes de activar producción.
 
 ### 11.2 Perfil configurable
 
@@ -981,8 +981,18 @@ Perfiles de protocolo conocidos:
 ```text
 JUSTA_LP7516_ASCII
   transporte: ANDROID_USB_SERIAL o DESKTOP_BRIDGE mediante RS-232
-  baud: configurable 1200/2400/4800/9600; default de instalación 9600
+  cable: RS-232 cruzado/null-modem, pines DB9 2 TXD, 3 RXD, 5 GND
+  baud: configurable 1200/2400/4800/9600; instalación C19=3 para 9600, 8N1
+  modo REQUEST: C18=3, Android envía R
+  modo CONTINUOUS: C18=4, Android no hace polling
   trama: ST|US|OL, GS|NT, signo, peso, kg|lb, CR LF
+
+RHINO_BAR8RS_ASCII
+  transporte: ANDROID_USB_SERIAL; cable Rhino CAUS-1 o equivalente certificado
+  baud: 9600, 8N1, sin control de flujo
+  consulta: enviar P
+  respuesta candidata: peso ASCII + kg, con o sin CR/LF
+  estabilidad: dos lecturas consecutivas equivalentes dentro de 1 segundo
 
 TORREY_PCR_ASCII
   transporte: ANDROID_USB_SERIAL
@@ -995,6 +1005,20 @@ TORREY_PCR_ASCII
 El simulador no forma parte de la interfaz operativa, tampoco en una APK de desarrollo instalada
 en una terminal. Las simulaciones viven en pruebas automatizadas o dobles de transporte que no
 pueden ser accionados por el cajero.
+
+### 11.2.1 Primer flujo CEDIS conectado
+
+La primera integración visible de Justa es **Inventario → Conteos**:
+
+1. La terminal consulta su perfil con el permiso `scale:use`, independiente de vales por área.
+2. La tarjeta de báscula sólo aparece al contar una unidad compatible con peso (`kg` o `g`).
+3. Una lectura inestable se muestra, pero no se puede aplicar.
+4. Una lectura estable requiere confirmación explícita con **Usar este peso**.
+5. El campo y teclado manual permanecen disponibles si no hay perfil, red, permiso, USB o lectura.
+
+Recepción de órdenes de compra no usa todavía la lectura automática porque su DTO vigente expresa
+cantidades como enteros. Conectar kilogramos decimales a ese contrato produciría pérdida de
+precisión; primero se migra el dominio de recepción y después se activa `INVENTORY_RECEIPT`.
 
 ### 11.3 Lectura normalizada
 

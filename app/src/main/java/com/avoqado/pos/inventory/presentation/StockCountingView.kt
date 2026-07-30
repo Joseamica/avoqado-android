@@ -62,6 +62,8 @@ import com.avoqado.pos.inventory.data.model.StockCountItem
 import com.avoqado.pos.inventory.data.model.StockCountType
 import com.avoqado.pos.inventory.data.model.StockItem
 import com.avoqado.pos.inventory.data.model.unitSuffixOf
+import com.avoqado.pos.scale.ScaleConnectionState
+import java.util.Locale
 
 // MARK: - Main Counting View
 
@@ -69,6 +71,9 @@ import com.avoqado.pos.inventory.data.model.unitSuffixOf
 fun StockCountingView(
     viewModel: InventoryViewModel,
     isTablet: Boolean,
+    scaleState: ScaleConnectionState = ScaleConnectionState.NotConfigured,
+    scaleConfigured: Boolean = false,
+    onRetryScale: () -> Unit = {},
 ) {
     val countItems by viewModel.countItems.collectAsState()
     val selectedIndex by viewModel.selectedItemIndex.collectAsState()
@@ -151,6 +156,13 @@ fun StockCountingView(
                     val selectedItem = countItems.getOrNull(selectedIndex)
                     if (selectedItem != null) {
                         SelectedItemInfo(item = selectedItem)
+                        InventoryScaleReading(
+                            item = selectedItem,
+                            state = scaleState,
+                            configured = scaleConfigured,
+                            onUseWeight = viewModel::updateCountedText,
+                            onRetry = onRetryScale,
+                        )
                     }
 
                     Spacer(modifier = Modifier.weight(1f))
@@ -235,6 +247,17 @@ fun StockCountingView(
                             compact = true,
                         )
                     }
+                    InventoryScaleReading(
+                        item = selectedItem,
+                        state = scaleState,
+                        configured = scaleConfigured,
+                        onUseWeight = viewModel::updateCountedText,
+                        onRetry = onRetryScale,
+                        modifier = Modifier.padding(
+                            horizontal = AvoqadoTheme.spacing.lg,
+                            vertical = AvoqadoTheme.spacing.sm,
+                        ),
+                    )
                 }
 
                 // Keypad
@@ -315,6 +338,101 @@ fun StockCountingView(
         )
     }
 }
+
+@Composable
+private fun InventoryScaleReading(
+    item: StockCountItem,
+    state: ScaleConnectionState,
+    configured: Boolean,
+    onUseWeight: (String) -> Unit,
+    onRetry: () -> Unit,
+    modifier: Modifier = Modifier.padding(top = AvoqadoTheme.spacing.md),
+) {
+    val conversion = scaleConversion(item.unit) ?: return
+    if (!configured) return
+
+    Surface(
+        modifier = modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.md),
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
+    ) {
+        Column(
+            modifier = Modifier.padding(AvoqadoTheme.spacing.md),
+            verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.xs),
+        ) {
+            Text(
+                text = "Báscula",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+            )
+            when (state) {
+                is ScaleConnectionState.Connecting ->
+                    Text("Conectando ${state.profileName}…", style = MaterialTheme.typography.bodySmall)
+                is ScaleConnectionState.Ready ->
+                    Text("Coloca el producto y espera una lectura estable.", style = MaterialTheme.typography.bodySmall)
+                is ScaleConnectionState.Unstable -> {
+                    Text(
+                        text = "${formatScaleValue(conversion.fromKg(state.reading.netKg.toDouble()))} ${conversion.label}",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text("Esperando que el peso se estabilice…", style = MaterialTheme.typography.bodySmall)
+                }
+                is ScaleConnectionState.Stable -> {
+                    val converted = conversion.fromKg(state.reading.netKg.toDouble())
+                    Text(
+                        text = "${formatScaleValue(converted)} ${conversion.label}",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    PrimaryButton(
+                        text = "Usar este peso",
+                        onClick = { onUseWeight(formatScaleValue(converted)) },
+                    )
+                }
+                is ScaleConnectionState.Problem -> {
+                    Text(
+                        text = state.message,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                    TextButton(onClick = onRetry) {
+                        Text("Reintentar conexión")
+                    }
+                }
+                ScaleConnectionState.NotConfigured -> {
+                    Text(
+                        text = "Báscula no conectada. Puedes capturar el conteo manualmente.",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                    TextButton(onClick = onRetry) {
+                        Text("Conectar")
+                    }
+                }
+            }
+        }
+    }
+}
+
+private data class ScaleUnitConversion(
+    val label: String,
+    val fromKg: (Double) -> Double,
+)
+
+private fun scaleConversion(unit: String?): ScaleUnitConversion? = when (unit?.uppercase()) {
+    "KILOGRAM", "KILOGRAMS", "KG", "KILO", "KILOS" ->
+        ScaleUnitConversion("kg") { it }
+    "GRAM", "GRAMS", "G", "GRAMO", "GRAMOS" ->
+        ScaleUnitConversion("g") { it * 1_000.0 }
+    else -> null
+}
+
+private fun formatScaleValue(value: Double): String =
+    if (value == value.toLong().toDouble()) {
+        value.toLong().toString()
+    } else {
+        String.format(Locale.US, "%.3f", value).trimEnd('0').trimEnd('.')
+    }
 
 // MARK: - Header
 

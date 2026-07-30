@@ -5,15 +5,34 @@ import kotlin.math.abs
 /**
  * Protocolos que Avoqado conoce de forma explícita.
  *
- * Un nombre de marca no es un protocolo. Por eso Rhino permanece pendiente hasta conocer el
- * modelo y Kretz Report usa etiquetas impresas mientras no exista acceso al protocolo propietario.
+ * Un nombre de marca no es un protocolo. Rhino se habilita únicamente para el BAR-8RS investigado;
+ * Kretz Report sigue usando etiquetas impresas mientras no exista acceso al protocolo propietario.
  */
 enum class ScaleProtocol(
     val profileType: String,
     val pollCommand: ByteArray? = null,
+    val defaultBaudRate: Int,
+    val pollIntervalMillis: Long = 250L,
+    val requiresSyntheticStability: Boolean = false,
 ) {
-    JUSTA_LP7516_ASCII("JUSTA_LP7516_ASCII"),
-    TORREY_PCR_ASCII("TORREY_PCR_ASCII", byteArrayOf('P'.code.toByte())),
+    JUSTA_LP7516_ASCII(
+        profileType = "JUSTA_LP7516_ASCII",
+        pollCommand = byteArrayOf('R'.code.toByte()),
+        defaultBaudRate = 9_600,
+    ),
+    RHINO_BAR8RS_ASCII(
+        profileType = "RHINO_BAR8RS_ASCII",
+        pollCommand = byteArrayOf('P'.code.toByte()),
+        defaultBaudRate = 9_600,
+        pollIntervalMillis = 500L,
+        requiresSyntheticStability = true,
+    ),
+    TORREY_PCR_ASCII(
+        profileType = "TORREY_PCR_ASCII",
+        pollCommand = byteArrayOf('P'.code.toByte()),
+        defaultBaudRate = 115_200,
+        requiresSyntheticStability = true,
+    ),
     ;
 
     companion object {
@@ -46,12 +65,14 @@ fun decodeScaleFrame(
 ): ScaleFrameResult = when (protocol) {
     ScaleProtocol.JUSTA_LP7516_ASCII ->
         decodeLp7516Frame(deviceId, rawFrame, observedAtEpochMillis)
+    ScaleProtocol.RHINO_BAR8RS_ASCII ->
+        decodeSimplePolledWeightFrame(deviceId, rawFrame, observedAtEpochMillis)
     ScaleProtocol.TORREY_PCR_ASCII ->
-        decodeTorreyPcrFrame(deviceId, rawFrame, observedAtEpochMillis)
+        decodeSimplePolledWeightFrame(deviceId, rawFrame, observedAtEpochMillis)
 }
 
 /**
- * LP7516, modo PC continuo o comando R:
+ * LP7516, modo PC continuo o respuesta al comando R:
  * `ST,GS,+  0.435kg\r\n`
  *
  * ST/US/OL significan estable, inestable y sobrecarga. GS/NT indican peso bruto o neto.
@@ -91,11 +112,12 @@ private fun decodeLp7516Frame(
 }
 
 /**
- * Familia Torrey PCR: el host envía `P` y la báscula responde una trama ASCII terminada en CR.
- * El manual no publica un bit de estabilidad, así que cada trama nace inestable y
+ * Rhino BAR-8RS y familia Torrey PCR: el host envía `P` y la báscula responde peso + unidad.
+ * Ninguno de los protocolos documentados publica un bit de estabilidad, así que cada trama nace
+ * inestable y
  * [ScaleStabilityTracker] exige lecturas consecutivas iguales antes de habilitar el peso.
  */
-private fun decodeTorreyPcrFrame(
+private fun decodeSimplePolledWeightFrame(
     deviceId: String,
     rawFrame: String,
     observedAtEpochMillis: Long,
@@ -107,7 +129,7 @@ private fun decodeTorreyPcrFrame(
         return ScaleFrameResult(rejection = ScaleFrameRejection.OVERLOAD)
     }
 
-    val match = TORREY_PCR_PATTERN.find(frame)
+    val match = SIMPLE_WEIGHT_PATTERN.find(frame)
         ?: return ScaleFrameResult(rejection = ScaleFrameRejection.MALFORMED)
     val rawWeight = match.groupValues[1].replace(" ", "").replace(',', '.')
     val unit = match.groupValues[2].lowercase()
@@ -180,7 +202,73 @@ private val LP7516_PATTERN = Regex(
     option = RegexOption.IGNORE_CASE,
 )
 
-private val TORREY_PCR_PATTERN = Regex(
+private val SIMPLE_WEIGHT_PATTERN = Regex(
     pattern = """([+-]?\s*[0-9]+(?:[.,][0-9]+)?)\s*(kg|lb|oz)""",
+    option = RegexOption.IGNORE_CASE,
+)
+
+/**
+ * Arma tramas a partir de paquetes USB arbitrarios.
+ *
+ * USB serial no conserva fronteras de mensaje: una respuesta puede llegar partida en varios
+ * callbacks o varias respuestas pueden llegar juntas. Rhino BAR-8RS tampoco tiene documentación
+ * pública que garantice CR/LF. Por eso se extraen primero tramas completas conocidas y se conserva
+ * cualquier sufijo parcial para el siguiente paquete.
+ */
+class ScaleFrameAssembler(
+    private val maxBufferLength: Int = 512,
+) {
+    private val buffer = StringBuilder()
+
+    init {
+        require(maxBufferLength >= 64)
+    }
+
+    fun append(
+        protocol: ScaleProtocol,
+        incoming: String,
+    ): List<String> {
+        if (incoming.isEmpty()) return emptyList()
+        buffer.append(incoming)
+        val frames = mutableListOf<String>()
+        val completePattern = protocol.completeFramePattern()
+
+        while (buffer.isNotEmpty()) {
+            val separator = buffer.indexOfAny(charArrayOf('\r', '\n'))
+            val match = completePattern.find(buffer)
+            when {
+                match != null && (separator < 0 || match.range.last < separator) -> {
+                    frames += match.value.trim()
+                    buffer.delete(0, match.range.last + 1)
+                }
+                separator >= 0 -> {
+                    val line = buffer.substring(0, separator).trim()
+                    buffer.delete(0, separator + 1)
+                    if (line.isNotEmpty()) frames += line
+                }
+                else -> break
+            }
+        }
+
+        if (buffer.length > maxBufferLength) {
+            buffer.delete(0, buffer.length - maxBufferLength / 2)
+        }
+        return frames
+    }
+
+    fun clear() {
+        buffer.clear()
+    }
+}
+
+private fun ScaleProtocol.completeFramePattern(): Regex = when (this) {
+    ScaleProtocol.JUSTA_LP7516_ASCII -> LP7516_EXTRACT_PATTERN
+    ScaleProtocol.RHINO_BAR8RS_ASCII,
+    ScaleProtocol.TORREY_PCR_ASCII,
+    -> SIMPLE_WEIGHT_PATTERN
+}
+
+private val LP7516_EXTRACT_PATTERN = Regex(
+    pattern = """(?:ST|US|OL)\s*,?\s*(?:GS|NT)\s*,?\s*[+-]\s*[0-9]+(?:[.,][0-9]+)?\s*(?:kg|lb)""",
     option = RegexOption.IGNORE_CASE,
 )
