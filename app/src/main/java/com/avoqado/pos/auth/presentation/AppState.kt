@@ -6,7 +6,10 @@ import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.domain.PlanManager
 import com.avoqado.pos.core.domain.RoleManager
 import com.avoqado.pos.core.util.ConnectivityMonitor
+import com.avoqado.pos.navigation.MainNavigationState
 import com.avoqado.pos.navigation.MainTab
+import com.avoqado.pos.navigation.mainContentKey
+import com.avoqado.pos.navigation.resolveTerminalStartTab
 import com.avoqado.pos.payment.data.PaymentSyncService
 import com.avoqado.pos.settings.domain.PosMode
 import com.avoqado.pos.settings.domain.PosModeManager
@@ -126,17 +129,40 @@ class AppState @Inject constructor(
             initialValue = computeVisibleTabs(_reservationsEnabled.value, posModeManager.currentMode.value),
         )
 
-    // Llave de rebuild total (Square): cambiar de sucursal o de modo recrea el
-    // NavHost completo — todas las pantallas montan de cero y recargan datos
-    // del venue/modo NUEVO en vez de quedarse con los del anterior.
-    val contentKey: StateFlow<String> = combine(
+    // Start destination and rebuild key travel in one StateFlow. Keeping them
+    // separate creates a race where the NavHost can rebuild with the previous
+    // tab while fresh terminal capabilities are arriving.
+    val mainNavigation: StateFlow<MainNavigationState> = combine(
+        visibleTabs,
         _roleVersion,
         posModeManager.currentMode,
-    ) { _, posMode -> "${'$'}{secureStorage.venueId}:${'$'}{posMode.key}" }
+        tpvSettingsRepository.terminalNavigation,
+    ) { tabs, roleVersion, posMode, terminal ->
+        MainNavigationState(
+            startTab = resolveTerminalStartTab(tabs, terminal),
+            contentKey = mainContentKey(
+                secureStorage.venueId,
+                posMode,
+                terminal,
+                roleVersion,
+            ),
+        )
+    }
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.Eagerly,
-            initialValue = "${'$'}{secureStorage.venueId}:${'$'}{posModeManager.currentMode.value.key}",
+            initialValue = MainNavigationState(
+                startTab = resolveTerminalStartTab(
+                    visibleTabs.value,
+                    tpvSettingsRepository.terminalNavigation.value,
+                ),
+                contentKey = mainContentKey(
+                    secureStorage.venueId,
+                    posModeManager.currentMode.value,
+                    tpvSettingsRepository.terminalNavigation.value,
+                    _roleVersion.value,
+                ),
+            ),
         )
 
     private fun computeVisibleTabs(

@@ -41,6 +41,28 @@ data class TpvSettings(
     }
 }
 
+/**
+ * Navigation capabilities for this physical terminal.
+ *
+ * Kept separate from venue-wide TPV settings because a cremería station,
+ * the main checkout and a café terminal can share a venue while opening
+ * different workspaces.
+ */
+data class TerminalNavigationSettings(
+    val terminalId: String? = null,
+    val defaultWorkspace: String = STANDARD_POS,
+    val canIssueAreaTickets: Boolean = false,
+    val canCheckoutAreaTickets: Boolean = false,
+    val canDeliverAreaTickets: Boolean = false,
+    val fulfillmentAreaId: String? = null,
+) {
+    companion object {
+        const val STANDARD_POS = "STANDARD_POS"
+        const val AREA_OPERATIONS = "AREA_OPERATIONS"
+        val DEFAULT = TerminalNavigationSettings()
+    }
+}
+
 @Singleton
 class TpvSettingsRepository @Inject constructor(
     private val secureStorage: SecureStorage,
@@ -51,6 +73,9 @@ class TpvSettingsRepository @Inject constructor(
 
     private val _settings = MutableStateFlow(TpvSettings.DEFAULT)
     val settings: StateFlow<TpvSettings> = _settings.asStateFlow()
+
+    private val _terminalNavigation = MutableStateFlow(TerminalNavigationSettings.DEFAULT)
+    val terminalNavigation: StateFlow<TerminalNavigationSettings> = _terminalNavigation.asStateFlow()
 
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
@@ -64,6 +89,7 @@ class TpvSettingsRepository @Inject constructor(
         } else {
             Log.d("📦", "No venue ID available, using defaults")
             _settings.value = TpvSettings.DEFAULT
+            _terminalNavigation.value = TerminalNavigationSettings.DEFAULT
         }
     }
 
@@ -73,7 +99,11 @@ class TpvSettingsRepository @Inject constructor(
         val localIncludeTaxOverride = loadIncludeTaxInTipBaseOverride(venueId)
 
         try {
-            val token = secureStorage.accessToken ?: return
+            val token = secureStorage.accessToken
+            if (token == null) {
+                _terminalNavigation.value = TerminalNavigationSettings.DEFAULT
+                return
+            }
             val request = Request.Builder()
                 .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/settings")
                 .header("Authorization", "Bearer $token")
@@ -84,11 +114,13 @@ class TpvSettingsRepository @Inject constructor(
             }
             if (!response.isSuccessful) {
                 Log.e("📦", "❌ Failed to fetch settings: ${response.code}")
+                _terminalNavigation.value = TerminalNavigationSettings.DEFAULT
                 return
             }
 
             val body = response.body?.string() ?: return
             val result = json.decodeFromString<VenueSettingsResponse>(body)
+            _terminalNavigation.value = result.data.toTerminalNavigationSettings()
 
             // Plan gating (Phase ①): persist the OPTIONAL plan block. Absent
             // field (old server) → null tier → PlanManager fails OPEN. Only
@@ -117,6 +149,7 @@ class TpvSettingsRepository @Inject constructor(
                 base = TpvSettings.DEFAULT,
                 localOverride = localIncludeTaxOverride,
             )
+            _terminalNavigation.value = TerminalNavigationSettings.DEFAULT
         } finally {
             _isLoading.value = false
         }
@@ -130,6 +163,7 @@ class TpvSettingsRepository @Inject constructor(
 
     fun clearCache() {
         _settings.value = TpvSettings.DEFAULT
+        _terminalNavigation.value = TerminalNavigationSettings.DEFAULT
     }
 
     private suspend fun loadIncludeTaxInTipBaseOverride(venueId: String): Boolean? {
@@ -151,24 +185,47 @@ class TpvSettingsRepository @Inject constructor(
 }
 
 @Serializable
-private data class VenueSettingsResponse(
+internal data class VenueSettingsResponse(
     val success: Boolean = true,
     val data: VenueSettingsData? = null,
 )
 
 @Serializable
-private data class VenueSettingsData(
+internal data class VenueSettingsData(
     val settings: TpvSettings? = null,
     val activeTerminalId: String? = null,
+    val deviceTerminal: DeviceTerminalSettingsDto? = null,
     val plan: VenuePlanDto? = null,
 )
+
+@Serializable
+internal data class DeviceTerminalSettingsDto(
+    val id: String,
+    val defaultWorkspace: String = TerminalNavigationSettings.STANDARD_POS,
+    val canIssueAreaTickets: Boolean = false,
+    val canCheckoutAreaTickets: Boolean = false,
+    val canDeliverAreaTickets: Boolean = false,
+    val fulfillmentAreaId: String? = null,
+)
+
+internal fun VenueSettingsData?.toTerminalNavigationSettings(): TerminalNavigationSettings {
+    val terminal = this?.deviceTerminal ?: return TerminalNavigationSettings.DEFAULT
+    return TerminalNavigationSettings(
+        terminalId = terminal.id,
+        defaultWorkspace = terminal.defaultWorkspace,
+        canIssueAreaTickets = terminal.canIssueAreaTickets,
+        canCheckoutAreaTickets = terminal.canCheckoutAreaTickets,
+        canDeliverAreaTickets = terminal.canDeliverAreaTickets,
+        fulfillmentAreaId = terminal.fulfillmentAreaId,
+    )
+}
 
 /**
  * Optional plan block in the venue-settings response. Every field defaults so
  * old servers (field absent) and partial payloads parse fine → fail-open.
  */
 @Serializable
-private data class VenuePlanDto(
+internal data class VenuePlanDto(
     val tier: String? = null,
     val grandfathered: Boolean = false,
     val exempt: Boolean = false,

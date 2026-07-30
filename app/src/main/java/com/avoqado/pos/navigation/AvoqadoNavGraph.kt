@@ -107,7 +107,7 @@ fun AvoqadoNavGraph(
     val offlinePendingCount by appState.offlinePendingCount.collectAsState()
     val syncRejectedCount by appState.syncRejectedCount.collectAsState()
     val visibleTabs by appState.visibleTabs.collectAsState()
-    val contentKey by appState.contentKey.collectAsState()
+    val mainNavigation by appState.mainNavigation.collectAsState()
     val isSwitchingContext by appState.venueSwitchState.isSwitching.collectAsState()
     val switchMessage by appState.venueSwitchState.message.collectAsState()
     val isTablet = windowSizeClass.widthSizeClass >= WindowWidthSizeClass.Medium
@@ -118,12 +118,13 @@ fun AvoqadoNavGraph(
             // llave incluye venueId + modo, así que el NavHost y cada pantalla
             // montan de cero y recargan datos del contexto NUEVO. Antes las
             // pantallas ya montadas seguían con los datos del venue anterior.
-            key(contentKey) {
+            key(mainNavigation.contentKey) {
                 MainScaffold(
                     isTablet = isTablet,
                     onLogout = { appState.onLogout() },
                     timeEntryRepository = appState.timeEntryRepository,
                     visibleTabs = visibleTabs,
+                    initialTab = mainNavigation.startTab,
                     roleManager = appState.roleManager,
                     pendingPaymentCount = pendingPaymentCount,
                     showOfflineBanner = showOfflineBanner,
@@ -178,6 +179,7 @@ private fun MainScaffold(
     onLogout: () -> Unit,
     timeEntryRepository: TimeEntryRepository,
     visibleTabs: List<MainTab>,
+    initialTab: MainTab,
     roleManager: RoleManager,
     pendingPaymentCount: Int = 0,
     showOfflineBanner: Boolean = false,
@@ -199,7 +201,9 @@ private fun MainScaffold(
     // El cobro se abre en un Dialog que NO cubre la pantalla completa: sin esto
     // el tab bar asomaba por debajo y era tocable a media transacción.
     val isPaying by com.avoqado.pos.payment.domain.PaymentOverlayState.isPaying.collectAsState()
-    val startTab = visibleTabs.firstOrNull() ?: MainTab.NOTIFICATIONS
+    val startTab = initialTab.takeIf { it in visibleTabs }
+        ?: visibleTabs.firstOrNull()
+        ?: MainTab.NOTIFICATIONS
 
     // Cuarentena de sincronización: hoja de resolución de rechazos.
     var showQuarantineSheet by remember { mutableStateOf(false) }
