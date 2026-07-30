@@ -52,6 +52,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.avoqado.pos.customers.data.model.Customer
+import com.avoqado.pos.areatickets.presentation.AreaTicketOperationsViewModel
 import com.avoqado.pos.customers.presentation.CreateCustomerView
 import com.avoqado.pos.customers.presentation.CustomersView
 import com.avoqado.pos.customers.presentation.CustomersViewModel
@@ -67,7 +68,9 @@ import com.avoqado.pos.pos.data.model.CartItem
 import com.avoqado.pos.pos.data.model.CartItemType
 import com.avoqado.pos.pos.data.model.Product
 import com.avoqado.pos.pos.presentation.cart.CartPanelView
+import com.avoqado.pos.pos.presentation.cart.CartState
 import com.avoqado.pos.pos.presentation.cart.CartViewModel
+import com.avoqado.pos.pos.presentation.cart.ScannedBarcodeResult
 import com.avoqado.pos.pos.presentation.cart.StaffSelectorSheet
 import com.avoqado.pos.pos.presentation.product.CreateProductView
 import com.avoqado.pos.pos.presentation.product.ProductDetailPanel
@@ -76,6 +79,7 @@ import com.avoqado.pos.pos.presentation.product.WeightCapturePanel
 import com.avoqado.pos.pos.presentation.scanner.BarcodeScannerView
 import com.avoqado.pos.core.domain.RoleManager
 import com.avoqado.pos.pos.presentation.search.SearchOverlayView
+import com.avoqado.pos.scale.ScaleCaptureViewModel
 import kotlinx.coroutines.launch
 
 enum class InputTab(val label: String) {
@@ -104,10 +108,17 @@ fun CheckoutScreen(
     val staffError by cartViewModel.staffError.collectAsState()
     val referralCodeState by cartViewModel.referralCode.collectAsState()
     val referralUiState by cartViewModel.referralValidation.collectAsState()
+    val areaTicketOperations: AreaTicketOperationsViewModel = hiltViewModel()
+    val areaOperationsState by areaTicketOperations.state.collectAsState()
+    val scaleCaptureViewModel: ScaleCaptureViewModel = hiltViewModel()
+    val scaleState by scaleCaptureViewModel.state.collectAsState()
 
     // Walk-in class flow: if a class was just reserved on the class screen,
     // drop it into the cart on arrival (Square-style: service enters the sale).
-    LaunchedEffect(Unit) { cartViewModel.consumePendingClassSeed() }
+    LaunchedEffect(Unit) {
+        cartViewModel.consumePendingClassSeed()
+        cartViewModel.restoreAreaTicketSession()
+    }
 
     // TABLE_SERVICE (PRO) — table ORDERING lives on the dedicated
     // TableOrderScreen now; the register only keeps the PAYING seam: the
@@ -141,6 +152,7 @@ fun CheckoutScreen(
     var showSearch by remember { mutableStateOf(false) }
     var amountCents by remember { mutableIntStateOf(0) }
     var showPaymentFlow by remember { mutableStateOf(false) }
+    var paymentCartSnapshot by remember { mutableStateOf<CartState?>(null) }
     var showNoteDialog by remember { mutableStateOf(false) }
     var currentNote by remember { mutableStateOf("") }
     var showIPhoneCart by remember { mutableStateOf(false) }
@@ -160,6 +172,8 @@ fun CheckoutScreen(
     var createProductInitialName by remember { mutableStateOf("") }
     var createProductInitialGtin by remember { mutableStateOf("") }
     var unknownBarcode by remember { mutableStateOf<String?>(null) }
+    var barcodeError by remember { mutableStateOf<String?>(null) }
+    var areaTicketAddedCount by remember { mutableStateOf<Int?>(null) }
     var showSplitPayment by remember { mutableStateOf(false) }
     // "Dividir la cuenta" from the table panel: auto-open the split sheet once
     // on arrival (flag consumed so re-compositions don't re-open it).
@@ -216,6 +230,28 @@ fun CheckoutScreen(
                 },
             )
         }
+    }
+
+    fun runPrimaryAction(closePhoneCart: Boolean = false) {
+        if (areaOperationsState.issueWorkspace) {
+            areaTicketOperations.issue(cartState) {
+                cartViewModel.clearCart()
+                if (closePhoneCart) showIPhoneCart = false
+            }
+            return
+        }
+        if (cartViewModel.hasCreditPack && selectedCustomer == null) {
+            showPackCustomerRequired = true
+            return
+        }
+        pendingPackGrant = selectedCustomer?.id?.let { customerId ->
+            val ids = cartState.items.mapNotNull { (it.type as? CartItemType.CreditPack)?.packId }
+            if (ids.isEmpty()) null else customerId to ids
+        }
+        if (closePhoneCart) showIPhoneCart = false
+        pendingSplitConfig = SplitConfig()
+        paymentCartSnapshot = cartState.paymentSnapshot()
+        showPaymentFlow = true
     }
 
     if (isTablet) {
@@ -308,7 +344,11 @@ fun CheckoutScreen(
                                             { weightProduct = it },
                                         )
                                     },
-                                    onPackTap = { cartViewModel.addCreditPack(it) },
+                                    onPackTap = if (roleManager?.canReadCreditPacks == true) {
+                                        { cartViewModel.addCreditPack(it) }
+                                    } else {
+                                        null
+                                    },
                                 )
                             }
                             InputTab.MOSAIC -> {
@@ -340,20 +380,7 @@ fun CheckoutScreen(
                     onItemTap = { item -> selectedCartItem = item },
                     onOrderTypeChange = { cartViewModel.setOrderType(it) },
                     onCharge = {
-                        if (cartViewModel.hasCreditPack && selectedCustomer == null) {
-                            showPackCustomerRequired = true
-                        } else {
-                            pendingPackGrant = selectedCustomer?.id?.let { cid ->
-                                val ids = cartState.items.mapNotNull { (it.type as? CartItemType.CreditPack)?.packId }
-                                if (ids.isEmpty()) null else cid to ids
-                            }
-                            // Referral capture moved to payment SUCCESS (onComplete):
-                            // capturing on charge-INTENT persisted a PENDING referral
-                            // + applied the discount even when the payment was then
-                            // cancelled.
-                            pendingSplitConfig = SplitConfig()
-                            showPaymentFlow = true
-                        }
+                        runPrimaryAction()
                     },
                     onClearCart = { showClearCartConfirm = true },
                     onSaveCart = {
@@ -390,6 +417,11 @@ fun CheckoutScreen(
                         // so future work just flips the `enabled` flag.
                     },
                     referralPlanAllowed = cartViewModel.referralPlanAllowed,
+                    primaryActionLabel = if (areaOperationsState.issueWorkspace) {
+                        "Emitir vale ${cartState.totalDisplay}"
+                    } else {
+                        null
+                    },
                 )
             }
         }
@@ -527,13 +559,21 @@ fun CheckoutScreen(
 
     // Venta por peso: panel de captura de peso (báscula/manual) para productos soldByWeight.
     weightProduct?.let { product ->
+        LaunchedEffect(product.id, areaOperationsState.settings?.scaleIntegration) {
+            scaleCaptureViewModel.start(areaOperationsState.settings?.scaleIntegration)
+        }
         WeightCapturePanel(
             product = product,
             isTablet = isTablet,
+            scaleState = scaleState,
+            onRetryScale = scaleCaptureViewModel::retry,
             onAdd = { weightKg ->
                 cartViewModel.addProductByWeight(product, weightKg)
             },
-            onDismiss = { weightProduct = null },
+            onDismiss = {
+                scaleCaptureViewModel.stop()
+                weightProduct = null
+            },
         )
     }
 
@@ -574,18 +614,7 @@ fun CheckoutScreen(
             onItemTap = { item -> selectedCartItem = item },
             onOrderTypeChange = { cartViewModel.setOrderType(it) },
             onCharge = {
-                if (cartViewModel.hasCreditPack && selectedCustomer == null) {
-                    showPackCustomerRequired = true
-                } else {
-                    pendingPackGrant = selectedCustomer?.id?.let { cid ->
-                        val ids = cartState.items.mapNotNull { (it.type as? CartItemType.CreditPack)?.packId }
-                        if (ids.isEmpty()) null else cid to ids
-                    }
-                    // (referral capture moved to payment success — see onComplete)
-                    showIPhoneCart = false
-                    pendingSplitConfig = SplitConfig()
-                    showPaymentFlow = true
-                }
+                runPrimaryAction(closePhoneCart = true)
             },
             onClearCart = { showClearCartConfirm = true },
             onSaveCart = {
@@ -616,6 +645,11 @@ fun CheckoutScreen(
             onForceOverrideReferral = { /* v1 placeholder */ },
             referralPlanAllowed = cartViewModel.referralPlanAllowed,
             onDismiss = { showIPhoneCart = false },
+            primaryActionLabel = if (areaOperationsState.issueWorkspace) {
+                "Emitir vale ${cartState.totalDisplay}"
+            } else {
+                null
+            },
         )
     }
 
@@ -642,14 +676,22 @@ fun CheckoutScreen(
             BarcodeScannerView(
                 onBarcodeScanned = { barcode ->
                     showBarcodeScanner = false
-                    val products = cartViewModel.products.value
-                    val matched = products.find { product ->
-                        product.sku == barcode || product.barcode == barcode || product.gtin == barcode
-                    }
-                    if (matched != null) {
-                        handleProductTap(matched, cartViewModel, { selectedProduct = it }, { weightProduct = it })
-                    } else {
-                        unknownBarcode = barcode
+                    checkoutScope.launch {
+                        when (val result = cartViewModel.resolveScannedBarcode(barcode)) {
+                            is ScannedBarcodeResult.ProductFound ->
+                                handleProductTap(
+                                    result.product,
+                                    cartViewModel,
+                                    { selectedProduct = it },
+                                    { weightProduct = it },
+                                )
+                            is ScannedBarcodeResult.AreaTicketsAdded ->
+                                areaTicketAddedCount = result.ticketCount
+                            is ScannedBarcodeResult.Unknown ->
+                                unknownBarcode = result.code
+                            is ScannedBarcodeResult.Error ->
+                                barcodeError = result.message
+                        }
                     }
                 },
                 onDismiss = { showBarcodeScanner = false },
@@ -712,8 +754,70 @@ fun CheckoutScreen(
         ) {}
     }
 
+    barcodeError?.let { message ->
+        AvoqadoDialog(
+            title = "No se pudo agregar el vale",
+            description = message,
+            onDismiss = { barcodeError = null },
+            actionButton = {
+                PrimaryButton(
+                    text = "Entendido",
+                    onClick = { barcodeError = null },
+                    fullWidth = true,
+                )
+            },
+        ) {}
+    }
+
+    areaTicketAddedCount?.let { count ->
+        AvoqadoSuccessToast(
+            message = "¡Vale agregado!",
+            subtitle = "$count ${if (count == 1) "vale" else "vales"} en esta venta",
+            onDismiss = { areaTicketAddedCount = null },
+        )
+    }
+
+    areaOperationsState.message?.let { message ->
+        AvoqadoSuccessToast(
+            message = message,
+            onDismiss = areaTicketOperations::dismissFeedback,
+        )
+    }
+
+    areaOperationsState.checkoutBlockingError?.let { message ->
+        AvoqadoDialog(
+            title = "Vale por área",
+            description = message,
+            onDismiss = areaTicketOperations::dismissFeedback,
+            actionButton = {
+                PrimaryButton(
+                    text = "Entendido",
+                    onClick = areaTicketOperations::dismissFeedback,
+                    fullWidth = true,
+                )
+            },
+        ) {}
+    }
+
+    if (areaOperationsState.error == null && areaOperationsState.pendingReprintCode != null) {
+        AvoqadoDialog(
+            title = "Vale pendiente de impresión",
+            description = "El vale ${areaOperationsState.pendingReprintCode} ya existe. Reimprímelo; no se emitirá otro.",
+            onDismiss = {},
+            actionButton = {
+                PrimaryButton(
+                    text = if (areaOperationsState.submitting) "Reimprimiendo…" else "Reimprimir",
+                    onClick = areaTicketOperations::reprintPending,
+                    enabled = !areaOperationsState.submitting,
+                    fullWidth = true,
+                )
+            },
+        ) {}
+    }
+
     // Payment flow overlay (full screen, matching iOS fullScreenCover)
     if (showPaymentFlow) {
+        val paymentCart = paymentCartSnapshot ?: cartState.paymentSnapshot()
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -729,7 +833,7 @@ fun CheckoutScreen(
                     ),
             )
             PaymentFlowScreen(
-                cartState = cartState,
+                cartState = paymentCart,
                 onComplete = { completion ->
                     when {
                         completion.splitType == "BYPRODUCT" && completion.paidItemIds.isNotEmpty() -> {
@@ -767,6 +871,7 @@ fun CheckoutScreen(
                     // (a cancelled payment no longer leaves a dangling referral).
                     checkoutScope.launch { cartViewModel.captureReferralOnPayment(orderId = null) }
                     showPaymentFlow = false
+                    paymentCartSnapshot = null
                     pendingSplitConfig = SplitConfig()
                     // El "Gracias" del cliente vuelve al logo del negocio (o al
                     // carrito si quedó saldo) en cuanto se cierra el pago.
@@ -774,6 +879,7 @@ fun CheckoutScreen(
                 },
                 onCancel = {
                     showPaymentFlow = false
+                    paymentCartSnapshot = null
                     pendingSplitConfig = SplitConfig()
                     cartViewModel.refreshCustomerDisplay()
                 },
@@ -787,10 +893,12 @@ fun CheckoutScreen(
         SplitPaymentSheet(
             totalCents = cartState.totalCents,
             items = cartState.items,
+            allowByProduct = cartState.items.none { it.locked },
             onDismiss = { showSplitPayment = false },
             onConfirm = { splitConfig ->
                 showSplitPayment = false
                 pendingSplitConfig = splitConfig
+                paymentCartSnapshot = cartState.paymentSnapshot()
                 showPaymentFlow = true
             },
         )
@@ -975,6 +1083,12 @@ fun CheckoutScreen(
     }
 }
 
+private fun CartState.paymentSnapshot(): CartState = copy(
+    items = items.map { item ->
+        item.copy(selectedModifiers = item.selectedModifiers.toList())
+    },
+)
+
 private fun handleProductTap(
     product: Product,
     cartViewModel: CartViewModel,
@@ -1018,6 +1132,7 @@ private fun IPhoneCartSheet(
     onForceOverrideReferral: () -> Unit = {},
     referralPlanAllowed: Boolean = true,
     onDismiss: () -> Unit,
+    primaryActionLabel: String? = null,
 ) {
     Box(
         modifier = Modifier
@@ -1085,6 +1200,7 @@ private fun IPhoneCartSheet(
                 onClearReferral = onClearReferral,
                 onForceOverrideReferral = onForceOverrideReferral,
                 referralPlanAllowed = referralPlanAllowed,
+                primaryActionLabel = primaryActionLabel,
             )
         }
     }

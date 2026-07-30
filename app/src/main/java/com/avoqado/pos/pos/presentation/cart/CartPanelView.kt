@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.Campaign
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.LocalOffer
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.MoreHoriz
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.ShoppingCart
@@ -101,6 +102,7 @@ fun CartPanelView(
     onForceOverrideReferral: () -> Unit = {},
     // Plan gate (REFERRAL_PROGRAM, Pro). Default true = fail-open.
     referralPlanAllowed: Boolean = true,
+    primaryActionLabel: String? = null,
 ) {
     val useDenseTabletLayout = AvoqadoTheme.adaptive.sizeClass != AvoqadoAdaptiveSizeClass.Compact
     val sectionOuterPadding = if (useDenseTabletLayout) AvoqadoTheme.spacing.md else AvoqadoTheme.spacing.lg
@@ -286,7 +288,7 @@ fun CartPanelView(
                             key(item.id) {
                                 CartItemRow(
                                     item = item,
-                                    onClick = { onItemTap(item) },
+                                    onClick = { if (!item.locked) onItemTap(item) },
                                     onDelete = { onRemoveItem(item.id) },
                                     useDenseTabletLayout = useDenseTabletLayout,
                                 )
@@ -365,6 +367,7 @@ fun CartPanelView(
                     // "Guardar carrito" button (outlined)
                     OutlinedButton(
                         onClick = onSaveCart,
+                        enabled = cartState.items.none { it.locked },
                         modifier = Modifier
                             .weight(1f)
                             .height(AvoqadoTheme.dimensions.buttonLarge),
@@ -382,7 +385,7 @@ fun CartPanelView(
 
                     // "Cobrar" button (filled)
                     PrimaryButton(
-                        text = "Cobrar ${cartState.totalDisplay}",
+                        text = primaryActionLabel ?: "Cobrar ${cartState.totalDisplay}",
                         onClick = onCharge,
                         modifier = Modifier.weight(1f),
                     )
@@ -749,6 +752,14 @@ private fun CartItemRow(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
+                if (item.locked) {
+                    Icon(
+                        imageVector = Icons.Filled.Lock,
+                        contentDescription = "Precio fijado por el vale",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(14.dp),
+                    )
+                }
             }
 
             // Modifiers summary

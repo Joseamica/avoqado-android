@@ -167,6 +167,11 @@ dependencies {
     // En equipos no-Sunmi el bind falla y todo queda igual que antes.
     implementation("com.sunmi:printerlibrary:1.0.24")
 
+    // Básculas USB/serial (RS-232 mediante adaptador USB y puertos virtuales USB).
+    // El parser del protocolo sigue siendo propio y se activa sólo con un ScaleProfile
+    // certificado por terminal.
+    implementation("com.github.mik3y:usb-serial-for-android:3.10.0")
+
     // Room
     implementation(libs.room.runtime)
     implementation(libs.room.ktx)

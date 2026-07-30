@@ -1,6 +1,10 @@
 package com.avoqado.pos.payment
 
 import com.avoqado.pos.MainDispatcherRule
+import com.avoqado.pos.areatickets.data.AreaTicketCheckout
+import com.avoqado.pos.areatickets.data.AreaTicketCheckoutOrder
+import com.avoqado.pos.areatickets.data.AreaTicketCheckoutTotals
+import com.avoqado.pos.areatickets.data.AreaTicketRepository
 import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.domain.printing.ComandaDispatcher
@@ -28,6 +32,7 @@ import com.avoqado.pos.printing.data.ComandaPrinter
 import com.avoqado.pos.printing.data.PrinterService
 import com.avoqado.pos.printing.data.model.KitchenItem
 import com.avoqado.pos.printing.data.model.KitchenTicketData
+import com.avoqado.pos.printing.data.model.ReceiptData
 import com.avoqado.pos.printing.routing.PrintConfig
 import com.avoqado.pos.payment.domain.ManualPaymentMethod
 import com.avoqado.pos.printing.routing.PrintConfigRepository
@@ -68,6 +73,7 @@ class PaymentFlowViewModelTest {
     private val secureStorage = mockk<SecureStorage>(relaxed = true)
     private val printConfigRepository = mockk<PrintConfigRepository>(relaxed = true)
     private val comandaPrinter = mockk<ComandaPrinter>(relaxed = true)
+    private val areaTicketRepository = mockk<AreaTicketRepository>(relaxed = true)
 
     private lateinit var viewModel: PaymentFlowViewModel
 
@@ -113,6 +119,7 @@ class PaymentFlowViewModelTest {
         every { secureStorage.venueName } returns "Avoqado Test"
         every { secureStorage.userId } returns "user-456"
         every { secureStorage.venueId } returns "venue-1"
+        every { areaTicketRepository.session.current() } returns null
 
         // PRINT_STATIONS — default to "no stations configured" so existing tests keep
         // exercising the legacy single-ticket path unless a test overrides this.
@@ -140,6 +147,7 @@ class PaymentFlowViewModelTest {
             tableSession = com.avoqado.pos.tables.data.TableSession(),
             syncOutbox = mockk(relaxed = true),
             customerDisplay = com.avoqado.pos.customerdisplay.CustomerDisplayState(),
+            areaTicketRepository = areaTicketRepository,
         )
     }
 
@@ -264,6 +272,71 @@ class PaymentFlowViewModelTest {
         verify(exactly = 1) { cashPaymentRepository.processCashPayment(500, 500) }
         coVerify(exactly = 1) { orderRepository.recordFastCashPayment(500, "user-456", 0, "FULLPAYMENT", any()) }
         assertTrue(viewModel.state.value is PaymentFlowState.Success)
+    }
+
+    @Test
+    fun `area checkout propagates delivery code to paid receipt`() = runTest {
+        val openCheckout = AreaTicketCheckout(
+            id = "checkout-area-1",
+            status = "OPEN",
+            version = 1,
+            expiresAt = "2026-07-30T00:00:00.000Z",
+            createdAt = "2026-07-29T00:00:00.000Z",
+            totals = AreaTicketCheckoutTotals(
+                subtotal = "1.00",
+                discountAmount = "0.00",
+                total = "1.00",
+            ),
+        )
+        val deliveryCode = "8427993264"
+        val materializedCheckout = openCheckout.copy(
+            status = "MATERIALIZED",
+            order = AreaTicketCheckoutOrder(
+                id = "order-area-1",
+                orderNumber = "AREA-101",
+                paymentStatus = "PENDING",
+                status = "OPEN",
+                total = "1.00",
+                remainingBalance = "1.00",
+                areaDeliveryCode = deliveryCode,
+            ),
+        )
+        every { areaTicketRepository.session.current() } returns openCheckout
+        coEvery {
+            areaTicketRepository.materialize(any(), any(), any())
+        } returns materializedCheckout
+        coEvery {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any())
+        } returns Result.success(
+            OrderRepository.CashPayResult(
+                paymentId = "payment-area-1",
+                receiptAccessKey = null,
+            ),
+        )
+        val printedReceipt = slot<ReceiptData>()
+        coEvery { printerService.autoPrintReceipt(capture(printedReceipt)) } returns Unit
+
+        val cart = CartState(
+            items = listOf(
+                CartItem(
+                    id = "area-line-1",
+                    type = CartItemType.ProductItem("product-1"),
+                    name = "Jamón",
+                    unitPrice = 100,
+                    areaTicketId = "ticket-1",
+                    areaTicketLineId = "ticket-line-1",
+                    locked = true,
+                ),
+            ),
+        )
+
+        viewModel.startPaymentFlow(cart)
+        viewModel.confirmCashCustom(100)
+        advanceUntilIdle()
+
+        assertEquals(deliveryCode, printedReceipt.captured.areaDeliveryCode)
+        coVerify(exactly = 0) { kdsRepository.createOrder(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { printerService.autoPrintKitchenTicket(any()) }
     }
 
     @Test

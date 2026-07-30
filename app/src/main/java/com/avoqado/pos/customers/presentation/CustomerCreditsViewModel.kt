@@ -56,6 +56,10 @@ class CustomerCreditsViewModel @Inject constructor(
     }
 
     fun loadPacks() {
+        // Product grids are shared by several roles. Memberships are optional:
+        // do not issue a request that the effective venue permissions already
+        // tell us will be rejected (and would surface as a global 403 toast).
+        if (!roleManager.canReadCreditPacks) return
         viewModelScope.launch { articlesRepository.fetchCreditPacks() }
     }
 

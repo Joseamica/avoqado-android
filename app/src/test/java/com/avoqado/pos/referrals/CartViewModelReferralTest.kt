@@ -126,6 +126,7 @@ class CartViewModelReferralTest {
         planManager = PlanManager(secureStorage),
         tableSession = com.avoqado.pos.tables.data.TableSession(),
         customerDisplay = com.avoqado.pos.customerdisplay.CustomerDisplayState(),
+        areaTicketRepository = mockk(relaxed = true),
     )
 
     private suspend fun selectCustomer(viewModel: CartViewModel, id: String = "cust-7") {

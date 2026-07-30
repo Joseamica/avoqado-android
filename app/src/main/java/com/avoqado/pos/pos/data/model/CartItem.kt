@@ -23,6 +23,10 @@ data class CartItem(
     val imageUrl: String? = null,
     val colorHex: String? = null,
     val categoryId: String? = null,
+    /** Snapshot line from an area ticket. These rows are server-priced and immutable in caja. */
+    val areaTicketId: String? = null,
+    val areaTicketLineId: String? = null,
+    val locked: Boolean = false,
 
     // Customizations
     var selectedModifiers: List<SelectedModifier> = emptyList(),

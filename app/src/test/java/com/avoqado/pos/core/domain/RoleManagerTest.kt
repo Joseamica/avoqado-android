@@ -125,6 +125,37 @@ class RoleManagerTest {
         assertTrue(roleManager.canViewCustomers)
     }
 
+    // MARK: - Effective venue permissions
+
+    @Test
+    fun `credit packs stay hidden when effective permission is absent`() {
+        every { secureStorage.venuePermissions } returns listOf(
+            "menu:read",
+            "area-tickets:issue",
+        )
+
+        assertFalse(roleManager.canReadCreditPacks)
+    }
+
+    @Test
+    fun `credit packs are available when exact effective permission is present`() {
+        every { secureStorage.venuePermissions } returns listOf(
+            "menu:read",
+            "creditPacks:read",
+        )
+
+        assertTrue(roleManager.canReadCreditPacks)
+    }
+
+    @Test
+    fun `venue permission matcher accepts resource and global wildcards`() {
+        every { secureStorage.venuePermissions } returns listOf("creditPacks:*")
+        assertTrue(roleManager.hasVenuePermission("creditPacks:read"))
+
+        every { secureStorage.venuePermissions } returns listOf("*:*")
+        assertTrue(roleManager.hasVenuePermission("area-tickets:deliver"))
+    }
+
     // MARK: - CASHIER: POS + transactions + view customers
 
     @Test

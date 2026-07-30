@@ -53,6 +53,29 @@ class RoleManager @Inject constructor(
     val canAccessKDS: Boolean
         get() = role in setOf("WAITER", "CASHIER", "MANAGER", "ADMIN", "OWNER", "SUPERADMIN")
 
+    // MARK: - Effective venue permissions
+
+    /**
+     * Permission checks for optional UI affordances must use the effective list
+     * returned by the server for this venue, not a local role guess. That keeps
+     * custom role permissions and Permission Sets authoritative.
+     */
+    fun hasVenuePermission(requiredPermission: String): Boolean {
+        val (requiredResource, requiredAction) = requiredPermission.split(':', limit = 2)
+            .let { parts -> parts.firstOrNull().orEmpty() to parts.getOrNull(1).orEmpty() }
+
+        return secureStorage.venuePermissions.any { granted ->
+            granted == "*:*" ||
+                granted == requiredPermission ||
+                granted == "$requiredResource:*" ||
+                granted == "*:$requiredAction"
+        }
+    }
+
+    /** Membership tiles are optional and must not trigger a forbidden request. */
+    val canReadCreditPacks: Boolean
+        get() = hasVenuePermission("creditPacks:read")
+
     // MARK: - Traslados entre sucursales (CEDIS)
     // Espejo de DEFAULT_PERMISSIONS del server (avoqado-server/src/lib/permissions.ts):
     // MANAGER tiene los 5 permisos inventory-transfers:* explícitos; ADMIN y OWNER

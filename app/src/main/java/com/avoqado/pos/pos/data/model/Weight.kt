@@ -23,7 +23,9 @@ const val MAX_WEIGHT_KG = 99.999
  *  - el resultado se redondea a 3 decimales (milésima de kg = gramo).
  */
 fun parseWeightKg(raw: String, gramsMode: Boolean = false): Double? {
-    val cleaned = raw.trim().map { c -> if (c == ',') '.' else c }.filter { it.isDigit() || it == '.' }
+    val trimmed = raw.trim()
+    if ('-' in trimmed) return null
+    val cleaned = trimmed.map { c -> if (c == ',') '.' else c }.filter { it.isDigit() || it == '.' }
         .joinToString("")
     if (cleaned.isEmpty() || cleaned.count { it == '.' } > 1) return null
     val value = cleaned.toDoubleOrNull() ?: return null

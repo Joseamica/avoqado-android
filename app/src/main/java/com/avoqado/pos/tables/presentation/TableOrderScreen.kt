@@ -93,6 +93,9 @@ import java.time.OffsetDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarHost
 
 /**
  * TABLE_SERVICE (PRO) — the DEDICATED table screen (Square's check view).
@@ -180,10 +183,23 @@ fun TableOrderScreen(
     var showPhoneCheck by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) { viewModel.loadCheck() }
+    // TODOS los avisos de esta pantalla pasan por aquí: por qué no se puede mover
+    // una cuenta, que un producto está agotado, que la cuenta no tiene cargos.
+    //
+    // Iban en Toast, que es la peor opción posible en este equipo. El Toast lo
+    // dibuja el sistema fuera de la app: no respeta el tema, se lo puede comer
+    // otra ventana, y en una Sunmi con pantalla de cliente no hay garantía de en
+    // cuál de las dos aparece. Ya pasó con "Imprimir corte", cuyo Toast de "no
+    // disponible" nadie vio nunca.
+    //
+    // Un Snackbar vive DENTRO de la app: sale siempre donde está el mesero, se ve
+    // igual en claro y oscuro, y —esto importa para no volver a discutirlo— sí
+    // aparece en el árbol de accesibilidad, así que se puede verificar que salió.
+    val snackbarHostState = remember { SnackbarHostState() }
     LaunchedEffect(actionMessage) {
         actionMessage?.let {
-            android.widget.Toast.makeText(context, it, android.widget.Toast.LENGTH_LONG).show()
             viewModel.consumeActionMessage()
+            snackbarHostState.showSnackbar(message = it, duration = SnackbarDuration.Long)
         }
     }
 
@@ -250,6 +266,7 @@ fun TableOrderScreen(
         }
     }
 
+    Box(modifier = Modifier.fillMaxSize()) {
     Column(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
         // Square: el header (regresar + mesa + comensales) vive en la COLUMNA
         // IZQUIERDA — el panel del cheque gana toda la altura en tablet.
@@ -569,6 +586,14 @@ fun TableOrderScreen(
                 }
             }
         }
+    }
+
+        // El aviso se ancla abajo del todo, encima del contenido: es donde el
+        // mesero ya está mirando cuando toca una acción.
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier.align(Alignment.BottomCenter),
+        )
     }
 
     // Product detail (modifiers/notes) — adds land on the SELECTED course.
@@ -896,7 +921,7 @@ fun TableOrderScreen(
                 showSplitModes = false
                 if (viewModel.preparePagar()) {
                     paymentSeedCents = viewModel.tableSession.current()?.totalCents ?: 0
-            if (paymentSeedCents <= 0) paymentSeedCents = viewModel.payableTotalCents
+                    if (paymentSeedCents <= 0) paymentSeedCents = viewModel.payableTotalCents
                     showSplitImporte = true
                 } else {
                     android.widget.Toast.makeText(context, "La cuenta no tiene cargos todavía", android.widget.Toast.LENGTH_SHORT).show()

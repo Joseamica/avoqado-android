@@ -9,6 +9,7 @@ import com.avoqado.pos.printing.routing.PrintConfigResponse
 import com.avoqado.pos.printing.routing.SyncPrintJobsRequest
 import retrofit2.http.Body
 import retrofit2.http.GET
+import retrofit2.http.HTTP
 import retrofit2.http.POST
 import retrofit2.http.Path
 import retrofit2.http.Query
@@ -45,6 +46,104 @@ interface ApiService {
         @Path("venueId") venueId: String,
         @Body request: Any, // TODO: typed request
     ): Any // TODO: typed response
+
+    // MARK: - Area Tickets v7
+
+    @GET("mobile/venues/{venueId}/area-ticket-settings")
+    suspend fun getAreaTicketSettings(
+        @Path("venueId") venueId: String,
+    ): com.avoqado.pos.areatickets.data.AreaTicketEnvelope<com.avoqado.pos.areatickets.data.AreaTicketSettingsData>
+
+    @POST("mobile/venues/{venueId}/scans/resolve")
+    suspend fun resolveAreaTicketScan(
+        @Path("venueId") venueId: String,
+        @Body request: com.avoqado.pos.areatickets.data.ScanRequest,
+    ): com.avoqado.pos.areatickets.data.AreaTicketEnvelope<com.avoqado.pos.areatickets.data.AreaTicketScanData>
+
+    @POST("mobile/venues/{venueId}/area-ticket-checkouts")
+    suspend fun createAreaTicketCheckout(
+        @Path("venueId") venueId: String,
+        @Body request: com.avoqado.pos.areatickets.data.IdempotentRequest,
+    ): com.avoqado.pos.areatickets.data.AreaTicketEnvelope<com.avoqado.pos.areatickets.data.CheckoutData>
+
+    @POST("mobile/venues/{venueId}/area-ticket-checkouts/{sessionId}/tickets")
+    suspend fun addAreaTicketToCheckout(
+        @Path("venueId") venueId: String,
+        @Path("sessionId") sessionId: String,
+        @Body request: com.avoqado.pos.areatickets.data.AddTicketRequest,
+    ): com.avoqado.pos.areatickets.data.AreaTicketEnvelope<com.avoqado.pos.areatickets.data.CheckoutData>
+
+    @HTTP(
+        method = "DELETE",
+        path = "mobile/venues/{venueId}/area-ticket-checkouts/{sessionId}/tickets/{ticketId}",
+        hasBody = true,
+    )
+    suspend fun removeAreaTicketFromCheckout(
+        @Path("venueId") venueId: String,
+        @Path("sessionId") sessionId: String,
+        @Path("ticketId") ticketId: String,
+        @Body request: com.avoqado.pos.areatickets.data.IdempotentRequest,
+    ): com.avoqado.pos.areatickets.data.AreaTicketEnvelope<com.avoqado.pos.areatickets.data.CheckoutData>
+
+    @POST("mobile/venues/{venueId}/area-ticket-checkouts/{sessionId}/materialize-order")
+    suspend fun materializeAreaTicketCheckout(
+        @Path("venueId") venueId: String,
+        @Path("sessionId") sessionId: String,
+        @Body request: com.avoqado.pos.areatickets.data.MaterializeCheckoutRequest,
+    ): com.avoqado.pos.areatickets.data.AreaTicketEnvelope<com.avoqado.pos.areatickets.data.CheckoutData>
+
+    @POST("mobile/venues/{venueId}/area-ticket-checkouts/{sessionId}/heartbeat")
+    suspend fun heartbeatAreaTicketCheckout(
+        @Path("venueId") venueId: String,
+        @Path("sessionId") sessionId: String,
+        @Body request: com.avoqado.pos.areatickets.data.IdempotentRequest,
+    ): com.avoqado.pos.areatickets.data.AreaTicketEnvelope<com.avoqado.pos.areatickets.data.CheckoutData>
+
+    @GET("mobile/venues/{venueId}/area-ticket-checkouts/{sessionId}")
+    suspend fun getAreaTicketCheckout(
+        @Path("venueId") venueId: String,
+        @Path("sessionId") sessionId: String,
+    ): com.avoqado.pos.areatickets.data.AreaTicketEnvelope<com.avoqado.pos.areatickets.data.CheckoutData>
+
+    @POST("mobile/venues/{venueId}/area-ticket-checkouts/{sessionId}/cancel")
+    suspend fun cancelAreaTicketCheckout(
+        @Path("venueId") venueId: String,
+        @Path("sessionId") sessionId: String,
+        @Body request: com.avoqado.pos.areatickets.data.IdempotentRequest,
+    ): com.avoqado.pos.areatickets.data.AreaTicketEnvelope<com.avoqado.pos.areatickets.data.CheckoutData>
+
+    @POST("mobile/venues/{venueId}/area-tickets")
+    suspend fun issueAreaTicket(
+        @Path("venueId") venueId: String,
+        @Body request: com.avoqado.pos.areatickets.data.IssueAreaTicketRequest,
+    ): com.avoqado.pos.areatickets.data.AreaTicketEnvelope<com.avoqado.pos.areatickets.data.IssuedTicketData>
+
+    @POST("mobile/venues/{venueId}/area-tickets/{ticketId}/print-attempts")
+    suspend fun recordAreaTicketPrintAttempt(
+        @Path("venueId") venueId: String,
+        @Path("ticketId") ticketId: String,
+        @Body request: com.avoqado.pos.areatickets.data.PrintAttemptRequest,
+    ): com.avoqado.pos.areatickets.data.AreaTicketEnvelope<kotlinx.serialization.json.JsonObject>
+
+    @GET("mobile/venues/{venueId}/area-ticket-fulfillment/pending")
+    suspend fun getPendingAreaTicketFulfillment(
+        @Path("venueId") venueId: String,
+        @Query("cursor") cursor: String? = null,
+        @Query("limit") limit: Int = 50,
+    ): com.avoqado.pos.areatickets.data.AreaTicketEnvelope<com.avoqado.pos.areatickets.data.PendingFulfillmentData>
+
+    @POST("mobile/venues/{venueId}/area-ticket-fulfillment/resolve")
+    suspend fun resolveAreaTicketFulfillment(
+        @Path("venueId") venueId: String,
+        @Body request: com.avoqado.pos.areatickets.data.ScanRequest,
+    ): com.avoqado.pos.areatickets.data.AreaTicketEnvelope<com.avoqado.pos.areatickets.data.DeliveryResolutionData>
+
+    @POST("mobile/venues/{venueId}/area-tickets/{ticketId}/fulfill")
+    suspend fun fulfillAreaTicket(
+        @Path("venueId") venueId: String,
+        @Path("ticketId") ticketId: String,
+        @Body request: com.avoqado.pos.areatickets.data.FulfillAreaTicketRequest,
+    ): com.avoqado.pos.areatickets.data.AreaTicketEnvelope<kotlinx.serialization.json.JsonObject>
 
     // MARK: - Print Stations (PRINT_STATIONS)
 

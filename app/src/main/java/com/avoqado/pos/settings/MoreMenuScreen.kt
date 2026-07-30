@@ -38,6 +38,7 @@ import androidx.compose.material.icons.automirrored.filled.PlaylistAddCheck
 import androidx.compose.material.icons.filled.Assignment
 import androidx.compose.material.icons.filled.PointOfSale
 import androidx.compose.material.icons.filled.Print
+import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
@@ -70,6 +71,7 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.avoqado.pos.addons.presentation.AddonsScreen
+import com.avoqado.pos.areatickets.presentation.AreaTicketDeliveryScreen
 import com.avoqado.pos.articles.presentation.ArticlesScreen
 import com.avoqado.pos.auth.presentation.VenueSwitcherSheet
 import com.avoqado.pos.cashdrawer.presentation.CashDrawerScreen
@@ -122,6 +124,7 @@ fun MoreMenuScreen(
     var showAddons by remember { mutableStateOf(false) }
     var showKDS by remember { mutableStateOf(false) }
     var showCustomerDisplay by remember { mutableStateOf(false) }
+    var showAreaTicketDelivery by remember { mutableStateOf(false) }
     var showKiosk by remember { mutableStateOf(false) }
     val kioskEnabled by viewModel.kioskManager.enabled.collectAsState()
     val customerDisplayDetected by viewModel.customerDisplayState.isPresenting.collectAsState()
@@ -143,6 +146,7 @@ fun MoreMenuScreen(
         showSupport = false
         showChangeMode = false
         showAddons = false
+        showAreaTicketDelivery = false
         showKDS = false
         showCustomerDisplay = false
         showKiosk = false
@@ -433,6 +437,13 @@ fun MoreMenuScreen(
             icon = Icons.Filled.Description,
             label = "Pedidos",
             onClick = { showOrders = true },
+            dense = denseMenu,
+        )
+        MenuRow(
+            icon = Icons.Filled.QrCodeScanner,
+            label = "Entregas por área",
+            subtitle = "Revisar papel o escanear comprobante pagado",
+            onClick = { showAreaTicketDelivery = true },
             dense = denseMenu,
         )
         if (viewModel.canManageCashDrawer) {
@@ -796,6 +807,10 @@ fun MoreMenuScreen(
     // Customize Menu Sheet
     if (showCustomizeMenu) {
         CustomizeMenuSheet(onDismiss = { showCustomizeMenu = false })
+    }
+
+    if (showAreaTicketDelivery) {
+        AreaTicketDeliveryScreen(onDismiss = { showAreaTicketDelivery = false })
     }
 
     // Venue Switcher Sheet

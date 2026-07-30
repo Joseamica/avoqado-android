@@ -74,6 +74,7 @@ data class SplitConfig(
 fun SplitPaymentSheet(
     totalCents: Int,
     items: List<CartItem>,
+    allowByProduct: Boolean = true,
     onDismiss: () -> Unit,
     onConfirm: (SplitConfig) -> Unit,
 ) {
@@ -121,12 +122,14 @@ fun SplitPaymentSheet(
 
             if (selectedOption == null) {
                 // Option selection
-                SplitOptionRow(
-                    title = "Por producto",
-                    description = "Selecciona los productos para este pago",
-                    onClick = { selectedOption = SplitType.BY_PRODUCT },
-                )
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                if (allowByProduct) {
+                    SplitOptionRow(
+                        title = "Por producto",
+                        description = "Selecciona los productos para este pago",
+                        onClick = { selectedOption = SplitType.BY_PRODUCT },
+                    )
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                }
                 SplitOptionRow(
                     title = "Partes iguales",
                     description = "Divide el total entre varias personas",
@@ -239,7 +242,7 @@ private fun ByProductContent(
                 modifier = Modifier.weight(1f),
             )
             Text(
-                text = "Atras",
+                text = "Atrás",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.clickable(onClick = onBack),
@@ -337,7 +340,7 @@ private fun EqualPartsContent(
                 modifier = Modifier.weight(1f),
             )
             Text(
-                text = "Atras",
+                text = "Atrás",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.clickable(onClick = onBack),
@@ -470,7 +473,7 @@ private fun CustomAmountContent(
                 modifier = Modifier.weight(1f),
             )
             Text(
-                text = "Atras",
+                text = "Atrás",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.primary,
                 modifier = Modifier.clickable(onClick = onBack),

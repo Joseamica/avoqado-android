@@ -17,6 +17,8 @@ import android.net.nsd.NsdServiceInfo
 import android.os.Build
 import android.util.Log
 import androidx.core.content.ContextCompat
+import com.avoqado.pos.printing.data.model.AreaTicketData
+import com.avoqado.pos.printing.data.ESCPOSPrinter.BarcodeSymbology
 import com.avoqado.pos.printing.data.model.DiscoveredPrinter
 import com.avoqado.pos.printing.data.model.KitchenTicketData
 import com.avoqado.pos.printing.data.model.PaperWidth
@@ -31,7 +33,6 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -68,6 +69,37 @@ private const val BIND_WAIT_TRIES = 10
 private const val BIND_WAIT_STEP_MS = 200L
 
 /**
+ * Fusiona una impresora WiFi recién resuelta con la lista ya descubierta.
+ * Devuelve la lista nueva, o `null` si no hay nada que cambiar.
+ *
+ * UNA impresora física se anuncia en los TRES tipos de servicio que browseamos
+ * (`_printer`=515/LPR, `_ipp`=631/IPP, `_pdl-datastream`=9100/raw) y cada
+ * anuncio resuelve por separado, así que hay que deduplicar por DIRECCIÓN.
+ *
+ * Pero deduplicar "gana el primero" es una CARRERA, y perderla no se ve: sólo
+ * el 9100 acepta un flujo ESC/POS crudo — el 631 y el 515 aceptan la conexión
+ * TCP y se tragan los bytes. Medido en hardware (Epson TM-m30III por Ethernet,
+ * 2026-07-29): resolvió primero por `_ipp` y quedó listada en `:631`, o sea
+ * una impresora que dice "Conectada" y no imprime nunca. Por eso el 9100
+ * ASCIENDE a una entrada previa en otro puerto, en vez de descartarse.
+ *
+ * iOS ya lo resolvía así (`PrinterService.preferredRawSocketPort`); Android se
+ * había quedado atrás.
+ */
+internal fun mergeResolvedWifiPrinter(
+    current: List<DiscoveredPrinter>,
+    printer: DiscoveredPrinter,
+): List<DiscoveredPrinter>? {
+    val existing = current.indexOfFirst {
+        it.address == printer.address && it.connectionType == PrinterConnectionType.WIFI
+    }
+    if (existing < 0) return current + printer
+    val isUpgrade = printer.port == DEFAULT_PORT && current[existing].port != DEFAULT_PORT
+    if (!isUpgrade) return null
+    return current.toMutableList().apply { this[existing] = printer }
+}
+
+/**
  * Pure decision for whether [PrinterService.sendData] must drop the cached socket
  * and reconnect before writing, instead of reusing the socket in the connection
  * cache. Kept side-effect free and top-level `internal` so it is exhaustively
@@ -79,11 +111,9 @@ private const val BIND_WAIT_STEP_MS = 200L
  * config was refetched — the bug this guards against), or the cached socket is
  * already closed.
  *
- * NOTE: this cannot and does not detect a half-open TCP socket where the peer
- * silently vanished without sending FIN/RST — that failure mode is not reliably
- * detectable from userspace and is explicitly out of scope. The product's
- * printing states are honest about this already: "Printing"/"Connected" means
- * bytes were accepted by the OS socket, not proof that paper came out.
+ * Raw-port printers commonly close port 9100 after every job. [PrinterService]
+ * therefore releases WiFi sockets after a successful write; the next job always
+ * reconnects instead of trying to reuse a half-open connection.
  */
 internal fun shouldReconnect(
     status: PrinterStatus,
@@ -332,6 +362,24 @@ class PrinterService @Inject constructor(
     }
 
     /**
+     * Vale de área (AREA_TICKETS): el papel que se lleva el cliente y que la caja escanea.
+     *
+     * `symbology` es configurable por venue porque no toda pistola lee CODE128 — la del cliente
+     * de Culiacán sí (probado contra su hardware), pero su sistema viejo emite CODE39 y otra
+     * sucursal podría tener una pistola de esa época. Ojo: CODE39 con 10 dígitos NO cabe en papel
+     * de 58 mm; ese respaldo exige rollo de 80.
+     */
+    suspend fun printAreaTicket(
+        ticket: AreaTicketData,
+        printer: SavedPrinter,
+        symbology: BarcodeSymbology = BarcodeSymbology.CODE128_C,
+    ) {
+        val escpos = escposFor(printer)
+        val data = escpos.generateAreaTicket(ticket, symbology)
+        sendData(data, printer)
+    }
+
+    /**
      * La integrada de Sunmi arranca en multibyte (GB18030) y necesita `FS .`
      * antes del code page. Las de red/Bluetooth ya están en single-byte.
      */
@@ -389,8 +437,14 @@ class PrinterService @Inject constructor(
                 PrinterConnectionType.USB -> sendDataUsb(data, printer)
                 PrinterConnectionType.INTERNAL -> innerPrinter.printRaw(data)
             }
+            if (printer.connectionTypeEnum == PrinterConnectionType.WIFI) {
+                releaseWifiConnection(printer.id)
+            }
             updateStatus(printer.id, PrinterStatus.Connected)
         } catch (e: Exception) {
+            if (printer.connectionTypeEnum == PrinterConnectionType.WIFI) {
+                releaseWifiConnection(printer.id)
+            }
             updateStatus(printer.id, PrinterStatus.Error(e.message ?: "Error al imprimir"))
             throw PrinterException.PrintFailed(e.message ?: "Error desconocido")
         }
@@ -421,6 +475,12 @@ class PrinterService @Inject constructor(
         val output: OutputStream = socket.getOutputStream()
         output.write(data)
         output.flush()
+    }
+
+    private fun releaseWifiConnection(printerId: String) {
+        runCatching { wifiConnections.remove(printerId)?.close() }
+            .onFailure { Log.w(TAG, "Error closing WiFi print job: ${it.message}") }
+        connectionEndpoints.remove(printerId)
     }
 
     private suspend fun sendDataUsb(data: ByteArray, printer: SavedPrinter) = withContext(Dispatchers.IO) {
@@ -723,12 +783,11 @@ class PrinterService @Inject constructor(
             address = address,
             port = resolved.port,
         )
-        val current = _discoveredPrinters.value.toMutableList()
-        // Dedup por DIRECCIÓN: la misma impresora se anuncia en varios tipos de
-        // servicio (_printer, _pdl-datastream, _ipp) y saldría repetida.
-        if (current.none { it.address == printer.address && it.connectionType == PrinterConnectionType.WIFI }) {
-            current.add(printer)
-            _discoveredPrinters.value = current
+        // Dedup por DIRECCIÓN + preferencia del puerto crudo: ver
+        // [mergeResolvedWifiPrinter]. Seguro sin lock extra porque los resolves
+        // están serializados por `resolveMutex`.
+        mergeResolvedWifiPrinter(_discoveredPrinters.value, printer)?.let {
+            _discoveredPrinters.value = it
         }
         Log.d(TAG, "Resolved printer: ${resolved.serviceName} at $address:${resolved.port}")
     }

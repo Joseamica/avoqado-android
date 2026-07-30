@@ -3,6 +3,9 @@ package com.avoqado.pos.pos.presentation.cart
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.avoqado.pos.areatickets.data.AreaTicketCheckout
+import com.avoqado.pos.areatickets.data.AreaTicketRepository
+import com.avoqado.pos.areatickets.data.moneyToCents
 import com.avoqado.pos.auth.data.AuthRepository
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.domain.PlanManager
@@ -41,6 +44,13 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.util.UUID
 import javax.inject.Inject
+
+sealed interface ScannedBarcodeResult {
+    data class ProductFound(val product: Product) : ScannedBarcodeResult
+    data class AreaTicketsAdded(val ticketCount: Int) : ScannedBarcodeResult
+    data class Unknown(val code: String) : ScannedBarcodeResult
+    data class Error(val message: String) : ScannedBarcodeResult
+}
 
 data class CartState(
     val items: List<CartItem> = emptyList(),
@@ -105,6 +115,7 @@ class CartViewModel @Inject constructor(
     private val planManager: PlanManager,
     private val tableSession: com.avoqado.pos.tables.data.TableSession,
     private val customerDisplay: com.avoqado.pos.customerdisplay.CustomerDisplayState,
+    private val areaTicketRepository: AreaTicketRepository,
 ) : ViewModel() {
 
     private val _cartState = MutableStateFlow(defaultCartState())
@@ -480,6 +491,15 @@ class CartViewModel @Inject constructor(
     val hasCreditPack: Boolean get() = _cartState.value.items.any { it.type is CartItemType.CreditPack }
 
     fun removeItem(itemId: String) {
+        val areaTicketId = _cartState.value.items.firstOrNull { it.id == itemId }?.areaTicketId
+        if (areaTicketId != null) {
+            viewModelScope.launch {
+                runCatching { areaTicketRepository.removeTicket(areaTicketId) }
+                    .onSuccess(::replaceAreaTicketLines)
+                    .onFailure { Log.e("🎟️", "No se pudo quitar el vale: ${it.message}") }
+            }
+            return
+        }
         _cartState.update { state ->
             val updatedItems = state.items.filter { it.id != itemId }
             // When an item removal leaves the cart empty, clear the reservationId.
@@ -494,6 +514,7 @@ class CartViewModel @Inject constructor(
     }
 
     fun updateQuantity(itemId: String, newQuantity: Int) {
+        if (_cartState.value.items.any { it.id == itemId && it.locked }) return
         if (newQuantity <= 0) {
             removeItem(itemId)
             return
@@ -508,6 +529,7 @@ class CartViewModel @Inject constructor(
     }
 
     fun incrementQuantity(itemId: String) {
+        if (_cartState.value.items.any { it.id == itemId && it.locked }) return
         _cartState.update { state ->
             state.copy(
                 items = state.items.map {
@@ -518,6 +540,7 @@ class CartViewModel @Inject constructor(
     }
 
     fun decrementQuantity(itemId: String) {
+        if (_cartState.value.items.any { it.id == itemId && it.locked }) return
         _cartState.update { state ->
             val item = state.items.find { it.id == itemId } ?: return@update state
             if (item.quantity <= 1) {
@@ -541,10 +564,12 @@ class CartViewModel @Inject constructor(
     }
 
     fun applyOrderDiscount(discount: Discount?) {
+        if (_cartState.value.items.any { it.locked }) return
         _cartState.update { it.copy(orderDiscount = discount) }
     }
 
     fun applyOrderTaxPercent(taxPercent: Int?) {
+        if (_cartState.value.items.any { it.locked }) return
         val normalized = taxPercent?.coerceIn(0, 100)?.takeIf { it > 0 }
         _cartState.update { it.copy(orderTaxPercent = normalized) }
     }
@@ -566,6 +591,7 @@ class CartViewModel @Inject constructor(
     }
 
     fun updateItemNote(itemId: String, note: String?) {
+        if (_cartState.value.items.any { it.id == itemId && it.locked }) return
         _cartState.update { state ->
             state.copy(
                 items = state.items.map {
@@ -576,6 +602,7 @@ class CartViewModel @Inject constructor(
     }
 
     fun updateItemCortesia(itemId: String, isCortesia: Boolean, reason: String?) {
+        if (_cartState.value.items.any { it.id == itemId && it.locked }) return
         _cartState.update { state ->
             state.copy(
                 items = state.items.map {
@@ -587,6 +614,7 @@ class CartViewModel @Inject constructor(
     }
 
     fun updateItemPriceAdjustment(itemId: String, priceCents: Int?) {
+        if (_cartState.value.items.any { it.id == itemId && it.locked }) return
         _cartState.update { state ->
             state.copy(
                 items = state.items.map {
@@ -598,7 +626,7 @@ class CartViewModel @Inject constructor(
 
     fun saveCurrentCart(name: String? = null): Boolean {
         val state = _cartState.value
-        if (state.isEmpty) return false
+        if (state.isEmpty || state.items.any { it.locked }) return false
 
         val cartName = name ?: "Carrito ${
             java.time.ZonedDateTime.now(com.avoqado.pos.core.util.VenueTimeZone.zoneId())
@@ -647,6 +675,12 @@ class CartViewModel @Inject constructor(
     }
 
     fun clearCart() {
+        if (areaTicketRepository.session.current() != null) {
+            viewModelScope.launch {
+                runCatching { areaTicketRepository.cancel() }
+                    .onFailure { Log.e("🎟️", "No se pudo liberar la sesión al limpiar el carrito: ${it.message}") }
+            }
+        }
         _cartState.value = defaultCartState()
         // Referral capture state is per-order, so wiping the cart must wipe
         // the code + validation too. The discount referenced by the validation
@@ -654,6 +688,81 @@ class CartViewModel @Inject constructor(
         _referralCode.value = ""
         _referralValidation.value = ReferralCaptureUiState.Idle
         Log.d("🛒", "Cart cleared")
+    }
+
+    /**
+     * Conserva el checkout normal para cualquier SKU/GTIN. Sólo los códigos del
+     * namespace de vales se resuelven en servidor para evitar colisiones y dobles claims.
+     */
+    fun restoreAreaTicketSession() {
+        viewModelScope.launch {
+            areaTicketRepository.restore()?.let(::replaceAreaTicketLines)
+        }
+    }
+
+    suspend fun resolveScannedBarcode(rawCode: String): ScannedBarcodeResult {
+        val code = rawCode.trim()
+        val localProduct = products.value.firstOrNull {
+            it.sku == code || it.barcode == code || it.gtin == code
+        }
+        if (!com.avoqado.pos.pos.data.isAreaTicketCode(code)) {
+            return localProduct?.let(ScannedBarcodeResult::ProductFound)
+                ?: ScannedBarcodeResult.Unknown(code)
+        }
+
+        return runCatching {
+            val resolved = areaTicketRepository.resolveCheckoutScan(code)
+            when (resolved.type) {
+                "PRODUCT" -> localProduct?.let(ScannedBarcodeResult::ProductFound)
+                    ?: ScannedBarcodeResult.Unknown(code)
+                "AREA_TICKET" -> {
+                    val settings = areaTicketRepository.settings()
+                    val hasNormalItems = _cartState.value.items.any { !it.locked }
+                    if (!settings.areaTickets.allowMixedCart && hasNormalItems) {
+                        ScannedBarcodeResult.Error("Este local cobra los vales en un carrito separado.")
+                    } else {
+                        val checkout = areaTicketRepository.addTicket(code)
+                        replaceAreaTicketLines(checkout)
+                        ScannedBarcodeResult.AreaTicketsAdded(checkout.tickets.size)
+                    }
+                }
+                "PAID_AREA_TICKET" -> ScannedBarcodeResult.Error("Ese vale ya está pagado; úsalo en la pantalla de entrega.")
+                "AMBIGUOUS" -> ScannedBarcodeResult.Error("El código coincide con un producto y un vale. Revisa la configuración.")
+                else -> ScannedBarcodeResult.Error("Vale no encontrado en este local.")
+            }
+        }.getOrElse { error ->
+            ScannedBarcodeResult.Error(error.message ?: "No se pudo consultar el vale. Revisa la conexión.")
+        }
+    }
+
+    private fun replaceAreaTicketLines(checkout: AreaTicketCheckout) {
+        val ticketRows = checkout.tickets.flatMap { ticket ->
+            ticket.lines.map { line ->
+                val detail = buildList {
+                    add("${ticket.fulfillmentArea.name} · Vale ${ticket.code}")
+                    line.weightKg?.let { add("$it kg") }
+                    if (line.quantity != "1" && line.weightKg == null) add("Cantidad ${line.quantity}")
+                }.joinToString(" · ")
+                CartItem(
+                    id = "area-ticket:${ticket.id}:${line.id}",
+                    type = CartItemType.CustomAmount,
+                    name = line.productNameSnapshot,
+                    subtitle = detail,
+                    unitPrice = line.total.moneyToCents(),
+                    quantity = 1,
+                    areaTicketId = ticket.id,
+                    areaTicketLineId = line.id,
+                    locked = true,
+                )
+            }
+        }
+        _cartState.update { state ->
+            state.copy(
+                items = state.items.filterNot { it.locked } + ticketRows,
+                orderDiscount = null,
+                orderTaxPercent = null,
+            )
+        }
     }
 
     // MARK: - Referral capture (Plan 5B)

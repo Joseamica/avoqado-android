@@ -91,6 +91,7 @@ class CartViewModelWeightTest {
         planManager = PlanManager(secureStorage),
         tableSession = com.avoqado.pos.tables.data.TableSession(),
         customerDisplay = com.avoqado.pos.customerdisplay.CustomerDisplayState(),
+        areaTicketRepository = mockk(relaxed = true),
     )
 
     private val jamon = Product(

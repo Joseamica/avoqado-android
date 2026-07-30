@@ -1,5 +1,6 @@
 package com.avoqado.pos.printing.data
 
+import com.avoqado.pos.printing.data.model.AreaTicketData
 import com.avoqado.pos.printing.data.model.KitchenTicketData
 import com.avoqado.pos.printing.data.model.PaperWidth
 import com.avoqado.pos.printing.data.model.ReceiptData
@@ -449,6 +450,7 @@ class ESCPOSPrinter(
             )
             // Venta por peso: peso × precio/kg bajo el nombre (mismo estilo que los modificadores).
             item.weightSummary?.let { printLine("  $it") }
+            item.areaSourceLabel?.let { printLine("  $it") }
             item.modifiers?.forEach { modifier ->
                 printLine("  + $modifier")
             }
@@ -500,6 +502,26 @@ class ESCPOSPrinter(
                     }
                 }
             }
+        }
+
+        // Comprobante pagado para entrega por área. El área puede escanearlo o,
+        // si el papel/pistola falla, teclear los 10 dígitos impresos debajo.
+        receipt.areaDeliveryCode?.takeIf { it.isNotBlank() }?.let { code ->
+            printLine()
+            printDoubleDivider()
+            setAlignment(TextAlignment.CENTER)
+            setBold(true)
+            printLine("ENTREGA POR ÁREA")
+            setBold(false)
+            printLine("Presenta este comprobante en el área")
+            printLine()
+            printBarcode(code)
+            printLine()
+            setLargeText(true)
+            setBold(true)
+            printLine(code)
+            setBold(false)
+            setLargeText(false)
         }
 
         // QR del recibo digital: escanear → recibo, calificar, facturar.
@@ -622,6 +644,95 @@ class ESCPOSPrinter(
         return getData()
     }
 
+    // MARK: - Vale de área (AREA_TICKETS)
+
+    /**
+     * El vale que el área entrega al cliente y que la caja escanea.
+     *
+     * Dos decisiones de maquetación que no son estéticas:
+     *
+     * 1. **El código va DOS veces**: como código de barras y en texto grande abajo. El HRI que
+     *    imprime la propia impresora bajo las barras es diminuto, y este papel viaja en la mano
+     *    de alguien por una cremería — se moja, se arruga y se dobla. Cuando la pistola no lee,
+     *    lo único que salva la venta es que el cajero pueda teclear 10 dígitos.
+     * 2. **Si el código de barras falla, el vale se imprime igual.** `printBarcode` devuelve
+     *    `false` sin escribir bytes; aquí eso sólo significa quedarse sin barras, nunca quedarse
+     *    sin vale. Un vale sin barras se teclea; un vale que no salió es un cliente parado en el
+     *    mostrador con su jamón rebanado y sin forma de pagarlo.
+     */
+    fun generateAreaTicket(
+        ticket: AreaTicketData,
+        symbology: BarcodeSymbology = BarcodeSymbology.CODE128_C,
+    ): ByteArray {
+        reset()
+
+        setAlignment(TextAlignment.CENTER)
+        ticket.venueName?.let { printLine(it) }
+
+        // El área ES el título: el cliente puede traer tres vales en la mano y tiene que
+        // distinguirlos de un vistazo.
+        setLargeText(true)
+        setBold(true)
+        printLine(ticket.areaName.uppercase(Locale("es", "MX")))
+        setBold(false)
+        setLargeText(false)
+
+        printDoubleDivider()
+
+        setAlignment(TextAlignment.LEFT)
+        printTwoColumns("Vale #:", ticket.areaTicketCode)
+        printTwoColumns("Hora:", ticket.formattedTime)
+        ticket.staffName?.let { printTwoColumns("Atendió:", it) }
+
+        printDivider()
+
+        for (item in ticket.items) {
+            if (ticket.showPrices) {
+                printThreeColumns(item.quantity.toString(), item.name, item.formattedPrice)
+            } else {
+                printTwoColumns("${item.quantity}x", item.name)
+            }
+            // Granel: "0.435 kg × $420.00/kg" bajo el nombre, igual que en el recibo.
+            item.weightSummary?.let { printLine("   $it") }
+            item.note?.let { printLine("   Nota: $it") }
+        }
+
+        if (ticket.showPrices) {
+            printDivider()
+            setBold(true)
+            setDoubleHeight(true)
+            printTwoColumns("TOTAL", ticket.formattedTotal)
+            setDoubleHeight(false)
+            setBold(false)
+        }
+
+        printDoubleDivider()
+
+        // El código, en barras y en grande. Ver el punto 1 del KDoc.
+        setAlignment(TextAlignment.CENTER)
+        printBarcode(ticket.areaTicketCode, symbology = symbology)
+        printLine()
+        setLargeText(true)
+        setBold(true)
+        printLine(ticket.areaTicketCode)
+        setBold(false)
+        setLargeText(false)
+
+        printLine()
+        printLine("Presenta este vale en caja")
+        if (ticket.holdsProduct) {
+            setBold(true)
+            printLine("Tu producto te espera aquí")
+            setBold(false)
+            printLine("Regresa con el ticket pagado")
+        }
+
+        printDoubleDivider()
+        cut()
+
+        return getData()
+    }
+
     // MARK: - Test Print
 
     fun generateTestPrint(): ByteArray {
@@ -629,7 +740,7 @@ class ESCPOSPrinter(
 
         setAlignment(TextAlignment.CENTER)
         setLargeText(true)
-        printLine("PRUEBA DE IMPRESION")
+        printLine("PRUEBA DE IMPRESIÓN")
         setLargeText(false)
         printLine()
 

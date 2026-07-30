@@ -19,16 +19,21 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.FlashOff
 import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -40,10 +45,20 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.zIndex
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.avoqado.pos.designsystem.components.PrimaryButton
@@ -70,6 +85,18 @@ fun BarcodeScannerView(
         )
     }
     var hasScanned by remember { mutableStateOf(false) }
+    var manualCode by remember { mutableStateOf("") }
+    val manualCodeFocusRequester = remember { FocusRequester() }
+    val softwareKeyboardController = LocalSoftwareKeyboardController.current
+
+    fun submitCode(rawCode: String) {
+        val code = rawCode.trim()
+        if (code.isNotEmpty() && !hasScanned) {
+            hasScanned = true
+            Log.d("📷", "Barcode submitted from keyboard/manual entry")
+            onBarcodeScanned(code)
+        }
+    }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission(),
@@ -81,6 +108,11 @@ fun BarcodeScannerView(
         if (!hasCameraPermission) {
             permissionLauncher.launch(Manifest.permission.CAMERA)
         }
+    }
+
+    LaunchedEffect(Unit) {
+        manualCodeFocusRequester.requestFocus()
+        softwareKeyboardController?.hide()
     }
 
     Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
@@ -211,7 +243,7 @@ fun BarcodeScannerView(
                     color = Color.White,
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
-                        .padding(bottom = 80.dp)
+                        .padding(bottom = 188.dp)
                         .background(Color.Black.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
                         .padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.md),
                 )
@@ -239,6 +271,50 @@ fun BarcodeScannerView(
                     onClick = onDismiss,
                 )
             }
+        }
+
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .zIndex(10f)
+                .padding(AvoqadoTheme.spacing.xl)
+                .widthIn(max = 520.dp)
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.lg))
+                .background(MaterialTheme.colorScheme.surface.copy(alpha = 0.96f))
+                .padding(AvoqadoTheme.spacing.lg),
+            verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
+        ) {
+            Text(
+                text = "Escanea con pistola o escribe el código",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            OutlinedTextField(
+                value = manualCode,
+                onValueChange = { manualCode = it },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .focusRequester(manualCodeFocusRequester)
+                    .onPreviewKeyEvent { event ->
+                        val isSubmitKey = event.key == Key.Enter || event.key == Key.Tab
+                        if (isSubmitKey && event.type == KeyEventType.KeyUp) {
+                            submitCode(manualCode)
+                            true
+                        } else {
+                            false
+                        }
+                    },
+                label = { Text("Código de vale o producto") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { submitCode(manualCode) }),
+            )
+            PrimaryButton(
+                text = "Consultar código",
+                enabled = manualCode.isNotBlank() && !hasScanned,
+                onClick = { submitCode(manualCode) },
+            )
         }
     }
 }

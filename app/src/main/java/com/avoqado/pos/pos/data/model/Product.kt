@@ -59,7 +59,8 @@ data class Product(
     val isOutOfStock: Boolean
         get() = trackInventory == true && (availableQuantity ?: 1) <= 0
 
-    val displayPrice: String get() = "$${String.format("%.2f", priceValue)}"
+    val displayPrice: String
+        get() = "$${String.format("%.2f", priceValue)}" + if (soldByWeight) "/kg" else ""
 
     val hasModifiers: Boolean
         get() = !modifierGroups.isNullOrEmpty() &&

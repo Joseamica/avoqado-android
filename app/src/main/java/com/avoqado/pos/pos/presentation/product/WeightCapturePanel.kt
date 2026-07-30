@@ -1,7 +1,7 @@
 // Venta por peso (báscula) — panel de captura, hermano de [ProductDetailPanel] (mismo overlay +
-// panel derecho de 400dp en tablet, full-screen en teléfono). El operador captura el peso a mano
-// (MVP: sin lectura USB HID/OTG); el total en vivo = round(weightKg × precio/kg) — la misma
-// aritmética half-up que aplica el server, verificada por test de paridad.
+// panel derecho de 400dp en tablet, full-screen en teléfono). Mientras el perfil físico de la
+// terminal no esté certificado, el operador captura el peso a mano; el total en vivo =
+// round(weightKg × precio/kg), la misma aritmética half-up que aplica el server.
 //
 // Un producto por peso NUNCA abre modificadores (el peso manda en el MVP): el tap del producto
 // enruta aquí directo desde CheckoutScreen.handleProductTap.
@@ -30,7 +30,9 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -52,6 +54,7 @@ import com.avoqado.pos.pos.data.model.Product
 import com.avoqado.pos.pos.data.model.formatWeightKg
 import com.avoqado.pos.pos.data.model.parseWeightKg
 import com.avoqado.pos.pos.data.model.weightTotalCents
+import com.avoqado.pos.scale.ScaleConnectionState
 import java.util.Locale
 
 private fun money(cents: Int): String = String.format(Locale.US, "$%.2f", cents / 100.0)
@@ -60,6 +63,8 @@ private fun money(cents: Int): String = String.format(Locale.US, "$%.2f", cents 
 fun WeightCapturePanel(
     product: Product,
     isTablet: Boolean,
+    scaleState: ScaleConnectionState = ScaleConnectionState.NotConfigured,
+    onRetryScale: () -> Unit = {},
     onAdd: (weightKg: Double) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -83,7 +88,13 @@ fun WeightCapturePanel(
                         onClick = {},
                     ),
             ) {
-                WeightCaptureContent(product = product, onAdd = onAdd, onDismiss = onDismiss)
+                WeightCaptureContent(
+                    product = product,
+                    scaleState = scaleState,
+                    onRetryScale = onRetryScale,
+                    onAdd = onAdd,
+                    onDismiss = onDismiss,
+                )
             }
         }
     } else {
@@ -98,7 +109,13 @@ fun WeightCapturePanel(
                     onClick = {},
                 ),
         ) {
-            WeightCaptureContent(product = product, onAdd = onAdd, onDismiss = onDismiss)
+            WeightCaptureContent(
+                product = product,
+                scaleState = scaleState,
+                onRetryScale = onRetryScale,
+                onAdd = onAdd,
+                onDismiss = onDismiss,
+            )
         }
     }
 }
@@ -106,10 +123,26 @@ fun WeightCapturePanel(
 @Composable
 private fun WeightCaptureContent(
     product: Product,
+    scaleState: ScaleConnectionState,
+    onRetryScale: () -> Unit,
     onAdd: (weightKg: Double) -> Unit,
     onDismiss: () -> Unit,
 ) {
     var weightText by remember(product.id) { mutableStateOf("") }
+    val scaleConfigured = scaleState !is ScaleConnectionState.NotConfigured
+    var manualMode by remember(product.id, scaleConfigured) {
+        mutableStateOf(!scaleConfigured)
+    }
+
+    LaunchedEffect(scaleState, manualMode) {
+        if (!manualMode) {
+            weightText = when (scaleState) {
+                is ScaleConnectionState.Stable -> scaleState.reading.netKg
+                else -> ""
+            }
+        }
+    }
+
     val weightKg = parseWeightKg(weightText)
     val totalCents = weightKg?.let { weightTotalCents(it, product.priceInCents) }
     val showError = weightText.isNotBlank() && weightKg == null
@@ -173,20 +206,47 @@ private fun WeightCaptureContent(
             )
             Spacer(Modifier.height(AvoqadoTheme.spacing.sm))
 
-            AvoqadoPillTextField(
-                value = weightText,
-                onValueChange = { weightText = it },
-                placeholder = "Peso (kg)",
-                keyboardType = KeyboardType.Decimal,
-                modifier = Modifier.testTag("weight-input"),
-            )
+            if (scaleConfigured && !manualMode) {
+                ScaleStatusCard(
+                    state = scaleState,
+                    onRetry = onRetryScale,
+                )
+                TextButton(
+                    onClick = {
+                        manualMode = true
+                        weightText = ""
+                    },
+                    modifier = Modifier.align(Alignment.End),
+                ) {
+                    Text("Capturar manualmente")
+                }
+            } else {
+                AvoqadoPillTextField(
+                    value = weightText,
+                    onValueChange = { weightText = it },
+                    placeholder = "Peso (kg)",
+                    keyboardType = KeyboardType.Decimal,
+                    modifier = Modifier.testTag("weight-input"),
+                )
 
-            Spacer(Modifier.height(AvoqadoTheme.spacing.xs))
-            Text(
-                text = "Captura el peso en kilogramos (ej. 0.435). También acepta coma decimal.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+                Spacer(Modifier.height(AvoqadoTheme.spacing.xs))
+                Text(
+                    text = "Captura el peso en kilogramos (ej. 0.435). También acepta coma decimal.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (scaleConfigured) {
+                    TextButton(
+                        onClick = {
+                            manualMode = false
+                            weightText = ""
+                        },
+                        modifier = Modifier.align(Alignment.End),
+                    ) {
+                        Text("Usar báscula")
+                    }
+                }
+            }
 
             Spacer(Modifier.height(AvoqadoTheme.spacing.md))
 
@@ -236,5 +296,92 @@ private fun WeightCaptureContent(
             fullWidth = true,
             modifier = Modifier.padding(AvoqadoTheme.spacing.xl),
         )
+    }
+}
+
+@Composable
+private fun ScaleStatusCard(
+    state: ScaleConnectionState,
+    onRetry: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .padding(AvoqadoTheme.spacing.lg)
+            .testTag("scale-status"),
+    ) {
+        when (state) {
+            ScaleConnectionState.NotConfigured -> Unit
+            is ScaleConnectionState.Connecting -> {
+                Text(
+                    text = "Conectando con ${state.profileName}…",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    text = "Revisa que el cable esté conectado.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            is ScaleConnectionState.Ready -> {
+                Text(
+                    text = "${state.profileName} conectada",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    text = "Coloca el producto sobre la báscula.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            is ScaleConnectionState.Unstable -> {
+                Text(
+                    text = "${state.reading.netKg} kg",
+                    style = MaterialTheme.typography.headlineLarge,
+                    fontWeight = FontWeight.Bold,
+                )
+                Text(
+                    text = "Peso inestable · espera para agregar",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            is ScaleConnectionState.Stable -> {
+                Text(
+                    text = "${state.reading.netKg} kg",
+                    style = MaterialTheme.typography.headlineLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                Text(
+                    text = "Lectura estable · ${state.profileName}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            is ScaleConnectionState.Problem -> {
+                Text(
+                    text = "Báscula no disponible",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                Text(
+                    text = state.message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                TextButton(
+                    onClick = onRetry,
+                    modifier = Modifier.align(Alignment.End),
+                ) {
+                    Text("Reintentar")
+                }
+            }
+        }
     }
 }

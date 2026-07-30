@@ -89,6 +89,51 @@ class SecureStorage @Inject constructor(
         set(value) { prefs.edit().putBoolean(KEY_RESERVATIONS_ENABLED, value).apply() }
 
     /**
+     * Vales por área (AREA_TICKETS) — opt-in POR VENUE, apagado por defecto.
+     *
+     * 🔴 El tier NO alcanza como gate, y por eso existe esta bandera. `AREA_TICKETS` es PRO
+     * y PRO es *blanket* en el server: TODO venue PRO lo recibe. Gatear sólo con
+     * `PlanManager.hasFeature()` haría aparecer el escaneo de vales y las pantallas de
+     * entrega en cada tienda retail y cada restaurante del parque — negocios que no tienen
+     * áreas ni vales y para los que eso es puro ruido, o peor, un flujo que rompe el suyo.
+     *
+     * Peor todavía: `hasFeature()` **falla ABIERTO** por diseño (código desconocido → `true`,
+     * para no dejar un POS inservible por un plan que no se pudo leer). Esa ley es correcta
+     * para no bloquear ventas, y es exactamente la equivocada aquí: sin esta bandera, un
+     * fallo al leer el plan encendería vales en todo el parque.
+     *
+     * Default `false` = el parque entero se comporta idéntico a hoy. Se enciende venue por
+     * venue en la instalación. Mismo patrón que [reservationsEnabled].
+     */
+    var areaTicketsEnabled: Boolean
+        get() = prefs.getBoolean(KEY_AREA_TICKETS_ENABLED, false)
+        set(value) { prefs.edit().putBoolean(KEY_AREA_TICKETS_ENABLED, value).apply() }
+
+    var areaTicketCheckoutId: String?
+        get() = prefs.getString(KEY_AREA_TICKET_CHECKOUT_ID, null)
+        set(value) = prefs.edit().putString(KEY_AREA_TICKET_CHECKOUT_ID, value).apply()
+
+    var areaTicketCheckoutVenueId: String?
+        get() = prefs.getString(KEY_AREA_TICKET_CHECKOUT_VENUE_ID, null)
+        set(value) = prefs.edit().putString(KEY_AREA_TICKET_CHECKOUT_VENUE_ID, value).apply()
+
+    var areaTicketCreateKey: String?
+        get() = prefs.getString(KEY_AREA_TICKET_CREATE_KEY, null)
+        set(value) = prefs.edit().putString(KEY_AREA_TICKET_CREATE_KEY, value).apply()
+
+    var areaTicketMaterializeKey: String?
+        get() = prefs.getString(KEY_AREA_TICKET_MATERIALIZE_KEY, null)
+        set(value) = prefs.edit().putString(KEY_AREA_TICKET_MATERIALIZE_KEY, value).apply()
+
+    var pendingAreaTicketIssueKey: String?
+        get() = prefs.getString(KEY_PENDING_AREA_TICKET_ISSUE_KEY, null)
+        set(value) = prefs.edit().putString(KEY_PENDING_AREA_TICKET_ISSUE_KEY, value).apply()
+
+    var pendingAreaTicketPrintCode: String?
+        get() = prefs.getString(KEY_PENDING_AREA_TICKET_PRINT_CODE, null)
+        set(value) = prefs.edit().putString(KEY_PENDING_AREA_TICKET_PRINT_CODE, value).apply()
+
+    /**
      * Plan tier for the active venue ("FREE"|"PRO"|"PREMIUM"|"ENTERPRISE"),
      * parsed from the venue-settings response. Null = unknown (old server or
      * not fetched yet) → PlanManager fails OPEN (no gates), matching today's
@@ -336,6 +381,16 @@ class SecureStorage @Inject constructor(
             .remove(KEY_VENUE_TIMEZONE)
             .remove(KEY_VENUE_MODE)
             .remove(KEY_RESERVATIONS_ENABLED)
+            // 🔴 Sin esta línea la bandera de vales SOBREVIVE al cambio de venue: se cambia de
+            // la cremería a una tienda retail y la tienda hereda el flujo de vales. Es
+            // exactamente el modo de falla que la bandera existe para evitar.
+            .remove(KEY_AREA_TICKETS_ENABLED)
+            .remove(KEY_AREA_TICKET_CHECKOUT_ID)
+            .remove(KEY_AREA_TICKET_CHECKOUT_VENUE_ID)
+            .remove(KEY_AREA_TICKET_CREATE_KEY)
+            .remove(KEY_AREA_TICKET_MATERIALIZE_KEY)
+            .remove(KEY_PENDING_AREA_TICKET_ISSUE_KEY)
+            .remove(KEY_PENDING_AREA_TICKET_PRINT_CODE)
             .remove(KEY_PLAN_TIER)
             .remove(KEY_PLAN_EXEMPT)
             .remove(KEY_VENUE_PERMISSIONS)
@@ -378,6 +433,13 @@ class SecureStorage @Inject constructor(
         private const val KEY_VENUE_TIMEZONE = "venueTimezone"
         private const val KEY_VENUE_MODE = "venueMode"
         private const val KEY_RESERVATIONS_ENABLED = "reservationsEnabled"
+        private const val KEY_AREA_TICKETS_ENABLED = "areaTicketsEnabled"
+        private const val KEY_AREA_TICKET_CHECKOUT_ID = "areaTicketCheckoutId"
+        private const val KEY_AREA_TICKET_CHECKOUT_VENUE_ID = "areaTicketCheckoutVenueId"
+        private const val KEY_AREA_TICKET_CREATE_KEY = "areaTicketCreateKey"
+        private const val KEY_AREA_TICKET_MATERIALIZE_KEY = "areaTicketMaterializeKey"
+        private const val KEY_PENDING_AREA_TICKET_ISSUE_KEY = "pendingAreaTicketIssueKey"
+        private const val KEY_PENDING_AREA_TICKET_PRINT_CODE = "pendingAreaTicketPrintCode"
         private const val KEY_PLAN_TIER = "planTier"
         private const val KEY_PLAN_EXEMPT = "planExempt"
         private const val KEY_VENUE_PERMISSIONS = "venuePermissions"

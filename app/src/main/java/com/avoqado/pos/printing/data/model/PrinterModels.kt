@@ -210,6 +210,11 @@ data class ReceiptData(
     val changeAmount: Int? = null, // cents
     /** URL del recibo digital para el QR (escanear → recibo, calificar, facturar). */
     val receiptUrl: String? = null,
+    /**
+     * Código opaco del comprobante pagado que cada área escanea para entregar.
+     * Sólo existe en ventas materializadas desde vales; los recibos normales quedan iguales.
+     */
+    val areaDeliveryCode: String? = null,
 ) {
     val isCashPayment: Boolean
         get() = paymentMethod == "Efectivo"
@@ -242,6 +247,12 @@ data class ReceiptItem(
     val isCortesia: Boolean = false,
     /** Venta por peso: "0.435 kg × $420.00/kg" — se imprime bajo el nombre. Null si no hay peso. */
     val weightSummary: String? = null,
+    /**
+     * Origen operativo de una línea ya preparada por un área, por ejemplo
+     * "Cremería · Vale 9016719357". El recibo final lo conserva para que la
+     * verificación visual sea posible aun si el área no escanea el código de entrega.
+     */
+    val areaSourceLabel: String? = null,
 ) {
     val formattedPrice: String
         get() = if (isCortesia) {
@@ -250,6 +261,47 @@ data class ReceiptItem(
             val amount = totalPrice / 100.0
             String.format(Locale.US, "$%.2f", amount)
         }
+}
+
+// MARK: - Vale de área (AREA_TICKETS)
+
+/**
+ * El papel que el ÁREA le da al cliente y que la caja escanea. No es comanda (esa se queda en
+ * la estación) ni recibo (ese sale pagado): es el tercer documento, el único que viaja en la mano
+ * del cliente.
+ *
+ * Reusa [ReceiptItem] a propósito — ya sabe pintar una línea de granel con su `weightSummary`, y
+ * que el vale y el recibo se vean idénticos es justo lo que hace que el cliente no note que
+ * cambiaron de sistema.
+ */
+data class AreaTicketData(
+    /** `9PPNNNNNC` — lo que va en el código de barras y en grande para teclear. */
+    val areaTicketCode: String,
+    /** "Cremería", "Panadería"… Es el título del vale. */
+    val areaName: String,
+    val items: List<ReceiptItem>,
+    val totalCents: Int,
+    val venueName: String? = null,
+    val staffName: String? = null,
+    val timestamp: Date = Date(),
+    /**
+     * §5.3 — configurable por venue. Algunos negocios no quieren que el cliente vea el desglose
+     * antes de llegar a la caja; el vale sigue siendo escaneable sin precios.
+     */
+    val showPrices: Boolean = true,
+    /**
+     * Sale de `FulfillmentArea.fulfillmentMode`. Cambia SOLO el pie del vale, que es lo que le
+     * dice al cliente si tiene que volver por su producto o ya se lo llevó.
+     */
+    val holdsProduct: Boolean = true,
+) {
+    val formattedTotal: String
+        get() = String.format(Locale.US, "$%.2f", totalCents / 100.0)
+
+    val formattedTime: String
+        get() = timestamp.toInstant()
+            .atZone(com.avoqado.pos.core.util.VenueTimeZone.zoneId())
+            .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm", Locale("es", "MX")))
 }
 
 // MARK: - Kitchen Ticket Data

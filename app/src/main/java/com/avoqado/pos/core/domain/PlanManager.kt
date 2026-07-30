@@ -81,8 +81,11 @@ class PlanManager @Inject constructor(
             "PROMOTIONS" to PlanTier.PRO,
             "REFERRAL_PROGRAM" to PlanTier.PRO,
             "ADVANCED_REPORTS" to PlanTier.PRO,
+            "AREA_TICKETS" to PlanTier.PRO,
+            "VARIABLE_WEIGHT_BARCODE" to PlanTier.PRO,
             "INVENTORY_TRACKING" to PlanTier.PREMIUM,
             "CFDI" to PlanTier.PREMIUM,
+            "SCALE_INTEGRATION" to PlanTier.PREMIUM,
         )
     }
 }

@@ -3,6 +3,8 @@ package com.avoqado.pos.payment.presentation
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.avoqado.pos.areatickets.data.AreaTicketRepository
+import com.avoqado.pos.areatickets.data.NormalCheckoutItem
 import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
 import com.avoqado.pos.kds.data.KDSOrderItemRequest
 import com.avoqado.pos.kds.data.KDSRepository
@@ -66,6 +68,7 @@ class PaymentFlowViewModel @Inject constructor(
     private val secureStorage: SecureStorage,
     private val comandaDispatcher: ComandaDispatcher,
     private val customerDisplay: com.avoqado.pos.customerdisplay.CustomerDisplayState,
+    private val areaTicketRepository: AreaTicketRepository,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<PaymentFlowState>(PaymentFlowState.Loading)
@@ -245,6 +248,7 @@ class PaymentFlowViewModel @Inject constructor(
     private var selectedTerminalId: String? = null
     private var lastPaymentId: String? = null
     private var lastReceiptAccessKey: String? = null
+    private var lastAreaDeliveryCode: String? = null
     private var lastCashTenderedCents: Int? = null
     private var splitSelectedItemIds: Set<String> = emptySet()
     private var splitNumberOfParts: Int? = null
@@ -471,6 +475,7 @@ class PaymentFlowViewModel @Inject constructor(
         _canPrintOnTerminal.value = false
         lastPaymentId = null
         lastReceiptAccessKey = null
+        lastAreaDeliveryCode = null
         lastCashTenderedCents = null
         _onlineTerminals.value = emptyList()
 
@@ -646,6 +651,11 @@ class PaymentFlowViewModel @Inject constructor(
 
         viewModelScope.launch {
             try {
+                if (areaTicketRepository.session.current() != null) {
+                    if (!materializeAreaTicketCheckout(cart)) return@launch
+                    processPaymentMethod(total)
+                    return@launch
+                }
                 val hasRealProducts = hasProductItems(cart)
 
                 if (hasRealProducts) {
@@ -758,6 +768,7 @@ class PaymentFlowViewModel @Inject constructor(
                     is TerminalPaymentResult.Success -> {
                         lastPaymentId = terminalResult.paymentId
                         lastReceiptAccessKey = terminalResult.receiptAccessKey
+                        finishAreaTicketPayment()
                         _state.value = PaymentFlowState.Success(
                             totalAmount = total,
                             method = PaymentMethod.CARD,
@@ -795,6 +806,7 @@ class PaymentFlowViewModel @Inject constructor(
                             // impreso, igual que en tarjeta. Se setea ANTES de imprimir y
                             // de armar el estado Success para que el QR ya esté disponible.
                             result.receiptAccessKey?.let { lastReceiptAccessKey = it }
+                            finishAreaTicketPayment()
                             recordCashSale(total, orderId)
                             _state.value = PaymentFlowState.Success(
                                 totalAmount = total,
@@ -811,7 +823,7 @@ class PaymentFlowViewModel @Inject constructor(
                             val isQueueable = OrderRepository.isQueueableError(error) ||
                                 (error is OrderRepository.ServerException && OrderRepository.isQueueableHttpCode(error.code))
                             val cart = cartState
-                            if (isQueueable && cart != null) {
+                            if (isQueueable && cart != null && areaTicketRepository.session.current() == null) {
                                 cashPaymentRepository.queueCashPayment(
                                     orderRequest = buildOrderRequest(cart),
                                     staffId = selectedStaffId(),
@@ -868,6 +880,17 @@ class PaymentFlowViewModel @Inject constructor(
                     _state.value = PaymentFlowState.Processing(total)
 
                     val cart = cartState
+                    if (cart != null && areaTicketRepository.session.current() != null) {
+                        if (!materializeAreaTicketCheckout(cart)) return@launch
+                        recordCashPaymentForOrder(
+                            orderId = createdOrderId!!,
+                            total = total,
+                            cashReceivedCents = cashReceivedCents,
+                            changeCents = result.changeCents,
+                            orderRequest = buildOrderRequest(cart),
+                        )
+                        return@launch
+                    }
                     val hasRealProducts = cart?.let(::hasProductItems) ?: false
 
                     // TABLE_SERVICE: a preset createdOrderId (PAYING table session)
@@ -1065,6 +1088,7 @@ class PaymentFlowViewModel @Inject constructor(
                 lastPaymentId = result.paymentId
                 // accessKey del recibo → QR en pantalla del cliente y recibo impreso.
                 result.receiptAccessKey?.let { lastReceiptAccessKey = it }
+                finishAreaTicketPayment()
                 recordCashSale(total, orderId)
                 _state.value = PaymentFlowState.Success(
                     totalAmount = total,
@@ -1078,7 +1102,7 @@ class PaymentFlowViewModel @Inject constructor(
             onFailure = { error ->
                 val isQueueable = OrderRepository.isQueueableError(error) ||
                     (error is OrderRepository.ServerException && OrderRepository.isQueueableHttpCode(error.code))
-                if (isQueueable) {
+                if (isQueueable && areaTicketRepository.session.current() == null) {
                     cashPaymentRepository.queueCashPayment(
                         orderRequest = orderRequest,
                         staffId = selectedStaffId(),
@@ -1195,6 +1219,14 @@ class PaymentFlowViewModel @Inject constructor(
         // Cancel pending terminal payment if in progress
         terminalPaymentService.cancelCurrentPayment()
 
+        if (areaTicketRepository.session.current() != null) {
+            viewModelScope.launch {
+                runCatching { areaTicketRepository.cancel() }
+                    .onFailure { Log.e("PaymentFlow", "⚠️ No se pudo liberar la sesión de vales: ${it.message}") }
+            }
+            return
+        }
+
         createdOrderId?.let { orderId ->
             viewModelScope.launch {
                 // A failed cancel leaves the order OPEN server-side with nobody
@@ -1240,7 +1272,7 @@ class PaymentFlowViewModel @Inject constructor(
     private fun createKDSOrderIfNeeded() {
         val cart = cartState ?: return
         val realItems = cart.items.filter {
-            it.type is CartItemType.ProductItem
+            it.type is CartItemType.ProductItem && !it.locked
         }
         if (realItems.isEmpty()) return
 
@@ -1296,7 +1328,7 @@ class PaymentFlowViewModel @Inject constructor(
     private fun autoPrintAfterPayment(method: PaymentMethod, changeCents: Int? = null) {
         val cart = cartState ?: return
         val realItems = cart.items.filter {
-            it.type is CartItemType.ProductItem
+            it.type is CartItemType.ProductItem && !it.locked
         }
 
         viewModelScope.launch {
@@ -1382,6 +1414,7 @@ class PaymentFlowViewModel @Inject constructor(
                 note = itemNote,
                 isCortesia = isCortesia,
                 weightSummary = weightSummary,
+                areaSourceLabel = subtitle.takeIf { locked },
             )
         }
 
@@ -1444,6 +1477,7 @@ class PaymentFlowViewModel @Inject constructor(
             changeAmount = resolvedChange,
             transactionId = lastPaymentId,
             receiptUrl = receiptUrl,
+            areaDeliveryCode = lastAreaDeliveryCode,
         )
     }
 
@@ -1600,6 +1634,67 @@ class PaymentFlowViewModel @Inject constructor(
 
     private fun hasProductItems(cart: CartState): Boolean {
         return cart.items.any { it.type is CartItemType.ProductItem }
+    }
+
+    private suspend fun materializeAreaTicketCheckout(cart: CartState): Boolean {
+        return try {
+            val normalItems = cart.items
+                .filter { !it.locked }
+                .mapNotNull { item ->
+                    val productId = (item.type as? CartItemType.ProductItem)?.productId ?: return@mapNotNull null
+                    NormalCheckoutItem(
+                        productId = productId,
+                        quantity = item.quantity,
+                        notes = item.itemNote,
+                        modifierIds = item.selectedModifiers.map { it.modifierId },
+                        discountId = item.itemDiscountId,
+                        weightQuantity = item.weightKg,
+                    )
+                }
+            val checkout = areaTicketRepository.materialize(
+                normalItems = normalItems,
+                customerName = null,
+                note = cart.orderNote,
+            )
+            if (checkout.status in setOf("PAYMENT_PENDING", "RECONCILIATION_REQUIRED")) {
+                _state.value = PaymentFlowState.Error(
+                    message = "Este cobro sigue en confirmación. No vuelvas a cobrar; revisa el estado del pago.",
+                    source = PaymentErrorSource.SERVER,
+                )
+                return false
+            }
+            val order = checkout.order
+            if (order == null) {
+                _state.value = PaymentFlowState.Error(
+                    message = "No se pudo materializar la orden de los vales.",
+                    source = PaymentErrorSource.SERVER,
+                )
+                false
+            } else {
+                createdOrderId = order.id
+                createdOrderNumber = order.orderNumber
+                lastAreaDeliveryCode = order.areaDeliveryCode
+                true
+            }
+        } catch (error: Exception) {
+            _state.value = PaymentFlowState.Error(
+                message = error.message ?: "No se pudo preparar la venta de vales.",
+                source = PaymentErrorSource.SERVER,
+            )
+            false
+        }
+    }
+
+    private fun finishAreaTicketPayment() {
+        if (areaTicketRepository.session.current() == null) return
+        if (_splitType.value == "FULLPAYMENT") {
+            areaTicketRepository.session.clear()
+        } else {
+            viewModelScope.launch {
+                runCatching { areaTicketRepository.refresh() }
+                    .onFailure { Log.e("🎟️", "No se pudo refrescar el saldo de la sesión: ${it.message}") }
+            }
+        }
     }
 
     private fun visiblePaymentItems(cart: CartState): List<PaymentItem> {
