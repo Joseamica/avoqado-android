@@ -226,6 +226,12 @@ class AreaTicketOperationsViewModel @Inject constructor(
         _state.value = _state.value.copy(message = null, error = null)
     }
 
+    fun dismissPendingReprint() {
+        // Keep the persisted code so a process restart can offer recovery again.
+        // Dismissing only releases the current screen after a printer outage.
+        _state.value = _state.value.copy(pendingReprintCode = null, error = null)
+    }
+
     private fun deliver(ticketId: String, scannedReceipt: Boolean) {
         if (_state.value.submitting) return
         viewModelScope.launch {

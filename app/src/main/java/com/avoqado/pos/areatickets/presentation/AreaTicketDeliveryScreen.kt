@@ -159,6 +159,10 @@ fun AreaTicketDeliveryScreen(
                     viewModel.deliverByReceiptCode(code)
                 },
                 onDismiss = { scanning = false },
+                cameraHint = "Apunta la cámara al código del comprobante pagado",
+                manualTitle = "Escanea o escribe el comprobante pagado",
+                manualLabel = "Código del comprobante pagado",
+                actionText = "Comprobar pago",
             )
         }
 

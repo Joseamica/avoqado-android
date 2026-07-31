@@ -802,8 +802,8 @@ fun CheckoutScreen(
     if (areaOperationsState.error == null && areaOperationsState.pendingReprintCode != null) {
         AvoqadoDialog(
             title = "Vale pendiente de impresión",
-            description = "El vale ${areaOperationsState.pendingReprintCode} ya existe. Reimprímelo; no se emitirá otro.",
-            onDismiss = {},
+            description = "El vale ${areaOperationsState.pendingReprintCode} ya existe y no se emitirá otro. Puedes cerrar este aviso y continuar; quedará pendiente para reimpresión.",
+            onDismiss = areaTicketOperations::dismissPendingReprint,
             actionButton = {
                 PrimaryButton(
                     text = if (areaOperationsState.submitting) "Reimprimiendo…" else "Reimprimir",

@@ -2,9 +2,12 @@ package com.avoqado.pos.areatickets.data
 
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ApiService
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import retrofit2.HttpException
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -14,6 +17,26 @@ class AreaTicketException(
     override val message: String,
     val retryable: Boolean,
 ) : Exception(message)
+
+private val areaTicketErrorJson = Json { ignoreUnknownKeys = true }
+
+internal fun parseAreaTicketHttpError(body: String?, statusCode: Int): AreaTicketException {
+    val apiError = body?.let { raw ->
+        runCatching {
+            areaTicketErrorJson.decodeFromString<AreaTicketEnvelope<JsonObject>>(raw).error
+        }.getOrNull()
+    }
+    return AreaTicketException(
+        code = apiError?.code ?: "HTTP_$statusCode",
+        message = apiError?.message ?: when (statusCode) {
+            401 -> "La sesión venció. Inicia sesión de nuevo."
+            403 -> "Esta terminal no tiene permiso para realizar esta operación."
+            404 -> "No encontramos ese vale o comprobante en este local."
+            else -> "No se pudo completar la operación de vales."
+        },
+        retryable = apiError?.retryable == true || statusCode >= 500,
+    )
+}
 
 @Singleton
 class AreaTicketSession @Inject constructor(
@@ -81,10 +104,20 @@ class AreaTicketRepository @Inject constructor(
         )
     }
 
+    private suspend fun <T> request(block: suspend () -> AreaTicketEnvelope<T>): T =
+        try {
+            block().unwrap()
+        } catch (error: HttpException) {
+            throw parseAreaTicketHttpError(
+                body = error.response()?.errorBody()?.string(),
+                statusCode = error.code(),
+            )
+        }
+
     suspend fun settings(): AreaTicketSettingsData {
         val venueId = venueId()
         session.ensureVenue(venueId)
-        return api.getAreaTicketSettings(venueId).unwrap()
+        return request { api.getAreaTicketSettings(venueId) }
     }
 
     suspend fun restore(): AreaTicketCheckout? {
@@ -93,7 +126,7 @@ class AreaTicketRepository @Inject constructor(
         session.current()?.let { return it }
         val checkoutId = session.persistedCheckoutId(venueId) ?: return null
         return runCatching {
-            api.getAreaTicketCheckout(venueId, checkoutId).unwrap().checkout
+            request { api.getAreaTicketCheckout(venueId, checkoutId) }.checkout
         }.getOrElse {
             return null
         }.also { checkout ->
@@ -106,24 +139,28 @@ class AreaTicketRepository @Inject constructor(
     }
 
     suspend fun resolveCheckoutScan(code: String): AreaTicketScanData =
-        api.resolveAreaTicketScan(venueId(), ScanRequest(code.trim(), "CHECKOUT")).unwrap()
+        request { api.resolveAreaTicketScan(venueId(), ScanRequest(code.trim(), "CHECKOUT")) }
 
     suspend fun addTicket(code: String): AreaTicketCheckout {
         val venueId = venueId()
         session.ensureVenue(venueId)
-        val checkout = session.current() ?: api.createAreaTicketCheckout(
-            venueId,
-            IdempotentRequest(session.createIdempotencyKey()),
-        ).unwrap().checkout.also { session.update(venueId, it) }
+        val checkout = session.current() ?: request {
+            api.createAreaTicketCheckout(
+                venueId,
+                IdempotentRequest(session.createIdempotencyKey()),
+            )
+        }.checkout.also { session.update(venueId, it) }
 
         if (checkout.status != "OPEN") {
             throw AreaTicketException("CHECKOUT_SESSION_FROZEN", "La sesión de vales ya no admite cambios.", false)
         }
-        val updated = api.addAreaTicketToCheckout(
-            venueId,
-            checkout.id,
-            AddTicketRequest(code.trim(), UUID.randomUUID().toString()),
-        ).unwrap().checkout
+        val updated = request {
+            api.addAreaTicketToCheckout(
+                venueId,
+                checkout.id,
+                AddTicketRequest(code.trim(), UUID.randomUUID().toString()),
+            )
+        }.checkout
         session.update(venueId, updated)
         return updated
     }
@@ -132,12 +169,14 @@ class AreaTicketRepository @Inject constructor(
         val venueId = venueId()
         val checkout = session.current()
             ?: throw AreaTicketException("CHECKOUT_NOT_FOUND", "No hay una sesión de vales abierta.", false)
-        val updated = api.removeAreaTicketFromCheckout(
-            venueId,
-            checkout.id,
-            ticketId,
-            IdempotentRequest(UUID.randomUUID().toString()),
-        ).unwrap().checkout
+        val updated = request {
+            api.removeAreaTicketFromCheckout(
+                venueId,
+                checkout.id,
+                ticketId,
+                IdempotentRequest(UUID.randomUUID().toString()),
+            )
+        }.checkout
         session.update(venueId, updated)
         return updated
     }
@@ -145,11 +184,13 @@ class AreaTicketRepository @Inject constructor(
     suspend fun heartbeat(): AreaTicketCheckout? {
         val venueId = venueId()
         val checkout = session.current() ?: return null
-        val updated = api.heartbeatAreaTicketCheckout(
-            venueId,
-            checkout.id,
-            IdempotentRequest(UUID.randomUUID().toString()),
-        ).unwrap().checkout
+        val updated = request {
+            api.heartbeatAreaTicketCheckout(
+                venueId,
+                checkout.id,
+                IdempotentRequest(UUID.randomUUID().toString()),
+            )
+        }.checkout
         session.update(venueId, updated)
         return updated
     }
@@ -164,16 +205,18 @@ class AreaTicketRepository @Inject constructor(
             ?: throw AreaTicketException("CHECKOUT_NOT_FOUND", "No hay una sesión de vales abierta.", false)
         if (checkout.order != null) return checkout
 
-        val updated = api.materializeAreaTicketCheckout(
-            venueId,
-            checkout.id,
-            MaterializeCheckoutRequest(
-                idempotencyKey = session.materializeIdempotencyKey(),
-                normalItems = normalItems,
-                customerName = customerName,
-                note = note,
-            ),
-        ).unwrap().checkout
+        val updated = request {
+            api.materializeAreaTicketCheckout(
+                venueId,
+                checkout.id,
+                MaterializeCheckoutRequest(
+                    idempotencyKey = session.materializeIdempotencyKey(),
+                    normalItems = normalItems,
+                    customerName = customerName,
+                    note = note,
+                ),
+            )
+        }.checkout
         session.update(venueId, updated)
         return updated
     }
@@ -181,7 +224,7 @@ class AreaTicketRepository @Inject constructor(
     suspend fun refresh(): AreaTicketCheckout? {
         val venueId = venueId()
         val checkout = session.current() ?: return null
-        val updated = api.getAreaTicketCheckout(venueId, checkout.id).unwrap().checkout
+        val updated = request { api.getAreaTicketCheckout(venueId, checkout.id) }.checkout
         session.update(venueId, updated)
         if (updated.status == "PAID" || updated.status == "CANCELLED" || updated.status == "EXPIRED") {
             session.clear()
@@ -192,11 +235,13 @@ class AreaTicketRepository @Inject constructor(
     suspend fun cancel(): AreaTicketCheckout? {
         val venueId = venueId()
         val checkout = session.current() ?: return null
-        val updated = api.cancelAreaTicketCheckout(
-            venueId,
-            checkout.id,
-            IdempotentRequest(UUID.randomUUID().toString()),
-        ).unwrap().checkout
+        val updated = request {
+            api.cancelAreaTicketCheckout(
+                venueId,
+                checkout.id,
+                IdempotentRequest(UUID.randomUUID().toString()),
+            )
+        }.checkout
         session.clear()
         return updated
     }
@@ -205,10 +250,12 @@ class AreaTicketRepository @Inject constructor(
         lines: List<IssueAreaTicketLineRequest>,
         idempotencyKey: String = UUID.randomUUID().toString(),
     ): AreaTicket =
-        api.issueAreaTicket(
-            venueId(),
-            IssueAreaTicketRequest(idempotencyKey, lines),
-        ).unwrap().ticket
+        request {
+            api.issueAreaTicket(
+                venueId(),
+                IssueAreaTicketRequest(idempotencyKey, lines),
+            )
+        }.ticket
 
     suspend fun recordPrint(
         ticketId: String,
@@ -218,37 +265,43 @@ class AreaTicketRepository @Inject constructor(
         errorCode: String? = null,
     ) {
         val auditReason = normalizeAreaTicketPrintReason(reprint, reason)
-        api.recordAreaTicketPrintAttempt(
-            venueId(),
-            ticketId,
-            PrintAttemptRequest(
-                idempotencyKey = UUID.randomUUID().toString(),
-                status = if (printed) "PRINTED" else "FAILED",
-                kind = if (reprint) "REPRINT" else "ORIGINAL",
-                reason = auditReason,
-                errorCode = errorCode,
-            ),
-        ).unwrap()
+        request {
+            api.recordAreaTicketPrintAttempt(
+                venueId(),
+                ticketId,
+                PrintAttemptRequest(
+                    idempotencyKey = UUID.randomUUID().toString(),
+                    status = if (printed) "PRINTED" else "FAILED",
+                    kind = if (reprint) "REPRINT" else "ORIGINAL",
+                    reason = auditReason,
+                    errorCode = errorCode,
+                ),
+            )
+        }
     }
 
     suspend fun pendingDelivery(cursor: String? = null): PendingFulfillmentData =
-        api.getPendingAreaTicketFulfillment(venueId(), cursor).unwrap()
+        request { api.getPendingAreaTicketFulfillment(venueId(), cursor) }
 
     suspend fun resolveDelivery(code: String): DeliveryResolutionData =
-        api.resolveAreaTicketFulfillment(
-            venueId(),
-            ScanRequest(code.trim(), "AREA_DELIVERY"),
-        ).unwrap()
+        request {
+            api.resolveAreaTicketFulfillment(
+                venueId(),
+                ScanRequest(code.trim(), "AREA_DELIVERY"),
+            )
+        }
 
     suspend fun fulfill(ticketId: String, scannedReceipt: Boolean) {
-        api.fulfillAreaTicket(
-            venueId(),
-            ticketId,
-            FulfillAreaTicketRequest(
-                idempotencyKey = UUID.randomUUID().toString(),
-                method = if (scannedReceipt) "RECEIPT_SCAN" else "PAPER_CONFIRMATION",
-            ),
-        ).unwrap()
+        request {
+            api.fulfillAreaTicket(
+                venueId(),
+                ticketId,
+                FulfillAreaTicketRequest(
+                    idempotencyKey = UUID.randomUUID().toString(),
+                    method = if (scannedReceipt) "RECEIPT_SCAN" else "PAPER_CONFIRMATION",
+                ),
+            )
+        }
     }
 }
 

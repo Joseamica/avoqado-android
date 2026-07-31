@@ -72,6 +72,10 @@ import java.util.concurrent.Executors
 fun BarcodeScannerView(
     onBarcodeScanned: (String) -> Unit,
     onDismiss: () -> Unit,
+    cameraHint: String = "Apunta la cámara al código de barras",
+    manualTitle: String = "Escanea con pistola o escribe el código",
+    manualLabel: String = "Código de vale o producto",
+    actionText: String = "Consultar código",
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -238,7 +242,7 @@ fun BarcodeScannerView(
 
                 // Scanning hint (bottom-center)
                 Text(
-                    text = "Apunta la camara al código de barras",
+                    text = cameraHint,
                     style = MaterialTheme.typography.bodyMedium,
                     color = Color.White,
                     modifier = Modifier
@@ -286,7 +290,7 @@ fun BarcodeScannerView(
             verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
         ) {
             Text(
-                text = "Escanea con pistola o escribe el código",
+                text = manualTitle,
                 style = MaterialTheme.typography.titleSmall,
                 color = MaterialTheme.colorScheme.onSurface,
             )
@@ -305,13 +309,13 @@ fun BarcodeScannerView(
                             false
                         }
                     },
-                label = { Text("Código de vale o producto") },
+                label = { Text(manualLabel) },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
                 keyboardActions = KeyboardActions(onDone = { submitCode(manualCode) }),
             )
             PrimaryButton(
-                text = "Consultar código",
+                text = actionText,
                 enabled = manualCode.isNotBlank() && !hasScanned,
                 onClick = { submitCode(manualCode) },
             )

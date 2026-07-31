@@ -11,7 +11,9 @@ import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.printing.data.PrinterService
 import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.every
 import io.mockk.mockk
+import io.mockk.verify
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -107,6 +109,27 @@ class AreaTicketOperationsStateTest {
         assertTrue(viewModel.state.value.issueWorkspace)
         assertNull(viewModel.state.value.error)
         coVerify(exactly = 0) { repository.pendingDelivery(any()) }
+    }
+
+    @Test
+    fun `dismissing pending reprint releases screen but keeps persisted recovery code`() = runTest {
+        val repository = mockk<AreaTicketRepository>()
+        val secureStorage = mockk<SecureStorage>(relaxed = true)
+        every { secureStorage.pendingAreaTicketPrintCode } returns "9340048086"
+        coEvery { repository.settings() } returns settings(defaultWorkspace = "AREA_OPERATIONS")
+
+        val viewModel = AreaTicketOperationsViewModel(
+            repository = repository,
+            printerService = mockk<PrinterService>(relaxed = true),
+            secureStorage = secureStorage,
+        )
+
+        assertEquals("9340048086", viewModel.state.value.pendingReprintCode)
+
+        viewModel.dismissPendingReprint()
+
+        assertNull(viewModel.state.value.pendingReprintCode)
+        verify(exactly = 0) { secureStorage.pendingAreaTicketPrintCode = null }
     }
 
     private fun settings(

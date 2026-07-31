@@ -27,7 +27,7 @@ class AvoqadoDatabaseMigrationTest {
     }
 
     @Test
-    fun migrationFrom1To3_keepsPendingPaymentsAndCreatesAllTables() {
+    fun migrationFrom1To6_keepsPendingPaymentsAndCreatesAllTables() {
         createVersion1Database()
 
         val database = openMigratedDatabase()
@@ -38,13 +38,16 @@ class AvoqadoDatabaseMigrationTest {
             assertTrue(tableExists(sqlite, "cash_drawer_events"))
             assertTrue(tableExists(sqlite, "purchase_orders"))
             assertTrue(tableExists(sqlite, "inventory_transfers"))
+            assertTrue(tableExists(sqlite, "pending_reservation_action"))
+            assertTrue(tableExists(sqlite, "cached_payloads"))
+            assertTrue(tableExists(sqlite, "pos_sync_intents"))
         } finally {
             database.close()
         }
     }
 
     @Test
-    fun migrationFrom2To3_keepsCashDrawerDataAndCreatesInventoryTables() {
+    fun migrationFrom2To6_keepsCashDrawerDataAndCreatesCurrentTables() {
         createVersion2Database()
 
         val database = openMigratedDatabase()
@@ -55,6 +58,9 @@ class AvoqadoDatabaseMigrationTest {
             assertEquals(1, countRows(sqlite, "cash_drawer_events"))
             assertTrue(tableExists(sqlite, "purchase_orders"))
             assertTrue(tableExists(sqlite, "inventory_transfers"))
+            assertTrue(tableExists(sqlite, "pending_reservation_action"))
+            assertTrue(tableExists(sqlite, "cached_payloads"))
+            assertTrue(tableExists(sqlite, "pos_sync_intents"))
         } finally {
             database.close()
         }
@@ -68,6 +74,9 @@ class AvoqadoDatabaseMigrationTest {
         ).addMigrations(
             AvoqadoDatabaseMigrations.MIGRATION_1_2,
             AvoqadoDatabaseMigrations.MIGRATION_2_3,
+            AvoqadoDatabaseMigrations.MIGRATION_3_4,
+            AvoqadoDatabaseMigrations.MIGRATION_4_5,
+            AvoqadoDatabaseMigrations.MIGRATION_5_6,
         ).build().also { roomDb ->
             roomDb.openHelper.writableDatabase
         }
