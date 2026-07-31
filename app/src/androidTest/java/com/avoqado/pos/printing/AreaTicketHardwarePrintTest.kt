@@ -8,6 +8,7 @@ import com.avoqado.pos.printing.data.model.AreaTicketData
 import com.avoqado.pos.printing.data.model.PaperWidth
 import com.avoqado.pos.printing.data.model.ReceiptItem
 import kotlinx.coroutines.runBlocking
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -73,13 +74,18 @@ class AreaTicketHardwarePrintTest {
         switchToSingleByteFirst = true,
     )
 
+    private suspend fun connectedPrinterOrSkip(): SunmiInnerPrinter {
+        val printer = SunmiInnerPrinter(context)
+        assumeTrue(
+            "Se requiere una Sunmi con impresora integrada disponible.",
+            printer.ensureBound(),
+        )
+        return printer
+    }
+
     @Test
     fun imprime_vale_con_CODE128() = runBlocking {
-        val printer = SunmiInnerPrinter(context)
-        check(printer.ensureBound()) {
-            "No se pudo enlazar el servicio de impresión de Sunmi. " +
-                "¿Es una Sunmi con cabezal? ¿La app tiene el permiso?"
-        }
+        val printer = connectedPrinterOrSkip()
         val bytes = escpos().generateAreaTicket(
             vale("9470000015"),
             symbology = ESCPOSPrinter.BarcodeSymbology.CODE128_C,
@@ -97,8 +103,7 @@ class AreaTicketHardwarePrintTest {
      */
     @Test
     fun imprime_vale_con_CODE39_para_medir_si_cabe_en_58mm() = runBlocking {
-        val printer = SunmiInnerPrinter(context)
-        check(printer.ensureBound()) { "No se pudo enlazar el servicio de impresión de Sunmi." }
+        val printer = connectedPrinterOrSkip()
         val bytes = escpos().generateAreaTicket(
             vale("9470000023"),
             symbology = ESCPOSPrinter.BarcodeSymbology.CODE39,
@@ -112,8 +117,7 @@ class AreaTicketHardwarePrintTest {
      */
     @Test
     fun imprime_vale_sin_precios() = runBlocking {
-        val printer = SunmiInnerPrinter(context)
-        check(printer.ensureBound()) { "No se pudo enlazar el servicio de impresión de Sunmi." }
+        val printer = connectedPrinterOrSkip()
         val bytes = escpos().generateAreaTicket(
             vale("9470000031").copy(showPrices = false),
             symbology = ESCPOSPrinter.BarcodeSymbology.CODE128_C,
