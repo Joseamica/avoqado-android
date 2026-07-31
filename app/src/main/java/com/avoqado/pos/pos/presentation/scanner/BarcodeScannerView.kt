@@ -277,11 +277,18 @@ fun BarcodeScannerView(
             }
         }
 
+        // Keep manual entry at the top: the Samsung landscape keyboard occupies
+        // the lower half of the scanner and previously hid both the value and CTA.
         Column(
             modifier = Modifier
-                .align(Alignment.BottomCenter)
+                .align(Alignment.TopCenter)
                 .zIndex(10f)
-                .padding(AvoqadoTheme.spacing.xl)
+                .padding(
+                    start = AvoqadoTheme.spacing.xl,
+                    top = 72.dp,
+                    end = AvoqadoTheme.spacing.xl,
+                    bottom = 0.dp,
+                )
                 .widthIn(max = 520.dp)
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.lg))
