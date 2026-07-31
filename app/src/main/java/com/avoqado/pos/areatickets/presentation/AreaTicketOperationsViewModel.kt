@@ -11,25 +11,39 @@ import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.pos.data.model.CartItemType
 import com.avoqado.pos.pos.presentation.cart.CartState
 import com.avoqado.pos.printing.data.ESCPOSPrinter.BarcodeSymbology
+import com.avoqado.pos.printing.data.AreaTicketPdfGenerator
 import com.avoqado.pos.printing.data.PrinterService
 import com.avoqado.pos.printing.data.model.AreaTicketData
 import com.avoqado.pos.printing.data.model.PrinterRole
 import com.avoqado.pos.printing.data.model.ReceiptItem
 import dagger.hilt.android.lifecycle.HiltViewModel
+import java.time.Instant
+import java.util.Date
 import java.util.Locale
 import java.util.UUID
 import javax.inject.Inject
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+data class AreaTicketPdfExport(
+    val ticketId: String,
+    val code: String,
+    val fileName: String,
+    val bytes: ByteArray,
+)
 
 data class AreaTicketOperationsState(
     val loading: Boolean = true,
     val submitting: Boolean = false,
+    val preparingPdf: Boolean = false,
     val settings: AreaTicketSettingsData? = null,
     val pending: List<AreaTicket> = emptyList(),
     val pendingReprintCode: String? = null,
+    val pdfExport: AreaTicketPdfExport? = null,
     val message: String? = null,
     val error: String? = null,
 ) {
@@ -58,6 +72,7 @@ data class AreaTicketOperationsState(
 class AreaTicketOperationsViewModel @Inject constructor(
     private val repository: AreaTicketRepository,
     private val printerService: PrinterService,
+    private val pdfGenerator: AreaTicketPdfGenerator,
     private val secureStorage: SecureStorage,
 ) : ViewModel() {
     private val _state = MutableStateFlow(AreaTicketOperationsState())
@@ -164,9 +179,9 @@ class AreaTicketOperationsViewModel @Inject constructor(
         }
     }
 
-    fun reprintPending() {
+    fun reprintPending(onIssued: () -> Unit = {}) {
         val code = _state.value.pendingReprintCode ?: return
-        if (_state.value.submitting) return
+        if (_state.value.submitting || _state.value.preparingPdf) return
         viewModelScope.launch {
             _state.value = _state.value.copy(submitting = true, error = null)
             runCatching {
@@ -184,10 +199,90 @@ class AreaTicketOperationsViewModel @Inject constructor(
                     pendingReprintCode = null,
                     message = "Vale ${ticket.code} reimpreso correctamente.",
                 )
+                onIssued()
             }.onFailure { error ->
                 _state.value = _state.value.copy(
                     submitting = false,
                     error = error.message ?: "No se pudo reimprimir el vale $code.",
+                )
+            }
+        }
+    }
+
+    fun preparePendingPdf() {
+        val code = _state.value.pendingReprintCode ?: return
+        if (_state.value.submitting || _state.value.preparingPdf) return
+        viewModelScope.launch {
+            _state.value = _state.value.copy(preparingPdf = true, error = null)
+            runCatching {
+                val resolution = repository.resolveCheckoutScan(code)
+                val ticket = resolution.ticket
+                    ?: throw IllegalStateException("No se encontró el vale $code para exportar.")
+                val bytes = withContext(Dispatchers.Default) {
+                    pdfGenerator.generate(ticket.toPrintable(), configuredSymbology())
+                }
+                AreaTicketPdfExport(
+                    ticketId = ticket.id,
+                    code = ticket.code,
+                    fileName = "vale-area-${ticket.code}.pdf",
+                    bytes = bytes,
+                )
+            }.onSuccess { export ->
+                _state.value = _state.value.copy(
+                    preparingPdf = false,
+                    pdfExport = export,
+                )
+            }.onFailure { error ->
+                _state.value = _state.value.copy(
+                    preparingPdf = false,
+                    pdfExport = null,
+                    error = error.message ?: "No se pudo preparar el PDF.",
+                )
+            }
+        }
+    }
+
+    fun cancelPendingPdfExport() {
+        _state.value = _state.value.copy(preparingPdf = false, pdfExport = null)
+    }
+
+    fun failPendingPdfExport(message: String) {
+        _state.value = _state.value.copy(
+            preparingPdf = false,
+            pdfExport = null,
+            error = message,
+        )
+    }
+
+    fun confirmPendingPdfSaved(onIssued: () -> Unit) {
+        val export = _state.value.pdfExport ?: return
+        if (_state.value.submitting) return
+        viewModelScope.launch {
+            _state.value = _state.value.copy(submitting = true, error = null)
+            runCatching {
+                repository.recordPrint(
+                    ticketId = export.ticketId,
+                    printed = true,
+                    reprint = false,
+                    reason = "Vale guardado como PDF por el operador.",
+                )
+            }.onSuccess {
+                issueIdempotencyKey = UUID.randomUUID().toString()
+                secureStorage.pendingAreaTicketIssueKey = issueIdempotencyKey
+                secureStorage.pendingAreaTicketPrintCode = null
+                _state.value = _state.value.copy(
+                    submitting = false,
+                    pendingReprintCode = null,
+                    pdfExport = null,
+                    message = "Vale ${export.code} guardado como PDF.",
+                )
+                onIssued()
+            }.onFailure { error ->
+                _state.value = _state.value.copy(
+                    submitting = false,
+                    pdfExport = null,
+                    error = error.message
+                        ?: "El PDF se guardó, pero no se pudo confirmar la salida del vale.",
                 )
             }
         }
@@ -229,7 +324,12 @@ class AreaTicketOperationsViewModel @Inject constructor(
     fun dismissPendingReprint() {
         // Keep the persisted code so a process restart can offer recovery again.
         // Dismissing only releases the current screen after a printer outage.
-        _state.value = _state.value.copy(pendingReprintCode = null, error = null)
+        _state.value = _state.value.copy(
+            preparingPdf = false,
+            pendingReprintCode = null,
+            pdfExport = null,
+            error = null,
+        )
     }
 
     private fun deliver(ticketId: String, scannedReceipt: Boolean) {
@@ -265,30 +365,10 @@ class AreaTicketOperationsViewModel @Inject constructor(
             )
             throw IllegalStateException("El vale fue creado, pero no hay impresora configurada. Reimprime el vale ${ticket.code} antes de entregarlo.")
         }
-        val printable = AreaTicketData(
-            areaTicketCode = ticket.code,
-            areaName = ticket.fulfillmentArea.name,
-            items = ticket.lines.map { line ->
-                ReceiptItem(
-                    name = line.productNameSnapshot,
-                    quantity = line.quantity.toBigDecimalOrNull()?.toInt() ?: 1,
-                    unitPrice = line.unitPrice.moneyToCents(),
-                    totalPrice = line.total.moneyToCents(),
-                    note = line.notes,
-                    weightSummary = line.weightKg?.let {
-                        "$it kg × $${String.format(Locale.US, "%.2f", line.unitPrice.toDoubleOrNull() ?: 0.0)}/kg"
-                    },
-                )
-            },
-            totalCents = ticket.total.moneyToCents(),
-            venueName = secureStorage.venueDisplayName,
-            holdsProduct = ticket.fulfillmentArea.fulfillmentMode == "HOLD_UNTIL_PAID",
-        )
-        val symbology = when (_state.value.settings?.areaTickets?.codeSymbology) {
-            "CODE39" -> BarcodeSymbology.CODE39
-            else -> BarcodeSymbology.CODE128_C
+        val printable = ticket.toPrintable()
+        runCatching {
+            printerService.printAreaTicket(printable, printer, configuredSymbology())
         }
-        runCatching { printerService.printAreaTicket(printable, printer, symbology) }
             .onSuccess { repository.recordPrint(ticket.id, printed = true, reprint = reprint) }
             .onFailure { error ->
                 repository.recordPrint(
@@ -301,4 +381,31 @@ class AreaTicketOperationsViewModel @Inject constructor(
                 throw error
             }
     }
+
+    private fun AreaTicket.toPrintable() = AreaTicketData(
+        areaTicketCode = code,
+        areaName = fulfillmentArea.name,
+        items = lines.map { line ->
+            ReceiptItem(
+                name = line.productNameSnapshot,
+                quantity = line.quantity.toBigDecimalOrNull()?.toInt() ?: 1,
+                unitPrice = line.unitPrice.moneyToCents(),
+                totalPrice = line.total.moneyToCents(),
+                note = line.notes,
+                weightSummary = line.weightKg?.let {
+                    "$it kg × $${String.format(Locale.US, "%.2f", line.unitPrice.toDoubleOrNull() ?: 0.0)}/kg"
+                },
+            )
+        },
+        totalCents = total.moneyToCents(),
+        venueName = secureStorage.venueDisplayName,
+        timestamp = runCatching { Date.from(Instant.parse(issuedAt)) }.getOrDefault(Date()),
+        holdsProduct = fulfillmentArea.fulfillmentMode == "HOLD_UNTIL_PAID",
+    )
+
+    private fun configuredSymbology() =
+        when (_state.value.settings?.areaTickets?.codeSymbology) {
+            "CODE39" -> BarcodeSymbology.CODE39
+            else -> BarcodeSymbology.CODE128_C
+        }
 }

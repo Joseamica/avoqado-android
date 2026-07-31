@@ -1,5 +1,7 @@
 package com.avoqado.pos.pos.presentation.checkout
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -48,6 +50,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -80,7 +83,9 @@ import com.avoqado.pos.pos.presentation.scanner.BarcodeScannerView
 import com.avoqado.pos.core.domain.RoleManager
 import com.avoqado.pos.pos.presentation.search.SearchOverlayView
 import com.avoqado.pos.scale.ScaleCaptureViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 enum class InputTab(val label: String) {
     KEYPAD("Teclado"),
@@ -191,7 +196,48 @@ fun CheckoutScreen(
     var showPayLaterSuccessToast by remember { mutableStateOf(false) }
     var reopenPayLaterToken by remember { mutableIntStateOf(0) }
     val checkoutScope = rememberCoroutineScope()
+    val context = LocalContext.current
     val customersViewModel: CustomersViewModel = hiltViewModel()
+    val pdfDocumentLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument("application/pdf"),
+    ) { uri ->
+        val export = areaTicketOperations.state.value.pdfExport
+        if (uri == null || export == null) {
+            areaTicketOperations.cancelPendingPdfExport()
+        } else {
+            checkoutScope.launch {
+                val result = withContext(Dispatchers.IO) {
+                    runCatching {
+                        context.contentResolver.openOutputStream(uri, "w")?.use { output ->
+                            output.write(export.bytes)
+                        } ?: error("No se pudo abrir el archivo seleccionado.")
+                    }
+                }
+                result
+                    .onSuccess {
+                        areaTicketOperations.confirmPendingPdfSaved {
+                            cartViewModel.clearCart()
+                        }
+                    }
+                    .onFailure { error ->
+                        areaTicketOperations.failPendingPdfExport(
+                            error.message ?: "No se pudo guardar el PDF.",
+                        )
+                    }
+            }
+        }
+    }
+
+    LaunchedEffect(areaOperationsState.pdfExport?.code) {
+        areaOperationsState.pdfExport?.let { export ->
+            runCatching { pdfDocumentLauncher.launch(export.fileName) }
+                .onFailure { error ->
+                    areaTicketOperations.failPendingPdfExport(
+                        error.message ?: "Este dispositivo no tiene un selector de archivos disponible.",
+                    )
+                }
+        }
+    }
 
     // Sync customer selection to the CartViewModel so the referral flow can
     // read it and reset on switch (Plan 5B).
@@ -802,17 +848,36 @@ fun CheckoutScreen(
     if (areaOperationsState.error == null && areaOperationsState.pendingReprintCode != null) {
         AvoqadoDialog(
             title = "Vale pendiente de impresión",
-            description = "El vale ${areaOperationsState.pendingReprintCode} ya existe y no se emitirá otro. Puedes cerrar este aviso y continuar; quedará pendiente para reimpresión.",
-            onDismiss = areaTicketOperations::dismissPendingReprint,
+            description = "El vale ${areaOperationsState.pendingReprintCode} ya existe y no se emitirá otro. Reimprímelo o guárdalo como PDF con el mismo código.",
+            onDismiss = {
+                if (!areaOperationsState.submitting && !areaOperationsState.preparingPdf) {
+                    areaTicketOperations.dismissPendingReprint()
+                }
+            },
             actionButton = {
                 PrimaryButton(
                     text = if (areaOperationsState.submitting) "Reimprimiendo…" else "Reimprimir",
-                    onClick = areaTicketOperations::reprintPending,
-                    enabled = !areaOperationsState.submitting,
+                    onClick = {
+                        areaTicketOperations.reprintPending {
+                            cartViewModel.clearCart()
+                        }
+                    },
+                    enabled = !areaOperationsState.submitting && !areaOperationsState.preparingPdf,
                     fullWidth = true,
                 )
             },
-        ) {}
+        ) {
+            PrimaryButton(
+                text = if (areaOperationsState.preparingPdf) {
+                    "Preparando PDF…"
+                } else {
+                    "Guardar PDF y continuar"
+                },
+                onClick = areaTicketOperations::preparePendingPdf,
+                enabled = !areaOperationsState.submitting && !areaOperationsState.preparingPdf,
+                fullWidth = true,
+            )
+        }
     }
 
     // Payment flow overlay (full screen, matching iOS fullScreenCover)
