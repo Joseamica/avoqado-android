@@ -44,7 +44,13 @@ class CustomersViewModel @Inject constructor(
                 onSuccess = { _customers.value = it },
                 onFailure = {
                     Log.e("👤", "Error: ${it.message}")
-                    _error.value = "Error al cargar clientes"
+                    // Decía "Error al cargar clientes" también sin internet, así que
+                    // parecía que la app estaba rota en vez de faltar la red.
+                    _error.value = ServerErrorText.humanize(
+                        it,
+                        fallback = "No se pudieron cargar los clientes. Inténtalo de nuevo.",
+                        offlineMessage = "Sin conexión: la lista de clientes necesita internet.",
+                    )
                 },
             )
             _isLoading.value = false

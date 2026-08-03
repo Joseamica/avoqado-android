@@ -76,7 +76,7 @@ class CustomersRepository @Inject constructor(
                     Log.d("👤", "Customer created: ${customer.fullName}")
                     Result.success(customer)
                 } else {
-                    Result.failure(Exception("Respuesta invalida del servidor"))
+                    Result.failure(Exception("Respuesta inválida del servidor"))
                 }
             } else {
                 Log.e("👤", "Create customer failed: $code - $body")
@@ -94,13 +94,13 @@ class CustomersRepository @Inject constructor(
             body.contains("email or phone must be provided") ->
                 "Debes proporcionar al menos un correo o teléfono."
             body.contains("email already exists") || body.contains("already registered") ->
-                "Este correo electronico ya esta registrado."
+                "Este correo electrónico ya está registrado."
             body.contains("phone already exists") ->
-                "Este número de teléfono ya esta registrado."
+                "Este número de teléfono ya está registrado."
             body.contains("invalid email") ->
-                "El correo electronico no es valido."
+                "El correo electrónico no es válido."
             body.contains("invalid phone") ->
-                "El número de teléfono no es valido."
+                "El número de teléfono no es válido."
             else -> "Error al crear cliente"
         }
     }

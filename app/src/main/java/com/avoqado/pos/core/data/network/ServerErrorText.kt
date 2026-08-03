@@ -17,6 +17,49 @@ object ServerErrorText {
     private val PERMISSION_REGEX = Regex("""Permission\s+'([^']+)'\s+required""", RegexOption.IGNORE_CASE)
 
     /**
+     * Versión para una excepción, que es lo que llega a la mayoría de los `catch`.
+     *
+     * Cubre los dos idiomas ajenos que veía el usuario: el del SISTEMA — un
+     * `UnknownHostException` llega como "Unable to resolve host ...", en inglés y
+     * hablando de DNS— y el del server, que escribe para quien depura. Sin esto,
+     * quedarse sin WiFi se leía como si la app estuviera rota.
+     *
+     * @param offlineMessage qué decir cuando el fallo es de red. Se personaliza
+     *   donde la falta de conexión significa algo concreto — el reloj checador,
+     *   por ejemplo, EXIGE internet porque el turno vive en el server, y decirlo
+     *   evita que alguien se vaya creyendo que marcó.
+     */
+    fun humanize(
+        error: Throwable?,
+        fallback: String = "No se pudo completar la acción. Inténtalo de nuevo.",
+        offlineMessage: String = "Sin conexión. Revisa la red e inténtalo de nuevo.",
+    ): String {
+        if (error == null) return fallback
+        return when (error) {
+            is java.net.UnknownHostException,
+            is java.net.ConnectException,
+            is java.net.NoRouteToHostException,
+            is javax.net.ssl.SSLException,
+            -> offlineMessage
+            is java.net.SocketTimeoutException,
+            -> "El servidor tardó demasiado en responder. Inténtalo de nuevo."
+            is java.io.InterruptedIOException,
+            -> offlineMessage
+            else -> humanize(error.message, fallback)
+        }
+    }
+
+    /** Espejo de iOS: distinguir sin-red de fallo real, sin tener la excepción. */
+    fun isOffline(error: Throwable?): Boolean = when (error) {
+        is java.net.UnknownHostException,
+        is java.net.ConnectException,
+        is java.net.NoRouteToHostException,
+        is java.io.InterruptedIOException,
+        -> true
+        else -> false
+    }
+
+    /**
      * @param raw mensaje del server, tal cual llegó.
      * @param fallback qué decir cuando no hay mensaje.
      */
