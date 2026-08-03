@@ -8,6 +8,7 @@ import com.avoqado.pos.core.domain.RoleManager
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.navigation.MainNavigationState
 import com.avoqado.pos.navigation.MainTab
+import com.avoqado.pos.navigation.MainTabsPolicy
 import com.avoqado.pos.navigation.mainContentKey
 import com.avoqado.pos.navigation.resolveTerminalStartTab
 import com.avoqado.pos.payment.data.PaymentSyncService
@@ -192,61 +193,15 @@ class AppState @Inject constructor(
     private fun computeVisibleTabs(
         reservationsEnabled: Boolean,
         posMode: PosMode = PosMode.RETAIL,
-    ): List<MainTab> {
-        // UN solo modo de dispositivo (PosMode) — el VenueMode legacy
-        // (Estándar/Reservas) quedó solo como migración de storage. Gate del
-        // plan ANDed con el toggle local: si el venue nuevo no tiene reservas,
-        // un modo Reservas persistido cae solo a Retail.
-        val planAllowsReservations = planManager.hasFeature("RESERVATIONS")
-        val inReservationsMode = reservationsEnabled &&
-            planAllowsReservations &&
-            posMode == PosMode.RESERVATIONS
-        // TABLE_SERVICE (PRO): the Mesas tab appears only in Restaurante mode.
-        // Plan gate ANDed like reservations — fail-open when the plan is unknown;
-        // the screen itself shows the PRO upsell when the feature is locked.
-        val inRestaurantMode = posMode == PosMode.RESTAURANT
-        val ordered = if (inReservationsMode) {
-            // Calendar leads, but Inventory is preserved alongside.
-            listOf(
-                MainTab.CALENDAR,
-                MainTab.CHECKOUT,
-                MainTab.INVENTORY,
-                MainTab.TRANSACTIONS,
-                MainTab.NOTIFICATIONS,
-                MainTab.MORE,
-            )
-        } else if (inRestaurantMode) {
-            // Mesas leads — the restaurant flow starts at the floor plan.
-            // Inventory stays alongside (same 6-tab pattern as reservations mode).
-            listOf(
-                MainTab.TABLES,
-                MainTab.CHECKOUT,
-                MainTab.INVENTORY,
-                MainTab.TRANSACTIONS,
-                MainTab.NOTIFICATIONS,
-                MainTab.MORE,
-            )
-        } else {
-            listOf(
-                MainTab.CHECKOUT,
-                MainTab.INVENTORY,
-                MainTab.TRANSACTIONS,
-                MainTab.NOTIFICATIONS,
-                MainTab.MORE,
-            )
-        }
-        return ordered.filter { tab ->
-            when (tab) {
-                MainTab.CHECKOUT -> roleManager.canAccessPOS
-                MainTab.INVENTORY -> roleManager.canAccessInventory
-                MainTab.TRANSACTIONS -> roleManager.canAccessTransactions
-                MainTab.NOTIFICATIONS -> true
-                MainTab.MORE -> true
-                MainTab.CALENDAR -> true
-                MainTab.TABLES -> roleManager.canAccessPOS
-            }
-        }
-    }
+    ): List<MainTab> = MainTabsPolicy.visibleTabs(
+        reservationsEnabled = reservationsEnabled,
+        // Gate del plan: si el venue no tiene reservas, el toggle local no basta.
+        planAllowsReservations = planManager.hasFeature("RESERVATIONS"),
+        posMode = posMode,
+        canAccessPOS = roleManager.canAccessPOS,
+        canAccessInventory = roleManager.canAccessInventory,
+        canAccessTransactions = roleManager.canAccessTransactions,
+    )
 
     fun refreshTabs() {
         _reservationsEnabled.value = secureStorage.reservationsEnabled
