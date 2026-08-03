@@ -36,7 +36,7 @@ class ReservationActionsRetrierTest {
         retrier.drain()
 
         coVerify(exactly = 1) { dao.delete(1L) }
-        coVerify(exactly = 0) { dao.incrementAttempt(any()) }
+        coVerify(exactly = 0) { dao.incrementAttempt(any(), any()) }
     }
 
     @Test
@@ -48,7 +48,8 @@ class ReservationActionsRetrierTest {
 
         retrier.drain()
 
-        coVerify(exactly = 1) { dao.incrementAttempt(2L) }
+        // El motivo viaja con el intento: es lo que la cuarentena enseña después.
+        coVerify(exactly = 1) { dao.incrementAttempt(2L, "timeout") }
         coVerify(exactly = 0) { dao.delete(any()) }
     }
 
@@ -125,7 +126,7 @@ class ReservationActionsRetrierTest {
         retrier.drain()
 
         coVerify(exactly = 0) { dao.delete(9L) }
-        coVerify(exactly = 0) { dao.incrementAttempt(9L) }
+        coVerify(exactly = 0) { dao.incrementAttempt(9L, any()) }
     }
 
     @Test
@@ -138,5 +139,26 @@ class ReservationActionsRetrierTest {
         retrier.drain()
 
         coVerify(exactly = 0) { api.confirm(any()) }
+    }
+
+    /**
+     * El motivo REAL del rechazo tiene que quedar guardado.
+     *
+     * Medido en la tablet: el server responde "Esta reservación requiere al menos
+     * 60 minutos de anticipación" — una frase que le dice al gerente exactamente
+     * qué pasó. Sin guardarla, la cuarentena sólo podía enseñar una guía genérica
+     * por tipo de acción y ese motivo se perdía en un log que nadie lee.
+     */
+    @Test
+    fun `guarda el motivo que dio el server, no solo que fallo`() = runTest {
+        val motivo = "Esta reservación requiere al menos 60 minutos de anticipación."
+        coEvery { dao.all() } returns listOf(
+            PendingReservationActionEntity(rowId = 7, reservationId = "r7", action = "CONFIRM"),
+        )
+        coEvery { api.confirm("r7") } returns Result.failure(RuntimeException(motivo))
+
+        retrier.drain()
+
+        coVerify(exactly = 1) { dao.incrementAttempt(7L, motivo) }
     }
 }

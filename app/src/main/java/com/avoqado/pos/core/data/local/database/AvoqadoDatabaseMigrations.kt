@@ -149,4 +149,26 @@ object AvoqadoDatabaseMigrations {
             )
         }
     }
+
+    // v7 — fija el actor original de cada intent para que un replay posterior
+    // nunca quede atribuido a otra sesión del mismo dispositivo.
+    val MIGRATION_6_7 = object : Migration(6, 7) {
+        override fun migrate(database: SupportSQLiteDatabase) {
+            database.execSQL("ALTER TABLE `pos_sync_intents` ADD COLUMN `staff_id` TEXT")
+        }
+    }
+
+    /**
+     * Guarda POR QUÉ el server rechazó una acción de reserva encolada.
+     *
+     * La cuarentena sólo podía enseñar una guía genérica por tipo de acción. El
+     * motivo real —medido en la tablet: "Esta reservación requiere al menos 60
+     * minutos de anticipación"— se quedaba en un log que nadie lee, y quien
+     * tiene que resolverlo se quedaba adivinando. iOS ya lo guardaba.
+     */
+    val MIGRATION_7_8 = object : Migration(7, 8) {
+        override fun migrate(database: SupportSQLiteDatabase) {
+            database.execSQL("ALTER TABLE `pending_reservation_action` ADD COLUMN `lastError` TEXT")
+        }
+    }
 }

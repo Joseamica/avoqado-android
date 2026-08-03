@@ -55,6 +55,6 @@ interface PendingReservationActionDao {
     @Query("DELETE FROM pending_reservation_action WHERE rowId = :rowId")
     suspend fun delete(rowId: Long)
 
-    @Query("UPDATE pending_reservation_action SET attemptCount = attemptCount + 1 WHERE rowId = :rowId")
-    suspend fun incrementAttempt(rowId: Long)
+    @Query("UPDATE pending_reservation_action SET attemptCount = attemptCount + 1, lastError = :error WHERE rowId = :rowId")
+    suspend fun incrementAttempt(rowId: Long, error: String? = null)
 }

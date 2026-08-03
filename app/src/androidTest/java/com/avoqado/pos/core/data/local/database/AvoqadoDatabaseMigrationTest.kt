@@ -27,7 +27,7 @@ class AvoqadoDatabaseMigrationTest {
     }
 
     @Test
-    fun migrationFrom1To6_keepsPendingPaymentsAndCreatesAllTables() {
+    fun migrationFrom1To8_keepsPendingPaymentsAndCreatesAllTables() {
         createVersion1Database()
 
         val database = openMigratedDatabase()
@@ -41,13 +41,17 @@ class AvoqadoDatabaseMigrationTest {
             assertTrue(tableExists(sqlite, "pending_reservation_action"))
             assertTrue(tableExists(sqlite, "cached_payloads"))
             assertTrue(tableExists(sqlite, "pos_sync_intents"))
+            assertTrue(columnExists(sqlite, "pos_sync_intents", "staff_id"))
+            // El motivo del rechazo que la cuarentena enseña: si la columna
+            // no sobrevive a la migración, la pantalla vuelve a la guía genérica.
+            assertTrue(columnExists(sqlite, "pending_reservation_action", "lastError"))
         } finally {
             database.close()
         }
     }
 
     @Test
-    fun migrationFrom2To6_keepsCashDrawerDataAndCreatesCurrentTables() {
+    fun migrationFrom2To8_keepsCashDrawerDataAndCreatesCurrentTables() {
         createVersion2Database()
 
         val database = openMigratedDatabase()
@@ -61,6 +65,10 @@ class AvoqadoDatabaseMigrationTest {
             assertTrue(tableExists(sqlite, "pending_reservation_action"))
             assertTrue(tableExists(sqlite, "cached_payloads"))
             assertTrue(tableExists(sqlite, "pos_sync_intents"))
+            assertTrue(columnExists(sqlite, "pos_sync_intents", "staff_id"))
+            // El motivo del rechazo que la cuarentena enseña: si la columna
+            // no sobrevive a la migración, la pantalla vuelve a la guía genérica.
+            assertTrue(columnExists(sqlite, "pending_reservation_action", "lastError"))
         } finally {
             database.close()
         }
@@ -77,6 +85,8 @@ class AvoqadoDatabaseMigrationTest {
             AvoqadoDatabaseMigrations.MIGRATION_3_4,
             AvoqadoDatabaseMigrations.MIGRATION_4_5,
             AvoqadoDatabaseMigrations.MIGRATION_5_6,
+            AvoqadoDatabaseMigrations.MIGRATION_6_7,
+            AvoqadoDatabaseMigrations.MIGRATION_7_8,
         ).build().also { roomDb ->
             roomDb.openHelper.writableDatabase
         }
@@ -153,6 +163,17 @@ class AvoqadoDatabaseMigrationTest {
         cursor.use {
             return it.moveToFirst()
         }
+    }
+
+    private fun columnExists(database: SupportSQLiteDatabase, tableName: String, columnName: String): Boolean {
+        val cursor = database.query("PRAGMA table_info(`$tableName`)")
+        cursor.use {
+            val nameIndex = it.getColumnIndex("name")
+            while (it.moveToNext()) {
+                if (nameIndex >= 0 && it.getString(nameIndex) == columnName) return true
+            }
+        }
+        return false
     }
 
     companion object {

@@ -25,7 +25,7 @@ import com.avoqado.pos.reservations.data.PendingReservationActionEntity
         // v6 — offline-first Corte B: outbox de intents (comandas/mesas offline)
         SyncIntentEntity::class,
     ],
-    version = 6,
+    version = 8,
     exportSchema = true,
 )
 abstract class AvoqadoDatabase : RoomDatabase() {

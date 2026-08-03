@@ -17,6 +17,9 @@ interface PendingPaymentDao {
     @Query("SELECT * FROM pending_payments WHERE syncStatus IN ('PENDING', 'SYNCING') ORDER BY createdAt ASC")
     suspend fun getUnsyncedPayments(): List<PendingPaymentEntity>
 
+    @Query("SELECT * FROM pending_payments WHERE syncStatus = 'FAILED' ORDER BY createdAt DESC")
+    suspend fun getFailedPayments(): List<PendingPaymentEntity>
+
     @Query("UPDATE pending_payments SET syncStatus = :status WHERE id = :id")
     suspend fun updateStatus(id: String, status: String)
 
@@ -28,6 +31,9 @@ interface PendingPaymentDao {
 
     @Query("UPDATE pending_payments SET syncStatus = 'PENDING' WHERE syncStatus = 'SYNCING'")
     suspend fun resetSyncingToPending()
+
+    @Query("UPDATE pending_payments SET syncStatus = 'PENDING', retryCount = 0, lastError = NULL, lastRetryAt = NULL WHERE id = :id AND syncStatus = 'FAILED'")
+    suspend fun retryFailed(id: String)
 
     @Query("DELETE FROM pending_payments WHERE syncStatus = 'SYNCED' AND createdAt < :olderThan")
     suspend fun deleteSynced(olderThan: Long)

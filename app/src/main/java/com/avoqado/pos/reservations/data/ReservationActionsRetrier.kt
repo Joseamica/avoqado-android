@@ -97,7 +97,11 @@ class ReservationActionsRetrier @Inject constructor(
                 pendingDao.delete(entry.rowId)
                 anySuccess = true
             } else {
-                pendingDao.incrementAttempt(entry.rowId)
+                // El motivo se guarda para que la cuarentena pueda enseñarlo. Sin
+                // esto sólo quedaba una guía genérica por tipo de acción, y el
+                // "requiere al menos 60 minutos de anticipación" que devuelve el
+                // server se perdía en un log que nadie lee.
+                pendingDao.incrementAttempt(entry.rowId, result.exceptionOrNull()?.message)
             }
         }
         // Coalesce into a single change signal per drain — mirrors iOS's

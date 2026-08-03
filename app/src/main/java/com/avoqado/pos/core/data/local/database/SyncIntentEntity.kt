@@ -26,6 +26,9 @@ data class SyncIntentEntity(
     val id: String,
     @ColumnInfo(name = "venue_id")
     val venueId: String,
+    /** Empleado que originó la mutación, no quien casualmente la reproduce. */
+    @ColumnInfo(name = "staff_id")
+    val staffId: String? = null,
     @ColumnInfo(name = "seq")
     val seq: Long,
     @ColumnInfo(name = "type")

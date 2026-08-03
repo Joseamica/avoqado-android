@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.local.database.PendingPaymentEntity
 import com.avoqado.pos.core.data.sync.SyncOutbox
+import com.avoqado.pos.core.data.network.ServerErrorText
 import com.avoqado.pos.core.domain.RoleManager
 import com.avoqado.pos.payment.data.PaymentSyncService
 import com.avoqado.pos.reservations.data.PendingReservationActionEntity
@@ -113,6 +114,10 @@ class QuarantineViewModel @Inject constructor(
      * deja a alguien sin lugar, y una cancelación que no llegó deja una mesa
      * bloqueada toda la noche.
      */
+    /** Lo que dijo el server, si lo dijo. Es más útil que cualquier guía nuestra. */
+    fun reservationRejectionReason(entry: PendingReservationActionEntity): String? =
+        entry.lastError?.takeIf { it.isNotBlank() }?.let { ServerErrorText.humanize(it) }
+
     fun reservationResolutionHint(entry: PendingReservationActionEntity): String = when (entry.action) {
         "CREATE" -> "La reserva NUNCA se creó en el sistema. Agéndala de nuevo antes de descartarla, o el cliente llegará sin lugar."
         "CANCEL" -> "La cancelación no llegó: la reserva sigue ocupando el horario. Cancélala a mano para liberarlo."

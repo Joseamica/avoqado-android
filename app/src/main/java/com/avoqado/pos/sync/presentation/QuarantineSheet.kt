@@ -157,6 +157,12 @@ fun QuarantineSheet(
                                 style = MaterialTheme.typography.titleSmall,
                                 fontWeight = FontWeight.SemiBold,
                             )
+                            // Lo que dijo el server va PRIMERO y en cuerpo normal:
+                            // "requiere al menos 60 minutos de anticipación" le dice
+                            // al gerente qué pasó mejor que cualquier guía nuestra.
+                            viewModel.reservationRejectionReason(entry)?.let { motivo ->
+                                Text(motivo, style = MaterialTheme.typography.bodyMedium)
+                            }
                             Text(
                                 viewModel.reservationResolutionHint(entry),
                                 style = MaterialTheme.typography.bodySmall,

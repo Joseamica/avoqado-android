@@ -32,6 +32,8 @@ object DatabaseModule {
             AvoqadoDatabaseMigrations.MIGRATION_3_4,
             AvoqadoDatabaseMigrations.MIGRATION_4_5,
             AvoqadoDatabaseMigrations.MIGRATION_5_6,
+            AvoqadoDatabaseMigrations.MIGRATION_6_7,
+            AvoqadoDatabaseMigrations.MIGRATION_7_8,
         )
             .build()
     }
