@@ -97,6 +97,9 @@ private fun TabletCashDrawerLayout(
     var showOpenSheet by remember { mutableStateOf(false) }
     var showPayInSheet by remember { mutableStateOf(false) }
     var showPayOutSheet by remember { mutableStateOf(false) }
+    // Egreso que dejaría la caja en negativo, a la espera de confirmación.
+    var pendingPayOut by remember { mutableStateOf<Pair<Int, String?>?>(null) }
+    val expectedAmountCents by viewModel.expectedAmountCents.collectAsState()
     var showCloseSheet by remember { mutableStateOf(false) }
     var showDailyReport by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
@@ -242,10 +245,46 @@ private fun TabletCashDrawerLayout(
         PayInOutSheet(
             isPayIn = false,
             onConfirm = { amountCents, note ->
-                viewModel.addPayOut(amountCents, note)
+                // 🔴 Sacar más efectivo del que hay deja la caja en NEGATIVO.
+                //
+                // Medido en la tablet: con $600 en caja se registró un egreso de
+                // $10,000 y el efectivo esperado quedó en -$9,400, sin un solo
+                // aviso. Un cero de más al teclear descuadra el corte del día y
+                // nadie se entera hasta contar el dinero.
+                //
+                // Se AVISA en vez de bloquear: el esperado puede ir corto si hay
+                // ventas en efectivo sin sincronizar, y un guard duro dejaría al
+                // cajero sin poder registrar un egreso legítimo.
+                if (amountCents > expectedAmountCents) {
+                    pendingPayOut = amountCents to note
+                } else {
+                    viewModel.addPayOut(amountCents, note)
+                }
                 showPayOutSheet = false
             },
             onDismiss = { showPayOutSheet = false },
+        )
+    }
+
+    pendingPayOut?.let { (amountCents, note) ->
+        AvoqadoDialog(
+            title = "Más de lo que hay en caja",
+            description = "En caja hay ${formatCurrency(expectedAmountCents)} y vas a sacar " +
+                "${formatCurrency(amountCents)}. La caja quedaría en " +
+                "${formatCurrency(expectedAmountCents - amountCents)}.\n\n" +
+                "Si es un error de captura, corrígelo. Si el efectivo real no coincide " +
+                "con lo que muestra la caja, revisa los movimientos antes de continuar.",
+            onDismiss = { pendingPayOut = null },
+            actionButton = {
+                PrimaryButton(
+                    text = "Sacar de todos modos",
+                    onClick = {
+                        viewModel.addPayOut(amountCents, note)
+                        pendingPayOut = null
+                    },
+                )
+            },
+            content = {},
         )
     }
 
@@ -313,6 +352,9 @@ private fun PhoneCashDrawerLayout(
     var showOpenSheet by remember { mutableStateOf(false) }
     var showPayInSheet by remember { mutableStateOf(false) }
     var showPayOutSheet by remember { mutableStateOf(false) }
+    // Egreso que dejaría la caja en negativo, a la espera de confirmación.
+    var pendingPayOut by remember { mutableStateOf<Pair<Int, String?>?>(null) }
+    val expectedAmountCents by viewModel.expectedAmountCents.collectAsState()
     var showCloseSheet by remember { mutableStateOf(false) }
     var showDailyReport by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
@@ -475,10 +517,38 @@ private fun PhoneCashDrawerLayout(
         PayInOutSheet(
             isPayIn = false,
             onConfirm = { amountCents, note ->
-                viewModel.addPayOut(amountCents, note)
+                // Mismo aviso que en el layout de tablet: sacar más de lo que hay
+                // deja la caja en negativo, y casi siempre es un cero de más.
+                if (amountCents > expectedAmountCents) {
+                    pendingPayOut = amountCents to note
+                } else {
+                    viewModel.addPayOut(amountCents, note)
+                }
                 showPayOutSheet = false
             },
             onDismiss = { showPayOutSheet = false },
+        )
+    }
+
+    pendingPayOut?.let { (amountCents, note) ->
+        AvoqadoDialog(
+            title = "Más de lo que hay en caja",
+            description = "En caja hay ${formatCurrency(expectedAmountCents)} y vas a sacar " +
+                "${formatCurrency(amountCents)}. La caja quedaría en " +
+                "${formatCurrency(expectedAmountCents - amountCents)}.\n\n" +
+                "Si es un error de captura, corrígelo. Si el efectivo real no coincide " +
+                "con lo que muestra la caja, revisa los movimientos antes de continuar.",
+            onDismiss = { pendingPayOut = null },
+            actionButton = {
+                PrimaryButton(
+                    text = "Sacar de todos modos",
+                    onClick = {
+                        viewModel.addPayOut(amountCents, note)
+                        pendingPayOut = null
+                    },
+                )
+            },
+            content = {},
         )
     }
 
@@ -886,6 +956,18 @@ private fun OpenDrawerContent(
             val displayEvents = events
                 .filter { it.type != CashDrawerEventType.OPEN.name }
                 .reversed()
+
+            if (displayEvents.isEmpty()) {
+                // Sin esto quedaba el título "Movimientos" flotando sobre un hueco
+                // enorme, que se lee como si la pantalla estuviera a medio cargar.
+                Text(
+                    text = "Todavía no hay movimientos. Los cobros en efectivo, " +
+                        "ingresos y egresos aparecerán aquí.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = AvoqadoTheme.spacing.md),
+                )
+            }
 
             displayEvents.forEach { event ->
                 EventRow(event = event)
