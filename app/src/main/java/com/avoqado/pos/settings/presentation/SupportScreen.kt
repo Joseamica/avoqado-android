@@ -809,11 +809,13 @@ private fun LegalContent() {
                 context.startActivity(intent)
             },
         )
+        // El renglón se marca como pendiente en vez de aparentar que lleva a algo:
+        // antes tocarlo lanzaba un Toast de "Próximamente" que en la Sunmi no se ve,
+        // así que la fila simplemente no hacía nada.
         LegalRow(
             title = "Licencias de terceros",
-            onClick = {
-                Toast.makeText(context, "Próximamente", Toast.LENGTH_SHORT).show()
-            },
+            trailingText = "Próximamente",
+            onClick = null,
         )
     }
 }
@@ -821,26 +823,40 @@ private fun LegalContent() {
 @Composable
 private fun LegalRow(
     title: String,
-    onClick: () -> Unit = {},
+    onClick: (() -> Unit)? = null,
+    /** Etiqueta al final, p. ej. "Próximamente" para lo que aún no existe. */
+    trailingText: String? = null,
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onClick() }
+            .let { if (onClick != null) it.clickable { onClick() } else it }
             .padding(vertical = AvoqadoTheme.spacing.md),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
             text = title,
             style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurface,
+            color = if (onClick != null) {
+                MaterialTheme.colorScheme.onSurface
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
             modifier = Modifier.weight(1f),
         )
-        Icon(
-            Icons.Filled.ChevronRight,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        if (trailingText != null) {
+            Text(
+                text = trailingText,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        } else {
+            Icon(
+                Icons.Filled.ChevronRight,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 }

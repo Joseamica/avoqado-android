@@ -139,16 +139,30 @@ fun CheckoutScreen(
     // already links a different reservation — tell the cashier instead of
     // silently dropping it.
     val seedConflict by cartViewModel.seedConflict.collectAsState()
+    var seedConflictDialog by remember { mutableStateOf(false) }
     val seedCtx = androidx.compose.ui.platform.LocalContext.current
     LaunchedEffect(seedConflict) {
         if (seedConflict) {
-            android.widget.Toast.makeText(
-                seedCtx,
-                "El carrito ya está ligado a otra reserva. Cobra o vacía el carrito antes de inscribir otra clase.",
-                android.widget.Toast.LENGTH_LONG,
-            ).show()
+            // En diálogo, no en Toast: el mesero acaba de intentar inscribir una
+            // clase y no pasó nada. Necesita entender que el carrito ya está ligado
+            // a otra reserva y qué hacer — un aviso que se desvanece (y que en la
+            // Sunmi puede ni salir en esta pantalla) lo deja atorado.
+            seedConflictDialog = true
             cartViewModel.clearSeedConflict()
         }
+    }
+
+    if (seedConflictDialog) {
+        AvoqadoDialog(
+            title = "El carrito ya tiene una reserva",
+            description = "Este carrito está ligado a otra reserva. Cóbralo o vacíalo " +
+                "antes de inscribir otra clase.",
+            onDismiss = { seedConflictDialog = false },
+            actionButton = {
+                PrimaryButton(text = "Entendido", onClick = { seedConflictDialog = false })
+            },
+            content = {},
+        )
     }
     var selectedProduct by remember { mutableStateOf<Product?>(null) }
     // Venta por peso (báscula): producto por peso pendiente de capturar peso.

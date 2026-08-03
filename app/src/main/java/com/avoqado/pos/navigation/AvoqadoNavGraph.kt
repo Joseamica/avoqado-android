@@ -87,6 +87,8 @@ import com.avoqado.pos.timeclock.presentation.TimeClockSheet
 import com.avoqado.pos.transactions.presentation.TransactionsScreen
 import dagger.hilt.android.EntryPointAccessors
 import java.time.format.DateTimeFormatter
+import com.avoqado.pos.designsystem.components.PrimaryButton
+import com.avoqado.pos.designsystem.components.AvoqadoDialog
 
 // MARK: - Hilt entry point for singleton dependencies needed in NavGraph composables
 @dagger.hilt.EntryPoint
@@ -105,7 +107,8 @@ fun AvoqadoNavGraph(
     val pendingPaymentCount by appState.pendingPaymentCount.collectAsState()
     val showOfflineBanner by appState.showOfflineBanner.collectAsState()
     val offlinePendingCount by appState.offlinePendingCount.collectAsState()
-    val syncRejectedCount by appState.syncRejectedCount.collectAsState()
+    val reconciliationCount by appState.reconciliationCount.collectAsState()
+    val sessionGuardMessage by appState.sessionGuardMessage.collectAsState()
     val visibleTabs by appState.visibleTabs.collectAsState()
     val mainNavigation by appState.mainNavigation.collectAsState()
     val isSwitchingContext by appState.venueSwitchState.isSwitching.collectAsState()
@@ -129,7 +132,7 @@ fun AvoqadoNavGraph(
                     pendingPaymentCount = pendingPaymentCount,
                     showOfflineBanner = showOfflineBanner,
                     offlinePendingCount = offlinePendingCount,
-                    syncRejectedCount = syncRejectedCount,
+                    syncIssueCount = reconciliationCount,
                     onTabsShouldRefresh = { appState.refreshTabs() },
                 )
             }
@@ -170,6 +173,22 @@ fun AvoqadoNavGraph(
                 }
             }
         }
+
+        sessionGuardMessage?.let { message ->
+            com.avoqado.pos.designsystem.components.AvoqadoDialog(
+                title = "Sincronización pendiente",
+                description = message,
+                onDismiss = appState::clearSessionGuard,
+                dismissOnClickOutside = false,
+                actionButton = {
+                    com.avoqado.pos.designsystem.components.PrimaryButton(
+                        text = "Entendido",
+                        onClick = appState::clearSessionGuard,
+                        fullWidth = true,
+                    )
+                },
+            ) {}
+        }
     }
 }
 
@@ -184,7 +203,7 @@ private fun MainScaffold(
     pendingPaymentCount: Int = 0,
     showOfflineBanner: Boolean = false,
     offlinePendingCount: Int = 0,
-    syncRejectedCount: Int = 0,
+    syncIssueCount: Int = 0,
     onTabsShouldRefresh: () -> Unit = {},
 ) {
     // Status bar icons: follow theme (light icons on dark, dark icons on light)
@@ -219,15 +238,33 @@ private fun MainScaffold(
         )
     }
     val formatter = remember { entryPoint.formatter() }
-    // 403/RBAC denials used to be invisible (the button just no-op'd). Surface
-    // them as a toast at the app root.
+    // Los rechazos por permiso (403) eran invisibles: el botón simplemente no
+    // hacía nada. Se taparon con un Toast, que en la Sunmi con pantalla de cliente
+    // vuelve a ser invisible — el mismo agujero, otra forma.
+    //
+    // Va en diálogo porque un "no tienes permiso" no es un aviso al paso: la
+    // persona acaba de intentar algo, no pasó nada, y necesita entender por qué y
+    // a quién pedírselo. Un mensaje que se desvanece en dos segundos no sirve para
+    // eso, y este puede aparecer sobre CUALQUIER pantalla de la app.
     val errorNotifier = remember { entryPoint.errorNotifier() }
     val forbiddenError by errorNotifier.forbiddenError.collectAsState()
+    var forbiddenDialog by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(forbiddenError) {
         forbiddenError?.let {
-            android.widget.Toast.makeText(context, it, android.widget.Toast.LENGTH_LONG).show()
+            forbiddenDialog = it
             errorNotifier.clear()
         }
+    }
+    forbiddenDialog?.let { motivo ->
+        AvoqadoDialog(
+            title = "No tienes permiso",
+            description = motivo,
+            onDismiss = { forbiddenDialog = null },
+            actionButton = {
+                PrimaryButton(text = "Entendido", onClick = { forbiddenDialog = null })
+            },
+            content = {},
+        )
     }
 
     fun navigateToTab(tab: MainTab) {
@@ -258,7 +295,7 @@ private fun MainScaffold(
             topBar = {
                 androidx.compose.foundation.layout.Column {
                     ConnectivityBanner(visible = showOfflineBanner, pendingSync = offlinePendingCount)
-                    com.avoqado.pos.sync.presentation.QuarantineBanner(count = syncRejectedCount) { showQuarantineSheet = true }
+                    com.avoqado.pos.sync.presentation.QuarantineBanner(count = syncIssueCount) { showQuarantineSheet = true }
                 }
             },
             bottomBar = {
@@ -517,7 +554,7 @@ private fun MainScaffold(
             topBar = {
                 androidx.compose.foundation.layout.Column {
                     ConnectivityBanner(visible = showOfflineBanner, pendingSync = offlinePendingCount)
-                    com.avoqado.pos.sync.presentation.QuarantineBanner(count = syncRejectedCount) { showQuarantineSheet = true }
+                    com.avoqado.pos.sync.presentation.QuarantineBanner(count = syncIssueCount) { showQuarantineSheet = true }
                 }
             },
             bottomBar = {

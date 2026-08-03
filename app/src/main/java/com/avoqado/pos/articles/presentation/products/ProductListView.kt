@@ -58,6 +58,8 @@ import com.avoqado.pos.designsystem.components.AvoqadoSuccessToast
 import com.avoqado.pos.designsystem.components.SearchPillField
 import com.avoqado.pos.designsystem.theme.AvoqadoAdaptiveSizeClass
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
+import com.avoqado.pos.designsystem.components.AvoqadoDialog
+import com.avoqado.pos.designsystem.components.PrimaryButton
 
 @Composable
 fun ProductListView(viewModel: ArticlesViewModel) {
@@ -71,6 +73,7 @@ fun ProductListView(viewModel: ArticlesViewModel) {
     var showCreateForm by remember { mutableStateOf(false) }
     var editingProduct by remember { mutableStateOf<ArticleProduct?>(null) }
     var deletingProduct by remember { mutableStateOf<ArticleProduct?>(null) }
+    var showLabelUnavailable by remember { mutableStateOf(false) }
 
     // Celebratory toast on create/update/delete success.
     lastSaveSuccess?.let { message ->
@@ -243,13 +246,10 @@ fun ProductListView(viewModel: ArticlesViewModel) {
                         onTap = { editingProduct = product },
                         onEdit = { editingProduct = product },
                         onDelete = { deletingProduct = product },
-                        onPrintLabel = {
-                            Toast.makeText(
-                                context,
-                                "Impresión no disponible",
-                                Toast.LENGTH_SHORT,
-                            ).show()
-                        },
+                        // Mismo caso que "Imprimir corte": era un Toast de "no
+                        // disponible" que en la Sunmi nadie veía, así que tocar
+                        // "Imprimir etiqueta" no producía NADA y el botón parecía roto.
+                        onPrintLabel = { showLabelUnavailable = true },
                     )
                 }
             }
@@ -295,6 +295,20 @@ fun ProductListView(viewModel: ArticlesViewModel) {
             },
         )
     }
+
+    if (showLabelUnavailable) {
+        AvoqadoDialog(
+            title = "Imprimir etiqueta",
+            description = "Todavía no se pueden imprimir etiquetas desde el POS. " +
+                "Si necesitas una, imprímela desde el panel de Avoqado.",
+            onDismiss = { showLabelUnavailable = false },
+            actionButton = {
+                PrimaryButton(text = "Entendido", onClick = { showLabelUnavailable = false })
+            },
+            content = {},
+        )
+    }
+
 }
 
 // MARK: - Quick-Add Inline Row
