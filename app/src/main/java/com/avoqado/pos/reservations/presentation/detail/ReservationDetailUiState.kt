@@ -11,6 +11,9 @@ data class ReservationDetailUiState(
     val capability: ReservationsCapability = ReservationsCapability(false, false, false, false),
     val pendingAction: ReservationAction? = null,
     val error: String? = null,
+    // Aviso de "se guardó, se enviará al reconectar". Separado de `error` a
+    // propósito: pintarlo en rojo haría que el mesero reintente y duplique.
+    val queuedMessage: String? = null,
     val justCompletedAction: ReservationAction? = null,
 ) {
     fun isAllowed(action: ReservationAction): Boolean {

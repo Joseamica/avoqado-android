@@ -47,6 +47,15 @@ fun ReservationsListScreen(
         }
     }
 
+    // El aviso de "se guardó, se enviará al reconectar": mismo canal, pero no es
+    // un error. Sin esto la acción encolada no se anunciaba en absoluto.
+    LaunchedEffect(state.queuedMessage) {
+        state.queuedMessage?.let {
+            snackHost.showSnackbar(it)
+            viewModel.consumeQueuedMessage()
+        }
+    }
+
     Scaffold(
         contentWindowInsets = WindowInsets(0),
         topBar = {

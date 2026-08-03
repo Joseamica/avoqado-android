@@ -78,7 +78,7 @@ class ReservationDetailViewModel @Inject constructor(
         // on the same reservation (e.g. confirm + no-show racing).
         if (_state.value.pendingAction != null) return
         val before = _state.value.reservation
-        _state.update { it.copy(pendingAction = action, error = null, justCompletedAction = null) }
+        _state.update { it.copy(pendingAction = action, error = null, queuedMessage = null, justCompletedAction = null) }
         viewModelScope.launch {
             val r = repository.runAction(reservationId, action, payload)
             val apiError = r.exceptionOrNull() as? ReservationApiException
@@ -95,12 +95,24 @@ class ReservationDetailViewModel @Inject constructor(
                 _state.update { it.copy(reservation = before, pendingAction = null, error = null) }
                 return@launch
             }
+            val queued = r.exceptionOrNull() as? ReservationRepository.OfflineEnqueuedException
             _state.update { current ->
-                if (r.isSuccess) {
-                    val updated = r.getOrNull() ?: before
-                    current.copy(reservation = updated, pendingAction = null, justCompletedAction = action)
-                } else {
-                    current.copy(reservation = before, pendingAction = null, error = r.exceptionOrNull()?.message ?: "Error")
+                when {
+                    r.isSuccess -> {
+                        val updated = r.getOrNull() ?: before
+                        current.copy(reservation = updated, pendingAction = null, justCompletedAction = action)
+                    }
+                    // Sin red la acción SÍ se guardó: se avisa, no se acusa un error.
+                    queued != null -> current.copy(
+                        reservation = before,
+                        pendingAction = null,
+                        queuedMessage = queued.message,
+                    )
+                    else -> current.copy(
+                        reservation = before,
+                        pendingAction = null,
+                        error = r.exceptionOrNull()?.message ?: "Error",
+                    )
                 }
             }
             if (r.isSuccess && action == ReservationAction.CHECK_IN) {
@@ -122,6 +134,7 @@ class ReservationDetailViewModel @Inject constructor(
     }
 
     fun consumeError() = _state.update { it.copy(error = null) }
+    fun consumeQueuedMessage() = _state.update { it.copy(queuedMessage = null) }
     fun consumeJustCompleted() = _state.update { it.copy(justCompletedAction = null) }
 
     /**

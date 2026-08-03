@@ -39,6 +39,15 @@ class ReservationActionsRetrier @Inject constructor(
         var anySuccess = false
         for (entry in pending) {
             if (entry.attemptCount >= maxAttempts) {
+                // Se descarta tras 5 intentos, pero NO en silencio: sin esta línea
+                // una acción del mesero desaparecía sin que nadie se enterara —
+                // justo lo que la regla de offline llama perder el intent.
+                // Pendiente: llevarla a una cuarentena visible como la de ventas.
+                android.util.Log.e(
+                    "📅",
+                    "Acción de reserva DESCARTADA tras $maxAttempts intentos: " +
+                        "${entry.action} sobre ${entry.reservationId} — nunca llegó al server",
+                )
                 pendingDao.delete(entry.rowId)
                 continue
             }

@@ -206,6 +206,28 @@ class ReservationRepository @Inject constructor(
         }
     }
 
+    /**
+     * La acción SE GUARDÓ y se enviará al reconectar. Viaja como `failure` porque
+     * no hay reserva actualizada que devolver, pero NO es un fallo: la pantalla
+     * tiene que decirlo así.
+     *
+     * Antes el mensaje era "Action CONFIRM enqueued for retry" y las pantallas lo
+     * pintaban tal cual en el hueco del error. El mesero leía un error en inglés,
+     * veía la reserva sin cambiar, y volvía a tocar — encolando la acción otra vez.
+     */
     class OfflineEnqueuedException(val action: ReservationAction) :
-        Exception("Action ${action.name} enqueued for retry")
+        Exception(mensajeEncolado(action))
+
+    companion object {
+        fun mensajeEncolado(action: ReservationAction): String = when (action) {
+            ReservationAction.CONFIRM -> "Sin conexión: se confirmará al volver el internet."
+            ReservationAction.CHECK_IN -> "Sin conexión: la llegada se registrará al volver el internet."
+            ReservationAction.COMPLETE -> "Sin conexión: se marcará como completada al volver el internet."
+            ReservationAction.NO_SHOW -> "Sin conexión: se marcará como no presentado al volver el internet."
+            ReservationAction.CANCEL -> "Sin conexión: se cancelará al volver el internet."
+            ReservationAction.RESCHEDULE -> "Sin conexión: se reagendará al volver el internet."
+            ReservationAction.CREATE -> "Sin conexión: la reserva se creará al volver el internet."
+            ReservationAction.UPDATE -> "Sin conexión: los cambios se guardarán al volver el internet."
+        }
+    }
 }

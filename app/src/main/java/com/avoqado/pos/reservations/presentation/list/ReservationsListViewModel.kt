@@ -59,7 +59,7 @@ class ReservationsListViewModel @Inject constructor(
     }
 
     fun runTransition(id: String, action: ReservationAction, payload: ReservationRepository.ActionPayload? = null) {
-        _state.update { it.copy(pendingTransitionIds = it.pendingTransitionIds + id) }
+        _state.update { it.copy(pendingTransitionIds = it.pendingTransitionIds + id, queuedMessage = null) }
         viewModelScope.launch {
             val r = repository.runAction(id, action, payload)
             _state.update { current ->
@@ -73,11 +73,18 @@ class ReservationsListViewModel @Inject constructor(
                     }
                     current.copy(items = filtered, pendingTransitionIds = pendingCleared, error = null)
                 } else {
-                    current.copy(pendingTransitionIds = pendingCleared, error = r.exceptionOrNull()?.message ?: "Error")
+                    val queued = r.exceptionOrNull() as? ReservationRepository.OfflineEnqueuedException
+                    if (queued != null) {
+                        // Sin red la acción SÍ quedó guardada: se avisa, no se acusa.
+                        current.copy(pendingTransitionIds = pendingCleared, queuedMessage = queued.message)
+                    } else {
+                        current.copy(pendingTransitionIds = pendingCleared, error = r.exceptionOrNull()?.message ?: "Error")
+                    }
                 }
             }
         }
     }
 
     fun consumeError() = _state.update { it.copy(error = null) }
+    fun consumeQueuedMessage() = _state.update { it.copy(queuedMessage = null) }
 }

@@ -17,6 +17,9 @@ data class ReservationsListUiState(
     val isLoading: Boolean = false,
     val items: List<Reservation> = emptyList(),
     val error: String? = null,
+    // "Se guardó, se enviará al reconectar" — separado de `error` para que el
+    // mesero no lo lea como fallo y reintente, duplicando la acción.
+    val queuedMessage: String? = null,
     val search: String = "",
     val channelFilter: ReservationChannel? = null,
     val pendingTransitionIds: Set<String> = emptySet(),

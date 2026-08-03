@@ -56,6 +56,11 @@ fun ReservationDetailScreen(
     var successLabel by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(state.error) { state.error?.let { snack.showSnackbar(it); viewModel.consumeError() } }
+    // El aviso de "se guardó, se enviará al reconectar" va por el mismo canal
+    // pero NO es un error: sin esto la acción encolada no se anunciaba en absoluto.
+    LaunchedEffect(state.queuedMessage) {
+        state.queuedMessage?.let { snack.showSnackbar(it); viewModel.consumeQueuedMessage() }
+    }
     LaunchedEffect(state.justCompletedAction) {
         successLabel = state.justCompletedAction?.let { successCopy(it) }
         if (successLabel != null) viewModel.consumeJustCompleted()
