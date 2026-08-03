@@ -68,4 +68,49 @@ class CashDrawerSessionParsingTest {
         val s = parse("""{"id":"sess-3","startingAmount":100.0,"status":"OPEN","closedAt":null}""")
         assertNull(s.closedAt)
     }
+
+    /**
+     * Una sesión ABIERTA no tiene conteo ni diferencia: el dinero aún no se ha
+     * contado. El server los manda como null y `jsonPrimitive.double` intentaba
+     * convertir el TEXTO "null", reventando el parseo ENTERO.
+     *
+     * Efecto medido en la tablet: "Parse current session error: For input
+     * string: \"null\"" en cada sincronización, y la caja abierta en el server
+     * era invisible para el POS — mientras el historial entraba sin problema,
+     * porque sus sesiones están cerradas y sí traen cifra.
+     */
+    @Test
+    fun `una sesion ABIERTA se parsea, aunque no tenga conteo ni diferencia`() {
+        val session = parse(
+            """
+            {
+              "id": "s-abierta",
+              "startingAmount": 500.0,
+              "actualAmount": null,
+              "overShort": null,
+              "closedAt": null,
+              "closedByName": null,
+              "openedByName": "Ana",
+              "openedAt": "2026-08-03T16:27:00.000Z",
+              "status": "OPEN"
+            }
+            """.trimIndent(),
+        )
+
+        assertEquals("s-abierta", session.id)
+        assertEquals(50_000, session.startingAmountCents)
+        assertNull("sin conteo mientras la caja siga abierta", session.actualAmountCents)
+        assertNull("y sin diferencia", session.overShortCents)
+        assertEquals("Ana", session.openedByName)
+    }
+
+    @Test
+    fun `un importe ausente no vale cero disfrazado`() {
+        // Que `actualAmount` falte no es lo mismo que contar $0: uno es "todavía
+        // no", el otro es "el cajón está vacío". Confundirlos inventa un faltante
+        // por el total de la caja.
+        val session = parse("""{"id":"s2","startingAmount":100.0,"status":"OPEN"}""")
+        assertNull(session.actualAmountCents)
+        assertNull(session.overShortCents)
+    }
 }

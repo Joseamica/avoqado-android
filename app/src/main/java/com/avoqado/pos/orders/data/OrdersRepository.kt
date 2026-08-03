@@ -17,6 +17,7 @@ import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -105,9 +106,13 @@ class OrdersRepository @Inject constructor(
                 val orders = dataArray.map {
                     json.decodeFromJsonElement<OrderSummary>(it)
                 }
-                val total = meta?.get("total")?.jsonPrimitive?.int ?: orders.size
-                val currentPage = meta?.get("page")?.jsonPrimitive?.int ?: page
-                val pageCount = meta?.get("pageCount")?.jsonPrimitive?.int ?: 1
+                // `intOrNull`: `int` sobre un JSON null convierte el TEXTO "null"
+                // y revienta el parseo entero — la lista de pedidos saldría vacía
+                // por un campo de paginación ausente. Mismo defecto que tenía la
+                // sesión de caja en curso.
+                val total = meta?.get("total")?.jsonPrimitive?.intOrNull ?: orders.size
+                val currentPage = meta?.get("page")?.jsonPrimitive?.intOrNull ?: page
+                val pageCount = meta?.get("pageCount")?.jsonPrimitive?.intOrNull ?: 1
 
                 Log.d(TAG, "✅ Loaded ${orders.size} orders (page $currentPage/$pageCount)")
                 OrderPage(

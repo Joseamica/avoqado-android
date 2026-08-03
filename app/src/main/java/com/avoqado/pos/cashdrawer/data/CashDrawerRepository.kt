@@ -16,6 +16,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.double
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -121,8 +122,8 @@ class CashDrawerRepository @Inject constructor(
             arr.mapNotNull { el ->
                 val obj = el.jsonObject
                 val method = obj["method"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
-                val dollars = obj["total"]?.jsonPrimitive?.double ?: 0.0
-                val tips = obj["tips"]?.jsonPrimitive?.double ?: 0.0
+                val dollars = obj["total"]?.jsonPrimitive?.doubleOrNull ?: 0.0
+                val tips = obj["tips"]?.jsonPrimitive?.doubleOrNull ?: 0.0
                 TenderRow(
                     method = method,
                     totalCents = (dollars * 100).toInt(),
@@ -557,9 +558,18 @@ class CashDrawerRepository @Inject constructor(
      */
     internal fun parseSessionFromApi(obj: JsonObject): CashDrawerSessionEntity {
         val id = obj["id"]?.jsonPrimitive?.contentOrNull ?: UUID.randomUUID().toString()
-        val startingDollars = obj["startingAmount"]?.jsonPrimitive?.double ?: 0.0
-        val actualDollars = obj["actualAmount"]?.jsonPrimitive?.double
-        val overShortDollars = (obj["overShort"] ?: obj["overShortAmount"])?.jsonPrimitive?.double
+        // 🔴 `doubleOrNull`, NUNCA `double`.
+        //
+        // `jsonPrimitive.double` sobre un JSON null intenta convertir el TEXTO
+        // "null" y revienta con NumberFormatException. En una sesión ABIERTA,
+        // `actualAmount` y `overShort` son nulos por definición —el dinero aún no
+        // se ha contado— así que la sesión en curso del server NUNCA se parseaba:
+        // "Parse current session error: For input string: \"null\"" en el log, y
+        // la caja abierta en otro dispositivo era invisible para este. El
+        // historial sí entraba, porque sus sesiones están cerradas y traen cifra.
+        val startingDollars = obj["startingAmount"]?.jsonPrimitive?.doubleOrNull ?: 0.0
+        val actualDollars = obj["actualAmount"]?.jsonPrimitive?.doubleOrNull
+        val overShortDollars = (obj["overShort"] ?: obj["overShortAmount"])?.jsonPrimitive?.doubleOrNull
         val status = obj["status"]?.jsonPrimitive?.contentOrNull ?: CashDrawerStatus.OPEN.name
 
         return CashDrawerSessionEntity(
@@ -581,7 +591,7 @@ class CashDrawerRepository @Inject constructor(
     }
 
     private fun parseEventFromApi(obj: JsonObject, sessionId: String): CashDrawerEventEntity {
-        val amountDollars = obj["amount"]?.jsonPrimitive?.double ?: 0.0
+        val amountDollars = obj["amount"]?.jsonPrimitive?.doubleOrNull ?: 0.0
 
         return CashDrawerEventEntity(
             id = obj["id"]?.jsonPrimitive?.contentOrNull ?: UUID.randomUUID().toString(),
