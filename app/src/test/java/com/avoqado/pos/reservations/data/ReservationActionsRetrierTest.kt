@@ -52,15 +52,21 @@ class ReservationActionsRetrierTest {
         coVerify(exactly = 0) { dao.delete(any()) }
     }
 
+    /**
+     * Reemplaza a un test anterior que exigía BORRAR la entrada al agotar los
+     * intentos. Ese era el bug: la acción del mesero desaparecía sin rastro y
+     * nadie se enteraba. Ahora se conserva para la cuarentena — pero sigue sin
+     * reintentarse, que era la otra mitad correcta del comportamiento viejo.
+     */
     @Test
-    fun `drain deletes entry when attempt count reaches max`() = runTest {
+    fun `al agotar los intentos deja de llamar al server pero conserva la entrada`() = runTest {
         coEvery { dao.all() } returns listOf(
             PendingReservationActionEntity(rowId = 3, reservationId = "r3", action = "COMPLETE", attemptCount = 5),
         )
 
         retrier.drain()
 
-        coVerify(exactly = 1) { dao.delete(3L) }
+        coVerify(exactly = 0) { dao.delete(3L) }
         coVerify(exactly = 0) { api.complete(any()) }
     }
 
@@ -96,4 +102,41 @@ class ReservationActionsRetrierTest {
         startsAt = "2026-04-29T10:00:00.000Z", endsAt = "2026-04-29T11:00:00.000Z",
         duration = 60, createdAt = "2026-04-29T00:00:00.000Z", updatedAt = "2026-04-29T00:00:00.000Z",
     )
+
+    /**
+     * Agotar los reintentos NO puede borrar la acción.
+     *
+     * Antes sí: tras 5 intentos se hacía `delete` y la acción del mesero
+     * desaparecía sin rastro — la mesa quedaba sin confirmar o un cliente sin
+     * cancelar, y no había dónde enterarse. Conservarla es lo que permite
+     * listarla en la cuarentena, igual que los cobros rechazados.
+     */
+    @Test
+    fun `una accion agotada se conserva para la cuarentena, no se borra`() = runTest {
+        coEvery { dao.all() } returns listOf(
+            PendingReservationActionEntity(
+                rowId = 9,
+                reservationId = "r9",
+                action = "CANCEL",
+                attemptCount = 5,
+            ),
+        )
+
+        retrier.drain()
+
+        coVerify(exactly = 0) { dao.delete(9L) }
+        coVerify(exactly = 0) { dao.incrementAttempt(9L) }
+    }
+
+    @Test
+    fun `una accion agotada ya no se reintenta contra el server`() = runTest {
+        // Reintentar para siempre martillea al server con algo que ya rechazó.
+        coEvery { dao.all() } returns listOf(
+            PendingReservationActionEntity(rowId = 10, reservationId = "r10", action = "CONFIRM", attemptCount = 5),
+        )
+
+        retrier.drain()
+
+        coVerify(exactly = 0) { api.confirm(any()) }
+    }
 }

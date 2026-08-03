@@ -45,6 +45,13 @@ interface PendingReservationActionDao {
     @Query("SELECT COUNT(*) FROM pending_reservation_action")
     fun pendingCount(): Flow<Int>
 
+    /** Las que agotaron los reintentos y esperan a que alguien las resuelva. */
+    @Query("SELECT * FROM pending_reservation_action WHERE attemptCount >= :maxAttempts ORDER BY createdAt ASC")
+    suspend fun exhausted(maxAttempts: Int): List<PendingReservationActionEntity>
+
+    @Query("SELECT COUNT(*) FROM pending_reservation_action WHERE attemptCount >= :maxAttempts")
+    fun exhaustedCount(maxAttempts: Int): Flow<Int>
+
     @Query("DELETE FROM pending_reservation_action WHERE rowId = :rowId")
     suspend fun delete(rowId: Long)
 

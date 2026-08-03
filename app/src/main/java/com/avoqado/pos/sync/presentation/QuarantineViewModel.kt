@@ -3,7 +3,12 @@ package com.avoqado.pos.sync.presentation
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.core.data.local.database.PendingPaymentEntity
 import com.avoqado.pos.core.data.sync.SyncOutbox
+import com.avoqado.pos.core.domain.RoleManager
+import com.avoqado.pos.payment.data.PaymentSyncService
+import com.avoqado.pos.reservations.data.PendingReservationActionEntity
+import com.avoqado.pos.reservations.data.ReservationRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -21,25 +26,104 @@ import javax.inject.Inject
 class QuarantineViewModel @Inject constructor(
     private val syncOutbox: SyncOutbox,
     private val secureStorage: SecureStorage,
+    private val paymentSyncService: PaymentSyncService,
+    private val reservationRepository: ReservationRepository,
+    private val roleManager: RoleManager,
 ) : ViewModel() {
 
     private val _items = MutableStateFlow<List<SyncOutbox.QuarantinedIntent>>(emptyList())
     val items: StateFlow<List<SyncOutbox.QuarantinedIntent>> = _items.asStateFlow()
 
+    private val _failedPayments = MutableStateFlow<List<PendingPaymentEntity>>(emptyList())
+    val failedPayments: StateFlow<List<PendingPaymentEntity>> = _failedPayments.asStateFlow()
+
+    /**
+     * Acciones de reserva que agotaron sus reintentos.
+     *
+     * Antes se borraban en silencio: la mesa se quedaba sin confirmar, o un
+     * cliente sin cancelar, y no había dónde enterarse. Van aquí por la misma
+     * razón que los cobros rechazados — alguien tiene que resolverlas a mano.
+     */
+    private val _failedReservationActions = MutableStateFlow<List<PendingReservationActionEntity>>(emptyList())
+    val failedReservationActions: StateFlow<List<PendingReservationActionEntity>> = _failedReservationActions.asStateFlow()
+
+    private val _successMessage = MutableStateFlow<String?>(null)
+    val successMessage: StateFlow<String?> = _successMessage.asStateFlow()
+
     val rejectedCount: StateFlow<Int> = syncOutbox.rejectedCount
+
+    /** Resolver/descartar conciliaciones altera caja: gerente o superior. */
+    val canResolve: Boolean
+        get() = roleManager.canIssueRefund
 
     fun load() {
         val venueId = secureStorage.venueId ?: return
-        viewModelScope.launch { _items.value = syncOutbox.rejectedIntents(venueId) }
+        viewModelScope.launch {
+            _items.value = syncOutbox.rejectedIntents(venueId)
+            _failedPayments.value = paymentSyncService.failedPayments()
+            _failedReservationActions.value = reservationRepository.quarantinedActions()
+        }
     }
 
     /** El gerente resolvió el rechazo a mano (recobró, re-comandó) y lo descarta. */
     fun dismiss(id: String) {
+        if (!canResolve) return
         val venueId = secureStorage.venueId ?: return
         viewModelScope.launch {
             syncOutbox.dismissRejected(venueId, id)
+            _successMessage.value = "Operación marcada como resuelta"
             load()
         }
+    }
+
+    fun retryPayment(id: String) {
+        if (!canResolve) return
+        viewModelScope.launch {
+            paymentSyncService.retryFailedPayment(id)
+            _successMessage.value = "Cobro enviado de nuevo a sincronización"
+            load()
+        }
+    }
+
+    /** Ya se resolvió a mano (se volvió a agendar, se llamó al cliente). */
+    fun dismissReservationAction(rowId: Long) {
+        if (!canResolve) return
+        viewModelScope.launch {
+            reservationRepository.dismissQuarantined(rowId)
+            _successMessage.value = "Acción de reserva marcada como resuelta"
+            load()
+        }
+    }
+
+    /** Qué intentaba hacer el mesero, en palabras. */
+    fun describeReservationAction(action: String): String = when (action) {
+        "CONFIRM" -> "Confirmar reserva"
+        "CHECK_IN" -> "Registrar llegada"
+        "COMPLETE" -> "Completar reserva"
+        "NO_SHOW" -> "Marcar no presentado"
+        "CANCEL" -> "Cancelar reserva"
+        "RESCHEDULE" -> "Reagendar"
+        "CREATE" -> "Crear reserva"
+        "UPDATE" -> "Editar reserva"
+        else -> action
+    }
+
+    /**
+     * Qué hacer con ella. La diferencia importa: una reserva que nunca se creó
+     * deja a alguien sin lugar, y una cancelación que no llegó deja una mesa
+     * bloqueada toda la noche.
+     */
+    fun reservationResolutionHint(entry: PendingReservationActionEntity): String = when (entry.action) {
+        "CREATE" -> "La reserva NUNCA se creó en el sistema. Agéndala de nuevo antes de descartarla, o el cliente llegará sin lugar."
+        "CANCEL" -> "La cancelación no llegó: la reserva sigue ocupando el horario. Cancélala a mano para liberarlo."
+        "RESCHEDULE" -> "El cambio de horario no se aplicó. La reserva sigue en su hora original — reagéndala o avisa al cliente."
+        "NO_SHOW" -> "No quedó marcada como no presentado. Si aplica un cargo, revísalo antes de descartarla."
+        "CHECK_IN" -> "La llegada no quedó registrada. Márcala a mano si el cliente sí llegó."
+        else -> "La operación nunca llegó al servidor. Revisa la reserva y vuelve a hacerla si sigue aplicando."
+    }
+
+    fun consumeSuccess() {
+        _successMessage.value = null
     }
 
     /** Texto humano por tipo de operación. */
@@ -63,10 +147,25 @@ class QuarantineViewModel @Inject constructor(
         "TABLE_OWNED_BY_OTHER" -> "Otro mesero ya trabajaba esta mesa. Revisa con él y vuelve a hacer la operación si aplica."
         "FEATURE_LOCKED" -> "El plan del local no tiene esta función activa. Contacta a administración."
         "ORDER_NOT_FOUND" -> "La orden ya no existe (pudo cancelarse). No requiere acción."
+        "OUTCOME_UNKNOWN" -> "El servidor evitó repetirla porque su resultado quedó incierto. Revisa la cuenta y la caja antes de hacer cualquier corrección."
+        "STALE_DEVICE_SEQUENCE" -> "El dispositivo intentó reutilizar una secuencia anterior. Revisa la operación y vuelve a iniciar sesión antes de continuar."
         else -> if (type == "PAY_CASH") {
             "El cobro no se registró. El efectivo está en caja: vuelve a cobrar esta cuenta desde el POS y luego descártalo."
         } else {
             "El server rechazó esta operación. Revísala y vuelve a hacerla manualmente si sigue aplicando."
         }
+    }
+
+    fun paymentResolutionHint(payment: PendingPaymentEntity): String = when {
+        payment.lastError?.contains("401") == true ->
+            "La sesión expiró. Inicia sesión de nuevo cuando no queden operaciones pendientes y vuelve a intentar."
+        payment.lastError?.contains("403") == true ->
+            "El empleado no tenía permiso para registrar este cobro. Un gerente debe revisar el rol y reintentarlo."
+        payment.lastError?.contains("404") == true ->
+            "La orden vinculada ya no existe. Verifica caja y ventas antes de volver a cobrar."
+        payment.lastError?.contains("400") == true ->
+            "El servidor rechazó los datos. Verifica la orden y la caja antes de reintentar."
+        else ->
+            "El cobro no logró confirmarse. Conserva el efectivo registrado y reintenta cuando el servidor esté disponible."
     }
 }

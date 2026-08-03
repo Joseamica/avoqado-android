@@ -35,6 +35,8 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Warning
+import com.avoqado.pos.designsystem.components.AvoqadoSuccessToast
+import java.text.NumberFormat
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -51,6 +53,9 @@ fun QuarantineSheet(
     viewModel: QuarantineViewModel = hiltViewModel(),
 ) {
     val items by viewModel.items.collectAsState()
+    val failedPayments by viewModel.failedPayments.collectAsState()
+    val failedReservations by viewModel.failedReservationActions.collectAsState()
+    val successMessage by viewModel.successMessage.collectAsState()
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     LaunchedEffect(Unit) { viewModel.load() }
@@ -61,20 +66,20 @@ fun QuarantineSheet(
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
                 Icon(Icons.Filled.WarningAmber, contentDescription = null, tint = Warning, modifier = Modifier.size(24.dp))
                 Text(
-                    "Operaciones que necesitan revisión",
+                "Conciliación sin conexión",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                 )
             }
             Spacer(Modifier.height(AvoqadoTheme.spacing.xs))
             Text(
-                "El server rechazó estas operaciones al sincronizar. Nada se perdió: revísalas, resuélvelas manualmente y descártalas.",
+                "Revisa operaciones rechazadas y cobros que no pudieron confirmarse. Avoqado conserva sus datos hasta que un gerente los resuelva.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(Modifier.height(AvoqadoTheme.spacing.md))
 
-            if (items.isEmpty()) {
+            if (items.isEmpty() && failedPayments.isEmpty() && failedReservations.isEmpty()) {
                 Text(
                     "No hay operaciones pendientes de revisión.",
                     style = MaterialTheme.typography.bodyMedium,
@@ -83,6 +88,104 @@ fun QuarantineSheet(
                 )
             } else {
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                    if (failedPayments.isNotEmpty()) {
+                        item {
+                            Text(
+                                "Cobros sin confirmar",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                        }
+                    }
+                    items(failedPayments, key = { "payment-${it.id}" }) { payment ->
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(AvoqadoTheme.spacing.md))
+                                .background(MaterialTheme.colorScheme.surfaceVariant)
+                                .padding(AvoqadoTheme.spacing.md),
+                            verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.xs),
+                        ) {
+                            Text(
+                                "${payment.method} · ${formatMoney(payment.amountCents)}",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            payment.orderNumber?.let {
+                                Text("Orden $it", style = MaterialTheme.typography.bodyMedium)
+                            }
+                            Text(
+                                viewModel.paymentResolutionHint(payment),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Text(
+                                formatTime(payment.createdAt),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            if (viewModel.canResolve) {
+                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                                    OutlinedButton(onClick = { viewModel.retryPayment(payment.id) }) {
+                                        Text("Reintentar")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if (failedReservations.isNotEmpty()) {
+                        item {
+                            Text(
+                                "Reservas sin sincronizar",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.padding(top = AvoqadoTheme.spacing.sm),
+                            )
+                        }
+                    }
+                    items(failedReservations, key = { "reservation-${it.rowId}" }) { entry ->
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(AvoqadoTheme.spacing.md))
+                                .background(MaterialTheme.colorScheme.surfaceVariant)
+                                .padding(AvoqadoTheme.spacing.md),
+                            verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.xs),
+                        ) {
+                            Text(
+                                viewModel.describeReservationAction(entry.action),
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                viewModel.reservationResolutionHint(entry),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Text(
+                                formatTime(entry.createdAt),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            if (viewModel.canResolve) {
+                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                                    OutlinedButton(onClick = { viewModel.dismissReservationAction(entry.rowId) }) {
+                                        Text("Marcar resuelta")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if (items.isNotEmpty()) {
+                        item {
+                            Text(
+                                "Operaciones rechazadas",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                                modifier = Modifier.padding(top = AvoqadoTheme.spacing.sm),
+                            )
+                        }
+                    }
                     items(items, key = { it.id }) { item ->
                         Column(
                             modifier = Modifier
@@ -110,23 +213,40 @@ fun QuarantineSheet(
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
-                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                                OutlinedButton(onClick = { viewModel.dismiss(item.id) }) {
-                                    Text("Descartar")
+                            if (viewModel.canResolve) {
+                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                                    OutlinedButton(onClick = { viewModel.dismiss(item.id) }) {
+                                        Text("Marcar resuelta")
+                                    }
                                 }
                             }
                         }
                     }
                 }
             }
+            if (!viewModel.canResolve && (items.isNotEmpty() || failedPayments.isNotEmpty())) {
+                Spacer(Modifier.height(AvoqadoTheme.spacing.md))
+                Text(
+                    "Pide a un gerente que revise y resuelva estas operaciones.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             Spacer(Modifier.height(AvoqadoTheme.spacing.md))
             HorizontalDivider()
         }
+    }
+
+    successMessage?.let {
+        AvoqadoSuccessToast(message = it, onDismiss = viewModel::consumeSuccess)
     }
 }
 
 private fun formatTime(epochMs: Long): String =
     SimpleDateFormat("d MMM, HH:mm", Locale("es", "MX")).format(Date(epochMs))
+
+private fun formatMoney(cents: Int): String =
+    NumberFormat.getCurrencyInstance(Locale("es", "MX")).format(cents / 100.0)
 
 /**
  * Banner persistente (visible AUNQUE haya conexión) cuando hay operaciones

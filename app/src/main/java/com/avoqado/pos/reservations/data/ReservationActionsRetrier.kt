@@ -23,7 +23,9 @@ class ReservationActionsRetrier @Inject constructor(
 ) {
     private val json = Json { ignoreUnknownKeys = true }
     private var job: Job? = null
-    private val maxAttempts = 5
+    // Misma constante que la cuarentena: si se separan, una acción agotada
+    // dejaría de listarse o se listaría antes de tiempo.
+    private val maxAttempts = ReservationRepository.MAX_ATTEMPTS
 
     fun start(scope: CoroutineScope) {
         if (job?.isActive == true) return
@@ -39,16 +41,18 @@ class ReservationActionsRetrier @Inject constructor(
         var anySuccess = false
         for (entry in pending) {
             if (entry.attemptCount >= maxAttempts) {
-                // Se descarta tras 5 intentos, pero NO en silencio: sin esta línea
-                // una acción del mesero desaparecía sin que nadie se enterara —
-                // justo lo que la regla de offline llama perder el intent.
-                // Pendiente: llevarla a una cuarentena visible como la de ventas.
+                // Agotó los reintentos: se DEJA en la tabla, no se borra.
+                //
+                // Antes se borraba aquí y la acción del mesero desaparecía sin que
+                // nadie se enterara — la mesa quedaba sin confirmar, o un cliente
+                // sin cancelar, y no había dónde mirarlo. Conservarla es lo que
+                // permite listarla en la cuarentena, igual que los cobros
+                // rechazados: visible hasta que un gerente la resuelva a mano.
                 android.util.Log.e(
                     "📅",
-                    "Acción de reserva DESCARTADA tras $maxAttempts intentos: " +
+                    "Acción de reserva EN CUARENTENA tras $maxAttempts intentos: " +
                         "${entry.action} sobre ${entry.reservationId} — nunca llegó al server",
                 )
-                pendingDao.delete(entry.rowId)
                 continue
             }
             val action = runCatching { ReservationAction.valueOf(entry.action) }.getOrNull()

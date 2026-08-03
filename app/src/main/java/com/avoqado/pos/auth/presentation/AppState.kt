@@ -34,6 +34,7 @@ class AppState @Inject constructor(
     private val tpvSettingsRepository: TpvSettingsRepository,
     private val paymentSyncService: PaymentSyncService,
     private val syncOutbox: com.avoqado.pos.core.data.sync.SyncOutbox,
+    private val reservationRepository: com.avoqado.pos.reservations.data.ReservationRepository,
     private val tableSyncCoordinator: com.avoqado.pos.tables.data.TableSyncCoordinator,
     private val posModeManager: PosModeManager,
     val venueSwitchState: com.avoqado.pos.settings.domain.VenueSwitchState,
@@ -83,6 +84,8 @@ class AppState @Inject constructor(
 
     val pendingPaymentCount: StateFlow<Int> = paymentSyncService.pendingCount
 
+    val failedPaymentCount: StateFlow<Int> = paymentSyncService.failedCount
+
     /** Operaciones offline esperando replay: outbox de mesas + cola de pagos. */
     val offlinePendingCount: StateFlow<Int> = combine(
         syncOutbox.pendingCount,
@@ -111,6 +114,27 @@ class AppState @Inject constructor(
      * "rechazo silencioso" (el contador antes no lo consumía nadie).
      */
     val syncRejectedCount: StateFlow<Int> = syncOutbox.rejectedCount
+
+    /**
+     * Todo lo que requiere conciliación humana, aunque la red ya haya vuelto.
+     *
+     * Las reservas agotadas entran aquí a propósito: sin sumarlas la cuarentena
+     * las listaría, pero nadie tendría motivo para abrirla — que es como se
+     * perdían antes.
+     */
+    val reconciliationCount: StateFlow<Int> = combine(
+        syncOutbox.rejectedCount,
+        paymentSyncService.failedCount,
+        reservationRepository.quarantinedCount,
+    ) { rejected, failed, reservas -> rejected + failed + reservas }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000),
+            initialValue = 0,
+        )
+
+    private val _sessionGuardMessage = MutableStateFlow<String?>(null)
+    val sessionGuardMessage: StateFlow<String?> = _sessionGuardMessage.asStateFlow()
 
     private val _reservationsEnabled = MutableStateFlow(secureStorage.reservationsEnabled)
 
@@ -227,6 +251,9 @@ class AppState @Inject constructor(
     fun refreshTabs() {
         _reservationsEnabled.value = secureStorage.reservationsEnabled
         posModeManager.reloadForCurrentVenue()
+        // Un cambio de venue debe rearmar los listeners/timer del outbox con
+        // el nuevo contexto; start() reinicia cuando cambia el venue activo.
+        startOfflineOutbox()
         _roleVersion.value += 1
     }
 
@@ -241,9 +268,28 @@ class AppState @Inject constructor(
     }
 
     fun onLogout() {
-        paymentSyncService.stop()
-        syncOutbox.stop()
-        secureStorage.clearSession()
-        _isLoggedIn.value = false
+        viewModelScope.launch {
+            val venueId = secureStorage.venueId
+            val blocking = paymentSyncService.blockingWorkCount() +
+                (venueId?.let { syncOutbox.blockingWorkCount(it) } ?: 0) +
+                secureStorage.areaTicketRecoveryCount()
+            if (blocking > 0) {
+                _sessionGuardMessage.value = if (blocking == 1) {
+                    "Hay 1 operación offline pendiente o en conciliación. Sincronízala o resuélvela antes de cerrar sesión para no perder su contexto."
+                } else {
+                    "Hay $blocking operaciones offline pendientes o en conciliación. Sincronízalas o resuélvelas antes de cerrar sesión para no perder su contexto."
+                }
+                return@launch
+            }
+
+            paymentSyncService.stop()
+            syncOutbox.stop()
+            secureStorage.clearSession()
+            _isLoggedIn.value = false
+        }
+    }
+
+    fun clearSessionGuard() {
+        _sessionGuardMessage.value = null
     }
 }

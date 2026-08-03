@@ -64,6 +64,14 @@ class ReservationRepository @Inject constructor(
 
     val pendingActionsCount: Flow<Int> = pendingDao.pendingCount()
 
+    /** Acciones que agotaron los reintentos y esperan resolución manual. */
+    val quarantinedCount: Flow<Int> = pendingDao.exhaustedCount(MAX_ATTEMPTS)
+
+    suspend fun quarantinedActions(): List<PendingReservationActionEntity> = pendingDao.exhausted(MAX_ATTEMPTS)
+
+    /** El gerente la resolvió a mano (volvió a agendar, llamó al cliente) y la descarta. */
+    suspend fun dismissQuarantined(rowId: Long) = pendingDao.delete(rowId)
+
     suspend fun fetchList(filters: ReservationFilters): Result<ReservationListResponse> {
         val r = api.list(filters)
         r.getOrNull()?.let { _lastList.value = it }
@@ -219,6 +227,9 @@ class ReservationRepository @Inject constructor(
         Exception(mensajeEncolado(action))
 
     companion object {
+        /** Espejo del límite del reintentador: pasado esto, va a cuarentena. */
+        const val MAX_ATTEMPTS = 5
+
         fun mensajeEncolado(action: ReservationAction): String = when (action) {
             ReservationAction.CONFIRM -> "Sin conexión: se confirmará al volver el internet."
             ReservationAction.CHECK_IN -> "Sin conexión: la llegada se registrará al volver el internet."
