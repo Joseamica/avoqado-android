@@ -692,6 +692,32 @@ private fun CurrentDrawerContent(
     val events by viewModel.events.collectAsState()
     val expectedCents by viewModel.expectedAmountCents.collectAsState()
     val isPrintingCorte by viewModel.isPrintingCorte.collectAsState()
+    // Corte PARCIAL en pantalla. Antes el botón sólo mandaba a imprimir: sin
+    // impresora configurada —o con ella caída— no había forma de ver cómo iba la
+    // caja a media jornada, que es justo para lo que sirve.
+    var showPartialReport by remember { mutableStateOf(false) }
+
+    val partialSession = session
+    if (showPartialReport && partialSession != null) {
+        val partialTenders by viewModel.tenderBreakdown.collectAsState()
+        LaunchedEffect(partialSession.id) {
+            viewModel.loadTenderBreakdown(partialSession.openedAt, System.currentTimeMillis())
+        }
+        DailyReportView(
+            session = partialSession,
+            events = events,
+            venueName = viewModel.venueName,
+            tenderBreakdown = partialTenders,
+            isPartial = true,
+            isPrinting = isPrintingCorte,
+            onRetryBreakdown = {
+                viewModel.loadTenderBreakdown(partialSession.openedAt, System.currentTimeMillis())
+            },
+            onPrint = { viewModel.printPartialCorte(partialSession, events) },
+            onDismiss = { showPartialReport = false },
+        )
+        return
+    }
 
     if (session == null) {
         // Empty state
@@ -709,7 +735,7 @@ private fun CurrentDrawerContent(
             onPayOut = onPayOut,
             onCloseDrawer = onCloseDrawer,
             isPrintingCorte = isPrintingCorte,
-            onPrintPartial = { viewModel.printPartialCorte(session!!, events) },
+            onPrintPartial = { showPartialReport = true },
         )
     }
 }

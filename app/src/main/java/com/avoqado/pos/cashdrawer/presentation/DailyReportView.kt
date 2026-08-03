@@ -48,6 +48,15 @@ fun DailyReportView(
     // Payment-method breakdown from the server (card + cash + other) for the
     // session window. Empty = not loaded / offline → falls back to cash-only.
     tenderBreakdown: List<com.avoqado.pos.cashdrawer.data.CashDrawerRepository.TenderRow> = emptyList(),
+    /**
+     * Corte PARCIAL: la caja sigue abierta y el dinero aún no se ha contado.
+     *
+     * Existe porque "Corte parcial" sólo imprimía: sin impresora configurada —o
+     * con ella caída— no había forma de ver cómo iba la caja a media jornada,
+     * que es justo para lo que sirve. Espejo del ticket, que ya distingue el
+     * parcial y omite conteo y diferencia.
+     */
+    isPartial: Boolean = false,
     isPrinting: Boolean = false,
     onPrint: () -> Unit = {},
     /**
@@ -121,7 +130,10 @@ fun DailyReportView(
             CircleBackButton(onClick = onDismiss)
             Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.md))
             Text(
-                text = "Corte de caja",
+                // El ticket ya distingue "CORTE PARCIAL"; la pantalla decía
+                // "Corte de caja" en los dos casos, y quien lo mira a media
+                // jornada puede creer que ya cerró la caja.
+                text = if (isPartial) "Corte parcial" else "Corte de caja",
                 style = MaterialTheme.typography.titleLarge,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurface,
@@ -315,27 +327,41 @@ fun DailyReportView(
                         color = MaterialTheme.colorScheme.outlineVariant,
                         modifier = Modifier.padding(vertical = AvoqadoTheme.spacing.sm),
                     )
-                    ReportRow(
-                        label = "Conteo real",
-                        value = formatCurrency(actualCents),
-                        isBold = true,
-                    )
+                    if (!isPartial) {
+                        ReportRow(
+                            label = "Conteo real",
+                            value = formatCurrency(actualCents),
+                            isBold = true,
+                        )
+                    }
                     HorizontalDivider(
                         color = MaterialTheme.colorScheme.outlineVariant,
                         modifier = Modifier.padding(vertical = AvoqadoTheme.spacing.sm),
                     )
 
-                    val (diffLabel, diffColor) = when {
-                        differenceCents > 0 -> "Sobrante" to Success
-                        differenceCents < 0 -> "Faltante" to Error
-                        else -> "Diferencia" to MaterialTheme.colorScheme.onSurface
+                    if (isPartial) {
+                        // Acusar un "Faltante" contra un conteo que todavía no se
+                        // ha hecho le inventaría un descuadre a alguien que no ha
+                        // hecho nada mal. Mismo criterio que el ticket parcial.
+                        Text(
+                            text = "La caja sigue abierta: el dinero aún no se ha contado. " +
+                                "El faltante o sobrante se calcula al cerrarla.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    } else {
+                        val (diffLabel, diffColor) = when {
+                            differenceCents > 0 -> "Sobrante" to Success
+                            differenceCents < 0 -> "Faltante" to Error
+                            else -> "Diferencia" to MaterialTheme.colorScheme.onSurface
+                        }
+                        ReportRow(
+                            label = diffLabel,
+                            value = formatCurrency(abs(differenceCents)),
+                            valueColor = diffColor,
+                            isBold = true,
+                        )
                     }
-                    ReportRow(
-                        label = diffLabel,
-                        value = formatCurrency(abs(differenceCents)),
-                        valueColor = diffColor,
-                        isBold = true,
-                    )
                 }
             }
 
