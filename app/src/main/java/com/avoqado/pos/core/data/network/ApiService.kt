@@ -10,6 +10,7 @@ import com.avoqado.pos.printing.routing.SyncPrintJobsRequest
 import retrofit2.http.Body
 import retrofit2.http.GET
 import retrofit2.http.HTTP
+import retrofit2.http.Headers
 import retrofit2.http.POST
 import retrofit2.http.Path
 import retrofit2.http.Query
@@ -191,6 +192,9 @@ interface ApiService {
 
     // MARK: - Offline-first sync (Corte B/D)
 
+    // Corre sola al reconectar: su rechazo va a cuarentena, no a un diálogo
+    // encima de la pantalla del mesero.
+    @Headers("X-Avoqado-Background: 1")
     @POST("mobile/venues/{venueId}/sync/intents")
     suspend fun syncIntents(
         @Path("venueId") venueId: String,
