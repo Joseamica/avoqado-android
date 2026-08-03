@@ -87,15 +87,25 @@ fun CreateReservationScreen(
 
     var showSuccess by remember { mutableStateOf(false) }
     var submitError by remember { mutableStateOf<String?>(null) }
+    // 🔴 Sin red la reserva SÍ se guardó. Va en su propio aviso porque el
+    // diálogo de error se titula "No se pudo guardar", y ese título contradecía
+    // al cuerpo ("se creará al volver el internet") en la misma ventana: el
+    // mesero leía el título, daba por fallada la reserva y la volvía a crear.
+    var queuedMessage by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(result) {
         result?.onSuccess { showSuccess = true }
         // Failure branch was silently dropped: the button just re-enabled
         // and nothing happened (fields ARE preserved in the VM's draft).
-        result?.onFailure {
-            submitError = com.avoqado.pos.core.data.network.ServerErrorText.humanize(
-                it.message,
-                "No se pudo guardar la reserva. Intenta de nuevo.",
-            )
+        result?.onFailure { error ->
+            val queued = error as? com.avoqado.pos.reservations.data.ReservationRepository.OfflineEnqueuedException
+            if (queued != null) {
+                queuedMessage = queued.message
+            } else {
+                submitError = com.avoqado.pos.core.data.network.ServerErrorText.humanize(
+                    error.message,
+                    "No se pudo guardar la reserva. Intenta de nuevo.",
+                )
+            }
         }
     }
 
@@ -196,6 +206,18 @@ fun CreateReservationScreen(
                 CreateSheet.DETAILS -> DetailsSection(viewModel)
             }
         }
+    }
+
+    if (queuedMessage != null) {
+        AvoqadoDialog(
+            title = "Guardado sin conexión",
+            description = queuedMessage ?: "",
+            onDismiss = { queuedMessage = null },
+            actionButton = {
+                PrimaryButton(text = "Entendido", onClick = { queuedMessage = null })
+            },
+            content = {},
+        )
     }
 
     if (submitError != null) {
