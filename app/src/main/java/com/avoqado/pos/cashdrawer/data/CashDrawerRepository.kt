@@ -86,7 +86,15 @@ class CashDrawerRepository @Inject constructor(
     // MARK: - Tender breakdown (corte de caja — all payment methods, not just cash)
 
     /** One tender row for the corte's "Desglose por método de pago". */
-    data class TenderRow(val method: String, val totalCents: Int)
+    /**
+     * @param totalCents lo cobrado por ese método, propina INCLUIDA — es lo que
+     *   entró y, en efectivo, lo que está físicamente en el cajón.
+     * @param tipsCents cuánto de ese total fue propina. Viaja aparte porque la
+     *   propina NO es dinero del negocio: se le entrega al mesero. Un corte que la
+     *   suma sin distinguirla hace que el cajón "cuadre" con dinero que se va a
+     *   repartir.
+     */
+    data class TenderRow(val method: String, val totalCents: Int, val tipsCents: Int = 0)
 
     /**
      * Payments grouped by method for the session window [fromMillis, toMillis].
@@ -114,7 +122,12 @@ class CashDrawerRepository @Inject constructor(
                 val obj = el.jsonObject
                 val method = obj["method"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
                 val dollars = obj["total"]?.jsonPrimitive?.double ?: 0.0
-                TenderRow(method = method, totalCents = (dollars * 100).toInt())
+                val tips = obj["tips"]?.jsonPrimitive?.double ?: 0.0
+                TenderRow(
+                    method = method,
+                    totalCents = (dollars * 100).toInt(),
+                    tipsCents = (tips * 100).toInt(),
+                )
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ tender-breakdown error: ${e.message}")

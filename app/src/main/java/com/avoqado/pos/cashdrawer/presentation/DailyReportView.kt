@@ -230,6 +230,35 @@ fun DailyReportView(
 
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
 
+            // PROPINAS — sección propia, igual que en el ticket impreso.
+            // La propina no es dinero del negocio: se le entrega al mesero. Iba
+            // sumada dentro de cada método sin distinguirse, así que el corte
+            // enseñaba el efectivo sin avisar cuánto de ahí hay que sacar.
+            val propinas = tenderBreakdown.filter { it.tipsCents != 0 }
+            if (propinas.isNotEmpty()) {
+                ReportSectionTitle(text = "Propinas")
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+                propinas.sortedByDescending { it.tipsCents }.forEach { t ->
+                    ReportRow(label = tenderLabel(t.method), value = formatCurrency(t.tipsCents))
+                }
+                ReportRow(
+                    label = "Total propinas",
+                    value = formatCurrency(propinas.sumOf { it.tipsCents }),
+                    isBold = true,
+                )
+                val propinaEfectivo = propinas.firstOrNull { it.method == "CASH" }?.tipsCents ?: 0
+                if (propinaEfectivo > 0) {
+                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xs))
+                    Text(
+                        text = "De estas, ${formatCurrency(propinaEfectivo)} están en el cajón y se " +
+                            "pagan al mesero. Regístralo como egreso para que el corte cuadre.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
+            }
+
             // Cash movements section
             ReportSectionTitle(text = "Movimientos de efectivo")
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))

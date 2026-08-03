@@ -109,6 +109,34 @@ object CorteTicketBuilder {
         }
         p.printDivider()
 
+        // PROPINAS — su propia sección, como en el Corte Z de SoftRestaurant.
+        //
+        // Va aparte porque la propina NO es dinero del negocio: se le entrega al
+        // mesero. Antes iba sumada dentro de cada método sin distinguirse, así que
+        // el corte enseñaba "Efectivo $5,158" sin decir que $552 de ahí eran
+        // propinas que hay que sacar del cajón. El total de cada método sigue
+        // incluyéndolas —es lo que hay físicamente— pero ahora se ve cuánto es.
+        val tips = tenders.filter { it.tipsCents != 0 }
+        if (tips.isNotEmpty()) {
+            p.setBold(true)
+            p.printLine("PROPINAS")
+            p.setBold(false)
+            tips.sortedByDescending { it.tipsCents }.forEach {
+                p.printTwoColumns(tenderLabel(it.method), money(it.tipsCents))
+            }
+            p.setBold(true)
+            p.printTwoColumns("Total propinas", money(tips.sumOf { it.tipsCents }))
+            p.setBold(false)
+            val propinaEfectivo = tips.firstOrNull { it.method == "CASH" }?.tipsCents ?: 0
+            if (propinaEfectivo > 0) {
+                // El dato que el cajero necesita para no descuadrar: de lo que hay en
+                // el cajón, esto le toca al mesero. Se saca con un egreso.
+                p.printLine("De estas, " + money(propinaEfectivo) + " estan en el cajon")
+                p.printLine("y se pagan al mesero (registra un egreso).")
+            }
+            p.printDivider()
+        }
+
         p.setBold(true)
         p.printLine("MOVIMIENTOS DE EFECTIVO")
         p.setBold(false)

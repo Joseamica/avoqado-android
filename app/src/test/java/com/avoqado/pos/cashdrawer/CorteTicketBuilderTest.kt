@@ -55,9 +55,10 @@ class CorteTicketBuilderTest {
     )
 
     private val tenders = listOf(
-        CashDrawerRepository.TenderRow("CASH", 5_000),
-        CashDrawerRepository.TenderRow("CREDIT_CARD", 12_000),
-        CashDrawerRepository.TenderRow("DEBIT_CARD", 3_000),
+        // Los totales INCLUYEN la propina; `tipsCents` dice cuánta de ella es.
+        CashDrawerRepository.TenderRow("CASH", 5_000, tipsCents = 300),
+        CashDrawerRepository.TenderRow("CREDIT_CARD", 12_000, tipsCents = 1_500),
+        CashDrawerRepository.TenderRow("DEBIT_CARD", 3_000, tipsCents = 200),
         CashDrawerRepository.TenderRow("BANK_TRANSFER", 800),
     )
 
@@ -245,5 +246,54 @@ class CorteTicketBuilderTest {
         )
         val fsDot = bytes.toList().windowed(2).any { it[0] == 0x1C.toByte() && it[1] == 0x2E.toByte() }
         assertFalse("no debe mandarlo", fsDot)
+    }
+
+    // MARK: - Propinas
+
+    /**
+     * La propina NO es dinero del negocio: se le entrega al mesero. Antes iba
+     * sumada dentro de cada método sin distinguirse, así que el corte decía
+     * "Efectivo $50.00" sin avisar que $3.00 de ahí hay que sacarlos del cajón.
+     * Es justo lo que el Corte Z de SoftRestaurant separa.
+     */
+    @Test
+    fun `el corte separa las propinas por metodo y su total`() {
+        val t = papel()
+        assertTrue("debe existir la sección", t.contains("PROPINAS"))
+        assertTrue("y su total", t.contains("Total propinas"))
+        // 300 + 1500 + 200 = 2000 → $20.00
+        assertTrue("el total suma las tres", t.contains("$20.00"))
+    }
+
+    /**
+     * El dato que evita el descuadre: de lo que hay en el cajón, cuánto le toca al
+     * mesero. Sin esto el cajero paga las propinas y su corte sale con faltante.
+     */
+    @Test
+    fun `avisa cuanta propina esta en el cajon y como sacarla`() {
+        val t = papel()
+        assertTrue("dice cuánto es en efectivo", t.contains("estan en el cajon"))
+        assertTrue("y cómo registrarlo", t.contains("egreso"))
+    }
+
+    @Test
+    fun `sin propinas no se imprime la seccion`() {
+        // Un negocio que no cobra propina no debe cargar con una sección vacía.
+        val sinPropina = tenders.map { it.copy(tipsCents = 0) }
+        val t = papel(tenders = sinPropina)
+        assertFalse(t.contains("PROPINAS"))
+        assertFalse(t.contains("Total propinas"))
+    }
+
+    /**
+     * El total de cada método sigue incluyendo su propina: es lo que entró por ahí
+     * y, en efectivo, lo que está FÍSICAMENTE en el cajón. Restarlo del desglose
+     * descuadraría el arqueo contra el dinero real.
+     */
+    @Test
+    fun `el total por metodo sigue incluyendo la propina`() {
+        val t = papel()
+        assertTrue("efectivo con propina incluida", t.contains("$50.00"))
+        assertTrue("crédito con propina incluida", t.contains("$120.00"))
     }
 }
