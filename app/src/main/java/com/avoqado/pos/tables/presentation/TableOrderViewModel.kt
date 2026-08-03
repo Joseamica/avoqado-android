@@ -512,6 +512,19 @@ class TableOrderViewModel @Inject constructor(
      */
     val blockedNotice: StateFlow<String?> = _blockedNotice.asStateFlow()
 
+    /**
+     * Aviso para el mesero: sale por el Snackbar de la pantalla.
+     *
+     * Existe para que las vistas dejen de llamar a `Toast.makeText` por su cuenta.
+     * El Toast lo dibuja el sistema FUERA de la app: no respeta el tema, otra
+     * ventana se lo puede comer, y en una Sunmi con pantalla de cliente no hay
+     * garantía de en cuál de las dos aparece. Ya pasó con "Imprimir corte", cuyo
+     * aviso nadie vio nunca.
+     */
+    fun showMessage(text: String) {
+        _actionMessage.value = text
+    }
+
     fun showBlockedReason(motivo: String) {
         _blockedNotice.value = motivo
     }

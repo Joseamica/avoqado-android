@@ -230,11 +230,7 @@ fun TableOrderScreen(
     /** Read-only por propiedad de mesa: avisa y bloquea la acción. */
     fun blockIfReadOnly(): Boolean {
         if (!readOnlyCheck) return false
-        android.widget.Toast.makeText(
-            context,
-            "Mesa de ${lockOwnerName ?: "otro mesero"} — solo lectura",
-            android.widget.Toast.LENGTH_SHORT,
-        ).show()
+        viewModel.showMessage("Mesa de ${lockOwnerName ?: "otro mesero"} — solo lectura")
         return true
     }
 
@@ -248,7 +244,7 @@ fun TableOrderScreen(
         // Square: Enviar se queda en la mesa — el panel muestra la ronda recién
         // enviada como bloque nuevo; se sale con Regresar/Guardar.
         viewModel.sendRound { _, msg ->
-            android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_LONG).show()
+            viewModel.showMessage(msg)
         }
     }
 
@@ -385,7 +381,7 @@ fun TableOrderScreen(
                                 onCustomAmount = { showCustomAmount = true },
                                 onMover = {
                                     if (pendingLines.isNotEmpty()) {
-                                        android.widget.Toast.makeText(context, "Envía o borra los artículos pendientes antes de mover", android.widget.Toast.LENGTH_LONG).show()
+                                        viewModel.showMessage("Envía o borra los artículos pendientes antes de mover")
                                     } else {
                                         showMoveDialog = true
                                     }
@@ -397,7 +393,7 @@ fun TableOrderScreen(
                                 onCompWhole = { showWholeCortesia = true },
                                 onDividir = {
                                     if (pendingLines.isNotEmpty()) {
-                                        android.widget.Toast.makeText(context, "Envía o borra los artículos pendientes antes de dividir", android.widget.Toast.LENGTH_LONG).show()
+                                        viewModel.showMessage("Envía o borra los artículos pendientes antes de dividir")
                                     } else {
                                         showSplitModes = true
                                     }
@@ -542,7 +538,7 @@ fun TableOrderScreen(
                                 onCustomAmount = { showCustomAmount = true },
                                 onMover = {
                                     if (pendingLines.isNotEmpty()) {
-                                        android.widget.Toast.makeText(context, "Envía o borra los artículos pendientes antes de mover", android.widget.Toast.LENGTH_LONG).show()
+                                        viewModel.showMessage("Envía o borra los artículos pendientes antes de mover")
                                     } else {
                                         showMoveDialog = true
                                     }
@@ -554,7 +550,7 @@ fun TableOrderScreen(
                                 onCompWhole = { showWholeCortesia = true },
                                 onDividir = {
                                     if (pendingLines.isNotEmpty()) {
-                                        android.widget.Toast.makeText(context, "Envía o borra los artículos pendientes antes de dividir", android.widget.Toast.LENGTH_LONG).show()
+                                        viewModel.showMessage("Envía o borra los artículos pendientes antes de dividir")
                                     } else {
                                         showSplitModes = true
                                     }
@@ -620,7 +616,7 @@ fun TableOrderScreen(
             onConfirm = { targetId ->
                 showMoveDialog = false
                 viewModel.moveTable(targetId) { ok, msg ->
-                    android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_LONG).show()
+                    viewModel.showMessage(msg)
                     if (ok) exitOnce()
                 }
             },
@@ -898,7 +894,7 @@ fun TableOrderScreen(
             onPick = { sourceId ->
                 showMerge = false
                 viewModel.mergeFrom(sourceId) { _, msg ->
-                    android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_LONG).show()
+                    viewModel.showMessage(msg)
                 }
                 panelTab = PanelTab.CUENTA
             },
@@ -912,7 +908,7 @@ fun TableOrderScreen(
             onPorPuesto = {
                 showSplitModes = false
                 viewModel.splitBySeat { ok, msg ->
-                    android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_LONG).show()
+                    viewModel.showMessage(msg)
                     if (ok) exitOnce()
                 }
             },
@@ -924,7 +920,7 @@ fun TableOrderScreen(
                     if (paymentSeedCents <= 0) paymentSeedCents = viewModel.payableTotalCents
                     showSplitImporte = true
                 } else {
-                    android.widget.Toast.makeText(context, "La cuenta no tiene cargos todavía", android.widget.Toast.LENGTH_SHORT).show()
+                    viewModel.showMessage("La cuenta no tiene cargos todavía")
                 }
             },
         )
@@ -1123,7 +1119,7 @@ fun TableOrderScreen(
             onConfirm = { reason ->
                 showAnularDialog = false
                 viewModel.anularCuenta(reason) { ok, msg ->
-                    android.widget.Toast.makeText(context, msg, android.widget.Toast.LENGTH_LONG).show()
+                    viewModel.showMessage(msg)
                     if (ok) exitOnce()
                 }
             },

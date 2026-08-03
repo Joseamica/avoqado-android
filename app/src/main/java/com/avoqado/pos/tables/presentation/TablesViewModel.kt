@@ -59,6 +59,25 @@ class TablesViewModel @Inject constructor(
     val tables: StateFlow<List<DiningTable>> = repository.tables
     val isLoading: StateFlow<Boolean> = repository.isLoading
 
+    /**
+     * Aviso para el mesero, por el Snackbar del plano.
+     *
+     * Las acciones masivas informan aquí su resultado ("3 anuladas, 1 falló").
+     * Iban en Toast, que el sistema dibuja FUERA de la app: en una Sunmi con
+     * pantalla de cliente no hay garantía de en cuál de las dos aparece, y un
+     * resultado de dinero que nadie ve es peor que no informar.
+     */
+    private val _actionMessage = MutableStateFlow<String?>(null)
+    val actionMessage: StateFlow<String?> = _actionMessage.asStateFlow()
+
+    fun showMessage(text: String) {
+        _actionMessage.value = text
+    }
+
+    fun consumeActionMessage() {
+        _actionMessage.value = null
+    }
+
     private val _selectedTableId = MutableStateFlow<String?>(null)
     val selectedTableId: StateFlow<String?> = _selectedTableId.asStateFlow()
 

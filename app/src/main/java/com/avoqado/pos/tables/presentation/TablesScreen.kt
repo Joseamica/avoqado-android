@@ -71,6 +71,10 @@ import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Success
 import com.avoqado.pos.tables.data.DiningTable
 import java.util.Locale
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarHost
 
 // Status palette (floor plan), Square-style: occupied = solid dark block with
 // light text + elapsed h:mm timer; free = flat light gray; reserved = amber.
@@ -146,6 +150,14 @@ fun TablesScreen(
     var showBulkAsignar by remember { mutableStateOf(false) }
     var showBulkMover by remember { mutableStateOf(false) }
     var showBulkUnir by remember { mutableStateOf(false) }
+    val snackbarHostState = remember { SnackbarHostState() }
+    val actionMessage by viewModel.actionMessage.collectAsState()
+    LaunchedEffect(actionMessage) {
+        actionMessage?.let {
+            viewModel.consumeActionMessage()
+            snackbarHostState.showSnackbar(message = it, duration = SnackbarDuration.Long)
+        }
+    }
     val bulkCtx = androidx.compose.ui.platform.LocalContext.current
     fun exitSelection() { selectionMode = false; selectedIds = emptySet() }
     val selectedOccupied = tables.filter { it.id in selectedIds && it.isOccupied }
@@ -155,6 +167,7 @@ fun TablesScreen(
         onDispose { viewModel.stopPolling() }
     }
 
+    Box(modifier = Modifier.fillMaxSize()) {
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -263,6 +276,15 @@ fun TablesScreen(
         }
     }
 
+        // El resultado de una acción masiva se ancla abajo, dentro de la app: un
+        // Toast lo dibuja el sistema fuera y en la Sunmi con pantalla de cliente
+        // no hay garantía de en cuál de las dos aparece.
+        SnackbarHost(
+            hostState = snackbarHostState,
+            modifier = Modifier.align(Alignment.BottomCenter),
+        )
+    }
+
     if (showBulkUnir) {
         // Hay que elegir CUÁL mesa se queda con la cuenta: el server cierra las
         // otras, así que la decisión no puede ser implícita.
@@ -287,7 +309,7 @@ fun TablesScreen(
                                         ok == 0 -> err ?: "No se pudieron unir"
                                         else -> "$ok unidas, $fail no: ${err ?: "error"}"
                                     }
-                                    android.widget.Toast.makeText(bulkCtx, msg, android.widget.Toast.LENGTH_LONG).show()
+                                    viewModel.showMessage(msg)
                                     exitSelection()
                                 }
                             },
@@ -308,7 +330,7 @@ fun TablesScreen(
             onConfirm = { reason ->
                 showBulkAnular = false
                 viewModel.bulkAnular(selectedOccupied, reason) { ok, fail ->
-                    android.widget.Toast.makeText(bulkCtx, "$ok anuladas" + (if (fail > 0) ", $fail fallaron" else ""), android.widget.Toast.LENGTH_LONG).show()
+                    viewModel.showMessage("$ok anuladas" + (if (fail > 0) ", $fail fallaron" else ""))
                 }
                 exitSelection()
             },
@@ -322,7 +344,7 @@ fun TablesScreen(
             onConfirm = { reason ->
                 showBulkCortesia = false
                 viewModel.bulkCortesia(selectedOccupied, reason) { ok, fail ->
-                    android.widget.Toast.makeText(bulkCtx, "$ok cuentas de cortesía" + (if (fail > 0) ", $fail fallaron" else ""), android.widget.Toast.LENGTH_LONG).show()
+                    viewModel.showMessage("$ok cuentas de cortesía" + (if (fail > 0) ", $fail fallaron" else ""))
                 }
                 exitSelection()
             },
@@ -343,7 +365,7 @@ fun TablesScreen(
             onStaffSelected = { staff ->
                 showBulkAsignar = false
                 viewModel.bulkAsignar(selectedOccupied, staff.id) { ok, fail ->
-                    android.widget.Toast.makeText(bulkCtx, "$ok asignadas a ${staff.fullName}" + (if (fail > 0) ", $fail fallaron" else ""), android.widget.Toast.LENGTH_LONG).show()
+                    viewModel.showMessage("$ok asignadas a ${staff.fullName}" + (if (fail > 0) ", $fail fallaron" else ""))
                 }
                 exitSelection()
             },
@@ -368,7 +390,7 @@ fun TablesScreen(
                                     .clickable {
                                         showBulkMover = false
                                         viewModel.bulkMover(source, t.id) { ok, msg ->
-                                            android.widget.Toast.makeText(bulkCtx, msg, android.widget.Toast.LENGTH_LONG).show()
+                                            viewModel.showMessage(msg)
                                         }
                                         exitSelection()
                                     }
