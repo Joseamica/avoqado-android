@@ -80,8 +80,30 @@ data class DiningTable(
             )
         } ?: openOrders.firstOrNull()
 
-    val isAvailable: Boolean get() = status == "AVAILABLE" && !hasOpenCheck
-    val isOccupied: Boolean get() = status == "OCCUPIED" || hasOpenCheck
+    /**
+     * 🔴 La CUENTA manda, no `status` — en las DOS direcciones.
+     *
+     * [hasOpenCheck] ya cubría `status = AVAILABLE` con cuenta viva (M2, D3
+     * 2026-07-28). Faltaba la dirección contraria y era peor: **mesa M9,
+     * 2026-08-03, `status = OCCUPIED` con CERO órdenes abiertas.** El plano la
+     * pintaba negra, tocarla no hacía absolutamente nada (`startOrdering` muere
+     * en `primaryCheck ?: return`), "anular" no tenía qué anular y "liberar"
+     * vive detrás de ese mismo tap. Una mesa del salón perdida para siempre.
+     *
+     * Causa raíz: liberar la mesa tras cobrar era trabajo del CLIENTE
+     * (`finishTableAfterPayment` → `clearTable` por HTTP directo, NO por el
+     * outbox). Sin red esa llamada se pierde en silencio (`.isSuccess`), y el
+     * `PAY_CASH` que el reducer replaya después NO libera la mesa — sólo lo
+     * hace `CLEAR_TABLE`. También se pierde si matan la app o si el cobro se
+     * hizo desde otro dispositivo. El server ya lo arregla de raíz
+     * (`releaseTableIfSettled`, libera al saldarse la última cuenta); esto es
+     * la defensa en profundidad para datos viejos y servers viejos.
+     *
+     * Regla: sin cuenta viva, la mesa está libre. `status` sólo sigue mandando
+     * para RESERVED, que es la única ocupación legítima sin cuenta.
+     */
+    val isAvailable: Boolean get() = !hasOpenCheck && status != "RESERVED"
+    val isOccupied: Boolean get() = hasOpenCheck
     val isReserved: Boolean get() = status == "RESERVED"
     val hasPosition: Boolean get() = positionX != null && positionY != null
 }

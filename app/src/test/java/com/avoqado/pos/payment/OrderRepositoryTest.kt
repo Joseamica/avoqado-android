@@ -251,4 +251,30 @@ class OrderRepositoryTest {
 
         assertTrue(payload.contains("\"customerId\":\"customer_789\""))
     }
+
+    @Test
+    fun `buildCreateOrderPayload includes stable externalId for safe retry`() {
+        val request = CreateOrderRequest(
+            items = listOf(
+                OrderItemRequest(
+                    productId = "prod_123",
+                    name = "Hamburguesa",
+                    quantity = 1,
+                    unitPrice = 15900,
+                ),
+            ),
+            subtotal = 15900,
+            tip = 0,
+            total = 15900,
+            paymentMethod = "CASH",
+        )
+
+        val payload = OrderRepository.buildCreateOrderPayload(
+            request = request,
+            staffId = "staff_123",
+            externalId = "order-session-789",
+        )
+
+        assertTrue(payload.contains("\"externalId\":\"order-session-789\""))
+    }
 }

@@ -112,6 +112,15 @@ class AreaTicketRepository @Inject constructor(
                 body = error.response()?.errorBody()?.string(),
                 statusCode = error.code(),
             )
+        } catch (error: java.io.IOException) {
+            // V7 mantiene los vales multi-dispositivo online por diseño. No se
+            // finge una emisión local que la caja de otra tablet no podría
+            // resolver ni cobrar de forma autoritativa.
+            throw AreaTicketException(
+                code = "AREA_TICKETS_REQUIRE_CONNECTION",
+                message = "Los vales por área requieren conexión con Avoqado. El POS normal sigue disponible; reintenta el vale cuando vuelva el servidor.",
+                retryable = true,
+            )
         }
 
     suspend fun settings(): AreaTicketSettingsData {

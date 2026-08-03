@@ -101,6 +101,7 @@ class OrderRepository @Inject constructor(
             customerId: String? = null,
             source: String = "AVOQADO_ANDROID",
             orderType: String = "TAKEOUT",
+            externalId: String? = null,
         ): String {
             return buildJsonObject {
                 put(
@@ -153,6 +154,7 @@ class OrderRepository @Inject constructor(
                 put("staffId", staffId)
                 put("orderType", orderType)
                 put("source", source)
+                externalId?.trim()?.takeIf { it.isNotEmpty() }?.let { put("externalId", it) }
                 put("subtotal", request.subtotal)
                 put("tip", request.tip)
                 put("total", request.total)
@@ -180,6 +182,7 @@ class OrderRepository @Inject constructor(
         staffId: String,
         customerId: String? = null,
         orderType: String = "TAKEOUT",
+        externalId: String = java.util.UUID.randomUUID().toString(),
     ): Result<CreateOrderResponse> {
         val venueId = secureStorage.venueId ?: return Result.failure(Exception("No venue selected"))
         val token = secureStorage.accessToken ?: return Result.failure(Exception("Not authenticated"))
@@ -197,6 +200,7 @@ class OrderRepository @Inject constructor(
                 staffId = staffId,
                 customerId = customerId,
                 orderType = orderType,
+                externalId = externalId,
             )
             val body = payload.toRequestBody("application/json".toMediaType())
 

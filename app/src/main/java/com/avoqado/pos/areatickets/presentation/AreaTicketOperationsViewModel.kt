@@ -82,7 +82,10 @@ class AreaTicketOperationsViewModel @Inject constructor(
 
     init {
         _state.value = _state.value.copy(
-            pendingReprintCode = secureStorage.pendingAreaTicketPrintCode,
+            pendingReprintCode = secureStorage.pendingAreaTicketPrintCode.takeIf {
+                val pendingVenue = secureStorage.pendingAreaTicketPrintVenueId
+                pendingVenue == null || pendingVenue == secureStorage.venueId
+            },
         )
         refresh()
     }
@@ -157,6 +160,7 @@ class AreaTicketOperationsViewModel @Inject constructor(
                 }
                 val ticket = repository.issue(lines, issueIdempotencyKey)
                 secureStorage.pendingAreaTicketPrintCode = ticket.code
+                secureStorage.pendingAreaTicketPrintVenueId = secureStorage.venueId
                 _state.value = _state.value.copy(pendingReprintCode = ticket.code)
                 printAndRecord(ticket, reprint = false)
                 ticket
@@ -164,6 +168,7 @@ class AreaTicketOperationsViewModel @Inject constructor(
                 issueIdempotencyKey = UUID.randomUUID().toString()
                 secureStorage.pendingAreaTicketIssueKey = issueIdempotencyKey
                 secureStorage.pendingAreaTicketPrintCode = null
+                secureStorage.pendingAreaTicketPrintVenueId = null
                 _state.value = _state.value.copy(
                     submitting = false,
                     pendingReprintCode = null,
@@ -194,6 +199,7 @@ class AreaTicketOperationsViewModel @Inject constructor(
                 issueIdempotencyKey = UUID.randomUUID().toString()
                 secureStorage.pendingAreaTicketIssueKey = issueIdempotencyKey
                 secureStorage.pendingAreaTicketPrintCode = null
+                secureStorage.pendingAreaTicketPrintVenueId = null
                 _state.value = _state.value.copy(
                     submitting = false,
                     pendingReprintCode = null,
@@ -270,6 +276,7 @@ class AreaTicketOperationsViewModel @Inject constructor(
                 issueIdempotencyKey = UUID.randomUUID().toString()
                 secureStorage.pendingAreaTicketIssueKey = issueIdempotencyKey
                 secureStorage.pendingAreaTicketPrintCode = null
+                secureStorage.pendingAreaTicketPrintVenueId = null
                 _state.value = _state.value.copy(
                     submitting = false,
                     pendingReprintCode = null,

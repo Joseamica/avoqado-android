@@ -40,6 +40,8 @@ class CashPaymentRepository @Inject constructor(
         changeCents: Int?,
         rating: Int?,
         orderId: String? = null,
+        /** Identidad estable de la creación de orden original. */
+        orderExternalId: String? = null,
         /**
          * Cobro registrado a mano (terminal ajena, transferencia). null =
          * efectivo. Se PERSISTE: sin esto, un cobro con tarjeta hecho sin red
@@ -68,7 +70,11 @@ class CashPaymentRepository @Inject constructor(
             rating = rating,
             itemsJson = null,
             orderRequestJson = if (hasOrderItems) {
-                OrderRepository.buildCreateOrderPayload(orderRequest, staffId)
+                OrderRepository.buildCreateOrderPayload(
+                    request = orderRequest,
+                    staffId = staffId,
+                    externalId = orderExternalId ?: "offline-order:$localId",
+                )
             } else {
                 null
             },

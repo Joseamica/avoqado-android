@@ -104,6 +104,7 @@ fun MoreMenuScreen(
 ) {
     val venueName by viewModel.venueName.collectAsState()
     val isSwitching by viewModel.isSwitching.collectAsState()
+    val sessionGuardMessage by viewModel.sessionGuardMessage.collectAsState()
     val currentMode by viewModel.posModeManager.currentMode.collectAsState()
     var showVenueSwitcher by remember { mutableStateOf(false) }
     var showTimeClock by remember { mutableStateOf(false) }
@@ -811,6 +812,22 @@ fun MoreMenuScreen(
 
     if (showAreaTicketDelivery) {
         AreaTicketDeliveryScreen(onDismiss = { showAreaTicketDelivery = false })
+    }
+
+    sessionGuardMessage?.let { message ->
+        com.avoqado.pos.designsystem.components.AvoqadoDialog(
+            title = "Sincronización pendiente",
+            description = message,
+            onDismiss = viewModel::clearSessionGuard,
+            dismissOnClickOutside = false,
+            actionButton = {
+                com.avoqado.pos.designsystem.components.PrimaryButton(
+                    text = "Entendido",
+                    onClick = viewModel::clearSessionGuard,
+                    fullWidth = true,
+                )
+            },
+        ) {}
     }
 
     // Venue Switcher Sheet

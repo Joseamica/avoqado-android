@@ -190,4 +190,38 @@ class CashPaymentRepositoryTest {
             )
         }
     }
+
+    @Test
+    fun `queued order reuses original externalId after lost create response`() = runTest {
+        val orderRequest = CreateOrderRequest(
+            items = listOf(
+                com.avoqado.pos.payment.data.model.OrderItemRequest(
+                    productId = "jamon",
+                    name = "Jamón",
+                    quantity = 1,
+                    unitPrice = 10000,
+                ),
+            ),
+            subtotal = 10000,
+            total = 10000,
+            paymentMethod = "CASH",
+        )
+
+        repository.queueCashPayment(
+            orderRequest = orderRequest,
+            staffId = "user-456",
+            cashTenderedCents = 10000,
+            changeCents = 0,
+            rating = null,
+            orderExternalId = "same-create-attempt",
+        )
+
+        coVerify {
+            dao.insert(
+                match {
+                    it.orderRequestJson?.contains("\"externalId\":\"same-create-attempt\"") == true
+                },
+            )
+        }
+    }
 }

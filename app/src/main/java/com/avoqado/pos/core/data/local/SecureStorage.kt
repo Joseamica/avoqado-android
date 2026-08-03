@@ -133,6 +133,24 @@ class SecureStorage @Inject constructor(
         get() = prefs.getString(KEY_PENDING_AREA_TICKET_PRINT_CODE, null)
         set(value) = prefs.edit().putString(KEY_PENDING_AREA_TICKET_PRINT_CODE, value).apply()
 
+    var pendingAreaTicketPrintVenueId: String?
+        get() = prefs.getString(KEY_PENDING_AREA_TICKET_PRINT_VENUE_ID, null)
+        set(value) = prefs.edit().putString(KEY_PENDING_AREA_TICKET_PRINT_VENUE_ID, value).apply()
+
+    /**
+     * Contextos de vales que no deben quedar huérfanos por logout/cambio de
+     * venue. `venueId == null` consulta todos (logout); con venue filtra el
+     * contexto actual (cambio de establecimiento).
+     */
+    fun areaTicketRecoveryCount(venueId: String? = null): Int {
+        val checkoutMatches = areaTicketCheckoutId != null &&
+            (venueId == null || areaTicketCheckoutVenueId == venueId)
+        val printVenue = pendingAreaTicketPrintVenueId
+        val printMatches = pendingAreaTicketPrintCode != null &&
+            (venueId == null || printVenue == null || printVenue == venueId)
+        return listOf(checkoutMatches, printMatches).count { it }
+    }
+
     /**
      * Plan tier for the active venue ("FREE"|"PRO"|"PREMIUM"|"ENTERPRISE"),
      * parsed from the venue-settings response. Null = unknown (old server or
@@ -385,12 +403,10 @@ class SecureStorage @Inject constructor(
             // la cremería a una tienda retail y la tienda hereda el flujo de vales. Es
             // exactamente el modo de falla que la bandera existe para evitar.
             .remove(KEY_AREA_TICKETS_ENABLED)
-            .remove(KEY_AREA_TICKET_CHECKOUT_ID)
-            .remove(KEY_AREA_TICKET_CHECKOUT_VENUE_ID)
-            .remove(KEY_AREA_TICKET_CREATE_KEY)
-            .remove(KEY_AREA_TICKET_MATERIALIZE_KEY)
-            .remove(KEY_PENDING_AREA_TICKET_ISSUE_KEY)
-            .remove(KEY_PENDING_AREA_TICKET_PRINT_CODE)
+            // El contexto de recuperación de vales NO se borra aquí. El
+            // logout normal está protegido, pero una expiración de token puede
+            // invalidar la sesión de forma reactiva. Conservar checkout/llaves
+            // y vale pendiente permite recuperarlos tras volver a iniciar.
             .remove(KEY_PLAN_TIER)
             .remove(KEY_PLAN_EXEMPT)
             .remove(KEY_VENUE_PERMISSIONS)
@@ -440,6 +456,7 @@ class SecureStorage @Inject constructor(
         private const val KEY_AREA_TICKET_MATERIALIZE_KEY = "areaTicketMaterializeKey"
         private const val KEY_PENDING_AREA_TICKET_ISSUE_KEY = "pendingAreaTicketIssueKey"
         private const val KEY_PENDING_AREA_TICKET_PRINT_CODE = "pendingAreaTicketPrintCode"
+        private const val KEY_PENDING_AREA_TICKET_PRINT_VENUE_ID = "pendingAreaTicketPrintVenueId"
         private const val KEY_PLAN_TIER = "planTier"
         private const val KEY_PLAN_EXEMPT = "planExempt"
         private const val KEY_VENUE_PERMISSIONS = "venuePermissions"

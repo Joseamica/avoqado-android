@@ -15,6 +15,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -45,6 +46,7 @@ class PaymentSyncService @Inject constructor(
         private const val MAX_RETRIES = 10
         private const val SYNC_INTERVAL_MS = 15L * 60 * 1000  // 15 minutes
         private const val MAX_PAYMENTS_PER_SYNC = 10
+        private const val MAX_DRAIN_BATCHES = 100
         private const val INITIAL_BACKOFF_MS = 1000L  // 1 second
         private const val MAX_BACKOFF_MS = 30_000L    // 30 seconds
         private const val CLEANUP_AFTER_MS = 24L * 60 * 60 * 1000  // 24 hours
@@ -116,7 +118,10 @@ class PaymentSyncService @Inject constructor(
         timerJob = syncScope.launch {
             while (isActive) {
                 delay(SYNC_INTERVAL_MS)
-                if (connectivityMonitor.isConnected.value) {
+                if (
+                    connectivityMonitor.isConnected.value &&
+                    connectivityMonitor.isServerReachable.value
+                ) {
                     syncNow()
                 }
             }
@@ -129,8 +134,11 @@ class PaymentSyncService @Inject constructor(
         connectivityJob?.cancel()
         connectivityJob = syncScope.launch {
             var wasDisconnected = false
-            connectivityMonitor.isConnected.collect { connected ->
-                if (!connected) {
+            combine(
+                connectivityMonitor.isConnected,
+                connectivityMonitor.isServerReachable,
+            ) { network, server -> network && server }.collect { fullyConnected ->
+                if (!fullyConnected) {
                     wasDisconnected = true
                 } else if (wasDisconnected) {
                     wasDisconnected = false
@@ -156,41 +164,65 @@ class PaymentSyncService @Inject constructor(
                 val cutoff = System.currentTimeMillis() - CLEANUP_AFTER_MS
                 dao.deleteSynced(cutoff)
 
-                // Get pending payments
-                val pending = dao.getPendingPayments(MAX_PAYMENTS_PER_SYNC)
-                if (pending.isEmpty()) {
-                    Log.d(TAG, "No pending payments to sync")
-                    return@launch
-                }
+                repeat(MAX_DRAIN_BATCHES) {
+                    if (!isStarted || !connectivityMonitor.isServerReachable.value) return@launch
 
-                Log.d(TAG, "Syncing ${pending.size} pending payments")
+                    val pending = dao.getPendingPayments(MAX_PAYMENTS_PER_SYNC)
+                    if (pending.isEmpty()) {
+                        Log.d(TAG, "No pending payments to sync")
+                        return@launch
+                    }
 
-                for (payment in pending) {
-                    // Check if we should stop (e.g., service was stopped)
-                    if (!isStarted) break
+                    Log.d(TAG, "Syncing ${pending.size} pending payments")
+                    var shouldStopDrain = false
 
-                    // Exponential backoff: wait before retry
-                    if (payment.retryCount > 0) {
-                        val backoff = calculateBackoff(payment.retryCount)
-                        val timeSinceLastRetry = System.currentTimeMillis() - (payment.lastRetryAt ?: 0)
-                        if (timeSinceLastRetry < backoff) {
-                            Log.d(TAG, "Skipping ${payment.id} — backoff not elapsed")
-                            continue
+                    for (payment in pending) {
+                        if (!isStarted) return@launch
+
+                        // FIFO: si el más viejo sigue en backoff, no adelantamos
+                        // cobros posteriores y esperamos el próximo trigger.
+                        if (payment.retryCount > 0) {
+                            val backoff = calculateBackoff(payment.retryCount)
+                            val timeSinceLastRetry = System.currentTimeMillis() - (payment.lastRetryAt ?: 0)
+                            if (timeSinceLastRetry < backoff) {
+                                Log.d(TAG, "Stopping drain at ${payment.id} — backoff not elapsed")
+                                shouldStopDrain = true
+                                break
+                            }
+                        }
+
+                        dao.updateStatus(payment.id, PaymentSyncStatus.SYNCING.name)
+                        if (syncPayment(payment)) {
+                            shouldStopDrain = true
+                            break
                         }
                     }
 
-                    // Mark as SYNCING
-                    dao.updateStatus(payment.id, PaymentSyncStatus.SYNCING.name)
-
-                    // Attempt sync
-                    val shouldStopBatch = syncPayment(payment)
-                    if (shouldStopBatch) break
+                    if (shouldStopDrain || pending.size < MAX_PAYMENTS_PER_SYNC) return@launch
                 }
+                Log.w(TAG, "Drain alcanzó el límite de seguridad de $MAX_DRAIN_BATCHES batches")
             } catch (e: Exception) {
                 Log.e(TAG, "Sync batch error: ${e.message}")
             }
         }
     }
+
+    /** Cobros que agotaron reintentos o que el servidor rechazó permanentemente. */
+    suspend fun failedPayments(): List<PendingPaymentEntity> = dao.getFailedPayments()
+
+    /**
+     * Reabre explícitamente un cobro fallido para conciliación. Nunca crea una
+     * llave nueva: conserva [PendingPaymentEntity.id] y por tanto la garantía
+     * de idempotencia del intento original.
+     */
+    suspend fun retryFailedPayment(id: String) {
+        dao.retryFailed(id)
+        syncNow()
+    }
+
+    /** Lectura persistida para impedir logout/cambio de venue con trabajo oculto. */
+    suspend fun blockingWorkCount(): Int =
+        dao.getUnsyncedPayments().size + dao.getFailedPayments().size
 
     private fun calculateBackoff(retryCount: Int): Long {
         return minOf(
@@ -202,7 +234,7 @@ class PaymentSyncService @Inject constructor(
     // MARK: - Single Payment Sync
 
     private suspend fun syncPayment(payment: PendingPaymentEntity): Boolean {
-        // Returns true if batch should stop (e.g., auth expired)
+        // true = detener el drain (auth o infraestructura transitoria).
         val venueId = payment.venueId.ifBlank { secureStorage.venueId.orEmpty() }
         if (venueId.isBlank()) {
             dao.updateStatusWithError(
@@ -228,7 +260,7 @@ class PaymentSyncService @Inject constructor(
                     }
                     is OrderResolution.RetryableFailure -> {
                         handleNetworkError(payment, result.message)
-                        return false
+                        return true
                     }
                 }
             }
@@ -276,16 +308,16 @@ class PaymentSyncService @Inject constructor(
 
         } catch (e: java.net.UnknownHostException) {
             handleNetworkError(payment, "Sin conexión")
-            return false
+            return true
         } catch (e: java.net.ConnectException) {
             handleNetworkError(payment, "No se pudo conectar al servidor")
-            return false
+            return true
         } catch (e: java.io.IOException) {
             handleNetworkError(payment, e.message ?: "Error de red")
-            return false
+            return true
         } catch (e: Exception) {
             handleNetworkError(payment, e.message ?: "Error desconocido")
-            return false
+            return true
         }
     }
 
@@ -368,11 +400,11 @@ class PaymentSyncService @Inject constructor(
             code >= 500 -> {
                 // Server error — retryable
                 handleNetworkError(payment, "Error del servidor ($code)")
-                false
+                true
             }
             else -> {
                 handleNetworkError(payment, "Código inesperado: $code")
-                false
+                true
             }
         }
     }

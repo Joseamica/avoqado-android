@@ -155,7 +155,7 @@ class PaymentFlowViewModelTest {
     fun `mixed cart includes custom amount in create order request`() = runTest {
         val requestSlot = slot<CreateOrderRequest>()
         coEvery {
-            orderRepository.createOrder(capture(requestSlot), any(), any(), any())
+            orderRepository.createOrder(capture(requestSlot), any(), any(), any(), any())
         } returns Result.success(
             CreateOrderResponse(success = true, data = OrderData(id = "order-1")),
         )
@@ -193,7 +193,7 @@ class PaymentFlowViewModelTest {
     @Test
     fun `retry on card error reuses existing order and does not create a second one`() = runTest {
         coEvery {
-            orderRepository.createOrder(any(), any(), any(), any())
+            orderRepository.createOrder(any(), any(), any(), any(), any())
         } returns Result.success(
             CreateOrderResponse(success = true, data = OrderData(id = "order-1")),
         )
@@ -221,7 +221,7 @@ class PaymentFlowViewModelTest {
         viewModel.selectTerminalAndPay("t1")
         advanceUntilIdle()
 
-        coVerify(exactly = 1) { orderRepository.createOrder(any(), "user-456", any(), any()) }
+        coVerify(exactly = 1) { orderRepository.createOrder(any(), "user-456", any(), any(), any()) }
         coVerify(exactly = 2) {
             terminalPaymentService.sendPaymentToTerminal(
                 terminalId = "t1",
@@ -342,7 +342,7 @@ class PaymentFlowViewModelTest {
     @Test
     fun `no print stations configured falls back to the legacy single kitchen ticket`() = runTest {
         coEvery {
-            orderRepository.createOrder(any(), any(), any(), any())
+            orderRepository.createOrder(any(), any(), any(), any(), any())
         } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-legacy")))
         coEvery {
             orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any())
@@ -374,7 +374,7 @@ class PaymentFlowViewModelTest {
     @Test
     fun `el ticket legado sale identico renglon por renglon, con categoria y modificadores`() = runTest {
         coEvery {
-            orderRepository.createOrder(any(), any(), any(), any())
+            orderRepository.createOrder(any(), any(), any(), any(), any())
         } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-abcd1234")))
         coEvery {
             orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any())
@@ -424,7 +424,7 @@ class PaymentFlowViewModelTest {
     @Test
     fun `active print stations route the kitchen ticket through the comanda printer instead of the legacy fan-out`() = runTest {
         coEvery {
-            orderRepository.createOrder(any(), any(), any(), any())
+            orderRepository.createOrder(any(), any(), any(), any(), any())
         } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-routed")))
         coEvery {
             orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any())

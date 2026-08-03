@@ -32,6 +32,8 @@ data class SyncIntentWire(
     val seq: Long,
     val type: String,
     val payload: JsonObject,
+    /** Actor original; null únicamente para filas creadas por clientes viejos. */
+    val staffId: String? = null,
     /** Reloj local al crear el intent (informativo — NUNCA ordena). */
     val createdAtLocal: Long,
 )

@@ -2,6 +2,7 @@ package com.avoqado.pos.core.data.sync
 
 import android.content.Context
 import android.util.Log
+import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.local.database.SyncIntentDao
 import com.avoqado.pos.core.data.local.database.SyncIntentEntity
 import com.avoqado.pos.core.data.network.ApiService
@@ -53,6 +54,7 @@ class SyncOutbox @Inject constructor(
     private val dao: SyncIntentDao,
     private val apiService: ApiService,
     private val connectivityMonitor: ConnectivityMonitor,
+    private val secureStorage: SecureStorage,
     @ApplicationContext context: Context,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -70,6 +72,7 @@ class SyncOutbox @Inject constructor(
     val acks: SharedFlow<SyncAck> = _acks.asSharedFlow()
 
     private var started = false
+    private var activeVenueId: String? = null
     private var connectivityJob: Job? = null
     private var timerJob: Job? = null
 
@@ -98,8 +101,10 @@ class SyncOutbox @Inject constructor(
     // MARK: - Lifecycle
 
     fun start(venueId: String) {
-        if (started) return
+        if (started && activeVenueId == venueId) return
+        if (started) stop()
         started = true
+        activeVenueId = venueId
         Log.d(TAG, "start() venue=$venueId device=$deviceId")
 
         scope.launch {
@@ -136,13 +141,19 @@ class SyncOutbox @Inject constructor(
         timerJob = scope.launch {
             while (true) {
                 delay(SAFETY_TIMER_MS)
-                if (connectivityMonitor.isConnected.value) replayNow(venueId)
+                if (
+                    connectivityMonitor.isConnected.value &&
+                    connectivityMonitor.isServerReachable.value
+                ) {
+                    replayNow(venueId)
+                }
             }
         }
     }
 
     fun stop() {
         started = false
+        activeVenueId = null
         connectivityJob?.cancel()
         timerJob?.cancel()
     }
@@ -161,6 +172,7 @@ class SyncOutbox @Inject constructor(
             SyncIntentEntity(
                 id = id,
                 venueId = venueId,
+                staffId = secureStorage.userId,
                 seq = 0, // reemplazado dentro de insertWithNextSeq
                 type = type,
                 payloadJson = json.encodeToString(JsonObject.serializer(), payload),
@@ -175,9 +187,16 @@ class SyncOutbox @Inject constructor(
     // MARK: - Replay
 
     suspend fun replayNow(venueId: String) {
-        if (!connectivityMonitor.isConnected.value) return
+        if (
+            activeVenueId != venueId ||
+            !connectivityMonitor.isConnected.value ||
+            !connectivityMonitor.isServerReachable.value
+        ) {
+            return
+        }
         replayMutex.withLock {
             while (true) {
+                if (activeVenueId != venueId) break
                 val batch = dao.pendingFifo(venueId, BATCH_SIZE)
                 if (batch.isEmpty()) break
 
@@ -189,6 +208,7 @@ class SyncOutbox @Inject constructor(
                             seq = it.seq,
                             type = it.type,
                             payload = json.decodeFromString(JsonObject.serializer(), it.payloadJson),
+                            staffId = it.staffId,
                             createdAtLocal = it.createdAt,
                         )
                     },
@@ -260,6 +280,10 @@ class SyncOutbox @Inject constructor(
         dao.dismiss(id)
         refreshCounts(venueId)
     }
+
+    /** Lectura persistida usada por las guardas de sesión y cambio de venue. */
+    suspend fun blockingWorkCount(venueId: String): Int =
+        dao.pendingCount(venueId) + dao.rejectedCount(venueId)
 
     companion object {
         private const val KEY_DEVICE_ID = "sync_device_id"

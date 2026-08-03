@@ -662,7 +662,13 @@ class PaymentFlowViewModel @Inject constructor(
                     if (createdOrderId == null) {
                         // Create order only once per payment session.
                         val orderRequest = buildOrderRequest(cart)
-                        val orderResult = orderRepository.createOrder(orderRequest, staffId = selectedStaffId(), orderType = cart.orderType)
+                        val orderExternalId = sessionIdempotencyKey()
+                        val orderResult = orderRepository.createOrder(
+                            orderRequest,
+                            staffId = selectedStaffId(),
+                            orderType = cart.orderType,
+                            externalId = orderExternalId,
+                        )
 
                         orderResult.fold(
                             onSuccess = { response ->
@@ -692,6 +698,7 @@ class PaymentFlowViewModel @Inject constructor(
                                             changeCents = null,
                                             rating = currentRating,
                                             orderId = null,
+                                            orderExternalId = orderExternalId,
                                             manualMethod = manualMethod,
                                         )
                                         // Record cash sale in drawer (defensive: same fix as B4)
@@ -909,7 +916,13 @@ class PaymentFlowViewModel @Inject constructor(
                                 orderRequest = orderRequest,
                             )
                         } else {
-                            val orderResult = orderRepository.createOrder(orderRequest, staffId = selectedStaffId(), orderType = cart.orderType)
+                            val orderExternalId = sessionIdempotencyKey()
+                            val orderResult = orderRepository.createOrder(
+                                orderRequest,
+                                staffId = selectedStaffId(),
+                                orderType = cart.orderType,
+                                externalId = orderExternalId,
+                            )
                             orderResult.fold(
                                 onSuccess = { orderResponse ->
                                     val orderId = orderResponse.data?.id
@@ -940,6 +953,7 @@ class PaymentFlowViewModel @Inject constructor(
                                             changeCents = result.changeCents,
                                             rating = currentRating,
                                             orderId = null,
+                                            orderExternalId = orderExternalId,
                                             manualMethod = manualMethod,
                                         )
                                         // FIX B4: Record cash sale in drawer even on offline queue

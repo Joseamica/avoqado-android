@@ -3,6 +3,7 @@ package com.avoqado.pos.payment
 import com.avoqado.pos.MainDispatcherRule
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.local.database.PendingPaymentDao
+import com.avoqado.pos.core.data.local.database.PendingPaymentEntity
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.payment.data.PaymentSyncService
 import io.mockk.coEvery
@@ -38,6 +39,7 @@ class PaymentSyncServiceTest {
         every { secureStorage.venueId } returns "venue-123"
         every { secureStorage.userId } returns "user-456"
         every { connectivityMonitor.isConnected } returns MutableStateFlow(true)
+        every { connectivityMonitor.isServerReachable } returns MutableStateFlow(true)
         coEvery { dao.getPendingCount() } returns flowOf(0)
         coEvery { dao.getFailedCount() } returns flowOf(0)
 
@@ -166,4 +168,32 @@ class PaymentSyncServiceTest {
     fun `failedCount starts at 0`() {
         assertEquals(0, service.failedCount.value)
     }
+
+    @Test
+    fun `blockingWorkCount reads persisted pending and failed payments`() = runTest {
+        val pending = payment("pending", "PENDING")
+        val failed = payment("failed", "FAILED")
+        coEvery { dao.getUnsyncedPayments() } returns listOf(pending)
+        coEvery { dao.getFailedPayments() } returns listOf(failed)
+
+        assertEquals(2, service.blockingWorkCount())
+    }
+
+    @Test
+    fun `retryFailedPayment reopens the same idempotency key`() = runTest {
+        service.retryFailedPayment("pay-original-id")
+
+        coVerify(exactly = 1) { dao.retryFailed("pay-original-id") }
+    }
+
+    private fun payment(id: String, status: String) = PendingPaymentEntity(
+        id = id,
+        venueId = "venue-123",
+        staffId = "user-456",
+        amountCents = 10_000,
+        tipCents = 0,
+        method = "CASH",
+        paymentType = "FAST",
+        syncStatus = status,
+    )
 }

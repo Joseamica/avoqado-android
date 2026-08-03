@@ -9,6 +9,8 @@ import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.local.StoredVenue
 import com.avoqado.pos.core.domain.PlanManager
 import com.avoqado.pos.core.domain.RoleManager
+import com.avoqado.pos.core.data.sync.SyncOutbox
+import com.avoqado.pos.payment.data.PaymentSyncService
 import com.avoqado.pos.pos.data.ActiveCartState
 import com.avoqado.pos.printing.data.PrinterService
 import com.avoqado.pos.settings.domain.PosModeManager
@@ -35,6 +37,8 @@ class MoreMenuViewModel @Inject constructor(
     val customerDisplayPrefs: com.avoqado.pos.customerdisplay.CustomerDisplayPrefs,
     val customerDisplayState: com.avoqado.pos.customerdisplay.CustomerDisplayState,
     val venueSwitchState: com.avoqado.pos.settings.domain.VenueSwitchState,
+    private val paymentSyncService: PaymentSyncService,
+    private val syncOutbox: SyncOutbox,
 ) : ViewModel() {
 
     private val _venueName = MutableStateFlow(secureStorage.venueName ?: "Sin establecimiento")
@@ -45,6 +49,9 @@ class MoreMenuViewModel @Inject constructor(
 
     private val _isSwitching = MutableStateFlow(false)
     val isSwitching: StateFlow<Boolean> = _isSwitching.asStateFlow()
+
+    private val _sessionGuardMessage = MutableStateFlow<String?>(null)
+    val sessionGuardMessage: StateFlow<String?> = _sessionGuardMessage.asStateFlow()
 
     val currentVenueId: String?
         get() = secureStorage.venueId
@@ -87,11 +94,23 @@ class MoreMenuViewModel @Inject constructor(
 
     fun switchVenue(venue: StoredVenue, onSwitched: () -> Unit = {}) {
         if (venue.id == secureStorage.venueId) return
-
-        _isSwitching.value = true
-        // Loader GLOBAL (sobrevive al rebuild del NavHost que detona el cambio).
-        venueSwitchState.begin("Cambiando a ${venue.name}…")
         viewModelScope.launch {
+            val currentVenueId = secureStorage.venueId
+            val blocking = paymentSyncService.blockingWorkCount() +
+                (currentVenueId?.let { syncOutbox.blockingWorkCount(it) } ?: 0) +
+                secureStorage.areaTicketRecoveryCount(currentVenueId)
+            if (blocking > 0) {
+                _sessionGuardMessage.value = if (blocking == 1) {
+                    "Hay 1 operación offline pendiente o en conciliación. Resuélvela antes de cambiar de establecimiento."
+                } else {
+                    "Hay $blocking operaciones offline pendientes o en conciliación. Resuélvelas antes de cambiar de establecimiento."
+                }
+                return@launch
+            }
+
+            _isSwitching.value = true
+            // Loader GLOBAL (sobrevive al rebuild del NavHost que detona el cambio).
+            venueSwitchState.begin("Cambiando a ${venue.name}…")
             try {
                 authRepository.switchVenue(venue)
 
@@ -112,5 +131,9 @@ class MoreMenuViewModel @Inject constructor(
                 venueSwitchState.end()
             }
         }
+    }
+
+    fun clearSessionGuard() {
+        _sessionGuardMessage.value = null
     }
 }
