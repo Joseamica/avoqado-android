@@ -44,6 +44,9 @@ data class VenueData(
 @Serializable
 data class RefreshRequest(
     val refreshToken: String,
+    // Sólo se manda al CAMBIAR de local: ata la sesión renovada al venue nuevo.
+    // Sin él el server conserva el que ya traía el token.
+    val venueId: String? = null,
 )
 
 @Serializable

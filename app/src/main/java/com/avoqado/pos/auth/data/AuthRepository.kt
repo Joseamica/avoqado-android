@@ -129,6 +129,33 @@ class AuthRepository @Inject constructor(
         // 1. Update SecureStorage with new venue
         secureStorage.switchVenue(venue)
 
+        // 1.b 🔴 Re-emitir el token para el local nuevo.
+        //
+        // Sin esto la sesión quedaba partida: el storage decía un local y el
+        // token seguía diciendo el anterior. Casi todo seguía "funcionando"
+        // porque el server lee el venue de la URL, pero `sync/intents` compara
+        // la URL contra el token y respondía 403 en bucle: los cobros hechos sin
+        // red se quedaban atorados en el outbox sin subir nunca, sin aviso.
+        //
+        // Si falla (sin red), NO se aborta el cambio de local: el POS tiene que
+        // poder vender igual. El token se re-emitirá en el siguiente refresh,
+        // que ya conserva el venue.
+        val refresh = secureStorage.refreshToken
+        if (refresh != null) {
+            try {
+                val tokens = apiService.refreshToken(RefreshRequest(refresh, venueId = venue.id))
+                secureStorage.updateTokens(tokens.accessToken, tokens.refreshToken)
+                Log.d("🔄", "✅ Token re-emitido para ${venue.name}")
+            } catch (e: Exception) {
+                Log.w("🔄", "No se pudo re-emitir el token al cambiar de local: ${e.message}")
+            }
+        } else {
+            // Sin refresh token no hay forma de re-emitir: la sesión queda atada
+            // al local anterior hasta el siguiente login. Se avisa en vez de
+            // callar, que es justo lo que escondía el desajuste.
+            Log.w("🔄", "Sin refresh token guardado: el token sigue apuntando al local anterior")
+        }
+
         // 2. Clear ALL venue-specific cached data
         productsRepository.clearCache()
         discountsRepository.clearCache()
