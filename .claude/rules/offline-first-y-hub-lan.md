@@ -187,9 +187,15 @@ por BT ya estaba configurada como impresora de recibos diciendo "Conectada".
 Detalle: `updatePrinterState()` devuelve **505** ("no printer detected") con
 modal/serial vacíos; `printerPaper` devuelve 1 igual, o sea que MIENTE.
 
-**No hay alta manual de impresora por IP.** Si una impresora no se anuncia por
-mDNS (VLAN, aislamiento de cliente, IP fija sin anuncio), hoy NO hay forma de
-configurarla. Es el hueco de instalación más grande que queda.
+**Alta manual de impresora por IP: YA EXISTE en las dos** (ios `62dc231`,
+android `c97ae22`). Está al final del buscador de impresoras, bajo "¿No aparece
+tu impresora?". Es la salida cuando no se anuncia por mDNS —VLAN, aislamiento
+de cliente en el WiFi, IP fija sin anuncio—, que antes dejaba al local sin
+comandas con la impresora encendida y en la misma red.
+
+🔴 **Prueba la conexión ANTES de guardar, y si falla no guarda nada.** Guardar
+sin probar deja una entrada que dice "Conectada" y nunca imprime — el mismo
+daño que la impresora fantasma de las Sunmi. No lo quites.
 
 **El permiso de "dispositivos cercanos"** (Android 13+) es obligatorio para
 descubrir impresoras: si alguien lo rechaza en la instalación, la lista sale
@@ -256,8 +262,7 @@ red y sin config de estaciones (2026-07-28). Cuarentena visible para rechazos.
 - Indicador visual de árbitro/isla en el plano.
 - El fix de impresión offline de **iOS** se hizo por paridad y lectura de código:
   **no se ha probado con un iPad y una impresora físicos.**
-- **Alta manual de impresora por IP** — sin ella, una impresora que no se anuncia
-  por mDNS es inconfigurable. El hueco de instalación más grande que queda.
+- ~~Alta manual de impresora por IP~~ — HECHO 2026-08-04 en ambas.
 
 **No vender:** "servicio completo offline multi-terminal" mientras el KDS offline
 no exista.
