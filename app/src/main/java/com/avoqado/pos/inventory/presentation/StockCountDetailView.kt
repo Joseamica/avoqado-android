@@ -82,8 +82,18 @@ fun StockCountDetailView(
 
             Spacer(modifier = Modifier.weight(1f))
 
-            // Invisible spacer for centering
-            Box(modifier = Modifier.width(64.dp))
+            // Retomar lo que quedó a medias. Sin esto la pantalla era sólo
+            // lectura y "Contar existencia" creaba OTRO conteo: en la base del
+            // local de pruebas quedaron dos completos abiertos desde el 11 de
+            // julio, con 51 artículos cada uno, que nadie iba a cerrar.
+            if (count.status == "IN_PROGRESS") {
+                TextButton(onClick = { viewModel.resumeCount(count) }) {
+                    Text("Continuar conteo")
+                }
+            } else {
+                // Hueco simétrico para que el título siga centrado.
+                Box(modifier = Modifier.width(64.dp))
+            }
         }
 
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)

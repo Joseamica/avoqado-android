@@ -411,6 +411,35 @@ class InventoryViewModel @Inject constructor(
         _showCounting.value = true
     }
 
+    /**
+     * Retoma un conteo que quedó a medias, en vez de empezar otro.
+     *
+     * No existía: la vista de detalle era sólo lectura y "Contar existencia"
+     * SIEMPRE creaba uno nuevo. Resultado medido en la base del local de
+     * pruebas: dos conteos completos abiertos desde el 11 de julio, con 51
+     * artículos cada uno, abandonados casi un mes. El trabajo de contarlos se
+     * perdía y la lista se llenaba de conteos que nadie iba a cerrar.
+     *
+     * Se posiciona en el primer artículo SIN contar, que es donde se dejó.
+     */
+    fun resumeCount(count: StockCount) {
+        _activeCountType.value = count.type
+        _activeCount.value = count
+        _countItems.value = count.items.toMutableList()
+        val primerPendiente = count.items.indexOfFirst { !it.yaSeConto }
+        _selectedItemIndex.value = when {
+            count.items.isEmpty() -> -1
+            primerPendiente >= 0 -> primerPendiente
+            else -> 0
+        }
+        _countedText.value = ""
+        _countNote.value = count.note.orEmpty()
+        _touchedItemIds.value = emptySet()
+        _showCountTypeSheet.value = false
+        _showCounting.value = true
+        Log.d(TAG, "▶️ Conteo retomado: ${count.id} (${count.items.size} artículos)")
+    }
+
     fun startFullCount() {
         viewModelScope.launch {
             _isSaving.value = true
