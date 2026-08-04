@@ -160,7 +160,7 @@ fun CartPanelView(
                     )
                     Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
                     Text(
-                        text = "El carrito esta vacio",
+                        text = "El carrito está vacío",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
