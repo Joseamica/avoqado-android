@@ -1,6 +1,7 @@
 package com.avoqado.pos.articles.presentation.categories
 
 import androidx.compose.foundation.ExperimentalFoundationApi
+import com.avoqado.pos.core.util.Plurales
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -261,7 +262,7 @@ private fun CategoryRow(
             horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.xs),
         ) {
             Text(
-                text = "${category.productCount} artículos",
+                text = Plurales.articulos(category.productCount),
                 style = if (denseMode) MaterialTheme.typography.labelSmall else MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.End,

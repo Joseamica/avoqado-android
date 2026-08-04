@@ -1,6 +1,7 @@
 package com.avoqado.pos.orders.presentation
 
 import androidx.compose.foundation.background
+import com.avoqado.pos.core.util.Plurales
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -856,7 +857,7 @@ private fun OrderRow(
                     modifier = Modifier.weight(1f),
                 )
                 Text(
-                    text = "${order.itemCount} artículos",
+                    text = Plurales.articulos(order.itemCount),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

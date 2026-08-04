@@ -1,6 +1,7 @@
 package com.avoqado.pos.inventory.presentation
 
 import android.widget.Toast
+import com.avoqado.pos.core.util.Plurales
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -888,7 +889,7 @@ private fun StockCountRow(
                 // justo lo que se necesita para auditar existencias.
                 text = listOfNotNull(
                     fechaCortaInv(count.createdAt),
-                    "${count.statusDisplay} - ${count.itemCount} artículos",
+                    "${count.statusDisplay} - ${Plurales.articulos(count.itemCount)}",
                 ).joinToString(" · "),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,

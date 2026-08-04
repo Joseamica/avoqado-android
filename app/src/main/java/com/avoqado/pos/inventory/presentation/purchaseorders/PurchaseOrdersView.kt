@@ -1,6 +1,7 @@
 package com.avoqado.pos.inventory.presentation.purchaseorders
 
 import androidx.compose.foundation.background
+import com.avoqado.pos.core.util.Plurales
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -215,7 +216,7 @@ private fun PurchaseOrderRow(
                     // aprobar una orden ni para saber cuál es la de esta semana.
                     text = listOfNotNull(
                         fechaCortaOc(order.createdAt),
-                        "${order.items.size} artículos",
+                        Plurales.articulos(order.items.size),
                         order.totalCost?.let { "$" + String.format(java.util.Locale.US, "%,.2f", it) },
                     ).joinToString(" · "),
                     style = MaterialTheme.typography.bodySmall,

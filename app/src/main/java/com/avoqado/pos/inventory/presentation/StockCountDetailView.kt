@@ -1,6 +1,7 @@
 package com.avoqado.pos.inventory.presentation
 
 import androidx.compose.foundation.background
+import com.avoqado.pos.core.util.Plurales
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -106,7 +107,7 @@ fun StockCountDetailView(
             horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.xl),
         ) {
             Text(
-                text = "${count.items.size} artículos",
+                text = Plurales.articulos(count.items.size),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

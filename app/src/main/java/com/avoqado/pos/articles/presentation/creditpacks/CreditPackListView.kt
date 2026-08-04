@@ -1,6 +1,7 @@
 package com.avoqado.pos.articles.presentation.creditpacks
 
 import androidx.compose.foundation.ExperimentalFoundationApi
+import com.avoqado.pos.core.util.Plurales
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.combinedClickable
@@ -286,7 +287,7 @@ private fun CreditPackCard(
                     modifier = Modifier.size(if (denseMode) 14.dp else 16.dp),
                 )
                 Text(
-                    text = " ${pack.itemCount} artículos",
+                    text = " " + Plurales.articulos(pack.itemCount),
                     style = if (denseMode) MaterialTheme.typography.labelSmall else MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

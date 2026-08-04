@@ -1,6 +1,7 @@
 package com.avoqado.pos.inventory.presentation.transfers
 
 import androidx.compose.foundation.background
+import com.avoqado.pos.core.util.Plurales
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -214,7 +215,7 @@ private fun TransferRow(
             ) {
                 StatusBadge(status = transfer.status, label = transfer.statusDisplay)
                 Text(
-                    text = "${transfer.items.size} artículos",
+                    text = Plurales.articulos(transfer.items.size),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
