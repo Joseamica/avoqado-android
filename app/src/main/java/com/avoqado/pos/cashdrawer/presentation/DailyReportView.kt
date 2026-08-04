@@ -88,9 +88,18 @@ fun DailyReportView(
     val payInsCents = events
         .filter { it.type == CashDrawerEventType.PAY_IN.name }
         .sumOf { it.amountCents }
-    val payOutsCents = events
+    // Lo devuelto en efectivo va en su propia línea (como Square), así que se
+    // separa de los demás egresos para no contarlo DOS veces en la pantalla.
+    val reembolsosCents = events
+        .filter {
+            it.type == CashDrawerEventType.PAY_OUT.name &&
+                it.note?.startsWith(CorteTicketBuilder.PREFIJO_REEMBOLSO) == true
+        }
+        .sumOf { it.amountCents }
+    val payOutsTodosCents = events
         .filter { it.type == CashDrawerEventType.PAY_OUT.name }
         .sumOf { it.amountCents }
+    val payOutsCents = payOutsTodosCents - reembolsosCents
 
     // Payment-method breakdown: prefer the server tender data (all methods),
     // fall back to local cash-only when it hasn't loaded (offline).
@@ -109,7 +118,8 @@ fun DailyReportView(
     val totalSalesCents = if (hasServerBreakdown) tenderBreakdown.sumOf { it.totalCents } else cashSalesCents
     val avgTicketCents = if (transactionCount > 0) totalSalesCents / transactionCount else 0
 
-    val expectedCents = session.startingAmountCents + cashSalesCents + payInsCents - payOutsCents
+    // Resta TODOS los egresos, reembolsos incluidos: ese dinero salió del cajón.
+    val expectedCents = session.startingAmountCents + cashSalesCents + payInsCents - payOutsTodosCents
     val actualCents = session.actualAmountCents ?: 0
     val differenceCents = actualCents - expectedCents
 
@@ -306,15 +316,6 @@ fun DailyReportView(
                         value = "-${formatCurrency(payOutsCents)}",
                         valueColor = Error,
                     )
-                    // Los reembolsos en efectivo, aparte — como en Square. Mezclarlos
-                    // con los pagos a proveedores impide saber cuánto se devolvió,
-                    // que es lo que se revisa cuando el cajón sale corto.
-                    val reembolsosCents = events
-                        .filter {
-                            it.type == CashDrawerEventType.PAY_OUT.name &&
-                                it.note?.startsWith(CorteTicketBuilder.PREFIJO_REEMBOLSO) == true
-                        }
-                        .sumOf { it.amountCents }
                     if (reembolsosCents > 0) {
                         ReportRow(
                             label = "Reembolsos en efectivo",

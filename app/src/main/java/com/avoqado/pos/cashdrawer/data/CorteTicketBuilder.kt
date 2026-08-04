@@ -66,7 +66,11 @@ object CorteTicketBuilder {
             .filter { it.type == CashDrawerEventType.PAY_OUT.name && it.note?.startsWith(PREFIJO_REEMBOLSO) == true }
             .sumOf { it.amountCents }
         val payOuts = payOutsTodos - reembolsos
-        val expected = session.startingAmountCents + cashSales + payIns - payOuts
+        // 🔴 El esperado resta payOutsTODOS, no `payOuts`: el dinero devuelto salió
+        // del cajón igual. Separarlos es sólo para PRESENTARLOS aparte; usar aquí
+        // la cifra ya descontada inflaría el esperado y acusaría un faltante
+        // inexistente por el importe de las devoluciones.
+        val expected = session.startingAmountCents + cashSales + payIns - payOutsTodos
         val actual = session.actualAmountCents ?: 0
         val diff = actual - expected
         val hasServerBreakdown = tenders.isNotEmpty()

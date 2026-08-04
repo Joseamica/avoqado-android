@@ -7,6 +7,8 @@ import com.avoqado.pos.cashdrawer.data.model.CashDrawerEventType
 import com.avoqado.pos.cashdrawer.data.model.CashDrawerSessionEntity
 import com.avoqado.pos.printing.data.model.PaperWidth
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -333,5 +335,40 @@ class CorteTicketBuilderTest {
     fun `sin reembolsos no se imprime el renglon`() {
         // Un renglón en $0.00 sólo alarga el ticket y hace dudar al cajero.
         assertFalse(papel().contains("Reembolsos en efectivo"))
+    }
+
+    /**
+     * Separar los reembolsos NO puede alterar el efectivo esperado.
+     *
+     * Es la trampa de este cambio: si el esperado resta los egresos YA sin los
+     * reembolsos, sube por el importe de las devoluciones y el corte acusa un
+     * faltante que no existe. El dinero devuelto salió del cajón igual —
+     * separarlo es sólo para presentarlo aparte.
+     */
+    @Test
+    fun `el efectivo esperado NO cambia por separar los reembolsos`() {
+        val reembolso = CashDrawerEventEntity(
+            id = "e-refund",
+            sessionId = "s1",
+            venueId = "v1",
+            type = CashDrawerEventType.PAY_OUT.name,
+            amountCents = 2_500,
+            note = "${CorteTicketBuilder.PREFIJO_REEMBOLSO} Producto defectuoso",
+            staffId = "st1",
+            staffName = "Main Owner",
+            createdAt = 1_785_005_000,
+        )
+        // El MISMO importe, una vez como reembolso y otra como egreso normal:
+        // el esperado tiene que salir idéntico en los dos casos.
+        val comoEgresoNormal = reembolso.copy(id = "e-plain", note = "Pago a proveedor")
+
+        val conReembolso = papel(events = eventos + reembolso)
+        val conEgreso = papel(events = eventos + comoEgresoNormal)
+
+        val esperadoA = Regex("Efectivo esperado\\s+\\\$([\\d,.]+)").find(conReembolso)?.groupValues?.get(1)
+        val esperadoB = Regex("Efectivo esperado\\s+\\\$([\\d,.]+)").find(conEgreso)?.groupValues?.get(1)
+
+        assertNotNull("el ticket debe traer el efectivo esperado", esperadoA)
+        assertEquals("separar el reembolso cambió el esperado", esperadoB, esperadoA)
     }
 }
