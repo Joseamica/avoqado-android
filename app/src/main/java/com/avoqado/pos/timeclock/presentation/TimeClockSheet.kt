@@ -19,6 +19,10 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Icon
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -83,6 +87,14 @@ fun TimeClockSheet(
     var isLoading by remember { mutableStateOf(false) }
     var currentScreen by remember { mutableStateOf(TimeClockScreen.PIN_ENTRY) }
     var note by remember { mutableStateOf("") }
+    /**
+     * Acuse de lo que acaba de quedar registrado.
+     *
+     * Sin esto la hoja se cerraba de golpe al marcar y el empleado no tenía cómo
+     * saber si su entrada quedó: para comprobarlo había que volver a abrir el
+     * reloj y teclear el PIN otra vez. Y es la prueba de las horas que le pagan.
+     */
+    var acuse by remember { mutableStateOf<String?>(null) }
     val configuration = LocalConfiguration.current
     val adaptive = AvoqadoTheme.adaptive
     val compactSheetLayout = adaptive.isAggressiveCompact ||
@@ -129,6 +141,48 @@ fun TimeClockSheet(
                 ),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
+            // Acuse de lo que acabó de registrarse. Ocupa la hoja entera para que
+            // no haya duda: antes se cerraba de golpe y el empleado se quedaba sin
+            // saber si su entrada quedó, en la pantalla que prueba sus horas.
+            acuse?.let { mensaje ->
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
+                Icon(
+                    imageVector = Icons.Filled.CheckCircle,
+                    contentDescription = null,
+                    tint = com.avoqado.pos.designsystem.theme.Success,
+                    modifier = Modifier.size(64.dp),
+                )
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+                Text(
+                    text = "Listo, ${staffData?.name ?: "compañero"}",
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    textAlign = TextAlign.Center,
+                )
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xs))
+                Text(
+                    text = mensaje,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                )
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xl))
+                PrimaryButton(
+                    text = "Entendido",
+                    onClick = {
+                        acuse = null
+                        pin = ""
+                        staffData = null
+                        note = ""
+                        currentScreen = TimeClockScreen.PIN_ENTRY
+                        onDismiss()
+                    },
+                    fullWidth = true,
+                )
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xl))
+                return@Column
+            }
+
             // Live clock display (matching iOS: 72pt font)
             Text(
                 text = timeDisplay,
@@ -319,7 +373,7 @@ fun TimeClockSheet(
                                         isLoading = true
                                         error = null
                                         repository.clockIn(pin, note.ifBlank { null }).fold(
-                                            onSuccess = { onDismiss() },
+                                            onSuccess = { acuse = "Entrada registrada a las ${horaActual()}." },
                                             onFailure = { error = it.message },
                                         )
                                         isLoading = false
@@ -345,7 +399,7 @@ fun TimeClockSheet(
                                             isLoading = true
                                             error = null
                                             repository.endBreak(pin, note.ifBlank { null }).fold(
-                                                onSuccess = { onDismiss() },
+                                                onSuccess = { acuse = "Descanso terminado a las ${horaActual()}." },
                                                 onFailure = { error = it.message },
                                             )
                                             isLoading = false
@@ -362,7 +416,13 @@ fun TimeClockSheet(
                                         isLoading = true
                                         error = null
                                         repository.clockOut(pin, note.ifBlank { null }).fold(
-                                            onSuccess = { onDismiss() },
+                                            onSuccess = {
+                                                val trabajado = staff.clockInTime
+                                                    ?.let { duracionDesde(it) }
+                                                    ?.let { " Trabajaste $it." }
+                                                    .orEmpty()
+                                                acuse = "Salida registrada a las ${horaActual()}.$trabajado"
+                                            },
                                             onFailure = { error = it.message },
                                         )
                                         isLoading = false
@@ -410,7 +470,10 @@ fun TimeClockSheet(
                                         isLoading = true
                                         error = null
                                         repository.startBreak(pin, breakType.id).fold(
-                                            onSuccess = { onDismiss() },
+                                            onSuccess = {
+                                                acuse = "Descanso iniciado a las ${horaActual()} " +
+                                                    "(${breakType.duration} ${breakType.name})."
+                                            },
                                             onFailure = { error = it.message },
                                         )
                                         isLoading = false
@@ -453,6 +516,29 @@ fun TimeClockSheet(
  * pintar la hora a pintar una equivocada en un dato que decide cuánto se le
  * paga a alguien.
  */
+/** Hora del dispositivo, para el acuse. */
+private fun horaActual(): String =
+    java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date())
+
+/**
+ * Cuánto lleva trabajado desde la entrada, en palabras ("5 h 20 min").
+ *
+ * Va en el acuse de salida porque es lo que el empleado quiere confirmar: no que
+ * "se guardó", sino cuántas horas le van a pagar.
+ */
+private fun duracionDesde(clockInIso: String): String? {
+    val inicio = runCatching { java.time.Instant.parse(clockInIso) }.getOrNull() ?: return null
+    val minutos = java.time.Duration.between(inicio, java.time.Instant.now()).toMinutes()
+    if (minutos < 0) return null
+    val horas = minutos / 60
+    val resto = minutos % 60
+    return when {
+        horas > 0 && resto > 0 -> "$horas h $resto min"
+        horas > 0 -> "$horas h"
+        else -> "$resto min"
+    }
+}
+
 private fun formatClockInTime(iso: String): String? = try {
     java.time.Instant.parse(iso)
         .atZone(com.avoqado.pos.core.util.VenueTimeZone.zoneId())
