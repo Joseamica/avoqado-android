@@ -347,7 +347,19 @@ private fun MainScaffold(
                 if (roleManager.canAccessTransactions) {
                     composable(MainTab.TRANSACTIONS.route) { TransactionsScreen(isTablet = true) }
                 }
-                composable(MainTab.NOTIFICATIONS.route) { NotificationsScreen() }
+                composable(MainTab.NOTIFICATIONS.route) {
+                    NotificationsScreen(
+                        // El aviso lleva a su pestaña: antes tocarlo sólo lo
+                        // marcaba como leído y la acción no iba a ninguna parte.
+                        onOpenTab = { tab ->
+                            navController.navigate(tab.route) {
+                                popUpTo(navController.graph.startDestinationId) { saveState = true }
+                                launchSingleTop = true
+                                restoreState = true
+                            }
+                        },
+                    )
+                }
                 composable(MainTab.MORE.route) {
                     MoreMenuScreen(
                         onLogout = onLogout,
@@ -625,7 +637,19 @@ private fun MainScaffold(
                 if (roleManager.canAccessTransactions) {
                     composable(MainTab.TRANSACTIONS.route) { TransactionsScreen() }
                 }
-                composable(MainTab.NOTIFICATIONS.route) { NotificationsScreen() }
+                composable(MainTab.NOTIFICATIONS.route) {
+                    NotificationsScreen(
+                        // El aviso lleva a su pestaña: antes tocarlo sólo lo
+                        // marcaba como leído y la acción no iba a ninguna parte.
+                        onOpenTab = { tab ->
+                            navController.navigate(tab.route) {
+                                popUpTo(navController.graph.startDestinationId) { saveState = true }
+                                launchSingleTop = true
+                                restoreState = true
+                            }
+                        },
+                    )
+                }
                 composable(MainTab.MORE.route) {
                     MoreMenuScreen(
                         onLogout = onLogout,

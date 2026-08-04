@@ -50,6 +50,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.avoqado.pos.navigation.MainTab
 import com.avoqado.pos.designsystem.components.AvoqadoBrandLoader
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.notifications.data.model.AppNotification
@@ -60,6 +61,15 @@ import com.avoqado.pos.notifications.data.model.NotificationType
 @Composable
 fun NotificationsScreen(
     viewModel: NotificationsViewModel = hiltViewModel(),
+    /**
+     * A dónde llevar al tocar una notificación con acción.
+     *
+     * El aviso trae su destino en `actionUrl` ("/inventory/raw-materials?…",
+     * "/orders/ORD-…") y la app lo ignoraba: tocar "Gestionar Inventario" sólo
+     * marcaba el aviso como leído. Una llamada a la acción que no lleva a
+     * ninguna parte enseña a no tocarla, y entonces el aviso deja de servir.
+     */
+    onOpenTab: (MainTab) -> Unit = {},
 ) {
     val notifications by viewModel.notifications.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
@@ -194,6 +204,7 @@ fun NotificationsScreen(
                                 if (!notification.isRead) {
                                     viewModel.markAsRead(notification.id)
                                 }
+                                destinoDe(notification.actionUrl)?.let(onOpenTab)
                             },
                         )
                     }
@@ -308,4 +319,23 @@ private fun NotificationType.toIcon(): ImageVector = when (this) {
     NotificationType.PROMOTION -> Icons.Filled.Campaign
     NotificationType.TIME_CLOCK -> Icons.Filled.Schedule
     NotificationType.GENERAL -> Icons.Filled.Notifications
+}
+
+/**
+ * Traduce el `actionUrl` del aviso a una pestaña de la app.
+ *
+ * Las rutas vienen en formato del dashboard web ("/inventory/raw-materials?…"),
+ * así que se mapea por el PRIMER segmento: es lo único estable entre las dos
+ * superficies. Un destino desconocido devuelve null y la fila sólo se marca
+ * como leída, en vez de llevar a un sitio equivocado.
+ */
+private fun destinoDe(actionUrl: String?): MainTab? {
+    val ruta = actionUrl?.trim()?.takeIf { it.startsWith("/") } ?: return null
+    return when (ruta.removePrefix("/").substringBefore('/').substringBefore('?')) {
+        "inventory" -> MainTab.INVENTORY
+        "orders", "payments", "transactions" -> MainTab.TRANSACTIONS
+        "tables" -> MainTab.TABLES
+        "reservations", "calendar" -> MainTab.CALENDAR
+        else -> null
+    }
 }
