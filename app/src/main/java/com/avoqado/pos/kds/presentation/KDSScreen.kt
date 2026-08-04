@@ -282,9 +282,22 @@ private fun FilterChip(
 
 // MARK: - Helpers
 
-private fun formatElapsedTime(millis: Long): String {
-    val totalSeconds = millis / 1000
-    val minutes = totalSeconds / 60
-    val seconds = totalSeconds % 60
-    return "%d:%02d".format(minutes, seconds)
+/**
+ * El reloj de cada comanda.
+ *
+ * Antes los minutos crecían sin tope: una comanda de hora y media salía como
+ * "90:14" y una olvidada de tres días como "4320:07". Medido en el iPad el
+ * 2026-08-04 (mismo defecto en las dos plataformas): la pantalla mostraba
+ * "30090:13" en TODOS los tickets. La cocina hace UNA cosa con este número
+ * —mirarlo de reojo y saber si va tarde— y con cinco dígitos no se puede.
+ *
+ * Espejo de `KDSTiempo.formatear` en iOS.
+ */
+internal fun formatElapsedTime(millis: Long): String {
+    val s = (millis / 1000).coerceAtLeast(0)
+    return when {
+        s < 3600 -> "%d:%02d".format(s / 60, s % 60)
+        s < 86_400 -> "%dh %02d".format(s / 3600, (s % 3600) / 60)
+        else -> "${s / 86_400} d"
+    }
 }
