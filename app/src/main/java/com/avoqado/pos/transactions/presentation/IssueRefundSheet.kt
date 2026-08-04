@@ -103,6 +103,17 @@ fun IssueRefundSheet(
     var reason by remember(transaction.id) { mutableStateOf<ReasonOption?>(null) }
     var reasonMenuOpen by remember(transaction.id) { mutableStateOf(false) }
     var submitting by remember(transaction.id) { mutableStateOf(false) }
+    /**
+     * Cómo se le devuelve el dinero al cliente — NO cómo pagó.
+     *
+     * Lo que decide si sale dinero del cajón es esto, no el método del cobro
+     * original. Antes se miraba el original: devolver en efectivo un cobro con
+     * tarjeta NO registraba el egreso, y el arqueo quedaba con un dinero de más
+     * que ya no estaba en el cajón.
+     */
+    var devuelveEnEfectivo by remember(transaction.id) {
+        mutableStateOf(transaction.method.equals("CASH", ignoreCase = true))
+    }
     var errorMsg by remember(transaction.id) { mutableStateOf<String?>(null) }
     // Include-tip toggle for amount refunds on payments that had tip. Defaults
     // ON → backend uses proportional split. OFF → send tipRefundCents=0 so the
@@ -186,10 +197,33 @@ fun IssueRefundSheet(
                         fontWeight = FontWeight.SemiBold,
                     )
                     Text(
-                        text = "Para devolver el dinero a la tarjeta hay que hacerlo desde la " +
-                            "terminal, con su función de devolución. Lo que registres aquí sale " +
-                            "del EFECTIVO de la caja.",
+                        text = "La devolución a la tarjeta se hace desde la terminal, con su " +
+                            "función de devolución. Dinos cómo se devolvió para que la caja cuadre:",
                         style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(modifier = Modifier.height(spacing.xs))
+                    Row(horizontalArrangement = Arrangement.spacedBy(spacing.sm)) {
+                        TabPill(
+                            label = "En efectivo",
+                            active = devuelveEnEfectivo,
+                            modifier = Modifier.weight(1f),
+                            onClick = { devuelveEnEfectivo = true },
+                        )
+                        TabPill(
+                            label = "En la terminal",
+                            active = !devuelveEnEfectivo,
+                            modifier = Modifier.weight(1f),
+                            onClick = { devuelveEnEfectivo = false },
+                        )
+                    }
+                    Text(
+                        text = if (devuelveEnEfectivo) {
+                            "Saldrá del efectivo de la caja."
+                        } else {
+                            "No toca la caja: sólo se registra para que la venta deje de contar."
+                        },
+                        style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
@@ -391,8 +425,10 @@ fun IssueRefundSheet(
                             result.fold(
                                 onSuccess = {
                                     Log.d("💸", "Refund OK: $it")
-                                    // Record cash drawer pay-out for CASH refunds when a session is open
-                                    if (transaction.method?.equals("CASH", ignoreCase = true) == true) {
+                                    // El egreso depende de cómo se DEVOLVIÓ, no de cómo se cobró:
+                                    // devolver en efectivo un cobro con tarjeta también saca dinero
+                                    // del cajón, y antes no se registraba.
+                                    if (devuelveEnEfectivo) {
                                         try {
                                             val openSession = cashDrawerRepository.getOpenSession()
                                             if (openSession != null) {
