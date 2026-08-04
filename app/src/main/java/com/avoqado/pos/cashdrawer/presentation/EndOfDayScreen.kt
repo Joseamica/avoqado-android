@@ -42,6 +42,7 @@ import com.avoqado.pos.cashdrawer.data.EndOfDaySummary
 import com.avoqado.pos.designsystem.components.CircleBackButton
 import com.avoqado.pos.designsystem.components.AvoqadoBrandLoader
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
+import com.avoqado.pos.core.util.Plurales
 import java.util.Locale
 
 private val WarnColor = Color(0xFFE8A33D)
@@ -183,14 +184,14 @@ fun EndOfDayScreen(
                 icon = Icons.Filled.Receipt,
                 ok = s.openChecks.count == 0,
                 okText = "Sin cuentas abiertas",
-                warnText = "${s.openChecks.count} cuentas abiertas (${money(s.openChecks.totalCents)})",
+                warnText = "${Plurales.contar(s.openChecks.count, "cuenta abierta", "cuentas abiertas")} (${money(s.openChecks.totalCents)})",
                 detail = if (s.openChecks.count > 0) "Cóbralas o anúlalas antes de cerrar" else null,
             )
             ChecklistItem(
                 icon = Icons.Filled.PointOfSale,
                 ok = s.openDrawers.isEmpty(),
                 okText = "Sin cajas abiertas",
-                warnText = "${s.openDrawers.size} caja(s) sin cerrar",
+                warnText = Plurales.contar(s.openDrawers.size, "caja sin cerrar", "cajas sin cerrar"),
                 detail = s.openDrawers.joinToString("\n") {
                     "${it.openedByName} · abierta ${hhmm(it.openedAt)} · inicial ${money(it.startingAmountCents)}"
                 }.ifEmpty { null },
@@ -199,7 +200,7 @@ fun EndOfDayScreen(
                 icon = Icons.Filled.Schedule,
                 ok = s.clockedInStaff.isEmpty(),
                 okText = "Nadie con entrada marcada",
-                warnText = "${s.clockedInStaff.size} empleado(s) con entrada marcada",
+                warnText = Plurales.contar(s.clockedInStaff.size, "empleado con entrada marcada", "empleados con entrada marcada"),
                 detail = s.clockedInStaff.joinToString("\n") {
                     "${it.name} · desde ${hhmm(it.clockInTime)}" + if (it.status == "ON_BREAK") " (en descanso)" else ""
                 }.ifEmpty { null },
