@@ -95,15 +95,23 @@ fun LandingScreen(
                 Spacer(modifier = Modifier.weight(1f))
 
                 // Tagline - matching iOS 38pt light weight, white
+                //
+                // 🔴 `lineHeight` explícito: sin él, Text hereda el del estilo
+                // base del tema —muy por debajo de 38sp— y en cuanto la frase
+                // se parte en dos renglones, SE ENCABALGAN. En la PAX (720px de
+                // ancho) se leía "barrio." pisando "Empezó en tu". Es la PRIMERA
+                // pantalla que ve cualquiera. Medido en una A910S el 2026-08-04.
                 Text(
                     text = "Empezó en tu barrio.",
                     fontSize = 38.sp,
+                    lineHeight = 44.sp,
                     fontWeight = FontWeight.Light,
                     color = Color.White,
                 )
                 Text(
                     text = "Terminó en todo México.",
                     fontSize = 38.sp,
+                    lineHeight = 44.sp,
                     fontWeight = FontWeight.Light,
                     color = Color.White,
                 )
