@@ -35,6 +35,10 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
+import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -269,6 +273,12 @@ fun PrinterSettingsSheet(
                 }
             }
 
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
+
+            ManualIpSection(printerService = printerService, scope = scope) { saved ->
+                configPrinter = saved
+            }
+
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxxl))
         }
     }
@@ -424,3 +434,129 @@ private fun DiscoveredPrinterRow(
         }
     }
 }
+
+// MARK: - Alta manual por IP
+
+/**
+ * El último recurso cuando el descubrimiento no la encuentra.
+ *
+ * Sin esto, una impresora que no se anuncia por mDNS —VLAN separada,
+ * aislamiento de cliente en el WiFi, IP fija sin anuncio— era INCONFIGURABLE, y
+ * el local se quedaba sin comandas aunque la impresora estuviera encendida y en
+ * la misma red. Era el hueco de instalación más grande que quedaba.
+ *
+ * Espejo de la sección "Entrada manual" de `PrinterDiscoverySheet` en iOS.
+ *
+ * 🔴 Se PRUEBA la conexión antes de guardar: guardar una impresora que no
+ * responde deja al local con una entrada que dice "Conectada" y nunca imprime
+ * —ya pasó con la impresora fantasma de las Sunmi—. Si falla, no se guarda
+ * nada y se dice por qué.
+ */
+@Composable
+private fun ManualIpSection(
+    printerService: PrinterService,
+    scope: kotlinx.coroutines.CoroutineScope,
+    onAdded: (SavedPrinter) -> Unit,
+) {
+    var ip by remember { mutableStateOf("") }
+    var port by remember { mutableStateOf("9100") }
+    var name by remember { mutableStateOf("") }
+    var isAdding by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Text(
+            text = "¿No aparece tu impresora?",
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+        Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxs))
+        Text(
+            text = "Agrégala escribiendo su dirección IP. El puerto estándar es 9100.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+
+        Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
+        ) {
+            OutlinedTextField(
+                value = ip,
+                onValueChange = { ip = it.trim(); error = null },
+                label = { Text("Dirección IP") },
+                placeholder = { Text("192.168.1.50") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                modifier = Modifier.weight(2f),
+            )
+            OutlinedTextField(
+                value = port,
+                onValueChange = { port = it.filter { c -> c.isDigit() }; error = null },
+                label = { Text("Puerto") },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                modifier = Modifier.weight(1f),
+            )
+        }
+
+        Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+
+        OutlinedTextField(
+            value = name,
+            onValueChange = { name = it },
+            label = { Text("Nombre (opcional)") },
+            placeholder = { Text("Cocina") },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+
+        error?.let {
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+            Text(
+                text = it,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
+        }
+
+        Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+
+        Button(
+            onClick = {
+                val direccion = ip.trim()
+                if (direccion.isEmpty() || isAdding) return@Button
+                isAdding = true
+                error = null
+                val printer = SavedPrinter(
+                    name = name.trim().ifEmpty { "Impresora $direccion" },
+                    connectionType = "wifi",
+                    address = direccion,
+                    port = port.toIntOrNull() ?: DEFAULT_MANUAL_PORT,
+                )
+                scope.launch {
+                    try {
+                        // Probar ANTES de guardar.
+                        printerService.connect(printer)
+                        printerService.savePrinter(printer)
+                        ip = ""; name = ""; port = "$DEFAULT_MANUAL_PORT"
+                        isAdding = false
+                        onAdded(printer)
+                    } catch (e: Exception) {
+                        isAdding = false
+                        error = "No se pudo conectar con $direccion. " +
+                            "Revisa que la impresora esté encendida, en esta misma red y que el puerto sea el correcto."
+                    }
+                }
+            },
+            enabled = ip.isNotBlank() && !isAdding,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Text(if (isAdding) "Conectando…" else "Agregar impresora")
+        }
+    }
+}
+
+private const val DEFAULT_MANUAL_PORT = 9100
