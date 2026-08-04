@@ -66,7 +66,13 @@ fun QuarantineSheet(
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
                 Icon(Icons.Filled.WarningAmber, contentDescription = null, tint = Warning, modifier = Modifier.size(24.dp))
                 Text(
-                "Conciliación sin conexión",
+                    // NO "sin conexión": la app suele tener red perfecta cuando
+                    // esto aparece. Lo que pasó es que el server RECHAZÓ la
+                    // operación al reconectar. El título anterior hacía leer el
+                    // banner como "estás offline" y el founder lo llamó
+                    // literalmente "el banner de offline" — el nombre confundía
+                    // el síntoma (ocurrió sin red) con el problema (fue rechazada).
+                    "Operaciones por revisar",
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.SemiBold,
                 )
