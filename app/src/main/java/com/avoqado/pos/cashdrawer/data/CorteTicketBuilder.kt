@@ -19,6 +19,10 @@ import com.avoqado.pos.printing.data.model.PaperWidth
  */
 object CorteTicketBuilder {
 
+    /** Lo que esta app escribe en la nota al registrar el egreso de un reembolso. */
+    const val PREFIJO_REEMBOLSO = "Reembolso:"
+
+
     fun build(
         session: CashDrawerSessionEntity,
         events: List<CashDrawerEventEntity>,
@@ -48,7 +52,20 @@ object CorteTicketBuilder {
 
         val cashSales = sumOf(CashDrawerEventType.CASH_SALE)
         val payIns = sumOf(CashDrawerEventType.PAY_IN)
-        val payOuts = sumOf(CashDrawerEventType.PAY_OUT)
+        val payOutsTodos = sumOf(CashDrawerEventType.PAY_OUT)
+        // Los reembolsos en efectivo van APARTE de los demás egresos, como en
+        // Square ("Reembolsos en efectivo" es una línea propia de su arqueo).
+        // Mezclarlos con los pagos a proveedores o el retiro de propinas impide
+        // saber cuánto se devolvió, que es lo que el dueño quiere revisar cuando
+        // el cajón sale corto.
+        //
+        // Se distinguen por el prefijo de la nota, que pone esta misma app al
+        // registrar el egreso. Frágil a propósito y a falta de un tipo de evento
+        // propio: añadirlo obliga a tocar el enum del server y migrar.
+        val reembolsos = events
+            .filter { it.type == CashDrawerEventType.PAY_OUT.name && it.note?.startsWith(PREFIJO_REEMBOLSO) == true }
+            .sumOf { it.amountCents }
+        val payOuts = payOutsTodos - reembolsos
         val expected = session.startingAmountCents + cashSales + payIns - payOuts
         val actual = session.actualAmountCents ?: 0
         val diff = actual - expected
@@ -144,6 +161,9 @@ object CorteTicketBuilder {
         p.printTwoColumns("Ventas en efectivo", "+" + money(cashSales))
         p.printTwoColumns("Ingresos", "+" + money(payIns))
         p.printTwoColumns("Egresos", "-" + money(payOuts))
+        if (reembolsos > 0) {
+            p.printTwoColumns("Reembolsos en efectivo", "-" + money(reembolsos))
+        }
         p.printDivider()
         p.setBold(true)
         p.printTwoColumns("Efectivo esperado", money(expected))

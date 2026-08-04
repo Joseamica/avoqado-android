@@ -66,10 +66,11 @@ class CorteTicketBuilderTest {
         session: CashDrawerSessionEntity = cerrada,
         tenders: List<CashDrawerRepository.TenderRow> = this.tenders,
         isPartial: Boolean = false,
+        events: List<CashDrawerEventEntity> = eventos,
     ): String = String(
         CorteTicketBuilder.build(
             session = session,
-            events = eventos,
+            events = events,
             tenders = tenders,
             venueName = "Restaurante El Atole",
             paperWidth = PaperWidth.MM80,
@@ -295,5 +296,42 @@ class CorteTicketBuilderTest {
         val t = papel()
         assertTrue("efectivo con propina incluida", t.contains("$50.00"))
         assertTrue("crédito con propina incluida", t.contains("$120.00"))
+    }
+
+    /**
+     * Los reembolsos en efectivo van APARTE de los demás egresos.
+     *
+     * Como en Square, cuyo arqueo lleva "Reembolsos en efectivo" como línea
+     * propia. Mezclarlos con los pagos a proveedores o el retiro de propinas
+     * impide saber cuánto se devolvió — que es justo lo que el dueño revisa
+     * cuando el cajón sale corto.
+     */
+    @Test
+    fun `los reembolsos en efectivo no se mezclan con los demas egresos`() {
+        val conReembolso = eventos + listOf(
+            CashDrawerEventEntity(
+                id = "e-refund",
+                sessionId = "s1",
+                venueId = "v1",
+                type = CashDrawerEventType.PAY_OUT.name,
+                amountCents = 2_500,
+                note = "${CorteTicketBuilder.PREFIJO_REEMBOLSO} Producto defectuoso",
+                staffId = "st1",
+                staffName = "Main Owner",
+                createdAt = 1_785_005_000,
+            ),
+        )
+        val t = papel(events = conReembolso)
+
+        assertTrue("debe existir su propio renglón", t.contains("Reembolsos en efectivo"))
+        assertTrue("con su importe", t.contains("$25.00"))
+        // El egreso de $10.00 de los eventos base sigue en "Egresos", sin el reembolso.
+        assertTrue("los otros egresos siguen aparte", t.contains("Egresos"))
+    }
+
+    @Test
+    fun `sin reembolsos no se imprime el renglon`() {
+        // Un renglón en $0.00 sólo alarga el ticket y hace dudar al cajero.
+        assertFalse(papel().contains("Reembolsos en efectivo"))
     }
 }

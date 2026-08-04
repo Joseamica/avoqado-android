@@ -1,6 +1,7 @@
 package com.avoqado.pos.cashdrawer.presentation
 
 import android.widget.Toast
+import com.avoqado.pos.cashdrawer.data.CorteTicketBuilder
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -305,6 +306,21 @@ fun DailyReportView(
                         value = "-${formatCurrency(payOutsCents)}",
                         valueColor = Error,
                     )
+                    // Los reembolsos en efectivo, aparte — como en Square. Mezclarlos
+                    // con los pagos a proveedores impide saber cuánto se devolvió,
+                    // que es lo que se revisa cuando el cajón sale corto.
+                    val reembolsosCents = events
+                        .filter {
+                            it.type == CashDrawerEventType.PAY_OUT.name &&
+                                it.note?.startsWith(CorteTicketBuilder.PREFIJO_REEMBOLSO) == true
+                        }
+                        .sumOf { it.amountCents }
+                    if (reembolsosCents > 0) {
+                        ReportRow(
+                            label = "Reembolsos en efectivo",
+                            value = "-" + formatCurrency(reembolsosCents),
+                        )
+                    }
                     HorizontalDivider(
                         color = MaterialTheme.colorScheme.outlineVariant,
                         modifier = Modifier.padding(vertical = AvoqadoTheme.spacing.sm),

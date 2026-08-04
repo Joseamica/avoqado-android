@@ -37,6 +37,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import com.avoqado.pos.cashdrawer.data.CorteTicketBuilder
 import com.avoqado.pos.designsystem.theme.Warning
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -435,7 +436,9 @@ fun IssueRefundSheet(
                                                 val refundCents = (amountToRefund * 100).toInt()
                                                 cashDrawerRepository.addPayOut(
                                                     amountCents = refundCents,
-                                                    note = "Reembolso: ${chosenReason.label}",
+                                                    // El prefijo lo lee el corte para separar los reembolsos del
+                                                    // resto de egresos: si cambia aquí, cambia allá.
+                                                    note = "${CorteTicketBuilder.PREFIJO_REEMBOLSO} ${chosenReason.label}",
                                                 )
                                                 Log.d("💸", "✅ Cash drawer PAY_OUT recorded for refund ($refundCents)")
                                             }
