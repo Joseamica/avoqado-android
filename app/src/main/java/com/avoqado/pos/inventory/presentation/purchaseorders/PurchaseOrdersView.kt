@@ -211,7 +211,13 @@ private fun PurchaseOrderRow(
             ) {
                 StatusBadge(status = order.status, label = order.statusDisplay)
                 Text(
-                    text = "${order.items.size} artículos",
+                    // Con fecha e importe: "3 artículos" no basta para decidir si
+                    // aprobar una orden ni para saber cuál es la de esta semana.
+                    text = listOfNotNull(
+                        fechaCortaOc(order.createdAt),
+                        "${order.items.size} artículos",
+                        order.totalCost?.let { "$" + String.format(java.util.Locale.US, "%,.2f", it) },
+                    ).joinToString(" · "),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -278,4 +284,15 @@ fun statusBadgeColors(status: String): Pair<Color, Color> {
         "APPROVED" -> Success.copy(alpha = 0.15f) to Success
         else -> MaterialTheme.colorScheme.surfaceVariant to MaterialTheme.colorScheme.onSurfaceVariant // DRAFT
     }
+}
+
+/** "3 ago, 14:18" en la zona del local; null si no hay fecha. */
+private fun fechaCortaOc(iso: String?): String? {
+    val texto = iso?.takeIf { it.isNotBlank() } ?: return null
+    return runCatching {
+        java.time.format.DateTimeFormatter
+            .ofPattern("d MMM, HH:mm", java.util.Locale("es", "MX"))
+            .withZone(com.avoqado.pos.core.util.VenueTimeZone.zoneId())
+            .format(java.time.Instant.parse(texto))
+    }.getOrNull()
 }

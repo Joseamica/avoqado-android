@@ -882,7 +882,14 @@ private fun StockCountRow(
                 fontWeight = FontWeight.Medium,
             )
             Text(
-                text = "${count.statusDisplay} - ${count.itemCount} artículos",
+                // Con la fecha: sin ella la lista eran siete entradas idénticas
+                // ("Conteo cíclico · Completado · 1 artículos") y no había forma
+                // de saber cuál era el de hoy y cuál el del mes pasado — que es
+                // justo lo que se necesita para auditar existencias.
+                text = listOfNotNull(
+                    fechaCortaInv(count.createdAt),
+                    "${count.statusDisplay} - ${count.itemCount} artículos",
+                ).joinToString(" · "),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -953,4 +960,19 @@ private fun SortOptionsSheet(
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxxl))
         }
     }
+}
+
+/**
+ * "3 ago, 14:18" — corta y con hora, que es como se distinguen dos conteos del
+ * mismo día. Devuelve null si no hay fecha, para no pintar un separador huérfano.
+ */
+private fun fechaCortaInv(iso: String?): String? {
+    val texto = iso?.takeIf { it.isNotBlank() } ?: return null
+    return runCatching {
+        val instante = java.time.Instant.parse(texto)
+        java.time.format.DateTimeFormatter
+            .ofPattern("d MMM, HH:mm", java.util.Locale("es", "MX"))
+            .withZone(com.avoqado.pos.core.util.VenueTimeZone.zoneId())
+            .format(instante)
+    }.getOrNull()
 }

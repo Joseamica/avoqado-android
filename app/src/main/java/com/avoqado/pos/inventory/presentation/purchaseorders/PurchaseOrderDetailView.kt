@@ -85,11 +85,16 @@ fun PurchaseOrderDetailView(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     StatusBadge(status = order.status, label = order.statusDisplay)
+                    // Sin nombre no se pinta: la palabra "por" colgando sola se lee
+                    // como un texto a medio cargar. Visto en pantalla sobre una
+                    // orden cuyo `createdById` venía vacío del server.
+                    if (order.createdByName.isNotBlank()) {
                     Text(
                         text = "por ${order.createdByName}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    }
                 }
             }
         }

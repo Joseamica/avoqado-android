@@ -75,11 +75,16 @@ fun TransferDetailView(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     StatusBadge(status = transfer.status, label = transfer.statusDisplay)
+                    // Sin nombre no se pinta: la palabra "por" colgando sola se lee
+                    // como un texto a medio cargar. Visto en pantalla sobre una
+                    // orden cuyo `createdById` venía vacío del server.
+                    if (transfer.createdByName.isNotBlank()) {
                     Text(
                         text = "por ${transfer.createdByName}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    }
                 }
             }
         }

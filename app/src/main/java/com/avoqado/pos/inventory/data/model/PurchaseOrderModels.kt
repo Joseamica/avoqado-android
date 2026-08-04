@@ -57,6 +57,19 @@ data class PurchaseOrder(
 
     val isFullyReceived: Boolean
         get() = items.isNotEmpty() && items.all { it.receivedQuantity >= it.orderedQuantity }
+
+    /**
+     * Lo que cuesta la orden. La lista sólo decía "3 artículos" — para decidir si
+     * aprobarla, quien la revisa necesita el importe, no el número de renglones.
+     */
+    val totalCost: Double?
+        get() {
+            // Si alguna línea no trae costo, NO se suma como 0: un total a la
+            // baja es peor que no enseñar total, porque se aprueba creyendo que
+            // cuesta menos.
+            if (items.isEmpty() || items.any { it.unitCost == null }) return null
+            return items.sumOf { it.orderedQuantity * (it.unitCost ?: 0.0) }
+        }
 }
 
 @Serializable
