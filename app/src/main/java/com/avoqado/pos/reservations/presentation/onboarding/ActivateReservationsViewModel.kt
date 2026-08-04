@@ -69,10 +69,19 @@ class ActivateReservationsViewModel @Inject constructor(
         viewModelScope.launch {
             delay(400)
             secureStorage.reservationsEnabled = true
-            // Activar reservas deja el dispositivo EN modo Reservas — ahora el
-            // modo vive en PosModeManager (selector único), no en el VenueMode
-            // legacy: escribir solo el legacy dejaba el tab Calendario invisible.
-            posModeManager.switchMode(com.avoqado.pos.settings.domain.PosMode.RESERVATIONS)
+            // 🔴 Un restaurante que activa citas SIGUE siendo restaurante.
+            //
+            // Antes esto movía el dispositivo a modo Reservas SIEMPRE, y como
+            // `MainTabsPolicy` sólo muestra Mesas en modo RESTAURANT, el plano
+            // DESAPARECÍA de la barra por tomar reservas. Medido el 2026-08-04.
+            // La decisión del founder es que CONVIVAN.
+            //
+            // El Calendario ya no depende del modo, así que sólo se mueve al
+            // dispositivo cuando venía de Retail —una estética que empieza a
+            // tomar citas sí quiere la agenda al frente.
+            if (posModeManager.currentMode.value != com.avoqado.pos.settings.domain.PosMode.RESTAURANT) {
+                posModeManager.switchMode(com.avoqado.pos.settings.domain.PosMode.RESERVATIONS)
+            }
             _state.value = ActivateReservationsUiState(didSucceed = true)
         }
     }

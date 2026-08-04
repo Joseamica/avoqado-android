@@ -31,6 +31,11 @@ sealed class PaymentFlowState {
         val isQueued: Boolean = false,  // true when payment was queued offline
         val paymentId: String? = null,
         val receiptAccessKey: String? = null,
+        /**
+         * URL del recibo ya armada por el backend (apunta al dashboard: calificación + autofactura).
+         * Preferirla sobre construirla desde el accessKey — ver `resolveReceiptUrl`.
+         */
+        val receiptUrl: String? = null,
     ) : PaymentFlowState()
     data class Error(val message: String, val source: PaymentErrorSource) : PaymentFlowState()
 }

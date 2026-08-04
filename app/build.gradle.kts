@@ -33,6 +33,15 @@ check(debugBaseUrl != releaseBaseUrl) {
         "Set avoqado.devBaseUrl in local.properties or pass -Pavoqado.devBaseUrl=..."
 }
 
+// Base del DASHBOARD (dominio distinto al del API). Es donde vive la página de
+// recibo del cliente final — la que tiene calificación Y autofactura (CFDI).
+// Sólo se usa como RESPALDO para el QR del ticket: lo normal es que el server
+// mande la URL ya armada en `digitalReceipt.receiptUrl`. Espeja el FRONTEND_URL
+// del backend (avoqado-server/render.yaml).
+val releaseDashboardUrl = "https://dashboard.avoqado.io"
+val defaultDebugDashboardUrl = "https://develop.avoqado-web-dashboard.pages.dev"
+val debugDashboardUrl = configValue("avoqado.devDashboardUrl", defaultDebugDashboardUrl).trim()
+
 android {
     namespace = "com.avoqado.pos"
     // Android 16 (API 36). Play RECHAZA actualizaciones que no lo targeteen a
@@ -49,6 +58,7 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         buildConfigField("String", "BASE_URL", "\"$releaseBaseUrl\"")
+        buildConfigField("String", "DASHBOARD_URL", "\"$releaseDashboardUrl\"")
         buildConfigField("String", "ENVIRONMENT_NAME", "\"production\"")
 
         // App label per environment (overridden in debug below). Manifest reads ${appLabel}.
@@ -72,6 +82,7 @@ android {
             manifestPlaceholders["appLabel"] = "Avoqado DEV"
             isMinifyEnabled = false
             buildConfigField("String", "BASE_URL", "\"$debugBaseUrl\"")
+            buildConfigField("String", "DASHBOARD_URL", "\"$debugDashboardUrl\"")
             buildConfigField("String", "ENVIRONMENT_NAME", "\"development\"")
         }
         release {

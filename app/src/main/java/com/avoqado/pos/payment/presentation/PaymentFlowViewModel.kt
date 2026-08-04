@@ -194,11 +194,13 @@ class PaymentFlowViewModel @Inject constructor(
                 is PaymentFlowState.Success ->
                     com.avoqado.pos.customerdisplay.CustomerContent.Done(
                         totalCents = st.totalAmount,
+                        // La URL del backend si vino; si no, se arma contra el DASHBOARD.
                         // Sin llave de recibo no se dibuja QR: mejor nada que un
                         // código que no lleva a ningún lado.
-                        receiptUrl = st.receiptAccessKey?.let { key ->
-                            com.avoqado.pos.core.data.network.ApiConstants.BASE_URL + "/public/receipt/" + key
-                        },
+                        receiptUrl = com.avoqado.pos.core.data.network.resolveReceiptUrl(
+                            st.receiptUrl,
+                            st.receiptAccessKey,
+                        ),
                     )
 
                 // Le toca al cajero: el cliente ve su total, sin nada tocable.
@@ -248,6 +250,8 @@ class PaymentFlowViewModel @Inject constructor(
     private var selectedTerminalId: String? = null
     private var lastPaymentId: String? = null
     private var lastReceiptAccessKey: String? = null
+    /** URL del recibo tal como la mandó el backend (dashboard). Ver `resolveReceiptUrl`. */
+    private var lastReceiptUrl: String? = null
     private var lastAreaDeliveryCode: String? = null
     private var lastCashTenderedCents: Int? = null
     private var splitSelectedItemIds: Set<String> = emptySet()
@@ -475,6 +479,7 @@ class PaymentFlowViewModel @Inject constructor(
         _canPrintOnTerminal.value = false
         lastPaymentId = null
         lastReceiptAccessKey = null
+        lastReceiptUrl = null
         lastAreaDeliveryCode = null
         lastCashTenderedCents = null
         _onlineTerminals.value = emptyList()
@@ -775,12 +780,14 @@ class PaymentFlowViewModel @Inject constructor(
                     is TerminalPaymentResult.Success -> {
                         lastPaymentId = terminalResult.paymentId
                         lastReceiptAccessKey = terminalResult.receiptAccessKey
+                        lastReceiptUrl = terminalResult.receiptUrl
                         finishAreaTicketPayment()
                         _state.value = PaymentFlowState.Success(
                             totalAmount = total,
                             method = PaymentMethod.CARD,
                             paymentId = terminalResult.paymentId,
                             receiptAccessKey = terminalResult.receiptAccessKey,
+                            receiptUrl = terminalResult.receiptUrl,
                         )
                         createKDSOrderAndPrint(PaymentMethod.CARD)
                     }
@@ -813,6 +820,7 @@ class PaymentFlowViewModel @Inject constructor(
                             // impreso, igual que en tarjeta. Se setea ANTES de imprimir y
                             // de armar el estado Success para que el QR ya esté disponible.
                             result.receiptAccessKey?.let { lastReceiptAccessKey = it }
+                            result.receiptUrl?.let { lastReceiptUrl = it }
                             finishAreaTicketPayment()
                             recordCashSale(total, orderId)
                             _state.value = PaymentFlowState.Success(
@@ -820,6 +828,7 @@ class PaymentFlowViewModel @Inject constructor(
                                 method = PaymentMethod.CASH,
                                 paymentId = result.paymentId,
                                 receiptAccessKey = result.receiptAccessKey,
+                                receiptUrl = result.receiptUrl,
                             )
                             createKDSOrderAndPrint(PaymentMethod.CASH)
                         },
@@ -990,8 +999,9 @@ class PaymentFlowViewModel @Inject constructor(
                         fastResult.fold(
                             onSuccess = { fast ->
                                 lastPaymentId = fast.paymentId
-                                // accessKey del recibo → QR en pantalla del cliente y recibo impreso.
+                                // Recibo → QR en pantalla del cliente y recibo impreso.
                                 fast.receiptAccessKey?.let { lastReceiptAccessKey = it }
+                                fast.receiptUrl?.let { lastReceiptUrl = it }
                                 recordCashSale(total, null)
                                 _state.value = PaymentFlowState.Success(
                                     totalAmount = total,
@@ -999,6 +1009,7 @@ class PaymentFlowViewModel @Inject constructor(
                                     changeAmount = result.changeCents,
                                     paymentId = fast.paymentId,
                                     receiptAccessKey = fast.receiptAccessKey,
+                                    receiptUrl = fast.receiptUrl,
                                 )
                             },
                             onFailure = { error ->
@@ -1100,8 +1111,9 @@ class PaymentFlowViewModel @Inject constructor(
         payResult.fold(
             onSuccess = { result ->
                 lastPaymentId = result.paymentId
-                // accessKey del recibo → QR en pantalla del cliente y recibo impreso.
+                // Recibo → QR en pantalla del cliente y recibo impreso.
                 result.receiptAccessKey?.let { lastReceiptAccessKey = it }
+                result.receiptUrl?.let { lastReceiptUrl = it }
                 finishAreaTicketPayment()
                 recordCashSale(total, orderId)
                 _state.value = PaymentFlowState.Success(
@@ -1110,6 +1122,7 @@ class PaymentFlowViewModel @Inject constructor(
                     changeAmount = changeCents,
                     paymentId = result.paymentId,
                     receiptAccessKey = result.receiptAccessKey,
+                    receiptUrl = result.receiptUrl,
                 )
                 createKDSOrderAndPrint(PaymentMethod.CASH, changeCents)
             },
@@ -1469,9 +1482,12 @@ class PaymentFlowViewModel @Inject constructor(
             ?: createdOrderId?.takeLast(4)
             ?: "---"
         // URL del recibo digital para el QR (misma que la pantalla del cliente).
-        val receiptUrl = lastReceiptAccessKey?.takeIf { it.isNotBlank() }?.let { key ->
-            com.avoqado.pos.core.data.network.ApiConstants.BASE_URL + "/public/receipt/" + key
-        }
+        // La del backend si vino; si no, se arma contra el DASHBOARD — nunca contra
+        // la base del API, que es lo que mandaba a la página vieja sin facturación.
+        val receiptUrl = com.avoqado.pos.core.data.network.resolveReceiptUrl(
+            lastReceiptUrl,
+            lastReceiptAccessKey,
+        )
         return ReceiptData(
             orderNumber = folio,
             orderType = "En tienda",

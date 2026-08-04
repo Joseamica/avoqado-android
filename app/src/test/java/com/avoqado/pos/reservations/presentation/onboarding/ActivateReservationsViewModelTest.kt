@@ -8,6 +8,7 @@ import io.mockk.mockk
 import io.mockk.verify
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.resetMain
@@ -36,10 +37,17 @@ class ActivateReservationsViewModelTest {
         return storage
     }
 
+    /** Un PosModeManager que dice estar en [mode] y registra los switchMode. */
+    private fun posModeIn(mode: com.avoqado.pos.settings.domain.PosMode): com.avoqado.pos.settings.domain.PosModeManager {
+        val m: com.avoqado.pos.settings.domain.PosModeManager = mockk(relaxed = true)
+        every { m.currentMode } returns MutableStateFlow(mode)
+        return m
+    }
+
     @Test
-    fun `activate persists reservationsEnabled and switches to RESERVATIONS mode`() = runTest(dispatcher) {
+    fun `activate desde Retail persiste el flag y mueve el dispositivo a Reservas`() = runTest(dispatcher) {
         val storage = storageWith(planTier = null) // fail-open: plan unknown
-        val posModeManager: com.avoqado.pos.settings.domain.PosModeManager = mockk(relaxed = true)
+        val posModeManager = posModeIn(com.avoqado.pos.settings.domain.PosMode.RETAIL)
         val vm = ActivateReservationsViewModel(storage, PlanManager(storage), posModeManager)
 
         vm.activate()
@@ -49,15 +57,32 @@ class ActivateReservationsViewModelTest {
         assertTrue(s.didSucceed)
         assertEquals(false, s.isActivating)
         verify { storage.reservationsEnabled = true }
-        // El modo vive en PosModeManager (selector único); el VenueMode legacy
-        // ya no se escribe — escribir solo el legacy dejaba Calendario invisible.
+        // Una estética que empieza a tomar citas sí quiere la agenda al frente.
         verify { posModeManager.switchMode(com.avoqado.pos.settings.domain.PosMode.RESERVATIONS) }
+    }
+
+    @Test
+    fun `activate NO saca del modo Restaurante — Mesas y Calendario conviven`() = runTest(dispatcher) {
+        // 🔴 El bug: activar reservas movía SIEMPRE el dispositivo a modo
+        // Reservas, y como Mesas sólo se pinta en modo RESTAURANT, el plano
+        // desaparecía de la barra. Un restaurante perdía las mesas por tomar
+        // citas. Medido en el iPad el 2026-08-04.
+        val storage = storageWith(planTier = "PRO")
+        val posModeManager = posModeIn(com.avoqado.pos.settings.domain.PosMode.RESTAURANT)
+        val vm = ActivateReservationsViewModel(storage, PlanManager(storage), posModeManager)
+
+        vm.activate()
+        advanceUntilIdle()
+
+        assertTrue(vm.state.value.didSucceed)
+        verify { storage.reservationsEnabled = true }      // el calendario SÍ se activa
+        verify(exactly = 0) { posModeManager.switchMode(any()) }  // …sin tocar el modo
     }
 
     @Test
     fun `activate ignored after success`() = runTest(dispatcher) {
         val storage = storageWith(planTier = null)
-        val vm = ActivateReservationsViewModel(storage, PlanManager(storage), mockk(relaxed = true))
+        val vm = ActivateReservationsViewModel(storage, PlanManager(storage), posModeIn(com.avoqado.pos.settings.domain.PosMode.RETAIL))
 
         vm.activate(); advanceUntilIdle()
         vm.activate(); advanceUntilIdle()
@@ -71,7 +96,7 @@ class ActivateReservationsViewModelTest {
     @Test
     fun `activate refuses on FREE plan and never flips local toggle`() = runTest(dispatcher) {
         val storage = storageWith(planTier = "FREE")
-        val vm = ActivateReservationsViewModel(storage, PlanManager(storage), mockk(relaxed = true))
+        val vm = ActivateReservationsViewModel(storage, PlanManager(storage), posModeIn(com.avoqado.pos.settings.domain.PosMode.RETAIL))
 
         assertFalse(vm.hasReservationsFeature)
 
@@ -88,7 +113,7 @@ class ActivateReservationsViewModelTest {
     @Test
     fun `activate works on PRO plan`() = runTest(dispatcher) {
         val storage = storageWith(planTier = "PRO")
-        val vm = ActivateReservationsViewModel(storage, PlanManager(storage), mockk(relaxed = true))
+        val vm = ActivateReservationsViewModel(storage, PlanManager(storage), posModeIn(com.avoqado.pos.settings.domain.PosMode.RETAIL))
 
         assertTrue(vm.hasReservationsFeature)
 
@@ -102,7 +127,7 @@ class ActivateReservationsViewModelTest {
     @Test
     fun `activate works on exempt FREE venue (grandfathered)`() = runTest(dispatcher) {
         val storage = storageWith(planTier = "FREE", planExempt = true)
-        val vm = ActivateReservationsViewModel(storage, PlanManager(storage), mockk(relaxed = true))
+        val vm = ActivateReservationsViewModel(storage, PlanManager(storage), posModeIn(com.avoqado.pos.settings.domain.PosMode.RETAIL))
 
         assertTrue(vm.hasReservationsFeature)
 
@@ -115,7 +140,7 @@ class ActivateReservationsViewModelTest {
     @Test
     fun `requiredTierLabel is Pro`() {
         val storage = storageWith(planTier = "FREE")
-        val vm = ActivateReservationsViewModel(storage, PlanManager(storage), mockk(relaxed = true))
+        val vm = ActivateReservationsViewModel(storage, PlanManager(storage), posModeIn(com.avoqado.pos.settings.domain.PosMode.RETAIL))
         assertEquals("Pro", vm.requiredTierLabel)
     }
 }

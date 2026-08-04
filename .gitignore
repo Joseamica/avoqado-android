@@ -93,3 +93,6 @@ docs/superpowers/specs/images/
 
 # graphify knowledge graph output
 graphify-out/
+
+# Artefactos locales de herramientas (no es código)
+.claude/worktrees/

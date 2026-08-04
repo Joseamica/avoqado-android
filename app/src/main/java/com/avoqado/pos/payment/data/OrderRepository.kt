@@ -91,6 +91,30 @@ class OrderRepository @Inject constructor(
             }
         }
 
+        /**
+         * URL del recibo digital YA ARMADA por el backend
+         * (payment.digitalReceipt.receiptUrl). Apunta al dashboard, que es la página
+         * con calificación **y autofactura (CFDI)**.
+         *
+         * Antes sólo se leía el accessKey de arriba y la URL se reconstruía a mano
+         * concatenando la base del API — y de una base de API sólo sale una URL de API,
+         * así que el QR de todos los tickets llevaba a la página vieja, sin facturación.
+         * Preferir SIEMPRE ésta; el accessKey queda como respaldo (ver `resolveReceiptUrl`).
+         *
+         * Mismos tres lugares que el accessKey, por el pay de orden y el fast.
+         */
+        fun extractReceiptUrlFromResponse(responseBody: String): String? {
+            return try {
+                val root = idExtractorJson.parseToJsonElement(responseBody).jsonObject
+                val url = root["payment"]?.jsonObject?.get("digitalReceipt")?.jsonObject?.get("receiptUrl")?.jsonPrimitive?.contentOrNull
+                    ?: root["data"]?.jsonObject?.get("digitalReceipt")?.jsonObject?.get("receiptUrl")?.jsonPrimitive?.contentOrNull
+                    ?: root["digitalReceipt"]?.jsonObject?.get("receiptUrl")?.jsonPrimitive?.contentOrNull
+                url?.takeIf { it.isNotBlank() }
+            } catch (_: Exception) {
+                null
+            }
+        }
+
         fun hasProductItems(request: CreateOrderRequest): Boolean {
             return request.items.any { !it.productId.isNullOrBlank() }
         }
@@ -322,8 +346,9 @@ class OrderRepository @Inject constructor(
                 Log.d("💵", "✅ Fast cash payment recorded: $amount cents, body: ${body.take(200)}")
                 val paymentId = extractPaymentIdFromResponse(body)
                 val accessKey = extractReceiptAccessKeyFromResponse(body)
-                Log.d("💵", "Extracted paymentId: $paymentId, receiptAccessKey: $accessKey")
-                Result.success(CashPayResult(paymentId, accessKey))
+                val receiptUrl = extractReceiptUrlFromResponse(body)
+                Log.d("💵", "Extracted paymentId: $paymentId, receiptAccessKey: $accessKey, receiptUrl: $receiptUrl")
+                Result.success(CashPayResult(paymentId, accessKey, receiptUrl))
             } else {
                 Log.e("💵", "❌ Fast cash payment failed ($code): $body")
                 Result.failure(ServerException(code, "Error al registrar pago rápido ($code)"))
@@ -336,8 +361,17 @@ class OrderRepository @Inject constructor(
 
     // MARK: - Record Cash Payment
 
-    /** paymentId + accessKey del recibo digital (para el QR en efectivo). */
-    data class CashPayResult(val paymentId: String?, val receiptAccessKey: String?)
+    /**
+     * paymentId + recibo digital (para el QR en efectivo).
+     *
+     * `receiptUrl` es la que arma el backend y apunta al dashboard (calificación + autofactura);
+     * `receiptAccessKey` queda de respaldo para armarla si la respuesta no la trae.
+     */
+    data class CashPayResult(
+        val paymentId: String?,
+        val receiptAccessKey: String?,
+        val receiptUrl: String? = null,
+    )
 
     suspend fun recordCashPayment(
         orderId: String,
@@ -386,8 +420,9 @@ class OrderRepository @Inject constructor(
                 Log.d("💵", "✅ Cash payment recorded for order: $orderId")
                 val paymentId = extractPaymentIdFromResponse(body)
                 val accessKey = extractReceiptAccessKeyFromResponse(body)
-                Log.d("💵", "   paymentId: $paymentId, receiptAccessKey: $accessKey")
-                Result.success(CashPayResult(paymentId, accessKey))
+                val receiptUrl = extractReceiptUrlFromResponse(body)
+                Log.d("💵", "   paymentId: $paymentId, receiptAccessKey: $accessKey, receiptUrl: $receiptUrl")
+                Result.success(CashPayResult(paymentId, accessKey, receiptUrl))
             } else {
                 Log.e("💵", "❌ Cash payment failed ($code): $body")
                 Result.failure(ServerException(code, "Error al registrar pago ($code)"))

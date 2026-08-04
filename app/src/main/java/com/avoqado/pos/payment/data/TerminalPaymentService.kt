@@ -128,6 +128,11 @@ class TerminalPaymentService @Inject constructor(
                         cardBrand = response.cardDetails?.brand,
                         paymentId = response.paymentId ?: response.transactionId,
                         receiptAccessKey = response.receipt?.receiptAccessKey,
+                        // El backend ya manda la URL del recibo ARMADA y apuntando al
+                        // dashboard (la página con calificación + autofactura). Antes se
+                        // descartaba aquí y más adelante se reconstruía desde la base del
+                        // API → todo ticket salía con el QR viejo, sin facturación.
+                        receiptUrl = response.receipt?.receiptUrl,
                     )
                 }
                 404 -> {
@@ -375,6 +380,8 @@ sealed class TerminalPaymentResult {
         val cardBrand: String? = null,
         val paymentId: String? = null,
         val receiptAccessKey: String? = null,
+        /** URL del recibo ya armada por el backend (dashboard). Preferirla sobre armarla a mano. */
+        val receiptUrl: String? = null,
     ) : TerminalPaymentResult()
     data class Error(val message: String) : TerminalPaymentResult()
 }
