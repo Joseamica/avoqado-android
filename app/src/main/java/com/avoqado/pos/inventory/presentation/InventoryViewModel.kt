@@ -455,6 +455,7 @@ class InventoryViewModel @Inject constructor(
                 expected = stock.onHand,
                 counted = 0.0,
                 difference = 0.0,
+                // Nace SIN contar: el 0 es un marcador de posición, no un dato.
                 unit = stock.unit,
                 rawMaterialId = if (isRaw) stock.id else null,
                 itemType = if (isRaw) "RAW_MATERIAL" else null,
@@ -523,6 +524,10 @@ class InventoryViewModel @Inject constructor(
             updated[index] = item.copy(
                 counted = counted,
                 difference = counted - item.expected,
+                // Marca la línea como CONTADA. Sin esto un 0 tecleado a mano se
+                // vería igual que uno sin contar, que es justo lo que se acaba
+                // de arreglar en el detalle.
+                countedAt = java.time.Instant.now().toString(),
             )
             _countItems.value = updated
             _touchedItemIds.value = _touchedItemIds.value + item.id

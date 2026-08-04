@@ -200,10 +200,15 @@ private fun DetailItemRow(
 ) {
     val diff = item.counted - item.expected
     val diffColor = when {
+        // Sin contar no hay diferencia que enseñar: pintarla en rojo le dice al
+        // gerente que falta mercancía cuando lo que falta es contarla.
+        !item.yaSeConto -> MaterialTheme.colorScheme.onSurfaceVariant
         diff > 0 -> Success
         diff < 0 -> MaterialTheme.colorScheme.error
         else -> MaterialTheme.colorScheme.onSurfaceVariant
     }
+    val contadoTexto = if (item.yaSeConto) viewModel.formatQuantity(item.counted) else "—"
+    val diferenciaTexto = if (item.yaSeConto) viewModel.formatQuantity(diff) else "Sin contar"
 
     if (isTablet) {
         Row(
@@ -248,14 +253,16 @@ private fun DetailItemRow(
                 textAlign = TextAlign.End,
             )
             Text(
-                text = viewModel.formatQuantity(item.counted),
+                text = contadoTexto,
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.SemiBold,
                 modifier = Modifier.weight(1f),
                 textAlign = TextAlign.End,
             )
             Text(
-                text = if (diff > 0) "+${viewModel.formatQuantity(diff)}" else viewModel.formatQuantity(diff),
+                text = if (!item.yaSeConto) diferenciaTexto
+                else if (diff > 0) "+${viewModel.formatQuantity(diff)}"
+                else viewModel.formatQuantity(diff),
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.SemiBold,
                 color = diffColor,
@@ -288,11 +295,13 @@ private fun DetailItemRow(
             Column(modifier = Modifier.weight(1f)) {
                 Text(text = item.productName, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium)
                 Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.lg)) {
-                    Text(text = "${viewModel.formatQuantity(item.expected)} / ${viewModel.formatQuantity(item.counted)}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(text = "${viewModel.formatQuantity(item.expected)} / $contadoTexto", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
             Text(
-                text = if (diff > 0) "+${viewModel.formatQuantity(diff)}" else viewModel.formatQuantity(diff),
+                text = if (!item.yaSeConto) diferenciaTexto
+                else if (diff > 0) "+${viewModel.formatQuantity(diff)}"
+                else viewModel.formatQuantity(diff),
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.Bold,
                 color = diffColor,

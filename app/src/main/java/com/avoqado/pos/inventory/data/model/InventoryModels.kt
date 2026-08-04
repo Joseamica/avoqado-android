@@ -97,8 +97,20 @@ data class StockCountItem(
     // material id as compat fallback, so switch on itemType, not on productId.
     val rawMaterialId: String? = null,
     val itemType: String? = null,
+    /**
+     * Cuándo se contó esta línea. **null = todavía NO se ha contado.**
+     *
+     * El server ya lo distinguía y la app lo ignoraba: un conteo a medias
+     * mostraba "Contado 0" con diferencias de -98, -100, -84 en rojo, como si
+     * faltara media bodega. Lo que faltaba era contar. Visto en la tablet
+     * 2026-08-03 sobre un conteo EN PROGRESO.
+     */
+    val countedAt: String? = null,
 ) {
     val isIngredient: Boolean get() = itemType == "RAW_MATERIAL"
+
+    /** Si esta línea ya se contó. Un 0 contado es un dato; un 0 sin contar, no. */
+    val yaSeConto: Boolean get() = countedAt != null
 
     val expectedDisplay: String get() = formatInvQty(expected) + unitSuffixOf(unit)
     val countedDisplay: String get() = formatInvQty(counted) + unitSuffixOf(unit)
