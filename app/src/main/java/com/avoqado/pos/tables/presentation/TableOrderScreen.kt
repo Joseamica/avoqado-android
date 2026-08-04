@@ -1420,16 +1420,27 @@ internal fun TableCheckPanel(
                         Icon(Icons.Outlined.Print, contentDescription = "Imprimir cuenta")
                     }
                 }
+                // 🔴 Una cuenta en \$0 POR DESCUENTO sí se puede cobrar.
+                //
+                // Antes se bloqueaba con "todavía no tiene cargos" — que además
+                // era falso: la cuenta tenía artículos, el total era 0 porque el
+                // descuento se los comía. La única salida era anularla, y una
+                // anulación NO es lo mismo que una venta con 100% de descuento:
+                // el producto salió del almacén y la promoción no queda
+                // registrada en ningún lado.
+                //
+                // Se distingue por los artículos, no por el importe.
+                val sinCargos = itemCount <= 0
                 BlockedTapOverlay(
                     reason = "Esta cuenta todavía no tiene cargos. Agrega productos y envíalos antes de cobrar."
-                        .takeIf { subtotalCents <= 0 },
+                        .takeIf { sinCargos },
                     onBlocked = onBlocked,
                     modifier = Modifier.weight(0.5f),
                 ) {
                     PrimaryButton(
                         text = "Pagar ${centsDisplay(subtotalCents)}",
                         onClick = onPagar,
-                        enabled = subtotalCents > 0,
+                        enabled = !sinCargos,
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
