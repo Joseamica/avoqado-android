@@ -37,6 +37,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import com.avoqado.pos.designsystem.theme.Warning
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -159,6 +160,39 @@ fun IssueRefundSheet(
                     fontWeight = FontWeight.SemiBold,
                 )
                 Spacer(modifier = Modifier.size(36.dp))
+            }
+
+            // 🔴 Un cobro con TARJETA no se devuelve desde aquí.
+            //
+            // La devolución a la tarjeta la hace la TERMINAL, con su propia
+            // función; no hay API para ello. Y el server registra TODO reembolso
+            // como efectivo (`method: 'CASH'` forzado en refund.mobile.service).
+            // Sin este aviso, un gerente devuelve un cobro con tarjeta desde el
+            // POS, el sistema lo da por hecho, y el cliente no recibe nada —
+            // además de sacar del cajón un dinero que nunca entró ahí.
+            if (!transaction.method.equals("CASH", ignoreCase = true)) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = spacing.md)
+                        .clip(RoundedCornerShape(spacing.md))
+                        .background(Warning.copy(alpha = 0.12f))
+                        .padding(spacing.md),
+                    verticalArrangement = Arrangement.spacedBy(spacing.xxs),
+                ) {
+                    Text(
+                        text = "Este cobro no fue en efectivo",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Text(
+                        text = "Para devolver el dinero a la tarjeta hay que hacerlo desde la " +
+                            "terminal, con su función de devolución. Lo que registres aquí sale " +
+                            "del EFECTIVO de la caja.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
 
             Row(
