@@ -199,7 +199,7 @@ fun TimeClockSheet(
                     // MARK: - PIN Entry Screen
 
                     Text(
-                        text = "Reloj de entrada",
+                        text = "Reloj checador",
                         style = MaterialTheme.typography.headlineMedium,
                     )
 

@@ -35,7 +35,7 @@ data class MenuItemConfig(
 )
 
 private val menuItems = listOf(
-    MenuItemConfig("menu_timeclock", "Reloj de entrada"),
+    MenuItemConfig("menu_timeclock", "Reloj checador"),
     MenuItemConfig("menu_reports", "Informes"),
     MenuItemConfig("menu_orders", "Pedidos"),
     MenuItemConfig("menu_cashdrawer", "Caja"),

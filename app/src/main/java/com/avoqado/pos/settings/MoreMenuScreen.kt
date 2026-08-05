@@ -422,7 +422,7 @@ fun MoreMenuScreen(
         }
         MenuRow(
             icon = Icons.Filled.Schedule,
-            label = "Reloj de entrada",
+            label = "Reloj checador",
             onClick = { showTimeClock = true },
             dense = denseMenu,
         )
