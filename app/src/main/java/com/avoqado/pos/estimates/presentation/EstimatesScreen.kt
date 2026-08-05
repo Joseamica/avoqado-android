@@ -55,6 +55,7 @@ import com.avoqado.pos.designsystem.components.AvoqadoBrandLoader
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.estimates.data.model.Estimate
 import com.avoqado.pos.estimates.data.model.EstimateStatus
+import com.avoqado.pos.designsystem.components.PrimaryButton
 
 // MARK: - Entry Point
 
@@ -232,7 +233,7 @@ private fun TabletEstimatesLayout(
                             verticalArrangement = Arrangement.Center,
                         ) {
                             Text(
-                                text = if (searchText.isNotEmpty()) "No se encontraron presupuestos" else "Sin presupuestos",
+                                text = if (searchText.isNotEmpty()) "No se encontraron presupuestos" else "No hay presupuestos",
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.Bold,
                             )
@@ -242,6 +243,15 @@ private fun TabletEstimatesLayout(
                                     text = "Crea tu primer presupuesto",
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                                // La pantalla invitaba a crear el primero y no
+                                // ofrecía CÓMO: había que adivinar el icono del
+                                // encabezado. Un estado vacío que pide una
+                                // acción trae el botón de esa acción.
+                                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
+                                PrimaryButton(
+                                    text = "Nuevo presupuesto",
+                                    onClick = { showCreateSheet = true },
                                 )
                             }
                         }
@@ -275,7 +285,7 @@ private fun TabletEstimatesLayout(
                 if (selectedEstimate != null) {
                     EstimateDetailView(estimate = selectedEstimate!!)
                 } else {
-                    EstimateEmptyState()
+                    EstimateEmptyState(hayPresupuestos = filteredEstimates.isNotEmpty())
                 }
             }
         }
@@ -590,8 +600,13 @@ private fun StatusBadge(status: EstimateStatus) {
 
 // MARK: - Empty State
 
+/**
+ * @param hayPresupuestos si la lista de al lado tiene algo que seleccionar.
+ *   Sin esto pedía "Selecciona un presupuesto" con la lista VACÍA — mandaba a
+ *   elegir algo que no existe.
+ */
 @Composable
-private fun EstimateEmptyState() {
+private fun EstimateEmptyState(hayPresupuestos: Boolean = true) {
     Column(
         modifier = Modifier.fillMaxSize(),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -615,7 +630,7 @@ private fun EstimateEmptyState() {
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
 
         Text(
-            text = "Selecciona un presupuesto",
+            text = if (hayPresupuestos) "Selecciona un presupuesto" else "Crea tu primer presupuesto",
             style = MaterialTheme.typography.titleLarge,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onSurface,
