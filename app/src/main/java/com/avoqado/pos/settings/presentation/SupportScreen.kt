@@ -105,7 +105,7 @@ private fun TabletSupportLayout(onDismiss: () -> Unit) {
                 CircleBackButton(onClick = onDismiss)
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
                 Text(
-                    text = "Atencion al cliente",
+                    text = "Atención al cliente",
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurface,
@@ -190,7 +190,7 @@ private fun PhoneSupportLayout(onDismiss: () -> Unit) {
                 CircleBackButton(onClick = onDismiss)
                 Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.md))
                 Text(
-                    text = "Atencion al cliente",
+                    text = "Atención al cliente",
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurface,
@@ -360,27 +360,31 @@ private data class FaqItem(
 
 private val faqItems = listOf(
     FaqItem(
-        question = "Como conecto una impresora?",
+        question = "¿Cómo conecto una impresora?",
         answer = "Ve a Mas > Impresora y activa Bluetooth en tu dispositivo. Enciende la impresora y seleccionala de la lista de dispositivos disponibles.",
     ),
     FaqItem(
-        question = "Como proceso un reembolso?",
+        question = "¿Cómo proceso un reembolso?",
         answer = "Ve a Pedidos, selecciona la transaccion y toca \"Reembolsar\". Puedes hacer reembolsos parciales o totales.",
     ),
     FaqItem(
-        question = "Como agrego un producto?",
+        question = "¿Cómo agrego un producto?",
         answer = "Ve a Mas > Articulos > Productos y toca el boton \"+\" para crear un nuevo producto con nombre, precio y categoria.",
     ),
     FaqItem(
-        question = "Como configuro la terminal de pago?",
-        answer = "La terminal PAX se conecta automáticamente via Bluetooth. Asegúrate de que esté encendida y en modo de emparejamiento.",
+        question = "¿Cómo configuro la terminal de pago?",
+        answer = "La terminal PAX se conecta automáticamente vía Bluetooth. Asegúrate de que esté encendida y en modo de emparejamiento.",
     ),
     FaqItem(
-        question = "Como cambio de sucursal?",
+        question = "¿Cómo abro la caja?",
+        answer = "Ve a Más > Caja. Desde ahí puedes registrar ingresos y egresos de efectivo, y ver el balance actual de tu caja.",
+    ),
+    FaqItem(
+        question = "¿Cómo cambio de sucursal?",
         answer = "En la pantalla Mas, toca la tarjeta de sucursal en la parte superior. Si tienes acceso a multiples sucursales, podras seleccionar otra.",
     ),
     FaqItem(
-        question = "Como genero un informe de ventas?",
+        question = "¿Cómo genero un informe de ventas?",
         answer = "Ve a Mas > Informes. Selecciona el periodo deseado y el tipo de informe (ventas, productos, empleados).",
     ),
 )
@@ -478,7 +482,7 @@ private data class TutorialItem(
 
 private val tutorialItems = listOf(
     TutorialItem("Primeros pasos con Avoqado", "Aprende a configurar tu punto de venta"),
-    TutorialItem("Gestion de productos", "Como crear, editar y organizar productos"),
+    TutorialItem("Gestion de productos", "Cómo crear, editar y organizar productos"),
     TutorialItem("Procesamiento de pagos", "Acepta pagos con tarjeta y efectivo"),
     TutorialItem("Gestion de inventario", "Controla existencias y ordenes de compra"),
     TutorialItem("Informes y analiticas", "Entiende tus ventas y metricas"),
