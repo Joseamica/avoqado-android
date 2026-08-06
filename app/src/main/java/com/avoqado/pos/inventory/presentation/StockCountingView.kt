@@ -160,6 +160,7 @@ fun StockCountingView(
                             item = selectedItem,
                             state = scaleState,
                             configured = scaleConfigured,
+                            planQueFalta = if (viewModel.hasScaleIntegration) null else viewModel.scaleTierLabel,
                             onUseWeight = viewModel::updateCountedText,
                             onRetry = onRetryScale,
                         )
@@ -251,6 +252,7 @@ fun StockCountingView(
                         item = selectedItem,
                         state = scaleState,
                         configured = scaleConfigured,
+                        planQueFalta = if (viewModel.hasScaleIntegration) null else viewModel.scaleTierLabel,
                         onUseWeight = viewModel::updateCountedText,
                         onRetry = onRetryScale,
                         modifier = Modifier.padding(
@@ -344,11 +346,43 @@ private fun InventoryScaleReading(
     item: StockCountItem,
     state: ScaleConnectionState,
     configured: Boolean,
+    /** null = el local tiene el plan. Con texto, es la etiqueta del plan que falta. */
+    planQueFalta: String? = null,
     onUseWeight: (String) -> Unit,
     onRetry: () -> Unit,
     modifier: Modifier = Modifier.padding(top = AvoqadoTheme.spacing.md),
 ) {
     val conversion = scaleConversion(item.unit) ?: return
+    // Antes: sin perfil configurado no se pintaba NADA. Con el candado de plan
+    // eso dejaba la báscula muda —el operador no sabía por qué no aparece—, así
+    // que el aviso de plan se muestra aunque no haya perfil. Nunca bloquea el
+    // conteo manual. Espejo de `.requierePlan` en iOS.
+    if (planQueFalta != null) {
+        Surface(
+            modifier = modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.md),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        ) {
+            Column(
+                modifier = Modifier.padding(AvoqadoTheme.spacing.md),
+                verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.xs),
+            ) {
+                Text(
+                    text = "Báscula · Incluido en $planQueFalta",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    text = "Conectar una báscula es parte del plan $planQueFalta. " +
+                        "Actívalo desde tu dashboard web (Configuración → Plan). " +
+                        "El conteo manual sigue disponible.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        return
+    }
     if (!configured) return
 
     Surface(

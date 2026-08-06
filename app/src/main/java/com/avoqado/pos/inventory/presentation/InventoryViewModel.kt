@@ -27,6 +27,9 @@ import com.avoqado.pos.core.data.network.ServerErrorText
 
 private const val TAG = "📦 InventoryVM"
 
+/** Espejo EXACTO de `PREMIUM_ONLY_CODES` en el backend y de iOS. */
+private const val SCALE_FEATURE_CODE = "SCALE_INTEGRATION"
+
 // MARK: - Sidebar sections (matching Square inventory screenshot)
 
 enum class InventorySection(val label: String) {
@@ -158,10 +161,30 @@ class InventoryViewModel @Inject constructor(
     }
 
     /**
+     * `SCALE_INTEGRATION` es PREMIUM en el backend y NADIE lo exigía: ni la ruta,
+     * ni iOS, ni aquí. La báscula funcionaba en cualquier plan.
+     *
+     * Falla ABIERTO con el plan desconocido, igual que el resto del gating.
+     */
+    val hasScaleIntegration: Boolean
+        get() = planManager.hasFeature(SCALE_FEATURE_CODE)
+
+    /** Etiqueta del plan que incluye la báscula ("Premium"). */
+    val scaleTierLabel: String
+        get() = planManager.requiredTierLabel(SCALE_FEATURE_CODE) ?: "Premium"
+
+    /**
      * La báscula es una ayuda opcional. Si el local, perfil, permiso o red no están disponibles,
      * el conteo manual continúa sin mostrar un error bloqueante.
      */
     fun loadScaleIntegrationSettings() {
+        // El candado de plan va ANTES de la red: el server ya responde 403 sin
+        // `SCALE_INTEGRATION`, esto sólo evita el viaje. El conteo manual sigue
+        // igual — la báscula nunca bloquea contar.
+        if (!hasScaleIntegration) {
+            _scaleIntegrationSettings.value = null
+            return
+        }
         viewModelScope.launch {
             _scaleIntegrationSettings.value = runCatching {
                 scaleSettingsRepository.settings()
