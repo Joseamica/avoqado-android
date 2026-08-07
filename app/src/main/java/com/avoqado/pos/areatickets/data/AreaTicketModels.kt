@@ -23,6 +23,7 @@ data class AreaTicketSettingsData(
     val areaTickets: AreaTicketModuleSettings,
     val terminal: AreaTicketTerminalCapabilities,
     val scaleIntegration: ScaleIntegrationSettings,
+    val variableWeightBarcode: VariableWeightBarcodeSettings = VariableWeightBarcodeSettings(),
 )
 
 @Serializable
@@ -84,6 +85,14 @@ data class ScaleIntegrationSettings(
     val enabled: Boolean,
     val profile: ScaleProfile? = null,
     val manualFallbackAllowed: Boolean = true,
+)
+
+@Serializable
+data class VariableWeightBarcodeSettings(
+    val entitled: Boolean = false,
+    val enabled: Boolean = false,
+    val format: String = "EAN13_PLU5_WEIGHT5",
+    val prefix: String = "20",
 )
 
 @Serializable

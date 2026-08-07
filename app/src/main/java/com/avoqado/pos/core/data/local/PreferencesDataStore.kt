@@ -42,6 +42,10 @@ class PreferencesDataStore @Inject constructor(
         dataStore.edit { it.remove(booleanPreferencesKey(key)) }
     }
 
+    suspend fun removeString(key: String) {
+        dataStore.edit { it.remove(stringPreferencesKey(key)) }
+    }
+
     suspend fun clear() {
         dataStore.edit { it.clear() }
     }

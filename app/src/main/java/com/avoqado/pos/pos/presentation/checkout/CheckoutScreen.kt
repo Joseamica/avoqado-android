@@ -828,6 +828,8 @@ fun CheckoutScreen(
                                     { selectedProduct = it },
                                     { weightProduct = it },
                                 )
+                            is ScannedBarcodeResult.WeightedProductFound ->
+                                cartViewModel.addProductByWeight(result.product, result.weightKg)
                             is ScannedBarcodeResult.AreaTicketsAdded ->
                                 areaTicketAddedCount = result.ticketCount
                             is ScannedBarcodeResult.Unknown ->

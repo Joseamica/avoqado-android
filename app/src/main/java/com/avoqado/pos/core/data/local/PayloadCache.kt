@@ -69,5 +69,6 @@ class PayloadCache @Inject constructor(
         const val TYPE_TABLES = "tables"
         const val TYPE_MENUS = "menus"
         const val TYPE_PRINT_CONFIG = "print_config"
+        const val TYPE_AREA_TICKET_SETTINGS = "area_ticket_settings"
     }
 }

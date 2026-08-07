@@ -123,6 +123,32 @@ class AuthRepository @Inject constructor(
         return Pair(response.accessToken, response.refreshToken)
     }
 
+    /**
+     * Re-emite la sesión para el venue que ya está seleccionado localmente.
+     *
+     * Esto repara sesiones creadas por versiones anteriores donde el storage
+     * cambió de venue, pero el JWT conservó el venue previo. Debe ejecutarse
+     * antes de arrancar cualquier cola offline: `sync/intents` sí exige que el
+     * venue de la URL coincida con el del token.
+     *
+     * Falla abierto cuando no hay red. El POS conserva su sesión y puede seguir
+     * trabajando offline; el siguiente arranque o cambio de venue reintentará.
+     */
+    suspend fun repairCurrentVenueBinding(): Boolean {
+        val venueId = secureStorage.venueId?.takeIf { it.isNotBlank() } ?: return false
+        val refresh = secureStorage.refreshToken?.takeIf { it.isNotBlank() } ?: return false
+
+        return try {
+            val tokens = apiService.refreshToken(RefreshRequest(refresh, venueId = venueId))
+            secureStorage.updateTokens(tokens.accessToken, tokens.refreshToken)
+            Log.d("🔄", "✅ Token ligado al venue actual")
+            true
+        } catch (e: Exception) {
+            Log.w("🔄", "No se pudo ligar el token al venue actual: ${e.message}")
+            false
+        }
+    }
+
     suspend fun switchVenue(venue: StoredVenue) {
         Log.d("🔄", "Switching to venue: ${venue.name}")
 
@@ -140,16 +166,7 @@ class AuthRepository @Inject constructor(
         // Si falla (sin red), NO se aborta el cambio de local: el POS tiene que
         // poder vender igual. El token se re-emitirá en el siguiente refresh,
         // que ya conserva el venue.
-        val refresh = secureStorage.refreshToken
-        if (refresh != null) {
-            try {
-                val tokens = apiService.refreshToken(RefreshRequest(refresh, venueId = venue.id))
-                secureStorage.updateTokens(tokens.accessToken, tokens.refreshToken)
-                Log.d("🔄", "✅ Token re-emitido para ${venue.name}")
-            } catch (e: Exception) {
-                Log.w("🔄", "No se pudo re-emitir el token al cambiar de local: ${e.message}")
-            }
-        } else {
+        if (!repairCurrentVenueBinding() && secureStorage.refreshToken.isNullOrBlank()) {
             // Sin refresh token no hay forma de re-emitir: la sesión queda atada
             // al local anterior hasta el siguiente login. Se avisa en vez de
             // callar, que es justo lo que escondía el desajuste.

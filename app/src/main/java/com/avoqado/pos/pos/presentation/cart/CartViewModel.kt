@@ -47,6 +47,7 @@ import javax.inject.Inject
 
 sealed interface ScannedBarcodeResult {
     data class ProductFound(val product: Product) : ScannedBarcodeResult
+    data class WeightedProductFound(val product: Product, val weightKg: Double) : ScannedBarcodeResult
     data class AreaTicketsAdded(val ticketCount: Int) : ScannedBarcodeResult
     data class Unknown(val code: String) : ScannedBarcodeResult
     data class Error(val message: String) : ScannedBarcodeResult
@@ -706,8 +707,39 @@ class CartViewModel @Inject constructor(
             it.sku == code || it.barcode == code || it.gtin == code
         }
         if (!com.avoqado.pos.pos.data.isAreaTicketCode(code)) {
-            return localProduct?.let(ScannedBarcodeResult::ProductFound)
-                ?: ScannedBarcodeResult.Unknown(code)
+            localProduct?.let { return ScannedBarcodeResult.ProductFound(it) }
+
+            if (code.length == 13 && code.all(Char::isDigit)) {
+                val barcodeSettings = runCatching { areaTicketRepository.settings().variableWeightBarcode }.getOrNull()
+                if (barcodeSettings?.enabled == true && barcodeSettings.entitled) {
+                    val decoded = com.avoqado.pos.pos.data.decodeVariableWeightBarcode(code, barcodeSettings.prefix)
+                    if (decoded != null) {
+                        val exactMatches = products.value.filter { product ->
+                            product.sku == decoded.plu || product.barcode == decoded.plu || product.gtin == decoded.plu
+                        }
+                        val matches = if (exactMatches.isNotEmpty()) {
+                            exactMatches
+                        } else {
+                            val normalizedPlu = decoded.plu.trimStart('0').ifEmpty { "0" }
+                            products.value.filter { product ->
+                                listOfNotNull(product.sku, product.barcode, product.gtin).any { candidate ->
+                                    candidate.all(Char::isDigit) && candidate.trimStart('0').ifEmpty { "0" } == normalizedPlu
+                                }
+                            }
+                        }
+                        if (matches.size > 1) {
+                            return ScannedBarcodeResult.Error("El PLU ${decoded.plu} coincide con más de un producto. Corrige el catálogo.")
+                        }
+                        val weightedProduct = matches.singleOrNull()
+                            ?: return ScannedBarcodeResult.Error("El PLU ${decoded.plu} de la báscula no existe en el catálogo.")
+                        if (!weightedProduct.soldByWeight) {
+                            return ScannedBarcodeResult.Error("El producto ${weightedProduct.name} no está configurado para venta por peso.")
+                        }
+                        return ScannedBarcodeResult.WeightedProductFound(weightedProduct, decoded.weightKg)
+                    }
+                }
+            }
+            return ScannedBarcodeResult.Unknown(code)
         }
 
         return runCatching {

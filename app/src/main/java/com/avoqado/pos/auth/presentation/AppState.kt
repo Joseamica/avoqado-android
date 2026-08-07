@@ -2,6 +2,7 @@ package com.avoqado.pos.auth.presentation
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.avoqado.pos.auth.data.AuthRepository
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.domain.PlanManager
 import com.avoqado.pos.core.domain.RoleManager
@@ -29,6 +30,7 @@ import javax.inject.Inject
 @HiltViewModel
 class AppState @Inject constructor(
     private val secureStorage: SecureStorage,
+    private val authRepository: AuthRepository,
     val timeEntryRepository: TimeEntryRepository,
     val roleManager: RoleManager,
     private val planManager: PlanManager,
@@ -41,14 +43,6 @@ class AppState @Inject constructor(
     val venueSwitchState: com.avoqado.pos.settings.domain.VenueSwitchState,
     connectivityMonitor: ConnectivityMonitor,
 ) : ViewModel() {
-
-    init {
-        if (secureStorage.isLoggedIn) {
-            paymentSyncService.start()
-            startOfflineOutbox()
-            refreshPlanAndSettings()
-        }
-    }
 
     /** Offline-first Corte B: replay del outbox de comandas + reconciliación. */
     private fun startOfflineOutbox() {
@@ -189,6 +183,23 @@ class AppState @Inject constructor(
                 ),
             ),
         )
+
+    init {
+        if (secureStorage.isLoggedIn) {
+            viewModelScope.launch {
+                // Versiones anteriores podían persistir el venue nuevo junto a
+                // un JWT todavía ligado al anterior. sync/intents valida ambos,
+                // así que reparar debe ocurrir antes de cualquier replay.
+                // Este init vive después de los StateFlow que refreshTabs toca:
+                // con Dispatchers.Main.immediate el bloque puede avanzar durante
+                // la construcción y no debe observar propiedades sin inicializar.
+                authRepository.repairCurrentVenueBinding()
+                paymentSyncService.start()
+                startOfflineOutbox()
+                refreshPlanAndSettings()
+            }
+        }
+    }
 
     private fun computeVisibleTabs(
         reservationsEnabled: Boolean,

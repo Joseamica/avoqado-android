@@ -2,6 +2,12 @@ package com.avoqado.pos.pos.presentation.cart
 
 import com.avoqado.pos.MainDispatcherRule
 import com.avoqado.pos.auth.data.AuthRepository
+import com.avoqado.pos.areatickets.data.AreaTicketModuleSettings
+import com.avoqado.pos.areatickets.data.AreaTicketRepository
+import com.avoqado.pos.areatickets.data.AreaTicketSettingsData
+import com.avoqado.pos.areatickets.data.AreaTicketTerminalCapabilities
+import com.avoqado.pos.areatickets.data.ScaleIntegrationSettings
+import com.avoqado.pos.areatickets.data.VariableWeightBarcodeSettings
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.domain.PlanManager
 import com.avoqado.pos.payment.data.OrderRepository
@@ -24,6 +30,7 @@ import io.mockk.mockk
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -52,6 +59,7 @@ class CartViewModelWeightTest {
     private val classCheckoutSeed = mockk<ClassCheckoutSeed>(relaxed = true)
     private val validateReferralUseCase = mockk<ValidateReferralUseCase>(relaxed = true)
     private val captureReferralUseCase = mockk<CaptureReferralUseCase>(relaxed = true)
+    private val areaTicketRepository = mockk<AreaTicketRepository>(relaxed = true)
 
     private val venueSwitchedFlow = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
 
@@ -74,6 +82,17 @@ class CartViewModelWeightTest {
         coEvery { staffRepository.getActiveStaff() } returns Result.success(
             listOf(StaffMember(id = "staff-99", firstName = "Jose", lastName = "Tester")),
         )
+        coEvery { areaTicketRepository.settings() } returns AreaTicketSettingsData(
+            venueId = "venue-1",
+            areaTickets = AreaTicketModuleSettings(entitled = true, enabled = true),
+            terminal = AreaTicketTerminalCapabilities(id = "terminal-1", name = "Caja"),
+            scaleIntegration = ScaleIntegrationSettings(entitled = false, enabled = false),
+            variableWeightBarcode = VariableWeightBarcodeSettings(
+                entitled = true,
+                enabled = true,
+                prefix = "20",
+            ),
+        )
     }
 
     private fun createViewModel(): CartViewModel = CartViewModel(
@@ -91,7 +110,7 @@ class CartViewModelWeightTest {
         planManager = PlanManager(secureStorage),
         tableSession = com.avoqado.pos.tables.data.TableSession(),
         customerDisplay = com.avoqado.pos.customerdisplay.CustomerDisplayState(),
-        areaTicketRepository = mockk(relaxed = true),
+        areaTicketRepository = areaTicketRepository,
     )
 
     private val jamon = Product(
@@ -164,5 +183,17 @@ class CartViewModelWeightTest {
         assertNotNull(items[0].weightKg)
         assertNull(items[1].weightKg)
         assertNotNull(items[2].weightKg)
+    }
+
+    @Test
+    fun `external scale EAN13 resolves its PLU and weight without opening manual capture`() = runTest {
+        every { productsRepository.products } returns MutableStateFlow(listOf(jamon.copy(sku = "00123")))
+        val vm = createViewModel()
+
+        val result = vm.resolveScannedBarcode("2000123004358")
+
+        result as ScannedBarcodeResult.WeightedProductFound
+        assertEquals("jamon", result.product.id)
+        assertEquals(0.435, result.weightKg, 0.0)
     }
 }

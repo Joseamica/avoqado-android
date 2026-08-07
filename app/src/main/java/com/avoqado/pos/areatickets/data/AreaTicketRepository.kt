@@ -1,5 +1,7 @@
 package com.avoqado.pos.areatickets.data
 
+import android.util.Log
+import com.avoqado.pos.core.data.local.PayloadCache
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ApiService
 import kotlinx.serialization.json.Json
@@ -90,6 +92,7 @@ class AreaTicketRepository @Inject constructor(
     private val api: ApiService,
     private val secureStorage: SecureStorage,
     val session: AreaTicketSession,
+    private val payloadCache: PayloadCache,
 ) {
     private fun venueId(): String =
         secureStorage.venueId ?: throw AreaTicketException("VENUE_REQUIRED", "Selecciona un local antes de continuar.", false)
@@ -126,7 +129,28 @@ class AreaTicketRepository @Inject constructor(
     suspend fun settings(): AreaTicketSettingsData {
         val venueId = venueId()
         session.ensureVenue(venueId)
-        return request { api.getAreaTicketSettings(venueId) }
+        return try {
+            request { api.getAreaTicketSettings(venueId) }.also { settings ->
+                payloadCache.save(
+                    PayloadCache.TYPE_AREA_TICKET_SETTINGS,
+                    venueId,
+                    areaTicketErrorJson.encodeToString(AreaTicketSettingsData.serializer(), settings),
+                )
+            }
+        } catch (error: Exception) {
+            if (error is AreaTicketException && !error.retryable) throw error
+
+            val cached = payloadCache.load(PayloadCache.TYPE_AREA_TICKET_SETTINGS, venueId)
+                ?: throw error
+            runCatching {
+                areaTicketErrorJson.decodeFromString<AreaTicketSettingsData>(cached.json)
+            }.onSuccess {
+                Log.d(
+                    TAG,
+                    "🗂️ Configuración de vales hidratada del cache (hace ${cached.ageMinutes} min)",
+                )
+            }.getOrElse { throw error }
+        }
     }
 
     suspend fun restore(): AreaTicketCheckout? {
@@ -311,6 +335,10 @@ class AreaTicketRepository @Inject constructor(
                 ),
             )
         }
+    }
+
+    private companion object {
+        const val TAG = "AreaTicketRepository"
     }
 }
 

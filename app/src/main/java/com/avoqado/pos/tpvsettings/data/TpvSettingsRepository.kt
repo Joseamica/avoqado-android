@@ -48,6 +48,7 @@ data class TpvSettings(
  * the main checkout and a café terminal can share a venue while opening
  * different workspaces.
  */
+@Serializable
 data class TerminalNavigationSettings(
     val terminalId: String? = null,
     val defaultWorkspace: String = STANDARD_POS,
@@ -80,6 +81,8 @@ class TpvSettingsRepository @Inject constructor(
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
+    private var loadedVenueId: String? = null
+
     fun getCurrentSettings(): TpvSettings = _settings.value
 
     suspend fun refreshSettings() {
@@ -98,6 +101,13 @@ class TpvSettingsRepository @Inject constructor(
         Log.d("📦", "Fetching settings for venue: $venueId")
         val localIncludeTaxOverride = loadIncludeTaxInTipBaseOverride(venueId)
 
+        if (loadedVenueId != venueId) {
+            loadedVenueId = venueId
+            _settings.value = applyIncludeTaxOverride(TpvSettings.DEFAULT, localIncludeTaxOverride)
+            _terminalNavigation.value = TerminalNavigationSettings.DEFAULT
+            hydrateLastKnownSettings(venueId, localIncludeTaxOverride)
+        }
+
         try {
             val token = secureStorage.accessToken
             if (token == null) {
@@ -114,13 +124,19 @@ class TpvSettingsRepository @Inject constructor(
             }
             if (!response.isSuccessful) {
                 Log.e("📦", "❌ Failed to fetch settings: ${response.code}")
-                _terminalNavigation.value = TerminalNavigationSettings.DEFAULT
+                if (response.code in 400..499) {
+                    _settings.value = applyIncludeTaxOverride(TpvSettings.DEFAULT, localIncludeTaxOverride)
+                    _terminalNavigation.value = TerminalNavigationSettings.DEFAULT
+                    clearPersistedSettings(venueId)
+                }
                 return
             }
 
             val body = response.body?.string() ?: return
             val result = json.decodeFromString<VenueSettingsResponse>(body)
-            _terminalNavigation.value = result.data.toTerminalNavigationSettings()
+            val terminalNavigation = result.data.toTerminalNavigationSettings()
+            _terminalNavigation.value = terminalNavigation
+            persistTerminalNavigation(venueId, terminalNavigation)
 
             // Plan gating (Phase ①): persist the OPTIONAL plan block. Absent
             // field (old server) → null tier → PlanManager fails OPEN. Only
@@ -131,25 +147,27 @@ class TpvSettingsRepository @Inject constructor(
             Log.d("📦", "Plan: tier=${result.data?.plan?.tier ?: "none"} exempt=${result.data?.plan?.exempt == true}")
 
             if (result.data?.settings != null) {
-                _settings.value = applyIncludeTaxOverride(
+                val resolvedSettings = applyIncludeTaxOverride(
                     base = result.data.settings,
                     localOverride = localIncludeTaxOverride,
                 )
+                _settings.value = resolvedSettings
+                persistTpvSettings(venueId, resolvedSettings)
                 Log.d("📦", "✅ Settings loaded (terminal: ${result.data.activeTerminalId})")
             } else {
                 Log.d("📦", "No active terminal, using defaults")
-                _settings.value = applyIncludeTaxOverride(
+                val resolvedSettings = applyIncludeTaxOverride(
                     base = TpvSettings.DEFAULT,
                     localOverride = localIncludeTaxOverride,
                 )
+                _settings.value = resolvedSettings
+                persistTpvSettings(venueId, resolvedSettings)
             }
         } catch (e: Exception) {
-            Log.e("📦", "❌ Error fetching settings: ${e.message}")
-            _settings.value = applyIncludeTaxOverride(
-                base = TpvSettings.DEFAULT,
-                localOverride = localIncludeTaxOverride,
+            Log.w(
+                "📦",
+                "⚠️ Settings sin servidor (${e.message}) — conservo la última configuración del local",
             )
-            _terminalNavigation.value = TerminalNavigationSettings.DEFAULT
         } finally {
             _isLoading.value = false
         }
@@ -162,8 +180,60 @@ class TpvSettingsRepository @Inject constructor(
     }
 
     fun clearCache() {
+        loadedVenueId = null
         _settings.value = TpvSettings.DEFAULT
         _terminalNavigation.value = TerminalNavigationSettings.DEFAULT
+    }
+
+    private suspend fun hydrateLastKnownSettings(
+        venueId: String,
+        localIncludeTaxOverride: Boolean?,
+    ) {
+        preferencesDataStore.getString(tpvSettingsKey(venueId)).first()?.let { cached ->
+            runCatching { json.decodeFromString<TpvSettings>(cached) }
+                .onSuccess {
+                    _settings.value = applyIncludeTaxOverride(it, localIncludeTaxOverride)
+                    Log.d("📦", "🗂️ TPV settings hidratados del cache para $venueId")
+                }
+                .onFailure { Log.w("📦", "Cache de TPV settings inválido: ${it.message}") }
+        }
+
+        preferencesDataStore.getString(terminalNavigationKey(venueId)).first()?.let { cached ->
+            runCatching { json.decodeFromString<TerminalNavigationSettings>(cached) }
+                .onSuccess {
+                    _terminalNavigation.value = it
+                    Log.d("📦", "🗂️ Perfil de terminal hidratado del cache para $venueId")
+                }
+                .onFailure { Log.w("📦", "Cache de terminal inválido: ${it.message}") }
+        }
+    }
+
+    private suspend fun persistTpvSettings(venueId: String, settings: TpvSettings) {
+        runCatching {
+            preferencesDataStore.setString(
+                tpvSettingsKey(venueId),
+                json.encodeToString(TpvSettings.serializer(), settings),
+            )
+        }.onFailure { Log.w("📦", "No se pudo guardar cache de TPV settings: ${it.message}") }
+    }
+
+    private suspend fun persistTerminalNavigation(
+        venueId: String,
+        terminalNavigation: TerminalNavigationSettings,
+    ) {
+        runCatching {
+            preferencesDataStore.setString(
+                terminalNavigationKey(venueId),
+                json.encodeToString(TerminalNavigationSettings.serializer(), terminalNavigation),
+            )
+        }.onFailure { Log.w("📦", "No se pudo guardar cache de terminal: ${it.message}") }
+    }
+
+    private suspend fun clearPersistedSettings(venueId: String) {
+        runCatching {
+            preferencesDataStore.removeString(tpvSettingsKey(venueId))
+            preferencesDataStore.removeString(terminalNavigationKey(venueId))
+        }.onFailure { Log.w("📦", "No se pudo invalidar el cache de terminal: ${it.message}") }
     }
 
     private suspend fun loadIncludeTaxInTipBaseOverride(venueId: String): Boolean? {
@@ -178,8 +248,15 @@ class TpvSettingsRepository @Inject constructor(
         return "${KEY_INCLUDE_TAX_IN_TIP_BASE_PREFIX}_$venueId"
     }
 
+    private fun tpvSettingsKey(venueId: String): String = "${KEY_TPV_SETTINGS_PREFIX}_$venueId"
+
+    private fun terminalNavigationKey(venueId: String): String =
+        "${KEY_TERMINAL_NAVIGATION_PREFIX}_$venueId"
+
     companion object {
         private const val KEY_INCLUDE_TAX_IN_TIP_BASE_PREFIX = "include_tax_in_tip_base"
+        private const val KEY_TPV_SETTINGS_PREFIX = "tpv_settings"
+        private const val KEY_TERMINAL_NAVIGATION_PREFIX = "terminal_navigation"
         private const val GLOBAL_VENUE_KEY = "global"
     }
 }
