@@ -80,18 +80,31 @@ fun PrinterConfigSheet(
     var showDeleteConfirm by remember { mutableStateOf(false) }
     var feedbackMessage by remember { mutableStateOf<String?>(null) }
 
+    /**
+     * La impresora CON lo que hay ahora en pantalla.
+     *
+     * 🔴 `printer` es el parámetro del Composable: una copia congelada al abrir
+     * la hoja. Lo que el usuario edita vive en los `remember` de arriba, así que
+     * usar `printer` directamente imprime con los valores VIEJOS.
+     *
+     * Eso es lo que pasaba: elegías 58 mm, tocabas "Imprimir página de prueba" y
+     * salía a 80 —el ancho con el que se abrió la hoja— con el ticket cortado.
+     * El ancho SÍ se guardaba; lo que iba mal era lo que se mandaba a imprimir.
+     *
+     * Todo lo que use la impresora en esta pantalla tiene que pasar por aquí.
+     */
+    fun printerEditado(): SavedPrinter = printer.conEdiciones(
+        name = name,
+        roles = selectedRoles.toList(),
+        paperWidthMm = paperWidthMm,
+        autoPrintReceipts = autoPrintReceipts,
+        autoPrintKitchenTickets = autoPrintKitchenTickets,
+        autoOpenCashDrawer = autoOpenCashDrawer,
+        numberOfCopies = numberOfCopies,
+    )
+
     fun saveChanges() {
-        printerService.updatePrinter(
-            printer.copy(
-                name = name,
-                roles = selectedRoles.toList(),
-                paperWidthMm = paperWidthMm,
-                autoPrintReceipts = autoPrintReceipts,
-                autoPrintKitchenTickets = autoPrintKitchenTickets,
-                autoOpenCashDrawer = autoOpenCashDrawer,
-                numberOfCopies = numberOfCopies,
-            ),
-        )
+        printerService.updatePrinter(printerEditado())
     }
 
     ModalBottomSheet(
@@ -155,7 +168,7 @@ fun PrinterConfigSheet(
                         if (status.isConnected) {
                             printerService.disconnect(printer)
                         } else {
-                            try { printerService.connect(printer) } catch (_: Exception) {}
+                            try { printerService.connect(printerEditado()) } catch (_: Exception) {}
                         }
                     }
                 }) {
@@ -334,7 +347,7 @@ fun PrinterConfigSheet(
                     isPrinting = true
                     scope.launch {
                         try {
-                            printerService.printTestPage(printer)
+                            printerService.printTestPage(printerEditado())
                             feedbackMessage = "Página de prueba enviada"
                         } catch (e: Exception) {
                             feedbackMessage = "Error: ${e.message}"
@@ -352,7 +365,7 @@ fun PrinterConfigSheet(
                 onClick = {
                     scope.launch {
                         try {
-                            printerService.openCashDrawer(printer)
+                            printerService.openCashDrawer(printerEditado())
                             feedbackMessage = "Comando enviado al cajon"
                         } catch (e: Exception) {
                             feedbackMessage = "Error: ${e.message}"
@@ -425,3 +438,28 @@ private fun SectionHeader(text: String) {
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
 }
+
+/**
+ * Aplica a la impresora lo que hay editado en la hoja de configuración.
+ *
+ * Vive FUERA del Composable para poder fijarlo con un test: el defecto que
+ * originó esto (la prueba de impresión salía a 80 mm con 58 elegido) venía de
+ * imprimir con la copia congelada, no de un cálculo mal hecho.
+ */
+internal fun SavedPrinter.conEdiciones(
+    name: String,
+    roles: List<String>,
+    paperWidthMm: Int,
+    autoPrintReceipts: Boolean,
+    autoPrintKitchenTickets: Boolean,
+    autoOpenCashDrawer: Boolean,
+    numberOfCopies: Int,
+): SavedPrinter = copy(
+    name = name,
+    roles = roles,
+    paperWidthMm = paperWidthMm,
+    autoPrintReceipts = autoPrintReceipts,
+    autoPrintKitchenTickets = autoPrintKitchenTickets,
+    autoOpenCashDrawer = autoOpenCashDrawer,
+    numberOfCopies = numberOfCopies,
+)
