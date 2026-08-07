@@ -47,6 +47,18 @@ class PayloadCache @Inject constructor(
         runCatching { dao.deleteOtherVenues(venueId) }
     }
 
+    /**
+     * Soltar UN payload porque el server dijo que ya no le toca a este local.
+     *
+     * 🔴 NO se llama nunca por un error de red — ahí el cache es justo lo que
+     * salva la operación (regla 3 de arriba). Sólo ante una negativa EXPLÍCITA
+     * y clasificada del server, como el 403 con `featureCode` del upsell.
+     */
+    suspend fun clear(type: String, venueId: String) {
+        runCatching { dao.delete(key(type, venueId)) }
+            .onFailure { Log.e(TAG, "❌ clear $type falló: ${it.message}") }
+    }
+
     private fun key(type: String, venueId: String) = "$type:$venueId"
 
     companion object {

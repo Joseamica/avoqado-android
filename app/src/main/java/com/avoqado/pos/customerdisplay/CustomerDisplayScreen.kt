@@ -51,6 +51,12 @@ import androidx.compose.ui.unit.sp
 import com.avoqado.pos.designsystem.components.Countries
 import com.avoqado.pos.designsystem.components.Country
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
+import androidx.compose.foundation.border
+import androidx.compose.material3.Button
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.layout.ContentScale
+import coil.compose.AsyncImage
 
 /**
  * Pantalla de cara al CLIENTE. Pensada para la pantalla CHICA del POS de
@@ -82,6 +88,14 @@ fun CustomerDisplayScreen(
         when (val c = content) {
             is CustomerContent.Idle -> IdleBranding(venueName, venueLogoUrl)
             is CustomerContent.Cart -> CartMirror(c)
+            is CustomerContent.Upsell ->
+                UpsellPrompt(
+                    c = c,
+                    canInteract = canInteract,
+                    onToggle = { state.onUpsellToggled?.invoke(it) },
+                    onConfirm = { state.onUpsellConfirmed?.invoke() },
+                    onDismiss = { state.onUpsellDismissed?.invoke() },
+                )
             is CustomerContent.Rating -> RatingPrompt(c, onRating)
             is CustomerContent.Tip -> TipPrompt(c, onTip)
             is CustomerContent.Total -> TotalOnly(c)
@@ -308,6 +322,196 @@ private fun TotalRow(label: String, value: String, highlight: Boolean = false) {
 }
 
 // MARK: - Estrellas
+
+// MARK: - "¿Algo más?" — el momento de upsell
+
+/**
+ * 🔴 Regla de oro de una pantalla de cliente: NUNCA tapar el total. La barra de
+ * arriba se queda fija y el "+ $X" de la vista previa aparece a su lado, para que el
+ * cliente siempre sepa cuánto va a pagar.
+ *
+ * 🔴 Marcar NO cobra. El botón primario nace APAGADO y sólo se prende cuando hay algo
+ * marcado: la pantalla nunca invita a confirmar la nada, y refuerza que el toque
+ * marca en vez de agregar.
+ *
+ * En pantallas no táctiles (`canInteract=false`) se pinta lo mismo SIN botones: es
+ * señalización para que el cajero la señale. Cero controles muertos esperando un
+ * toque que el firmware de la NP511 se queda.
+ */
+@Composable
+private fun UpsellPrompt(
+    c: CustomerContent.Upsell,
+    canInteract: Boolean,
+    onToggle: (String) -> Unit,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    Column(
+        modifier = Modifier.fillMaxSize().padding(AvoqadoTheme.spacing.xxl),
+    ) {
+        // El total, siempre visible.
+        Row(verticalAlignment = Alignment.Bottom) {
+            Text("Tu total", fontSize = CdBody, fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Spacer(Modifier.width(AvoqadoTheme.spacing.md))
+            Text(money(c.cartTotalCents), fontSize = CdAmount, lineHeight = CdAmount * 1.1f, fontWeight = FontWeight.Bold)
+            Spacer(Modifier.weight(1f))
+            if (c.selectedDeltaCents > 0) {
+                Text(
+                    "+ ${money(c.selectedDeltaCents)}",
+                    fontSize = CdBody,
+                    fontWeight = FontWeight.Bold,
+                    color = UpsellAccent,
+                )
+            }
+        }
+        Spacer(Modifier.height(AvoqadoTheme.spacing.md))
+        HorizontalDivider(thickness = 2.dp, color = MaterialTheme.colorScheme.surfaceVariant)
+
+        Spacer(Modifier.height(AvoqadoTheme.spacing.xl))
+        Text(
+            text = "¿Algo más?",
+            fontSize = CdTitle,
+            lineHeight = CdTitle * 1.2f,
+            fontWeight = FontWeight.Bold,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Spacer(Modifier.height(AvoqadoTheme.spacing.lg))
+
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.lg),
+        ) {
+            c.cards.forEach { card ->
+                UpsellCardView(
+                    card = card,
+                    selected = card.ruleId in c.selectedRuleIds,
+                    enabled = canInteract,
+                    modifier = Modifier.weight(1f),
+                    onClick = { onToggle(card.ruleId) },
+                )
+            }
+        }
+
+        Spacer(Modifier.weight(1f))
+
+        if (canInteract) {
+            val hasSelection = c.selectedRuleIds.isNotEmpty()
+            Button(
+                onClick = onConfirm,
+                enabled = hasSelection,
+                modifier = Modifier.fillMaxWidth().height(96.dp),
+                shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.lg),
+            ) {
+                Text(
+                    text = if (hasSelection) "Agregar · ${money(c.selectedDeltaCents)}" else "Agregar",
+                    fontSize = CdActionMain,
+                    fontWeight = FontWeight.Bold,
+                )
+            }
+            Spacer(Modifier.height(AvoqadoTheme.spacing.md))
+            // "No, gracias" es una salida legítima, no letra chica gris — la misma
+            // postura que ya tomó "Sin propina" más abajo en este archivo.
+            OutlinedButton(
+                onClick = onDismiss,
+                modifier = Modifier.fillMaxWidth().height(74.dp),
+                shape = RoundedCornerShape(50),
+            ) {
+                Text("No, gracias", fontSize = CdBody, fontWeight = FontWeight.Bold)
+            }
+        } else {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.lg))
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .padding(vertical = AvoqadoTheme.spacing.lg),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    "Pídelo en la caja",
+                    fontSize = CdBody,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+/** El verde de marca aparece SÓLO en el estado marcado: un acento único significa algo. */
+private val UpsellAccent = Color(0xFF7ADD2C)
+
+@Composable
+private fun UpsellCardView(
+    card: com.avoqado.pos.pos.data.model.UpsellCard,
+    selected: Boolean,
+    enabled: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    Card(
+        modifier = modifier
+            .height(190.dp)
+            .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.lg))
+            .then(if (enabled) Modifier.clickable { onClick() } else Modifier)
+            .then(
+                if (selected) {
+                    Modifier.border(4.dp, UpsellAccent, RoundedCornerShape(AvoqadoTheme.cornerRadius.lg))
+                } else {
+                    Modifier
+                },
+            )
+            .alpha(if (enabled) 1f else 0.62f),
+    ) {
+        Row(
+            modifier = Modifier.fillMaxSize().padding(AvoqadoTheme.spacing.lg),
+            horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(104.dp)
+                    .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
+                    .background(MaterialTheme.colorScheme.surfaceVariant),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (!card.imageUrl.isNullOrBlank()) {
+                    AsyncImage(
+                        model = card.imageUrl,
+                        contentDescription = card.name,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize(),
+                    )
+                }
+            }
+            Column(verticalArrangement = Arrangement.Center, modifier = Modifier.weight(1f)) {
+                Text(card.name, fontSize = CdBody, fontWeight = FontWeight.Bold, maxLines = 2)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        money(card.displayPriceCents),
+                        fontSize = CdBody,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    card.badge?.let {
+                        Spacer(Modifier.width(AvoqadoTheme.spacing.sm))
+                        Text(it, fontSize = 19.sp, fontWeight = FontWeight.Bold, color = UpsellAccent)
+                    }
+                }
+                card.headline?.let {
+                    Spacer(Modifier.height(AvoqadoTheme.spacing.sm))
+                    Text(
+                        it,
+                        fontSize = 19.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                    )
+                }
+            }
+        }
+    }
+}
 
 @Composable
 private fun RatingPrompt(c: CustomerContent.Rating, onRating: (Int) -> Unit) {

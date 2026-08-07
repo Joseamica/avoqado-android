@@ -18,6 +18,17 @@ data class Product(
     val variants: List<ProductVariant>? = null,
     val active: Boolean? = null,
     val featured: Boolean? = null,
+    /**
+     * Upsell "¿Algo más?": permiso del dueño para que este producto se sugiera al
+     * cobrar. Es un VETO, no una regla — en false no lo sugiere NINGUNA capa, ni
+     * siquiera la IA. Nullable + default null porque las versiones viejas del server
+     * no lo mandan; ausente se trata como apagado.
+     *
+     * 🔴 NO confundir con `featured` (arriba): ese campo se guarda desde el dashboard
+     * pero nadie lo lee, y reusarlo promocionaría productos que el dueño marcó por
+     * otra razón.
+     */
+    val upsellEnabled: Boolean? = null,
     val sku: String? = null,
     val barcode: String? = null,
     val gtin: String? = null,

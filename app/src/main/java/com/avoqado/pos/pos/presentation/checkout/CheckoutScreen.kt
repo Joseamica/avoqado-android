@@ -132,6 +132,28 @@ fun CheckoutScreen(
     // session active everything below is inert.
     val tablesViewModel: com.avoqado.pos.tables.presentation.TablesViewModel = hiltViewModel()
     val tableSessionActive by tablesViewModel.tableSession.active.collectAsState()
+
+    // Upsell "¿Algo más?" — el momento previo al cobro. Con la perilla apagada o
+    // sin reglas, todo esto es inerte y el cobro no se entera de que existe.
+    val upsellViewModel: com.avoqado.pos.pos.presentation.upsell.UpsellViewModel = hiltViewModel()
+    val upsellMoment by upsellViewModel.moment.collectAsState()
+    /**
+     * 🔴 COBRAR UNA MESA NO OFRECE UPSELL — todavía. No es un olvido, es un candado.
+     *
+     * Al cobrar una mesa, `consumePendingTableCobrar` limpia el carrito y siembra UNA
+     * línea de monto libre ("Cuenta Mesa 5" = el saldo). El pago se registra contra la
+     * ORDEN que ya vive en el server, no contra este carrito. Si el upsell metiera un
+     * postre aquí, el cliente lo PAGARÍA y la orden real nunca lo tendría: sin
+     * descuento de inventario, fuera de ventas por producto, y con $0 atribuido en el
+     * reporte (el ingreso sale de las líneas reales de la orden, a propósito).
+     *
+     * Cobrado sin registrar. Para habilitarlo hace falta el acomodador de mesa, que
+     * agrega vía ADD_ITEMS con comparación de versión contra el server — está en el
+     * spec y no está construido. Hasta entonces, mostrador y nada más.
+     */
+    val isTablePaying = tableSessionActive?.mode == com.avoqado.pos.tables.data.TableSession.Mode.PAYING
+    val upsellContext = com.avoqado.pos.pos.presentation.upsell.UpsellContext.COUNTER
+    LaunchedEffect(Unit) { upsellViewModel.refresh() }
     LaunchedEffect(tableSessionActive?.orderId, tableSessionActive?.mode) {
         cartViewModel.consumePendingTableCobrar()
     }
@@ -292,6 +314,63 @@ fun CheckoutScreen(
         }
     }
 
+    /**
+     * Congela el total y abre el cobro.
+     *
+     * 🔴 El carrito se lee del FLUJO (`cartViewModel.cartState.value`), NO de la
+     * variable `cartState` capturada por `collectAsState()`. Si el upsell acaba de
+     * meter un producto, esa variable todavía trae el carrito VIEJO hasta la
+     * siguiente recomposición: se cobraría sin el producto aceptado y `clearCart()`
+     * lo borraría después — el negocio regala el producto y la orden ni lo registra.
+     */
+    fun proceedToPayment(cart: CartState = cartViewModel.cartState.value) {
+        pendingPackGrant = selectedCustomer?.id?.let { customerId ->
+            val ids = cart.items.mapNotNull { (it.type as? CartItemType.CreditPack)?.packId }
+            if (ids.isEmpty()) null else customerId to ids
+        }
+        paymentCartSnapshot = cart.paymentSnapshot()
+        showPaymentFlow = true
+    }
+
+    /**
+     * Cierra el momento de upsell y sigue al cobro — por CUALQUIERA de las dos
+     * superficies (la tira del cajero o la pantalla del cliente).
+     *
+     * 🔴 Pase lo que pase, esto termina en `proceedToPayment()`. Un fallo al
+     * agregar un postre no puede dejar al mostrador sin poder cobrar.
+     */
+    fun resolveUpsell(accept: Boolean) {
+        // Del FLUJO, no de `upsellMoment` capturado: el toque pudo llegar de la
+        // pantalla del cliente, fuera de esta recomposición.
+        val moment = upsellViewModel.moment.value ?: return
+        if (!accept) {
+            upsellViewModel.finish(emptyList(), 0)
+            proceedToPayment()
+            return
+        }
+        checkoutScope.launch {
+            // 🔴 El acomodador re-valida contra el catálogo VIVO y DEVUELVE el
+            // carrito resultante. De ahí sale el snapshot, de ningún otro lado:
+            // leer `cartState` aquí daría el carrito de ANTES de agregar.
+            val result = runCatching {
+                com.avoqado.pos.pos.domain.CounterUpsellAcceptor(cartViewModel)
+                    .accept(moment.selectedCards, upsellViewModel.catalog)
+            }.getOrNull()
+
+            if (result == null) {
+                upsellViewModel.finish(emptyList(), 0)
+                proceedToPayment()
+                return@launch
+            }
+
+            val addedCents = result.cart.subtotalCents - moment.cartSubtotalBefore
+            upsellViewModel.finish(result.added, addedCents)
+            // El cliente ve su carrito ya actualizado antes de pagar.
+            cartViewModel.refreshCustomerDisplay()
+            proceedToPayment(result.cart)
+        }
+    }
+
     fun runPrimaryAction(closePhoneCart: Boolean = false) {
         if (areaOperationsState.issueWorkspace) {
             areaTicketOperations.issue(cartState) {
@@ -304,14 +383,18 @@ fun CheckoutScreen(
             showPackCustomerRequired = true
             return
         }
-        pendingPackGrant = selectedCustomer?.id?.let { customerId ->
-            val ids = cartState.items.mapNotNull { (it.type as? CartItemType.CreditPack)?.packId }
-            if (ids.isEmpty()) null else customerId to ids
-        }
         if (closePhoneCart) showIPhoneCart = false
         pendingSplitConfig = SplitConfig()
-        paymentCartSnapshot = cartState.paymentSnapshot()
-        showPaymentFlow = true
+
+        // Upsell "¿Algo más?" — va AQUÍ, antes de congelar el total. Si hay algo
+        // que ofrecer, el cobro espera a que se resuelva la tira; si no (sin
+        // reglas, perilla apagada, grupo de control, o cualquier error), sigue
+        // de largo. Ofrecer un postre jamás puede impedir un cobro.
+        // `!isTablePaying`: ver la nota del candado arriba — en una mesa se cobraría
+        // un producto que la orden del server nunca registra.
+        if (!isTablePaying && upsellViewModel.offer(cartViewModel.cartState.value, upsellContext) != null) return
+
+        proceedToPayment()
     }
 
     if (isTablet) {
@@ -949,6 +1032,10 @@ fun CheckoutScreen(
                     // Referral is real now: capture on actual payment success
                     // (a cancelled payment no longer leaves a dangling referral).
                     checkoutScope.launch { cartViewModel.captureReferralOnPayment(orderId = null) }
+                    // Upsell: el momento terminó en venta PAGADA. Sólo aquí, en el
+                    // éxito real — una impresión sin esto aporta $0 al reporte, y
+                    // marcarla antes contaría como venta algo que se canceló.
+                    completion.orderId?.let { upsellViewModel.onOrderPaid(it) }
                     showPaymentFlow = false
                     paymentCartSnapshot = null
                     pendingSplitConfig = SplitConfig()
@@ -960,11 +1047,39 @@ fun CheckoutScreen(
                     showPaymentFlow = false
                     paymentCartSnapshot = null
                     pendingSplitConfig = SplitConfig()
+                    // El cobro se canceló: la impresión se queda SIN convertir (aporta
+                    // $0 y no cuenta para el promedio). Lo aceptado sigue en el carrito,
+                    // que es lo correcto — el cliente lo pidió; lo que no ocurrió es la venta.
+                    upsellViewModel.cancelPendingConversion()
                     cartViewModel.refreshCustomerDisplay()
                 },
                 splitConfig = pendingSplitConfig,
             )
         }
+    }
+
+    // ── Upsell "¿Algo más?" — la tira del cajero ──────────────────────────────
+    // Se pinta ENCIMA, anclada abajo: el cobro es el acto principal y esto no
+    // puede secuestrar la pantalla. Sale sola cuando el momento se resuelve.
+    upsellMoment?.let { moment ->
+        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+            com.avoqado.pos.pos.presentation.upsell.UpsellCashierStrip(
+                cards = moment.cards,
+                selected = moment.selected,
+                onToggle = { upsellViewModel.toggle(it) },
+                onSkip = { resolveUpsell(accept = false) },
+                onConfirm = { resolveUpsell(accept = true) },
+            )
+        }
+    }
+
+    // El cliente resuelve desde SU pantalla con exactamente las mismas acciones.
+    // Registrarlo una vez y no por momento: son las mismas dos funciones siempre.
+    LaunchedEffect(Unit) {
+        upsellViewModel.bindCustomerActions(
+            onConfirm = { resolveUpsell(accept = true) },
+            onDismiss = { resolveUpsell(accept = false) },
+        )
     }
 
     // Split payment sheet

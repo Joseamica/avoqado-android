@@ -42,4 +42,12 @@ interface CachedPayloadDao {
     /** Al cambiar de venue no arrastramos catálogo ajeno. */
     @Query("DELETE FROM cached_payloads WHERE venue_id != :venueId")
     suspend fun deleteOtherVenues(venueId: String)
+
+    /**
+     * Borrado de UN payload. Distinto de un fallo de red: se usa cuando el server
+     * dice explícitamente que ese contenido ya no le corresponde al local (p. ej.
+     * el candado de plan del upsell). Ahí sí hay que soltarlo, no conservarlo.
+     */
+    @Query("DELETE FROM cached_payloads WHERE cache_key = :cacheKey")
+    suspend fun delete(cacheKey: String)
 }

@@ -30,6 +30,28 @@ sealed interface CustomerContent {
         val totalCents: Int,
     ) : CustomerContent
 
+    /**
+     * "¿Algo más?" — el momento de upsell, ANTES de que se congele el total.
+     *
+     * 🔴 `selectedRuleIds` marca, NO cobra. Tocar una tarjeta la resalta y actualiza
+     * la vista previa del total; sólo el botón Agregar la mete al carrito. Un toque
+     * directo que agregara al instante suena mejor hasta que alguien roza la
+     * pantalla con la manga y le cobran algo que no pidió.
+     *
+     * En pantallas NO táctiles (T3 Pro) esto se pinta igual pero sin interacción:
+     * es señalización para que el cajero la señale mientras lo ofrece de viva voz.
+     */
+    data class Upsell(
+        val cards: List<com.avoqado.pos.pos.data.model.UpsellCard>,
+        /** Total actual del carrito, SIN lo marcado. Nunca se tapa. */
+        val cartTotalCents: Int,
+        val selectedRuleIds: Set<String> = emptySet(),
+    ) : CustomerContent {
+        /** Vista previa de lo que sumaría lo marcado. */
+        val selectedDeltaCents: Int
+            get() = cards.filter { it.ruleId in selectedRuleIds }.sumOf { it.displayPriceCents }
+    }
+
     /** Las estrellas: el cliente califica en SU pantalla. */
     data class Rating(val amountCents: Int) : CustomerContent
 
@@ -157,6 +179,30 @@ class CustomerDisplayState @Inject constructor() {
     /** Callbacks de VUELTA: lo que el cliente toca en su pantalla. */
     var onRatingPicked: ((Int) -> Unit)? = null
     var onTipPicked: ((Int) -> Unit)? = null
+
+    /**
+     * Upsell: el cliente marca/desmarca una tarjeta. Sólo cambia la selección — NO
+     * agrega nada al carrito.
+     */
+    var onUpsellToggled: ((String) -> Unit)? = null
+
+    /** El cliente confirmó con "Agregar". AQUÍ sí entra al carrito. */
+    var onUpsellConfirmed: (() -> Unit)? = null
+
+    /** "No, gracias". Cierra sin tocar el carrito. */
+    var onUpsellDismissed: (() -> Unit)? = null
+
+    /**
+     * Refleja en la pantalla del cliente lo que se marcó desde CUALQUIER superficie.
+     * El cajero marca en la suya y el cliente lo ve al instante: una sola verdad,
+     * dos superficies de entrada — el mismo patrón que propina y calificación.
+     */
+    fun updateUpsellSelection(selected: Set<String>) {
+        val current = _content.value
+        if (current is CustomerContent.Upsell) {
+            _content.value = current.copy(selectedRuleIds = selected)
+        }
+    }
 
     /** El cliente eligió recibir su recibo por WhatsApp / correo (tecleado en SU pantalla). */
     var onWhatsAppSubmit: ((String) -> Unit)? = null

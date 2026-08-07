@@ -1,0 +1,26 @@
+{
+  "success": true,
+  "data": {
+    "rules": [
+      {
+        "id": "cmsf6ozsh0007c942sqqomsd5",
+        "triggerType": "ALWAYS",
+        "triggerProductIds": [],
+        "triggerCategoryIds": [],
+        "suggestedProductId": "cmpe651og00jz9k92545uyz0a",
+        "headline": "¿Le agregamos un agua bien fría?",
+        "priority": 0,
+        "lift": null,
+        "daysOfWeek": [],
+        "timeFrom": null,
+        "timeUntil": null
+      }
+    ],
+    "surfaces": {
+      "counter": true,
+      "tableOrdering": true,
+      "tablePaying": true
+    },
+    "holdoutPercent": 10
+  }
+}

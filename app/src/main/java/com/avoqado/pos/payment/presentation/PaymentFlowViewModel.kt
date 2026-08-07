@@ -48,6 +48,13 @@ data class PaymentCompletion(
     val splitType: String,
     val remainingBalanceCents: Int,
     val paidItemIds: Set<String> = emptySet(),
+    /**
+     * La orden que quedó cobrada, cuando la hubo (una venta rápida sin orden la
+     * deja en null). El upsell la necesita para atar su métrica a la venta REAL:
+     * el ingreso del reporte sale de las líneas cobradas, nunca de lo que reportó
+     * el POS.
+     */
+    val orderId: String? = null,
 )
 
 const val LOCAL_PRINTER_UNAVAILABLE = "__LOCAL_PRINTER_UNAVAILABLE__"
@@ -1574,6 +1581,7 @@ class PaymentFlowViewModel @Inject constructor(
                     splitType = splitTypeValue,
                     remainingBalanceCents = remaining,
                     paidItemIds = validPaidIds,
+                    orderId = createdOrderId,
                 )
             }
             "EQUALPARTS", "CUSTOMAMOUNT" -> {
@@ -1581,12 +1589,14 @@ class PaymentFlowViewModel @Inject constructor(
                 PaymentCompletion(
                     splitType = splitTypeValue,
                     remainingBalanceCents = remaining,
+                    orderId = createdOrderId,
                 )
             }
             else -> {
                 PaymentCompletion(
                     splitType = splitTypeValue,
                     remainingBalanceCents = 0,
+                    orderId = createdOrderId,
                 )
             }
         }
