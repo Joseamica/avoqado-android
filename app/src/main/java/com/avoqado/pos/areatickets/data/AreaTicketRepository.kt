@@ -28,14 +28,20 @@ internal fun parseAreaTicketHttpError(body: String?, statusCode: Int): AreaTicke
             areaTicketErrorJson.decodeFromString<AreaTicketEnvelope<JsonObject>>(raw).error
         }.getOrNull()
     }
-    return AreaTicketException(
-        code = apiError?.code ?: "HTTP_$statusCode",
-        message = apiError?.message ?: when (statusCode) {
+    val code = apiError?.code ?: "HTTP_$statusCode"
+    val message = when (code) {
+        "CHECKOUT_TERMINAL_MISMATCH" ->
+            "Esta terminal no funciona como Caja de vales. Escanea el vale en la terminal de Caja o configúrala en Dashboard → Configuración → Vales por área → Terminales."
+        else -> apiError?.message ?: when (statusCode) {
             401 -> "La sesión venció. Inicia sesión de nuevo."
             403 -> "Esta terminal no tiene permiso para realizar esta operación."
             404 -> "No encontramos ese vale o comprobante en este local."
             else -> "No se pudo completar la operación de vales."
-        },
+        }
+    }
+    return AreaTicketException(
+        code = code,
+        message = message,
         retryable = apiError?.retryable == true || statusCode >= 500,
     )
 }
@@ -324,7 +330,7 @@ class AreaTicketRepository @Inject constructor(
             )
         }
 
-    suspend fun fulfill(ticketId: String, scannedReceipt: Boolean) {
+    suspend fun fulfill(ticketId: String, scannedReceipt: Boolean): AreaTicketFulfillmentResult =
         request {
             api.fulfillAreaTicket(
                 venueId(),
@@ -335,7 +341,6 @@ class AreaTicketRepository @Inject constructor(
                 ),
             )
         }
-    }
 
     private companion object {
         const val TAG = "AreaTicketRepository"

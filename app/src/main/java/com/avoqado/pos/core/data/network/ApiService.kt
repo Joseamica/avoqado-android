@@ -50,28 +50,33 @@ interface ApiService {
 
     // MARK: - Area Tickets v7
 
+    @Headers("X-Avoqado-Local-Error: 1")
     @GET("mobile/venues/{venueId}/area-ticket-settings")
     suspend fun getAreaTicketSettings(
         @Path("venueId") venueId: String,
     ): com.avoqado.pos.areatickets.data.AreaTicketEnvelope<com.avoqado.pos.areatickets.data.AreaTicketSettingsData>
 
+    @Headers("X-Avoqado-Local-Error: 1")
     @GET("mobile/venues/{venueId}/scale-settings")
     suspend fun getScaleSettings(
         @Path("venueId") venueId: String,
     ): com.avoqado.pos.areatickets.data.AreaTicketEnvelope<com.avoqado.pos.areatickets.data.ScaleIntegrationSettings>
 
+    @Headers("X-Avoqado-Local-Error: 1")
     @POST("mobile/venues/{venueId}/scans/resolve")
     suspend fun resolveAreaTicketScan(
         @Path("venueId") venueId: String,
         @Body request: com.avoqado.pos.areatickets.data.ScanRequest,
     ): com.avoqado.pos.areatickets.data.AreaTicketEnvelope<com.avoqado.pos.areatickets.data.AreaTicketScanData>
 
+    @Headers("X-Avoqado-Local-Error: 1")
     @POST("mobile/venues/{venueId}/area-ticket-checkouts")
     suspend fun createAreaTicketCheckout(
         @Path("venueId") venueId: String,
         @Body request: com.avoqado.pos.areatickets.data.IdempotentRequest,
     ): com.avoqado.pos.areatickets.data.AreaTicketEnvelope<com.avoqado.pos.areatickets.data.CheckoutData>
 
+    @Headers("X-Avoqado-Local-Error: 1")
     @POST("mobile/venues/{venueId}/area-ticket-checkouts/{sessionId}/tickets")
     suspend fun addAreaTicketToCheckout(
         @Path("venueId") venueId: String,
@@ -79,6 +84,7 @@ interface ApiService {
         @Body request: com.avoqado.pos.areatickets.data.AddTicketRequest,
     ): com.avoqado.pos.areatickets.data.AreaTicketEnvelope<com.avoqado.pos.areatickets.data.CheckoutData>
 
+    @Headers("X-Avoqado-Local-Error: 1")
     @HTTP(
         method = "DELETE",
         path = "mobile/venues/{venueId}/area-ticket-checkouts/{sessionId}/tickets/{ticketId}",
@@ -91,6 +97,7 @@ interface ApiService {
         @Body request: com.avoqado.pos.areatickets.data.IdempotentRequest,
     ): com.avoqado.pos.areatickets.data.AreaTicketEnvelope<com.avoqado.pos.areatickets.data.CheckoutData>
 
+    @Headers("X-Avoqado-Local-Error: 1")
     @POST("mobile/venues/{venueId}/area-ticket-checkouts/{sessionId}/materialize-order")
     suspend fun materializeAreaTicketCheckout(
         @Path("venueId") venueId: String,
@@ -98,6 +105,7 @@ interface ApiService {
         @Body request: com.avoqado.pos.areatickets.data.MaterializeCheckoutRequest,
     ): com.avoqado.pos.areatickets.data.AreaTicketEnvelope<com.avoqado.pos.areatickets.data.CheckoutData>
 
+    @Headers("X-Avoqado-Local-Error: 1")
     @POST("mobile/venues/{venueId}/area-ticket-checkouts/{sessionId}/heartbeat")
     suspend fun heartbeatAreaTicketCheckout(
         @Path("venueId") venueId: String,
@@ -105,12 +113,14 @@ interface ApiService {
         @Body request: com.avoqado.pos.areatickets.data.IdempotentRequest,
     ): com.avoqado.pos.areatickets.data.AreaTicketEnvelope<com.avoqado.pos.areatickets.data.CheckoutData>
 
+    @Headers("X-Avoqado-Local-Error: 1")
     @GET("mobile/venues/{venueId}/area-ticket-checkouts/{sessionId}")
     suspend fun getAreaTicketCheckout(
         @Path("venueId") venueId: String,
         @Path("sessionId") sessionId: String,
     ): com.avoqado.pos.areatickets.data.AreaTicketEnvelope<com.avoqado.pos.areatickets.data.CheckoutData>
 
+    @Headers("X-Avoqado-Local-Error: 1")
     @POST("mobile/venues/{venueId}/area-ticket-checkouts/{sessionId}/cancel")
     suspend fun cancelAreaTicketCheckout(
         @Path("venueId") venueId: String,
@@ -118,12 +128,14 @@ interface ApiService {
         @Body request: com.avoqado.pos.areatickets.data.IdempotentRequest,
     ): com.avoqado.pos.areatickets.data.AreaTicketEnvelope<com.avoqado.pos.areatickets.data.CheckoutData>
 
+    @Headers("X-Avoqado-Local-Error: 1")
     @POST("mobile/venues/{venueId}/area-tickets")
     suspend fun issueAreaTicket(
         @Path("venueId") venueId: String,
         @Body request: com.avoqado.pos.areatickets.data.IssueAreaTicketRequest,
     ): com.avoqado.pos.areatickets.data.AreaTicketEnvelope<com.avoqado.pos.areatickets.data.IssuedTicketData>
 
+    @Headers("X-Avoqado-Local-Error: 1")
     @POST("mobile/venues/{venueId}/area-tickets/{ticketId}/print-attempts")
     suspend fun recordAreaTicketPrintAttempt(
         @Path("venueId") venueId: String,
@@ -131,6 +143,7 @@ interface ApiService {
         @Body request: com.avoqado.pos.areatickets.data.PrintAttemptRequest,
     ): com.avoqado.pos.areatickets.data.AreaTicketEnvelope<kotlinx.serialization.json.JsonObject>
 
+    @Headers("X-Avoqado-Local-Error: 1")
     @GET("mobile/venues/{venueId}/area-ticket-fulfillment/pending")
     suspend fun getPendingAreaTicketFulfillment(
         @Path("venueId") venueId: String,
@@ -138,18 +151,20 @@ interface ApiService {
         @Query("limit") limit: Int = 50,
     ): com.avoqado.pos.areatickets.data.AreaTicketEnvelope<com.avoqado.pos.areatickets.data.PendingFulfillmentData>
 
+    @Headers("X-Avoqado-Local-Error: 1")
     @POST("mobile/venues/{venueId}/area-ticket-fulfillment/resolve")
     suspend fun resolveAreaTicketFulfillment(
         @Path("venueId") venueId: String,
         @Body request: com.avoqado.pos.areatickets.data.ScanRequest,
     ): com.avoqado.pos.areatickets.data.AreaTicketEnvelope<com.avoqado.pos.areatickets.data.DeliveryResolutionData>
 
+    @Headers("X-Avoqado-Local-Error: 1")
     @POST("mobile/venues/{venueId}/area-tickets/{ticketId}/fulfill")
     suspend fun fulfillAreaTicket(
         @Path("venueId") venueId: String,
         @Path("ticketId") ticketId: String,
         @Body request: com.avoqado.pos.areatickets.data.FulfillAreaTicketRequest,
-    ): com.avoqado.pos.areatickets.data.AreaTicketEnvelope<kotlinx.serialization.json.JsonObject>
+    ): com.avoqado.pos.areatickets.data.AreaTicketEnvelope<com.avoqado.pos.areatickets.data.AreaTicketFulfillmentResult>
 
     // MARK: - Print Stations (PRINT_STATIONS)
 

@@ -25,7 +25,8 @@ import com.avoqado.pos.pos.presentation.cart.CartState
 @Composable
 fun PaymentFlowScreen(
     cartState: CartState,
-    onComplete: (PaymentCompletion) -> Unit,
+    onPaymentCommitted: (PaymentCompletion) -> Unit,
+    onDone: () -> Unit,
     onCancel: () -> Unit,
     splitConfig: SplitConfig = SplitConfig(),
     /** Mesas (Square): link "Dividir importe" en la selección de método. */
@@ -179,6 +180,12 @@ fun PaymentFlowScreen(
                 )
             }
             is PaymentFlowState.Success -> {
+                // El dinero ya se comprometió. Consumir el carrito ahora mantiene la
+                // pantalla de recibo abierta, pero hace imposible volver a cobrar la
+                // misma venta si imprimir falla o el operador sale por otra ruta.
+                LaunchedEffect(currentState) {
+                    viewModel.consumeCompletion()?.let(onPaymentCommitted)
+                }
                 val splashKey = currentState.paymentId
                     ?: "${currentState.totalAmount}-${currentState.method}-${currentState.isQueued}"
                 var splashDone by rememberSaveable(splashKey) { mutableStateOf(false) }
@@ -223,7 +230,12 @@ fun PaymentFlowScreen(
                             viewModel.clearCustomerAttachResult()
                             showCustomersSheet = true
                         },
-                        onDone = { onComplete(viewModel.buildCompletion()) },
+                        onDone = {
+                            // También cerrar la carrera de un toque inmediato contra el
+                            // LaunchedEffect: exactamente uno de los dos consume el pago.
+                            viewModel.consumeCompletion()?.let(onPaymentCommitted)
+                            onDone()
+                        },
                     )
                 }
             }

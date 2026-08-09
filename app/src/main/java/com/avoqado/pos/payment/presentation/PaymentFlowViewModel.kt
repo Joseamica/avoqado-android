@@ -80,6 +80,7 @@ class PaymentFlowViewModel @Inject constructor(
 
     private val _state = MutableStateFlow<PaymentFlowState>(PaymentFlowState.Loading)
     val state: StateFlow<PaymentFlowState> = _state.asStateFlow()
+    private var completionConsumed = false
 
     /**
      * Propina y calificación las captura el CLIENTE en su pantalla: requiere
@@ -460,6 +461,7 @@ class PaymentFlowViewModel @Inject constructor(
 
     fun startPaymentFlow(cart: CartState) {
         cartState = cart
+        completionConsumed = false
         splitBaseAmountOverride = resolveSplitBaseAmount(cart)
         val amount = currentBaseAmount()
 
@@ -1600,6 +1602,17 @@ class PaymentFlowViewModel @Inject constructor(
                 )
             }
         }
+    }
+
+    /**
+     * Entrega el resultado económico una sola vez, en cuanto el pago quedó confirmado.
+     * La pantalla de recibo puede permanecer abierta para imprimir o enviar el comprobante,
+     * pero cerrar esa pantalla ya no decide si el carrito sigue siendo cobrable.
+     */
+    fun consumeCompletion(): PaymentCompletion? {
+        if (_state.value !is PaymentFlowState.Success || completionConsumed) return null
+        completionConsumed = true
+        return buildCompletion()
     }
 
     fun buildPaymentContext(): PaymentContext {

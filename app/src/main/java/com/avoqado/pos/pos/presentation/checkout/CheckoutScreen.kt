@@ -998,7 +998,7 @@ fun CheckoutScreen(
             )
             PaymentFlowScreen(
                 cartState = paymentCart,
-                onComplete = { completion ->
+                onPaymentCommitted = { completion ->
                     when {
                         completion.splitType == "BYPRODUCT" && completion.paidItemIds.isNotEmpty() -> {
                             completion.paidItemIds.forEach { paidItemId ->
@@ -1038,6 +1038,8 @@ fun CheckoutScreen(
                     // éxito real — una impresión sin esto aporta $0 al reporte, y
                     // marcarla antes contaría como venta algo que se canceló.
                     completion.orderId?.let { upsellViewModel.onOrderPaid(it) }
+                },
+                onDone = {
                     showPaymentFlow = false
                     paymentCartSnapshot = null
                     pendingSplitConfig = SplitConfig()

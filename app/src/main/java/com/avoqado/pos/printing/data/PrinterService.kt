@@ -127,6 +127,29 @@ internal fun shouldReconnect(
     return false
 }
 
+/**
+ * Selecciona la impresora por defecto sin inventar rutas de cocina. En un Sunmi
+ * con cabezal físico, la integrada funciona como respaldo plug-and-play sólo
+ * para recibos cuando el negocio todavía no guardó una impresora explícita.
+ */
+internal fun selectDefaultPrinter(
+    role: PrinterRole,
+    configured: List<SavedPrinter>,
+    integratedAvailable: Boolean,
+    integratedPaperWidthMm: Int,
+): SavedPrinter? {
+    configured.firstOrNull { it.isEnabled && it.hasRole(role) }?.let { return it }
+    if (role != PrinterRole.RECEIPT || !integratedAvailable) return null
+    return SavedPrinter(
+        id = "internal-auto-receipt",
+        name = "Impresora integrada",
+        connectionType = PrinterConnectionType.INTERNAL.value,
+        address = "internal",
+        roles = listOf(PrinterRole.RECEIPT.value),
+        paperWidthMm = integratedPaperWidthMm,
+    )
+}
+
 @Singleton
 class PrinterService @Inject constructor(
     @ApplicationContext private val context: Context,
@@ -527,8 +550,12 @@ class PrinterService @Inject constructor(
      * @return number of printers that successfully printed at least one copy
      */
     suspend fun manualPrintReceipt(receipt: ReceiptData): Int {
-        val eligible = _savedPrinters.value
-            .filter { it.isEnabled && it.hasRole(PrinterRole.RECEIPT) }
+        val configured = getPrinters(PrinterRole.RECEIPT)
+        val eligible = if (configured.isNotEmpty()) {
+            configured
+        } else {
+            listOfNotNull(getDefaultPrinterWithHardwareFallback(PrinterRole.RECEIPT))
+        }
         var successCount = 0
         eligible.forEach { printer ->
             try {
@@ -826,6 +853,29 @@ class PrinterService @Inject constructor(
 
     fun getDefaultPrinter(role: PrinterRole): SavedPrinter? =
         getPrinters(role).firstOrNull()
+
+    /**
+     * Respaldo de hardware para acciones explícitas de recibo/vale. No altera
+     * autoPrintReceipt ni asigna la integrada a cocina, bar o etiquetas.
+     */
+    suspend fun getDefaultPrinterWithHardwareFallback(role: PrinterRole): SavedPrinter? {
+        val configured = getPrinters(role)
+        if (configured.isNotEmpty() || role != PrinterRole.RECEIPT) {
+            return selectDefaultPrinter(
+                role = role,
+                configured = configured,
+                integratedAvailable = false,
+                integratedPaperWidthMm = 58,
+            )
+        }
+        val available = innerPrinter.ensureBound() && innerPrinter.hasPhysicalPrinter
+        return selectDefaultPrinter(
+            role = role,
+            configured = configured,
+            integratedAvailable = available,
+            integratedPaperWidthMm = innerPrinter.paperWidthMm,
+        )
+    }
 
     fun hasConfiguredPrinters(): Boolean =
         _savedPrinters.value.isNotEmpty()

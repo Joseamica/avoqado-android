@@ -752,14 +752,30 @@ private fun CartItemRow(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                if (item.locked) {
-                    Icon(
-                        imageVector = Icons.Filled.Lock,
-                        contentDescription = "Precio fijado por el vale",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(14.dp),
-                    )
-                }
+            }
+
+            // Detalle de la línea que viene de un vale: "QA Cremería · Vale
+            // 9998136081 · 0.435 kg". El CartViewModel ya lo armaba y la fila
+            // nunca lo pintaba, así que en la Caja el jamón aparecía como
+            // "QA Jamón por kg $104.40" — sin peso que cotejar contra el papel
+            // y sin señal de que la línea venía bloqueada por un vale.
+            item.subtitle?.takeIf { it.isNotBlank() }?.let { detail ->
+                Text(
+                    text = detail,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+
+            if (item.locked) {
+                Icon(
+                    imageVector = Icons.Filled.Lock,
+                    contentDescription = "Precio fijado por el vale",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.size(14.dp),
+                )
             }
 
             // Modifiers summary

@@ -172,6 +172,9 @@ fun TableOrderScreen(
     var showPayment by remember { mutableStateOf(false) }
     var paymentSeedCents by remember { mutableStateOf(0) }
     var pendingSplitConfig by remember { mutableStateOf(com.avoqado.pos.payment.presentation.SplitConfig()) }
+    var committedPaymentCompletion by remember {
+        mutableStateOf<com.avoqado.pos.payment.presentation.PaymentCompletion?>(null)
+    }
     var showSplitImporte by remember { mutableStateOf(false) }
     val tablesViewModel: TablesViewModel = androidx.hilt.navigation.compose.hiltViewModel()
     var unknownBarcode by remember { mutableStateOf<String?>(null) }
@@ -254,6 +257,7 @@ fun TableOrderScreen(
             paymentSeedCents = viewModel.tableSession.current()?.totalCents ?: 0
             if (paymentSeedCents <= 0) paymentSeedCents = viewModel.payableTotalCents
             pendingSplitConfig = com.avoqado.pos.payment.presentation.SplitConfig()
+            committedPaymentCompletion = null
             showPayment = true
         } else {
             // Aviso PERSISTENTE, no Toast: en la Sunmi los Toast quedan detrás
@@ -760,6 +764,7 @@ fun TableOrderScreen(
             onConfirm = { config ->
                 showSplitImporte = false
                 pendingSplitConfig = config
+                committedPaymentCompletion = null
                 showPayment = true
             },
         )
@@ -838,25 +843,45 @@ fun TableOrderScreen(
                         showPayment = false
                         showSplitImporte = true
                     },
-                    onComplete = { completion ->
+                    onPaymentCommitted = { completion ->
+                        committedPaymentCompletion = completion
                         if (completion.remainingBalanceCents > 0) {
-                            // Pago parcial (split): la sesión pasa a deber SOLO el
-                            // resto y el flujo se re-lanza con ese monto.
+                            // Pago parcial (split): la sesión ya debe SOLO el resto.
+                            // No cambiamos todavía el seed visible: hacerlo aquí
+                            // reiniciaría PaymentFlowScreen y ocultaría el recibo.
                             tablesViewModel.updateTableSessionRemaining(completion.remainingBalanceCents)
-                            paymentSeedCents = completion.remainingBalanceCents
-                            pendingSplitConfig = com.avoqado.pos.payment.presentation.SplitConfig()
-                            viewModel.loadCheck()
                         } else {
-                            // Pagada por completo: liberar la mesa y volver al plano
-                            // (Square: efectivo exacto → regresa al plano, mesa libre).
+                            // Pagada por completo: liberar la mesa de inmediato. La
+                            // pantalla de recibo sigue visible hasta que el operador
+                            // pulse "Venta nueva".
                             tablesViewModel.finishTableAfterPayment()
-                            showPayment = false
-                            exitOnce()
+                        }
+                    },
+                    onDone = {
+                        val completion = committedPaymentCompletion
+                        committedPaymentCompletion = null
+                        when {
+                            completion == null -> showPayment = false
+                            completion.remainingBalanceCents == 0 -> {
+                                showPayment = false
+                                pendingSplitConfig = com.avoqado.pos.payment.presentation.SplitConfig()
+                                // Square: efectivo exacto → después del recibo regresa
+                                // al plano; la mesa ya quedó libre al confirmar el pago.
+                                exitOnce()
+                            }
+                            else -> {
+                                // Ahora sí iniciar el siguiente cobro por el saldo,
+                                // después de que el operador terminó con el recibo.
+                                paymentSeedCents = completion.remainingBalanceCents
+                                pendingSplitConfig = com.avoqado.pos.payment.presentation.SplitConfig()
+                                viewModel.loadCheck()
+                            }
                         }
                     },
                     onCancel = {
                         showPayment = false
                         pendingSplitConfig = com.avoqado.pos.payment.presentation.SplitConfig()
+                        committedPaymentCompletion = null
                         // 🔴 La sesión NO puede quedarse en PAYING (auditoría): el tab
                         // Cobrar la detectaría y sembraría el register con esta mesa —
                         // una venta retail acabaría registrada contra la orden de la mesa.

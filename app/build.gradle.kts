@@ -52,8 +52,8 @@ android {
         applicationId = "com.avoqado.pos"
         minSdk = 26
         targetSdk = 36
-        versionCode = 25
-        versionName = "2.11.0"
+        versionCode = 26
+        versionName = "2.12.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -62,6 +62,10 @@ android {
         buildConfigField("String", "ENVIRONMENT_NAME", "\"production\"")
 
         // App label per environment (overridden in debug below). Manifest reads ${appLabel}.
+        // Corto A PROPÓSITO: el lanzador recorta a ~10-12 caracteres, así que
+        // "Avoqado - Punto de venta" se leería "Avoqado - …" bajo el icono. El nombre
+        // largo vive en el TÍTULO de la ficha de Play Store, que es lo que alimenta la
+        // búsqueda de la tienda — `android:label` no influye en ese ranking.
         manifestPlaceholders["appLabel"] = "Avoqado"
     }
 

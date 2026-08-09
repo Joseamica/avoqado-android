@@ -40,6 +40,9 @@ class ForbiddenInterceptor(
     companion object {
         /** Marca las peticiones que corren solas, sin que nadie las pida. */
         const val BACKGROUND_HEADER = "X-Avoqado-Background"
+
+        /** La función interpreta y presenta su propio error con contexto operativo. */
+        const val LOCAL_ERROR_HEADER = "X-Avoqado-Local-Error"
     }
 
     private val json = Json { ignoreUnknownKeys = true }
@@ -62,6 +65,11 @@ class ForbiddenInterceptor(
             }
             return response
         }
+
+        // Algunos módulos tienen errores de dominio mucho más útiles que el modal
+        // RBAC global (por ejemplo: "esta terminal es Cremería, escanea en Caja").
+        // Si el repositorio ya los presentará, no dupliques ni tapes ese mensaje.
+        if (request.header(LOCAL_ERROR_HEADER) != null) return response
 
         if (response.code == 403) {
             val body = response.peekBody(4096).string()

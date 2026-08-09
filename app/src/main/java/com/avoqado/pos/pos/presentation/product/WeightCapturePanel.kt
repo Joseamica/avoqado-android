@@ -51,6 +51,7 @@ import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.pos.data.model.MAX_WEIGHT_KG
 import com.avoqado.pos.pos.data.model.MIN_WEIGHT_KG
 import com.avoqado.pos.pos.data.model.Product
+import com.avoqado.pos.pos.data.model.availableWeightLabel
 import com.avoqado.pos.pos.data.model.formatWeightKg
 import com.avoqado.pos.pos.data.model.parseWeightKg
 import com.avoqado.pos.pos.data.model.weightTotalCents
@@ -235,6 +236,16 @@ private fun WeightCaptureContent(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                // Cuánto queda, antes de pesar. Sin esto el mostrador emite el
+                // vale a ciegas y se entera de que no alcanzaba al ir por el
+                // producto.
+                product.availableWeightLabel?.let { available ->
+                    Text(
+                        text = available,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 if (scaleConfigured) {
                     TextButton(
                         onClick = {

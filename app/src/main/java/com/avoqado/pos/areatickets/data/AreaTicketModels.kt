@@ -240,6 +240,11 @@ data class FulfillAreaTicketRequest(
 )
 
 @Serializable
+data class AreaTicketFulfillmentResult(
+    val alreadyFulfilled: Boolean,
+)
+
+@Serializable
 data class PendingFulfillmentData(
     val fulfillmentArea: AreaTicketArea? = null,
     val tickets: List<AreaTicket> = emptyList(),

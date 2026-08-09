@@ -78,6 +78,25 @@ class ForbiddenInterceptorTest {
     }
 
     @Test
+    fun `403 handled by the feature does not open the global permission dialog`() {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(403)
+                .setBody(
+                    """{"success":false,"data":null,"error":{"code":"CHECKOUT_TERMINAL_MISMATCH","message":"Esta terminal no está configurada como caja de vales.","retryable":false}}""",
+                ),
+        )
+
+        val request = Request.Builder()
+            .url(server.url("/mobile/venues/venue-1/area-ticket-checkouts"))
+            .header("X-Avoqado-Local-Error", "1")
+            .build()
+        client.newCall(request).execute()
+
+        assertNull(errorNotifier.forbiddenError.value)
+    }
+
+    @Test
     fun `200 response does not set error`() {
         server.enqueue(
             MockResponse()

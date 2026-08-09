@@ -50,6 +50,8 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
@@ -480,6 +482,31 @@ class PaymentFlowViewModelTest {
         assertEquals("BYPRODUCT", completion.splitType)
         assertEquals(setOf("paid-1"), completion.paidItemIds)
         assertEquals(400, completion.remainingBalanceCents)
+    }
+
+    @Test
+    fun `successful payment exposes completion once before receipt screen is dismissed`() = runTest {
+        val cart = CartState(
+            items = listOf(
+                CartItem(
+                    id = "paid-line-1",
+                    type = CartItemType.CustomAmount,
+                    name = "Venta",
+                    unitPrice = 500,
+                ),
+            ),
+        )
+
+        viewModel.startPaymentFlow(cart)
+        viewModel.confirmCashCustom(500)
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value is PaymentFlowState.Success)
+        assertNotNull(
+            "El checkout debe consumir el carrito al confirmarse el pago, no al salir del recibo",
+            viewModel.consumeCompletion(),
+        )
+        assertNull("La misma venta no debe consumirse dos veces", viewModel.consumeCompletion())
     }
 
     @Test

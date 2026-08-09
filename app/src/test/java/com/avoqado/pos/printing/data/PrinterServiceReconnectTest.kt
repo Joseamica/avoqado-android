@@ -1,7 +1,11 @@
 package com.avoqado.pos.printing.data
 
+import com.avoqado.pos.printing.data.model.PrinterRole
 import com.avoqado.pos.printing.data.model.PrinterStatus
+import com.avoqado.pos.printing.data.model.SavedPrinter
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -128,5 +132,52 @@ class PrinterServiceReconnectTest {
             socketClosed = true,
         )
         assertTrue(result)
+    }
+
+    @Test
+    fun `integrated Sunmi is plug and play fallback for receipt printing`() {
+        val selected = selectDefaultPrinter(
+            role = PrinterRole.RECEIPT,
+            configured = emptyList(),
+            integratedAvailable = true,
+            integratedPaperWidthMm = 80,
+        )
+
+        assertEquals("internal", selected?.connectionType)
+        assertEquals("internal", selected?.address)
+        assertEquals(80, selected?.paperWidthMm)
+        assertTrue(selected?.hasRole(PrinterRole.RECEIPT) == true)
+    }
+
+    @Test
+    fun `configured receipt printer wins over integrated fallback`() {
+        val configured = SavedPrinter(
+            id = "configured",
+            name = "Epson",
+            connectionType = "wifi",
+            address = "192.168.1.80",
+            roles = listOf(PrinterRole.RECEIPT.value),
+        )
+
+        val selected = selectDefaultPrinter(
+            role = PrinterRole.RECEIPT,
+            configured = listOf(configured),
+            integratedAvailable = true,
+            integratedPaperWidthMm = 80,
+        )
+
+        assertEquals("configured", selected?.id)
+    }
+
+    @Test
+    fun `integrated fallback never invents a kitchen route`() {
+        val selected = selectDefaultPrinter(
+            role = PrinterRole.KITCHEN,
+            configured = emptyList(),
+            integratedAvailable = true,
+            integratedPaperWidthMm = 80,
+        )
+
+        assertNull(selected)
     }
 }

@@ -43,4 +43,28 @@ class AreaTicketHttpErrorTest {
 
         assertTrue(error.retryable)
     }
+
+    @Test
+    fun `checkout terminal mismatch explains where to configure the terminal`() {
+        val error = parseAreaTicketHttpError(
+            body = """
+                {
+                  "success": false,
+                  "data": null,
+                  "error": {
+                    "code": "CHECKOUT_TERMINAL_MISMATCH",
+                    "message": "Esta terminal no está configurada como caja de vales.",
+                    "retryable": false
+                  }
+                }
+            """.trimIndent(),
+            statusCode = 403,
+        )
+
+        assertEquals(
+            "Esta terminal no funciona como Caja de vales. Escanea el vale en la terminal de Caja o configúrala en Dashboard → Configuración → Vales por área → Terminales.",
+            error.message,
+        )
+        assertFalse(error.retryable)
+    }
 }

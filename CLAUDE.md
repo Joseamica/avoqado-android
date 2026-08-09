@@ -2,6 +2,10 @@
 
 This file provides guidance to Claude Code when working with this repository.
 
+> **Reglas de entorno** — sesiones de IA en paralelo, y cuándo verificar según la carga de la
+> máquina — están en el `CLAUDE.md` del workspace (`../CLAUDE.md`), que auto-carga junto con este
+> archivo. Léelas antes de correr builds/tests o de tocar git.
+
 ## 🔴 CRITICAL — Android e iOS se cambian JUNTOS (paridad obligatoria)
 
 **Todo cambio de producto que hagas aquí debe portarse a `avoqado-ios` en el MISMO

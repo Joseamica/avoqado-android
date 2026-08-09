@@ -34,12 +34,14 @@ data class StockItem(
     // UI compatibility: existing code references currentQuantity
     val currentQuantity: Double get() = onHand
 
+    /**
+     * Existencia como la lee un humano, CON unidad y con los decimales que la
+     * unidad merece. Antes truncaba a entero y sin sufijo: 8.065 kg de jamón se
+     * mostraba "8", escondiendo 65 g. En un producto por peso el decimal es el
+     * inventario, no un adorno.
+     */
     val currentQuantityDisplay: String
-        get() = if (currentQuantity == currentQuantity.toLong().toDouble()) {
-            currentQuantity.toLong().toString()
-        } else {
-            String.format(Locale.US, "%.2f", currentQuantity)
-        }
+        get() = formatInvQty(currentQuantity, unit) + unitSuffixOf(unit)
 
     // UI compatibility: existing code references category
     val category: String? get() = categoryName
@@ -112,8 +114,8 @@ data class StockCountItem(
     /** Si esta línea ya se contó. Un 0 contado es un dato; un 0 sin contar, no. */
     val yaSeConto: Boolean get() = countedAt != null
 
-    val expectedDisplay: String get() = formatInvQty(expected) + unitSuffixOf(unit)
-    val countedDisplay: String get() = formatInvQty(counted) + unitSuffixOf(unit)
+    val expectedDisplay: String get() = formatInvQty(expected, unit) + unitSuffixOf(unit)
+    val countedDisplay: String get() = formatInvQty(counted, unit) + unitSuffixOf(unit)
 }
 
 enum class StockSortOption(val label: String) {
@@ -156,10 +158,23 @@ data class PaginationInfo(
 )
 
 
-/** "2.5"/"5" formatting: decimals only when needed. */
-fun formatInvQty(value: Double): String =
-    if (value == value.toLong().toDouble()) value.toLong().toString()
-    else String.format(java.util.Locale.US, "%.2f", value)
+/**
+ * Cuántos decimales tiene sentido enseñar según la unidad.
+ *
+ * En kilos y litros el tercer decimal es el gramo y el mililitro: redondear a
+ * dos escondía existencia real (8.065 kg de jamón se leía "8.07", y truncando,
+ * "8"). En piezas nadie quiere ver "47.00".
+ */
+private fun invDecimalsFor(unit: String?): Int = when (unit?.uppercase()) {
+    "KILOGRAM", "LITER", "LITRE" -> 3
+    else -> 2
+}
+
+/** "8.065 kg" · "2.5" · "47": decimales sólo los que hacen falta. */
+fun formatInvQty(value: Double, unit: String? = null): String =
+    String.format(java.util.Locale.US, "%.${invDecimalsFor(unit)}f", value)
+        .trimEnd('0')
+        .trimEnd('.')
 
 /** Short Spanish unit suffix ("kg","g","L"…). Empty for count/piece units. */
 fun unitSuffixOf(unit: String?): String = when (unit?.uppercase()) {
@@ -174,4 +189,4 @@ fun unitSuffixOf(unit: String?): String = when (unit?.uppercase()) {
 }
 
 /** StockItem on-hand with unit, no truncation ("2.5 kg" not "2"). */
-val StockItem.onHandDisplay: String get() = formatInvQty(onHand) + unitSuffixOf(unit)
+val StockItem.onHandDisplay: String get() = formatInvQty(onHand, unit) + unitSuffixOf(unit)

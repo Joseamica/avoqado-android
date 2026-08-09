@@ -52,6 +52,12 @@ data class Product(
     val modifierGroups: List<ProductModifierGroupEntry>? = null,
     val trackInventory: Boolean? = null,
     val availableQuantity: Int? = null,
+    /**
+     * Existencia SIN truncar. `availableQuantity` es entero por compatibilidad
+     * con versiones ya publicadas, y en un producto por kilo eso miente: 8.065
+     * kg de jamón llegaban como 8. Opcional: los servidores viejos no lo mandan.
+     */
+    val availableQuantityExact: Double? = null,
     /** QUANTITY | RECIPE — para que el modal de agotado explique la causa. */
     val inventoryMethod: String? = null,
     /** Insumo cuello de botella de la receta (null sin receta / backend viejo). */
@@ -187,6 +193,21 @@ data class CategoriesResponse(
     val data: List<ProductCategory> = emptyList(),
 )
 
+
+/**
+ * "Disponible: 8.065 kg" para el panel de captura de peso, o `null` cuando no
+ * hay nada honesto que decir (el producto no rastrea inventario, o el server es
+ * anterior a `availableQuantityExact`). Preferimos callar antes que inventar una
+ * existencia: en una cremería ese número decide si se puede vender.
+ */
+val Product.availableWeightLabel: String?
+    get() {
+        if (trackInventory != true) return null
+        val exact = availableQuantityExact ?: return null
+        if (exact <= 0) return "Sin existencia registrada"
+        val amount = String.format(java.util.Locale.US, "%.3f", exact).trimEnd('0').trimEnd('.')
+        return "Disponible: $amount kg"
+    }
 
 /** Espejo de avoqado-tpv: detalle de un insumo faltante para el modal de agotado. */
 @kotlinx.serialization.Serializable

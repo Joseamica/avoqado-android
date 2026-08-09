@@ -22,7 +22,9 @@ import java.util.Date
 import java.util.Locale
 import java.util.UUID
 import javax.inject.Inject
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -64,6 +66,18 @@ data class AreaTicketOperationsState(
                 it.terminal.fulfillmentArea?.active == true
         } == true
 
+    val canConfirmDeliveryWithPaper: Boolean
+        get() = deliveryWorkspace && settings?.areaTickets?.deliveryVerificationMode in setOf(
+            "PAPER_CONFIRMATION",
+            "PAPER_OR_SCAN",
+        )
+
+    val canScanDeliveryReceipt: Boolean
+        get() = deliveryWorkspace && settings?.areaTickets?.deliveryVerificationMode in setOf(
+            "RECEIPT_SCAN",
+            "PAPER_OR_SCAN",
+        )
+
     val checkoutBlockingError: String?
         get() = error.takeIf { settings != null || pendingReprintCode != null }
 }
@@ -77,6 +91,7 @@ class AreaTicketOperationsViewModel @Inject constructor(
 ) : ViewModel() {
     private val _state = MutableStateFlow(AreaTicketOperationsState())
     val state: StateFlow<AreaTicketOperationsState> = _state.asStateFlow()
+    private var refreshRequestId = 0L
     private var issueIdempotencyKey = secureStorage.pendingAreaTicketIssueKey
         ?: UUID.randomUUID().toString().also { secureStorage.pendingAreaTicketIssueKey = it }
 
@@ -90,17 +105,23 @@ class AreaTicketOperationsViewModel @Inject constructor(
         refresh()
     }
 
-    fun refresh(loadPendingDelivery: Boolean = false) {
-        viewModelScope.launch {
+    fun refresh(loadPendingDelivery: Boolean = false): Job {
+        val requestId = ++refreshRequestId
+        return viewModelScope.launch {
             _state.value = _state.value.copy(loading = true, error = null)
-            val settings = runCatching { repository.settings() }
-                .getOrElse { error ->
-                    _state.value = _state.value.copy(
-                        loading = false,
-                        error = error.message ?: "No se pudo cargar la operación de vales.",
-                    )
-                    return@launch
-                }
+            val settings = try {
+                repository.settings()
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                if (requestId != refreshRequestId) return@launch
+                _state.value = _state.value.copy(
+                    loading = false,
+                    error = error.message ?: "No se pudo cargar la operación de vales.",
+                )
+                return@launch
+            }
+            if (requestId != refreshRequestId) return@launch
             val canLoadPending = loadPendingDelivery &&
                 settings.areaTickets.entitled &&
                 settings.areaTickets.enabled &&
@@ -115,23 +136,26 @@ class AreaTicketOperationsViewModel @Inject constructor(
                 )
                 return@launch
             }
-            runCatching { repository.pendingDelivery().tickets }
-                .onSuccess { pending ->
-                    _state.value = _state.value.copy(
-                        loading = false,
-                        settings = settings,
-                        pending = pending,
-                        error = null,
-                    )
-                }
-                .onFailure { error ->
+            try {
+                val pending = repository.pendingDelivery().tickets
+                if (requestId != refreshRequestId) return@launch
+                _state.value = _state.value.copy(
+                    loading = false,
+                    settings = settings,
+                    pending = pending,
+                    error = null,
+                )
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                if (requestId != refreshRequestId) return@launch
                 _state.value = _state.value.copy(
                     loading = false,
                     settings = settings,
                     pending = emptyList(),
                     error = error.message ?: "No se pudo cargar la operación de vales.",
                 )
-                }
+            }
         }
     }
 
@@ -159,14 +183,23 @@ class AreaTicketOperationsViewModel @Inject constructor(
                     )
                 }
                 val ticket = repository.issue(lines, issueIdempotencyKey)
+                // Primero persiste la recuperación: si la app muere al limpiar el
+                // carrito, el mismo vale todavía puede reimprimirse al volver.
                 secureStorage.pendingAreaTicketPrintCode = ticket.code
                 secureStorage.pendingAreaTicketPrintVenueId = secureStorage.venueId
                 _state.value = _state.value.copy(pendingReprintCode = ticket.code)
+                // La llave protege la creación, no la impresión. Una vez que el
+                // servidor aceptó este vale, el siguiente carrito necesita otra
+                // llave aunque todavía quede pendiente reimprimir el papel.
+                issueIdempotencyKey = UUID.randomUUID().toString()
+                secureStorage.pendingAreaTicketIssueKey = issueIdempotencyKey
+                // El vale ya quedó emitido en servidor. Desde este punto el carrito no
+                // puede seguir cobrable aunque falle la salida en papel: imprimir es una
+                // recuperación secundaria del mismo vale, no parte de su creación.
+                onIssued()
                 printAndRecord(ticket, reprint = false)
                 ticket
             }.onSuccess { ticket ->
-                issueIdempotencyKey = UUID.randomUUID().toString()
-                secureStorage.pendingAreaTicketIssueKey = issueIdempotencyKey
                 secureStorage.pendingAreaTicketPrintCode = null
                 secureStorage.pendingAreaTicketPrintVenueId = null
                 _state.value = _state.value.copy(
@@ -174,7 +207,6 @@ class AreaTicketOperationsViewModel @Inject constructor(
                     pendingReprintCode = null,
                     message = "Vale ${ticket.code} emitido correctamente.",
                 )
-                onIssued()
             }.onFailure { error ->
                 _state.value = _state.value.copy(
                     submitting = false,
@@ -296,31 +328,68 @@ class AreaTicketOperationsViewModel @Inject constructor(
     }
 
     fun deliverWithPaper(ticketId: String) {
+        if (!_state.value.canConfirmDeliveryWithPaper) {
+            _state.value = _state.value.copy(
+                error = "Esta terminal no permite confirmar entregas con el vale impreso.",
+                message = null,
+            )
+            return
+        }
         deliver(ticketId, scannedReceipt = false)
     }
 
     fun deliverByReceiptCode(code: String) {
         if (_state.value.submitting) return
+        if (!_state.value.canScanDeliveryReceipt) {
+            _state.value = _state.value.copy(
+                error = "Esta terminal no permite confirmar entregas escaneando el comprobante.",
+                message = null,
+            )
+            return
+        }
         viewModelScope.launch {
-            _state.value = _state.value.copy(submitting = true, error = null)
-            runCatching {
-                val resolution = repository.resolveDelivery(code)
-                resolution.tickets
-                    .filter { it.status == "PAID" }
-                    .forEach { repository.fulfill(it.id, scannedReceipt = true) }
-                resolution.tickets.size
-            }.onSuccess { count ->
-                _state.value = _state.value.copy(
-                    submitting = false,
-                    message = "$count ${if (count == 1) "vale entregado" else "vales entregados"}.",
-                )
-                refresh(loadPendingDelivery = true)
-            }.onFailure { error ->
+            _state.value = _state.value.copy(submitting = true, error = null, message = null)
+            val paidTickets = try {
+                repository.resolveDelivery(code).tickets.filter { it.status == "PAID" }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
                 _state.value = _state.value.copy(
                     submitting = false,
                     error = error.message ?: "No se pudo comprobar la entrega.",
                 )
+                return@launch
             }
+            if (paidTickets.isEmpty()) {
+                _state.value = _state.value.copy(
+                    submitting = false,
+                    error = "El comprobante no contiene productos pagados pendientes de entrega para esta área.",
+                )
+                return@launch
+            }
+
+            var deliveredCount = 0
+            var alreadyDeliveredCount = 0
+            var deliveryError: Exception? = null
+            for (ticket in paidTickets) {
+                try {
+                    val result = repository.fulfill(ticket.id, scannedReceipt = true)
+                    if (result.alreadyFulfilled) alreadyDeliveredCount += 1 else deliveredCount += 1
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (error: Exception) {
+                    deliveryError = error
+                    break
+                }
+            }
+
+            val errorMessage = deliveryFeedbackError(
+                deliveredCount = deliveredCount,
+                alreadyDeliveredCount = alreadyDeliveredCount,
+                failure = deliveryError,
+            )
+            val successMessage = if (errorMessage == null) deliveredMessage(deliveredCount) else null
+            finishDeliveryAfterRefresh(message = successMessage, error = errorMessage)
         }
     }
 
@@ -342,26 +411,70 @@ class AreaTicketOperationsViewModel @Inject constructor(
     private fun deliver(ticketId: String, scannedReceipt: Boolean) {
         if (_state.value.submitting) return
         viewModelScope.launch {
-            _state.value = _state.value.copy(submitting = true, error = null)
-            runCatching { repository.fulfill(ticketId, scannedReceipt) }
-                .onSuccess {
-                    _state.value = _state.value.copy(
-                        submitting = false,
-                        message = "Entrega registrada.",
-                    )
-                    refresh(loadPendingDelivery = true)
-                }
-                .onFailure { error ->
-                    _state.value = _state.value.copy(
-                        submitting = false,
-                        error = error.message ?: "No se pudo registrar la entrega.",
-                    )
-                }
+            _state.value = _state.value.copy(submitting = true, error = null, message = null)
+            val result = try {
+                repository.fulfill(ticketId, scannedReceipt)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                finishDeliveryAfterRefresh(
+                    message = null,
+                    error = error.message ?: "No se pudo registrar la entrega.",
+                )
+                return@launch
+            }
+            if (result.alreadyFulfilled) {
+                finishDeliveryAfterRefresh(
+                    message = null,
+                    error = "Este vale ya había sido entregado por otra terminal. Verifica los productos antes de continuar.",
+                )
+            } else {
+                finishDeliveryAfterRefresh(message = "Entrega registrada.", error = null)
+            }
         }
     }
 
+    private suspend fun finishDeliveryAfterRefresh(message: String?, error: String?) {
+        refresh(loadPendingDelivery = true).join()
+        val refreshError = _state.value.error
+        val finalError = when {
+            error != null && refreshError != null ->
+                "$error No se pudo actualizar la lista: $refreshError Verifica los productos antes de continuar."
+            error != null ->
+                "$error La lista fue actualizada; verifica los productos antes de continuar."
+            refreshError != null ->
+                if (message == null) refreshError else "$message No se pudo actualizar la lista: $refreshError"
+            else -> null
+        }
+        _state.value = _state.value.copy(
+            submitting = false,
+            message = message.takeIf { finalError == null },
+            error = finalError,
+        )
+    }
+
+    private fun deliveredMessage(count: Int): String =
+        "$count ${if (count == 1) "vale entregado" else "vales entregados"}."
+
+    private fun deliveryFeedbackError(
+        deliveredCount: Int,
+        alreadyDeliveredCount: Int,
+        failure: Exception?,
+    ): String? {
+        if (alreadyDeliveredCount == 0 && failure == null) return null
+        val parts = mutableListOf<String>()
+        if (deliveredCount > 0) parts += deliveredMessage(deliveredCount)
+        if (alreadyDeliveredCount > 0) {
+            parts += "$alreadyDeliveredCount ${if (alreadyDeliveredCount == 1) "vale ya había sido entregado" else "vales ya habían sido entregados"} por otra terminal."
+        }
+        if (failure != null) {
+            parts += "No se pudo completar el resto: ${failure.message ?: "No se pudo registrar la entrega."}"
+        }
+        return parts.joinToString(" ")
+    }
+
     private suspend fun printAndRecord(ticket: AreaTicket, reprint: Boolean) {
-        val printer = printerService.getDefaultPrinter(PrinterRole.RECEIPT)
+        val printer = printerService.getDefaultPrinterWithHardwareFallback(PrinterRole.RECEIPT)
         if (printer == null) {
             repository.recordPrint(
                 ticketId = ticket.id,
@@ -370,7 +483,12 @@ class AreaTicketOperationsViewModel @Inject constructor(
                 reason = "No hay impresora de recibos configurada.",
                 errorCode = "PRINTER_NOT_CONFIGURED",
             )
-            throw IllegalStateException("El vale fue creado, pero no hay impresora configurada. Reimprime el vale ${ticket.code} antes de entregarlo.")
+            throw IllegalStateException(
+                areaTicketPrintFailureMessage(
+                    code = ticket.code,
+                    error = IllegalStateException("No hay impresora configurada."),
+                ),
+            )
         }
         val printable = ticket.toPrintable()
         runCatching {
@@ -385,7 +503,10 @@ class AreaTicketOperationsViewModel @Inject constructor(
                     reason = error.message,
                     errorCode = "PRINT_FAILED",
                 )
-                throw error
+                throw IllegalStateException(
+                    areaTicketPrintFailureMessage(ticket.code, error),
+                    error,
+                )
             }
     }
 
@@ -415,4 +536,13 @@ class AreaTicketOperationsViewModel @Inject constructor(
             "CODE39" -> BarcodeSymbology.CODE39
             else -> BarcodeSymbology.CODE128_C
         }
+}
+
+@Suppress("UNUSED_PARAMETER")
+internal fun areaTicketPrintFailureMessage(code: String, error: Throwable): String {
+    // Conserva el detalle técnico en la causa/auditoría, no en la pantalla del
+    // operador. En todos los casos el vale ya existe y reintentar no debe emitirlo.
+    return "No pudimos imprimir el vale $code, pero ya quedó creado y pendiente de reimpresión. " +
+        "Verifica que la impresora esté encendida y conectada a la misma red, o configúrala en Más → Impresora. " +
+        "También puedes guardarlo como PDF."
 }

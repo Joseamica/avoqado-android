@@ -31,11 +31,31 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.avoqado.pos.areatickets.data.AreaTicketLine
 import com.avoqado.pos.designsystem.components.AvoqadoDialog
 import com.avoqado.pos.designsystem.components.AvoqadoSuccessToast
+import com.avoqado.pos.designsystem.components.CircleBackButton
 import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.pos.presentation.scanner.BarcodeScannerView
+
+/**
+ * Qué tiene que entregar el empleado, en sus términos: producto y CUÁNTO.
+ *
+ * La lista mostraba sólo el nombre del producto y el importe, así que tres
+ * vales de jamón de 0.1, 0.435 y 1.5 kg se veían casi idénticos y había que
+ * despejar el peso dividiendo entre el precio por kilo. El peso es la
+ * instrucción de trabajo de esta pantalla, no un detalle.
+ */
+internal fun areaTicketLinesSummary(lines: List<AreaTicketLine>): String =
+    lines.joinToString("  •  ") { line ->
+        val weight = line.weightKg?.takeIf { it.isNotBlank() }
+        when {
+            weight != null -> "${line.productNameSnapshot} · $weight kg"
+            line.quantity != "1" -> "${line.productNameSnapshot} × ${line.quantity}"
+            else -> line.productNameSnapshot
+        }
+    }
 
 @Composable
 fun AreaTicketDeliveryScreen(
@@ -62,9 +82,7 @@ fun AreaTicketDeliveryScreen(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
             ) {
-                IconButton(onClick = onDismiss) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Volver")
-                }
+                CircleBackButton(onClick = onDismiss)
                 Column(modifier = Modifier.weight(1f)) {
                     Text("Entregas por área", style = MaterialTheme.typography.headlineSmall)
                     Text(
@@ -73,7 +91,7 @@ fun AreaTicketDeliveryScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                if (state.deliveryWorkspace) {
+                if (state.canScanDeliveryReceipt) {
                     PrimaryButton(
                         text = "Escanear pagado",
                         onClick = { scanning = true },
@@ -128,9 +146,9 @@ fun AreaTicketDeliveryScreen(
                                                 style = MaterialTheme.typography.titleMedium,
                                             )
                                             Text(
-                                                ticket.lines.joinToString { it.productNameSnapshot },
+                                                areaTicketLinesSummary(ticket.lines),
                                                 style = MaterialTheme.typography.bodyMedium,
-                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                color = MaterialTheme.colorScheme.onSurface,
                                             )
                                         }
                                         Text(
@@ -138,12 +156,14 @@ fun AreaTicketDeliveryScreen(
                                             style = MaterialTheme.typography.titleMedium,
                                         )
                                     }
-                                    Spacer(Modifier.height(AvoqadoTheme.spacing.xs))
-                                    PrimaryButton(
-                                        text = "Revisé el papel y entregué",
-                                        onClick = { viewModel.deliverWithPaper(ticket.id) },
-                                        fullWidth = true,
-                                    )
+                                    if (state.canConfirmDeliveryWithPaper) {
+                                        Spacer(Modifier.height(AvoqadoTheme.spacing.xs))
+                                        PrimaryButton(
+                                            text = "Revisé el papel y entregué",
+                                            onClick = { viewModel.deliverWithPaper(ticket.id) },
+                                            fullWidth = true,
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -152,7 +172,7 @@ fun AreaTicketDeliveryScreen(
             }
         }
 
-        if (scanning) {
+        if (scanning && state.canScanDeliveryReceipt) {
             BarcodeScannerView(
                 onBarcodeScanned = { code ->
                     scanning = false
