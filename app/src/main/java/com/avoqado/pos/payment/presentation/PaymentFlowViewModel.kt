@@ -331,6 +331,23 @@ class PaymentFlowViewModel @Inject constructor(
     private val _customerAttachResult = MutableStateFlow<String?>(null)
     val customerAttachResult: StateFlow<String?> = _customerAttachResult.asStateFlow()
 
+    /**
+     * Cliente de ESTA venta. Se siembra con el que ya venía elegido en el
+     * carrito y lo sobrescribe el alta desde la pantalla de recibo.
+     *
+     * 🔴 Antes vivía sólo como estado local de la pantalla de recibo, arrancando
+     * en null: el cajero elegía "Juan Pérez" en el carrito, cobraba, y al
+     * terminar la pantalla le ofrecía "Agregar cliente" como si no hubiera
+     * nadie. No era sólo la etiqueta — la orden se creaba SIN `customerId`, así
+     * que la venta quedaba anónima en el server: sin historial de compra, sin
+     * lealtad y sin cliente que facturar.
+     */
+    private val _attachedCustomerName = MutableStateFlow<String?>(null)
+    val attachedCustomerName: StateFlow<String?> = _attachedCustomerName.asStateFlow()
+
+    /** Id del cliente que viaja en `POST /orders`. */
+    private var attachedCustomerId: String? = null
+
     fun clearCustomerAttachResult() {
         _customerAttachResult.value = null
     }
@@ -356,6 +373,8 @@ class PaymentFlowViewModel @Inject constructor(
             result
                 .fold(
                     onSuccess = {
+                        attachedCustomerId = customerId
+                        _attachedCustomerName.value = customerName
                         _customerAttachResult.value = "Cliente agregado: $customerName"
                     },
                     onFailure = { error ->
@@ -380,13 +399,18 @@ class PaymentFlowViewModel @Inject constructor(
             _printSending.value = true
             _printResult.value = null
             try {
-                val count = printerService.manualPrintReceipt(receipt)
-                _printResult.value = if (count > 0) {
-                    "Recibo impreso"
-                } else if (!selectedTerminalId.isNullOrBlank()) {
-                    LOCAL_PRINTER_UNAVAILABLE
-                } else {
-                    "No hay impresora de recibos configurada"
+                // El motivo importa: "pon papel" y "configura una impresora" son
+                // acciones distintas, y decir "Recibo impreso" cuando no salió
+                // nada deja al cajero sin ticket creyendo que sí se imprimió.
+                _printResult.value = when (val outcome = printerService.manualPrintReceipt(receipt)) {
+                    is PrinterService.PrintOutcome.Printed -> "Recibo impreso"
+                    is PrinterService.PrintOutcome.OutOfPaper -> "La impresora no tiene papel"
+                    is PrinterService.PrintOutcome.Failed ->
+                        if (!selectedTerminalId.isNullOrBlank()) LOCAL_PRINTER_UNAVAILABLE
+                        else "No se pudo imprimir: ${outcome.reason}"
+                    is PrinterService.PrintOutcome.NoPrinter ->
+                        if (!selectedTerminalId.isNullOrBlank()) LOCAL_PRINTER_UNAVAILABLE
+                        else "No hay impresora de recibos configurada"
                 }
             } catch (e: Exception) {
                 _printResult.value = "Error al imprimir: ${e.message ?: "desconocido"}"
@@ -459,7 +483,14 @@ class PaymentFlowViewModel @Inject constructor(
             ?: secureStorage.userId.orEmpty()
     }
 
-    fun startPaymentFlow(cart: CartState) {
+    /**
+     * @param customerId Cliente que el cajero ya eligió en el carrito. Viaja en
+     *   `POST /orders` para que la venta quede ligada a él (historial, lealtad,
+     *   facturación). Va como parámetro de ESTA función —y no en un setter
+     *   aparte— porque aquí mismo se limpia el estado de la venta anterior: un
+     *   setter externo se podía llamar antes y quedar borrado en silencio.
+     */
+    fun startPaymentFlow(cart: CartState, customerId: String? = null, customerName: String? = null) {
         cartState = cart
         completionConsumed = false
         splitBaseAmountOverride = resolveSplitBaseAmount(cart)
@@ -502,6 +533,8 @@ class PaymentFlowViewModel @Inject constructor(
         _printSending.value = false
         _customerAttachResult.value = null
         _customerAttachSending.value = false
+        attachedCustomerId = customerId?.takeIf { it.isNotBlank() }
+        _attachedCustomerName.value = customerName?.takeIf { it.isNotBlank() }
         lastReceipt = null
 
         Log.d("💰", "Starting payment flow - amount: $amount")
@@ -680,6 +713,7 @@ class PaymentFlowViewModel @Inject constructor(
                         val orderResult = orderRepository.createOrder(
                             orderRequest,
                             staffId = selectedStaffId(),
+                            customerId = attachedCustomerId,
                             orderType = cart.orderType,
                             externalId = orderExternalId,
                         )
@@ -708,6 +742,8 @@ class PaymentFlowViewModel @Inject constructor(
                                         cashPaymentRepository.queueCashPayment(
                                             orderRequest = orderRequest,
                                             staffId = selectedStaffId(),
+                                            customerId = attachedCustomerId,
+                                            idempotencyKey = sessionIdempotencyKey(),
                                             cashTenderedCents = null,
                                             changeCents = null,
                                             rating = currentRating,
@@ -852,6 +888,8 @@ class PaymentFlowViewModel @Inject constructor(
                                 cashPaymentRepository.queueCashPayment(
                                     orderRequest = buildOrderRequest(cart),
                                     staffId = selectedStaffId(),
+                                    customerId = attachedCustomerId,
+                                    idempotencyKey = sessionIdempotencyKey(),
                                     cashTenderedCents = null,
                                     changeCents = null,
                                     rating = currentRating,
@@ -938,6 +976,7 @@ class PaymentFlowViewModel @Inject constructor(
                             val orderResult = orderRepository.createOrder(
                                 orderRequest,
                                 staffId = selectedStaffId(),
+                                customerId = attachedCustomerId,
                                 orderType = cart.orderType,
                                 externalId = orderExternalId,
                             )
@@ -967,6 +1006,8 @@ class PaymentFlowViewModel @Inject constructor(
                                         cashPaymentRepository.queueCashPayment(
                                             orderRequest = orderRequest,
                                             staffId = selectedStaffId(),
+                                            customerId = attachedCustomerId,
+                                            idempotencyKey = sessionIdempotencyKey(),
                                             cashTenderedCents = cashReceivedCents,
                                             changeCents = result.changeCents,
                                             rating = currentRating,
@@ -1031,6 +1072,8 @@ class PaymentFlowViewModel @Inject constructor(
                                         cashPaymentRepository.queueCashPayment(
                                             orderRequest = buildOrderRequest(cart),
                                             staffId = selectedStaffId(),
+                                            customerId = attachedCustomerId,
+                                            idempotencyKey = sessionIdempotencyKey(),
                                             cashTenderedCents = cashReceivedCents,
                                             changeCents = result.changeCents,
                                             rating = currentRating,
@@ -1142,6 +1185,8 @@ class PaymentFlowViewModel @Inject constructor(
                     cashPaymentRepository.queueCashPayment(
                         orderRequest = orderRequest,
                         staffId = selectedStaffId(),
+                        customerId = attachedCustomerId,
+                        idempotencyKey = sessionIdempotencyKey(),
                         cashTenderedCents = cashReceivedCents,
                         changeCents = changeCents,
                         rating = currentRating,
@@ -1512,6 +1557,7 @@ class PaymentFlowViewModel @Inject constructor(
                 null -> null
             },
             venueName = secureStorage.venueName ?: "Avoqado",
+            customerName = _attachedCustomerName.value,
             cashTendered = if (resolvedMethod == PaymentMethod.CASH && manualMethod == null) resolvedChange?.let { receiptTotal + it } else null,
             changeAmount = resolvedChange,
             transactionId = lastPaymentId,
@@ -1730,6 +1776,13 @@ class PaymentFlowViewModel @Inject constructor(
                 true
             }
         } catch (error: Exception) {
+            // Una sesión vencida no es un cobro fallido: no se cobró nada y los vales
+            // siguen vivos. Tirar aquí la sesión muerta es lo que permite que el
+            // siguiente escaneo abra una nueva; si la dejáramos, la caja se quedaría
+            // pulsando Cobrar contra algo que el server ya no acepta.
+            if ((error as? com.avoqado.pos.areatickets.data.AreaTicketException)?.code == "CHECKOUT_SESSION_STALE") {
+                runCatching { areaTicketRepository.session.clear() }
+            }
             _state.value = PaymentFlowState.Error(
                 message = error.message ?: "No se pudo preparar la venta de vales.",
                 source = PaymentErrorSource.SERVER,

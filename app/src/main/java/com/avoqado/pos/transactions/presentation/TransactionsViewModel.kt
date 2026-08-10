@@ -217,12 +217,13 @@ class TransactionsViewModel @Inject constructor(
             _isPrintingReceipt.value = true
             _printReceiptResult.value = null
             try {
-                val count = printerService.manualPrintReceipt(transaction.toReceiptData(venueName))
-                _printReceiptResult.value = if (count > 0) {
-                    "Recibo impreso"
-                } else {
-                    "No hay impresora de recibos configurada"
-                }
+                _printReceiptResult.value =
+                    when (val outcome = printerService.manualPrintReceipt(transaction.toReceiptData(venueName))) {
+                        is PrinterService.PrintOutcome.Printed -> "Recibo impreso"
+                        is PrinterService.PrintOutcome.OutOfPaper -> "La impresora no tiene papel"
+                        is PrinterService.PrintOutcome.Failed -> "No se pudo imprimir: ${outcome.reason}"
+                        is PrinterService.PrintOutcome.NoPrinter -> "No hay impresora de recibos configurada"
+                    }
             } catch (e: Exception) {
                 _printReceiptResult.value = "Error al imprimir: ${e.message ?: "desconocido"}"
             } finally {

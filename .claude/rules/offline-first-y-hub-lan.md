@@ -84,6 +84,17 @@ el mismo POS se ve como dos peers y la elección de árbitro deja de ser estable
 - `SPLIT_ORDER` resuelve las referencias **todo-o-nada**: si UNA no resuelve,
   rechaza. Un cheque partido a medias cobra de menos a un cliente y de más a
   otro, y el mesero no tiene cómo notarlo.
+- **Rendirse rápido ES el diseño en la ruta del dinero** (crear orden, cobrar
+  efectivo, fast): timeouts cortos (5 s conectar / 15 s total) y a la cola. El
+  default (30 s Android / 60 s iOS) congelaba al cajero con fila cuando el WiFi
+  seguía "bien" pero sin internet. NO aplicar al resto: la terminal espera 310 s
+  a propósito (alguien tiene que pasar la tarjeta) y el catálogo en red lenta sí
+  tarda y no tiene cola que lo salve.
+- La creación EN LÍNEA también viaja con `externalId` (Android
+  `sessionIdempotencyKey()`, iOS `sessionOrderExternalId()`): si el intento
+  lento SÍ aterrizó, el reintento — vivo o del outbox — deduplica en vez de
+  duplicar la orden. La llave es POR VENTA: se limpia al crear, al encolar y en
+  reset, porque reusarla entre dos ventas devolvería la orden de la anterior.
 
 ---
 

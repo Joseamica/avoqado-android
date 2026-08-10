@@ -199,11 +199,23 @@ fun TableOrderScreen(
     // igual en claro y oscuro, y —esto importa para no volver a discutirlo— sí
     // aparece en el árbol de accesibilidad, así que se puede verificar que salió.
     val snackbarHostState = remember { SnackbarHostState() }
+    // 🔴 Mostrar PRIMERO, consumir DESPUÉS.
+    //
+    // Al revés (consumir y luego mostrar) el aviso NUNCA se ve: consumirlo pone
+    // `actionMessage` en null, eso cambia la LLAVE del LaunchedEffect, y Compose
+    // cancela la corrutina en curso — matando el `showSnackbar` antes de que
+    // pinte. Se comía TODOS los avisos de la pantalla: descuentos aplicados,
+    // cuenta anulada, mesa liberada y —lo que lo destapó— el rechazo del server
+    // al fusionar una cuenta que ya tiene pagos: el mesero tocaba "Fusionar", no
+    // pasaba nada, y no había forma de saber por qué (2026-08-09).
+    //
+    // `showSnackbar` suspende hasta que el aviso se cierra; consumir al volver
+    // deja el estado limpio para el siguiente, y dos mensajes iguales seguidos
+    // sí se vuelven a ver porque el estado pasa por null entre uno y otro.
     LaunchedEffect(actionMessage) {
-        actionMessage?.let {
-            viewModel.consumeActionMessage()
-            snackbarHostState.showSnackbar(message = it, duration = SnackbarDuration.Long)
-        }
+        val mensaje = actionMessage ?: return@LaunchedEffect
+        snackbarHostState.showSnackbar(message = mensaje, duration = SnackbarDuration.Long)
+        viewModel.consumeActionMessage()
     }
 
     // No session (e.g. process restore) — nothing to work on, back to the floor.
@@ -259,11 +271,13 @@ fun TableOrderScreen(
             pendingSplitConfig = com.avoqado.pos.payment.presentation.SplitConfig()
             committedPaymentCompletion = null
             showPayment = true
-        } else {
-            // Aviso PERSISTENTE, no Toast: en la Sunmi los Toast quedan detrás
-            // de la pantalla del cliente y el toque parecía no hacer nada.
-            viewModel.showBlockedReason("Esta cuenta todavía no tiene cargos. Agrega artículos y envíalos antes de cobrar.")
         }
+        // El motivo lo pone `preparePagar()`, que es quien SABE por qué no se
+        // puede: sin cargos, ya pagada, o cuenta ajena. Antes se ponía aquí un
+        // texto fijo ("no tiene cargos") que era falso en la mayoría de los
+        // casos. Sigue siendo un aviso PERSISTENTE y no un Toast: en la Sunmi
+        // los Toast quedan detrás de la pantalla del cliente y el toque parecía
+        // no hacer nada.
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -839,6 +853,10 @@ fun TableOrderScreen(
                 com.avoqado.pos.payment.presentation.PaymentFlowScreen(
                     cartState = paymentCart,
                     splitConfig = pendingSplitConfig,
+                    // El cheque ya trae su cliente asignado; el recibo lo
+                    // muestra en vez de pedirlo otra vez al cerrar la mesa.
+                    preselectedCustomerId = check?.customerId,
+                    preselectedCustomerName = check?.customerName,
                     onSplitImporte = {
                         showPayment = false
                         showSplitImporte = true

@@ -35,6 +35,23 @@ interface PendingPaymentDao {
     @Query("UPDATE pending_payments SET syncStatus = 'PENDING', retryCount = 0, lastError = NULL, lastRetryAt = NULL WHERE id = :id AND syncStatus = 'FAILED'")
     suspend fun retryFailed(id: String)
 
+    /** Estado actual de UN cobro. Lo usa el reintento manual para saber cómo le
+     *  fue de verdad, en vez de cantar éxito a ciegas. */
+    @Query("SELECT syncStatus FROM pending_payments WHERE id = :id")
+    suspend fun syncStatusOf(id: String): String?
+
+    @Query("SELECT lastError FROM pending_payments WHERE id = :id")
+    suspend fun lastErrorOf(id: String): String?
+
+    /**
+     * "Marcar resuelta": el gerente decidió que este cobro ya no debe
+     * reintentarse (típico: el server confirma "ya está pagada" — el dinero SÍ
+     * entró y reintentar jamás va a prosperar). SOLO borra filas FAILED: una
+     * PENDING/SYNCING sigue viva y borrarla perdería un cobro real.
+     */
+    @Query("DELETE FROM pending_payments WHERE id = :id AND syncStatus = 'FAILED'")
+    suspend fun deleteFailed(id: String): Int
+
     @Query("DELETE FROM pending_payments WHERE syncStatus = 'SYNCED' AND createdAt < :olderThan")
     suspend fun deleteSynced(olderThan: Long)
 

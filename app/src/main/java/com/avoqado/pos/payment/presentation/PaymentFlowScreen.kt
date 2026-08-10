@@ -31,6 +31,13 @@ fun PaymentFlowScreen(
     splitConfig: SplitConfig = SplitConfig(),
     /** Mesas (Square): link "Dividir importe" en la selección de método. */
     onSplitImporte: (() -> Unit)? = null,
+    /**
+     * Cliente que el cajero ya eligió ANTES de cobrar (encabezado del carrito o
+     * cliente del cheque). Se lo lleva la orden y se muestra ya puesto en la
+     * pantalla de recibo, en vez de pedirlo otra vez.
+     */
+    preselectedCustomerId: String? = null,
+    preselectedCustomerName: String? = null,
     viewModel: PaymentFlowViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsState()
@@ -42,26 +49,32 @@ fun PaymentFlowScreen(
     val customersViewModel: CustomersViewModel = hiltViewModel()
     val customerAttachSending by viewModel.customerAttachSending.collectAsState()
     val customerAttachResult by viewModel.customerAttachResult.collectAsState()
-    var selectedPaymentCustomerName by rememberSaveable { mutableStateOf<String?>(null) }
+    // Una sola fuente para el nombre: la del ViewModel. Antes esta pantalla
+    // guardaba el suyo aparte, arrancando siempre en null — de ahí que el
+    // cliente del carrito no apareciera al terminar el cobro.
+    val attachedCustomerName by viewModel.attachedCustomerName.collectAsState()
     var showCustomersSheet by rememberSaveable { mutableStateOf(false) }
     var showCreateCustomer by rememberSaveable { mutableStateOf(false) }
     var createCustomerSearchText by rememberSaveable { mutableStateOf("") }
 
     fun attachCustomer(customer: Customer) {
-        selectedPaymentCustomerName = customer.fullName
         showCustomersSheet = false
         showCreateCustomer = false
         viewModel.attachCustomerToCurrentPayment(customer.id, customer.fullName)
     }
 
-    LaunchedEffect(cartState, splitConfig) {
+    LaunchedEffect(cartState, splitConfig, preselectedCustomerId, preselectedCustomerName) {
         viewModel.setSplitConfig(
             type = splitConfig.type.toApiSplitType(),
             selectedItemIds = splitConfig.selectedItemIds,
             numberOfParts = splitConfig.numberOfParts,
             customAmountCents = splitConfig.customAmountCents,
         )
-        viewModel.startPaymentFlow(cartState)
+        viewModel.startPaymentFlow(
+            cart = cartState,
+            customerId = preselectedCustomerId,
+            customerName = preselectedCustomerName,
+        )
     }
 
     Box(
@@ -223,7 +236,7 @@ fun PaymentFlowScreen(
                         canPrintOnTerminal = canPrintOnTerminal,
                         onPrintOnTerminalReceipt = { viewModel.printReceiptOnTerminal() },
                         onClearPrintResult = { viewModel.clearPrintResult() },
-                        customerName = if (customerAttachSending) "Agregando..." else selectedPaymentCustomerName,
+                        customerName = if (customerAttachSending) "Agregando..." else attachedCustomerName,
                         customerResultMessage = customerAttachResult,
                         onClearCustomerResult = { viewModel.clearCustomerAttachResult() },
                         onAddCustomer = {

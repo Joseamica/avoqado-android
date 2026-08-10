@@ -26,7 +26,7 @@ re-descubrir el diseño meses después.
 - Espejo exacto: usa los mismos nombres de campos, textos en español y semántica que
   el otro repo. Los códigos de feature/permiso se replican por nombre EXACTO.
 
-## 🔴 CRITICAL — Ask which payment tier BEFORE building or changing anything
+## 🔴 CRITICAL — Ask which payment tier (and how it gets turned on) BEFORE building or changing anything
 
 Avoqado is a tier-gated SaaS (**FREE · PRO · PREMIUM · ENTERPRISE**). Whenever you add a new
 feature, modify existing behavior, or expose a new capability, **STOP and ask the founder which
@@ -43,6 +43,9 @@ behind a paywall.
   ⚠️ **avoqado-android** (THIS repo) and **avoqado-ios** have NO tier gating yet — **start adding it
   now**, mirroring the backend feature codes by exact name. Treat tier codes like permissions:
   mirrored across backend + every client by exact name — a mismatch fails silently.
+- **Activación (regla completa en `../CLAUDE.md`):** esta app **lee** el estado del switch; solo se
+  construye aquí si se toca durante el turno desde el piso, y entonces va en Android **e** iOS en el mismo
+  trabajo. Apagado se ve y se explica, nunca desaparece en silencio.
 
 ## UI/UX Rules (BLOCKING — read before ANY UI work)
 

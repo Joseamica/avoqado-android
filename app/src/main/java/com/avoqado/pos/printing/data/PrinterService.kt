@@ -54,6 +54,9 @@ private val BT_SPP_UUID: UUID = UUID.fromString("00001101-0000-1000-8000-00805F9
 /** Default ESC/POS raw printing port */
 private const val DEFAULT_PORT = 9100
 
+/** Cuánto se espera la respuesta de estado antes de imprimir de todos modos. */
+private const val PAPER_STATUS_TIMEOUT_MS = 1500
+
 /** Connection timeout in milliseconds */
 private const val CONNECTION_TIMEOUT_MS = 10_000L
 
@@ -495,9 +498,54 @@ class PrinterService @Inject constructor(
 
     private suspend fun sendDataWiFi(data: ByteArray, printer: SavedPrinter) = withContext(Dispatchers.IO) {
         val socket = wifiConnections[printer.id] ?: throw PrinterException.NotConnected()
+
+        // 🔴 Preguntar ANTES de escribir: el 9100 es fuego-y-olvido.
+        //
+        // El socket acepta los bytes aunque el rollo esté vacío, así que sin esta
+        // consulta la app cantaba "Recibo impreso" y no salía nada. Encontrado en
+        // la T3 con una EPSON TM-m30III el 2026-08-10: el cajero se queda sin
+        // ticket y creyendo que sí se imprimió.
+        if (isOutOfPaper(socket)) throw PrinterException.OutOfPaper()
+
         val output: OutputStream = socket.getOutputStream()
         output.write(data)
         output.flush()
+    }
+
+    /**
+     * ¿La impresora dice que se quedó sin papel? (ESC/POS `DLE EOT 4`)
+     *
+     * `DLE EOT n` es un comando de TIEMPO REAL: la impresora lo contesta aunque
+     * esté en estado de error, que es justo cuando importa. n=4 pide el sensor
+     * del rollo; en la respuesta los bits 5 y 6 (0x60) encendidos significan
+     * papel agotado.
+     *
+     * 🔴 FALLA ABIERTO a propósito. Si la impresora no contesta a tiempo —modelo
+     * viejo que no soporta el comando, red lenta— se imprime igual. En este
+     * dominio el "fail-safe" NO puede ser dejar de imprimir: una comanda que no
+     * llega a la cocina es peor que un aviso que no aparece. Sólo se bloquea
+     * cuando la impresora dice EXPLÍCITAMENTE que no tiene papel.
+     */
+    private fun isOutOfPaper(socket: Socket): Boolean = try {
+        val previousTimeout = socket.soTimeout
+        socket.soTimeout = PAPER_STATUS_TIMEOUT_MS
+        try {
+            socket.getOutputStream().apply {
+                write(byteArrayOf(0x10, 0x04, 0x04)) // DLE EOT 4 — sensor del rollo
+                flush()
+            }
+            val status = socket.getInputStream().read()
+            // read() == -1 → la impresora cerró; no es "sin papel", no bloquear.
+            val sinPapel = status >= 0 && (status and 0x60) == 0x60
+            if (sinPapel) Log.w(TAG, "Impresora sin papel (estado 0x${status.toString(16)})")
+            sinPapel
+        } finally {
+            socket.soTimeout = previousTimeout
+        }
+    } catch (e: Exception) {
+        // Timeout o modelo que no soporta DLE EOT: se imprime igual (fail-open).
+        Log.d(TAG, "Sin respuesta al estado de papel (${e.message}) — se imprime igual")
+        false
     }
 
     private fun releaseWifiConnection(printerId: String) {
@@ -549,24 +597,51 @@ class PrinterService @Inject constructor(
      *
      * @return number of printers that successfully printed at least one copy
      */
-    suspend fun manualPrintReceipt(receipt: ReceiptData): Int {
+    /**
+     * Desenlace de una reimpresión manual. Un simple contador no alcanzaba: con
+     * 0 impresiones la pantalla decía "No hay impresora configurada" aunque SÍ
+     * hubiera una, sólo que sin papel. El motivo tiene que llegar a la UI para
+     * que el cajero sepa qué hacer (poner papel ≠ configurar impresora).
+     */
+    sealed interface PrintOutcome {
+        data class Printed(val count: Int) : PrintOutcome
+        data object NoPrinter : PrintOutcome
+        data object OutOfPaper : PrintOutcome
+        data class Failed(val reason: String) : PrintOutcome
+    }
+
+    suspend fun manualPrintReceipt(receipt: ReceiptData): PrintOutcome {
         val configured = getPrinters(PrinterRole.RECEIPT)
         val eligible = if (configured.isNotEmpty()) {
             configured
         } else {
             listOfNotNull(getDefaultPrinterWithHardwareFallback(PrinterRole.RECEIPT))
         }
+        if (eligible.isEmpty()) return PrintOutcome.NoPrinter
+
         var successCount = 0
+        var outOfPaper = false
+        var lastError: String? = null
         eligible.forEach { printer ->
             try {
                 printReceipt(receipt, printer)
                 successCount++
                 Log.d(TAG, "Manual reprint succeeded on ${printer.name}")
+            } catch (e: PrinterException.OutOfPaper) {
+                outOfPaper = true
+                Log.e(TAG, "Manual reprint: ${printer.name} sin papel")
             } catch (e: Exception) {
+                lastError = e.message
                 Log.e(TAG, "Manual reprint failed on ${printer.name}: ${e.message}")
             }
         }
-        return successCount
+        return when {
+            successCount > 0 -> PrintOutcome.Printed(successCount)
+            // Sin papel gana sobre un error genérico: es el motivo accionable.
+            outOfPaper -> PrintOutcome.OutOfPaper
+            lastError != null -> PrintOutcome.Failed(lastError!!)
+            else -> PrintOutcome.NoPrinter
+        }
     }
 
     suspend fun autoPrintKitchenTicket(ticket: KitchenTicketData) {

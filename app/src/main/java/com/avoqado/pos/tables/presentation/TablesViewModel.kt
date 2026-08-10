@@ -323,7 +323,7 @@ class TablesViewModel @Inject constructor(
                 },
                 onFailure = { e ->
                     repository.refresh(vId)
-                    _actionState.value = TableActionState.Error(e.message ?: "No se pudo dar de cortesía")
+                    _actionState.value = TableActionState.Error(com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo dar de cortesía"))
                 },
             )
         }
@@ -353,7 +353,7 @@ class TablesViewModel @Inject constructor(
                 },
                 onFailure = { e ->
                     repository.refresh(vId)
-                    _actionState.value = TableActionState.Error(e.message ?: "No se pudo anular la cuenta")
+                    _actionState.value = TableActionState.Error(com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo anular la cuenta"))
                 },
             )
         }
@@ -460,7 +460,7 @@ class TablesViewModel @Inject constructor(
                     repository.refresh(vId)
                     onDone(true, "Cuenta movida")
                 },
-                onFailure = { e -> onDone(false, e.message ?: "No se pudo mover") },
+                onFailure = { e -> onDone(false, com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo mover")) },
             )
         }
     }
@@ -557,7 +557,7 @@ class TablesViewModel @Inject constructor(
                 printerService.printReceipt(receipt, printer)
                 _actionState.value = TableActionState.Success("Pre-cuenta impresa")
             } catch (e: Exception) {
-                _actionState.value = TableActionState.Error("No se pudo imprimir: ${e.message ?: "desconocido"}")
+                _actionState.value = TableActionState.Error("No se pudo imprimir: ${com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "desconocido")}")
             }
         }
     }

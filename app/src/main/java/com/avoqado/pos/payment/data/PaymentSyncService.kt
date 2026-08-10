@@ -215,9 +215,51 @@ class PaymentSyncService @Inject constructor(
      * llave nueva: conserva [PendingPaymentEntity.id] y por tanto la garantía
      * de idempotencia del intento original.
      */
-    suspend fun retryFailedPayment(id: String) {
+    /**
+     * Reintento MANUAL desde "Operaciones por revisar", con el desenlace real.
+     *
+     * 🔴 Antes devolvía Unit y la pantalla pintaba una palomita verde pasara lo
+     * que pasara. Con el cobro rechazado por el server (400), el gerente veía
+     * "Cobro enviado de nuevo a sincronización" y el mismo cobro seguía en la
+     * lista: la pantalla decía que sí y los hechos decían que no. En una
+     * pantalla cuyo único trabajo es responder "¿este cobro entró?", esa mentira
+     * es peor que no tener el botón.
+     */
+    suspend fun retryFailedPayment(id: String): RetryOutcome {
         dao.retryFailed(id)
         syncNow()
+        // `syncNow()` corre en su propio scope: hay que ESPERAR (con tope) el
+        // desenlace de ESTA fila. Leer el estado de inmediato contestaba
+        // "quedó en cola" con el server contestando 400 un segundo después —
+        // el mensaje salía antes del round-trip (visto en la T3, 2026-08-09).
+        val deadline = System.currentTimeMillis() + 12_000
+        while (System.currentTimeMillis() < deadline) {
+            when (dao.syncStatusOf(id)) {
+                // La fila desaparece si otra pasada ya la limpió: se aplicó.
+                null, PaymentSyncStatus.SYNCED.name -> return RetryOutcome.Applied
+                PaymentSyncStatus.FAILED.name -> return RetryOutcome.Rejected(dao.lastErrorOf(id))
+                else -> kotlinx.coroutines.delay(400)
+            }
+        }
+        // Tope alcanzado sin resolución: genuinamente en cola (sin red o server
+        // lento). No es éxito ni rechazo.
+        return RetryOutcome.StillQueued
+    }
+
+    /**
+     * El gerente resolvió el cobro a mano y lo descarta de la cuarentena.
+     * Devuelve false si la fila ya no estaba FAILED (otra pasada la movió).
+     */
+    suspend fun dismissFailedPayment(id: String): Boolean = dao.deleteFailed(id) > 0
+
+    /** Qué pasó con un reintento manual. */
+    sealed interface RetryOutcome {
+        /** El server lo aceptó (o ya lo tenía). Se acabó. */
+        data object Applied : RetryOutcome
+        /** Sigue encolado — típicamente sin red. Se reintentará solo. */
+        data object StillQueued : RetryOutcome
+        /** El server lo rechazó otra vez. Necesita a un humano. */
+        data class Rejected(val error: String?) : RetryOutcome
     }
 
     /** Lectura persistida para impedir logout/cambio de venue con trabajo oculto. */
@@ -299,12 +341,16 @@ class PaymentSyncService @Inject constructor(
                 .post(bodyJson.toRequestBody(JSON_MEDIA))
                 .build()
 
-            val (code, responseBody) = withContext(Dispatchers.IO) {
+            val (code, responseBody, headers) = withContext(Dispatchers.IO) {
                 val response = client.newCall(request).execute()
-                response.code to (response.body?.string() ?: "")
+                Triple(
+                    response.code,
+                    response.body?.string() ?: "",
+                    response.header("content-type") to response.header("ngrok-error-code"),
+                )
             }
 
-            return handleSyncResult(payment, code, responseBody)
+            return handleSyncResult(payment, code, responseBody, headers.first, headers.second)
 
         } catch (e: java.net.UnknownHostException) {
             handleNetworkError(payment, "Sin conexión")
@@ -371,7 +417,13 @@ class PaymentSyncService @Inject constructor(
         }
     }
 
-    private suspend fun handleSyncResult(payment: PendingPaymentEntity, code: Int, body: String): Boolean {
+    private suspend fun handleSyncResult(
+        payment: PendingPaymentEntity,
+        code: Int,
+        body: String,
+        contentType: String? = null,
+        ngrokError: String? = null,
+    ): Boolean {
         return when {
             code in 200..299 -> {
                 // Success
@@ -391,8 +443,15 @@ class PaymentSyncService @Inject constructor(
                 dao.updateStatus(payment.id, PaymentSyncStatus.SYNCED.name)
                 false
             }
+            // 🔴 Un 4xx de un INTERMEDIARIO (portal cautivo, proxy de plaza,
+            // túnel caído) no dice nada de la venta: es red, no negocio. Mandarlo
+            // a cuarentena marcaba un cobro legítimo como fallido permanente.
+            OrderRepository.isTransient4xx(code, contentType, ngrokError, body) -> {
+                handleNetworkError(payment, "Respuesta $code de la red, no del servidor de Avoqado")
+                true
+            }
             code in 400..499 -> {
-                // Client error — permanent failure (bad request, not retryable)
+                // Rechazo de NEGOCIO de nuestra API — permanente, a cuarentena.
                 Log.e(TAG, "❌ Payment ${payment.id} failed permanently: $code - $body")
                 dao.updateStatusWithError(payment.id, PaymentSyncStatus.FAILED.name, "Error $code: $body")
                 false

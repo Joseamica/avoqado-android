@@ -152,11 +152,23 @@ fun TablesScreen(
     var showBulkUnir by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
     val actionMessage by viewModel.actionMessage.collectAsState()
+    // 🔴 Mostrar PRIMERO, consumir DESPUÉS.
+    //
+    // Al revés (consumir y luego mostrar) el aviso NUNCA se ve: consumirlo pone
+    // `actionMessage` en null, eso cambia la LLAVE del LaunchedEffect, y Compose
+    // cancela la corrutina en curso — matando el `showSnackbar` antes de que
+    // pinte. Se comía TODOS los avisos de la pantalla: descuentos aplicados,
+    // cuenta anulada, mesa liberada y —lo que lo destapó— el rechazo del server
+    // al fusionar una cuenta que ya tiene pagos: el mesero tocaba "Fusionar", no
+    // pasaba nada, y no había forma de saber por qué (2026-08-09).
+    //
+    // `showSnackbar` suspende hasta que el aviso se cierra; consumir al volver
+    // deja el estado limpio para el siguiente, y dos mensajes iguales seguidos
+    // sí se vuelven a ver porque el estado pasa por null entre uno y otro.
     LaunchedEffect(actionMessage) {
-        actionMessage?.let {
-            viewModel.consumeActionMessage()
-            snackbarHostState.showSnackbar(message = it, duration = SnackbarDuration.Long)
-        }
+        val mensaje = actionMessage ?: return@LaunchedEffect
+        snackbarHostState.showSnackbar(message = mensaje, duration = SnackbarDuration.Long)
+        viewModel.consumeActionMessage()
     }
     val bulkCtx = androidx.compose.ui.platform.LocalContext.current
     fun exitSelection() { selectionMode = false; selectedIds = emptySet() }

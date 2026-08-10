@@ -117,7 +117,7 @@ class PaymentFlowViewModelTest {
         coEvery { kdsOrderBus.publish(any()) } returns Unit
         coEvery { printerService.autoPrintReceipt(any()) } returns Unit
         coEvery { printerService.autoPrintKitchenTicket(any()) } returns Unit
-        coEvery { printerService.manualPrintReceipt(any()) } returns 1
+        coEvery { printerService.manualPrintReceipt(any()) } returns PrinterService.PrintOutcome.Printed(1)
         every { secureStorage.venueName } returns "Avoqado Test"
         every { secureStorage.userId } returns "user-456"
         every { secureStorage.venueId } returns "venue-1"
@@ -742,5 +742,71 @@ class PaymentFlowViewModelTest {
         advanceUntilIdle()
 
         coVerify(exactly = 1) { cashDrawerRepository.addCashSale(800, any()) }
+    }
+
+    @Test
+    fun `el cliente elegido en el carrito nace con la orden`() = runTest {
+        // 🔴 El cajero elegía "Juan Perez" en el encabezado del carrito, cobraba,
+        // y la orden se creaba SIN customerId: venta anonima en el server (sin
+        // historial, sin lealtad, sin a quien facturar) y la pantalla de recibo
+        // le volvia a ofrecer "Agregar cliente". El ticket salia perfecto, asi
+        // que nadie se enteraba.
+        val customerIdSlot = slot<String>()
+        coEvery {
+            orderRepository.createOrder(any(), any(), capture(customerIdSlot), any(), any())
+        } returns Result.success(
+            CreateOrderResponse(success = true, data = OrderData(id = "order-1")),
+        )
+        coEvery {
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any())
+        } returns TerminalPaymentResult.Error("Terminal timeout")
+
+        val cart = CartState(
+            items = listOf(
+                CartItem(
+                    id = "line-product",
+                    type = CartItemType.ProductItem("prod-1"),
+                    name = "Hamburguesa de Pollo",
+                    unitPrice = 11900,
+                ),
+            ),
+        )
+
+        viewModel.startPaymentFlow(cart, customerId = "cus_juan_perez", customerName = "Juan Perez")
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        assertEquals("cus_juan_perez", customerIdSlot.captured)
+        // Y la pantalla de recibo lo muestra puesto, en vez de pedirlo otra vez.
+        assertEquals("Juan Perez", viewModel.attachedCustomerName.value)
+    }
+
+    @Test
+    fun `una venta nueva no arrastra al cliente de la anterior`() = runTest {
+        coEvery {
+            orderRepository.createOrder(any(), any(), any(), any(), any())
+        } returns Result.success(
+            CreateOrderResponse(success = true, data = OrderData(id = "order-1")),
+        )
+
+        val cart = CartState(
+            items = listOf(
+                CartItem(
+                    id = "line-product",
+                    type = CartItemType.ProductItem("prod-1"),
+                    name = "Hamburguesa",
+                    unitPrice = 11900,
+                ),
+            ),
+        )
+
+        viewModel.startPaymentFlow(cart, customerId = "cus_juan_perez", customerName = "Juan Perez")
+        assertEquals("Juan Perez", viewModel.attachedCustomerName.value)
+
+        // Siguiente cliente en la fila: la sesion arranca limpia. Cobrarle a uno
+        // a nombre de otro es peor que no tener cliente.
+        viewModel.startPaymentFlow(cart)
+        assertNull(viewModel.attachedCustomerName.value)
     }
 }

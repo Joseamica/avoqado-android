@@ -701,6 +701,17 @@ class CartViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Renueva la sesión de cobro de vales para que no venza mientras el cajero
+     * trabaja. Espejo de `maintainAreaTicketCheckout` en iOS.
+     *
+     * Lanza si falla: el llamador decide. Un bache de red no debe tumbar el cobro,
+     * pero tampoco queremos tragarnos el error en silencio aquí.
+     */
+    suspend fun heartbeatAreaTicketSession() {
+        areaTicketRepository.heartbeat()?.let(::replaceAreaTicketLines)
+    }
+
     suspend fun resolveScannedBarcode(rawCode: String): ScannedBarcodeResult {
         val code = rawCode.trim()
         val localProduct = products.value.firstOrNull {

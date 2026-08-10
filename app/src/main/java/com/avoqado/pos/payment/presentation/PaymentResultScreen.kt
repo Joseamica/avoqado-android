@@ -138,13 +138,19 @@ fun PaymentResultScreen(
                         .padding(vertical = AvoqadoTheme.spacing.xs),
                 )
                 if (onAddCustomer != null) {
+                    // Con cliente ya puesto esto es una ETIQUETA, no un botón:
+                    // subrayarlo e invitar al toque hacía pensar que faltaba
+                    // algo. Mismo criterio que iOS (PaymentResultViews.swift).
+                    val hasCustomer = customerName != null
                     Text(
                         text = customerName ?: "Agregar cliente",
                         style = MaterialTheme.typography.bodyLarge,
                         color = MaterialTheme.colorScheme.onSurface,
-                        textDecoration = TextDecoration.Underline,
+                        textDecoration = if (hasCustomer) null else TextDecoration.Underline,
                         modifier = Modifier
-                            .clickable(onClick = onAddCustomer)
+                            .then(
+                                if (hasCustomer) Modifier else Modifier.clickable(onClick = onAddCustomer),
+                            )
                             .padding(vertical = AvoqadoTheme.spacing.xs),
                     )
                 }

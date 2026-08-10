@@ -20,6 +20,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -28,6 +29,30 @@ class OrderRepository @Inject constructor(
     private val secureStorage: SecureStorage,
     private val client: OkHttpClient,
 ) {
+    /**
+     * Cliente SOLO para la ruta del dinero (crear orden, cobrar efectivo, fast).
+     *
+     * Rendirse rápido y ENCOLAR es el diseño (patrón Square: intenta, falla
+     * rápido, guarda local): un timeout ya es un error encolable
+     * (`isQueueableError`), así que esto no abre ningún camino nuevo — solo
+     * llega en ~15 s al mismo código que antes tardaba 30–60 en alcanzarse,
+     * que era lo que congelaba al cajero con fila.
+     *
+     * Es seguro reintentar después gracias a las llaves de idempotencia
+     * (`externalId` en la orden, `idempotencyKey` en el pago): si el intento
+     * lento SÍ aterrizó en el server, el replay deduplica en vez de duplicar.
+     *
+     * 🔴 NO usar para: terminal (310 s a propósito — espera a que pasen la
+     * tarjeta), catálogo/reportes (en red lenta sí tardan y ahí no hay cola
+     * que los salve), ni adjuntar cliente/recibos (no bloquean el cobro).
+     */
+    private val moneyClient: OkHttpClient = client.newBuilder()
+        .connectTimeout(5, TimeUnit.SECONDS)
+        .readTimeout(10, TimeUnit.SECONDS)
+        .writeTimeout(10, TimeUnit.SECONDS)
+        .callTimeout(15, TimeUnit.SECONDS)
+        .build()
+
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
     // MARK: - Exception types
@@ -47,6 +72,40 @@ class OrderRepository @Inject constructor(
 
         fun isQueueableHttpCode(code: Int): Boolean {
             return code >= 500
+        }
+
+        /**
+         * ¿Este 4xx lo dijo NUESTRA API, o un intermediario del camino?
+         *
+         * 🔴 Un 4xx de la API es un rechazo de NEGOCIO y va a cuarentena. Pero un
+         * 4xx de un portal cautivo, un proxy de plaza o un túnel caído NO dice
+         * nada de la venta — y mandarlo a cuarentena marca un cobro legítimo como
+         * fallido PERMANENTE, con un mensaje inventado ("la orden ya no existe").
+         * El efectivo ya está en el cajón; la venta nunca llega al server y el
+         * corte no cuadra al cierre.
+         *
+         * Reproducido en la T3 el 2026-08-09: con el túnel abajo, ngrok contestó
+         * 404 y el cobro encolado murió con ese texto.
+         *
+         * `ConnectivityInterceptor.isServerDown` ya usaba este criterio para el
+         * letrero de "sin conexión"; la cola de pagos no lo reusaba. Señales de
+         * que la respuesta NO viene de la API:
+         *  - trae `ngrok-error-code` (túnel de desarrollo caído)
+         *  - el cuerpo es HTML (página de error de proxy/CDN/portal cautivo)
+         *  - el cuerpo no es el JSON de error de la API
+         * Más 408/429, que son transitorios por definición.
+         */
+        fun isTransient4xx(code: Int, contentType: String?, ngrokError: String?, body: String?): Boolean {
+            if (code !in 400..499) return false
+            if (code == 408 || code == 429) return true
+            if (!ngrokError.isNullOrBlank()) return true
+            val ct = contentType?.lowercase().orEmpty()
+            if (ct.startsWith("text/html")) return true
+            // Sin JSON parseable no hay forma de que sea un rechazo de la API.
+            val trimmed = body?.trim().orEmpty()
+            if (trimmed.isEmpty()) return true
+            if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) return true
+            return false
         }
 
         /**
@@ -235,7 +294,7 @@ class OrderRepository @Inject constructor(
                 .build()
 
             val (responseCode, responseBody) = withContext(Dispatchers.IO) {
-                val response = client.newCall(httpRequest).execute()
+                val response = moneyClient.newCall(httpRequest).execute()
                 response.code to (response.body?.string() ?: "")
             }
 
@@ -338,7 +397,7 @@ class OrderRepository @Inject constructor(
                 .build()
 
             val (code, body) = withContext(Dispatchers.IO) {
-                val response = client.newCall(request).execute()
+                val response = moneyClient.newCall(request).execute()
                 response.code to (response.body?.string() ?: "")
             }
 
@@ -412,7 +471,7 @@ class OrderRepository @Inject constructor(
                 .build()
 
             val (code, body) = withContext(Dispatchers.IO) {
-                val response = client.newCall(request).execute()
+                val response = moneyClient.newCall(request).execute()
                 response.code to (response.body?.string() ?: "")
             }
 

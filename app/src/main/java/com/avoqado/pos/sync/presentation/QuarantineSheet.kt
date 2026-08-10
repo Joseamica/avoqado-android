@@ -35,10 +35,9 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Warning
+import com.avoqado.pos.designsystem.components.AvoqadoErrorToast
 import com.avoqado.pos.designsystem.components.AvoqadoSuccessToast
 import java.text.NumberFormat
-import java.text.SimpleDateFormat
-import java.util.Date
 import java.util.Locale
 
 /**
@@ -56,6 +55,8 @@ fun QuarantineSheet(
     val failedPayments by viewModel.failedPayments.collectAsState()
     val failedReservations by viewModel.failedReservationActions.collectAsState()
     val successMessage by viewModel.successMessage.collectAsState()
+    val errorMessage by viewModel.errorMessage.collectAsState()
+    val retryingPaymentId by viewModel.retryingPaymentId.collectAsState()
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     LaunchedEffect(Unit) { viewModel.load() }
@@ -131,9 +132,25 @@ fun QuarantineSheet(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                             if (viewModel.canResolve) {
-                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                                    OutlinedButton(onClick = { viewModel.retryPayment(payment.id) }) {
-                                        Text("Reintentar")
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm, Alignment.End),
+                                ) {
+                                    // La guía de la tarjeta puede ordenar "márcalo como
+                                    // resuelto" (caso "ya está pagada"): el botón tiene
+                                    // que existir, no solo el consejo.
+                                    val enVuelo = retryingPaymentId != null
+                                    OutlinedButton(
+                                        onClick = { viewModel.dismissPayment(payment.id) },
+                                        enabled = !enVuelo,
+                                    ) {
+                                        Text("Marcar resuelta")
+                                    }
+                                    OutlinedButton(
+                                        onClick = { viewModel.retryPayment(payment.id) },
+                                        enabled = !enVuelo,
+                                    ) {
+                                        Text(if (retryingPaymentId == payment.id) "Reintentando…" else "Reintentar")
                                     }
                                 }
                             }
@@ -252,10 +269,26 @@ fun QuarantineSheet(
     successMessage?.let {
         AvoqadoSuccessToast(message = it, onDismiss = viewModel::consumeSuccess)
     }
+
+    // Un reintento rechazado se ve como rechazo, no como palomita verde.
+    errorMessage?.let {
+        AvoqadoErrorToast(message = it, onDismiss = viewModel::consumeError)
+    }
 }
 
+/**
+ * Hora del NEGOCIO, no la del aparato.
+ *
+ * 🔴 Con `SimpleDateFormat` pelón se usa la zona del dispositivo: un cobro de
+ * las 12:28 salía como "10 ago, 02:28". Justo en la pantalla donde un gerente
+ * decide si un cobro entró, la hora estaba a 14 horas de la realidad — y con
+ * eso no se puede cruzar nada contra el corte. Las otras 49 pantallas de la app
+ * ya usan `VenueTimeZone`; ésta se había quedado fuera.
+ */
 private fun formatTime(epochMs: Long): String =
-    SimpleDateFormat("d MMM, HH:mm", Locale("es", "MX")).format(Date(epochMs))
+    java.time.Instant.ofEpochMilli(epochMs)
+        .atZone(com.avoqado.pos.core.util.VenueTimeZone.zoneId())
+        .format(java.time.format.DateTimeFormatter.ofPattern("d MMM, HH:mm", Locale("es", "MX")))
 
 private fun formatMoney(cents: Int): String =
     NumberFormat.getCurrencyInstance(Locale("es", "MX")).format(cents / 100.0)

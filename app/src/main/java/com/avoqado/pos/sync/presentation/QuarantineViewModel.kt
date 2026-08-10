@@ -51,6 +51,24 @@ class QuarantineViewModel @Inject constructor(
     private val _successMessage = MutableStateFlow<String?>(null)
     val successMessage: StateFlow<String?> = _successMessage.asStateFlow()
 
+    /** Un rechazo NO se pinta con palomita verde. Va por su propio canal. */
+    private val _errorMessage = MutableStateFlow<String?>(null)
+    val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
+
+    fun consumeError() {
+        _errorMessage.value = null
+    }
+
+    /**
+     * Cobro que está reintentando AHORA. El reintento espera el desenlace real
+     * (hasta 12 s), así que sin esto el gerente toca "Reintentar" y la pantalla
+     * no hace absolutamente nada durante 12 segundos — en una pantalla de
+     * DINERO eso invita a picarle otra vez. Espejo de `retryingPaymentId` de
+     * iOS (QuarantineView.swift), que sí lo tenía desde el primer día.
+     */
+    private val _retryingPaymentId = MutableStateFlow<String?>(null)
+    val retryingPaymentId: StateFlow<String?> = _retryingPaymentId.asStateFlow()
+
     val rejectedCount: StateFlow<Int> = syncOutbox.rejectedCount
 
     /** Resolver/descartar conciliaciones altera caja: gerente o superior. */
@@ -77,11 +95,45 @@ class QuarantineViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Un mensaje que NO depende del desenlace es una mentira con palomita
+     * verde: el gerente lee "listo", el cobro sigue en la lista, y esta pantalla
+     * existe justo para responder "¿este cobro entró?".
+     */
     fun retryPayment(id: String) {
         if (!canResolve) return
+        if (_retryingPaymentId.value != null) return // ya hay uno en vuelo
         viewModelScope.launch {
-            paymentSyncService.retryFailedPayment(id)
-            _successMessage.value = "Cobro enviado de nuevo a sincronización"
+            _retryingPaymentId.value = id
+            try {
+            when (val outcome = paymentSyncService.retryFailedPayment(id)) {
+                is PaymentSyncService.RetryOutcome.Applied ->
+                    _successMessage.value = "Cobro sincronizado"
+                is PaymentSyncService.RetryOutcome.StillQueued ->
+                    _successMessage.value = "Sin conexión — el cobro quedó en cola y se reintentará solo"
+                is PaymentSyncService.RetryOutcome.Rejected ->
+                    _errorMessage.value = outcome.error?.let { detalleRechazo(it) }
+                        ?: "El servidor volvió a rechazar el cobro"
+            }
+            load()
+            } finally {
+                _retryingPaymentId.value = null
+            }
+        }
+    }
+
+    /**
+     * "Marcar resuelta" para un COBRO fallido. Existía para operaciones
+     * rechazadas y reservas pero no para cobros: la guía decía "márcalo como
+     * resuelto" apuntando a un botón inexistente, y un cobro en "ya está
+     * pagada" era IRRESOLUBLE — tarjeta y banner eternos (visto en la T3 el
+     * 2026-08-09 con el caso real de $129).
+     */
+    fun dismissPayment(id: String) {
+        if (!canResolve) return
+        viewModelScope.launch {
+            paymentSyncService.dismissFailedPayment(id)
+            _successMessage.value = "Cobro marcado como resuelto"
             load()
         }
     }
@@ -161,14 +213,33 @@ class QuarantineViewModel @Inject constructor(
         }
     }
 
-    fun paymentResolutionHint(payment: PendingPaymentEntity): String = when {
-        payment.lastError?.contains("401") == true ->
+    fun paymentResolutionHint(payment: PendingPaymentEntity): String =
+        payment.lastError?.let { detalleRechazo(it) }
+            ?: "El cobro no logró confirmarse. Conserva el efectivo registrado y reintenta cuando el servidor esté disponible."
+
+    /**
+     * Traduce el error crudo del server a lo que el gerente tiene que DECIDIR.
+     *
+     * 🔴 El caso que importa es "Order is already paid": NO es un cobro perdido,
+     * es un cobro que YA quedó aplicado y cuya respuesta se perdió en el camino
+     * (servidor reiniciado, WiFi caído a media respuesta). El texto genérico
+     * —"verifica la orden y la caja antes de reintentar"— empuja justo al error
+     * contrario: volver a cobrarle al cliente algo que ya pagó.
+     *
+     * Visto el 2026-08-09: seis reintentos con ese 400 y el dinero ya estaba
+     * registrado desde el primero.
+     */
+    fun detalleRechazo(error: String): String = when {
+        error.contains("already paid", ignoreCase = true) ->
+            "Esta cuenta YA está pagada en el servidor: el cobro sí quedó registrado. " +
+                "NO lo vuelvas a cobrar — márcalo como resuelto."
+        error.contains("401") ->
             "La sesión expiró. Inicia sesión de nuevo cuando no queden operaciones pendientes y vuelve a intentar."
-        payment.lastError?.contains("403") == true ->
+        error.contains("403") ->
             "El empleado no tenía permiso para registrar este cobro. Un gerente debe revisar el rol y reintentarlo."
-        payment.lastError?.contains("404") == true ->
+        error.contains("404") ->
             "La orden vinculada ya no existe. Verifica caja y ventas antes de volver a cobrar."
-        payment.lastError?.contains("400") == true ->
+        error.contains("400") ->
             "El servidor rechazó los datos. Verifica la orden y la caja antes de reintentar."
         else ->
             "El cobro no logró confirmarse. Conserva el efectivo registrado y reintenta cuando el servidor esté disponible."

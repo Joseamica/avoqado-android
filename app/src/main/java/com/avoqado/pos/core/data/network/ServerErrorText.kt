@@ -1,5 +1,7 @@
 package com.avoqado.pos.core.data.network
 
+import kotlinx.serialization.json.contentOrNull
+
 /**
  * Traduce los mensajes que manda el server a algo que un mesero pueda leer.
  *
@@ -12,8 +14,9 @@ package com.avoqado.pos.core.data.network
  * No se traduce en el server a propósito: ahí el detalle técnico sirve para los
  * logs y para el dashboard. Lo que cambia es lo que ve la persona.
  */
-object ServerErrorText {
 
+
+object ServerErrorText {
     private val PERMISSION_REGEX = Regex("""Permission\s+'([^']+)'\s+required""", RegexOption.IGNORE_CASE)
 
     /**
@@ -45,8 +48,47 @@ object ServerErrorText {
             -> "El servidor tardó demasiado en responder. Inténtalo de nuevo."
             is java.io.InterruptedIOException,
             -> offlineMessage
+            // 🔴 Retrofit: `HttpException.message` es "HTTP 400 Bad Request" y el
+            // MOTIVO real viaja en el cuerpo, que nadie leía.
+            //
+            // Así, un rechazo de negocio perfectamente explicado por el server
+            // —"La cuenta origen ya tiene pagos; no se puede fusionar"— llegaba
+            // al mesero como "HTTP 400". Visto en la T3 el 2026-08-09 al intentar
+            // fusionar cuentas: el aviso no decía nada útil y no había forma de
+            // saber qué hacer. Vale para TODA llamada Retrofit de la app, no sólo
+            // para fusionar.
+            // Sin mensaje del server se va al fallback DEL LLAMADOR ("No se pudo
+            // fusionar"), nunca a `error.message`: ese es "HTTP 500
+            // Response.error()" y filtrar esa jerga a la pantalla es el mismo
+            // defecto que estamos arreglando, sólo que con otro texto.
+            is retrofit2.HttpException -> serverMessageFrom(error)?.let { humanize(it, fallback) } ?: fallback
             else -> humanize(error.message, fallback)
         }
+    }
+
+    /**
+     * El `message` que el server puso en el cuerpo del error, o null si no vino.
+     *
+     * El cuerpo sólo se puede leer UNA vez, así que se hace aquí y se atrapa
+     * cualquier fallo: un error al explicar un error no puede tumbar la pantalla.
+     */
+    fun serverMessageFrom(error: retrofit2.HttpException): String? = try {
+        val body = error.response()?.errorBody()?.string()
+        if (body.isNullOrBlank()) {
+            null
+        } else {
+            val root = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+                .parseToJsonElement(body)
+                .let { it as? kotlinx.serialization.json.JsonObject }
+            listOf("message", "error", "errorMessage")
+                .firstNotNullOfOrNull { key ->
+                    (root?.get(key) as? kotlinx.serialization.json.JsonPrimitive)
+                        ?.contentOrNull
+                        ?.takeIf { it.isNotBlank() }
+                }
+        }
+    } catch (_: Exception) {
+        null
     }
 
     /** Espejo de iOS: distinguir sin-red de fallo real, sin tener la excepción. */

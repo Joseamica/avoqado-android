@@ -277,4 +277,50 @@ class OrderRepositoryTest {
 
         assertTrue(payload.contains("\"externalId\":\"order-session-789\""))
     }
+
+    // MARK: - 4xx de infraestructura vs 4xx de negocio
+
+    @Test
+    fun `un 404 de tunel caido NO es rechazo de negocio`() {
+        // 🔴 Reproducido en la T3 el 2026-08-09: con el túnel abajo, ngrok
+        // contestó 404 y el cobro encolado se marcó FAILED permanente con el
+        // texto "la orden ya no existe". El efectivo YA estaba en el cajón y la
+        // venta nunca llegó al server: el corte no cuadra al cierre y nadie
+        // sabe por qué. En un local real el mismo papel lo hace el portal
+        // cautivo del WiFi de la plaza.
+        assertTrue(OrderRepository.isTransient4xx(404, "text/html", "ERR_NGROK_3200", "<html>..."))
+    }
+
+    @Test
+    fun `una pagina HTML de proxy NO es rechazo de negocio`() {
+        assertTrue(OrderRepository.isTransient4xx(403, "text/html; charset=utf-8", null, "<!DOCTYPE html>"))
+    }
+
+    @Test
+    fun `un cuerpo que no es JSON NO puede ser un rechazo de nuestra API`() {
+        assertTrue(OrderRepository.isTransient4xx(400, "text/plain", null, "Blocked by proxy"))
+        assertTrue(OrderRepository.isTransient4xx(400, null, null, ""))
+    }
+
+    @Test
+    fun `408 y 429 son transitorios por definicion`() {
+        assertTrue(OrderRepository.isTransient4xx(408, "application/json", null, "{}"))
+        assertTrue(OrderRepository.isTransient4xx(429, "application/json", null, "{}"))
+    }
+
+    @Test
+    fun `un rechazo REAL de la API sigue yendo a cuarentena`() {
+        // Lo que NO debe cambiar: "Order is already paid" es negocio y tiene que
+        // seguir siendo permanente, o el cobro se reintentaría para siempre.
+        val json = """{"message":"Order is already paid","errorName":"Error"}"""
+        assertFalse(OrderRepository.isTransient4xx(400, "application/json; charset=utf-8", null, json))
+        assertFalse(OrderRepository.isTransient4xx(403, "application/json", null, """{"message":"Sin permiso"}"""))
+        assertFalse(OrderRepository.isTransient4xx(404, "application/json", null, """{"message":"Order not found"}"""))
+    }
+
+    @Test
+    fun `los 5xx no pasan por esta regla, ya eran reintentables`() {
+        assertFalse(OrderRepository.isTransient4xx(500, "text/html", "ERR", "<html>"))
+        assertFalse(OrderRepository.isTransient4xx(200, "application/json", null, "{}"))
+    }
 }

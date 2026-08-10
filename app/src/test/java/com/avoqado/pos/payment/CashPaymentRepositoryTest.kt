@@ -224,4 +224,109 @@ class CashPaymentRepositoryTest {
             )
         }
     }
+
+    @Test
+    fun `el cliente elegido en el carrito viaja en el pago encolado sin red`() = runTest {
+        // 🔴 Sin esto, cobrar sin red borraba al cliente: el cajero eligió
+        // "Juan Pérez", el ticket salió bien, y al reconectar la venta se
+        // reproducía anónima — sin historial, sin lealtad y sin a quién
+        // facturar. Nadie lo nota, porque en el local todo se vio correcto.
+        val orderRequest = CreateOrderRequest(
+            items = listOf(
+                com.avoqado.pos.payment.data.model.OrderItemRequest(
+                    productId = "prod_1",
+                    name = "Hamburguesa",
+                    quantity = 1,
+                    unitPrice = 11900,
+                ),
+            ),
+            subtotal = 11900,
+            total = 11900,
+            paymentMethod = "CASH",
+        )
+
+        repository.queueCashPayment(
+            orderRequest = orderRequest,
+            staffId = "user-456",
+            cashTenderedCents = 15000,
+            changeCents = 3100,
+            rating = null,
+            customerId = "cus_juan_perez",
+        )
+
+        coVerify {
+            dao.insert(
+                match {
+                    it.orderRequestJson?.contains("\"customerId\":\"cus_juan_perez\"") == true
+                },
+            )
+        }
+    }
+
+    @Test
+    fun `una venta sin cliente no inventa uno`() = runTest {
+        val orderRequest = CreateOrderRequest(
+            items = listOf(
+                com.avoqado.pos.payment.data.model.OrderItemRequest(
+                    productId = "prod_1",
+                    name = "Hamburguesa",
+                    quantity = 1,
+                    unitPrice = 11900,
+                ),
+            ),
+            subtotal = 11900,
+            total = 11900,
+            paymentMethod = "CASH",
+        )
+
+        repository.queueCashPayment(
+            orderRequest = orderRequest,
+            staffId = "user-456",
+            cashTenderedCents = 11900,
+            changeCents = 0,
+            rating = null,
+        )
+
+        coVerify { dao.insert(match { it.orderRequestJson?.contains("customerId") != true }) }
+    }
+
+    @Test
+    fun `el cobro encolado conserva la llave del intento en linea`() = runTest {
+        // 🔴 El caso real (2026-08-09, log del backend):
+        //   12:28:31.884  el server GUARDA el pago con la llave K
+        //   12:28:32.207  el server recibe SIGTERM — la respuesta nunca llega
+        //   12:30 → 12:39  seis reintentos, todos 400 "Order is already paid"
+        //
+        // El dinero YA estaba cobrado. Los reintentos fallaban porque al
+        // encolar se inventaba una llave nueva: el server buscaba una llave que
+        // no conocía, se saltaba el atajo idempotente y chocaba con la orden ya
+        // pagada. El cobro se quedaba en cuarentena para siempre y el gerente no
+        // tenía forma de saber si el efectivo había entrado.
+        //
+        // El id de la fila ES la llave que manda PaymentSyncService.
+        val orderRequest = CreateOrderRequest(items = emptyList(), subtotal = 12900, total = 12900, paymentMethod = "CASH")
+
+        val localId = repository.queueCashPayment(
+            orderRequest = orderRequest,
+            staffId = "user-456",
+            cashTenderedCents = 15000,
+            changeCents = 2100,
+            rating = null,
+            orderId = "order-1",
+            idempotencyKey = "65fb7769-3319-4c24-9d74-f017000c3fb1",
+        )
+
+        assertEquals("65fb7769-3319-4c24-9d74-f017000c3fb1", localId)
+        coVerify { dao.insert(match { it.id == "65fb7769-3319-4c24-9d74-f017000c3fb1" }) }
+    }
+
+    @Test
+    fun `sin llave previa se genera una, y dos cobros distintos no la comparten`() = runTest {
+        val orderRequest = CreateOrderRequest(items = emptyList(), subtotal = 5000, total = 5000, paymentMethod = "CASH")
+
+        val a = repository.queueCashPayment(orderRequest, "user-456", null, null, null)
+        val b = repository.queueCashPayment(orderRequest, "user-456", null, null, null)
+
+        assertNotEquals(a, b)
+    }
 }

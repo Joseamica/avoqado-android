@@ -43,6 +43,29 @@ class CashPaymentRepository @Inject constructor(
         /** Identidad estable de la creación de orden original. */
         orderExternalId: String? = null,
         /**
+         * Cliente elegido en el carrito. Se PERSISTE con el pago: sin esto, un
+         * cobro hecho sin red se reproducía al reconectar como venta anónima
+         * aunque el cajero sí hubiera elegido al cliente — y nadie se entera,
+         * porque el ticket ya salió bien.
+         */
+        customerId: String? = null,
+        /**
+         * 🔴 LA MISMA llave que usó el intento en línea, no una nueva.
+         *
+         * El id de esta fila ES la llave que `PaymentSyncService` manda al
+         * reintentar. Inventar una aquí rompe la deduplicación del server: si
+         * el cobro SÍ se aplicó pero la respuesta se perdió (servidor
+         * reiniciado, WiFi caído a media respuesta), el reintento llega con una
+         * llave que el server no conoce, se salta el atajo idempotente y choca
+         * contra "Order is already paid" — 400 permanente. El cobro queda en
+         * cuarentena para siempre aunque el dinero YA esté cobrado, y el
+         * gerente no tiene forma de saber si entró.
+         *
+         * Medido el 2026-08-09 con el log del backend: el pago quedó guardado
+         * con la llave `65fb7769…`, hubo 6 reintentos y CERO deduplicaciones.
+         */
+        idempotencyKey: String? = null,
+        /**
          * Cobro registrado a mano (terminal ajena, transferencia). null =
          * efectivo. Se PERSISTE: sin esto, un cobro con tarjeta hecho sin red
          * se reproducía como efectivo al reconectar y el corte pedía dinero
@@ -50,7 +73,7 @@ class CashPaymentRepository @Inject constructor(
          */
         manualMethod: com.avoqado.pos.payment.domain.ManualPaymentMethod? = null,
     ): String {
-        val localId = UUID.randomUUID().toString()
+        val localId = idempotencyKey?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString()
         val hasOrderItems = OrderRepository.hasProductItems(orderRequest)
         val paymentType = if (orderId != null || hasOrderItems) "ORDER" else "FAST"
         val entity = PendingPaymentEntity(
@@ -73,6 +96,7 @@ class CashPaymentRepository @Inject constructor(
                 OrderRepository.buildCreateOrderPayload(
                     request = orderRequest,
                     staffId = staffId,
+                    customerId = customerId,
                     externalId = orderExternalId ?: "offline-order:$localId",
                 )
             } else {

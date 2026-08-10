@@ -22,6 +22,31 @@ class AreaTicketException(
 
 private val areaTicketErrorJson = Json { ignoreUnknownKeys = true }
 
+/** Estados en los que una sesión de cobro ya no admite más movimientos. */
+private val AREA_TICKET_TERMINAL_STATUSES = setOf("PAID", "CANCELLED", "EXPIRED")
+
+/**
+ * Si una sesión de cobro todavía sirve para cobrar.
+ *
+ * Mira DOS cosas, no una: el estado y la caducidad. El venue caduca las sesiones
+ * por edad (`checkoutSessionMaxAgeMinutes`) y eso NO se refleja en `status`, que
+ * se queda en OPEN. El server manda `expiresAt` justamente para esto.
+ *
+ * Ante una fecha ilegible devuelve `true`: el server sigue siendo la autoridad y
+ * rechazará si de verdad venció. Tirar aquí una sesión buena sería peor.
+ */
+internal fun isAreaTicketCheckoutUsable(
+    status: String,
+    expiresAt: String?,
+    nowMillis: Long = System.currentTimeMillis(),
+): Boolean {
+    if (status in AREA_TICKET_TERMINAL_STATUSES) return false
+    val expiry = expiresAt?.takeIf { it.isNotBlank() }
+        ?.let { runCatching { java.time.Instant.parse(it).toEpochMilli() }.getOrNull() }
+        ?: return true
+    return expiry > nowMillis
+}
+
 internal fun parseAreaTicketHttpError(body: String?, statusCode: Int): AreaTicketException {
     val apiError = body?.let { raw ->
         runCatching {
@@ -32,6 +57,10 @@ internal fun parseAreaTicketHttpError(body: String?, statusCode: Int): AreaTicke
     val message = when (code) {
         "CHECKOUT_TERMINAL_MISMATCH" ->
             "Esta terminal no funciona como Caja de vales. Escanea el vale en la terminal de Caja o configúrala en Dashboard → Configuración → Vales por área → Terminales."
+        // No es un fallo del cobro: la sesión se quedó abierta demasiado tiempo. Lo
+        // único que hay que hacer es volver a escanear, y el vale sigue vivo.
+        "CHECKOUT_SESSION_STALE" ->
+            "El cobro de estos vales quedó abierto demasiado tiempo y venció. Vuelve a escanear el vale para cobrarlo — no se cobró nada."
         else -> apiError?.message ?: when (statusCode) {
             401 -> "La sesión venció. Inicia sesión de nuevo."
             403 -> "Esta terminal no tiene permiso para realizar esta operación."
@@ -162,19 +191,30 @@ class AreaTicketRepository @Inject constructor(
     suspend fun restore(): AreaTicketCheckout? {
         val venueId = venueId()
         session.ensureVenue(venueId)
-        session.current()?.let { return it }
+        // También la que ya está en memoria: una sesión puede vencer con la app
+        // abierta y el carrito a la vista. Devolverla sin mirar la caducidad era
+        // el mismo error, sólo que sin reinicio de por medio.
+        session.current()?.let { current ->
+            if (isAreaTicketCheckoutUsable(current.status, current.expiresAt)) return current
+            session.clear()
+            return null
+        }
         val checkoutId = session.persistedCheckoutId(venueId) ?: return null
         return runCatching {
             request { api.getAreaTicketCheckout(venueId, checkoutId) }.checkout
         }.getOrElse {
             return null
         }.also { checkout ->
-            if (checkout.status in setOf("PAID", "CANCELLED", "EXPIRED")) {
-                session.clear()
-            } else {
+            // Antes esto sólo miraba `status`, y la caducidad del venue NO se refleja
+            // ahí: una sesión de la madrugada seguía en OPEN y volvía como carrito
+            // cobrable. El cajero se enteraba al pulsar Cobrar —con el cliente
+            // enfrente— porque el server la rechazaba con CHECKOUT_SESSION_STALE.
+            if (isAreaTicketCheckoutUsable(checkout.status, checkout.expiresAt)) {
                 session.update(venueId, checkout)
+            } else {
+                session.clear()
             }
-        }.takeUnless { it.status in setOf("PAID", "CANCELLED", "EXPIRED") }
+        }.takeIf { isAreaTicketCheckoutUsable(it.status, it.expiresAt) }
     }
 
     suspend fun resolveCheckoutScan(code: String): AreaTicketScanData =

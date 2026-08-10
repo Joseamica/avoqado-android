@@ -180,6 +180,16 @@ sealed class PrinterException(message: String) : Exception(message) {
     class NotConnected : PrinterException("Impresora no conectada")
     class ConnectionFailed(reason: String) : PrinterException("Error de conexión: $reason")
     class PrintFailed(reason: String) : PrinterException("Error de impresión: $reason")
+
+    /**
+     * La impresora respondió que se quedó SIN PAPEL.
+     *
+     * 🔴 Existe porque el puerto 9100 es fuego-y-olvido: el socket acepta los
+     * bytes aunque no salga nada, así que sin preguntarle a la impresora la app
+     * cantaba "Recibo impreso" con el rollo vacío. Encontrado en la T3 con una
+     * EPSON TM-m30III el 2026-08-10.
+     */
+    class OutOfPaper : PrinterException("La impresora no tiene papel")
     class Timeout : PrinterException("Tiempo de espera agotado")
     class PrinterNotFound : PrinterException("Impresora no encontrada")
     class BluetoothUnavailable : PrinterException("Bluetooth no disponible")

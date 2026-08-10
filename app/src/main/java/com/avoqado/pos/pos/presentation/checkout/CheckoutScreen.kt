@@ -125,6 +125,23 @@ fun CheckoutScreen(
         cartViewModel.restoreAreaTicketSession()
     }
 
+    // Mantener viva la sesión de cobro mientras haya vales en el carrito.
+    // iOS ya lo hacía (`maintainAreaTicketCheckout`) y Android tenía el método
+    // en el repositorio SIN un solo llamador: la sesión moría a los 30 minutos
+    // aunque el cajero estuviera trabajando en ella, y el error salía al cobrar.
+    val hasAreaTicketLines = cartState.items.any { it.locked }
+    LaunchedEffect(hasAreaTicketLines) {
+        if (!hasAreaTicketLines) return@LaunchedEffect
+        val ttl = areaOperationsState.settings?.areaTickets?.claimTtlSeconds ?: 120
+        val intervalMs = (ttl / 2).coerceIn(15, 60) * 1_000L
+        while (true) {
+            // Un bache de red no debe sacar al cajero del cobro: el siguiente
+            // latido reintenta y materializar sigue exigiendo servidor.
+            runCatching { cartViewModel.heartbeatAreaTicketSession() }
+            kotlinx.coroutines.delay(intervalMs)
+        }
+    }
+
     // TABLE_SERVICE (PRO) — table ORDERING lives on the dedicated
     // TableOrderScreen now; the register only keeps the PAYING seam: the
     // session seeds the cart with the check total so the NORMAL payment flow
@@ -998,6 +1015,11 @@ fun CheckoutScreen(
             )
             PaymentFlowScreen(
                 cartState = paymentCart,
+                // El cliente del encabezado del carrito se lleva al cobro: la
+                // orden nace con `customerId` y la pantalla de recibo ya lo
+                // muestra puesto en vez de pedirlo de nuevo.
+                preselectedCustomerId = selectedCustomer?.id,
+                preselectedCustomerName = selectedCustomer?.fullName,
                 onPaymentCommitted = { completion ->
                     when {
                         completion.splitType == "BYPRODUCT" && completion.paidItemIds.isNotEmpty() -> {

@@ -1,7 +1,10 @@
 package com.avoqado.pos.core.data.network
 
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertFalse
 import org.junit.Test
 
 /**
@@ -84,5 +87,56 @@ class ServerErrorTextTest {
         assertTrue(ServerErrorText.isOffline(java.net.UnknownHostException("x")))
         assertTrue(!ServerErrorText.isOffline(RuntimeException("Forbidden")))
         assertTrue(!ServerErrorText.isOffline(null))
+    }
+
+    // MARK: - Retrofit: el motivo vive en el CUERPO, no en el message
+
+    private fun httpError(code: Int, body: String): retrofit2.HttpException =
+        retrofit2.HttpException(
+            retrofit2.Response.error<Any>(
+                code,
+                body.toResponseBody("application/json".toMediaType()),
+            ),
+        )
+
+    @Test
+    fun `un rechazo de negocio muestra el motivo del server, no HTTP 400`() {
+        // 🔴 Visto en la T3 el 2026-08-09: el mesero tocó "Fusionar cuentas", el
+        // server explicó perfectamente por qué no se podía, y en pantalla salió
+        // "HTTP 400". `HttpException.message` es genérico; el motivo viaja en el
+        // cuerpo y nadie lo leía. Pasaba en TODA llamada Retrofit de la app.
+        val error = httpError(400, """{"message":"La cuenta origen ya tiene pagos; no se puede fusionar"}""")
+
+        assertEquals(
+            "La cuenta origen ya tiene pagos; no se puede fusionar",
+            ServerErrorText.humanize(error, "No se pudo fusionar"),
+        )
+    }
+
+    @Test
+    fun `tambien lee las otras llaves que usa el server`() {
+        assertEquals("Algo pasó", ServerErrorText.humanize(httpError(400, """{"error":"Algo pasó"}"""), "fallback"))
+        assertEquals("Otra cosa", ServerErrorText.humanize(httpError(422, """{"errorMessage":"Otra cosa"}"""), "fallback"))
+    }
+
+    @Test
+    fun `sin cuerpo util cae al fallback, nunca a HTTP nnn`() {
+        listOf("", "no soy json", "{}", """{"message":""}""").forEach { body ->
+            val texto = ServerErrorText.humanize(httpError(500, body), "No se pudo completar")
+            assertEquals("No se pudo completar", texto)
+            assertFalse("no debe filtrarse jerga HTTP: $texto", texto.contains("HTTP"))
+        }
+    }
+
+    @Test
+    fun `un permiso del server sigue traduciendose aunque venga en el cuerpo`() {
+        // La traducción de permisos ya existía para el texto plano; tiene que
+        // seguir aplicando cuando el mismo texto llega dentro del JSON.
+        val texto = ServerErrorText.humanize(
+            httpError(403, """{"message":"Permission 'tables:manage-all' required"}"""),
+            "fallback",
+        )
+        assertTrue(texto.contains("No tienes permiso"))
+        assertTrue("el código del permiso se conserva para pedir ayuda", texto.contains("tables:manage-all"))
     }
 }

@@ -2,6 +2,20 @@
 
 This file provides guidance to Codex when working with this repository.
 
+## 🔴 Antes de construir: tier + activación (dos decisiones, no una)
+
+Este archivo NO reemplaza al `CLAUDE.md` de este repo — léelo. Lo que más se rompe si lo saltas:
+
+- **Tier** ("¿lo pagó?") y **activación** ("¿lo quiere prendido?") son ejes DISTINTOS: se componen con AND.
+- Un switch se justifica **solo** si puedes nombrar dos clientes reales que quieran lo contrario. Si no, es
+  comportamiento core y va **sin** toggle — la app no se construye por toggles.
+- El switch canónico vive en `avoqado-web-dashboard`. 🔴 **Nunca solo un `UPDATE` en Postgres.**
+- El default ON/OFF lo decides tú midiendo el riesgo; pregunta al founder solo si toca dinero, fiscal,
+  permisos, stock o algo irreversible (ahí el default es OFF).
+- 🔴 **Apagado se VE y se EXPLICA** — nunca desaparecer en silencio.
+
+Regla completa: `avoqado-server/.claude/rules/feature-gating.md` · cross-repo: `CLAUDE.md` del workspace.
+
 ## Entorno: varias sesiones de IA trabajan en paralelo (contexto, no un bloqueo)
 
 Casi siempre hay 2+ agentes editando este workspace al mismo tiempo. Es lo normal: **no es una

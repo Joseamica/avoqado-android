@@ -225,6 +225,7 @@ class TableOrderViewModel @Inject constructor(
     /** Grid tap without modifiers. Dedupe is COURSE-aware: the same product on
      *  two courses must stay two lines (they fire at different moments). */
     fun addProduct(product: Product) {
+        invalidateBlockedNotice()
         // Guard de inventario (búsqueda/escáner llegan sin pasar por el tile).
         if (product.isOutOfStock) {
             _actionMessage.value = "\"${product.name}\" está agotado"
@@ -371,6 +372,7 @@ class TableOrderViewModel @Inject constructor(
      *  course — the server accepts it in the same round (customName +
      *  customUnitPriceCents, no productId). */
     fun addCustomAmount(name: String, amountCents: Int) {
+        invalidateBlockedNotice()
         if (amountCents <= 0) return
         _pending.value = _pending.value + PendingLine(
             item = CartItem(
@@ -469,7 +471,7 @@ class TableOrderViewModel @Inject constructor(
                         val msg = if (e.message?.contains("409") == true) {
                             "La orden cambió en otro dispositivo — vuelve a abrir la mesa"
                         } else {
-                            e.message ?: "No se pudo enviar la ronda"
+                            com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo enviar la ronda")
                         }
                         onDone(false, msg)
                     }
@@ -530,6 +532,20 @@ class TableOrderViewModel @Inject constructor(
     }
 
     fun dismissBlockedNotice() {
+        _blockedNotice.value = null
+    }
+
+    /**
+     * El aviso describe un ESTADO ("esta cuenta no tiene cargos"). En cuanto el
+     * mesero cambia ese estado —agrega un artículo, envía la ronda, se cambia de
+     * cuenta— deja de ser cierto y pasa a mentir.
+     *
+     * 🔴 Visto el 2026-08-09: el aviso de un toque anterior seguía en pantalla
+     * junto a una cuenta con una Corona de $45 y el botón "Pagar $45.00". El
+     * comentario de arriba ya decía que debía irse "cuando el mesero hace otra
+     * cosa"; eso nunca se programó.
+     */
+    private fun invalidateBlockedNotice() {
         _blockedNotice.value = null
     }
 
@@ -654,7 +670,7 @@ class TableOrderViewModel @Inject constructor(
                     repository.refresh(vId)
                 },
                 onFailure = { e ->
-                    _actionMessage.value = e.message ?: "No se pudo dar de cortesía"
+                    _actionMessage.value = com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo dar de cortesía")
                     loadCheck()
                 },
             )
@@ -678,7 +694,7 @@ class TableOrderViewModel @Inject constructor(
                     val target = repository.tables.value.firstOrNull { it.id == targetTableId }
                     onDone(true, "Cuenta movida a Mesa ${target?.number ?: ""}".trim())
                 },
-                onFailure = { e -> onDone(false, e.message ?: "No se pudo mover la cuenta") },
+                onFailure = { e -> onDone(false, com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo mover la cuenta")) },
             )
         }
     }
@@ -693,7 +709,7 @@ class TableOrderViewModel @Inject constructor(
                     repository.refresh(vId)
                     _actionMessage.value = "Cuenta asignada a $staffName"
                 },
-                onFailure = { e -> _actionMessage.value = e.message ?: "No se pudo asignar la cuenta" },
+                onFailure = { e -> _actionMessage.value = com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo asignar la cuenta") },
             )
         }
     }
@@ -710,7 +726,7 @@ class TableOrderViewModel @Inject constructor(
                     repository.refresh(vId)
                 },
                 onFailure = { e ->
-                    _actionMessage.value = e.message ?: "No se pudo dar la cortesía"
+                    _actionMessage.value = com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo dar la cortesía")
                     loadCheck()
                 },
             )
@@ -731,7 +747,7 @@ class TableOrderViewModel @Inject constructor(
                     loadCheck()
                     repository.refresh(vId)
                 },
-                onFailure = { e -> _actionMessage.value = e.message ?: "No se pudo actualizar la cuenta" },
+                onFailure = { e -> _actionMessage.value = com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo actualizar la cuenta") },
             )
         }
     }
@@ -743,7 +759,7 @@ class TableOrderViewModel @Inject constructor(
         viewModelScope.launch {
             repository.applyOrderDiscount(vId, session.orderId, discountId).fold(
                 onSuccess = { _actionMessage.value = "Descuento aplicado"; loadCheck(); repository.refresh(vId) },
-                onFailure = { e -> _actionMessage.value = e.message ?: "No se pudo aplicar el descuento" },
+                onFailure = { e -> _actionMessage.value = com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo aplicar el descuento") },
             )
         }
     }
@@ -756,7 +772,7 @@ class TableOrderViewModel @Inject constructor(
         viewModelScope.launch {
             repository.removeOrderDiscount(vId, session.orderId, orderDiscountId).fold(
                 onSuccess = { _actionMessage.value = "Descuento quitado"; loadCheck(); repository.refresh(vId) },
-                onFailure = { e -> _actionMessage.value = e.message ?: "No se pudo quitar el descuento" },
+                onFailure = { e -> _actionMessage.value = com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo quitar el descuento") },
             )
         }
     }
@@ -839,7 +855,7 @@ class TableOrderViewModel @Inject constructor(
                     loadCheck()
                     repository.refresh(vId)
                 },
-                onFailure = { e -> _actionMessage.value = e.message ?: "No se pudo aplicar el cobro" },
+                onFailure = { e -> _actionMessage.value = com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo aplicar el cobro") },
             )
         }
     }
@@ -855,7 +871,7 @@ class TableOrderViewModel @Inject constructor(
                     loadCheck()
                     repository.refresh(vId)
                 },
-                onFailure = { e -> _actionMessage.value = e.message ?: "No se pudo quitar el cobro" },
+                onFailure = { e -> _actionMessage.value = com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo quitar el cobro") },
             )
         }
     }
@@ -900,7 +916,7 @@ class TableOrderViewModel @Inject constructor(
                     loadLoyalty()
                     repository.refresh(vId)
                 },
-                onFailure = { e -> _actionMessage.value = e.message ?: "No se pudo canjear los puntos" },
+                onFailure = { e -> _actionMessage.value = com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo canjear los puntos") },
             )
         }
     }
@@ -923,6 +939,7 @@ class TableOrderViewModel @Inject constructor(
         tableSession.start(next)
         clearPending()
         _actionMessage.value = null
+        invalidateBlockedNotice()
         loadCheck()
         return next
     }
@@ -943,7 +960,12 @@ class TableOrderViewModel @Inject constructor(
                     repository.refresh(vId)
                     onDone(true, if (offline) "Cuentas fusionadas — se sincroniza al volver la señal" else "Cuentas fusionadas")
                 },
-                onFailure = { e -> onDone(false, e.message ?: "No se pudo fusionar") },
+                // El MOTIVO lo pone el server ("La cuenta origen ya tiene pagos;
+                // no se puede fusionar"): sin humanize, Retrofit entregaba
+                // "HTTP 400" y el mesero se quedaba sin saber qué hacer.
+                onFailure = { e ->
+                    onDone(false, com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo fusionar"))
+                },
             )
         }
     }
@@ -971,7 +993,7 @@ class TableOrderViewModel @Inject constructor(
                     tableSession.clear()
                     onDone(true, if (offline) "Cuenta dividida por puesto — se sincroniza al volver la señal" else "Cuenta dividida por puesto")
                 },
-                onFailure = { e -> onDone(false, e.message ?: "No se pudo dividir por puesto") },
+                onFailure = { e -> onDone(false, com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo dividir por puesto")) },
             )
         }
     }
@@ -1030,7 +1052,7 @@ class TableOrderViewModel @Inject constructor(
                     loadCheck()
                     repository.refresh(vId)
                 },
-                onFailure = { e -> _actionMessage.value = e.message ?: "No se pudo separar la cuenta" },
+                onFailure = { e -> _actionMessage.value = com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo separar la cuenta") },
             )
         }
     }
@@ -1049,7 +1071,7 @@ class TableOrderViewModel @Inject constructor(
                 },
                 onFailure = { e ->
                     repository.refresh(vId)
-                    onDone(false, e.message ?: "No se pudo anular la cuenta")
+                    onDone(false, com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo anular la cuenta"))
                 },
             )
         }
@@ -1212,7 +1234,7 @@ class TableOrderViewModel @Inject constructor(
                 printerService.printReceipt(receipt, printer)
                 _actionMessage.value = "Pre-cuenta impresa"
             } catch (e: Exception) {
-                _actionMessage.value = "No se pudo imprimir: ${e.message ?: "desconocido"}"
+                _actionMessage.value = "No se pudo imprimir: ${com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "desconocido")}"
             }
         }
     }
@@ -1263,8 +1285,44 @@ class TableOrderViewModel @Inject constructor(
         // outbox. `session.totalCents` NO sirve aquí — nace en 0 en las mesas
         // provisionales y dejaba el cobro muerto.
         val queuedCents = _queued.value.sumOf { it.item.effectiveUnitPrice * it.item.quantity }
-        val totalCents = payableCents(totalFromCheck, queuedCents, session.totalCents)
-        if (totalCents <= 0) return false
+        val checkDeLaSesion = _check.value?.takeIf { it.id == session.orderId }
+        // Si CONOCEMOS el cheque de esta sesión, su saldo manda aunque sea 0.
+        // Caer a `session.totalCents` ahí cobraría un total viejo contra una
+        // cuenta que ya no lo debe. El fallback es sólo para cuando no hay
+        // cheque que leer (mesa provisional sin red).
+        val totalCents = if (checkDeLaSesion != null) {
+            totalFromCheck + queuedCents
+        } else {
+            payableCents(totalFromCheck, queuedCents, session.totalCents)
+        }
+
+        if (totalCents <= 0) {
+            val articulos = (checkDeLaSesion?.items?.sumOf { it.quantity } ?: 0) +
+                _queued.value.sumOf { it.item.quantity }
+            val totalDelCheque = checkDeLaSesion?.let { round(it.total * 100).toInt() } ?: 0
+            when {
+                // 🔴 Ninguno de estos tres dice ya "no tiene cargos" a lo bruto.
+                // Ese texto era falso en DOS de los tres casos, y el mesero se
+                // quedaba sin saber qué hacer.
+                articulos <= 0 ->
+                    showBlockedReason("Esta cuenta todavía no tiene cargos. Agrega artículos y envíalos antes de cobrar.")
+                totalDelCheque > 0 ->
+                    // Tiene cargos y su total NO es 0: el saldo llegó a 0 porque
+                    // YA se pagó. Ofrecer "Pagar" aquí termina en un rechazo del
+                    // server ("Order is already paid") que no explica nada.
+                    showBlockedReason("Esta cuenta ya está pagada. Libera la mesa o cámbiate a otra cuenta.")
+                else -> {
+                    // Cortesía al 100% (o descuento que se come el total): SÍ se
+                    // cobra, y cobrar $0 es justo lo que la cierra. Anularla no
+                    // es equivalente: el producto salió del almacén y la
+                    // cortesía tiene que quedar registrada como venta en $0.
+                    tableSession.start(session.copy(mode = TableSession.Mode.PAYING, totalCents = 0))
+                    return true
+                }
+            }
+            return false
+        }
+
         tableSession.start(session.copy(mode = TableSession.Mode.PAYING, totalCents = totalCents))
         return true
     }
