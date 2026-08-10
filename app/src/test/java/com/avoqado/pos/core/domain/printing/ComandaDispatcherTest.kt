@@ -73,7 +73,8 @@ class ComandaDispatcherTest {
     fun setup() {
         coEvery { printConfigRepository.refresh(any()) } returns Unit
         every { printConfigRepository.getCurrentConfig() } returns sinEstaciones
-        coEvery { comandaPrinter.printComandas(any(), any(), any(), any(), any()) } returns Unit
+        coEvery { comandaPrinter.printComandas(any(), any(), any(), any(), any()) } returns
+            ComandaPrinter.Result(attempted = 1, printed = 1, skippedNoPrinter = 0, lastError = null)
         coEvery { printerService.autoPrintKitchenTicket(any()) } returns Unit
 
         dispatcher = ComandaDispatcher(printConfigRepository, comandaPrinter, printerService)
@@ -114,7 +115,7 @@ class ComandaDispatcherTest {
         val plansSlot = slot<List<TicketPlan>>()
         coEvery {
             comandaPrinter.printComandas(capture(plansSlot), conEstaciones, "1234", "En tienda", null)
-        } returns Unit
+        } returns ComandaPrinter.Result(attempted = 1, printed = 1, skippedNoPrinter = 0, lastError = null)
 
         dispatcher.dispatch(
             venueId = "venue-1",
@@ -158,7 +159,8 @@ class ComandaDispatcherTest {
     @Test
     fun `sin estaciones y sin fallback legado se rutea igual`() = runTest {
         val plansSlot = slot<List<TicketPlan>>()
-        coEvery { comandaPrinter.printComandas(capture(plansSlot), any(), any(), any(), any()) } returns Unit
+        coEvery { comandaPrinter.printComandas(capture(plansSlot), any(), any(), any(), any()) } returns
+            ComandaPrinter.Result(attempted = 1, printed = 1, skippedNoPrinter = 0, lastError = null)
 
         dispatcher.dispatch(
             venueId = "venue-1",

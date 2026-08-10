@@ -203,7 +203,8 @@ class ReservationDetailViewModelTest {
         val printConfigRepository = defaultPrintConfigRepository(config)
         val comandaPrinter = mockk<ComandaPrinter>(relaxed = true)
         val plansSlot = slot<List<TicketPlan>>()
-        coEvery { comandaPrinter.printComandas(capture(plansSlot), config, any(), any(), any()) } returns Unit
+        coEvery { comandaPrinter.printComandas(capture(plansSlot), config, any(), any(), any()) } returns
+            ComandaPrinter.Result(attempted = 1, printed = 1, skippedNoPrinter = 0, lastError = null)
         val productsRepository = mockk<ProductsRepository>(relaxed = true)
 
         val vm = buildVm(
@@ -294,7 +295,8 @@ class ReservationDetailViewModelTest {
         val printConfigRepository = defaultPrintConfigRepository(config)
         val comandaPrinter = mockk<ComandaPrinter>(relaxed = true)
         val plansSlot = slot<List<TicketPlan>>()
-        coEvery { comandaPrinter.printComandas(capture(plansSlot), config, any(), any(), any()) } returns Unit
+        coEvery { comandaPrinter.printComandas(capture(plansSlot), config, any(), any(), any()) } returns
+            ComandaPrinter.Result(attempted = 1, printed = 1, skippedNoPrinter = 0, lastError = null)
 
         val vm = buildVm(repo, printConfigRepository = printConfigRepository, comandaPrinter = comandaPrinter)
         advanceUntilIdle()
