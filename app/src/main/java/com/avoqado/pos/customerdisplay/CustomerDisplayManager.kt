@@ -79,6 +79,38 @@ internal fun chooseCustomerDisplayId(
 internal fun shouldTearDownOnDetach(currentHost: Any?, caller: Any): Boolean =
     currentHost === caller
 
+/**
+ * ¿El `attach` de este anfitrión hereda una `Presentation` que ya no le
+ * pertenece a nadie vivo?
+ *
+ * 🔴 El agujero que tapa, y es el del MODO NORMAL — el que corre hoy en
+ * producción: una `Presentation` cuelga de la Activity que la creó. Desde que
+ * [shouldTearDownOnDetach] hizo el `detach` consciente de instancia, el detach
+ * TARDÍO de la Activity vieja se ignora ENTERO — incluido su `dismiss()`. En una
+ * recreación (rotación en tablet, cambio automático a tema oscuro: el manifest
+ * a propósito NO declara `configChanges`) la instancia nueva hace
+ * `attach → refresh → showPresentation`, y ahí el early-return por
+ * `isShowing == true` corta en seco: la ventana del cliente queda colgada de una
+ * Activity DESTRUIDA y nunca se re-ata. Peor: `isShowing` es la única prueba de
+ * vida que tenemos, así que si en algún equipo la ventana muere con su creador,
+ * sigue diciendo `true` para siempre — `isPresenting` miente y, con "el cliente
+ * elige propina" activado, el cajero espera un toque sobre una pantalla negra.
+ *
+ * La regla: el `detach` sigue siendo por identidad (un detach tardío no desmonta
+ * nada de nadie), y es el `attach` de la instancia nueva el que se hace cargo de
+ * lo que heredó. Solo cuando el anfitrión cambia de INSTANCIA: un
+ * `onStop → onStart` de la misma Activity no hereda nada (su propio detach ya
+ * desmontó) y no debe parpadear.
+ *
+ * No aplica al camino invertido: ahí la ventana del cliente es una Activity
+ * propia, no cuelga del anfitrión y sobrevive por su cuenta.
+ */
+internal fun shouldRebuildInheritedPresentation(
+    previousHost: Any?,
+    newHost: Any,
+    hasPresentation: Boolean,
+): Boolean = hasPresentation && previousHost !== newHost
+
 @Singleton
 class CustomerDisplayManager @Inject constructor(
     @ApplicationContext private val appContext: Context,
@@ -89,6 +121,9 @@ class CustomerDisplayManager @Inject constructor(
     // la pantalla de Ajustes.
     @Suppress("unused") private val prefs: CustomerDisplayPrefs,
     private val displayModePrefs: DisplayModePrefs,
+    // Quién coloca la caja. Vive aquí porque el manager es el único que se entera
+    // de que cambió el hardware de pantallas (ver resync).
+    private val cashierGuard: CashierDisplayGuard,
 ) {
     private val tag = "🖥️CustomerDisplay"
 
@@ -164,9 +199,43 @@ class CustomerDisplayManager @Inject constructor(
         private set
 
     private val displayListener = object : DisplayManager.DisplayListener {
-        override fun onDisplayAdded(displayId: Int) = refresh()
-        override fun onDisplayRemoved(displayId: Int) = refresh()
-        override fun onDisplayChanged(displayId: Int) = refresh()
+        override fun onDisplayAdded(displayId: Int) = resync()
+        override fun onDisplayRemoved(displayId: Int) = resync()
+        override fun onDisplayChanged(displayId: Int) = resync()
+    }
+
+    /**
+     * Vuelve a colocar la caja Y a montar el letrero del cliente. Es lo que hay
+     * que llamar cuando el ESCENARIO pudo haber cambiado por debajo: cambió el
+     * hardware de pantallas, o la caja volvió al frente.
+     *
+     * 🔴 Por qué no basta con [refresh]: refresh decide qué mostrarle al CLIENTE,
+     * pero no mueve la caja. La secuencia que rompía —encontrada leyendo el
+     * código, no en hardware; la delata que el reset de intentos de
+     * [CashierDisplayGuard] existía justo para este caso y nadie lo disparaba— es:
+     * se va la pantalla del cliente →
+     * Android arrastra la caja al display 0 → vuelve la pantalla →
+     * `onDisplayAdded` → un refresh a secas dice "el cliente va en el display 0"
+     * pero la caja SIGUE ahí, así que el guard anti-bucle no monta nada. Estado
+     * final: la caja, con menú y precios, de cara al cliente; la pantalla chica
+     * con el launcher; y Ajustes jurando que el mostrador está invertido. Solo se
+     * salía reiniciando la app.
+     *
+     * Llamar a `enforce` aquí es barato y no puede entrar en bucle: es no-op
+     * cuando la caja ya está en destino, y cuando no lo está la cuenta de
+     * intentos lo corta (ver accountForEnforce / shouldRelaunchCashier). En modo
+     * NORMAL —el que corre hoy en producción— el destino es siempre la pantalla
+     * por defecto, donde la caja ya vive: enforce no mueve un dedo.
+     *
+     * Y de paso cubre el hueco conocido de "nadie re-monta el letrero tras un
+     * HOME": `CustomerDisplayActivity.isShowingOn` exige STARTED justo para que
+     * el siguiente refresh lo traiga de vuelta — pero hasta ahora ese "siguiente
+     * refresh" no lo disparaba nadie.
+     */
+    fun resync() {
+        val activity = hostActivity ?: return
+        cashierGuard.enforce(activity)
+        refresh()
     }
 
     /** Llamar desde MainActivity.onStart. */
@@ -182,19 +251,36 @@ class CustomerDisplayManager @Inject constructor(
         // listener de displays de más. Va ANTES de reclamar el anfitrión y de
         // registrar lo nuevo, para no soltar de rebote lo que acabamos de atar.
         //
-        // Lo que NO se toca aquí es la ventana del cliente: en una recreación el
-        // letrero ya está montado y correcto, y apagarlo para volverlo a montar
-        // es justo el parpadeo (o la desaparición) que estamos evitando.
+        // La ventana del cliente del modo INVERTIDO tampoco se toca aquí: es una
+        // Activity propia, en una recreación ya está montada y correcta, y
+        // apagarla para volverla a montar es justo el parpadeo (o la
+        // desaparición) que estamos evitando.
+        val previousHost = hostActivity
         releaseHostBindings()
+        // 🔴 La `Presentation` del modo NORMAL sí cuelga del anfitrión, así que
+        // una heredada de una Activity ya destruida hay que desmontarla aquí: el
+        // refresh() de más abajo la reconstruye contra la Activity viva. Ver
+        // shouldRebuildInheritedPresentation — sin esto la ventana del cliente
+        // queda atada a un muerto y `isPresenting` miente para siempre.
+        if (shouldRebuildInheritedPresentation(previousHost, activity, presentation != null)) {
+            Log.i(tag, "Anfitrión nuevo: se desmonta la Presentation heredada para reconstruirla")
+            dismissPresentation()
+        }
         hostActivity = activity
         val dm = activity.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager ?: return
         displayManager = dm
         dm.registerDisplayListener(displayListener, handler)
-        refresh()
-        // Reacciona al interruptor de Ajustes en caliente: sin esto, tocarlo
-        // no hacía nada hasta desenchufar un monitor o mandar la app a
-        // segundo plano. refresh() ya es idempotente, así que recibir aquí el
-        // valor inicial del StateFlow no produce un doble montaje visible.
+        // Reacciona al interruptor de Ajustes en caliente: sin esto, tocarlo no
+        // hacía nada hasta desenchufar un monitor o mandar la app a segundo
+        // plano.
+        //
+        // 🔴 Y este `collect` ES el primer refresh() del attach, no un extra:
+        // `Dispatchers.Main.immediate` estando ya en el hilo principal ejecuta
+        // EN LÍNEA, y un StateFlow entrega su valor actual al colectar. Un
+        // `refresh()` explícito antes de esta línea corría dos veces seguidas —
+        // en modo normal el segundo era no-op, pero en invertido
+        // `isShowingOn()` todavía era `false` (startActivity es asíncrono) y se
+        // lanzaba un SEGUNDO intent hacia la pantalla del cliente.
         invertedObserverJob = scope.launch {
             displayModePrefs.inverted.collect { refresh() }
         }
@@ -365,6 +451,20 @@ class CustomerDisplayManager @Inject constructor(
      * toque del turno no abre el teclado si cae justo en un campo de texto. Se
      * verificó con adb que volver a poner la caja al FRENTE sí devuelve el foco a
      * su pantalla.
+     *
+     * 🔴 Lo que se DESCARTÓ para llegar aquí, para que nadie lo reintente: qué
+     * display recibe el foco entre varios lo decide WindowManagerService, y no
+     * hay API pública para pedírselo sin un evento de entrada real. El candidato
+     * obvio era `Window.setLocalFocus` + `WindowManager.LayoutParams.FLAG_LOCAL_FOCUS_MODE`,
+     * y leyendo el fuente de AOSP resultó veneno: esa combinación pone la ventana
+     * en un modo donde deja de recibir toques/teclas REALES del sistema — solo
+     * eventos inyectados localmente. "Arreglar" el toque desperdiciado así habría
+     * dejado la pantalla del CAJERO completamente muda al tacto: justo lo que
+     * "degradar, nunca bloquear" prohíbe, y muchísimo peor que el problema que
+     * resuelve. También se probó en el D3 pedir el foco de VISTA del árbol de
+     * Compose (`decorView.requestFocus()`) desde el guard: NO bastó —
+     * `mTopFocusedDisplayId` seguía apuntando al cliente—, así que ese código se
+     * quitó en vez de dejarlo como adorno.
      *
      * 🔴 Por qué [ActivityManager.moveTaskToFront] y no relanzar la Activity: un
      * `startActivity` hacia la caja la RECREA, y una recreación dispara justo la

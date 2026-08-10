@@ -1,7 +1,5 @@
 package com.avoqado.pos.settings.presentation
 
-import android.app.Activity
-import android.content.ContextWrapper
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -23,15 +21,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import com.avoqado.pos.core.util.findActivity
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.settings.domain.KioskManager
-
-/** El Context de Compose puede venir envuelto; hay que desenvolverlo. */
-private fun android.content.Context.findActivity(): Activity? = when (this) {
-    is Activity -> this
-    is ContextWrapper -> baseContext.findActivity()
-    else -> null
-}
 
 /**
  * Modo kiosco + la salida explícita.

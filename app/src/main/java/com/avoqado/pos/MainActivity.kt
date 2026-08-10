@@ -59,6 +59,13 @@ class MainActivity : FragmentActivity() {
         // Reengancha tras un reinicio del equipo o del proceso: si el negocio
         // dejó el kiosco encendido, debe seguir encendido al volver.
         kiosk.applyOnResume(this)
+        // Volver al frente es el otro momento en que el escenario pudo haber
+        // cambiado por debajo (alguien desenchufó y volvió a enchufar la
+        // pantalla, o el cliente se fue a HOME desde su letrero). resync()
+        // recoloca la caja y remonta el letrero, y es no-op cuando ya está todo
+        // en su sitio — en modo normal no mueve nada. Ver
+        // CustomerDisplayManager.resync.
+        customerDisplay.resync()
     }
 
     override fun onStop() {

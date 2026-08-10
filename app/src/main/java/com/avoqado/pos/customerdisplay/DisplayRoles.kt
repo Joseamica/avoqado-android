@@ -105,3 +105,51 @@ internal fun shouldRelaunchCashier(
     attemptsForTarget: Int,
     maxAttempts: Int = 2,
 ): Boolean = currentDisplayId != targetDisplayId && attemptsForTarget < maxAttempts
+
+/**
+ * La contabilidad del anti-bucle: qué hardware había, a qué pantalla íbamos y
+ * cuántas veces lo hemos intentado.
+ *
+ * @param displaySet las pantallas presentes la última vez que se contó.
+ * @param target la pantalla a la que le tocaba la caja entonces; null = todavía ninguna.
+ * @param attempts relanzamientos ya gastados PARA ESE escenario.
+ */
+internal data class RelaunchAccounting(
+    val displaySet: Set<Int> = emptySet(),
+    val target: Int? = null,
+    val attempts: Int = 0,
+)
+
+/**
+ * ¿El escenario es genuinamente NUEVO respecto a la última cuenta?
+ *
+ * Solo dos cosas lo hacen nuevo: cambió el hardware presente (alguien enchufó o
+ * desenchufó una pantalla) o cambió el destino (el usuario tocó el interruptor).
+ * Volver a pasar por `enforce` NO es un escenario nuevo.
+ */
+internal fun isNewRelaunchScenario(
+    previous: RelaunchAccounting,
+    presentDisplays: Set<Int>,
+    target: Int,
+): Boolean = presentDisplays != previous.displaySet || previous.target != target
+
+/**
+ * Actualiza la contabilidad al entrar a un `enforce`. PURA (sin Android) porque
+ * es la única lógica no trivial del guard y el precio de equivocarse es
+ * asimétrico en los dos sentidos:
+ *
+ * - Reiniciar de más = relanzar la caja para siempre en un equipo que ignora
+ *   `setLaunchDisplayId`. La caja parpadeando sin parar es el peor final posible.
+ * - Reiniciar de menos = quedarse con la caja en la pantalla equivocada aunque el
+ *   escenario haya cambiado (justo el caso de reconectar la pantalla en caliente:
+ *   el hardware volvió, y volver a intentarlo es lo correcto).
+ */
+internal fun accountForEnforce(
+    previous: RelaunchAccounting,
+    presentDisplays: Set<Int>,
+    target: Int,
+): RelaunchAccounting = RelaunchAccounting(
+    displaySet = presentDisplays,
+    target = target,
+    attempts = if (isNewRelaunchScenario(previous, presentDisplays, target)) 0 else previous.attempts,
+)

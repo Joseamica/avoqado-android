@@ -1,7 +1,7 @@
 package com.avoqado.pos.settings
 
-import android.app.Activity
 import android.content.pm.PackageManager
+import android.util.Log
 import androidx.core.content.pm.PackageInfoCompat
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -76,6 +76,7 @@ import com.avoqado.pos.areatickets.presentation.AreaTicketDeliveryScreen
 import com.avoqado.pos.articles.presentation.ArticlesScreen
 import com.avoqado.pos.auth.presentation.VenueSwitcherSheet
 import com.avoqado.pos.cashdrawer.presentation.CashDrawerScreen
+import com.avoqado.pos.core.util.findActivity
 import com.avoqado.pos.customers.presentation.CustomersScreen
 import com.avoqado.pos.designsystem.components.TierBadge
 import com.avoqado.pos.designsystem.theme.AvoqadoAdaptiveSizeClass
@@ -126,7 +127,6 @@ fun MoreMenuScreen(
     var showAddons by remember { mutableStateOf(false) }
     var showKDS by remember { mutableStateOf(false) }
     var showCustomerDisplay by remember { mutableStateOf(false) }
-    var displayModeToastMessage by remember { mutableStateOf<String?>(null) }
     var showAreaTicketDelivery by remember { mutableStateOf(false) }
     var showKiosk by remember { mutableStateOf(false) }
     val kioskEnabled by viewModel.kioskManager.enabled.collectAsState()
@@ -904,22 +904,30 @@ fun MoreMenuScreen(
             onInvertedChange = { nuevo ->
                 viewModel.cashierDisplayGuard.resetAttempts()
                 viewModel.displayModePrefs.setInverted(nuevo)
-                val activity = context as? Activity
+                // findActivity() y no `context as? Activity`: el Context de
+                // Compose viene envuelto, así que el cast daba null y el
+                // interruptor se quedaba sin mover la caja — en silencio.
+                val activity = context.findActivity()
                 if (activity != null) {
                     viewModel.cashierDisplayGuard.enforce(activity)
+                } else {
+                    // No puede pasar (esta pantalla vive dentro de MainActivity),
+                    // pero si pasara, el ajuste ya quedó guardado y la caja se
+                    // colocaría sola en el próximo arranque: se deja rastro en
+                    // vez de fallar mudo.
+                    Log.w(
+                        "🖥️CashierDisplay",
+                        "Sin Activity detrás del Context: el modo se guardó pero la caja no se movió ahora",
+                    )
                 }
                 showCustomerDisplay = false
-                displayModeToastMessage = if (nuevo) "¡Pantallas invertidas!" else "¡Pantallas normales!"
+                // Sin toast de éxito a propósito: enforce() relanza MainActivity
+                // en la misma vuelta, así que la composición que lo mostraría
+                // muere antes de pintarlo. La confirmación real es que TODO el
+                // POS aparece en la otra pantalla — no hace falta adorno, y menos
+                // uno que nunca se ve.
             },
             onDismiss = { showCustomerDisplay = false },
-        )
-    }
-
-    // Celebratory toast on invert/restore.
-    displayModeToastMessage?.let { message ->
-        com.avoqado.pos.designsystem.components.AvoqadoSuccessToast(
-            message = message,
-            onDismiss = { displayModeToastMessage = null },
         )
     }
 

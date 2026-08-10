@@ -135,9 +135,18 @@ fun CustomerDisplaySheet(
                     )
                     Text(
                         // Apagado se VE y se EXPLICA: nunca desaparece en silencio.
+                        // 🔴 `!invertible` cubre DOS motivos distintos —"no hay
+                        // segunda pantalla" y "la hay pero no es táctil"—, y
+                        // dárselos a ambos con el mismo texto es mentirle a
+                        // cualquiera con un teléfono o una tablet normal. El "hay
+                        // o no hay" se lee de `detected`, el MISMO dato que la
+                        // línea de arriba de esta hoja, para que las dos frases
+                        // no puedan contradecirse entre sí.
                         text = when {
                             invertUnsupported ->
                                 "Este equipo no permitió mover la caja a la otra pantalla."
+                            !invertible && !detected ->
+                                "Este equipo no tiene una segunda pantalla; no hay nada que invertir."
                             !invertible ->
                                 "La segunda pantalla de este equipo no es táctil; " +
                                     "el cajero no podría trabajar en ella."
