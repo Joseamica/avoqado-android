@@ -10,6 +10,12 @@ import android.os.Looper
 import android.util.Log
 import android.view.Display
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -63,6 +69,12 @@ class CustomerDisplayManager @Inject constructor(
 
     private val handler = Handler(Looper.getMainLooper())
 
+    // Scope propio del manager (singleton, vive más allá de un solo ciclo de
+    // attach/detach). Lo que entra/sale con attach()/detach() es el JOB que
+    // colecta el interruptor, no este scope.
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private var invertedObserverJob: Job? = null
+
     private var displayManager: DisplayManager? = null
     private var presentation: CustomerDisplayPresentation? = null
     private var hostActivity: Activity? = null
@@ -86,10 +98,23 @@ class CustomerDisplayManager @Inject constructor(
         displayManager = dm
         dm.registerDisplayListener(displayListener, handler)
         refresh()
+        // Reacciona al interruptor de Ajustes en caliente: sin esto, tocarlo
+        // no hacía nada hasta desenchufar un monitor o mandar la app a
+        // segundo plano. refresh() ya es idempotente, así que recibir aquí el
+        // valor inicial del StateFlow no produce un doble montaje visible.
+        invertedObserverJob = scope.launch {
+            displayModePrefs.inverted.collect { refresh() }
+        }
     }
 
     /** Llamar desde MainActivity.onStop — sin esto la ventana se filtra. */
     fun detach() {
+        // Cancelar el JOB, no el scope: el scope es del manager (singleton) y
+        // vive más allá de un solo ciclo de attach/detach; sin cancelar aquí,
+        // cada MainActivity.onStart/onStop deja una colecta huérfana corriendo
+        // — una corrutina filtrada por ciclo.
+        invertedObserverJob?.cancel()
+        invertedObserverJob = null
         displayManager?.unregisterDisplayListener(displayListener)
         dismiss()
         hostActivity = null
@@ -123,13 +148,29 @@ class CustomerDisplayManager @Inject constructor(
         }
 
         if (customerId == Display.DEFAULT_DISPLAY) {
+            // 🔴 GUARD ANTI-BUCLE: si la caja (MainActivity) TODAVÍA vive en la
+            // pantalla DEFAULT —arranque en frío antes de que el guard de Task 4
+            // la mueva, `setLaunchDisplayId` ignorado por el fabricante, o ese
+            // guard ya se rindió (invertUnsupported)— montar aquí el letrero del
+            // cliente TAPARÍA la caja. Eso dispara MainActivity.onStop →
+            // detach() → dismiss() → finishIfShowing() → (la caja reaparece)
+            // onStart → attach() → refresh() → vuelve a montar el letrero: un
+            // bucle infinito de parpadeo con la caja inservible. La regla del
+            // dominio es "degradar, nunca bloquear": la pantalla del cliente es
+            // decoración, cobrar es el negocio — se queda sin letrero, nunca sin
+            // caja usable.
+            if (activity.currentDisplayId() == customerId) {
+                Log.i(
+                    tag,
+                    "Modo invertido pero la caja sigue en la pantalla principal: no se monta el letrero del cliente para no taparla",
+                )
+                dismiss()
+                return
+            }
             // Modo invertido: el cliente va en la pantalla principal, y ahí
             // TYPE_PRESENTATION está prohibido → Activity.
             dismissPresentation()
             showCustomerActivity(activity, customerId)
-            // La principal siempre es física y táctil: el cliente sí puede
-            // elegir propina y calificación.
-            state.setTouchCapable(true)
             return
         }
 
@@ -149,7 +190,14 @@ class CustomerDisplayManager @Inject constructor(
                 opts.toBundle(),
             )
             isActive = true
-            state.setPresenting(true)
+            // 🔴 NO `state.setPresenting(true)` aquí: que `startActivity` no haya
+            // lanzado excepción solo dice que el sistema aceptó la intención, no
+            // que la ventana llegó a aparecer. La señal fiable es el propio
+            // ciclo de vida de CustomerDisplayActivity (ver su onStart/onStop).
+            // La principal siempre es física y táctil: el cliente sí puede
+            // elegir propina y calificación — solo en éxito, simétrico con
+            // showPresentation.
+            state.setTouchCapable(true)
             Log.i(tag, "Pantalla del cliente (Activity) montada en display $displayId")
         }.onFailure {
             // Nunca tumbar la caja por culpa de la pantalla del cliente.

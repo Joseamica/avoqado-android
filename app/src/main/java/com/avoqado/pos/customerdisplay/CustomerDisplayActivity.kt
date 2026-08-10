@@ -4,6 +4,7 @@ import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.lifecycle.Lifecycle
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
@@ -52,6 +53,22 @@ class CustomerDisplayActivity : ComponentActivity() {
         }
     }
 
+    // 🔴 La señal de "de verdad se está mostrando" viene del propio ciclo de
+    // vida, no de que startActivity() no haya lanzado excepción: eso solo
+    // dice que el sistema aceptó la intención, no que la ventana llegó a
+    // aparecer. isPresenting alimenta a quién le toca capturar propina y
+    // calificación (ver CustomerDisplayState) — una señal optimista manda el
+    // upsell a una pantalla que nadie ve.
+    override fun onStart() {
+        super.onStart()
+        state.setPresenting(true)
+    }
+
+    override fun onStop() {
+        state.setPresenting(false)
+        super.onStop()
+    }
+
     override fun onDestroy() {
         if (instance === this) instance = null
         super.onDestroy()
@@ -61,8 +78,19 @@ class CustomerDisplayActivity : ComponentActivity() {
         /** Se limpia en onDestroy, así que no retiene la Activity muerta. */
         private var instance: CustomerDisplayActivity? = null
 
+        /**
+         * 🔴 No basta con "viva y no terminándose": si el cliente le da HOME
+         * (esta Activity no oculta las barras del sistema ni usa lock-task),
+         * la instancia sigue existiendo pero dejó de estar en pantalla. Exigir
+         * STARTED es lo que hace que el siguiente refresh() la vuelva a traer
+         * al frente en vez de creerla montada para siempre.
+         */
         fun isShowingOn(displayId: Int): Boolean =
-            instance?.let { !it.isFinishing && it.display?.displayId == displayId } == true
+            instance?.let {
+                !it.isFinishing &&
+                    it.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED) &&
+                    it.currentDisplayId() == displayId
+            } == true
 
         fun finishIfShowing() {
             instance?.finish()

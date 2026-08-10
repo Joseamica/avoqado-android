@@ -1,5 +1,7 @@
 package com.avoqado.pos.customerdisplay
 
+import android.app.Activity
+import android.os.Build
 import android.view.Display
 
 /**
@@ -24,6 +26,21 @@ internal val REMOTE_CAPTURE_HINTS: List<String> = listOf(
 internal fun displayOwnerPackage(display: Display): String? = runCatching {
     Display::class.java.getMethod("getOwnerPackageName").invoke(display) as? String
 }.getOrNull()
+
+/**
+ * En qué pantalla vive esta Activity.
+ *
+ * 🔴 `Activity.getDisplay()` es API 30 y este proyecto soporta desde 26: en un
+ * Sunmi con Android 9 la llamada directa es un NoSuchMethodError que tumba la
+ * caja. El camino viejo está deprecado pero es el único que existe ahí.
+ */
+@Suppress("DEPRECATION")
+internal fun Activity.currentDisplayId(): Int =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        display?.displayId ?: Display.DEFAULT_DISPLAY
+    } else {
+        windowManager.defaultDisplay.displayId
+    }
 
 /**
  * Qué pantalla le toca a quién.
