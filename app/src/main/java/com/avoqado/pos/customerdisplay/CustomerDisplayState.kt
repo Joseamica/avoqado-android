@@ -176,6 +176,25 @@ class CustomerDisplayState @Inject constructor() {
         _customerCapturesInput.value = presenting && enabledByUser && touchCapable
     }
 
+    /** ¿Este equipo admite invertir las pantallas? (segunda pantalla física). */
+    private val _invertible = MutableStateFlow(false)
+    val invertible: StateFlow<Boolean> = _invertible.asStateFlow()
+
+    fun setInvertible(value: Boolean) {
+        _invertible.value = value
+    }
+
+    /**
+     * El equipo NO permitió mover la caja a la otra pantalla (dos intentos
+     * fallidos). Solo en memoria: nunca se toca la preferencia del usuario.
+     */
+    private val _invertUnsupported = MutableStateFlow(false)
+    val invertUnsupported: StateFlow<Boolean> = _invertUnsupported.asStateFlow()
+
+    fun setInvertUnsupported(value: Boolean) {
+        _invertUnsupported.value = value
+    }
+
     /** Callbacks de VUELTA: lo que el cliente toca en su pantalla. */
     var onRatingPicked: ((Int) -> Unit)? = null
     var onTipPicked: ((Int) -> Unit)? = null
