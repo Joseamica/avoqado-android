@@ -36,6 +36,8 @@ class MoreMenuViewModel @Inject constructor(
     val kioskManager: com.avoqado.pos.settings.domain.KioskManager,
     val customerDisplayPrefs: com.avoqado.pos.customerdisplay.CustomerDisplayPrefs,
     val customerDisplayState: com.avoqado.pos.customerdisplay.CustomerDisplayState,
+    val displayModePrefs: com.avoqado.pos.customerdisplay.DisplayModePrefs,
+    val cashierDisplayGuard: com.avoqado.pos.customerdisplay.CashierDisplayGuard,
     val venueSwitchState: com.avoqado.pos.settings.domain.VenueSwitchState,
     private val paymentSyncService: PaymentSyncService,
     private val syncOutbox: SyncOutbox,

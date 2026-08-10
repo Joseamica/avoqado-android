@@ -1,5 +1,6 @@
 package com.avoqado.pos.settings
 
+import android.app.Activity
 import android.content.pm.PackageManager
 import androidx.core.content.pm.PackageInfoCompat
 import androidx.compose.foundation.background
@@ -125,6 +126,7 @@ fun MoreMenuScreen(
     var showAddons by remember { mutableStateOf(false) }
     var showKDS by remember { mutableStateOf(false) }
     var showCustomerDisplay by remember { mutableStateOf(false) }
+    var displayModeToastMessage by remember { mutableStateOf<String?>(null) }
     var showAreaTicketDelivery by remember { mutableStateOf(false) }
     var showKiosk by remember { mutableStateOf(false) }
     val kioskEnabled by viewModel.kioskManager.enabled.collectAsState()
@@ -893,10 +895,31 @@ fun MoreMenuScreen(
 
     // Customer Display Sheet (POS de doble pantalla)
     if (showCustomerDisplay) {
+        val carritoConItems by viewModel.activeCartState.itemCount.collectAsState()
         CustomerDisplaySheet(
             prefs = viewModel.customerDisplayPrefs,
             displayState = viewModel.customerDisplayState,
+            displayModePrefs = viewModel.displayModePrefs,
+            ventaEnCurso = carritoConItems > 0,
+            onInvertedChange = { nuevo ->
+                viewModel.cashierDisplayGuard.resetAttempts()
+                viewModel.displayModePrefs.setInverted(nuevo)
+                val activity = context as? Activity
+                if (activity != null) {
+                    viewModel.cashierDisplayGuard.enforce(activity)
+                }
+                showCustomerDisplay = false
+                displayModeToastMessage = if (nuevo) "¡Pantallas invertidas!" else "¡Pantallas normales!"
+            },
             onDismiss = { showCustomerDisplay = false },
+        )
+    }
+
+    // Celebratory toast on invert/restore.
+    displayModeToastMessage?.let { message ->
+        com.avoqado.pos.designsystem.components.AvoqadoSuccessToast(
+            message = message,
+            onDismiss = { displayModeToastMessage = null },
         )
     }
 

@@ -21,11 +21,17 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import com.avoqado.pos.customerdisplay.CustomerDisplayPrefs
 import com.avoqado.pos.customerdisplay.CustomerDisplayState
+import com.avoqado.pos.customerdisplay.DisplayModePrefs
+import com.avoqado.pos.designsystem.components.AvoqadoDialog
+import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 
 /**
@@ -41,10 +47,17 @@ import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 fun CustomerDisplaySheet(
     prefs: CustomerDisplayPrefs,
     displayState: CustomerDisplayState,
+    displayModePrefs: DisplayModePrefs,
+    ventaEnCurso: Boolean,
+    onInvertedChange: (Boolean) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val detected by displayState.isPresenting.collectAsState()
     val captureEnabled by prefs.customerCaptureEnabled.collectAsState()
+    val invertible by displayState.invertible.collectAsState()
+    val invertUnsupported by displayState.invertUnsupported.collectAsState()
+    val inverted by displayModePrefs.inverted.collectAsState()
+    var confirmando by remember { mutableStateOf(false) }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -108,7 +121,62 @@ fun CustomerDisplaySheet(
                 )
             }
 
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column(modifier = Modifier.padding(end = AvoqadoTheme.spacing.md)) {
+                    Text(
+                        text = "Invertir pantallas",
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                    Text(
+                        // Apagado se VE y se EXPLICA: nunca desaparece en silencio.
+                        text = when {
+                            invertUnsupported ->
+                                "Este equipo no permitió mover la caja a la otra pantalla."
+                            !invertible ->
+                                "La segunda pantalla de este equipo no es táctil; " +
+                                    "el cajero no podría trabajar en ella."
+                            ventaEnCurso ->
+                                "Termina la venta en curso para poder cambiar de pantalla."
+                            else ->
+                                "El cliente ve la pantalla grande y el cajero trabaja en la chica."
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = inverted,
+                    enabled = invertible && !ventaEnCurso,
+                    onCheckedChange = { confirmando = true },
+                )
+            }
+
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxxl))
         }
+    }
+
+    if (confirmando) {
+        AvoqadoDialog(
+            title = if (inverted) "¿Volver a la pantalla normal?" else "¿Invertir las pantallas?",
+            description = "La caja se va a reiniciar en la otra pantalla. " +
+                "Tarda unos segundos y no se pierde nada.",
+            onDismiss = { confirmando = false },
+            actionButton = {
+                PrimaryButton(
+                    text = "Continuar",
+                    onClick = {
+                        confirmando = false
+                        onInvertedChange(!inverted)
+                    },
+                    fullWidth = true,
+                )
+            },
+        ) {}
     }
 }
