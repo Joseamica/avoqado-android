@@ -697,7 +697,21 @@ class CartViewModel @Inject constructor(
      */
     fun restoreAreaTicketSession() {
         viewModelScope.launch {
-            areaTicketRepository.restore()?.let(::replaceAreaTicketLines)
+            // 🔴 Restaurar es BEST-EFFORT: corre solo al entrar a Cobrar y no
+            // puede tumbar la app.
+            //
+            // `restore()` empieza por `venueId()`, que LANZA si no hay local
+            // seleccionado — y eso pasa de verdad: con la sesión vencida el
+            // refresh devuelve 401, el venue se limpia, y al abrir Cobrar la
+            // excepción subía sin nadie que la atrapara. Crash al arranque en
+            // vez de mandar al login. Reproducido en la D3 el 2026-08-10 con la
+            // sesión expirada (AreaTicketException VENUE_REQUIRED).
+            //
+            // iOS ya lo hacía bien con `try?` (CheckoutView.swift): esto es el
+            // espejo, con log para que el fallo no quede invisible.
+            runCatching { areaTicketRepository.restore() }
+                .onSuccess { checkout -> checkout?.let(::replaceAreaTicketLines) }
+                .onFailure { Log.w("🎟️", "No se pudo restaurar la sesión de vales: ${it.message}") }
         }
     }
 
