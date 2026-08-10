@@ -179,6 +179,7 @@ class ArticlesViewModel @Inject constructor(
         viewModelScope.launch {
             _isSaving.value = true
             try {
+                repository.clearError()
                 // Generate SKU if not provided (mobile route may require it)
                 val resolvedSku = sku ?: UUID.randomUUID().toString().take(8).uppercase()
                 val payload = buildJsonObject {
@@ -201,7 +202,9 @@ class ArticlesViewModel @Inject constructor(
                 Log.d(TAG, if (success) "✅ Product created" else "❌ Product creation failed")
                 if (success) _lastSaveSuccess.value = "¡Artículo creado!"
                 onResult(success)
-                if (!success) repository.setError("No se pudo guardar. Intenta de nuevo.")
+                if (!success && repository.errorMessage.value.isNullOrBlank()) {
+                    repository.setError("No se pudo guardar. Intenta de nuevo.")
+                }
             } finally {
                 _isSaving.value = false
             }
@@ -229,6 +232,7 @@ class ArticlesViewModel @Inject constructor(
         viewModelScope.launch {
             _isSaving.value = true
             try {
+                repository.clearError()
                 val payload = buildJsonObject {
                     put("name", name)
                     if (description != null) put("description", description)
@@ -249,7 +253,9 @@ class ArticlesViewModel @Inject constructor(
                 Log.d(TAG, if (success) "✅ Product $productId updated" else "❌ Product update failed")
                 if (success) _lastSaveSuccess.value = "¡Artículo actualizado!"
                 onResult(success)
-                if (!success) repository.setError("No se pudo guardar. Intenta de nuevo.")
+                if (!success && repository.errorMessage.value.isNullOrBlank()) {
+                    repository.setError("No se pudo guardar. Intenta de nuevo.")
+                }
             } finally {
                 _isSaving.value = false
             }

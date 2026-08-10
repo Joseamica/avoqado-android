@@ -13,6 +13,7 @@ import com.avoqado.pos.articles.data.model.ProductOptionsListResponse
 import com.avoqado.pos.articles.data.model.RawMaterial
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ApiConstants
+import com.avoqado.pos.core.data.network.ServerErrorText
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -172,14 +173,14 @@ class ArticlesRepository @Inject constructor(
                 .post(body)
                 .build()
 
-            val (code, _) = executeRequest(request)
+            val (code, responseBody) = executeRequest(request)
             if (code in 200..299) {
                 Log.d(TAG, "✅ Product created")
                 fetchProducts()
                 true
             } else {
                 Log.e(TAG, "❌ createProduct error: HTTP $code")
-                _errorMessage.value = "Error al crear producto"
+                _errorMessage.value = ServerErrorText.fromResponseBody(responseBody, "Error al crear producto")
                 false
             }
         } catch (e: Exception) {
@@ -198,14 +199,14 @@ class ArticlesRepository @Inject constructor(
                 .put(body)
                 .build()
 
-            val (code, _) = executeRequest(request)
+            val (code, responseBody) = executeRequest(request)
             if (code in 200..299) {
                 Log.d(TAG, "✅ Product $productId updated")
                 fetchProducts()
                 true
             } else {
                 Log.e(TAG, "❌ updateProduct error: HTTP $code")
-                _errorMessage.value = "Error al actualizar producto"
+                _errorMessage.value = ServerErrorText.fromResponseBody(responseBody, "Error al actualizar producto")
                 false
             }
         } catch (e: Exception) {

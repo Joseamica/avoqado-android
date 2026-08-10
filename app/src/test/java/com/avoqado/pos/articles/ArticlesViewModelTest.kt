@@ -7,11 +7,14 @@ import com.avoqado.pos.articles.presentation.ArticlesViewModel
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.domain.PlanManager
 import io.mockk.coVerify
+import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.verify
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.advanceUntilIdle
 import org.junit.Assert.assertEquals
 import org.junit.Before
 import org.junit.Rule
@@ -24,6 +27,7 @@ class ArticlesViewModelTest {
     val mainDispatcherRule = MainDispatcherRule()
 
     private val repository = mockk<ArticlesRepository>(relaxed = true)
+    private lateinit var repositoryError: MutableStateFlow<String?>
 
     @Before
     fun setup() {
@@ -34,7 +38,8 @@ class ArticlesViewModelTest {
         every { repository.coupons } returns MutableStateFlow(emptyList())
         every { repository.creditPacks } returns MutableStateFlow(emptyList())
         every { repository.isLoading } returns MutableStateFlow(false)
-        every { repository.errorMessage } returns MutableStateFlow(null)
+        repositoryError = MutableStateFlow(null)
+        every { repository.errorMessage } returns repositoryError
     }
 
     /** Default: plan unknown → fail-open (promotions management available). */
@@ -145,6 +150,30 @@ class ArticlesViewModelTest {
     }
 
     // MARK: - Products CRUD
+
+    @Test
+    fun `create product does not replace the actionable repository error`() = runTest {
+        repositoryError.value = "Este producto debe crearse o activarse desde el Catálogo maestro."
+        coEvery { repository.createProduct(any()) } returns false
+        val viewModel = createViewModel()
+
+        viewModel.createProduct(
+            name = "Agua",
+            type = com.avoqado.pos.articles.data.model.ProductType.FOOD_AND_BEV,
+            priceType = com.avoqado.pos.articles.data.model.PriceType.FIXED,
+            price = 25.0,
+            taxRate = 0.16,
+            isActive = true,
+            trackInventory = false,
+        )
+        advanceUntilIdle()
+
+        assertEquals(
+            "Este producto debe crearse o activarse desde el Catálogo maestro.",
+            repositoryError.value,
+        )
+        verify(exactly = 0) { repository.setError(any()) }
+    }
 
     @Test
     fun `deleteProduct calls repository`() = runTest {

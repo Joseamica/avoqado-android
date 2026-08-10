@@ -3,6 +3,7 @@ package com.avoqado.pos.pos.data
 import android.util.Log
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ApiConstants
+import com.avoqado.pos.core.data.network.ServerErrorText
 import com.avoqado.pos.pos.data.model.CategoriesResponse
 import com.avoqado.pos.pos.data.model.CreateProductRequest
 import com.avoqado.pos.pos.data.model.CreateProductResponse
@@ -239,7 +240,11 @@ class ProductsRepository @Inject constructor(
                 }
             } else {
                 Log.e("📦", "Create product failed: $code - $body")
-                Result.failure(Exception("Error al crear producto ($code)"))
+                Result.failure(
+                    Exception(
+                        ServerErrorText.fromResponseBody(body, "Error al crear producto ($code)"),
+                    ),
+                )
             }
         } catch (e: Exception) {
             Log.e("📦", "Create product error: ${e.message}")

@@ -18,6 +18,10 @@ import kotlinx.serialization.json.contentOrNull
 
 object ServerErrorText {
     private val PERMISSION_REGEX = Regex("""Permission\s+'([^']+)'\s+required""", RegexOption.IGNORE_CASE)
+    private val JSON = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+    private const val CATALOG_GOVERNANCE_REQUIRED = "CATALOG_GOVERNANCE_REQUIRED"
+    private const val CATALOG_GOVERNANCE_MESSAGE =
+        "Este producto debe crearse o activarse desde el Catálogo maestro."
 
     /**
      * Versión para una excepción, que es lo que llega a la mayoría de los `catch`.
@@ -77,8 +81,7 @@ object ServerErrorText {
         if (body.isNullOrBlank()) {
             null
         } else {
-            val root = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
-                .parseToJsonElement(body)
+            val root = JSON.parseToJsonElement(body)
                 .let { it as? kotlinx.serialization.json.JsonObject }
             listOf("message", "error", "errorMessage")
                 .firstNotNullOfOrNull { key ->
@@ -89,6 +92,32 @@ object ServerErrorText {
         }
     } catch (_: Exception) {
         null
+    }
+
+    /**
+     * Extrae el error de las fronteras OkHttp que no usan Retrofit. El código
+     * estable del catálogo conserva una instrucción útil incluso si una respuesta
+     * excepcional omite `message`; los demás errores respetan el texto del server.
+     */
+    fun fromResponseBody(rawBody: String?, fallback: String): String = try {
+        val root = rawBody
+            ?.takeIf { it.isNotBlank() }
+            ?.let(JSON::parseToJsonElement)
+            as? kotlinx.serialization.json.JsonObject
+        val code = (root?.get("code") as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull
+        val message = listOf("message", "error", "errorMessage")
+            .firstNotNullOfOrNull { key ->
+                (root?.get(key) as? kotlinx.serialization.json.JsonPrimitive)
+                    ?.contentOrNull
+                    ?.takeIf { it.isNotBlank() }
+            }
+        if (code == CATALOG_GOVERNANCE_REQUIRED) {
+            message ?: CATALOG_GOVERNANCE_MESSAGE
+        } else {
+            humanize(message, fallback)
+        }
+    } catch (_: Exception) {
+        fallback
     }
 
     /** Espejo de iOS: distinguir sin-red de fallo real, sin tener la excepción. */
