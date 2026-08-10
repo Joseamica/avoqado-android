@@ -293,9 +293,25 @@ class CustomerDisplayManager @Inject constructor(
         }
     }
 
+    /**
+     * 🔴 Si había una Presentation viva y CONFIRMADA (isPresenting=true) y la
+     * apagamos para pasar al camino Activity (modo invertido), ese `true` tiene
+     * que apagarse CON ella. Si sobrevive, se combina con el
+     * `touchCapable=true` optimista de [showCustomerActivity] y
+     * `customerCapturesInput` se prende ANTES de que exista ventana real: un
+     * lanzamiento aceptado que aterriza en otra pantalla, o que el modo kiosco
+     * bloquea, mandaría propina/upsell a una pantalla que nadie ve, con el
+     * cajero esperando un toque que nunca llega. El autocierre de
+     * `CustomerDisplayActivity` NO puede corregir esto — nunca prendió lo que
+     * está apagando, así que su guarda (`reportedPresence`) correctamente no
+     * lo toca. `CustomerDisplayActivity.onStart()` es quien vuelve a prenderlo
+     * cuando de verdad confirma presencia.
+     */
     private fun dismissPresentation() {
+        val hadPresentation = presentation != null
         runCatching { presentation?.dismiss() }
         presentation = null
+        if (hadPresentation) state.setPresenting(false)
     }
 
     /**

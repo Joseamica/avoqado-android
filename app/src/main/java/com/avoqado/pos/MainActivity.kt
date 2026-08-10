@@ -45,6 +45,9 @@ class MainActivity : FragmentActivity() {
      *  sin ella el bind no conecta y no pasa nada. */
     @Inject lateinit var innerPrinter: com.avoqado.pos.printing.data.SunmiInnerPrinter
 
+    /** Deja la caja en la pantalla que le toca cuando el mostrador está invertido. */
+    @Inject lateinit var cashierGuard: com.avoqado.pos.customerdisplay.CashierDisplayGuard
+
     override fun onStart() {
         super.onStart()
         innerPrinter.bind()
@@ -71,6 +74,11 @@ class MainActivity : FragmentActivity() {
     @OptIn(ExperimentalMaterial3WindowSizeClassApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Si el mostrador está invertido, la caja va en la otra pantalla. Se
+        // llama ANTES de pintar, pero NO se hace finish(): el sistema mueve la
+        // tarea y recrea la Activity, y si por lo que sea no se mueve, la caja
+        // sigue siendo usable donde está.
+        cashierGuard.enforce(this)
         enableEdgeToEdge()
         hideNavigationBar()
         setContent {
