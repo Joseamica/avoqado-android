@@ -34,7 +34,16 @@ class DisplayModePrefs @Inject constructor(
     private val _dirty = MutableStateFlow(prefs.getBoolean(KEY_DIRTY, false))
     val dirty: StateFlow<Boolean> = _dirty.asStateFlow()
 
-    /** Cambio hecho DESDE este equipo: aplica ya y queda pendiente de empujar. */
+    /**
+     * Cambio hecho DESDE este equipo: aplica ya y queda pendiente de empujar.
+     *
+     * Sincronizado: `setInverted` corre desde el hilo principal (toque del
+     * interruptor en Ajustes) y `adoptFromServer` corre desde una corrutina de
+     * IO. Sin sincronización, la lectura de `_dirty.value` en `adoptFromServer`
+     * puede ocurrir antes de que este método termine de marcarlo a true, y el
+     * nuevo valor local se pierde revertido en el siguiente refresh del server.
+     */
+    @Synchronized
     fun setInverted(value: Boolean) {
         prefs.edit().putBoolean(KEY_INVERTED, value).putBoolean(KEY_DIRTY, true).apply()
         _inverted.value = value
@@ -45,7 +54,11 @@ class DisplayModePrefs @Inject constructor(
      * Valor que llegó del server. Se ignora si hay un cambio local pendiente:
      * si no, un equipo sin internet que acaba de prender el modo lo vería
      * revertirse en el siguiente refresh.
+     *
+     * Sincronizado: protege la lectura de `_dirty` para que no se entrelace
+     * con `setInverted` corriendo en otro hilo.
      */
+    @Synchronized
     fun adoptFromServer(value: Boolean) {
         if (_dirty.value) return
         if (_inverted.value == value) return
@@ -53,7 +66,13 @@ class DisplayModePrefs @Inject constructor(
         _inverted.value = value
     }
 
-    /** El server confirmó nuestro valor: a partir de aquí él manda. */
+    /**
+     * El server confirmó nuestro valor: a partir de aquí él manda.
+     *
+     * Sincronizado: protege la escritura a `_dirty` para que no se entrelace
+     * con `setInverted` o `adoptFromServer`.
+     */
+    @Synchronized
     fun markSynced() {
         prefs.edit().putBoolean(KEY_DIRTY, false).apply()
         _dirty.value = false
