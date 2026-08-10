@@ -80,10 +80,16 @@ class CustomerDisplayManager @Inject constructor(
     private var hostActivity: Activity? = null
 
     /**
-     * Pantalla para la que hay un lanzamiento de [CustomerDisplayActivity]
-     * PENDIENTE: se pone justo antes de `startActivity()` y se limpia cuando
-     * la Activity confirma que arrancó ([onCustomerActivityStarted]), o cuando
-     * el manager decide que ya no la quiere ([dismiss] / el guard anti-bucle).
+     * Pantalla en la que el manager QUIERE una ventana de cliente ahora mismo;
+     * null cuando no quiere ninguna.
+     *
+     * Es un DESEO, no un apretón de manos: vale lo que dice mientras sea cierto.
+     * Se pone al decidir montar al cliente en esa pantalla
+     * ([showCustomerActivity]) y se limpia SOLO cuando el manager deja de
+     * quererla: la pantalla se fue o la caja pasó a segundo plano ([dismiss]),
+     * el guard anti-bucle dijo que no, o se cambió de modo (rama final de
+     * [refresh] → [finishCustomerActivity]). Que la Activity confirme NO lo
+     * consume.
      *
      * 🔴 Por qué existe: `startActivity()` hacia otra pantalla es ASÍNCRONO —
      * hay una ventana entre ESE `startActivity()` y el `onCreate()` real de la
@@ -93,10 +99,22 @@ class CustomerDisplayManager @Inject constructor(
      * `CustomerDisplayActivity.finishIfShowing()` es un no-op porque no hay
      * instancia que cerrar — y el lanzamiento en vuelo ATERRIZA de todos
      * modos, tapando la caja. Este campo es lo que le permite a la propia
-     * Activity, en `onStart()`, preguntarle al manager "¿TODAVÍA me quieres
-     * aquí?" en vez de asumirlo por haber llegado a existir, y cerrarse sola
-     * si la respuesta es no. La decisión sigue siendo del manager: la Activity
-     * solo pregunta.
+     * Activity, en `onStart()`, preguntar "¿me sigues queriendo aquí?" en vez
+     * de asumirlo por haber llegado a existir, y cerrarse sola si la respuesta
+     * es no. La decisión sigue siendo del manager: la Activity solo pregunta.
+     *
+     * 🔴 Y por qué DESEO y no apretón de manos de un solo uso: la Activity
+     * consulta esto en CADA `onStart()`. Un token que se consumiera al
+     * confirmar dejaría la respuesta en `null` para todo lo que venga después
+     * — el ciclo `onStop → onRestart → onStart` por causa ajena
+     * (bloqueo/desbloqueo, gestión de energía del fabricante, un overlay del
+     * sistema) y la recreación por cambio de configuración (el manifest declara
+     * `resizeableActivity` y a propósito NO declara `configChanges`) — y el
+     * letrero del cliente se autocerraría sin que el manager lo haya decidido,
+     * sin nadie que lo repusiera: ningún listener de display se dispara y
+     * `inverted` no cambió. Mientras el deseo siga puesto, esos casos
+     * sobreviven; y cuando el manager de verdad deja de querer la ventana, la
+     * cierra ÉL ([finishCustomerActivity]).
      */
     private var desiredCustomerDisplayId: Int? = null
 
@@ -143,21 +161,13 @@ class CustomerDisplayManager @Inject constructor(
     }
 
     /**
-     * Lo consulta [CustomerDisplayActivity.onStart]: ¿el manager TODAVÍA la
-     * quiere en esta pantalla? La decisión de "¿todavía la quieres?" es del
-     * manager, no de la Activity — ella solo pregunta, nunca adivina.
+     * Lo consulta [CustomerDisplayActivity.onStart] en cada arranque de
+     * visibilidad: ¿el manager SIGUE queriendo una ventana de cliente en esta
+     * pantalla? La decisión es del manager, no de la Activity — ella solo
+     * pregunta, nunca adivina, y se cierra sola si la respuesta es no.
      */
     internal fun wantsCustomerDisplayOn(displayId: Int): Boolean =
         desiredCustomerDisplayId == displayId
-
-    /**
-     * La Activity confirma que arrancó de verdad: el lanzamiento deja de estar
-     * "pendiente" (ya está "mostrándose", que se rastrea aparte vía
-     * [CustomerDisplayActivity.isShowingOn]).
-     */
-    internal fun onCustomerActivityStarted(displayId: Int) {
-        if (desiredCustomerDisplayId == displayId) desiredCustomerDisplayId = null
-    }
 
     private fun refresh() {
         val activity = hostActivity ?: return
@@ -219,11 +229,16 @@ class CustomerDisplayManager @Inject constructor(
 
     /** Modo invertido: el cliente en una Activity sobre la pantalla principal. */
     private fun showCustomerActivity(activity: Activity, displayId: Int) {
-        if (CustomerDisplayActivity.isShowingOn(displayId)) return
-        // Se marca ANTES de startActivity(): si el resultado tarda (es
-        // asíncrono) y otro refresh() cambia de opinión mientras tanto, la
-        // Activity va a preguntar por este valor en su propio onStart().
+        // El deseo se deja puesto ANTES de todo lo demás —incluido el
+        // early-return de abajo—: llegar aquí YA significa que el manager quiere
+        // una ventana de cliente en esta pantalla, la haya o no todavía. Antes
+        // de `startActivity()` porque es asíncrono: si otro refresh() cambia de
+        // opinión mientras el lanzamiento va en vuelo, la Activity leerá este
+        // valor (ya limpiado) en su onStart() y se cerrará sola. Y también en el
+        // camino "ya está montada", porque este es el valor que esa instancia va
+        // a releer en CADA onStart() mientras siga viva.
         desiredCustomerDisplayId = displayId
+        if (CustomerDisplayActivity.isShowingOn(displayId)) return
         runCatching {
             val opts = ActivityOptions.makeBasic().setLaunchDisplayId(displayId)
             activity.startActivity(
@@ -246,6 +261,10 @@ class CustomerDisplayManager @Inject constructor(
             Log.e(tag, "No se pudo abrir la pantalla del cliente: ${it.message}")
             isActive = false
             state.setPresenting(false)
+            // El intento se abortó: no hay —ni va a haber— ventana que responda
+            // por este deseo, así que se limpia para que no valide más tarde una
+            // instancia que nadie pidió. El siguiente refresh() lo vuelve a
+            // poner si sigue haciendo falta.
             desiredCustomerDisplayId = null
         }
     }
@@ -280,10 +299,12 @@ class CustomerDisplayManager @Inject constructor(
     }
 
     /**
-     * Cierra la Activity del cliente si está viva Y cancela cualquier
-     * lanzamiento pendiente. Las dos cosas juntas: un `finish()` a una
-     * instancia que TODAVÍA no existe (ver [desiredCustomerDisplayId]) no
-     * cancela nada por sí solo, y el lanzamiento en vuelo aterrizaría igual.
+     * El manager deja de querer la ventana del cliente: retira el deseo Y
+     * cierra la Activity si está viva. Las dos cosas juntas, porque cada una
+     * sola deja un agujero: un `finish()` a una instancia que TODAVÍA no existe
+     * (ver [desiredCustomerDisplayId]) no cancela nada, y el lanzamiento en
+     * vuelo aterrizaría igual; y retirar el deseo sin cerrar dejaría la ventana
+     * en pantalla hasta su siguiente `onStart()`.
      */
     private fun finishCustomerActivity() {
         desiredCustomerDisplayId = null

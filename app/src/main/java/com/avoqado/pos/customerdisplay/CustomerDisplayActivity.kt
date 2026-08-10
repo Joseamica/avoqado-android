@@ -19,35 +19,36 @@ import javax.inject.Inject
  * sigue siendo el camino en modo normal (y es el ÚNICO que funciona en equipos
  * cuya pantalla de cliente es virtual, como el T3 Pro).
  *
- * Es sin estado: solo pinta el singleton [CustomerDisplayState]. Si el sistema
- * la recrea, no se pierde nada.
+ * No guarda NADA del negocio: solo pinta el singleton [CustomerDisplayState], y
+ * quién va en qué pantalla lo decide y lo recuerda [CustomerDisplayManager]. Por
+ * eso una recreación del sistema (rotación, densidad, resize) es inofensiva: la
+ * instancia nueva le vuelve a preguntar al manager y obtiene la misma respuesta.
+ * Lo único que sí es de la instancia es [reportedPresence], y es puro ciclo de
+ * vida — ver su KDoc.
  */
 @AndroidEntryPoint
 class CustomerDisplayActivity : ComponentActivity() {
 
     @Inject lateinit var state: CustomerDisplayState
 
-    // Para preguntarle al manager, en onStart(), si TODAVÍA nos quiere aquí
-    // (ver el porqué en CustomerDisplayManager.desiredCustomerDisplayId). La
-    // decisión es del manager; esta Activity solo pregunta.
+    // Para preguntarle al manager, en cada onStart(), si SIGUE queriendo una
+    // ventana de cliente aquí (ver CustomerDisplayManager.desiredCustomerDisplayId).
+    // La decisión es del manager; esta Activity solo pregunta.
     @Inject lateinit var manager: CustomerDisplayManager
 
     /**
-     * true desde el PRIMER `onStart()` que confirmó con el manager que esta
-     * instancia sigue siendo bienvenida. NO se resetea en `onStop()`: Android
-     * garantiza un ciclo `onStop() → onRestart() → onStart()` sobre la MISMA
-     * instancia cada vez que su ventana deja de ser visible y vuelve a serlo
-     * (bloqueo/desbloqueo del equipo, gestión de energía del fabricante, un
-     * overlay del sistema) — sin Intent nuevo, sin pasar por `onCreate()`, y
-     * sin que el manager se entere. Si el guard de `onStart()` volviera a
-     * correr en esos ciclos, comprobaría contra un token que el manager YA
-     * limpió al confirmar el primero (ver `onCustomerActivityStarted`) y se
-     * autocerraría de una instancia que sigue siendo válida. El guard es una
-     * comprobación de "¿me confirman ESTE lanzamiento?", no de "¿sigo
-     * queriendo esta ventana viva?" — por eso corre UNA sola vez por
-     * instancia; los `onStart()` siguientes son vaivén normal de visibilidad.
+     * ¿Fue ESTA instancia la que anunció presencia en [CustomerDisplayState]?
+     *
+     * 🔴 [CustomerDisplayState] es un singleton COMPARTIDO por todas las
+     * ventanas de cliente, así que un `setPresenting(false)` de una apaga la
+     * señal de cualquier otra. Cuando el guard de [onStart] nos cierra, Android
+     * dispara nuestro `onStop()` igual más adelante (porque `onStart()` ya
+     * corrió): sin esta guarda, ese `onStop()` tardío apagaría un `true`
+     * legítimo puesto mientras tanto por OTRA ventana — la `Presentation` del
+     * modo normal, o una instancia relanzada en la pantalla correcta. Solo
+     * apagamos lo que nosotros prendimos.
      */
-    private var confirmed = false
+    private var reportedPresence = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -76,34 +77,29 @@ class CustomerDisplayActivity : ComponentActivity() {
     }
 
     // 🔴 `startActivity()` hacia otra pantalla es ASÍNCRONO: entre que el
-    // manager lo dispara y que esta Activity llega a su PRIMER onStart()
-    // puede haber corrido otro refresh() que decidió que YA NO nos quiere
-    // aquí — el caso que importa es el guard anti-bucle, cuando la caja
-    // resultó estar todavía en esta misma pantalla. En esa ventana `instance`
-    // (companion) seguía siendo null, así que `finishIfShowing()` no tuvo
+    // manager lo dispara y que esta Activity llega a existir puede haber
+    // corrido otro refresh() que decidió que YA NO quiere un letrero aquí — el
+    // caso que importa es el guard anti-bucle, cuando la caja resultó estar
+    // todavía en esta misma pantalla. En esa ventana `instance` (companion)
+    // seguía siendo null, así que el `finishIfShowing()` del manager no tuvo
     // nada que cancelar y este lanzamiento en vuelo llegó de todos modos. Por
-    // eso NO asumimos que llegar aquí significa seguir vigentes: le
-    // preguntamos al manager, que es quien tiene la decisión — nosotros solo
-    // preguntamos. Si dice que no, nos cerramos ANTES de que alguien (cliente
-    // o cajero, si esto tapó su pantalla) llegue a vernos.
+    // eso NO asumimos que existir signifique seguir vigentes: le preguntamos al
+    // manager, que es quien tiene la decisión — nosotros solo preguntamos. Si
+    // dice que no, nos cerramos ANTES de que alguien (cliente o cajero, si esto
+    // tapó su pantalla) llegue a vernos.
     //
-    // Pero SOLO la primera vez (`!confirmed`): los `onStart()` siguientes de
-    // una instancia ya confirmada son el vaivén normal de visibilidad —ver el
-    // porqué en el KDoc de `confirmed`— y NO deben volver a consultar el
-    // token, porque el manager ya lo limpió al confirmar y un re-chequeo la
-    // autocerraría por error. Cuando el manager de verdad deja de querer esta
-    // ventana, es ÉL quien la cierra (`finishCustomerActivity()`); este
-    // guard existe solo para el lanzamiento en vuelo que ya nadie quiere.
+    // La pregunta se contesta en CADA onStart(), no solo el primero, porque el
+    // manager deja el deseo PUESTO mientras siga queriendo esta ventana (ver
+    // CustomerDisplayManager.desiredCustomerDisplayId). Así un `onStop →
+    // onRestart → onStart` por causa ajena (bloqueo/desbloqueo, gestión de
+    // energía del fabricante, un overlay del sistema) y una recreación por
+    // cambio de configuración encuentran el deseo intacto y siguen vivas: lo
+    // único que se cierra solo es el lanzamiento que el manager ya no quiere.
     override fun onStart() {
         super.onStart()
-        if (!confirmed) {
-            val displayId = currentDisplayId()
-            if (!manager.wantsCustomerDisplayOn(displayId)) {
-                finish()
-                return
-            }
-            manager.onCustomerActivityStarted(displayId)
-            confirmed = true
+        if (!manager.wantsCustomerDisplayOn(currentDisplayId())) {
+            finish()
+            return
         }
         // La señal de "de verdad se está mostrando" viene del propio ciclo de
         // vida, no de que startActivity() no haya lanzado excepción: eso solo
@@ -111,17 +107,21 @@ class CustomerDisplayActivity : ComponentActivity() {
         // aparecer. isPresenting alimenta a quién le toca capturar propina y
         // calificación (ver CustomerDisplayState) — una señal optimista manda
         // el upsell a una pantalla que nadie ve.
+        reportedPresence = true
         state.setPresenting(true)
     }
 
     override fun onStop() {
-        // Solo si ESTA instancia de verdad llegó a confirmar el lanzamiento:
-        // si el guard de arriba nos cerró en el primer onStart(), jamás
-        // tocamos isPresenting — de lo contrario este onStop() (que Android
-        // dispara igual, porque onStart() ya corrió) podría apagar un `true`
-        // legítimo que ya puso otra ventana (Presentation o una relanzada)
-        // después de que a nosotros nos cancelaron.
-        if (confirmed) state.setPresenting(false)
+        // Solo si ESTA instancia llegó a anunciar presencia: si el guard de
+        // arriba nos cerró, jamás tocamos isPresenting — de lo contrario este
+        // onStop() (que Android dispara igual, porque onStart() ya corrió)
+        // podría apagar un `true` legítimo que ya puso otra ventana
+        // (Presentation o una relanzada) después de que a nosotros nos
+        // cancelaron. Ver el KDoc de reportedPresence.
+        if (reportedPresence) {
+            reportedPresence = false
+            state.setPresenting(false)
+        }
         super.onStop()
     }
 
