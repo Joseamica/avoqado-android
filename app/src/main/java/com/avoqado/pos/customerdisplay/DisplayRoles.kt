@@ -153,3 +153,81 @@ internal fun accountForEnforce(
     target = target,
     attempts = if (isNewRelaunchScenario(previous, presentDisplays, target)) 0 else previous.attempts,
 )
+
+/** Cuántos remontes seguidos se permiten antes de rendirse. Ver [decideCustomerRemount]. */
+internal const val MAX_CUSTOMER_REMOUNTS = 3
+
+/**
+ * Cuánto tiene que aguantar la ventana en pantalla para que la ráfaga se
+ * considere terminada. Ver [decideCustomerRemount].
+ */
+internal const val CUSTOMER_REMOUNT_QUIET_PERIOD_MS = 10_000L
+
+/**
+ * Veredicto de [decideCustomerRemount].
+ *
+ * @param remount hay que reponer la ventana del cliente.
+ * @param attempts remontes ya gastados en la ráfaga en curso, DESPUÉS de este evento.
+ * @param gaveUp se alcanzó el tope: no se repone y hay que dejar rastro en el log.
+ */
+internal data class RemountVerdict(
+    val remount: Boolean,
+    val attempts: Int,
+    val gaveUp: Boolean,
+)
+
+/**
+ * La ventana del cliente dejó de estar al frente. ¿Se repone?
+ *
+ * 🔴 El hueco que cierra: el letrero del cliente NO usa lock-task, así que un
+ * swipe desde el borde trae las barras del sistema y un HOME lo manda al fondo —
+ * la Activity sigue viva pero fuera de pantalla. Lo mismo hace un overlay del
+ * sistema o la gestión de energía del fabricante. Hasta ahora sólo se recuperaba
+ * en el siguiente evento de pantalla o cuando la caja volvía al frente: mientras
+ * tanto el cliente se quedaba viendo el escritorio de Android.
+ *
+ * 🔴 Por qué NO puede entrar en lazo, que es el riesgo real de remontar desde el
+ * propio `onStop` del letrero:
+ *
+ * 1. **El deseo manda.** Sólo se repone si el manager SIGUE queriendo una ventana
+ *    de cliente en ESA pantalla (`desiredDisplayId == stoppedDisplayId`). Cuando el
+ *    manager la cierra a propósito retira el deseo ANTES de llamar a `finish()`
+ *    (ver `CustomerDisplayManager.finishCustomerActivity`), así que el `onStop`
+ *    que provoca ese cierre llega aquí con el deseo ya en `null` y contesta que
+ *    no. El lazo `dismiss → onStop → remontar` es imposible por construcción, no
+ *    por temporización.
+ * 2. **Tope por ráfaga.** Si algo ajeno tumba la ventana una y otra vez —el modo
+ *    kiosco bloquea lanzar esta Activity (es tarea nueva, y lock-task lo rechaza
+ *    devolviendo un código, sin excepción que atrapar), un overlay que gana
+ *    siempre— se corta a los [MAX_CUSTOMER_REMOUNTS] intentos seguidos.
+ *
+ * La ráfaga se cierra sola cuando la ventana aguanta [CUSTOMER_REMOUNT_QUIET_PERIOD_MS]
+ * en pantalla: rendirse es para el parpadeo rápido, no para el turno entero. Sin
+ * esto, el tercer HOME de la mañana dejaría al cliente viendo el escritorio hasta
+ * reiniciar la app.
+ *
+ * @param desiredDisplayId pantalla en la que el manager quiere al cliente; null = ninguna.
+ * @param stoppedDisplayId pantalla de la ventana que acaba de dejar de estar al frente.
+ * @param previousAttempts remontes gastados en la ráfaga anterior.
+ * @param lastRemountAtMs cuándo se pidió el último remonte (misma base de tiempo que [nowMs]).
+ */
+internal fun decideCustomerRemount(
+    desiredDisplayId: Int?,
+    stoppedDisplayId: Int,
+    previousAttempts: Int,
+    lastRemountAtMs: Long,
+    nowMs: Long,
+    maxAttempts: Int = MAX_CUSTOMER_REMOUNTS,
+    quietPeriodMs: Long = CUSTOMER_REMOUNT_QUIET_PERIOD_MS,
+): RemountVerdict {
+    // El manager ya no quiere una ventana aquí: no se repone, y la ráfaga muere
+    // con el deseo (el siguiente montaje empieza con la cuenta limpia).
+    if (desiredDisplayId == null || desiredDisplayId != stoppedDisplayId) {
+        return RemountVerdict(remount = false, attempts = 0, gaveUp = false)
+    }
+    val burst = if (nowMs - lastRemountAtMs >= quietPeriodMs) 0 else previousAttempts
+    // Se conserva la cuenta al rendirse: mientras el parpadeo siga siendo rápido
+    // seguimos rendidos; en cuanto haya calma, la rama de arriba la reinicia.
+    if (burst >= maxAttempts) return RemountVerdict(remount = false, attempts = burst, gaveUp = true)
+    return RemountVerdict(remount = true, attempts = burst + 1, gaveUp = false)
+}

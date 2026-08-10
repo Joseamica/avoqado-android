@@ -174,4 +174,126 @@ class DisplayRolesTest {
         val a = accountForEnforce(trasReset, presentDisplays = setOf(2), target = 2)
         assertEquals(0, a.attempts)
     }
+
+    // MARK: - Reponer la ventana del cliente (decideCustomerRemount)
+    //
+    // El letrero no usa lock-task: un HOME del cliente, un overlay del sistema o
+    // la gestión de energía del fabricante lo mandan al fondo y la Activity queda
+    // viva pero fuera de pantalla. Remontar desde su propio onStop es lo único
+    // instantáneo, y es exactamente donde vive el riesgo de lazo
+    // (dismiss → onStop → remontar → …). Estos tests son la prueba de que el lazo
+    // no existe: la decisión no la toma el onStop, la toma el DESEO del manager.
+
+    @Test
+    fun `remonte - el manager la sigue queriendo aqui, se repone`() {
+        val v = decideCustomerRemount(
+            desiredDisplayId = 0,
+            stoppedDisplayId = 0,
+            previousAttempts = 0,
+            lastRemountAtMs = 0L,
+            nowMs = 1_000L,
+        )
+        assertTrue(v.remount)
+        assertEquals(1, v.attempts)
+        assertFalse(v.gaveUp)
+    }
+
+    @Test
+    fun `remonte - el manager la cerro a proposito, NO se repone (este es el lazo)`() {
+        // finishCustomerActivity() retira el deseo ANTES del finish(), así que el
+        // onStop que ese cierre provoca llega con el deseo en null. Si esto
+        // devolviera true, el manager no podría cerrar nunca la ventana:
+        // dismiss → onStop → remontar → dismiss → … para siempre.
+        val v = decideCustomerRemount(
+            desiredDisplayId = null,
+            stoppedDisplayId = 0,
+            previousAttempts = 2,
+            lastRemountAtMs = 1_000L,
+            nowMs = 1_200L,
+        )
+        assertFalse(v.remount)
+        assertFalse(v.gaveUp)
+        assertEquals(0, v.attempts) // y la ráfaga muere con el deseo
+    }
+
+    @Test
+    fun `remonte - el deseo apunta a OTRA pantalla, no se repone`() {
+        // Cambió el modo mientras esta ventana se apagaba: el manager quiere al
+        // cliente en la secundaria (camino Presentation), no aquí.
+        val v = decideCustomerRemount(
+            desiredDisplayId = 2,
+            stoppedDisplayId = 0,
+            previousAttempts = 1,
+            lastRemountAtMs = 1_000L,
+            nowMs = 1_200L,
+        )
+        assertFalse(v.remount)
+        assertEquals(0, v.attempts)
+    }
+
+    @Test
+    fun `remonte - tope de la rafaga - se rinde al tercero seguido`() {
+        // Con el modo kiosco activo, lanzar esta Activity es tarea nueva y
+        // lock-task lo rechaza devolviendo un CÓDIGO, no una excepción: nadie se
+        // entera del fallo. Sin tope, cada caída pediría otro lanzamiento.
+        var attempts = 0
+        var last = 0L
+        repeat(MAX_CUSTOMER_REMOUNTS) { i ->
+            val now = 1_000L + i * 100L // ráfaga rápida: dentro del periodo de calma
+            val v = decideCustomerRemount(0, 0, attempts, last, now)
+            assertTrue("intento ${i + 1} debería reponerse", v.remount)
+            attempts = v.attempts
+            last = now
+        }
+        val rendido = decideCustomerRemount(0, 0, attempts, last, 1_400L)
+        assertFalse(rendido.remount)
+        assertTrue(rendido.gaveUp)
+        assertEquals(MAX_CUSTOMER_REMOUNTS, rendido.attempts) // la cuenta NO se pierde al rendirse
+    }
+
+    @Test
+    fun `remonte - rendirse es para el parpadeo rapido, no para el turno entero`() {
+        // Si la ventana aguantó el periodo de calma, la ráfaga se cerró: el
+        // siguiente HOME del cliente merece servicio. Sin esto, el tercer HOME de
+        // la mañana lo dejaría viendo el escritorio hasta reiniciar la app.
+        val v = decideCustomerRemount(
+            desiredDisplayId = 0,
+            stoppedDisplayId = 0,
+            previousAttempts = MAX_CUSTOMER_REMOUNTS,
+            lastRemountAtMs = 1_000L,
+            nowMs = 1_000L + CUSTOMER_REMOUNT_QUIET_PERIOD_MS,
+        )
+        assertTrue(v.remount)
+        assertFalse(v.gaveUp)
+        assertEquals(1, v.attempts) // arranca ráfaga nueva
+    }
+
+    @Test
+    fun `remonte - seguir rendido mientras el parpadeo siga siendo rapido`() {
+        // Justo por debajo del periodo de calma: no cuenta como aguantar.
+        val v = decideCustomerRemount(
+            desiredDisplayId = 0,
+            stoppedDisplayId = 0,
+            previousAttempts = MAX_CUSTOMER_REMOUNTS,
+            lastRemountAtMs = 1_000L,
+            nowMs = 1_000L + CUSTOMER_REMOUNT_QUIET_PERIOD_MS - 1,
+        )
+        assertFalse(v.remount)
+        assertTrue(v.gaveUp)
+    }
+
+    @Test
+    fun `remonte - el primer arranque no arrastra una rafaga fantasma`() {
+        // lastRemountAtMs = 0 (nunca se remontó) no puede parecer "acaba de
+        // pasar": la primera caída del turno se repone siempre.
+        val v = decideCustomerRemount(
+            desiredDisplayId = 0,
+            stoppedDisplayId = 0,
+            previousAttempts = 0,
+            lastRemountAtMs = 0L,
+            nowMs = CUSTOMER_REMOUNT_QUIET_PERIOD_MS * 10,
+        )
+        assertTrue(v.remount)
+        assertEquals(1, v.attempts)
+    }
 }

@@ -143,6 +143,20 @@ class CustomerDisplayActivity : ComponentActivity() {
             reportedPresence = false
             state.setPresenting(false)
         }
+        // Dejamos de estar al frente: puede ser un HOME del cliente, un overlay
+        // del sistema o la gestión de energía del fabricante. El manager decide
+        // si nos repone —sólo si SIGUE queriendo una ventana aquí— y con cuántos
+        // intentos; nosotros solo avisamos, igual que en onStart solo
+        // preguntamos. Ver CustomerDisplayManager.onCustomerDisplayStopped.
+        //
+        // 🔴 Un cambio de configuración NO es una caída: el sistema nos recrea él
+        // solo en milisegundos. Avisar aquí sería pedir un lanzamiento de más
+        // (que el remonte descartaría por vernos ya montados, pero con un
+        // parpadeo posible por medio) y gastaría un intento de la ráfaga por un
+        // evento que nadie tuvo que reponer.
+        if (!isChangingConfigurations) {
+            manager.onCustomerDisplayStopped(currentDisplayId())
+        }
         super.onStop()
     }
 

@@ -8,6 +8,7 @@ import android.content.Intent
 import android.hardware.display.DisplayManager
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import android.view.Display
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -193,6 +194,17 @@ class CustomerDisplayManager @Inject constructor(
 
     /** Ver [bringCashierToFront]. Como campo para poder retirarlo del handler. */
     private val refrontCashierRunnable = Runnable { bringCashierToFront() }
+
+    /**
+     * Remontes ya gastados en la ráfaga en curso y cuándo se pidió el último.
+     * La regla vive en [decideCustomerRemount] (pura y testeada); aquí sólo se
+     * guarda su contabilidad. Ver [onCustomerDisplayStopped].
+     */
+    private var remountAttempts = 0
+    private var lastRemountRequestAtMs = 0L
+
+    /** Ver [onCustomerDisplayStopped]. Como campo para poder retirarlo del handler. */
+    private val remountCustomerRunnable = Runnable { remountCustomerDisplay() }
 
     /** true cuando hay una segunda pantalla activa (para UI de diagnóstico). */
     var isActive: Boolean = false
@@ -491,6 +503,79 @@ class CustomerDisplayManager @Inject constructor(
     }
 
     /**
+     * La ventana del cliente dejó de estar al frente
+     * ([CustomerDisplayActivity.onStop]): si el manager la SIGUE queriendo ahí,
+     * se repone sola.
+     *
+     * 🔴 Lo que se recupera: el letrero no usa lock-task, así que un swipe desde
+     * el borde trae las barras y un HOME lo manda al fondo — la Activity sigue
+     * viva pero fuera de pantalla ([CustomerDisplayActivity.isShowingOn] exige
+     * STARTED justo por eso). Igual la tumban un overlay del sistema o la gestión
+     * de energía del fabricante. Antes sólo se recuperaba en el siguiente evento
+     * de pantalla o cuando la caja volvía al frente ([resync]); mientras tanto el
+     * cliente miraba el escritorio de Android.
+     *
+     * 🔴 Por qué esto NO es el lazo `dismiss → onStop → remontar` que el diseño
+     * prohíbe: la decisión no la toma este `onStop`, la toma el DESEO
+     * ([desiredCustomerDisplayId]). Cuando el manager cierra la ventana a
+     * propósito, [finishCustomerActivity] retira el deseo ANTES del `finish()` —y
+     * de paso cancela cualquier remonte ya agendado—, así que el `onStop` que ese
+     * cierre provoca llega aquí con el deseo en `null` y no repone nada. El corte
+     * es estructural, no una carrera ganada por poco. El tope de la ráfaga cubre
+     * lo otro: que algo ajeno —el modo kiosco rechazando el lanzamiento (es tarea
+     * nueva; lock-task lo bloquea devolviendo un código, sin excepción), un
+     * overlay que gana siempre— tumbe la ventana una y otra vez. Ver
+     * [decideCustomerRemount].
+     *
+     * Se agenda con un respiro en vez de remontar en línea: aquí todavía estamos
+     * dentro del callback de ciclo de vida (el estado baja a CREATED al salir de
+     * él), y una recreación por cambio de configuración vuelve sola en ese mismo
+     * plazo — el remonte la encuentra ya montada y no hace nada.
+     */
+    internal fun onCustomerDisplayStopped(displayId: Int) {
+        val now = SystemClock.uptimeMillis()
+        val verdict = decideCustomerRemount(
+            desiredDisplayId = desiredCustomerDisplayId,
+            stoppedDisplayId = displayId,
+            previousAttempts = remountAttempts,
+            lastRemountAtMs = lastRemountRequestAtMs,
+            nowMs = now,
+        )
+        remountAttempts = verdict.attempts
+        if (verdict.gaveUp) {
+            // Rastro explícito de por qué el cliente se queda sin letrero: es la
+            // única pista que va a tener quien lo vea apagado en un local.
+            Log.w(
+                tag,
+                "La pantalla del cliente se cayó $MAX_CUSTOMER_REMOUNTS veces seguidas en el display $displayId y no se sostiene: " +
+                    "se deja de reponer hasta que aguante o cambie el escenario. " +
+                    "Sospechosos: modo kiosco (lock-task bloquea abrir esta Activity, que es tarea nueva) u otra app tapando la pantalla.",
+            )
+            return
+        }
+        if (!verdict.remount) return
+        lastRemountRequestAtMs = now
+        handler.removeCallbacks(remountCustomerRunnable)
+        handler.postDelayed(remountCustomerRunnable, CUSTOMER_REMOUNT_DELAY_MS)
+    }
+
+    /**
+     * Repone la ventana del cliente. Pasa por [refresh] a propósito: es el único
+     * punto de decisión del manager, así que el remonte hereda TODAS sus reglas —
+     * entre ellas el guard anti-bucle que se niega a montar el letrero si la caja
+     * todavía vive en esa pantalla. Nada de esto llama a `enforce`: la caja no se
+     * toca desde aquí.
+     */
+    private fun remountCustomerDisplay() {
+        val displayId = desiredCustomerDisplayId ?: return
+        // Volvió sola mientras esperábamos (una recreación por cambio de
+        // configuración hace justo eso): no hay nada que reponer.
+        if (CustomerDisplayActivity.isShowingOn(displayId)) return
+        Log.i(tag, "La pantalla del cliente dejó de estar al frente en el display $displayId: reponiéndola (intento $remountAttempts)")
+        refresh()
+    }
+
+    /**
      * Vuelve a poner la tarea de la caja al frente de SU pantalla, para que el
      * servidor de ventanas le devuelva el foco de teclado. Ver
      * [onCustomerDisplayPresented].
@@ -579,6 +664,13 @@ class CustomerDisplayManager @Inject constructor(
         // no habría ventana de cliente que lo justifique.
         pendingCashierRefront = false
         handler.removeCallbacks(refrontCashierRunnable)
+        // 🔴 Y se cancela cualquier remonte agendado, con su cuenta. El deseo ya
+        // en null bastaría (ver onCustomerDisplayStopped), pero esto cierra la
+        // ventana de tiempo en la que un `onStop` ajeno agendó un remonte
+        // JUSTO antes de que el manager cambiara de opinión: sin esto, la caja
+        // yéndose a segundo plano podría dejar un lanzamiento en camino.
+        remountAttempts = 0
+        handler.removeCallbacks(remountCustomerRunnable)
         CustomerDisplayActivity.finishIfShowing()
     }
 
@@ -599,5 +691,14 @@ class CustomerDisplayManager @Inject constructor(
          * [onCustomerDisplayPresented]).
          */
         const val CASHIER_REFRONT_DELAY_MS = 500L
+
+        /**
+         * Respiro antes de reponer la ventana del cliente. Corto porque el
+         * cliente está mirando el escritorio mientras tanto, pero no cero: el
+         * `onStop` que lo dispara todavía está corriendo, y una recreación por
+         * cambio de configuración vuelve sola dentro de este plazo. Ver
+         * [onCustomerDisplayStopped].
+         */
+        const val CUSTOMER_REMOUNT_DELAY_MS = 350L
     }
 }
