@@ -4,6 +4,9 @@ import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.Lifecycle
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import dagger.hilt.android.AndroidEntryPoint
@@ -60,6 +63,7 @@ class CustomerDisplayActivity : ComponentActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE)
         // La pantalla de cara al cliente no se apaga a media venta.
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        hideSystemBars()
 
         instance = this
         setContent {
@@ -101,6 +105,17 @@ class CustomerDisplayActivity : ComponentActivity() {
             finish()
             return
         }
+        // 🔴 Esta ventana tiene FLAG_NOT_FOCUSABLE (ver onCreate), así que
+        // NUNCA dispara onWindowFocusChanged(hasFocus = true) — el sistema
+        // excluye a las ventanas no enfocables de recibir foco de entrada, y
+        // ese es el hook que MainActivity usa para reaplicar el ocultamiento
+        // de las barras. onStart() sí corre aquí: es un callback de
+        // VISIBILIDAD del ciclo de vida (no de foco de ventana), y ya se
+        // repite en cada onStop→onRestart→onStart — bloqueo/desbloqueo,
+        // gestión de energía del fabricante, overlays del sistema (ver el
+        // KDoc de la clase) — así que cubre los mismos casos que en
+        // MainActivity cubría el focus-changed.
+        hideSystemBars()
         // La señal de "de verdad se está mostrando" viene del propio ciclo de
         // vida, no de que startActivity() no haya lanzado excepción: eso solo
         // dice que el sistema aceptó la intención, no que la ventana llegó a
@@ -130,16 +145,46 @@ class CustomerDisplayActivity : ComponentActivity() {
         super.onDestroy()
     }
 
+    /**
+     * Oculta AMBAS barras del sistema en la ventana de cara al cliente: la de
+     * estado arriba (reloj, wifi, bluetooth) y, en Sunmi, el dock de abajo con
+     * apps lanzables (Chrome, Ajustes, Sunmi OS) + atrás/home/recientes.
+     *
+     * Sin esto, un cliente frente a la caja tiene Chrome y los Ajustes del
+     * equipo a un toque — y si le da HOME, el letrero desaparece y nada lo
+     * vuelve a montar (la Activity queda viva pero fuera de pantalla, ver
+     * [isShowingOn]).
+     *
+     * 🔴 Por qué no [com.avoqado.pos.designsystem.components.ImmersiveWindow]:
+     * ese helper busca `LocalView.current.parent as? DialogWindowProvider` —
+     * resuelve la ventana de un `Dialog`/`ModalBottomSheet`, NO la ventana
+     * propia de una `Activity`. El contenido de `setContent {}` aquí cuelga
+     * directo del decor de esta Activity (no hay `DialogWindowProvider` en la
+     * cadena de padres), así que ese cast siempre da null y el helper no
+     * haría nada — se replica en su lugar el mismo patrón que usa
+     * `MainActivity.hideNavigationBar()`.
+     */
+    private fun hideSystemBars() {
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        WindowCompat.getInsetsController(window, window.decorView).apply {
+            systemBarsBehavior =
+                WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            hide(WindowInsetsCompat.Type.systemBars())
+        }
+    }
+
     companion object {
         /** Se limpia en onDestroy, así que no retiene la Activity muerta. */
         private var instance: CustomerDisplayActivity? = null
 
         /**
-         * 🔴 No basta con "viva y no terminándose": si el cliente le da HOME
-         * (esta Activity no oculta las barras del sistema ni usa lock-task),
-         * la instancia sigue existiendo pero dejó de estar en pantalla. Exigir
-         * STARTED es lo que hace que el siguiente refresh() la vuelva a traer
-         * al frente en vez de creerla montada para siempre.
+         * 🔴 No basta con "viva y no terminándose": las barras se ocultan
+         * (ver [hideSystemBars]) pero son TRANSITORIAS — un swipe desde el
+         * borde las trae de vuelta unos segundos — y esta Activity no usa
+         * lock-task, así que el cliente igual puede llegar a HOME desde ahí.
+         * Si lo hace, la instancia sigue existiendo pero dejó de estar en
+         * pantalla. Exigir STARTED es lo que hace que el siguiente refresh()
+         * la vuelva a traer al frente en vez de creerla montada para siempre.
          */
         fun isShowingOn(displayId: Int): Boolean =
             instance?.let {
