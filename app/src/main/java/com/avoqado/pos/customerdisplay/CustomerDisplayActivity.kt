@@ -27,6 +27,14 @@ class CustomerDisplayActivity : ComponentActivity() {
 
     @Inject lateinit var state: CustomerDisplayState
 
+    // Para preguntarle al manager, en onStart(), si TODAVÍA nos quiere aquí
+    // (ver el porqué en CustomerDisplayManager.desiredCustomerDisplayId). La
+    // decisión es del manager; esta Activity solo pregunta.
+    @Inject lateinit var manager: CustomerDisplayManager
+
+    /** true solo si onStart() de verdad confirmó la presentación (ver onStop). */
+    private var reallyPresenting = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -53,19 +61,45 @@ class CustomerDisplayActivity : ComponentActivity() {
         }
     }
 
-    // 🔴 La señal de "de verdad se está mostrando" viene del propio ciclo de
-    // vida, no de que startActivity() no haya lanzado excepción: eso solo
-    // dice que el sistema aceptó la intención, no que la ventana llegó a
-    // aparecer. isPresenting alimenta a quién le toca capturar propina y
-    // calificación (ver CustomerDisplayState) — una señal optimista manda el
-    // upsell a una pantalla que nadie ve.
+    // 🔴 `startActivity()` hacia otra pantalla es ASÍNCRONO: entre que el
+    // manager lo dispara y que esta Activity llega a onStart() puede haber
+    // corrido otro refresh() que decidió que YA NO nos quiere aquí — el caso
+    // que importa es el guard anti-bucle, cuando la caja resultó estar
+    // todavía en esta misma pantalla. En esa ventana `instance` (companion)
+    // seguía siendo null, así que `finishIfShowing()` no tuvo nada que
+    // cancelar y este lanzamiento en vuelo llegó de todos modos. Por eso NO
+    // asumimos que llegar aquí significa seguir vigentes: le preguntamos al
+    // manager, que es quien tiene la decisión — nosotros solo preguntamos.
+    // Si dice que no, nos cerramos ANTES de que alguien (cliente o cajero,
+    // si esto tapó su pantalla) llegue a vernos.
     override fun onStart() {
         super.onStart()
+        val displayId = currentDisplayId()
+        if (!manager.wantsCustomerDisplayOn(displayId)) {
+            finish()
+            return
+        }
+        manager.onCustomerActivityStarted(displayId)
+        // La señal de "de verdad se está mostrando" viene del propio ciclo de
+        // vida, no de que startActivity() no haya lanzado excepción: eso solo
+        // dice que el sistema aceptó la intención, no que la ventana llegó a
+        // aparecer. isPresenting alimenta a quién le toca capturar propina y
+        // calificación (ver CustomerDisplayState) — una señal optimista manda
+        // el upsell a una pantalla que nadie ve.
+        reallyPresenting = true
         state.setPresenting(true)
     }
 
     override fun onStop() {
-        state.setPresenting(false)
+        // Solo si ESTA instancia de verdad llegó a confirmar la presentación:
+        // si onStart() nos cerró por el guard de arriba, jamás tocamos
+        // isPresenting — de lo contrario este onStop() tardío podría apagar
+        // un `true` legítimo que ya puso otra ventana (Presentation o una
+        // relanzada) después de que a nosotros nos cancelaron.
+        if (reallyPresenting) {
+            reallyPresenting = false
+            state.setPresenting(false)
+        }
         super.onStop()
     }
 

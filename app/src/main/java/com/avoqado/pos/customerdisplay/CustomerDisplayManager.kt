@@ -79,6 +79,27 @@ class CustomerDisplayManager @Inject constructor(
     private var presentation: CustomerDisplayPresentation? = null
     private var hostActivity: Activity? = null
 
+    /**
+     * Pantalla para la que hay un lanzamiento de [CustomerDisplayActivity]
+     * PENDIENTE: se pone justo antes de `startActivity()` y se limpia cuando
+     * la Activity confirma que arrancó ([onCustomerActivityStarted]), o cuando
+     * el manager decide que ya no la quiere ([dismiss] / el guard anti-bucle).
+     *
+     * 🔴 Por qué existe: `startActivity()` hacia otra pantalla es ASÍNCRONO —
+     * hay una ventana entre ESE `startActivity()` y el `onCreate()` real de la
+     * Activity donde el `instance` del companion todavía es null. Si en esa
+     * ventana un `refresh()` decide cerrar (el caso que importa: el guard
+     * anti-bucle, cuando la pantalla destino resulta ser la de la caja),
+     * `CustomerDisplayActivity.finishIfShowing()` es un no-op porque no hay
+     * instancia que cerrar — y el lanzamiento en vuelo ATERRIZA de todos
+     * modos, tapando la caja. Este campo es lo que le permite a la propia
+     * Activity, en `onStart()`, preguntarle al manager "¿TODAVÍA me quieres
+     * aquí?" en vez de asumirlo por haber llegado a existir, y cerrarse sola
+     * si la respuesta es no. La decisión sigue siendo del manager: la Activity
+     * solo pregunta.
+     */
+    private var desiredCustomerDisplayId: Int? = null
+
     /** true cuando hay una segunda pantalla activa (para UI de diagnóstico). */
     var isActive: Boolean = false
         private set
@@ -119,6 +140,23 @@ class CustomerDisplayManager @Inject constructor(
         dismiss()
         hostActivity = null
         displayManager = null
+    }
+
+    /**
+     * Lo consulta [CustomerDisplayActivity.onStart]: ¿el manager TODAVÍA la
+     * quiere en esta pantalla? La decisión de "¿todavía la quieres?" es del
+     * manager, no de la Activity — ella solo pregunta, nunca adivina.
+     */
+    internal fun wantsCustomerDisplayOn(displayId: Int): Boolean =
+        desiredCustomerDisplayId == displayId
+
+    /**
+     * La Activity confirma que arrancó de verdad: el lanzamiento deja de estar
+     * "pendiente" (ya está "mostrándose", que se rastrea aparte vía
+     * [CustomerDisplayActivity.isShowingOn]).
+     */
+    internal fun onCustomerActivityStarted(displayId: Int) {
+        if (desiredCustomerDisplayId == displayId) desiredCustomerDisplayId = null
     }
 
     private fun refresh() {
@@ -174,7 +212,7 @@ class CustomerDisplayManager @Inject constructor(
             return
         }
 
-        CustomerDisplayActivity.finishIfShowing()
+        finishCustomerActivity()
         val target = displays.firstOrNull { it.displayId == customerId } ?: return
         showPresentation(activity, target)
     }
@@ -182,6 +220,10 @@ class CustomerDisplayManager @Inject constructor(
     /** Modo invertido: el cliente en una Activity sobre la pantalla principal. */
     private fun showCustomerActivity(activity: Activity, displayId: Int) {
         if (CustomerDisplayActivity.isShowingOn(displayId)) return
+        // Se marca ANTES de startActivity(): si el resultado tarda (es
+        // asíncrono) y otro refresh() cambia de opinión mientras tanto, la
+        // Activity va a preguntar por este valor en su propio onStart().
+        desiredCustomerDisplayId = displayId
         runCatching {
             val opts = ActivityOptions.makeBasic().setLaunchDisplayId(displayId)
             activity.startActivity(
@@ -204,6 +246,7 @@ class CustomerDisplayManager @Inject constructor(
             Log.e(tag, "No se pudo abrir la pantalla del cliente: ${it.message}")
             isActive = false
             state.setPresenting(false)
+            desiredCustomerDisplayId = null
         }
     }
 
@@ -236,11 +279,22 @@ class CustomerDisplayManager @Inject constructor(
         presentation = null
     }
 
+    /**
+     * Cierra la Activity del cliente si está viva Y cancela cualquier
+     * lanzamiento pendiente. Las dos cosas juntas: un `finish()` a una
+     * instancia que TODAVÍA no existe (ver [desiredCustomerDisplayId]) no
+     * cancela nada por sí solo, y el lanzamiento en vuelo aterrizaría igual.
+     */
+    private fun finishCustomerActivity() {
+        desiredCustomerDisplayId = null
+        CustomerDisplayActivity.finishIfShowing()
+    }
+
     private fun dismiss() {
         dismissPresentation()
         // Si la caja se va a segundo plano, el cliente NO puede quedarse viendo
         // un total congelado.
-        CustomerDisplayActivity.finishIfShowing()
+        finishCustomerActivity()
         isActive = false
         state.setPresenting(false)
     }
