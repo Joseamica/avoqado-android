@@ -78,6 +78,8 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.avoqado.pos.designsystem.components.AvoqadoErrorToast
+import com.avoqado.pos.designsystem.components.AvoqadoSuccessToast
 import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Success
@@ -198,25 +200,18 @@ fun TableOrderScreen(
     // Un Snackbar vive DENTRO de la app: sale siempre donde está el mesero, se ve
     // igual en claro y oscuro, y —esto importa para no volver a discutirlo— sí
     // aparece en el árbol de accesibilidad, así que se puede verificar que salió.
-    val snackbarHostState = remember { SnackbarHostState() }
-    // 🔴 Mostrar PRIMERO, consumir DESPUÉS.
+    val isReprinting by viewModel.isReprinting.collectAsState()
+    val actionIsError by viewModel.actionIsError.collectAsState()
+    val actionHint by viewModel.actionHint.collectAsState()
+    // El aviso lo pinta el DESIGN SYSTEM (AvoqadoSuccessToast / AvoqadoErrorToast):
+    // centrado, con el color que corresponde y con subtítulo para decir qué hacer.
     //
-    // Al revés (consumir y luego mostrar) el aviso NUNCA se ve: consumirlo pone
-    // `actionMessage` en null, eso cambia la LLAVE del LaunchedEffect, y Compose
-    // cancela la corrutina en curso — matando el `showSnackbar` antes de que
-    // pinte. Se comía TODOS los avisos de la pantalla: descuentos aplicados,
-    // cuenta anulada, mesa liberada y —lo que lo destapó— el rechazo del server
-    // al fusionar una cuenta que ya tiene pagos: el mesero tocaba "Fusionar", no
-    // pasaba nada, y no había forma de saber por qué (2026-08-09).
+    // 🔴 Antes era un `SnackbarHost` crudo de Material anclado abajo: salía gris
+    // —igual un éxito que un rechazo—, descentrado, y encima TAPABA el botón
+    // "Pagar". Un fallo tiene que verse como fallo.
     //
-    // `showSnackbar` suspende hasta que el aviso se cierra; consumir al volver
-    // deja el estado limpio para el siguiente, y dos mensajes iguales seguidos
-    // sí se vuelven a ver porque el estado pasa por null entre uno y otro.
-    LaunchedEffect(actionMessage) {
-        val mensaje = actionMessage ?: return@LaunchedEffect
-        snackbarHostState.showSnackbar(message = mensaje, duration = SnackbarDuration.Long)
-        viewModel.consumeActionMessage()
-    }
+    // El consumo ocurre en el `onDismiss` del toast, nunca antes de mostrarlo:
+    // limpiar el estado primero cancelaba el aviso antes de que se pintara.
 
     // No session (e.g. process restore) — nothing to work on, back to the floor.
     var exited by remember { mutableStateOf(false) }
@@ -396,6 +391,7 @@ fun TableOrderScreen(
                                 onAnular = { showAnularDialog = true },
                                 onPrintPreBill = { viewModel.printPreBill() },
                                 onReprintComandas = { viewModel.reprintComandas() },
+                                isReprinting = isReprinting,
                                 onCustomAmount = { showCustomAmount = true },
                                 onMover = {
                                     if (pendingLines.isNotEmpty()) {
@@ -553,6 +549,7 @@ fun TableOrderScreen(
                                 onAnular = { showAnularDialog = true },
                                 onPrintPreBill = { viewModel.printPreBill() },
                                 onReprintComandas = { viewModel.reprintComandas() },
+                                isReprinting = isReprinting,
                                 onCustomAmount = { showCustomAmount = true },
                                 onMover = {
                                     if (pendingLines.isNotEmpty()) {
@@ -602,12 +599,20 @@ fun TableOrderScreen(
         }
     }
 
-        // El aviso se ancla abajo del todo, encima del contenido: es donde el
-        // mesero ya está mirando cuando toca una acción.
-        SnackbarHost(
-            hostState = snackbarHostState,
-            modifier = Modifier.align(Alignment.BottomCenter),
-        )
+        actionMessage?.let { mensaje ->
+            if (actionIsError) {
+                AvoqadoErrorToast(
+                    message = mensaje,
+                    subtitle = actionHint,
+                    onDismiss = { viewModel.consumeActionMessage() },
+                )
+            } else {
+                AvoqadoSuccessToast(
+                    message = mensaje,
+                    onDismiss = { viewModel.consumeActionMessage() },
+                )
+            }
+        }
     }
 
     // Product detail (modifiers/notes) — adds land on the SELECTED course.
@@ -936,8 +941,15 @@ fun TableOrderScreen(
             onDismiss = { showMerge = false },
             onPick = { sourceId ->
                 showMerge = false
-                viewModel.mergeFrom(sourceId) { _, msg ->
-                    viewModel.showMessage(msg)
+                viewModel.mergeFrom(sourceId) { ok, msg ->
+                    if (ok) {
+                        viewModel.showMessage(msg)
+                    } else {
+                        // El motivo lo da el server; el QUÉ HACER lo ponemos
+                        // nosotros — un mesero con fila necesita su siguiente
+                        // movimiento, no un diagnóstico.
+                        viewModel.showError(msg, "Cobra el resto de esa cuenta por separado, o reversa su pago antes de fusionarla.")
+                    }
                 }
                 panelTab = PanelTab.CUENTA
             },
@@ -2061,6 +2073,10 @@ internal fun TableActionsPanel(
     onAnular: () -> Unit,
     onPrintPreBill: () -> Unit,
     onReprintComandas: () -> Unit,
+    /** Reimprimiendo AHORA: la etiqueta lo dice y el botón no acepta otro toque.
+     *  Sin esto, el timeout de una impresora inalcanzable (~10 s) se veía como
+     *  que el botón no hacía nada, y el mesero volvía a picarle. */
+    isReprinting: Boolean = false,
     onCustomAmount: () -> Unit,
     onMover: () -> Unit = {},
     onAsignar: () -> Unit = {},
@@ -2188,9 +2204,9 @@ internal fun TableActionsPanel(
                 modifier = Modifier.weight(1f),
             )
             ActionPill(
-                label = "Volver a imprimir pedido",
-                enabled = hasSent,
-                blockedReason = "Aún no se ha enviado ningún pedido a cocina.",
+                label = if (isReprinting) "Reimprimiendo…" else "Volver a imprimir pedido",
+                enabled = hasSent && !isReprinting,
+                blockedReason = if (isReprinting) null else "Aún no se ha enviado ningún pedido a cocina.",
                 onBlocked = onBlocked,
                 onClick = onReprintComandas,
                 modifier = Modifier.weight(1f),

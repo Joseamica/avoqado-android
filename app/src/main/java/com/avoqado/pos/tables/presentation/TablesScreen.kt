@@ -65,6 +65,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.avoqado.pos.designsystem.components.AvoqadoSuccessToast
+import com.avoqado.pos.designsystem.components.AvoqadoErrorToast
 import com.avoqado.pos.designsystem.components.PlanGateScreen
 import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
@@ -150,26 +152,13 @@ fun TablesScreen(
     var showBulkAsignar by remember { mutableStateOf(false) }
     var showBulkMover by remember { mutableStateOf(false) }
     var showBulkUnir by remember { mutableStateOf(false) }
-    val snackbarHostState = remember { SnackbarHostState() }
     val actionMessage by viewModel.actionMessage.collectAsState()
-    // 🔴 Mostrar PRIMERO, consumir DESPUÉS.
-    //
-    // Al revés (consumir y luego mostrar) el aviso NUNCA se ve: consumirlo pone
-    // `actionMessage` en null, eso cambia la LLAVE del LaunchedEffect, y Compose
-    // cancela la corrutina en curso — matando el `showSnackbar` antes de que
-    // pinte. Se comía TODOS los avisos de la pantalla: descuentos aplicados,
-    // cuenta anulada, mesa liberada y —lo que lo destapó— el rechazo del server
-    // al fusionar una cuenta que ya tiene pagos: el mesero tocaba "Fusionar", no
-    // pasaba nada, y no había forma de saber por qué (2026-08-09).
-    //
-    // `showSnackbar` suspende hasta que el aviso se cierra; consumir al volver
-    // deja el estado limpio para el siguiente, y dos mensajes iguales seguidos
-    // sí se vuelven a ver porque el estado pasa por null entre uno y otro.
-    LaunchedEffect(actionMessage) {
-        val mensaje = actionMessage ?: return@LaunchedEffect
-        snackbarHostState.showSnackbar(message = mensaje, duration = SnackbarDuration.Long)
-        viewModel.consumeActionMessage()
-    }
+    // El aviso lo pinta el DESIGN SYSTEM, igual que en la pantalla del cheque:
+    // centrado, rojo cuando es un fallo, y con subtítulo para decir qué hacer.
+    // El `SnackbarHost` crudo salía gris —igual un éxito que un rechazo— y
+    // descentrado. El consumo va en el `onDismiss`, nunca antes de pintar.
+    val actionIsError by viewModel.actionIsError.collectAsState()
+    val actionHint by viewModel.actionHint.collectAsState()
     val bulkCtx = androidx.compose.ui.platform.LocalContext.current
     fun exitSelection() { selectionMode = false; selectedIds = emptySet() }
     val selectedOccupied = tables.filter { it.id in selectedIds && it.isOccupied }
@@ -291,10 +280,20 @@ fun TablesScreen(
         // El resultado de una acción masiva se ancla abajo, dentro de la app: un
         // Toast lo dibuja el sistema fuera y en la Sunmi con pantalla de cliente
         // no hay garantía de en cuál de las dos aparece.
-        SnackbarHost(
-            hostState = snackbarHostState,
-            modifier = Modifier.align(Alignment.BottomCenter),
-        )
+        actionMessage?.let { mensaje ->
+            if (actionIsError) {
+                AvoqadoErrorToast(
+                    message = mensaje,
+                    subtitle = actionHint,
+                    onDismiss = { viewModel.consumeActionMessage() },
+                )
+            } else {
+                AvoqadoSuccessToast(
+                    message = mensaje,
+                    onDismiss = { viewModel.consumeActionMessage() },
+                )
+            }
+        }
     }
 
     if (showBulkUnir) {
@@ -321,7 +320,7 @@ fun TablesScreen(
                                         ok == 0 -> err ?: "No se pudieron unir"
                                         else -> "$ok unidas, $fail no: ${err ?: "error"}"
                                     }
-                                    viewModel.showMessage(msg)
+                                    if (fail > 0) viewModel.showError(msg) else viewModel.showMessage(msg)
                                     exitSelection()
                                 }
                             },
@@ -342,7 +341,8 @@ fun TablesScreen(
             onConfirm = { reason ->
                 showBulkAnular = false
                 viewModel.bulkAnular(selectedOccupied, reason) { ok, fail ->
-                    viewModel.showMessage("$ok anuladas" + (if (fail > 0) ", $fail fallaron" else ""))
+                    val msg = "$ok anuladas" + (if (fail > 0) ", $fail fallaron" else "")
+                    if (fail > 0) viewModel.showError(msg) else viewModel.showMessage(msg)
                 }
                 exitSelection()
             },
@@ -356,7 +356,8 @@ fun TablesScreen(
             onConfirm = { reason ->
                 showBulkCortesia = false
                 viewModel.bulkCortesia(selectedOccupied, reason) { ok, fail ->
-                    viewModel.showMessage("$ok cuentas de cortesía" + (if (fail > 0) ", $fail fallaron" else ""))
+                    val msg = "$ok cuentas de cortesía" + (if (fail > 0) ", $fail fallaron" else "")
+                    if (fail > 0) viewModel.showError(msg) else viewModel.showMessage(msg)
                 }
                 exitSelection()
             },

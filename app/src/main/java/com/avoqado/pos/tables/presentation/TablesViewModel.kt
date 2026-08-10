@@ -72,7 +72,28 @@ class TablesViewModel @Inject constructor(
 
     fun showMessage(text: String) {
         _actionMessage.value = text
+        _actionIsError.value = false
+        _actionHint.value = null
     }
+
+    /**
+     * Un FALLO se ve como fallo (círculo rojo), no con el mismo aviso gris de
+     * "Cuentas unidas". Espejo de `TableOrderViewModel.showError`.
+     *
+     * @param hint qué HACER. El motivo dice qué pasó; con fila en la caja lo que
+     *   hace falta es el siguiente movimiento.
+     */
+    fun showError(text: String, hint: String? = null) {
+        _actionMessage.value = text
+        _actionIsError.value = true
+        _actionHint.value = hint
+    }
+
+    private val _actionIsError = MutableStateFlow(false)
+    val actionIsError: StateFlow<Boolean> = _actionIsError.asStateFlow()
+
+    private val _actionHint = MutableStateFlow<String?>(null)
+    val actionHint: StateFlow<String?> = _actionHint.asStateFlow()
 
     fun consumeActionMessage() {
         _actionMessage.value = null

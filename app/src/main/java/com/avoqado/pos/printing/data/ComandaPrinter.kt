@@ -83,13 +83,37 @@ class ComandaPrinter @Inject constructor(
      * printer (offline, unreachable, misconfigured) is logged and does NOT abort the
      * other stations' tickets (mirrors the server's per-job resilience).
      */
+    /**
+     * Qué pasó de verdad al imprimir. Lo IGNORA el camino automático (una
+     * impresora caída jamás puede frenar una venta) y lo LEE el manual, donde
+     * el mesero pidió la impresión y merece saber si salió.
+     *
+     * 🔴 Antes esta función devolvía Unit y se tragaba cada excepción en un log:
+     * "Volver a imprimir pedido" cantaba "Comandas reimpresas" aunque no hubiera
+     * salido ni un papel. Medido en la T3 el 2026-08-09: 10 s de timeout contra
+     * una impresora inalcanzable y aun así palomita de éxito.
+     */
+    data class Result(
+        val attempted: Int,
+        val printed: Int,
+        /** Sin impresora resuelta NI default de cocina: no se intentó siquiera. */
+        val skippedNoPrinter: Int,
+        val lastError: String?,
+    ) {
+        val nothingPrinted: Boolean get() = printed == 0
+        val partial: Boolean get() = printed in 1 until attempted
+    }
+
     suspend fun printComandas(
         plans: List<TicketPlan>,
         config: PrintConfig,
         orderNumber: String,
         orderType: String = "En tienda",
         serverName: String? = null,
-    ) {
+    ): Result {
+        var printed = 0
+        var skipped = 0
+        var lastError: String? = null
         for (plan in plans) {
             try {
                 val resolved = resolve(plan, config, orderNumber, orderType, serverName)
@@ -100,14 +124,18 @@ class ComandaPrinter @Inject constructor(
                         "⚠️ No printer resolved for station='${resolved.stationLabel}' and no default " +
                             "KITCHEN printer configured — comanda skipped",
                     )
+                    skipped++
                     continue
                 }
                 repeat(resolved.copies) { printerService.printKitchenTicket(resolved.ticket, printer) }
+                printed++
                 Log.d(TAG, "✅ Printed comanda for station='${resolved.stationLabel}' on ${printer.displayAddress}")
             } catch (e: Exception) {
+                lastError = e.message
                 Log.e(TAG, "❌ Comanda print failed for station='${plan.stationId}': ${e.message}", e)
             }
         }
+        return Result(attempted = plans.size, printed = printed, skippedNoPrinter = skipped, lastError = lastError)
     }
 
     private fun ConsolidatedLine.toKitchenItem(): KitchenItem = KitchenItem(

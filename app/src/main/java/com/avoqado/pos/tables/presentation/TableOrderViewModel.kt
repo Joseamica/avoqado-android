@@ -195,7 +195,7 @@ class TableOrderViewModel @Inject constructor(
                     // verdad también lo van a ignorar. El banner naranja de
                     // arriba ya comunica que no hay conexión.
                     if (!isNetworkError(e)) {
-                        _actionMessage.value = "No se pudo actualizar la cuenta"
+                        showError("No se pudo actualizar la cuenta")
                     }
                 },
             )
@@ -363,7 +363,7 @@ class TableOrderViewModel @Inject constructor(
                 printerService.openCashDrawer(printer)
                 _actionMessage.value = "Caja abierta"
             } catch (e: Exception) {
-                _actionMessage.value = "No se pudo abrir la caja: ${e.message}"
+                showError("No se pudo abrir la caja: ${e.message}")
             }
         }
     }
@@ -525,7 +525,29 @@ class TableOrderViewModel @Inject constructor(
      */
     fun showMessage(text: String) {
         _actionMessage.value = text
+        _actionIsError.value = false
+        _actionHint.value = null
     }
+
+    /**
+     * Un FALLO se ve como fallo: círculo rojo, no un aviso gris igual al de
+     * "Descuento aplicado". Antes todo salía por el mismo canal neutro, así que
+     * un rechazo del server tenía exactamente el mismo peso visual que un éxito.
+     *
+     * @param hint qué HACER al respecto. El motivo solo dice qué pasó; el mesero
+     *   con fila necesita saber su siguiente movimiento, no un diagnóstico.
+     */
+    fun showError(text: String, hint: String? = null) {
+        _actionMessage.value = text
+        _actionIsError.value = true
+        _actionHint.value = hint
+    }
+
+    private val _actionIsError = MutableStateFlow(false)
+    val actionIsError: StateFlow<Boolean> = _actionIsError.asStateFlow()
+
+    private val _actionHint = MutableStateFlow<String?>(null)
+    val actionHint: StateFlow<String?> = _actionHint.asStateFlow()
 
     fun showBlockedReason(motivo: String) {
         _blockedNotice.value = motivo
@@ -551,7 +573,7 @@ class TableOrderViewModel @Inject constructor(
 
     private fun requireOnline(accion: String): Boolean {
         if (connectivityMonitor.isConnected.value) return true
-        _actionMessage.value = "Sin conexión — $accion necesita internet; se habilita al volver la señal"
+        showError("Sin conexión — $accion necesita internet; se habilita al volver la señal")
         return false
     }
 
@@ -670,7 +692,7 @@ class TableOrderViewModel @Inject constructor(
                     repository.refresh(vId)
                 },
                 onFailure = { e ->
-                    _actionMessage.value = com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo dar de cortesía")
+                    showError(com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo dar de cortesía"))
                     loadCheck()
                 },
             )
@@ -709,7 +731,7 @@ class TableOrderViewModel @Inject constructor(
                     repository.refresh(vId)
                     _actionMessage.value = "Cuenta asignada a $staffName"
                 },
-                onFailure = { e -> _actionMessage.value = com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo asignar la cuenta") },
+                onFailure = { e -> showError(com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo asignar la cuenta")) },
             )
         }
     }
@@ -726,7 +748,7 @@ class TableOrderViewModel @Inject constructor(
                     repository.refresh(vId)
                 },
                 onFailure = { e ->
-                    _actionMessage.value = com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo dar la cortesía")
+                    showError(com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo dar la cortesía"))
                     loadCheck()
                 },
             )
@@ -747,7 +769,7 @@ class TableOrderViewModel @Inject constructor(
                     loadCheck()
                     repository.refresh(vId)
                 },
-                onFailure = { e -> _actionMessage.value = com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo actualizar la cuenta") },
+                onFailure = { e -> showError(com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo actualizar la cuenta")) },
             )
         }
     }
@@ -759,7 +781,7 @@ class TableOrderViewModel @Inject constructor(
         viewModelScope.launch {
             repository.applyOrderDiscount(vId, session.orderId, discountId).fold(
                 onSuccess = { _actionMessage.value = "Descuento aplicado"; loadCheck(); repository.refresh(vId) },
-                onFailure = { e -> _actionMessage.value = com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo aplicar el descuento") },
+                onFailure = { e -> showError(com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo aplicar el descuento")) },
             )
         }
     }
@@ -772,7 +794,7 @@ class TableOrderViewModel @Inject constructor(
         viewModelScope.launch {
             repository.removeOrderDiscount(vId, session.orderId, orderDiscountId).fold(
                 onSuccess = { _actionMessage.value = "Descuento quitado"; loadCheck(); repository.refresh(vId) },
-                onFailure = { e -> _actionMessage.value = com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo quitar el descuento") },
+                onFailure = { e -> showError(com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo quitar el descuento")) },
             )
         }
     }
@@ -855,7 +877,7 @@ class TableOrderViewModel @Inject constructor(
                     loadCheck()
                     repository.refresh(vId)
                 },
-                onFailure = { e -> _actionMessage.value = com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo aplicar el cobro") },
+                onFailure = { e -> showError(com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo aplicar el cobro")) },
             )
         }
     }
@@ -871,7 +893,7 @@ class TableOrderViewModel @Inject constructor(
                     loadCheck()
                     repository.refresh(vId)
                 },
-                onFailure = { e -> _actionMessage.value = com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo quitar el cobro") },
+                onFailure = { e -> showError(com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo quitar el cobro")) },
             )
         }
     }
@@ -916,7 +938,7 @@ class TableOrderViewModel @Inject constructor(
                     loadLoyalty()
                     repository.refresh(vId)
                 },
-                onFailure = { e -> _actionMessage.value = com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo canjear los puntos") },
+                onFailure = { e -> showError(com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo canjear los puntos")) },
             )
         }
     }
@@ -1052,7 +1074,7 @@ class TableOrderViewModel @Inject constructor(
                     loadCheck()
                     repository.refresh(vId)
                 },
-                onFailure = { e -> _actionMessage.value = com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo separar la cuenta") },
+                onFailure = { e -> showError(com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo separar la cuenta")) },
             )
         }
     }
@@ -1080,7 +1102,38 @@ class TableOrderViewModel @Inject constructor(
     /** "Volver a imprimir pedido" (Acciones): re-fires the comandas for the
      *  ALREADY-SENT items, grouped by course — for when the kitchen lost a
      *  ticket. Uses the check's real lines (productId + modifiers). */
+
+    /**
+     * El fallo de una impresora, en palabras de mesero.
+     *
+     * 🔴 `ServerErrorText` traduce errores del SERVER; una impresora habla otro
+     * idioma. Sin esto el aviso decía "Error de conexión: failed to connect to
+     * /10.0.2.2 (port 9100) from /192.168.100.217 (port 50942) after 10000ms" —
+     * cierto, inútil, y encima en inglés. Lo que hace falta es qué revisar.
+     */
+    private fun motivoImpresora(raw: String?): String = when {
+        raw == null -> "Revisa que la impresora esté encendida y en la misma red."
+        raw.contains("failed to connect", ignoreCase = true) ||
+            raw.contains("Error de conexión", ignoreCase = true) ||
+            raw.contains("timeout", ignoreCase = true) ||
+            raw.contains("ETIMEDOUT", ignoreCase = true) ->
+            "La impresora no responde. Revisa que esté encendida y conectada a la misma red del local."
+        raw.contains("ECONNREFUSED", ignoreCase = true) ->
+            "La impresora rechazó la conexión. Verifica su dirección IP en Más → Impresoras."
+        raw.contains("No conectada", ignoreCase = true) ||
+            raw.contains("NotConnected", ignoreCase = true) ->
+            "La impresora está desconectada. Enciéndela y vuelve a intentar."
+        raw.contains("papel", ignoreCase = true) || raw.contains("paper", ignoreCase = true) ->
+            "Revisa el papel de la impresora."
+        else -> "Revisa que la impresora esté encendida y en la misma red."
+    }
+
+    /** La reimpresión tarda (timeout de impresora ~10 s): la pantalla lo dice. */
+    private val _isReprinting = MutableStateFlow(false)
+    val isReprinting: StateFlow<Boolean> = _isReprinting.asStateFlow()
+
     fun reprintComandas() {
+        if (_isReprinting.value) return
         val session = tableSession.current() ?: return
         val vId = venueId ?: return
         val sentItems = _check.value?.items?.filter { it.productId != null } ?: emptyList()
@@ -1089,6 +1142,7 @@ class TableOrderViewModel @Inject constructor(
             return
         }
         viewModelScope.launch {
+            _isReprinting.value = true
             printConfigRepository.refresh(vId)
             val config = printConfigRepository.getCurrentConfig()
             // Sin estaciones NO se aborta: el motor de ruteo es fail-open (los
@@ -1096,30 +1150,69 @@ class TableOrderViewModel @Inject constructor(
             // impresora KITCHEN local. Abortar aquí dejaba a un local sin
             // estaciones configuradas sin poder reimprimir NADA.
             if (!config.stations.any { it.active } && printerService.getDefaultPrinter(PrinterRole.KITCHEN) == null) {
-                _actionMessage.value = "No hay ninguna impresora de cocina configurada"
+                _isReprinting.value = false
+                showError(
+                    "No hay ninguna impresora de cocina configurada",
+                    "Agrega una en Más → Impresoras y asígnale el rol de Cocina.",
+                )
                 return@launch
             }
-            sentItems.groupBy { it.course }.forEach { (course, courseItems) ->
-                val routable = courseItems.map { item ->
-                    RoutableItem(
-                        orderItemId = item.id,
-                        productId = item.productId,
-                        categoryId = null,
-                        productName = item.productName ?: "Artículo",
-                        quantity = item.quantity,
-                        modifiers = item.modifiers.map { it.name },
-                        notes = item.notes,
+            // 🔴 El resultado se MIRA. Esta es una acción manual: el mesero la
+            // pidió y está esperando el papel. Cantar "reimpresas" sin haber
+            // impreso nada lo manda a la cocina a buscar una comanda que no
+            // existe — y a echarle la culpa a la cocina.
+            var intentadas = 0
+            var impresas = 0
+            var sinImpresora = 0
+            var ultimoError: String? = null
+            try {
+                sentItems.groupBy { it.course }.forEach { (course, courseItems) ->
+                    val routable = courseItems.map { item ->
+                        RoutableItem(
+                            orderItemId = item.id,
+                            productId = item.productId,
+                            categoryId = null,
+                            productName = item.productName ?: "Artículo",
+                            quantity = item.quantity,
+                            modifiers = item.modifiers.map { it.name },
+                            notes = item.notes,
+                        )
+                    }
+                    val plans = PrintRoutingMapper.buildComandas(routable, config)
+                    val r = comandaPrinter.printComandas(
+                        plans = plans,
+                        config = config,
+                        orderNumber = session.orderNumber,
+                        orderType = "Mesa ${session.tableNumber}" + (course?.let { " · $it" } ?: "") + " · REIMPRESIÓN",
                     )
+                    intentadas += r.attempted
+                    impresas += r.printed
+                    sinImpresora += r.skippedNoPrinter
+                    r.lastError?.let { ultimoError = it }
                 }
-                val plans = PrintRoutingMapper.buildComandas(routable, config)
-                comandaPrinter.printComandas(
-                    plans = plans,
-                    config = config,
-                    orderNumber = session.orderNumber,
-                    orderType = "Mesa ${session.tableNumber}" + (course?.let { " · $it" } ?: "") + " · REIMPRESIÓN",
-                )
+            } finally {
+                _isReprinting.value = false
             }
-            _actionMessage.value = "Comandas reimpresas"
+
+            when {
+                impresas > 0 && impresas == intentadas ->
+                    showMessage(if (impresas == 1) "Comanda reimpresa" else "$impresas comandas reimpresas")
+                impresas > 0 ->
+                    showError(
+                        "Sólo se reimprimieron $impresas de $intentadas comandas",
+                        if (ultimoError != null) motivoImpresora(ultimoError) else "Revisa las impresoras de las estaciones que faltaron.",
+                    )
+                sinImpresora > 0 && ultimoError == null ->
+                    showError(
+                        "No se reimprimió: no hay impresora para esas estaciones",
+                        "Configúralas en Más → Impresoras, o asígnale una impresora de cocina al local.",
+                    )
+                else ->
+                    showError(
+                        "No se pudo reimprimir la comanda",
+                        motivoImpresora(ultimoError),
+                    )
+            }
         }
     }
 
@@ -1234,7 +1327,7 @@ class TableOrderViewModel @Inject constructor(
                 printerService.printReceipt(receipt, printer)
                 _actionMessage.value = "Pre-cuenta impresa"
             } catch (e: Exception) {
-                _actionMessage.value = "No se pudo imprimir: ${com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "desconocido")}"
+                showError("No se pudo imprimir: ${com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "desconocido")}")
             }
         }
     }
