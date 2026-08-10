@@ -3,6 +3,7 @@ package com.avoqado.pos.payment
 import com.avoqado.pos.MainDispatcherRule
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.local.database.PendingPaymentDao
+import com.avoqado.pos.core.data.local.database.PaymentSyncStatus
 import com.avoqado.pos.core.data.local.database.PendingPaymentEntity
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.payment.data.PaymentSyncService
@@ -21,6 +22,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
+import kotlin.time.Duration.Companion.seconds
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class PaymentSyncServiceTest {
@@ -157,6 +159,23 @@ class PaymentSyncServiceTest {
         )
         assertEquals(30_000L, backoff)
     }
+
+    // MARK: - Retry wait
+    //
+    // El tope del reintento se medía con System.currentTimeMillis() mientras la espera
+    // usaba delay(): dentro de runTest, delay() es tiempo VIRTUAL y vuelve al instante,
+    // así que el reloj de pared casi no avanza y el bucle gira sin fin. En producción no
+    // se nota; en test cuelga la suite entera (medido: 673s en un solo caso).
+
+    @Test
+    fun `retryFailedPayment deja de esperar en vez de girar cuando la fila sigue pendiente`() =
+        runTest(timeout = 15.seconds) {
+            coEvery { dao.syncStatusOf("stuck") } returns PaymentSyncStatus.PENDING.name
+
+            val outcome = service.retryFailedPayment("stuck")
+
+            assertEquals(PaymentSyncService.RetryOutcome.StillQueued, outcome)
+        }
 
     // MARK: - Order id extraction
     //

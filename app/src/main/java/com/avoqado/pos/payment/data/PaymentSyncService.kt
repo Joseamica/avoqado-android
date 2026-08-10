@@ -19,6 +19,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.buildJsonObject
@@ -268,18 +269,29 @@ class PaymentSyncService @Inject constructor(
         // desenlace de ESTA fila. Leer el estado de inmediato contestaba
         // "quedó en cola" con el server contestando 400 un segundo después —
         // el mensaje salía antes del round-trip (visto en la T3, 2026-08-09).
-        val deadline = System.currentTimeMillis() + 12_000
-        while (System.currentTimeMillis() < deadline) {
-            when (dao.syncStatusOf(id)) {
-                // La fila desaparece si otra pasada ya la limpió: se aplicó.
-                null, PaymentSyncStatus.SYNCED.name -> return RetryOutcome.Applied
-                PaymentSyncStatus.FAILED.name -> return RetryOutcome.Rejected(dao.lastErrorOf(id))
-                else -> kotlinx.coroutines.delay(400)
+        // El tope lo pone withTimeoutOrNull, NO System.currentTimeMillis(): la espera
+        // usa delay(), y tope y espera tienen que leer el MISMO reloj. Mezclarlos
+        // colgaba la suite — bajo runTest delay() es tiempo virtual y vuelve al
+        // instante, así que el reloj de pared no avanzaba y el bucle giraba sin fin
+        // hasta agotar el heap.
+        return withTimeoutOrNull(12_000) {
+            var outcome: RetryOutcome? = null
+            while (outcome == null) {
+                outcome = when (dao.syncStatusOf(id)) {
+                    // La fila desaparece si otra pasada ya la limpió: se aplicó.
+                    null, PaymentSyncStatus.SYNCED.name -> RetryOutcome.Applied
+                    PaymentSyncStatus.FAILED.name -> RetryOutcome.Rejected(dao.lastErrorOf(id))
+                    else -> {
+                        delay(400)
+                        null
+                    }
+                }
             }
+            outcome
         }
         // Tope alcanzado sin resolución: genuinamente en cola (sin red o server
         // lento). No es éxito ni rechazo.
-        return RetryOutcome.StillQueued
+            ?: RetryOutcome.StillQueued
     }
 
     /**
