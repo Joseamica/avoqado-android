@@ -302,6 +302,41 @@ class TableOrderReprintComandasTest {
     }
 
     /**
+     * Saltadas PERO con un error de impresora encima: manda el error, porque
+     * "configura la estación" sería un consejo equivocado cuando lo que pasó es
+     * que la impresora no contestó.
+     */
+    @Test
+    fun `saltadas con error gana el motivo de la impresora`() = runTest {
+        coEvery { comandaPrinter.printComandas(any(), any(), any(), any(), any()) } returns
+            ComandaPrinter.Result(attempted = 2, printed = 0, skippedNoPrinter = 1, lastError = errorRealDeLaT3)
+
+        val vm = buildVm()
+        vm.reprintComandas()
+
+        assertTrue(vm.actionIsError.value)
+        assertEquals("No se pudo reimprimir la comanda", vm.actionMessage.value)
+        assertTrue(vm.actionHint.value.orEmpty().contains("no responde"))
+    }
+
+    // MARK: - El Result mismo
+
+    @Test
+    fun `los helpers del Result no confunden nada con parcial`() {
+        val nada = ComandaPrinter.Result(attempted = 2, printed = 0, skippedNoPrinter = 0, lastError = "x")
+        assertTrue(nada.nothingPrinted)
+        assertFalse("cero impresas no es 'parcial', es nada", nada.partial)
+
+        val parcial = ComandaPrinter.Result(attempted = 3, printed = 1, skippedNoPrinter = 0, lastError = "x")
+        assertFalse(parcial.nothingPrinted)
+        assertTrue(parcial.partial)
+
+        val completo = ComandaPrinter.Result(attempted = 2, printed = 2, skippedNoPrinter = 0, lastError = null)
+        assertFalse(completo.nothingPrinted)
+        assertFalse("todo impreso no es parcial", completo.partial)
+    }
+
+    /**
      * El único guard que SÍ corta antes de intentar. Vale porque no existe
      * ninguna impresora de cocina en todo el dispositivo — no es el guard de
      * configuración que la regla offline-first prohíbe (ese exigía estaciones
