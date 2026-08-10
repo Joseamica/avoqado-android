@@ -114,9 +114,16 @@ class CashierDisplayGuard @Inject constructor(
      * la ventana consiga foco real (por sistema o por ese primer toque), para no
      * perder un segundo golpe reclamando un campo en particular. Esto NO tiene
      * garantía de eliminar el toque desperdiciado — la causa vive en el servidor
-     * de ventanas, fuera del alcance de una app normal — así que si se sigue
-     * reproduciendo en hardware, es un costo aceptado del feature, igual que el
-     * parpadeo de ~1 s en el arranque en frío.
+     * de ventanas, fuera del alcance de una app normal.
+     *
+     * 🔴 Verificado después en el D3: NO bastó. Tras mover la caja,
+     * `mTopFocusedDisplayId` seguía en la pantalla del cliente. La pieza que sí
+     * mueve esa aguja es re-frentear la TAREA de la caja
+     * ([CustomerDisplayManager.onCustomerDisplayPresented]), y va allá porque el
+     * momento correcto es cuando la ventana del cliente ya aterrizó — que es
+     * después de que este guard corrió. Esto se queda como best-effort barato y
+     * complementario (foco de vista dentro de la ventana, no foco entre
+     * pantallas).
      */
     private fun requestCashierFocus(activity: Activity, currentDisplayId: Int) {
         if (currentDisplayId == Display.DEFAULT_DISPLAY) return

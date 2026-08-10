@@ -1,6 +1,7 @@
 package com.avoqado.pos.customerdisplay
 
 import android.app.Activity
+import android.app.ActivityManager
 import android.app.ActivityOptions
 import android.content.Context
 import android.content.Intent
@@ -53,6 +54,30 @@ internal fun chooseCustomerDisplayId(
         }
         .minByOrNull { it.displayId }?.displayId
 }
+
+/**
+ * ¿Este `detach` viene del anfitrión VIGENTE, o llega tarde de uno que ya fue
+ * reemplazado?
+ *
+ * 🔴 Lo que no es obvio: cuando Android RECREA una Activity —exactamente lo que
+ * provoca [CashierDisplayGuard] al relanzar la caja en la otra pantalla— el
+ * `onStart()` de la instancia NUEVA corre ANTES del `onStop()` de la VIEJA. O
+ * sea que el orden real es `attach(nueva)` → `detach(vieja)`. Un `detach` que
+ * desmonte a ciegas mataría entonces la ventana del cliente que la instancia
+ * nueva acaba de montar, y dejaría al manager sin anfitrión aunque haya una
+ * Activity viva. MEDIDO en un D3: tras relanzar la caja, la pantalla del cliente
+ * desapareció y NO volvió sola —el cliente se quedó viendo el launcher— y es
+ * intermitente, o sea que en un local aparece "a veces".
+ *
+ * Se compara por IDENTIDAD (`===`) y no por igualdad: lo que importa es si es LA
+ * MISMA instancia de Activity, no si dos instancias distintas se parecen.
+ *
+ * Top-level e `internal` para poder testear la decisión sin Android — esta
+ * carrera depende de la temporización y nadie la va a reproducir a mano dos
+ * veces.
+ */
+internal fun shouldTearDownOnDetach(currentHost: Any?, caller: Any): Boolean =
+    currentHost === caller
 
 @Singleton
 class CustomerDisplayManager @Inject constructor(
@@ -118,6 +143,22 @@ class CustomerDisplayManager @Inject constructor(
      */
     private var desiredCustomerDisplayId: Int? = null
 
+    /**
+     * Hay un montaje de la pantalla del cliente RECIÉN lanzado al que todavía le
+     * debemos devolverle el foco de teclado a la caja (ver
+     * [onCustomerDisplayPresented]).
+     *
+     * Se arma SOLO al lanzar de verdad la Activity del cliente y se consume en
+     * cuanto esa ventana confirma presencia: así el re-frente ocurre UNA VEZ POR
+     * MONTAJE y no en cada [refresh] ni en cada `onStart` repetido de la ventana
+     * del cliente (bloqueo/desbloqueo, overlays del sistema). Repetirlo sería el
+     * ingrediente de un bucle, que es justo lo que no puede pasarle a la caja.
+     */
+    private var pendingCashierRefront = false
+
+    /** Ver [bringCashierToFront]. Como campo para poder retirarlo del handler. */
+    private val refrontCashierRunnable = Runnable { bringCashierToFront() }
+
     /** true cuando hay una segunda pantalla activa (para UI de diagnóstico). */
     var isActive: Boolean = false
         private set
@@ -132,6 +173,19 @@ class CustomerDisplayManager @Inject constructor(
     fun attach(activity: Activity) {
         // La marca en reposo es del NEGOCIO (logo si hay, si no el nombre).
         state.setVenueBranding(secureStorage.venueDisplayName, secureStorage.venueLogo)
+        // 🔴 En una RECREACIÓN de la caja (lo que provoca CashierDisplayGuard al
+        // moverla de pantalla) este attach() de la instancia NUEVA corre ANTES
+        // del onStop() de la VIEJA — ver shouldTearDownOnDetach. Como el detach()
+        // de la vieja va a llegar tarde y se ignorará por no ser ya la
+        // anfitriona, es AQUÍ donde hay que soltar los enganches del anfitrión
+        // anterior: si no, cada recreación dejaría una colecta huérfana y un
+        // listener de displays de más. Va ANTES de reclamar el anfitrión y de
+        // registrar lo nuevo, para no soltar de rebote lo que acabamos de atar.
+        //
+        // Lo que NO se toca aquí es la ventana del cliente: en una recreación el
+        // letrero ya está montado y correcto, y apagarlo para volverlo a montar
+        // es justo el parpadeo (o la desaparición) que estamos evitando.
+        releaseHostBindings()
         hostActivity = activity
         val dm = activity.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager ?: return
         displayManager = dm
@@ -146,17 +200,42 @@ class CustomerDisplayManager @Inject constructor(
         }
     }
 
-    /** Llamar desde MainActivity.onStop — sin esto la ventana se filtra. */
-    fun detach() {
-        // Cancelar el JOB, no el scope: el scope es del manager (singleton) y
-        // vive más allá de un solo ciclo de attach/detach; sin cancelar aquí,
-        // cada MainActivity.onStart/onStop deja una colecta huérfana corriendo
-        // — una corrutina filtrada por ciclo.
+    /**
+     * Llamar desde MainActivity.onStop — sin esto la ventana se filtra.
+     *
+     * 🔴 Recibe QUIÉN llama porque el desmontaje tiene que ser consciente de la
+     * instancia: en una recreación de la caja, el `onStart()` de la nueva corre
+     * ANTES del `onStop()` de la vieja, así que este método lo invoca una
+     * Activity que ya dejó de ser la anfitriona. Ese detach tardío NO puede
+     * tocar nada del anfitrión vigente —ni la ventana del cliente que la nueva
+     * acaba de montar, ni el listener, ni la colecta del interruptor—, o el
+     * cliente se queda viendo el launcher el resto del turno. Ver
+     * [shouldTearDownOnDetach].
+     */
+    fun detach(activity: Activity) {
+        if (!shouldTearDownOnDetach(hostActivity, activity)) {
+            Log.d(tag, "detach() de una instancia que ya no es la anfitriona: no se desmonta nada")
+            return
+        }
+        handler.removeCallbacks(refrontCashierRunnable)
+        releaseHostBindings()
+        dismiss()
+        hostActivity = null
+    }
+
+    /**
+     * Suelta lo que está atado al anfitrión ACTUAL (la colecta del interruptor y
+     * el listener de displays), sin tocar lo que se le muestra al cliente.
+     *
+     * Se cancela el JOB, no el scope: el scope es del manager (singleton) y vive
+     * más allá de un solo ciclo de attach/detach; sin cancelar aquí, cada
+     * onStart/onStop de la caja dejaría una colecta huérfana corriendo — una
+     * corrutina filtrada por ciclo.
+     */
+    private fun releaseHostBindings() {
         invertedObserverJob?.cancel()
         invertedObserverJob = null
         displayManager?.unregisterDisplayListener(displayListener)
-        dismiss()
-        hostActivity = null
         displayManager = null
     }
 
@@ -247,6 +326,10 @@ class CustomerDisplayManager @Inject constructor(
                 opts.toBundle(),
             )
             isActive = true
+            // Este montaje —y solo este— tiene derecho a un re-frente de la caja
+            // cuando la ventana del cliente confirme presencia. Ver
+            // onCustomerDisplayPresented().
+            pendingCashierRefront = true
             // 🔴 NO `state.setPresenting(true)` aquí: que `startActivity` no haya
             // lanzado excepción solo dice que el sistema aceptó la intención, no
             // que la ventana llegó a aparecer. La señal fiable es el propio
@@ -266,6 +349,72 @@ class CustomerDisplayManager @Inject constructor(
             // instancia que nadie pidió. El siguiente refresh() lo vuelve a
             // poner si sigue haciendo falta.
             desiredCustomerDisplayId = null
+            pendingCashierRefront = false
+        }
+    }
+
+    /**
+     * La ventana del cliente CONFIRMÓ que está en pantalla
+     * ([CustomerDisplayActivity.onStart]). Es el momento de devolverle a la caja
+     * el foco de teclado.
+     *
+     * 🔴 El problema, medido en un D3 físico: tras invertir, `mTopFocusedDisplayId`
+     * se queda en la pantalla del CLIENTE —fue la última en activarse— y NINGUNA
+     * ventana tiene foco de teclado hasta que el cajero toca su pantalla. Los
+     * toques SÍ se entregan sin foco, así que el daño real es acotado: el primer
+     * toque del turno no abre el teclado si cae justo en un campo de texto. Se
+     * verificó con adb que volver a poner la caja al FRENTE sí devuelve el foco a
+     * su pantalla.
+     *
+     * 🔴 Por qué [ActivityManager.moveTaskToFront] y no relanzar la Activity: un
+     * `startActivity` hacia la caja la RECREA, y una recreación dispara justo la
+     * carrera de [shouldTearDownOnDetach] (attach de la nueva → detach tardío de
+     * la vieja) además de un nuevo `refresh()` que vuelve a montar al cliente →
+     * que volvería a pedir el re-frente… un bucle de relanzamientos con la caja
+     * inservible. `moveTaskToFront` solo reordena la tarea EXISTENTE en su
+     * pantalla: no recrea nada, no dispara onStop/onStart y no puede realimentar
+     * el ciclo. Necesita el permiso REORDER_TASKS (nivel normal: se concede al
+     * instalar, sin diálogo).
+     *
+     * Se posterga un poco a propósito: cuando esto corre, la ventana del cliente
+     * está en `onStart` pero todavía le falta resumir y que el servidor de
+     * ventanas asiente. Pedir el frente en el mismo fotograma sería una carrera
+     * contra el propio montaje que lo causó. Llegar tarde es inofensivo: las dos
+     * pantallas ya están donde tienen que estar y el re-frente no mueve nada de
+     * sitio.
+     */
+    internal fun onCustomerDisplayPresented() {
+        if (!pendingCashierRefront) return
+        pendingCashierRefront = false
+        handler.removeCallbacks(refrontCashierRunnable)
+        handler.postDelayed(refrontCashierRunnable, CASHIER_REFRONT_DELAY_MS)
+    }
+
+    /**
+     * Vuelve a poner la tarea de la caja al frente de SU pantalla, para que el
+     * servidor de ventanas le devuelva el foco de teclado. Ver
+     * [onCustomerDisplayPresented].
+     *
+     * Todo es best-effort y nada de esto puede tumbar ni congelar la caja: si el
+     * anfitrión ya murió, si el equipo no concede el permiso o si el fabricante
+     * lo ignora, se registra y se sigue — el costo es el toque "despertador" que
+     * ya existía, nunca una caja rota.
+     */
+    private fun bringCashierToFront() {
+        val activity = hostActivity ?: return
+        if (activity.isFinishing || activity.isDestroyed) return
+        // Solo en modo invertido: con la caja en la pantalla principal no hay
+        // nada que corregir, y el camino normal (Presentation) no se toca.
+        if (activity.currentDisplayId() == Display.DEFAULT_DISPLAY) return
+        val am = activity.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager ?: return
+        runCatching {
+            // NO_USER_ACTION: es un ajuste interno nuestro, no un cambio de app
+            // pedido por una persona; sin esta bandera se le notificaría a lo que
+            // esté en la otra pantalla que "el usuario se fue".
+            am.moveTaskToFront(activity.taskId, ActivityManager.MOVE_TASK_NO_USER_ACTION)
+            Log.i(tag, "Caja re-frenteada en display ${activity.currentDisplayId()} para recuperar el foco de teclado")
+        }.onFailure {
+            Log.w(tag, "No se pudo re-frentear la caja (el primer toque seguirá siendo un despertador): ${it.message}")
         }
     }
 
@@ -324,6 +473,12 @@ class CustomerDisplayManager @Inject constructor(
      */
     private fun finishCustomerActivity() {
         desiredCustomerDisplayId = null
+        // Un montaje que el manager cancela ya no tiene por qué cobrar su
+        // re-frente: si vuelve a hacer falta, el próximo lanzamiento lo arma otra
+        // vez. Y si el temporizador ya iba en camino, se retira — cuando dispare
+        // no habría ventana de cliente que lo justifique.
+        pendingCashierRefront = false
+        handler.removeCallbacks(refrontCashierRunnable)
         CustomerDisplayActivity.finishIfShowing()
     }
 
@@ -334,5 +489,15 @@ class CustomerDisplayManager @Inject constructor(
         finishCustomerActivity()
         isActive = false
         state.setPresenting(false)
+    }
+
+    private companion object {
+        /**
+         * Margen para que la ventana del cliente termine de aterrizar antes de
+         * pedir el frente para la caja. No es un número mágico con garantía: es
+         * "lo bastante después del montaje", y llegar tarde no rompe nada (ver
+         * [onCustomerDisplayPresented]).
+         */
+        const val CASHIER_REFRONT_DELAY_MS = 500L
     }
 }

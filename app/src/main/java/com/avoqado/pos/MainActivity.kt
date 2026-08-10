@@ -62,7 +62,13 @@ class MainActivity : FragmentActivity() {
     }
 
     override fun onStop() {
-        customerDisplay.detach()
+        // 🔴 Se pasa `this` porque el desmontaje tiene que ser consciente de la
+        // instancia: cuando Android RECREA esta Activity (justo lo que hace
+        // CashierDisplayGuard al mover la caja de pantalla), el onStart() de la
+        // instancia NUEVA corre ANTES de este onStop() de la VIEJA. Un detach a
+        // ciegas mataría aquí la pantalla del cliente que la nueva acaba de
+        // montar. Ver CustomerDisplayManager.shouldTearDownOnDetach.
+        customerDisplay.detach(this)
         super.onStop()
     }
 

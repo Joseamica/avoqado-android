@@ -124,6 +124,12 @@ class CustomerDisplayActivity : ComponentActivity() {
         // el upsell a una pantalla que nadie ve.
         reportedPresence = true
         state.setPresenting(true)
+        // Este es el momento en que la ventana del cliente ya está de verdad en
+        // pantalla — y por tanto el momento en que la caja se quedó sin foco de
+        // teclado (fue la última pantalla en activarse). El manager decide si hay
+        // que devolvérselo y lo hace UNA sola vez por montaje; llamar aquí en cada
+        // onStart() es inofensivo. Ver CustomerDisplayManager.onCustomerDisplayPresented.
+        manager.onCustomerDisplayPresented()
     }
 
     override fun onStop() {

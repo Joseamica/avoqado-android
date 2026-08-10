@@ -20,6 +20,16 @@
     <uses-permission android:name="android.permission.READ_CONTACTS" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Doble pantalla invertida: tras montar la pantalla del cliente, el foco de
+         teclado se queda en LA DEL CLIENTE (fue la última en activarse) y el
+         primer toque del cajero se gasta en despertarlo. Volver a poner la tarea
+         de la caja al frente de su pantalla lo devuelve, y moveTaskToFront es la
+         única vía que NO recrea la Activity (relanzarla dispararía una carrera de
+         attach/detach y podría entrar en bucle). Nivel normal: se concede al
+         instalar, no le sale ningún diálogo al negocio.
+         Ver CustomerDisplayManager.onCustomerDisplayPresented. -->
+    <uses-permission android:name="android.permission.REORDER_TASKS" />
+
     <!-- Bluetooth printing -->
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30" />
