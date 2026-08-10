@@ -4,6 +4,9 @@ import android.util.Log
 import com.avoqado.pos.core.data.local.PreferencesDataStore
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ApiConstants
+import com.avoqado.pos.customerdisplay.DisplayModeAction
+import com.avoqado.pos.customerdisplay.DisplayModePrefs
+import com.avoqado.pos.customerdisplay.reconcileDisplayMode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -13,8 +16,10 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -56,6 +61,7 @@ data class TerminalNavigationSettings(
     val canCheckoutAreaTickets: Boolean = false,
     val canDeliverAreaTickets: Boolean = false,
     val fulfillmentAreaId: String? = null,
+    val customerDisplayInverted: Boolean = false,
 ) {
     companion object {
         const val STANDARD_POS = "STANDARD_POS"
@@ -69,6 +75,7 @@ class TpvSettingsRepository @Inject constructor(
     private val secureStorage: SecureStorage,
     private val client: OkHttpClient,
     private val preferencesDataStore: PreferencesDataStore,
+    private val displayModePrefs: DisplayModePrefs,
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -138,6 +145,25 @@ class TpvSettingsRepository @Inject constructor(
             _terminalNavigation.value = terminalNavigation
             persistTerminalNavigation(venueId, terminalNavigation)
 
+            // Modo de pantallas: el local manda mientras haya un cambio sin
+            // confirmar; si no, se adopta el del server. Solo en el camino
+            // exitoso — un refresh fallido no puede mover la caja de pantalla.
+            when (
+                val action = reconcileDisplayMode(
+                    local = displayModePrefs.inverted.value,
+                    dirty = displayModePrefs.dirty.value,
+                    server = result.data?.deviceTerminal?.customerDisplayInverted,
+                )
+            ) {
+                is DisplayModeAction.Adopt -> displayModePrefs.adoptFromServer(action.value)
+                is DisplayModeAction.Push -> pushDisplayMode(
+                    venueId = venueId,
+                    terminalId = terminalNavigation.terminalId,
+                    value = action.value,
+                )
+                DisplayModeAction.Keep -> Unit
+            }
+
             // Plan gating (Phase ①): persist the OPTIONAL plan block. Absent
             // field (old server) → null tier → PlanManager fails OPEN. Only
             // written on a successful response so a transient error never
@@ -170,6 +196,47 @@ class TpvSettingsRepository @Inject constructor(
             )
         } finally {
             _isLoading.value = false
+        }
+    }
+
+    /**
+     * Empuja el modo de pantallas de ESTE equipo. Si falla no pasa nada malo:
+     * la bandera `dirty` sigue puesta y se reintenta en el próximo refresh.
+     */
+    private suspend fun pushDisplayMode(venueId: String, terminalId: String?, value: Boolean) {
+        val id = terminalId ?: return
+        val token = secureStorage.accessToken ?: return
+        runCatching {
+            val request = Request.Builder()
+                .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/terminals/$id/display-mode")
+                .header("Authorization", "Bearer $token")
+                .patch(
+                    """{"customerDisplayInverted":$value}"""
+                        .toRequestBody("application/json".toMediaType()),
+                )
+                .build()
+            val response = withContext(Dispatchers.IO) { client.newCall(request).execute() }
+            if (response.isSuccessful) {
+                // Solo se marca sincronizado si el valor que acabamos de
+                // empujar SIGUE siendo el vigente. Si el cajero tocó el
+                // interruptor dos veces rápido antes de que esta respuesta
+                // llegara, `markSynced()` aquí bajaría `dirty` sin que el
+                // valor NUEVO haya llegado al server — y el siguiente refresh
+                // lo revertiría.
+                if (displayModePrefs.inverted.value == value) {
+                    displayModePrefs.markSynced()
+                    Log.d("📦", "✅ Modo de pantallas sincronizado ($value)")
+                } else {
+                    Log.d(
+                        "📦",
+                        "↪️ El modo de pantallas cambió mientras se empujaba ($value) — no se marca sincronizado",
+                    )
+                }
+            } else {
+                Log.w("📦", "⚠️ El server rechazó el modo de pantallas: ${response.code}")
+            }
+        }.onFailure {
+            Log.w("📦", "⚠️ Sin red para sincronizar el modo de pantallas — se reintenta después")
         }
     }
 
@@ -283,6 +350,7 @@ internal data class DeviceTerminalSettingsDto(
     val canCheckoutAreaTickets: Boolean = false,
     val canDeliverAreaTickets: Boolean = false,
     val fulfillmentAreaId: String? = null,
+    val customerDisplayInverted: Boolean = false,
 )
 
 internal fun VenueSettingsData?.toTerminalNavigationSettings(): TerminalNavigationSettings {
@@ -294,6 +362,7 @@ internal fun VenueSettingsData?.toTerminalNavigationSettings(): TerminalNavigati
         canCheckoutAreaTickets = terminal.canCheckoutAreaTickets,
         canDeliverAreaTickets = terminal.canDeliverAreaTickets,
         fulfillmentAreaId = terminal.fulfillmentAreaId,
+        customerDisplayInverted = terminal.customerDisplayInverted,
     )
 }
 

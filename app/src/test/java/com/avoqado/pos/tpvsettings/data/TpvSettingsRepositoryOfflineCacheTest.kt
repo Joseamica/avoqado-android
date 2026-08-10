@@ -2,9 +2,11 @@ package com.avoqado.pos.tpvsettings.data
 
 import com.avoqado.pos.core.data.local.PreferencesDataStore
 import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.customerdisplay.DisplayModePrefs
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
 import okhttp3.Call
@@ -30,6 +32,7 @@ class TpvSettingsRepositoryOfflineCacheTest {
             secureStorage = storage,
             client = clientReturning(areaOperationsResponse()),
             preferencesDataStore = preferences,
+            displayModePrefs = fakeDisplayModePrefs(),
         )
         onlineRepository.refreshSettingsForVenue(VENUE_ID)
 
@@ -40,6 +43,7 @@ class TpvSettingsRepositoryOfflineCacheTest {
             secureStorage = storage,
             client = clientThrowing(IOException("offline")),
             preferencesDataStore = preferences,
+            displayModePrefs = fakeDisplayModePrefs(),
         )
         coldOfflineRepository.refreshSettingsForVenue(VENUE_ID)
 
@@ -59,12 +63,14 @@ class TpvSettingsRepositoryOfflineCacheTest {
             secureStorage = storage,
             client = clientReturning(areaOperationsResponse()),
             preferencesDataStore = preferences,
+            displayModePrefs = fakeDisplayModePrefs(),
         ).refreshSettingsForVenue(VENUE_ID)
 
         val otherVenueRepository = TpvSettingsRepository(
             secureStorage = storage,
             client = clientThrowing(IOException("offline")),
             preferencesDataStore = preferences,
+            displayModePrefs = fakeDisplayModePrefs(),
         )
         otherVenueRepository.refreshSettingsForVenue("venue-b")
 
@@ -82,12 +88,14 @@ class TpvSettingsRepositoryOfflineCacheTest {
             secureStorage = storage,
             client = clientReturning(areaOperationsResponse()),
             preferencesDataStore = preferences,
+            displayModePrefs = fakeDisplayModePrefs(),
         ).refreshSettingsForVenue(VENUE_ID)
 
         val deniedRepository = TpvSettingsRepository(
             secureStorage = storage,
             client = clientReturning(body = "{\"error\":\"Forbidden\"}", statusCode = 403),
             preferencesDataStore = preferences,
+            displayModePrefs = fakeDisplayModePrefs(),
         )
         deniedRepository.refreshSettingsForVenue(VENUE_ID)
 
@@ -97,6 +105,7 @@ class TpvSettingsRepositoryOfflineCacheTest {
             secureStorage = storage,
             client = clientThrowing(IOException("offline")),
             preferencesDataStore = preferences,
+            displayModePrefs = fakeDisplayModePrefs(),
         )
         coldAfterDenial.refreshSettingsForVenue(VENUE_ID)
         assertEquals(TerminalNavigationSettings.DEFAULT, coldAfterDenial.terminalNavigation.value)
@@ -116,6 +125,16 @@ class TpvSettingsRepositoryOfflineCacheTest {
 
     private fun authenticatedStorage(): SecureStorage = mockk<SecureStorage>(relaxed = true) {
         every { accessToken } returns "access-token"
+    }
+
+    /**
+     * Sin cambios pendientes: estos tests cubren el cache de settings/terminal,
+     * no la sincronización del modo de pantallas — que ese `dirty` esté en
+     * `false` evita que la reconciliación intente empujar nada aquí.
+     */
+    private fun fakeDisplayModePrefs(): DisplayModePrefs = mockk<DisplayModePrefs>(relaxed = true) {
+        every { inverted } returns MutableStateFlow(false)
+        every { dirty } returns MutableStateFlow(false)
     }
 
     private fun clientReturning(body: String, statusCode: Int = 200): OkHttpClient {
