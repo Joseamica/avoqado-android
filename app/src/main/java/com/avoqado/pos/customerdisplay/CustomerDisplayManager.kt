@@ -58,13 +58,6 @@ class CustomerDisplayManager @Inject constructor(
 ) {
     private val tag = "🖥️CustomerDisplay"
 
-    // Apps cuya pantalla virtual es una CAPTURA de la caja, no un display de
-    // cliente. Se comparan como substring del paquete (en minúsculas), así que
-    // basta la raíz de la marca para cubrir sus variantes.
-    private val REMOTE_CAPTURE_HINTS = listOf(
-        "anydesk", "teamviewer", "rustdesk", "vnc", "scrcpy",
-        "airdroid", "splashtop", "screencap", "screenrecord",
-    )
     private val handler = Handler(Looper.getMainLooper())
 
     private var displayManager: DisplayManager? = null
@@ -130,7 +123,7 @@ class CustomerDisplayManager @Inject constructor(
                 // sí entrega toques a la app; una virtual de Sunmi (NP511 del T3 Pro)
                 // NO. De esto depende delegar propina/calificación y mostrar el
                 // teclado del cliente sin que quede muerto en pantallas no táctiles.
-                val touchCapable = ownerPackage(target) == null
+                val touchCapable = displayOwnerPackage(target) == null
                 state.setTouchCapable(touchCapable)
                 Log.i(tag, "Pantalla del cliente montada en display ${target.displayId} (${target.name}), táctil=$touchCapable")
             }
@@ -163,20 +156,11 @@ class CustomerDisplayManager @Inject constructor(
      */
     private fun pickCustomerDisplay(candidates: List<Display>): Display? {
         val chosenId = chooseCustomerDisplayId(
-            candidates.map { CandidateDisplay(it.displayId, ownerPackage(it)) },
+            candidates.map { CandidateDisplay(it.displayId, displayOwnerPackage(it)) },
             REMOTE_CAPTURE_HINTS,
         ) ?: return null
         return candidates.firstOrNull { it.displayId == chosenId }
     }
-
-    /**
-     * Paquete que creó una pantalla VIRTUAL; null en las físicas.
-     * `getOwnerPackageName()` es @hide, por eso reflexión — envuelta para que si
-     * un OEM la bloquea, caigamos al comportamiento previo en vez de crashear.
-     */
-    private fun ownerPackage(display: Display): String? = runCatching {
-        Display::class.java.getMethod("getOwnerPackageName").invoke(display) as? String
-    }.getOrNull()
 
     private fun dismiss() {
         runCatching { presentation?.dismiss() }
