@@ -238,6 +238,149 @@ class PaymentFlowViewModelTest {
         assertTrue(viewModel.state.value is PaymentFlowState.Error)
     }
 
+    // MARK: - Doble cobro con tarjeta (incidente 2026-08-10, Sunmi D3)
+
+    /** Carrito mínimo con un producto, para los casos de tarjeta. */
+    private fun cardCart() = CartState(
+        items = listOf(
+            CartItem(
+                id = "line-product",
+                type = CartItemType.ProductItem("prod-1"),
+                name = "Pizza",
+                unitPrice = 1500,
+            ),
+        ),
+    )
+
+    private fun stubOrderCreation() {
+        coEvery {
+            orderRepository.createOrder(any(), any(), any(), any(), any())
+        } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-1")))
+    }
+
+    @Test
+    fun `un desenlace no confirmado NO se pinta como Error`() = runTest {
+        stubOrderCreation()
+        coEvery {
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any())
+        } returns TerminalPaymentResult.Undetermined("No pudimos confirmar el cobro.", "req-1")
+
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        // Ni Success ni Error: el estado honesto.
+        assertTrue(viewModel.state.value is PaymentFlowState.Undetermined)
+    }
+
+    @Test
+    fun `retry con un cobro sin resolver NO cobra — primero consulta`() = runTest {
+        stubOrderCreation()
+        coEvery {
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any())
+        } returns TerminalPaymentResult.Undetermined("No pudimos confirmar el cobro.", "req-1")
+        coEvery {
+            terminalPaymentService.resolveOutcome("req-1")
+        } returns TerminalPaymentResult.Undetermined("No pudimos confirmar el cobro.", "req-1")
+
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        viewModel.retry()
+        advanceUntilIdle()
+
+        // 🔴 Lo que produjo el doble cobro: retry() mandaba a cobrar de nuevo a ciegas.
+        // Ahora sólo se consulta — el cargo sigue siendo UNO solo.
+        coVerify(exactly = 1) {
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any())
+        }
+        coVerify(exactly = 1) { terminalPaymentService.resolveOutcome("req-1") }
+        assertTrue(viewModel.state.value is PaymentFlowState.Undetermined)
+    }
+
+    @Test
+    fun `si la re-consulta dice que SI se cobro, el cajero ve exito y no un error`() = runTest {
+        stubOrderCreation()
+        coEvery {
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any())
+        } returns TerminalPaymentResult.Undetermined("No pudimos confirmar el cobro.", "req-1")
+        // El escenario exacto del incidente: la terminal SÍ cobró, la app se enteró tarde.
+        coEvery {
+            terminalPaymentService.resolveOutcome("req-1")
+        } returns TerminalPaymentResult.Success(paymentId = "pay-tarde")
+
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        viewModel.recheckCardCharge()
+        advanceUntilIdle()
+
+        val state = viewModel.state.value
+        assertTrue("debe terminar en éxito, sin error a la vista", state is PaymentFlowState.Success)
+        assertEquals("pay-tarde", (state as PaymentFlowState.Success).paymentId)
+        assertEquals(PaymentMethod.CARD, state.method)
+        // Y jamás un segundo cargo.
+        coVerify(exactly = 1) {
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any())
+        }
+    }
+
+    @Test
+    fun `si consta que NO se cobro, recien ahi se ofrece cobrar`() = runTest {
+        stubOrderCreation()
+        coEvery {
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any())
+        } returns TerminalPaymentResult.Undetermined("No pudimos confirmar el cobro.", "req-1")
+        coEvery {
+            terminalPaymentService.resolveOutcome("req-1")
+        } returns TerminalPaymentResult.Error("El cobro fue rechazado. No se cobró la tarjeta.")
+        coEvery { terminalPaymentService.fetchOnlineTerminals() } returns TerminalListResult.Success(
+            listOf(OnlineTerminal(terminalId = "t1", name = "Caja 1")),
+        )
+
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        viewModel.retry()
+        advanceUntilIdle()
+
+        // Rechazo confirmado ⇒ consta que no hubo cargo ⇒ es seguro volver a cobrar.
+        assertTrue(viewModel.state.value is PaymentFlowState.SelectingTerminal)
+        coVerify(exactly = 1) {
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any())
+        }
+    }
+
+    @Test
+    fun `un cobro sin resolver NO se arrastra a la siguiente venta`() = runTest {
+        stubOrderCreation()
+        coEvery {
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any())
+        } returns TerminalPaymentResult.Undetermined("No pudimos confirmar el cobro.", "req-1")
+
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+        assertTrue(viewModel.state.value is PaymentFlowState.Undetermined)
+
+        // Venta NUEVA: el cobro sin resolver de la anterior no puede gobernar ésta, o un
+        // retry aquí consultaría aquel requestId y pintaría como cobrada una venta distinta.
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.retry()
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) { terminalPaymentService.resolveOutcome("req-1") }
+    }
+
     @Test
     fun `start payment flow resets previous tip before next custom payment`() = runTest {
         coEvery {

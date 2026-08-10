@@ -25,6 +25,7 @@ import com.avoqado.pos.payment.data.model.PaymentErrorSource
 import com.avoqado.pos.payment.data.model.PaymentFlowState
 import com.avoqado.pos.payment.data.model.PaymentItem
 import com.avoqado.pos.payment.data.model.PaymentMethod
+import com.avoqado.pos.payment.domain.CardChargeDecision
 import com.avoqado.pos.pos.data.model.CartItemType
 import com.avoqado.pos.pos.presentation.cart.CartState
 import com.avoqado.pos.core.data.local.SecureStorage
@@ -146,7 +147,12 @@ class PaymentFlowViewModel @Inject constructor(
 
         viewModelScope.launch {
             _state.collect { st ->
-                if (st is PaymentFlowState.Success || st is PaymentFlowState.Error) {
+                // Undetermined también libera el guard: si no, la pantalla honesta se queda
+                // sin poder re-consultar ni cobrar de nuevo (el cajero atrapado sin salida).
+                if (st is PaymentFlowState.Success ||
+                    st is PaymentFlowState.Error ||
+                    st is PaymentFlowState.Undetermined
+                ) {
                     isProcessingPayment = false
                 }
                 if (st is PaymentFlowState.Success) {
@@ -225,8 +231,11 @@ class PaymentFlowViewModel @Inject constructor(
                     checkoutBreakdown()
 
                 // Sin venta que mostrar (cargando, error): de vuelta a la marca.
+                // Undetermined es asunto del CAJERO —él revisa la terminal—: al cliente no se
+                // le pone ni un éxito que no consta ni un error que quizá no ocurrió.
                 is PaymentFlowState.Loading,
                 is PaymentFlowState.Error,
+                is PaymentFlowState.Undetermined,
                 ->
                     com.avoqado.pos.customerdisplay.CustomerContent.Idle
             },
@@ -256,6 +265,14 @@ class PaymentFlowViewModel @Inject constructor(
         }
     }
     private var selectedTerminalId: String? = null
+    /**
+     * `requestId` del cobro con tarjeta de ESTA venta cuyo desenlace no consta. Mientras no sea
+     * null, `retry()` tiene prohibido cobrar: primero re-consulta. Es POR VENTA a propósito
+     * (se limpia en `startPaymentFlow`) — un id heredado de la venta anterior haría que la
+     * consulta respondiera por un cobro que no es el de esta pantalla.
+     */
+    private var undeterminedRequestId: String? = null
+
     private var lastPaymentId: String? = null
     private var lastReceiptAccessKey: String? = null
     /** URL del recibo tal como la mandó el backend (dashboard). Ver `resolveReceiptUrl`. */
@@ -499,6 +516,10 @@ class PaymentFlowViewModel @Inject constructor(
         // Reset transient state from any previous session.
         isProcessingPayment = false
         paymentIdempotencyKey = null
+        // 🔴 POR VENTA, igual que la llave de idempotencia: arrastrar el cobro sin resolver de
+        // la venta anterior haría que un `retry()` de ESTA consultara aquél — y pintara como
+        // cobrada una venta que nadie cobró.
+        undeterminedRequestId = null
         selectedMethod = null
         currentRating = null
         currentTipCents = 0
@@ -822,24 +843,22 @@ class PaymentFlowViewModel @Inject constructor(
                     return
                 }
                 when (terminalResult) {
-                    is TerminalPaymentResult.Success -> {
-                        lastPaymentId = terminalResult.paymentId
-                        lastReceiptAccessKey = terminalResult.receiptAccessKey
-                        lastReceiptUrl = terminalResult.receiptUrl
-                        finishAreaTicketPayment()
-                        _state.value = PaymentFlowState.Success(
-                            totalAmount = total,
-                            method = PaymentMethod.CARD,
-                            paymentId = terminalResult.paymentId,
-                            receiptAccessKey = terminalResult.receiptAccessKey,
-                            receiptUrl = terminalResult.receiptUrl,
-                        )
-                        createKDSOrderAndPrint(PaymentMethod.CARD)
-                    }
+                    is TerminalPaymentResult.Success -> applyCardCharged(terminalResult, total)
                     is TerminalPaymentResult.Error -> {
+                        // Consta que no se cobró: reintentar vuelve a ser seguro.
+                        undeterminedRequestId = null
                         _state.value = PaymentFlowState.Error(
                             message = terminalResult.message,
                             source = PaymentErrorSource.TERMINAL,
+                        )
+                    }
+                    // 🔴 No se sabe si la tarjeta se cobró. Ni Success ni Error: su propia
+                    // pantalla, sin Reintentar a ciegas. Ver PaymentFlowState.Undetermined.
+                    is TerminalPaymentResult.Undetermined -> {
+                        undeterminedRequestId = terminalResult.requestId
+                        _state.value = PaymentFlowState.Undetermined(
+                            totalAmount = total,
+                            message = terminalResult.message,
                         )
                     }
                 }
@@ -1279,6 +1298,15 @@ class PaymentFlowViewModel @Inject constructor(
         when (selectedMethod) {
             PaymentMethod.CARD -> {
                 val total = currentBaseAmount() + currentTipCents
+                // 🔴 NUNCA cobrar de nuevo sin preguntar antes cómo quedó el intento anterior.
+                // Este `retry()` mandaba directo a "Seleccionar terminal" y cobró una tarjeta
+                // dos veces (2026-08-10). Si queda un cobro sin resolver, primero se consulta;
+                // sólo si CONSTA que no hubo cargo se ofrece cobrar.
+                val pending = undeterminedRequestId
+                if (pending != null) {
+                    reconcileThenOffer(pending, total)
+                    return
+                }
                 _state.value = PaymentFlowState.SelectingTerminal(total)
                 fetchTerminals()
             }
@@ -1291,6 +1319,90 @@ class PaymentFlowViewModel @Inject constructor(
                 _state.value = PaymentFlowState.SelectingPaymentMethod(total)
             }
         }
+    }
+
+    /**
+     * El cobro con tarjeta consta como exitoso: se cierra el flujo como cualquier venta buena.
+     *
+     * Se usa igual cuando el éxito llega por la respuesta directa de la terminal que cuando se
+     * descubre TARDE, re-consultando el estado durable. En ese segundo caso el cajero no ve
+     * ningún error: el cobro salió bien, la app sólo se enteró después.
+     */
+    private fun applyCardCharged(charged: TerminalPaymentResult.Success, total: Int) {
+        undeterminedRequestId = null // el desenlace ya consta
+        lastPaymentId = charged.paymentId
+        lastReceiptAccessKey = charged.receiptAccessKey
+        lastReceiptUrl = charged.receiptUrl
+        finishAreaTicketPayment()
+        _state.value = PaymentFlowState.Success(
+            totalAmount = total,
+            method = PaymentMethod.CARD,
+            paymentId = charged.paymentId,
+            receiptAccessKey = charged.receiptAccessKey,
+            receiptUrl = charged.receiptUrl,
+        )
+        createKDSOrderAndPrint(PaymentMethod.CARD)
+    }
+
+    /**
+     * Vuelve a preguntarle al server cómo quedó un cobro sin resolver y actúa según el desenlace:
+     * cobró → flujo normal; no cobró → recién ahí se ofrece cobrar; sigue sin saberse → la
+     * pantalla honesta. **Nunca dispara un cargo.**
+     */
+    private fun reconcileThenOffer(requestId: String, total: Int) {
+        _state.value = PaymentFlowState.Undetermined(
+            totalAmount = total,
+            message = CardChargeDecision.UNDETERMINED_MESSAGE,
+            checking = true,
+        )
+        viewModelScope.launch {
+            when (val outcome = terminalPaymentService.resolveOutcome(requestId)) {
+                is TerminalPaymentResult.Success -> applyCardCharged(outcome, total)
+                is TerminalPaymentResult.Error -> {
+                    // Consta que NO se cobró: aquí sí es seguro ofrecer cobrar de nuevo.
+                    undeterminedRequestId = null
+                    _state.value = PaymentFlowState.SelectingTerminal(total)
+                    fetchTerminals()
+                }
+                is TerminalPaymentResult.Undetermined -> {
+                    undeterminedRequestId = outcome.requestId
+                    _state.value = PaymentFlowState.Undetermined(
+                        totalAmount = total,
+                        message = outcome.message,
+                        checking = false,
+                    )
+                }
+            }
+        }
+    }
+
+    /**
+     * "Volver a consultar" desde la pantalla de cobro no confirmado. Es la acción SEGURA:
+     * sólo pregunta, jamás cobra.
+     */
+    fun recheckCardCharge() {
+        val total = currentBaseAmount() + currentTipCents
+        val pending = undeterminedRequestId
+        if (pending == null) {
+            // Ya no hay nada pendiente que consultar: consta que no hay cargo vivo.
+            _state.value = PaymentFlowState.SelectingTerminal(total)
+            fetchTerminals()
+            return
+        }
+        reconcileThenOffer(pending, total)
+    }
+
+    /**
+     * El cajero revisó la terminal, vio la advertencia del riesgo de doble cobro y aun así
+     * decide cobrar otra vez. Es una decisión HUMANA y explícita — nunca un camino automático.
+     */
+    fun chargeAgainDespiteUndetermined() {
+        val total = currentBaseAmount() + currentTipCents
+        Log.w("PaymentFlow", "⚠️ Cobro repetido autorizado por el cajero tras un desenlace no confirmado")
+        // El cajero se hizo cargo: el intento anterior deja de gobernar este flujo.
+        undeterminedRequestId = null
+        _state.value = PaymentFlowState.SelectingTerminal(total)
+        fetchTerminals()
     }
 
     fun cancel() {

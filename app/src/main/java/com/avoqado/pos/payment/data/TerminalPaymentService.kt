@@ -3,9 +3,15 @@ package com.avoqado.pos.payment.data
 import android.util.Log
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ApiConstants
+import com.avoqado.pos.payment.domain.CardChargeDecision
+import com.avoqado.pos.payment.domain.CardChargeOutcome
+import com.avoqado.pos.payment.domain.ChargeStatusProbe
+import com.avoqado.pos.payment.domain.ChargeWaitEnding
+import com.avoqado.pos.payment.domain.ProbeDecision
 import com.avoqado.pos.printing.data.model.ReceiptData
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -33,6 +39,15 @@ class TerminalPaymentService @Inject constructor(
     // Track current request for cancellation
     private var currentRequestId: String? = null
     private var currentTerminalId: String? = null
+
+    /**
+     * `requestId` del último cobro con tarjeta que quedó SIN resolver. Es la llave para volver a
+     * preguntarle al server cómo terminó, en vez de cobrar otra vez a ciegas. Se limpia en cuanto
+     * el desenlace consta (cobró / no cobró) — sólo sobrevive mientras hay duda.
+     */
+    @Volatile
+    var unresolvedRequestId: String? = null
+        private set
 
     /**
      * GET /mobile/venues/{venueId}/terminals/online
@@ -86,6 +101,10 @@ class TerminalPaymentService @Inject constructor(
         val requestId = UUID.randomUUID().toString()
         currentRequestId = requestId
         currentTerminalId = terminalId
+        // Desde este instante la tarjeta PUEDE cobrarse. Hasta que el desenlace conste,
+        // este id es lo único que permite preguntar "¿cómo quedó?" en vez de cobrar de nuevo.
+        unresolvedRequestId = requestId
+        var ceilingExceeded = false
 
         Log.d("💳", "Sending payment to terminal: $terminalId, amount: $amountCents, tip: $tipCents, requestId: $requestId")
 
@@ -110,9 +129,23 @@ class TerminalPaymentService @Inject constructor(
                 .post(requestBody)
                 .build()
 
+            // Tope de reloj de pared sobre la espera. Sin esto, un aviso que NUNCA llega
+            // (terminal apagada, sin batería, cancelada desde su propia pantalla) deja al
+            // cajero en "Procesando pago…" para siempre, sin salida y con fila enfrente.
+            val call = client.newCall(request)
             val (responseCode, body) = withContext(Dispatchers.IO) {
-                val response = client.newCall(request).execute()
-                response.code to (response.body?.string() ?: "")
+                val watchdog = launch {
+                    delay(CardChargeDecision.WAIT_CEILING_MS)
+                    ceilingExceeded = true
+                    Log.w("💳", "⏱️ Plazo máximo de espera vencido — se corta la espera y se consulta el estado")
+                    call.cancel() // cierra el socket → execute() sale de inmediato
+                }
+                try {
+                    val response = call.execute()
+                    response.code to (response.body?.string() ?: "")
+                } finally {
+                    watchdog.cancel()
+                }
             }
 
             currentRequestId = null
@@ -120,6 +153,7 @@ class TerminalPaymentService @Inject constructor(
 
             when (responseCode) {
                 in 200..299 -> {
+                    unresolvedRequestId = null
                     val response = json.decodeFromString(TerminalPaymentResponse.serializer(), body)
                     Log.d("💳", "✅ Terminal payment success: ${response.status}")
                     TerminalPaymentResult.Success(
@@ -141,6 +175,8 @@ class TerminalPaymentService @Inject constructor(
                         errorResp.errorMessage ?: errorResp.message
                     } catch (_: Exception) { null }
                     Log.e("💳", "❌ Terminal not connected (404): $body")
+                    // El server contestó: nunca despachó nada. Consta que no se cobró.
+                    unresolvedRequestId = null
                     TerminalPaymentResult.Error(errorMsg ?: "La terminal no está conectada")
                 }
                 422 -> {
@@ -149,32 +185,42 @@ class TerminalPaymentService @Inject constructor(
                         errorResp.errorMessage ?: errorResp.message
                     } catch (_: Exception) { null }
                     Log.e("💳", "❌ Terminal payment rejected (422): $body")
+                    unresolvedRequestId = null
                     TerminalPaymentResult.Error(errorMsg ?: "La terminal no tiene conexión activa")
                 }
-                504 -> {
-                    // Server-side timeout: the charge may still have completed. Verify the
-                    // durable status before surfacing a failure (never blind-fail money).
-                    Log.e("💳", "⏳ Terminal payment server timeout (504): recovering via durable status")
-                    resolveViaStatus(requestId)
-                }
                 else -> {
+                    // 🔴 Un fallo de TRANSPORTE (5xx, 408) no es un fallo de COBRO: la terminal
+                    // pudo haber cobrado y sólo se perdió el aviso. Fue exactamente el 503 de
+                    // ngrok reiniciando el backend lo que produjo el doble cobro del 2026-08-10.
+                    // Los 4xx sí son respuestas de negocio y se propagan tal cual.
                     val errorMsg = try {
                         val errorResp = json.decodeFromString(TerminalPaymentResponse.serializer(), body)
                         errorResp.errorMessage ?: errorResp.message
                     } catch (_: Exception) { null }
-                    Log.e("💳", "❌ Terminal payment failed: $responseCode - $body")
-                    TerminalPaymentResult.Error(errorMsg ?: "Error al procesar pago ($responseCode)")
+                    if (CardChargeDecision.mustReconcile(ChargeWaitEnding.Http(responseCode))) {
+                        Log.e("💳", "⏳ Fallo de transporte ($responseCode): se consulta el estado durable")
+                        resolveOutcome(requestId)
+                    } else {
+                        Log.e("💳", "❌ Terminal payment failed: $responseCode - $body")
+                        unresolvedRequestId = null
+                        TerminalPaymentResult.Error(errorMsg ?: "Error al procesar pago ($responseCode)")
+                    }
                 }
             }
         } catch (e: Exception) {
             currentRequestId = null
             currentTerminalId = null
-            // Network drop / client timeout / 5xx = UNKNOWN outcome. Ask the server what
-            // actually happened before giving up — prevents a false "failed" (and the double
-            // charge a blind retry would cause). A definitive 409 busy is an HTTP response,
-            // not an exception, so it never reaches here — it stays in the `else` arm above.
-            Log.e("💳", "⚠️ Terminal payment connection error: recovering via durable status: ${e.message}")
-            resolveViaStatus(requestId)
+            // Corte de red / timeout del cliente / plazo vencido = desenlace DESCONOCIDO.
+            // Se le pregunta al server qué pasó de verdad antes de rendirse — es lo que evita
+            // el falso "falló" (y el doble cobro que provocaría un reintento a ciegas).
+            val ending = if (ceilingExceeded) ChargeWaitEnding.CeilingExceeded else ChargeWaitEnding.NetworkError
+            Log.e("💳", "⚠️ Espera terminada sin resultado ($ending): se consulta el estado durable: ${e.message}")
+            if (CardChargeDecision.mustReconcile(ending)) {
+                resolveOutcome(requestId)
+            } else {
+                unresolvedRequestId = null
+                TerminalPaymentResult.Error(e.message ?: "Error al procesar pago")
+            }
         }
     }
 
@@ -182,13 +228,16 @@ class TerminalPaymentService @Inject constructor(
 
     /**
      * GET /mobile/venues/{venueId}/terminal-payment/{requestId}
-     * Durable status of a charge request — used to recover the real outcome after a dropped
-     * long-poll / server timeout / network error (never blind-fail money). Returns null on
-     * 404 NOT_FOUND (never persisted → safe to retry) or on any other error (best-effort).
+     * Estado durable de una solicitud de cobro — es lo que permite recuperar el desenlace REAL
+     * después de una espera larga que murió, un plazo vencido o un corte de red.
+     *
+     * 🔴 Distingue `NotFound` (404: nunca se persistió → nadie pasó una tarjeta) de `Unreachable`
+     * (no se pudo preguntar). Colapsarlos en un solo "null" era lo que hacía que un server
+     * inalcanzable pareciera un "no se cobró" y habilitara un reintento a ciegas.
      */
-    suspend fun getPaymentStatus(requestId: String): TerminalPaymentStatusDto? {
-        val venueId = secureStorage.venueId ?: return null
-        val token = secureStorage.accessToken ?: return null
+    suspend fun getPaymentStatus(requestId: String): ChargeStatusProbe {
+        val venueId = secureStorage.venueId ?: return ChargeStatusProbe.Unreachable
+        val token = secureStorage.accessToken ?: return ChargeStatusProbe.Unreachable
 
         return try {
             val request = Request.Builder()
@@ -202,55 +251,80 @@ class TerminalPaymentService @Inject constructor(
                 response.code to (response.body?.string() ?: "")
             }
 
-            if (responseCode in 200..299) {
-                val dto = json.decodeFromString(TerminalPaymentStatusDto.serializer(), body)
-                Log.d("💳", "Payment status $requestId → ${dto.status} (inProgress=${dto.inProgress})")
-                dto
-            } else {
-                // 404 NOT_FOUND → never persisted (safe to retry); any other code → best-effort null.
-                Log.d("💳", "Payment status $requestId → $responseCode (no durable status)")
-                null
+            when {
+                responseCode in 200..299 -> {
+                    val dto = json.decodeFromString(TerminalPaymentStatusDto.serializer(), body)
+                    Log.d("💳", "Payment status $requestId → ${dto.status} (inProgress=${dto.inProgress})")
+                    ChargeStatusProbe.Known(
+                        status = dto.status,
+                        inProgress = dto.inProgress,
+                        paymentId = dto.paymentId,
+                    )
+                }
+                responseCode == 404 -> {
+                    Log.d("💳", "Payment status $requestId → 404 NOT_FOUND (la solicitud nunca existió)")
+                    ChargeStatusProbe.NotFound
+                }
+                else -> {
+                    // 5xx / 401 / lo que sea: NO se sabe nada. Nunca asumir que no se cobró.
+                    Log.d("💳", "Payment status $requestId → $responseCode (no se pudo determinar)")
+                    ChargeStatusProbe.Unreachable
+                }
             }
         } catch (e: Exception) {
             Log.e("💳", "Error fetching payment status: ${e.message}")
-            null
+            ChargeStatusProbe.Unreachable
         }
     }
 
     /**
-     * Resolve an unknown outcome (dropped long-poll / server timeout / network error) by polling
-     * the durable status up to 3 times. Terminal COMPLETED → success; FAILED/CANCELLED → surface;
-     * TIMED_OUT/UNKNOWN, still-in-progress, or NOT_FOUND → "verify on the terminal" (never a silent
-     * success — that's how false failures and double charges happen).
+     * Averigua cómo terminó de verdad un cobro cuyo desenlace no consta, consultando el estado
+     * durable hasta 3 veces. La decisión (cobró / no cobró / no se sabe) es de
+     * [CardChargeDecision] — aquí sólo se hace la red y se traduce al resultado del flujo.
+     *
+     * Público a propósito: `retry()` lo usa para re-consultar ANTES de ofrecer cobrar otra vez.
      */
-    private suspend fun resolveViaStatus(requestId: String): TerminalPaymentResult {
-        val unresolved = TerminalPaymentResult.Error(
-            "El terminal no respondió a tiempo. Verifica el estado en la terminal.",
-        )
-        repeat(3) { attempt ->
-            // Back off between polls (500ms → 2s) — give the terminal a beat to settle.
+    suspend fun resolveOutcome(requestId: String): TerminalPaymentResult {
+        val attempts = 3
+        var outcome: CardChargeOutcome = CardChargeDecision.exhausted()
+
+        repeat(attempts) { attempt ->
+            // Respiro entre consultas (500ms → 2s): darle un momento a la terminal para asentarse.
             if (attempt > 0) delay(if (attempt == 1) 500L else 2000L)
 
-            val status = getPaymentStatus(requestId)
-                ?: return unresolved // 404 NOT_FOUND → never processed → safe
-
-            if (!status.inProgress) {
-                return when (status.status) {
-                    "COMPLETED" -> TerminalPaymentResult.Success(
-                        transactionId = null,
-                        cardLastFour = null,
-                        cardBrand = null,
-                        paymentId = status.paymentId,
-                        receiptAccessKey = null,
-                    )
-                    "FAILED" -> TerminalPaymentResult.Error("El cobro falló")
-                    "CANCELLED" -> TerminalPaymentResult.Error("Cobro cancelado")
-                    else -> unresolved // TIMED_OUT / UNKNOWN — outcome not confirmed
+            val probe = getPaymentStatus(requestId)
+            when (val decision = CardChargeDecision.decide(probe, isFinalAttempt = attempt == attempts - 1)) {
+                is ProbeDecision.Resolved -> {
+                    outcome = decision.outcome
+                    return outcome.toResult(requestId)
                 }
+                ProbeDecision.KeepPolling -> Unit // seguir preguntando
             }
-            // still in progress → poll again
         }
-        return unresolved // stayed in progress after 3 polls
+        // Se agotaron las consultas y seguía en curso: indeterminado, NUNCA "falló".
+        return outcome.toResult(requestId)
+    }
+
+    /** El desenlace, traducido al resultado que consume el flujo de pago. */
+    private fun CardChargeOutcome.toResult(requestId: String): TerminalPaymentResult = when (this) {
+        is CardChargeOutcome.Charged -> {
+            // Consta que se cobró: el desenlace ya no está pendiente.
+            unresolvedRequestId = null
+            Log.d("💳", "✅ Cobro confirmado por estado durable (paymentId=$paymentId)")
+            TerminalPaymentResult.Success(paymentId = paymentId)
+        }
+        is CardChargeOutcome.NotCharged -> {
+            // Consta que NO se cobró: reintentar es seguro.
+            unresolvedRequestId = null
+            Log.d("💳", "🚫 Consta que no se cobró: $message")
+            TerminalPaymentResult.Error(message)
+        }
+        is CardChargeOutcome.Undetermined -> {
+            // Sigue sin saberse: se conserva el requestId para poder volver a preguntar.
+            unresolvedRequestId = requestId
+            Log.w("💳", "❓ Desenlace indeterminado — el cajero debe revisar la terminal")
+            TerminalPaymentResult.Undetermined(message, requestId)
+        }
     }
 
     /**
@@ -383,7 +457,16 @@ sealed class TerminalPaymentResult {
         /** URL del recibo ya armada por el backend (dashboard). Preferirla sobre armarla a mano. */
         val receiptUrl: String? = null,
     ) : TerminalPaymentResult()
+
+    /** Consta que NO se cobró (rechazo, cancelación, terminal desconectada): reintentar es seguro. */
     data class Error(val message: String) : TerminalPaymentResult()
+
+    /**
+     * 🔴 No se pudo determinar si la tarjeta se cobró. NI éxito NI fracaso — es el tercer
+     * desenlace, el que faltaba. Nunca se pinta como pantalla de Error, y nunca habilita un
+     * reintento a ciegas: `requestId` es la llave para volver a preguntar.
+     */
+    data class Undetermined(val message: String, val requestId: String) : TerminalPaymentResult()
 }
 
 sealed class TerminalListResult {

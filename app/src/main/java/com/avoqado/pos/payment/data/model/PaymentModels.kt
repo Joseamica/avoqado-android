@@ -38,6 +38,24 @@ sealed class PaymentFlowState {
         val receiptUrl: String? = null,
     ) : PaymentFlowState()
     data class Error(val message: String, val source: PaymentErrorSource) : PaymentFlowState()
+
+    /**
+     * 🔴 Tercer desenlace del cobro con tarjeta: **no se sabe si se cobró**.
+     *
+     * Ni éxito ni fracaso. Nace de un fallo de transporte, un plazo de espera vencido o un
+     * server inalcanzable en un punto donde la terminal YA pudo haber cobrado. Existe porque
+     * pintarlo como Error —y ofrecer Reintentar— cobró una tarjeta dos veces (2026-08-10).
+     *
+     * Desde aquí NUNCA sale un cargo a ciegas: sólo volver a consultar, o cobrar de nuevo
+     * tras una advertencia explícita del riesgo.
+     *
+     * @param checking true mientras se re-consulta el estado (deshabilita las acciones).
+     */
+    data class Undetermined(
+        val totalAmount: Int,
+        val message: String,
+        val checking: Boolean = false,
+    ) : PaymentFlowState()
 }
 
 data class PaymentContext(

@@ -262,6 +262,20 @@ fun PaymentFlowScreen(
                     },
                 )
             }
+            // 🔴 Ni éxito ni fracaso: no se sabe si la tarjeta se cobró. Pantalla propia,
+            // sin Reintentar a ciegas — ver PaymentUndeterminedView.
+            is PaymentFlowState.Undetermined -> {
+                PaymentUndeterminedView(
+                    message = currentState.message,
+                    isChecking = currentState.checking,
+                    onRecheck = { viewModel.recheckCardCharge() },
+                    onChargeAgain = { viewModel.chargeAgainDespiteUndetermined() },
+                    onCancel = {
+                        viewModel.cancel()
+                        onCancel()
+                    },
+                )
+            }
         }
     }
 

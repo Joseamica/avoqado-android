@@ -22,7 +22,9 @@ import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Error
+import androidx.compose.material.icons.filled.HelpOutline
 import androidx.compose.material.icons.filled.Print
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -42,6 +44,7 @@ import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import com.avoqado.pos.R
@@ -628,6 +631,121 @@ fun PaymentErrorView(
 
         TextButton(onClick = onCancel) {
             Text("Cancelar")
+        }
+    }
+}
+
+// MARK: - Cobro no confirmado (ni éxito ni fracaso)
+
+/**
+ * 🔴 El tercer desenlace. Se muestra cuando NO se pudo determinar si la tarjeta se cobró:
+ * fallo de transporte, plazo de espera vencido o server inalcanzable justo donde la terminal
+ * ya pudo haber cobrado.
+ *
+ * Reglas de esta pantalla:
+ *  - NO dice "Error": no consta que haya fallado (y decirlo produjo un doble cobro real).
+ *  - La acción destacada es la SEGURA: volver a consultar, que jamás cobra.
+ *  - "Cobrar de nuevo" existe —el negocio no se puede quedar parado— pero SÓLO tras una
+ *    advertencia explícita del riesgo, confirmada por el cajero.
+ */
+@Composable
+fun PaymentUndeterminedView(
+    message: String,
+    isChecking: Boolean,
+    onRecheck: () -> Unit,
+    onChargeAgain: () -> Unit,
+    onCancel: () -> Unit,
+) {
+    var showChargeAgainWarning by remember { mutableStateOf(false) }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(AvoqadoTheme.spacing.xxxl),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Icon(
+            Icons.Filled.HelpOutline,
+            contentDescription = null,
+            tint = Warning,
+            modifier = Modifier.size(80.dp),
+        )
+
+        Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
+
+        Text(
+            text = "Cobro sin confirmar",
+            style = MaterialTheme.typography.headlineLarge,
+            textAlign = TextAlign.Center,
+        )
+
+        Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+
+        Text(
+            text = message,
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.widthIn(max = 400.dp),
+        )
+
+        Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxxl))
+
+        // Acción segura y destacada: sólo pregunta, nunca cobra.
+        PrimaryButton(
+            text = if (isChecking) "Consultando..." else "Volver a consultar",
+            onClick = onRecheck,
+            enabled = !isChecking,
+            isLoading = isChecking,
+        )
+
+        Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
+
+        TextButton(
+            onClick = { showChargeAgainWarning = true },
+            enabled = !isChecking,
+        ) {
+            Text(
+                text = "Cobrar de nuevo",
+                color = if (isChecking) {
+                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
+                } else {
+                    MaterialTheme.colorScheme.error
+                },
+            )
+        }
+
+        TextButton(onClick = onCancel, enabled = !isChecking) {
+            Text("Cancelar")
+        }
+    }
+
+    // La advertencia NO es decorativa: es lo único entre el cajero y un segundo cargo.
+    if (showChargeAgainWarning) {
+        AvoqadoDialog(
+            title = "¿Cobrar de nuevo?",
+            description = "Puede que la tarjeta YA se haya cobrado. Revisa la terminal " +
+                "y el estado del cobro antes de continuar: si el cobro anterior sí pasó, " +
+                "esto le cobrará al cliente por segunda vez.",
+            onDismiss = { showChargeAgainWarning = false },
+            actionButton = {
+                PrimaryButton(
+                    text = "Sí, cobrar de nuevo",
+                    onClick = {
+                        showChargeAgainWarning = false
+                        onChargeAgain()
+                    },
+                    fullWidth = true,
+                )
+            },
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Warning,
+                contentDescription = null,
+                tint = Warning,
+                modifier = Modifier.size(24.dp),
+            )
         }
     }
 }
