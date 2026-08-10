@@ -127,7 +127,8 @@ class PaymentFlowViewModelTest {
         // exercising the legacy single-ticket path unless a test overrides this.
         coEvery { printConfigRepository.refresh(any()) } returns Unit
         every { printConfigRepository.getCurrentConfig() } returns PrintConfig()
-        coEvery { comandaPrinter.printComandas(any(), any(), any(), any(), any()) } returns Unit
+        coEvery { comandaPrinter.printComandas(any(), any(), any(), any(), any()) } returns
+            ComandaPrinter.Result(attempted = 1, printed = 1, skippedNoPrinter = 0, lastError = null)
 
         viewModel = PaymentFlowViewModel(
             orderRepository = orderRepository,
@@ -439,7 +440,7 @@ class PaymentFlowViewModelTest {
         val plansSlot = slot<List<TicketPlan>>()
         coEvery {
             comandaPrinter.printComandas(capture(plansSlot), config, any(), any(), any())
-        } returns Unit
+        } returns ComandaPrinter.Result(attempted = 1, printed = 1, skippedNoPrinter = 0, lastError = null)
 
         val cart = CartState(
             items = listOf(
