@@ -17,6 +17,7 @@ import kotlinx.coroutines.test.runTest
 import okhttp3.OkHttpClient
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -155,6 +156,78 @@ class PaymentSyncServiceTest {
             30_000L,
         )
         assertEquals(30_000L, backoff)
+    }
+
+    // MARK: - Order id extraction
+    //
+    // POST /mobile/venues/:id/orders answers {"success":true,"order":{...}} — verified
+    // with curl against the running server. A parser that only looks at data.id treats a
+    // successful creation as a failure, and every retry creates ANOTHER order: that is
+    // exactly how payment dee41b9b sat PENDING for 19 days on the D3 while spawning
+    // orphan orders (ORD-1786374408214 among them).
+
+    @Test
+    fun `extractOrderId reads the order envelope the create endpoint actually returns`() {
+        val body = """
+            {"success":true,"order":{"id":"cmf2k9x1y0001qz8h3n4v7abc",
+            "orderNumber":"ORD-1786374408214","status":"PENDING","total":481.80}}
+        """.trimIndent()
+
+        assertEquals("cmf2k9x1y0001qz8h3n4v7abc", PaymentSyncService.extractOrderId(body))
+    }
+
+    @Test
+    fun `extractOrderId still reads the data envelope used by other endpoints`() {
+        val body = """{"success":true,"data":{"id":"order-from-data-envelope"}}"""
+
+        assertEquals("order-from-data-envelope", PaymentSyncService.extractOrderId(body))
+    }
+
+    @Test
+    fun `extractOrderId returns null when no envelope carries an id`() {
+        val body = """{"success":true,"message":"aceptado"}"""
+
+        assertEquals(null, PaymentSyncService.extractOrderId(body))
+    }
+
+    // MARK: - Order creation classification
+    //
+    // A 2xx means the server DID create the order. If we cannot read its id back, retrying
+    // POSTs /orders again and creates a duplicate — the D3 spawned six orphan orders that
+    // way for a single $401.50 payment. Unreadable success is a case for a human (FAILED →
+    // quarantine), never for the retry loop.
+
+    @Test
+    fun `unreadable success is permanent so the retry loop cannot duplicate the order`() {
+        val result = PaymentSyncService.classifyOrderCreation(201, """{"success":true}""")
+
+        assertTrue(
+            "2xx sin orderId legible debe ser permanente, no reintentable: $result",
+            result is PaymentSyncService.OrderResolution.PermanentFailure,
+        )
+    }
+
+    @Test
+    fun `readable success returns the order id`() {
+        val result = PaymentSyncService.classifyOrderCreation(
+            201,
+            """{"success":true,"order":{"id":"order-created-ok"}}""",
+        )
+
+        assertEquals(
+            PaymentSyncService.OrderResolution.Ready("order-created-ok"),
+            result,
+        )
+    }
+
+    @Test
+    fun `server error stays retryable`() {
+        val result = PaymentSyncService.classifyOrderCreation(503, "upstream down")
+
+        assertTrue(
+            "un 5xx es transitorio y debe reintentarse: $result",
+            result is PaymentSyncService.OrderResolution.RetryableFailure,
+        )
     }
 
     // MARK: - Count tracking

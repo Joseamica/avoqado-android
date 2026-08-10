@@ -51,6 +51,42 @@ class PaymentSyncService @Inject constructor(
         private const val MAX_BACKOFF_MS = 30_000L    // 30 seconds
         private const val CLEANUP_AFTER_MS = 24L * 60 * 60 * 1000  // 24 hours
         private val JSON_MEDIA = "application/json".toMediaType()
+
+        private val RESPONSE_JSON = Json { ignoreUnknownKeys = true }
+
+        /**
+         * The create-order endpoint answers {"success":true,"order":{...}}; other endpoints
+         * wrap their payload in "data". Both envelopes live in the same controller file, so
+         * read both — OrderRepository.parseCreateOrderResponse learned this on day one and
+         * this parser never did, which is why a successful creation looked like a failure.
+         */
+        internal fun classifyOrderCreation(code: Int, body: String): OrderResolution = when {
+            code in 200..299 -> {
+                val orderId = extractOrderId(body)
+                if (orderId.isNullOrBlank()) {
+                    // The server accepted it, so the order EXISTS — we just cannot read its
+                    // id. Retrying would POST /orders again and create a duplicate, which is
+                    // strictly worse than stopping. Quarantine it so a person can link it.
+                    OrderResolution.PermanentFailure("Orden creada pero sin id legible en la respuesta")
+                } else {
+                    OrderResolution.Ready(orderId)
+                }
+            }
+            code == 401 -> OrderResolution.AuthExpired
+            code in 400..499 -> OrderResolution.PermanentFailure("Order recreate failed ($code): $body")
+            else -> OrderResolution.RetryableFailure("Order recreate server error ($code)")
+        }
+
+        internal fun extractOrderId(body: String): String? {
+            return try {
+                val root = RESPONSE_JSON.parseToJsonElement(body).jsonObject
+                root["order"]?.jsonObject?.get("id")?.jsonPrimitive?.contentOrNull
+                    ?: root["data"]?.jsonObject?.get("id")?.jsonPrimitive?.contentOrNull
+                    ?: root["id"]?.jsonPrimitive?.contentOrNull
+            } catch (_: Exception) {
+                null
+            }
+        }
     }
 
     // MARK: - State
@@ -70,7 +106,7 @@ class PaymentSyncService @Inject constructor(
     private val syncScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val json = Json { ignoreUnknownKeys = true }
 
-    private sealed interface OrderResolution {
+    internal sealed interface OrderResolution {
         data class Ready(val orderId: String) : OrderResolution
         data class RetryableFailure(val message: String) : OrderResolution
         data class PermanentFailure(val message: String) : OrderResolution
@@ -382,19 +418,10 @@ class PaymentSyncService @Inject constructor(
                 response.code to (response.body?.string() ?: "")
             }
 
-            when {
-                code in 200..299 -> {
-                    val orderId = extractOrderId(body)
-                    if (orderId.isNullOrBlank()) {
-                        OrderResolution.RetryableFailure("Order sync missing orderId in response")
-                    } else {
-                        Log.d(TAG, "✅ Recreated order for queued payment ${payment.id}: $orderId")
-                        OrderResolution.Ready(orderId)
-                    }
+            classifyOrderCreation(code, body).also {
+                if (it is OrderResolution.Ready) {
+                    Log.d(TAG, "✅ Recreated order for queued payment ${payment.id}: ${it.orderId}")
                 }
-                code == 401 -> OrderResolution.AuthExpired
-                code in 400..499 -> OrderResolution.PermanentFailure("Order recreate failed ($code): $body")
-                else -> OrderResolution.RetryableFailure("Order recreate server error ($code)")
             }
         } catch (e: java.net.UnknownHostException) {
             OrderResolution.RetryableFailure("Sin conexión")
@@ -407,15 +434,7 @@ class PaymentSyncService @Inject constructor(
         }
     }
 
-    private fun extractOrderId(body: String): String? {
-        return try {
-            val root = json.parseToJsonElement(body).jsonObject
-            root["data"]?.jsonObject?.get("id")?.jsonPrimitive?.contentOrNull
-                ?: root["id"]?.jsonPrimitive?.contentOrNull
-        } catch (_: Exception) {
-            null
-        }
-    }
+    private fun extractOrderId(body: String): String? = Companion.extractOrderId(body)
 
     private suspend fun handleSyncResult(
         payment: PendingPaymentEntity,
