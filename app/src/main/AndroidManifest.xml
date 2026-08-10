@@ -79,5 +79,17 @@
                 android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
                 android:resource="@xml/usb_printer_filter" />
         </activity>
+
+        <!-- Pantalla del cliente en modo invertido: vive en la pantalla
+             PRINCIPAL, en su propia tarea porque está en otro display, y fuera
+             de recientes (no es una pantalla que el cajero abra). -->
+        <activity
+            android:name=".customerdisplay.CustomerDisplayActivity"
+            android:exported="false"
+            android:launchMode="singleInstance"
+            android:taskAffinity=".customerdisplay"
+            android:excludeFromRecents="true"
+            android:resizeableActivity="true"
+            android:theme="@style/Theme.Avoqado" />
     </application>
 </manifest>

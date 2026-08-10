@@ -1,7 +1,9 @@
 package com.avoqado.pos.customerdisplay
 
 import android.app.Activity
+import android.app.ActivityOptions
 import android.content.Context
+import android.content.Intent
 import android.hardware.display.DisplayManager
 import android.os.Handler
 import android.os.Looper
@@ -55,6 +57,7 @@ class CustomerDisplayManager @Inject constructor(
     // dentro del state. Sin esto el ajuste solo se aplicaría si alguien abre
     // la pantalla de Ajustes.
     @Suppress("unused") private val prefs: CustomerDisplayPrefs,
+    private val displayModePrefs: DisplayModePrefs,
 ) {
     private val tag = "🖥️CustomerDisplay"
 
@@ -97,74 +100,99 @@ class CustomerDisplayManager @Inject constructor(
         val activity = hostActivity ?: return
         // PRESENTATION = pantallas pensadas para mostrar contenido a terceros;
         // es justo la categoría en la que caen los displays de cliente.
-        val candidates = displayManager
+        val displays = displayManager
             ?.getDisplays(DisplayManager.DISPLAY_CATEGORY_PRESENTATION)
             ?.toList()
             .orEmpty()
-        val target = pickCustomerDisplay(candidates)
 
-        if (target == null) {
-            if (presentation != null) Log.i(tag, "Segunda pantalla desconectada")
+        val roles = resolveDisplayRoles(
+            defaultDisplayId = Display.DEFAULT_DISPLAY,
+            candidates = displays.map { CandidateDisplay(it.displayId, displayOwnerPackage(it)) },
+            remoteCaptureHints = REMOTE_CAPTURE_HINTS,
+            inverted = displayModePrefs.inverted.value,
+        )
+        state.setInvertible(roles.invertible)
+
+        val customerId = roles.customerDisplayId
+        if (customerId == null) {
+            if (presentation != null || CustomerDisplayActivity.isShowingOn(Display.DEFAULT_DISPLAY)) {
+                Log.i(tag, "Segunda pantalla desconectada")
+            }
             dismiss()
             return
         }
 
-        // Ya montada en esa misma pantalla: nada que hacer.
-        if (presentation?.display?.displayId == target.displayId && presentation?.isShowing == true) return
+        if (customerId == Display.DEFAULT_DISPLAY) {
+            // Modo invertido: el cliente va en la pantalla principal, y ahí
+            // TYPE_PRESENTATION está prohibido → Activity.
+            dismissPresentation()
+            showCustomerActivity(activity, customerId)
+            // La principal siempre es física y táctil: el cliente sí puede
+            // elegir propina y calificación.
+            state.setTouchCapable(true)
+            return
+        }
 
-        dismiss()
+        CustomerDisplayActivity.finishIfShowing()
+        val target = displays.firstOrNull { it.displayId == customerId } ?: return
+        showPresentation(activity, target)
+    }
+
+    /** Modo invertido: el cliente en una Activity sobre la pantalla principal. */
+    private fun showCustomerActivity(activity: Activity, displayId: Int) {
+        if (CustomerDisplayActivity.isShowingOn(displayId)) return
+        runCatching {
+            val opts = ActivityOptions.makeBasic().setLaunchDisplayId(displayId)
+            activity.startActivity(
+                Intent(activity, CustomerDisplayActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP),
+                opts.toBundle(),
+            )
+            isActive = true
+            state.setPresenting(true)
+            Log.i(tag, "Pantalla del cliente (Activity) montada en display $displayId")
+        }.onFailure {
+            // Nunca tumbar la caja por culpa de la pantalla del cliente.
+            Log.e(tag, "No se pudo abrir la pantalla del cliente: ${it.message}")
+            isActive = false
+            state.setPresenting(false)
+        }
+    }
+
+    /** Modo normal: el cliente en un Presentation sobre la secundaria. */
+    private fun showPresentation(activity: Activity, target: Display) {
+        if (presentation?.display?.displayId == target.displayId && presentation?.isShowing == true) return
+        dismissPresentation()
         runCatching {
             CustomerDisplayPresentation(activity, target, state).also {
                 it.show()
                 presentation = it
                 isActive = true
                 state.setPresenting(true)
-                // Detección automática por hardware: una pantalla FÍSICA (sin dueño)
-                // sí entrega toques a la app; una virtual de Sunmi (NP511 del T3 Pro)
-                // NO. De esto depende delegar propina/calificación y mostrar el
-                // teclado del cliente sin que quede muerto en pantallas no táctiles.
+                // Detección automática por hardware: una pantalla FÍSICA (sin
+                // dueño) sí entrega toques; una virtual de Sunmi (NP511 del T3
+                // Pro) NO. De esto depende delegar propina/calificación.
                 val touchCapable = displayOwnerPackage(target) == null
                 state.setTouchCapable(touchCapable)
                 Log.i(tag, "Pantalla del cliente montada en display ${target.displayId} (${target.name}), táctil=$touchCapable")
             }
         }.onFailure {
-            // Nunca tumbar la caja por culpa de la pantalla del cliente.
             Log.e(tag, "No se pudo montar la pantalla del cliente: ${it.message}")
             isActive = false
             state.setPresenting(false)
         }
     }
 
-    /**
-     * Elige la pantalla del cliente entre las candidatas.
-     *
-     * 🔴 El problema real: una app de control remoto (AnyDesk, TeamViewer…)
-     * crea una pantalla VIRTUAL para capturar la caja, y esa también se anuncia
-     * como "de presentación". Con `firstOrNull()` le atinábamos a la buena por
-     * PURA SUERTE (orden de enumeración): si la captura enumera primero,
-     * montaríamos la interfaz del cliente DENTRO de la captura y su pantalla
-     * física se quedaría en negro mientras alguien está conectado por remoto.
-     *
-     * No sirve "rechazar todas las virtuales": en el Sunmi T3 Pro la pantalla
-     * del cliente ES virtual (la crea `com.sunmi.usbscreen`). Lo que distingue
-     * a la buena de la captura es QUIÉN la creó:
-     *   - física (HDMI del D3, Elo…): sin dueño → siempre la mejor opción.
-     *   - virtual de un servicio de pantalla del vendor (Sunmi): válida.
-     *   - virtual de una app de captura/remoto: se descarta.
-     * Ante la duda (dueño desconocido) NO montamos: mejor nada que dentro de la
-     * captura de otro.
-     */
-    private fun pickCustomerDisplay(candidates: List<Display>): Display? {
-        val chosenId = chooseCustomerDisplayId(
-            candidates.map { CandidateDisplay(it.displayId, displayOwnerPackage(it)) },
-            REMOTE_CAPTURE_HINTS,
-        ) ?: return null
-        return candidates.firstOrNull { it.displayId == chosenId }
+    private fun dismissPresentation() {
+        runCatching { presentation?.dismiss() }
+        presentation = null
     }
 
     private fun dismiss() {
-        runCatching { presentation?.dismiss() }
-        presentation = null
+        dismissPresentation()
+        // Si la caja se va a segundo plano, el cliente NO puede quedarse viendo
+        // un total congelado.
+        CustomerDisplayActivity.finishIfShowing()
         isActive = false
         state.setPresenting(false)
     }
