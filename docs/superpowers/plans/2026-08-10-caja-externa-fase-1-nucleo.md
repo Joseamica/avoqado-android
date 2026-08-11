@@ -1562,10 +1562,51 @@ Al crear el `AreaTicketFulfillment`: `orderId: ticket.orderId ?? null` y
 En `listPendingAreaTicketFulfillment`, la lista es la **unión**: nativos elegibles como hoy, más
 externos con `externalDeliveryTracking: 'TRACKED'` y settlement elegible.
 
-- [ ] **Step 4: Correr todo**
+- [ ] **Step 4: Arreglar el test de aislamiento por área de la Task 9** (lo encontró su revisión)
+
+`tests/integration/area-tickets/area-ticket-external-queue.test.ts` tiene un test que dice probar
+que una terminal de otra área no ve estos vales. **No prueba eso.** Usa una terminal de área
+*nativa*, cuyos vales quedan fuera por **tres** condiciones independientes a la vez:
+`fulfillmentAreaId`, `settlementRoute: EXTERNAL`, y la ausencia de relación `externalSettlement`.
+El test pasaría igual **si se borrara la línea de `fulfillmentAreaId` de la query** — o sea que no
+vigila el predicado que dice vigilar, y es justo la regla de seguridad central del módulo.
+
+El código que hay hoy es correcto (es una igualdad plana, verificada en revisión); lo que falla es
+la prueba. El test venía prescrito así en el plan: **es un error del plan, no del implementador de
+la Task 9.**
+
+Arréglalo creando una **segunda área también `EXTERNAL`**, con su propia terminal, y afirmando que
+cada terminal ve solo los vales de su área:
+
+```typescript
+it('una terminal de OTRA área externa no ve estos vales — aísla el filtro de área, no otros', async () => {
+  // Ambas áreas son EXTERNAL: si la query dejara de filtrar por fulfillmentAreaId,
+  // nada más excluiría estos vales y el test fallaría. Ese es el punto.
+  const mio = await issueExternalTicket({ quantity: '1' })
+  const ajeno = await issueExternalTicketInSecondArea({ quantity: '1' })
+
+  const propia = await listPendingExternalConfirmation(venueId, { deviceUid: externalIssueDeviceUid })
+  expect(propia.items.map((i: any) => i.id)).toContain(mio.id)
+  expect(propia.items.map((i: any) => i.id)).not.toContain(ajeno.id)
+
+  const otra = await listPendingExternalConfirmation(venueId, { deviceUid: segundaAreaDeviceUid })
+  expect(otra.items.map((i: any) => i.id)).toContain(ajeno.id)
+  expect(otra.items.map((i: any) => i.id)).not.toContain(mio.id)
+})
+```
+
+**Verifica que el test nuevo tenga poder de verdad:** borra temporalmente la línea
+`fulfillmentAreaId: terminal.fulfillmentAreaId` de la query, confirma que este test **falla**, y
+restáurala. Si no falla, el test sigue sin servir y hay que rehacerlo. Documenta esa comprobación
+en tu reporte — es la única forma de saber que un test de aislamiento aísla algo.
+
+Conserva el test viejo si quieres (no estorba), pero el que cuenta es este.
+
+- [ ] **Step 5: Correr todo**
 
 ```bash
-TEST_DATABASE_URL=… npx jest --selectProjects integration --testPathPattern "area-ticket"   # todas
+set -a; source .env.test.local; set +a
+npx jest --selectProjects integration --testPathPattern "area-ticket"   # todas
 npm run build
 ```
 
