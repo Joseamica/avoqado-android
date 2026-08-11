@@ -47,6 +47,7 @@ import io.mockk.mockk
 import io.mockk.slot
 import io.mockk.verify
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -258,6 +259,114 @@ class PaymentFlowViewModelTest {
         coEvery {
             orderRepository.createOrder(any(), any(), any(), any(), any())
         } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-1")))
+    }
+
+    // MARK: - Cancelar es una PETICIÓN, no una garantía
+
+    /**
+     * Deja el envío EN VUELO para poder cancelar en medio, como el cajero de verdad: manda el
+     * cobro, el cliente empieza a pagar, y la cancelación sale antes de que la terminal conteste.
+     */
+    private fun terminalRespondsLate(result: TerminalPaymentResult) {
+        coEvery {
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any())
+        } coAnswers {
+            kotlinx.coroutines.delay(60_000)
+            result
+        }
+        coEvery { orderRepository.cancelOrder(any()) } returns Result.success(Unit)
+        // La ranura arranca LIBRE, como en producción (SharedPreferences devuelve null si no
+        // hay nada). Explícito a propósito: es una entrada del camino del dinero y no puede
+        // depender del valor por defecto de un mock relajado.
+        every { terminalPaymentService.unresolvedRequestId } returns null
+    }
+
+    @Test
+    fun `si la terminal cobro DESPUES de cancelar, el cobro no desaparece`() = runTest {
+        // 🔴 El hueco: cancelar es una PETICIÓN, no una garantía. Si la tarjeta ya se pasó, la
+        // terminal cobra igual y avisa TARDE. El guard de resultado obsoleto tiraba ese
+        // desenlace ENTERO —incluido el cobro exitoso—: el dinero salía, la venta quedaba
+        // marcada como impaga y el cajero cobraba otra vez.
+        stubOrderCreation()
+        terminalRespondsLate(TerminalPaymentResult.Success(paymentId = "pay-tarde", requestId = "req-1"))
+
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceTimeBy(1_000) // el envío sigue en vuelo: el cliente está pagando
+        viewModel.cancel() // el cajero cancela desde el POS
+        advanceUntilIdle() // …y la terminal contesta "cobrado", tarde
+
+        // La referencia queda armada en la llave DURABLE: la próxima venta se topa con ella
+        // y el cajero puede resolverla desde "Cobro sin confirmar".
+        verify { terminalPaymentService.rearmUnresolvedCharge("req-1") }
+        // Pero NO se secuestra la pantalla de la que el cajero ya se fue.
+        assertFalse(
+            "cancelar significa que la pantalla no se toca",
+            viewModel.state.value is PaymentFlowState.Success,
+        )
+    }
+
+    @Test
+    fun `un desenlace tardio que sigue sin saberse tambien queda pendiente`() = runTest {
+        stubOrderCreation()
+        terminalRespondsLate(
+            TerminalPaymentResult.Undetermined("No pudimos confirmar el cobro.", "req-1"),
+        )
+
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceTimeBy(1_000)
+        viewModel.cancel()
+        advanceUntilIdle()
+
+        verify { terminalPaymentService.rearmUnresolvedCharge("req-1") }
+    }
+
+    @Test
+    fun `cancelar antes de que la terminal haga nada sigue cancelando limpio`() = runTest {
+        // El camino feliz. El server contesta 409 'Cancelado' ⇒ consta que NO hubo cargo:
+        // ni referencia colgada ni pantalla de "Cobro sin confirmar" fantasma en la venta
+        // siguiente. Si esto se rompe, cada cancelación normal deja un fantasma.
+        stubOrderCreation()
+        terminalRespondsLate(TerminalPaymentResult.Error("Cancelado"))
+
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceTimeBy(1_000)
+        viewModel.cancel()
+        advanceUntilIdle()
+
+        verify { terminalPaymentService.rearmUnresolvedCharge(null) }
+        assertFalse(
+            "una cancelación limpia no deja pantalla de cobro sin confirmar",
+            viewModel.state.value is PaymentFlowState.Undetermined,
+        )
+    }
+
+    @Test
+    fun `un desenlace tardio NO pisa la llave del cobro que el cajero mando despues`() = runTest {
+        // La venta ya avanzó a otra cosa: hay un cobro POSTERIOR gobernando el disco. El
+        // rezagado no puede robarle la única ranura — ese otro es el que todavía puede tener
+        // dinero encima.
+        stubOrderCreation()
+        terminalRespondsLate(TerminalPaymentResult.Success(paymentId = "pay-viejo", requestId = "req-viejo"))
+        // La llave arranca libre (si no, la venta ni siquiera empezaría) y se ocupa mientras
+        // el rezagado sigue en vuelo.
+        var armada: String? = null
+        every { terminalPaymentService.unresolvedRequestId } answers { armada }
+
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceTimeBy(1_000)
+        armada = "req-nuevo" // el cajero ya mandó OTRO cobro y ése quedó sin confirmar
+        viewModel.cancel()
+        advanceUntilIdle()
+
+        verify { terminalPaymentService.rearmUnresolvedCharge("req-nuevo") }
     }
 
     @Test
