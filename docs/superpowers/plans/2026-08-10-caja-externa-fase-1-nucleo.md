@@ -773,7 +773,9 @@ describe('Cancelación de un vale externo ya consumido', () => {
       reason: 'El cliente se arrepintió',
     })
 
-    expect(await stockOf(externalInventoryId)).toBe(before + 2)
+    // Comparar en Decimal, no en Number: `currentStock` es Decimal(x,3) y
+    // colapsarlo a float invita a un falso verde el día que la cantidad no sea redonda.
+    expect((await stockOf(externalInventoryId)).toFixed(3)).toBe(before.plus(2).toFixed(3))
     const r = await prisma.areaTicketInventoryReservation.findFirst({ where: { areaTicketId: ticket.id } })
     expect(r!.status).toBe('RELEASED')
     expect(r!.reversalMovementId).not.toBeNull()
@@ -787,7 +789,9 @@ describe('Cancelación de un vale externo ya consumido', () => {
     await cancelAreaTicket(venueId, ticket.id, input)
     await cancelAreaTicket(venueId, ticket.id, input)
 
-    expect(await stockOf(externalInventoryId)).toBe(before + 2)   // NO +4
+    // Comparar en Decimal, no en Number: `currentStock` es Decimal(x,3) y
+    // colapsarlo a float invita a un falso verde el día que la cantidad no sea redonda.
+    expect((await stockOf(externalInventoryId)).toFixed(3)).toBe(before.plus(2).toFixed(3))   // NO +4
   })
 
   it('con recordWasteOnCancel el stock NO vuelve: se registra merma', async () => {
@@ -877,6 +881,109 @@ git commit -m "feat(area-tickets): reversa de inventario al cancelar un vale ext
 
 Idempotente por reversalMovementId. Sin esa columna, un reintento de
 cancelación devuelve el producto a stock dos veces."
+```
+
+---
+
+## Task 5b: Guard — un vale externo no entra al circuito de caja Avoqado
+
+**Files:**
+- Modify: `avoqado-server/src/services/mobile/areaTicketV7.mobile.service.ts` (`addTicketToCheckout:941`, y el claim de `lockAreaTicketCheckoutForPayment:1018`)
+- Test: `avoqado-server/tests/integration/area-tickets/area-ticket-external-not-claimable.test.ts`
+
+**Interfaces:**
+- Consumes: `settlementRoute` (Task 1), el CHECK `area_ticket_external_no_avoqado_circuit` (Task 2), vales externos emitibles (Task 4).
+- Produces: error de dominio `AREA_TICKET_IS_EXTERNAL` (409).
+
+**Por qué existe esta tarea:** la encontró la revisión de Task 4 y **no estaba en el plan original**. Task 4 es el primer productor de vales `EXTERNAL`; hoy, si una caja Avoqado escanea uno, el código pasa todos sus guards —ni siquiera selecciona `settlementRoute`— y llega al `updateMany` que pone `status: CLAIMED` + `checkoutSessionId`, donde el CHECK de la base dispara un `23514` que sale como **500 crudo en la pantalla del cajero**. El dinero está a salvo (el CHECK hace su trabajo), pero un error de Postgres no le dice a nadie qué hacer. El CHECK es la red; esto es la puerta.
+
+- [ ] **Step 1: Escribir el test que falla**
+
+```typescript
+describe('Un vale externo no se puede cobrar en una caja Avoqado', () => {
+  it('addTicketToCheckout lo rechaza con AREA_TICKET_IS_EXTERNAL, no con un 500 de Postgres', async () => {
+    const ticket = await issueExternalTicket({ quantity: '1' })
+    const session = await createAreaTicketCheckout(venueId, { idempotencyKey: `s-${suffix}`, deviceUid: checkoutDeviceUid })
+
+    await expect(
+      addTicketToCheckout(venueId, session.id, ticket.code, { idempotencyKey: `a-${suffix}`, deviceUid: checkoutDeviceUid }),
+    ).rejects.toMatchObject({ code: 'AREA_TICKET_IS_EXTERNAL' })
+  })
+
+  it('el mensaje le dice al cajero qué hacer, no qué falló', async () => {
+    const ticket = await issueExternalTicket({ quantity: '1' })
+    const session = await createAreaTicketCheckout(venueId, { idempotencyKey: `s2-${suffix}`, deviceUid: checkoutDeviceUid })
+    try {
+      await addTicketToCheckout(venueId, session.id, ticket.code, { idempotencyKey: `a2-${suffix}`, deviceUid: checkoutDeviceUid })
+      throw new Error('debió rechazar')
+    } catch (e: any) {
+      expect(e.code).toBe('AREA_TICKET_IS_EXTERNAL')
+      expect(e.message).toMatch(/caja externa/i)
+      expect(e.message).not.toMatch(/constraint|violat|23514/i)
+    }
+  })
+
+  it('el vale externo queda intacto: sigue ISSUED, sin sesión y sin orden', async () => {
+    const ticket = await issueExternalTicket({ quantity: '1' })
+    const session = await createAreaTicketCheckout(venueId, { idempotencyKey: `s3-${suffix}`, deviceUid: checkoutDeviceUid })
+    await expect(
+      addTicketToCheckout(venueId, session.id, ticket.code, { idempotencyKey: `a3-${suffix}`, deviceUid: checkoutDeviceUid }),
+    ).rejects.toThrow()
+
+    const after = await prisma.areaTicket.findUnique({ where: { id: ticket.id } })
+    expect(after!.status).toBe('ISSUED')
+    expect(after!.checkoutSessionId).toBeNull()
+    expect(after!.orderId).toBeNull()
+  })
+
+  it('un vale NATIVO se sigue agregando a la sesión igual que antes', async () => {
+    const ticket = await issueNativeTicket({ quantity: '1' })
+    const session = await createAreaTicketCheckout(venueId, { idempotencyKey: `s4-${suffix}`, deviceUid: checkoutDeviceUid })
+    const result = await addTicketToCheckout(venueId, session.id, ticket.code, { idempotencyKey: `a4-${suffix}`, deviceUid: checkoutDeviceUid })
+    expect(result.tickets.map((t: any) => t.id)).toContain(ticket.id)
+  })
+})
+```
+
+- [ ] **Step 2: Correr y verificar que falla**
+
+Run: `set -a; source .env.test.local; set +a; npx jest --selectProjects integration --testPathPattern "area-ticket-external-not-claimable"`
+Expected: FAIL — los primeros casos truenan con un error de Postgres (`23514`, `check_violation`) en vez de con `AREA_TICKET_IS_EXTERNAL`. **Captura esa salida:** es la prueba de que el defecto existe.
+
+- [ ] **Step 3: Implementar el guard**
+
+En `addTicketToCheckout`, añade `settlementRoute` al `select` del vale (hoy no se selecciona) y, junto a los guards de estado que ya existen:
+
+```typescript
+if (ticket.settlementRoute === AreaSettlementRoute.EXTERNAL) {
+  throw domainError(409, 'AREA_TICKET_IS_EXTERNAL',
+    'Este vale se cobra en la caja externa, no en Avoqado.')
+}
+```
+
+Aplica el mismo guard en el claim de `lockAreaTicketCheckoutForPayment`. Ponlo **antes** de cualquier escritura, para que el vale quede intacto.
+
+- [ ] **Step 4: Correr los tests**
+
+```bash
+set -a; source .env.test.local; set +a
+npx jest --selectProjects integration --testPathPattern "area-ticket-external-not-claimable"   # 4/4
+npx jest --selectProjects integration --testPathPattern "area-ticket-v7"                       # regresión, sin cambios
+```
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/services/mobile/areaTicketV7.mobile.service.ts \
+        tests/integration/area-tickets/area-ticket-external-not-claimable.test.ts
+git commit -m "fix(area-tickets): rechazar un vale externo en caja Avoqado con un error legible
+
+El CHECK de la base ya impedía el daño (un vale EXTERNAL no puede entrar al
+circuito de caja Avoqado), pero lo hacía disparando un 23514 que le llegaba al
+cajero como un 500 crudo. El CHECK es la red; este guard es la puerta: rechaza
+antes de escribir, con un mensaje que dice qué hacer.
+
+Encontrado por la revisión de Task 4."
 ```
 
 ---
