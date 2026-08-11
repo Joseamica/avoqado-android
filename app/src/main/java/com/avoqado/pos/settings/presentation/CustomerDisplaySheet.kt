@@ -148,8 +148,18 @@ fun CustomerDisplaySheet(
                             !invertible && !detected ->
                                 "Este equipo no tiene una segunda pantalla; no hay nada que invertir."
                             !invertible ->
-                                "La segunda pantalla de este equipo no es táctil; " +
-                                    "el cajero no podría trabajar en ella."
+                                // 🔴 NO decir "no es táctil": es falso y manda a
+                                // buscar el problema donde no está. Medido en un
+                                // T3 Pro (2026-08-10): el panel del cliente SÍ trae
+                                // digitalizador (SUNMI NP511, TOUCH_MT), pero Android
+                                // no lo asocia a esa pantalla —`displayId` vacío— y
+                                // sus toques aterrizan en la pantalla del cajero, con
+                                // las coordenadas del panel grande. El hardware está;
+                                // lo que falta es el ruteo, y eso no se arregla desde
+                                // la app (build de producción sin root, y la pantalla
+                                // es virtual, creada por com.sunmi.usbscreen).
+                                "En este equipo los toques de la segunda pantalla no " +
+                                    "llegan a ella, así que el cajero no podría trabajar ahí."
                             ventaEnCurso ->
                                 "Termina la venta en curso para poder cambiar de pantalla."
                             else ->
