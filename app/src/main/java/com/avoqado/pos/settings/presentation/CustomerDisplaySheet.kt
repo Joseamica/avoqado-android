@@ -102,7 +102,14 @@ fun CustomerDisplaySheet(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                Column(modifier = Modifier.padding(end = AvoqadoTheme.spacing.md)) {
+                // 🔴 `weight(1f)`, no sólo padding: sin él el Column se queda con todo el ancho
+                // que pida su texto y APLASTA al Switch — se vio recortado contra el borde en
+                // un T3 Pro. El texto es el que debe ceder y envolver, nunca el control.
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = AvoqadoTheme.spacing.md),
+                ) {
                     Text(
                         text = "El cliente elige propina y calificación",
                         style = MaterialTheme.typography.bodyLarge,
@@ -128,7 +135,14 @@ fun CustomerDisplaySheet(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                Column(modifier = Modifier.padding(end = AvoqadoTheme.spacing.md)) {
+                // 🔴 `weight(1f)`, no sólo padding: sin él el Column se queda con todo el ancho
+                // que pida su texto y APLASTA al Switch — se vio recortado contra el borde en
+                // un T3 Pro. El texto es el que debe ceder y envolver, nunca el control.
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = AvoqadoTheme.spacing.md),
+                ) {
                     Text(
                         text = "Invertir pantallas",
                         style = MaterialTheme.typography.bodyLarge,
