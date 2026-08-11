@@ -655,8 +655,18 @@ fun PaymentUndeterminedView(
     onRecheck: () -> Unit,
     onChargeAgain: () -> Unit,
     onCancel: () -> Unit,
+    /** El cobro sin confirmar quedó de otra venta: confirmarlo no paga la actual. */
+    fromPreviousSale: Boolean = false,
 ) {
     var showChargeAgainWarning by remember { mutableStateOf(false) }
+    var showLeaveWarning by remember { mutableStateOf(false) }
+
+    // 🔴 Sin esto, un "atrás" desmonta la pantalla y toda la ceremonia de la advertencia
+    // desaparece en silencio. La llave vive en disco, así que salir NO pierde el cobro —
+    // pero el cajero tiene que enterarse de que sigue sin confirmarse.
+    androidx.activity.compose.BackHandler(enabled = !isChecking) {
+        showLeaveWarning = true
+    }
 
     Column(
         modifier = Modifier
@@ -675,7 +685,7 @@ fun PaymentUndeterminedView(
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
 
         Text(
-            text = "Cobro sin confirmar",
+            text = if (fromPreviousSale) "Cobro anterior sin confirmar" else "Cobro sin confirmar",
             style = MaterialTheme.typography.headlineLarge,
             textAlign = TextAlign.Center,
         )
@@ -707,7 +717,7 @@ fun PaymentUndeterminedView(
             enabled = !isChecking,
         ) {
             Text(
-                text = "Cobrar de nuevo",
+                text = if (fromPreviousSale) "Cobrar esta venta de todos modos" else "Cobrar de nuevo",
                 color = if (isChecking) {
                     MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
                 } else {
@@ -724,14 +734,20 @@ fun PaymentUndeterminedView(
     // La advertencia NO es decorativa: es lo único entre el cajero y un segundo cargo.
     if (showChargeAgainWarning) {
         AvoqadoDialog(
-            title = "¿Cobrar de nuevo?",
-            description = "Puede que la tarjeta YA se haya cobrado. Revisa la terminal " +
-                "y el estado del cobro antes de continuar: si el cobro anterior sí pasó, " +
-                "esto le cobrará al cliente por segunda vez.",
+            title = if (fromPreviousSale) "¿Cobrar esta venta?" else "¿Cobrar de nuevo?",
+            description = if (fromPreviousSale) {
+                "El cobro anterior sigue sin confirmarse y dejará de avisarte. Si aquel cobro " +
+                    "sí pasó y no lo verificaste, el cliente podría quedar cobrado dos veces. " +
+                    "Revisa la terminal antes de continuar."
+            } else {
+                "Puede que la tarjeta YA se haya cobrado. Revisa la terminal " +
+                    "y el estado del cobro antes de continuar: si el cobro anterior sí pasó, " +
+                    "esto le cobrará al cliente por segunda vez."
+            },
             onDismiss = { showChargeAgainWarning = false },
             actionButton = {
                 PrimaryButton(
-                    text = "Sí, cobrar de nuevo",
+                    text = if (fromPreviousSale) "Sí, continuar" else "Sí, cobrar de nuevo",
                     onClick = {
                         showChargeAgainWarning = false
                         onChargeAgain()
@@ -742,6 +758,34 @@ fun PaymentUndeterminedView(
         ) {
             Icon(
                 imageVector = Icons.Filled.Warning,
+                contentDescription = null,
+                tint = Warning,
+                modifier = Modifier.size(24.dp),
+            )
+        }
+    }
+
+    // Salir está permitido (bloquear la caja sería peor), pero nunca en silencio: se dice
+    // que el cobro sigue sin confirmarse y que va a volver a aparecer.
+    if (showLeaveWarning) {
+        AvoqadoDialog(
+            title = "El cobro sigue sin confirmarse",
+            description = "Si sales ahora, este cobro queda pendiente y te lo volveremos a " +
+                "mostrar la próxima vez que cobres. Revisa la terminal para saber si pasó.",
+            onDismiss = { showLeaveWarning = false },
+            actionButton = {
+                PrimaryButton(
+                    text = "Volver a consultar",
+                    onClick = {
+                        showLeaveWarning = false
+                        onRecheck()
+                    },
+                    fullWidth = true,
+                )
+            },
+        ) {
+            Icon(
+                imageVector = Icons.Filled.HelpOutline,
                 contentDescription = null,
                 tint = Warning,
                 modifier = Modifier.size(24.dp),

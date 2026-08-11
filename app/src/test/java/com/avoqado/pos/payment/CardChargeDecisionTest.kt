@@ -101,20 +101,46 @@ class CardChargeDecisionTest {
     }
 
     @Test
-    fun `404 confirmado significa que la solicitud nunca existió — no se cobró`() {
-        // El server nunca persistió la solicitud → la terminal jamás fue invocada.
+    fun `un 404 NO alcanza para declarar que no se cobro — queda indeterminado`() {
+        // 🔴 Tentador y equivocado: "no existe la solicitud ⇒ nadie pasó una tarjeta".
+        // El server crea la fila ANTES de emitir a la terminal, pero entre que el request
+        // llega y la fila se escribe corren validateStaffVenue y la query de paymentStatus.
+        // Si el socket murió con el request ya enviado, esa ventana supera de sobra los
+        // 2.5 s del sondeo en un backend cargado o recién arrancado.
+        // Sólo se llega aquí tras un final de transporte, o sea que ya hay duda: ante la
+        // duda se dice que hay duda. Un NotCharged aquí = pantalla de Error = Reintentar
+        // SIN advertencia = el doble cobro otra vez, por otra puerta.
         val decision = CardChargeDecision.decide(ChargeStatusProbe.NotFound, isFinalAttempt = true)
 
-        assertTrue((decision as ProbeDecision.Resolved).outcome is CardChargeOutcome.NotCharged)
+        assertTrue((decision as ProbeDecision.Resolved).outcome is CardChargeOutcome.Undetermined)
     }
 
     @Test
     fun `un 404 aislado NO se cree a la primera — puede ser un POST rezagado`() {
-        // Declarar "no se cobró" con una sola lectura abre la puerta a cobrar encima de un
-        // request que todavía venía en camino. Se vuelve a preguntar.
         val decision = CardChargeDecision.decide(ChargeStatusProbe.NotFound, isFinalAttempt = false)
 
         assertEquals(ProbeDecision.KeepPolling, decision)
+    }
+
+    @Test
+    fun `NO COBRO solo sale de un estado terminal que lo diga — nunca de una ausencia`() {
+        // La única prueba válida de que no hubo cargo es que el server lo AFIRME.
+        val afirmados = listOf("FAILED", "CANCELLED")
+        afirmados.forEach { status ->
+            val d = CardChargeDecision.decide(
+                ChargeStatusProbe.Known(status = status, inProgress = false),
+                isFinalAttempt = true,
+            )
+            assertTrue("$status debe constar como no cobrado", (d as ProbeDecision.Resolved).outcome is CardChargeOutcome.NotCharged)
+        }
+        // Y de nada más: ausencia (404) e ignorancia (no se pudo preguntar) NO califican.
+        listOf(ChargeStatusProbe.NotFound, ChargeStatusProbe.Unreachable).forEach { probe ->
+            val d = CardChargeDecision.decide(probe, isFinalAttempt = true)
+            assertFalse(
+                "$probe no puede declarar que no se cobró",
+                (d as ProbeDecision.Resolved).outcome is CardChargeOutcome.NotCharged,
+            )
+        }
     }
 
     // MARK: - Desenlace 3: NO SE SABE (jamás ofrecer un reintento a ciegas)

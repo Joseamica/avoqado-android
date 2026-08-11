@@ -50,6 +50,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -151,6 +152,7 @@ class PaymentFlowViewModelTest {
             syncOutbox = mockk(relaxed = true),
             customerDisplay = com.avoqado.pos.customerdisplay.CustomerDisplayState(),
             areaTicketRepository = areaTicketRepository,
+            savedStateHandle = androidx.lifecycle.SavedStateHandle(),
         )
     }
 
@@ -359,26 +361,62 @@ class PaymentFlowViewModelTest {
     }
 
     @Test
-    fun `un cobro sin resolver NO se arrastra a la siguiente venta`() = runTest {
+    fun `un cobro sin resolver BLOQUEA la siguiente venta hasta resolverlo`() = runTest {
+        // 🔴 El agujero que hacía inútil toda la ceremonia: el cajero ve "Cobro sin confirmar",
+        // se va a Transacciones a comprobar si el pago entró, vuelve y cobra — pantalla nueva,
+        // cero advertencia, segundo cargo. La llave vive en DISCO justo para esto.
         stubOrderCreation()
-        coEvery {
+        every { terminalPaymentService.unresolvedRequestId } returns "req-1"
+
+        viewModel.startPaymentFlow(cardCart())
+        advanceUntilIdle()
+
+        val state = viewModel.state.value
+        assertTrue("la venta nueva debe toparse con el cobro pendiente", state is PaymentFlowState.Undetermined)
+        assertTrue(
+            "debe declararse que viene de otra venta",
+            (state as PaymentFlowState.Undetermined).fromPreviousSale,
+        )
+        // Y nadie cobró nada por el camino.
+        coVerify(exactly = 0) {
             terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any())
-        } returns TerminalPaymentResult.Undetermined("No pudimos confirmar el cobro.", "req-1")
+        }
+    }
+
+    @Test
+    fun `confirmar el cobro de la venta ANTERIOR no marca como pagada la venta actual`() = runTest {
+        // Distinción crítica: la llave pendiente era de otra venta. Que aquel cobro sí haya
+        // pasado NO paga la venta que el cajero tiene ahora en el carrito.
+        stubOrderCreation()
+        every { terminalPaymentService.unresolvedRequestId } returns "req-vieja"
+        coEvery {
+            terminalPaymentService.resolveOutcome("req-vieja")
+        } returns TerminalPaymentResult.Success(paymentId = "pay-vieja")
 
         viewModel.startPaymentFlow(cardCart())
-        viewModel.selectPaymentMethod(PaymentMethod.CARD)
-        viewModel.selectTerminalAndPay("t1")
         advanceUntilIdle()
-        assertTrue(viewModel.state.value is PaymentFlowState.Undetermined)
+        viewModel.recheckCardCharge()
+        advanceUntilIdle()
 
-        // Venta NUEVA: el cobro sin resolver de la anterior no puede gobernar ésta, o un
-        // retry aquí consultaría aquel requestId y pintaría como cobrada una venta distinta.
+        assertFalse(
+            "jamás dar por pagada la venta actual con el cobro de otra",
+            viewModel.state.value is PaymentFlowState.Success,
+        )
+        assertNotNull(viewModel.resolvedNotice.value)
+    }
+
+    @Test
+    fun `cobrar de todos modos suelta la llave durable para no bloquear la siguiente venta`() = runTest {
+        stubOrderCreation()
+        every { terminalPaymentService.unresolvedRequestId } returns "req-1"
+
         viewModel.startPaymentFlow(cardCart())
-        viewModel.selectPaymentMethod(PaymentMethod.CARD)
-        viewModel.retry()
+        advanceUntilIdle()
+        viewModel.chargeAgainDespiteUndetermined()
         advanceUntilIdle()
 
-        coVerify(exactly = 0) { terminalPaymentService.resolveOutcome("req-1") }
+        // El cajero asumió el riesgo tras la advertencia: la llave deja de gobernar.
+        verify { terminalPaymentService.forgetUnresolvedCharge() }
     }
 
     @Test

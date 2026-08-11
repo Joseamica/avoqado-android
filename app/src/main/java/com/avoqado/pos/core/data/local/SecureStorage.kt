@@ -89,6 +89,27 @@ class SecureStorage @Inject constructor(
         set(value) { prefs.edit().putBoolean(KEY_RESERVATIONS_ENABLED, value).apply() }
 
     /**
+     * `requestId` de un cobro con TARJETA cuyo desenlace NO consta.
+     *
+     * 🔴 Vive en disco a propósito: es lo único que impide un segundo cargo cuando la app
+     * muere, el cajero cambia de pestaña, o se va a Transacciones a ver si el pago entró —
+     * que es justo lo que hace la gente frente a la pantalla "Cobro sin confirmar". En RAM
+     * esa ceremonia se evapora y el siguiente "Cobrar" arranca limpio, sin advertencia.
+     *
+     * Se escribe al enviar el cobro y se borra SÓLO cuando el desenlace consta (cobró o no
+     * cobró), o cuando el cajero decide explícitamente cobrar de nuevo asumiendo el riesgo.
+     * **NO se limpia en `clearSession`**: un cobro sin confirmar no deja de existir porque
+     * alguien cierre sesión o cambie de venue.
+     */
+    var pendingCardChargeRequestId: String?
+        get() = prefs.getString(KEY_PENDING_CARD_CHARGE, null)
+        set(value) {
+            prefs.edit().apply {
+                if (value == null) remove(KEY_PENDING_CARD_CHARGE) else putString(KEY_PENDING_CARD_CHARGE, value)
+            }.apply()
+        }
+
+    /**
      * Vales por área (AREA_TICKETS) — opt-in POR VENUE, apagado por defecto.
      *
      * 🔴 El tier NO alcanza como gate, y por eso existe esta bandera. `AREA_TICKETS` es PRO
@@ -448,6 +469,7 @@ class SecureStorage @Inject constructor(
         private const val KEY_VENUE_SLUG = "venueSlug"
         private const val KEY_VENUE_TIMEZONE = "venueTimezone"
         private const val KEY_VENUE_MODE = "venueMode"
+        private const val KEY_PENDING_CARD_CHARGE = "pendingCardChargeRequestId"
         private const val KEY_RESERVATIONS_ENABLED = "reservationsEnabled"
         private const val KEY_AREA_TICKETS_ENABLED = "areaTicketsEnabled"
         private const val KEY_AREA_TICKET_CHECKOUT_ID = "areaTicketCheckoutId"

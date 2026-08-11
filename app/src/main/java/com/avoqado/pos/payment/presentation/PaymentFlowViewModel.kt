@@ -77,6 +77,7 @@ class PaymentFlowViewModel @Inject constructor(
     private val comandaDispatcher: ComandaDispatcher,
     private val customerDisplay: com.avoqado.pos.customerdisplay.CustomerDisplayState,
     private val areaTicketRepository: AreaTicketRepository,
+    private val savedStateHandle: androidx.lifecycle.SavedStateHandle,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow<PaymentFlowState>(PaymentFlowState.Loading)
@@ -266,12 +267,17 @@ class PaymentFlowViewModel @Inject constructor(
     }
     private var selectedTerminalId: String? = null
     /**
-     * `requestId` del cobro con tarjeta de ESTA venta cuyo desenlace no consta. Mientras no sea
-     * null, `retry()` tiene prohibido cobrar: primero re-consulta. Es POR VENTA a propósito
-     * (se limpia en `startPaymentFlow`) — un id heredado de la venta anterior haría que la
-     * consulta respondiera por un cobro que no es el de esta pantalla.
+     * `requestId` del cobro con tarjeta cuyo desenlace no consta, **según esta pantalla**.
+     * Mientras no sea null, `retry()` tiene prohibido cobrar: primero re-consulta.
+     *
+     * Vive en `SavedStateHandle` para sobrevivir a la muerte del proceso. La copia
+     * autoritativa y durable es la del servicio (disco); ésta sirve para distinguir
+     * "el cobro sin resolver es MÍO" de "es de una venta anterior" — sin esa distinción,
+     * re-consultar un cobro viejo podría marcar como pagada una venta que nadie cobró.
      */
-    private var undeterminedRequestId: String? = null
+    private var undeterminedRequestId: String?
+        get() = savedStateHandle[KEY_UNDETERMINED_REQUEST]
+        set(value) { savedStateHandle[KEY_UNDETERMINED_REQUEST] = value }
 
     private var lastPaymentId: String? = null
     private var lastReceiptAccessKey: String? = null
@@ -333,6 +339,21 @@ class PaymentFlowViewModel @Inject constructor(
 
     private val _printResult = MutableStateFlow<String?>(null)
     val printResult: StateFlow<String?> = _printResult.asStateFlow()
+
+    /** Aviso tras resolver un cobro sin confirmar que había quedado de una venta anterior. */
+    private val _resolvedNotice = MutableStateFlow<String?>(null)
+    val resolvedNotice: StateFlow<String?> = _resolvedNotice.asStateFlow()
+
+    /**
+     * La cancelación de la orden fue RECHAZADA por el server (típicamente 409: ya está pagada).
+     * Antes esto sólo se logueaba mientras la app navegaba afuera, así que el cajero se quedaba
+     * creyendo que canceló algo que sigue vivo — y encima el cobro podía aterrizar sobre esa
+     * orden. Ahora se ve.
+     */
+    private val _cancelFailure = MutableStateFlow<String?>(null)
+    val cancelFailure: StateFlow<String?> = _cancelFailure.asStateFlow()
+
+    fun clearCancelFailure() { _cancelFailure.value = null }
 
     private val _canPrintOnTerminal = MutableStateFlow(false)
     val canPrintOnTerminal: StateFlow<Boolean> = _canPrintOnTerminal.asStateFlow()
@@ -516,10 +537,6 @@ class PaymentFlowViewModel @Inject constructor(
         // Reset transient state from any previous session.
         isProcessingPayment = false
         paymentIdempotencyKey = null
-        // 🔴 POR VENTA, igual que la llave de idempotencia: arrastrar el cobro sin resolver de
-        // la venta anterior haría que un `retry()` de ESTA consultara aquél — y pintara como
-        // cobrada una venta que nadie cobró.
-        undeterminedRequestId = null
         selectedMethod = null
         currentRating = null
         currentTipCents = 0
@@ -564,7 +581,27 @@ class PaymentFlowViewModel @Inject constructor(
         // itself before we collect tip/rating.
         probeTerminalAvailability()
 
-        // Determine first step based on TPV settings
+        // 🔴 Antes de dejar cobrar nada: ¿quedó un cobro con tarjeta sin resolver? La llave
+        // vive en disco, así que sobrevive al cambio de pestaña y a la muerte del proceso —
+        // que es justo cuando la pantalla de advertencia se evaporaba y el siguiente "Cobrar"
+        // arrancaba limpio. Se resuelve ESE antes de ofrecer uno nuevo.
+        val pending = terminalPaymentService.unresolvedRequestId
+        if (pending != null) {
+            val fromPreviousSale = pending != undeterminedRequestId
+            undeterminedRequestId = pending
+            _state.value = PaymentFlowState.Undetermined(
+                totalAmount = amount,
+                message = if (fromPreviousSale) PREVIOUS_CHARGE_MESSAGE else CardChargeDecision.UNDETERMINED_MESSAGE,
+                fromPreviousSale = fromPreviousSale,
+            )
+            return
+        }
+
+        enterInitialState(amount)
+    }
+
+    /** Primer paso del cobro según la configuración de la TPV (calificación → propina → método). */
+    private fun enterInitialState(amount: Int) {
         if (settings.showReviewScreen) {
             _state.value = PaymentFlowState.CollectingRating(amount)
         } else if (settings.showTipScreen) {
@@ -1349,27 +1386,45 @@ class PaymentFlowViewModel @Inject constructor(
      * cobró → flujo normal; no cobró → recién ahí se ofrece cobrar; sigue sin saberse → la
      * pantalla honesta. **Nunca dispara un cargo.**
      */
-    private fun reconcileThenOffer(requestId: String, total: Int) {
+    private fun reconcileThenOffer(requestId: String, total: Int, fromPreviousSale: Boolean = false) {
+        val pendingMessage = if (fromPreviousSale) PREVIOUS_CHARGE_MESSAGE else CardChargeDecision.UNDETERMINED_MESSAGE
         _state.value = PaymentFlowState.Undetermined(
             totalAmount = total,
-            message = CardChargeDecision.UNDETERMINED_MESSAGE,
+            message = pendingMessage,
             checking = true,
+            fromPreviousSale = fromPreviousSale,
         )
         viewModelScope.launch {
             when (val outcome = terminalPaymentService.resolveOutcome(requestId)) {
-                is TerminalPaymentResult.Success -> applyCardCharged(outcome, total)
+                is TerminalPaymentResult.Success -> {
+                    undeterminedRequestId = null
+                    if (fromPreviousSale) {
+                        // 🔴 Ese cobro era de OTRA venta: confirmarlo NO paga ésta. Se informa
+                        // y se sigue con la venta actual desde cero.
+                        _resolvedNotice.value = "El cobro anterior sí se había realizado"
+                        enterInitialState(total)
+                    } else {
+                        applyCardCharged(outcome, total)
+                    }
+                }
                 is TerminalPaymentResult.Error -> {
                     // Consta que NO se cobró: aquí sí es seguro ofrecer cobrar de nuevo.
                     undeterminedRequestId = null
-                    _state.value = PaymentFlowState.SelectingTerminal(total)
-                    fetchTerminals()
+                    if (fromPreviousSale) {
+                        _resolvedNotice.value = "El cobro anterior no se realizó"
+                        enterInitialState(total)
+                    } else {
+                        _state.value = PaymentFlowState.SelectingTerminal(total)
+                        fetchTerminals()
+                    }
                 }
                 is TerminalPaymentResult.Undetermined -> {
                     undeterminedRequestId = outcome.requestId
                     _state.value = PaymentFlowState.Undetermined(
                         totalAmount = total,
-                        message = outcome.message,
+                        message = pendingMessage,
                         checking = false,
+                        fromPreviousSale = fromPreviousSale,
                     )
                 }
             }
@@ -1382,14 +1437,19 @@ class PaymentFlowViewModel @Inject constructor(
      */
     fun recheckCardCharge() {
         val total = currentBaseAmount() + currentTipCents
-        val pending = undeterminedRequestId
+        val fromPreviousSale = (_state.value as? PaymentFlowState.Undetermined)?.fromPreviousSale == true
+        // La llave durable manda: si el proceso murió, `undeterminedRequestId` viene vacío
+        // pero el cobro sigue sin resolverse en disco.
+        val pending = undeterminedRequestId ?: terminalPaymentService.unresolvedRequestId
         if (pending == null) {
             // Ya no hay nada pendiente que consultar: consta que no hay cargo vivo.
-            _state.value = PaymentFlowState.SelectingTerminal(total)
-            fetchTerminals()
+            if (fromPreviousSale) enterInitialState(total) else {
+                _state.value = PaymentFlowState.SelectingTerminal(total)
+                fetchTerminals()
+            }
             return
         }
-        reconcileThenOffer(pending, total)
+        reconcileThenOffer(pending, total, fromPreviousSale)
     }
 
     /**
@@ -1398,12 +1458,23 @@ class PaymentFlowViewModel @Inject constructor(
      */
     fun chargeAgainDespiteUndetermined() {
         val total = currentBaseAmount() + currentTipCents
+        val fromPreviousSale = (_state.value as? PaymentFlowState.Undetermined)?.fromPreviousSale == true
         Log.w("PaymentFlow", "⚠️ Cobro repetido autorizado por el cajero tras un desenlace no confirmado")
-        // El cajero se hizo cargo: el intento anterior deja de gobernar este flujo.
+        // El cajero se hizo cargo: el intento anterior deja de gobernar este flujo, y la llave
+        // durable se suelta para que no vuelva a bloquear la siguiente venta.
         undeterminedRequestId = null
+        terminalPaymentService.forgetUnresolvedCharge()
+        if (fromPreviousSale) {
+            // La venta de la llave era otra: ésta empieza por su primer paso normal.
+            enterInitialState(total)
+            return
+        }
         _state.value = PaymentFlowState.SelectingTerminal(total)
         fetchTerminals()
     }
+
+    /** Aviso de una sola vez tras resolver un cobro pendiente de una venta anterior. */
+    fun clearResolvedNotice() { _resolvedNotice.value = null }
 
     fun cancel() {
         isProcessingPayment = false
@@ -1422,13 +1493,44 @@ class PaymentFlowViewModel @Inject constructor(
 
         createdOrderId?.let { orderId ->
             viewModelScope.launch {
-                // A failed cancel leaves the order OPEN server-side with nobody
-                // aware. Log it (was fully discarded) so orphaned orders are
-                // diagnosable; the order screen reconciliation can pick them up.
+                // 🔴 Un cancel rechazado deja la orden ABIERTA en el server. Loguearlo y
+                // navegar afuera le hacía creer al cajero que había cancelado — y un cobro
+                // podía aterrizar sobre esa orden viva. El rechazo se VE.
                 orderRepository.cancelOrder(orderId).onFailure { e ->
                     Log.e("PaymentFlow", "⚠️ Failed to cancel order $orderId (may be left OPEN): ${e.message}")
+                    _cancelFailure.value =
+                        "No se pudo cancelar la orden: ${e.message ?: "error desconocido"}. Sigue abierta — revísala en Órdenes."
                 }
             }
+        }
+    }
+
+    /**
+     * Cancelación desde una pantalla de dinero (error / cobro sin confirmar): ESPERA el
+     * resultado antes de dejar salir. Si el server rechaza, no se sale: se muestra el motivo.
+     *
+     * @param onCancelled se invoca sólo cuando la cancelación realmente quedó.
+     */
+    fun cancelAndExit(onCancelled: () -> Unit) {
+        val orderId = createdOrderId
+        if (orderId == null || areaTicketRepository.session.current() != null) {
+            cancel()
+            onCancelled()
+            return
+        }
+        isProcessingPayment = false
+        paymentGeneration++
+        paymentIdempotencyKey = null
+        terminalPaymentService.cancelCurrentPayment()
+        viewModelScope.launch {
+            orderRepository.cancelOrder(orderId).fold(
+                onSuccess = { onCancelled() },
+                onFailure = { e ->
+                    Log.e("PaymentFlow", "⚠️ Failed to cancel order $orderId (may be left OPEN): ${e.message}")
+                    _cancelFailure.value =
+                        "No se pudo cancelar la orden: ${e.message ?: "error desconocido"}. Sigue abierta — revísala en Órdenes."
+                },
+            )
         }
     }
 
@@ -1955,5 +2057,15 @@ class PaymentFlowViewModel @Inject constructor(
             }
             else -> null
         }
+    }
+
+    private companion object {
+        /** Sobrevive a la muerte del proceso junto con el resto del SavedStateHandle. */
+        const val KEY_UNDETERMINED_REQUEST = "undeterminedChargeRequestId"
+
+        /** Copy para un cobro sin confirmar heredado de OTRA venta. */
+        const val PREVIOUS_CHARGE_MESSAGE =
+            "Quedó un cobro sin confirmar de una venta anterior. " +
+                "Revisa la terminal antes de cobrar de nuevo."
     }
 }

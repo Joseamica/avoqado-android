@@ -256,10 +256,9 @@ fun PaymentFlowScreen(
                 PaymentErrorView(
                     message = currentState.message,
                     onRetry = { viewModel.retry() },
-                    onCancel = {
-                        viewModel.cancel()
-                        onCancel()
-                    },
+                    // Cancelar aquí ESPERA al server: si rechaza (409, la orden ya está
+                    // pagada), no se sale — se muestra el motivo.
+                    onCancel = { viewModel.cancelAndExit(onCancel) },
                 )
             }
             // 🔴 Ni éxito ni fracaso: no se sabe si la tarjeta se cobró. Pantalla propia,
@@ -268,15 +267,31 @@ fun PaymentFlowScreen(
                 PaymentUndeterminedView(
                     message = currentState.message,
                     isChecking = currentState.checking,
+                    fromPreviousSale = currentState.fromPreviousSale,
                     onRecheck = { viewModel.recheckCardCharge() },
                     onChargeAgain = { viewModel.chargeAgainDespiteUndetermined() },
-                    onCancel = {
-                        viewModel.cancel()
-                        onCancel()
-                    },
+                    onCancel = { viewModel.cancelAndExit(onCancel) },
                 )
             }
         }
+    }
+
+    // Aviso al resolverse un cobro sin confirmar que venía de una venta anterior.
+    val resolvedNotice by viewModel.resolvedNotice.collectAsState()
+    resolvedNotice?.let { notice ->
+        com.avoqado.pos.designsystem.components.AvoqadoSuccessToast(
+            message = notice,
+            onDismiss = { viewModel.clearResolvedNotice() },
+        )
+    }
+
+    // El server rechazó la cancelación: la orden sigue abierta y el cajero tiene que saberlo.
+    val cancelFailure by viewModel.cancelFailure.collectAsState()
+    cancelFailure?.let { failure ->
+        com.avoqado.pos.designsystem.components.AvoqadoErrorToast(
+            message = failure,
+            onDismiss = { viewModel.clearCancelFailure() },
+        )
     }
 
     if (showCustomersSheet) {

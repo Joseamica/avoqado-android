@@ -30,7 +30,12 @@ sealed class CardChargeOutcome {
     /** Consta que la tarjeta SÍ se cobró. Se sigue el flujo normal, sin error a la vista. */
     data class Charged(val paymentId: String?) : CardChargeOutcome()
 
-    /** Consta que NO se cobró (rechazo, cancelación, o solicitud inexistente): reintentar es seguro. */
+    /**
+     * Consta que NO se cobró: reintentar es seguro.
+     *
+     * 🔴 Sólo nace de un estado terminal que lo AFIRME (`FAILED`, `CANCELLED`). Nunca de una
+     * ausencia (404) ni de una ignorancia (no se pudo preguntar) — ésas son `Undetermined`.
+     */
     data class NotCharged(val message: String) : CardChargeOutcome()
 
     /** No se pudo determinar. Ni éxito ni fracaso: jamás ofrecer un reintento a ciegas. */
@@ -124,13 +129,15 @@ object CardChargeDecision {
      * antes de esa, las respuestas ambiguas sólo piden volver a preguntar.
      */
     fun decide(probe: ChargeStatusProbe, isFinalAttempt: Boolean): ProbeDecision = when (probe) {
-        // Un 404 aislado puede ser un POST que todavía venía en camino: no se declara
-        // "no se cobró" con una sola lectura. Confirmado al final, sí es concluyente.
+        // 🔴 Un 404 NO prueba que no se haya cobrado, aunque lo parezca. El server crea la
+        // fila ANTES de emitir a la terminal, pero entre que el request llega y la fila se
+        // escribe corren `validateStaffVenue` y la query de `order.paymentStatus`: si el
+        // socket murió con el request ya enviado, esa ventana supera los ~2.5 s del sondeo
+        // en un backend cargado o recién arrancado. Y aquí sólo se llega tras un final de
+        // transporte, o sea que YA hay duda. Ante la duda se dice que hay duda.
         is ChargeStatusProbe.NotFound ->
             if (isFinalAttempt) {
-                ProbeDecision.Resolved(
-                    CardChargeOutcome.NotCharged("La terminal no recibió el cobro. No se cobró la tarjeta."),
-                )
+                ProbeDecision.Resolved(CardChargeOutcome.Undetermined(UNDETERMINED_MESSAGE))
             } else {
                 ProbeDecision.KeepPolling
             }

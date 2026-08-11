@@ -50,11 +50,15 @@ sealed class PaymentFlowState {
      * tras una advertencia explícita del riesgo.
      *
      * @param checking true mientras se re-consulta el estado (deshabilita las acciones).
+     * @param fromPreviousSale el cobro sin resolver quedó de OTRA venta (la llave sobrevivió en
+     *   disco a un cambio de pestaña o a la muerte del proceso). Confirmarlo NO paga la venta
+     *   actual: sólo suelta el bloqueo para poder cobrar ésta.
      */
     data class Undetermined(
         val totalAmount: Int,
         val message: String,
         val checking: Boolean = false,
+        val fromPreviousSale: Boolean = false,
     ) : PaymentFlowState()
 }
 

@@ -218,7 +218,103 @@ deben espejarse **exactos**.
 
 ---
 
-## 8. Archivos tocados
+## 8. Segunda pasada — las dos ventanas que el arreglo no abría pero tampoco cerraba
+
+La revisión encontró que el fix original era correcto pero **no durable**, y que un camino
+seguía declarando "no se cobró" sin poder saberlo. Ambas cerradas.
+
+### R2 — la pantalla honesta no sobrevivía a un cambio de pestaña
+
+El agujero: `PaymentFlowScreen` no tenía `BackHandler` y su host era
+`var showPaymentFlow by remember` (no `rememberSaveable`). El cajero que ve "Cobro sin
+confirmar" hace lo que hace la gente — irse a **Transacciones** a comprobar si el pago entró.
+Ese solo cambio de tab desmontaba la composición, la pantalla desaparecía en silencio, y el
+siguiente "Cobrar" llamaba `startPaymentFlow` con `undeterminedRequestId` en RAM ya perdido:
+**cargo a ciegas, sin advertencia.** Toda la ceremonia se evaporaba.
+
+Cerrado en tres capas:
+
+1. **La llave vive en DISCO** — `SecureStorage.pendingCardChargeRequestId`.
+   `TerminalPaymentService.unresolvedRequestId` ahora delega ahí (era el código muerto que el
+   revisor detectó: 9 escrituras, cero lecturas — **era justo la llave durable que faltaba**).
+   No se limpia en `clearSession`: un cobro sin confirmar no deja de existir porque alguien
+   cierre sesión o cambie de venue.
+2. **`startPaymentFlow` la consulta ANTES de dejar cobrar.** Si hay llave pendiente, la venta
+   nueva se topa con la pantalla "Cobro anterior sin confirmar" en vez de arrancar limpia.
+3. **`BackHandler`** en el estado indeterminado + `rememberSaveable` en el host. Salir sigue
+   permitido —bloquear la caja sería peor— pero nunca en silencio: un diálogo avisa que el cobro
+   queda pendiente y que volverá a aparecer.
+
+**Distinción crítica:** un cobro pendiente de OTRA venta no puede pagar la actual. Por eso
+conviven dos referencias — la durable del servicio (disco, global) y la de la pantalla
+(`SavedStateHandle`, de esta venta). Si difieren, `fromPreviousSale = true` y confirmar aquel
+cobro **sólo suelta el bloqueo**: muestra "El cobro anterior sí se había realizado" y arranca
+la venta actual desde su primer paso. Nunca `Success`. Cubierto con test.
+
+### R1 — un 404 rápido ya no se declara "no se cobró"
+
+El sondeo (0 / +500 ms / +2 s) resolvía un `NotFound` sostenido a `NotCharged` → pantalla de
+Error → **Reintentar sin advertencia**. Pero el server crea la fila antes de emitir a la
+terminal *con `validateStaffVenue` y la query de `order.paymentStatus` de por medio*: si el
+socket murió con el request ya enviado, esa ventana supera los 2.5 s en un backend cargado o
+recién arrancado. Y a `resolveOutcome` sólo se llega tras un final de transporte, o sea que ya
+hay duda.
+
+Ahora **`NotFound` → `Undetermined`**. Como efecto, `NotCharged` sólo nace de un estado terminal
+que lo AFIRME (`FAILED`, `CANCELLED`): nunca de una ausencia ni de una ignorancia. Test:
+`NO COBRO solo sale de un estado terminal que lo diga — nunca de una ausencia`.
+
+### El sondeo ya no hereda el cliente de 310 s
+
+`getPaymentStatus` reusaba el `OkHttpClient` de 310 s: tres sondeos contra un proxy que acepta
+la conexión y nunca contesta daban hasta **~15 min de "Consultando…"** — el mismo cuelgue que el
+tope de espera vino a matar. Ahora hay un `statusClient` aparte (conectar 5 s, leer 8 s,
+`callTimeout` 10 s — acota la llamada COMPLETA) más un tope de reloj de pared de 35 s en
+`resolveOutcome`. El plazo largo existe porque alguien tiene que llegar a pasar la tarjeta;
+una **consulta** no espera a nadie.
+
+### "Cancelar" ya no miente
+
+`viewModel.cancel()` disparaba `cancelOrder` y navegaba afuera; un rechazo del server (409: la
+orden ya está pagada) sólo se logueaba. El cajero creía que canceló algo que seguía vivo, y el
+cobro podía aterrizar sobre esa orden. Nuevo `cancelAndExit()` —usado por las pantallas de
+dinero (Error e indeterminado)— **espera el resultado**: sólo sale si la cancelación quedó, y si
+el server rechaza muestra *"No se pudo cancelar la orden: … Sigue abierta — revísala en
+Órdenes."* en un `AvoqadoErrorToast`.
+
+### El pegamento, por fin con pruebas
+
+`TerminalPaymentServiceHttpTest` (**16 tests, MockWebServer real**) cubre lo que nadie cubría —
+el `when (responseCode)` de `sendPaymentToTerminal` y el mapeo de `getPaymentStatus`, que es
+exactamente donde vivía el incidente:
+
+- 503 + terminal ya cobrada → **Success** (el escenario del doble cobro, extremo a extremo)
+- 503 + `FAILED` → Error · 503 + server también caído → Undetermined **conservando la llave**
+- 404 / 409 → error de negocio directo, **sin consultar** (`requestCount == 1`)
+- `getPaymentStatus`: 200 → `Known` · 404 → `NotFound` · 5xx/401/sin sesión → `Unreachable`
+- `resolveOutcome` insiste mientras siga en curso; un 404 sostenido queda indeterminado
+
+Requiere `runBlocking`, no `runTest`: el reloj virtual salta hacia adelante mientras la llamada
+HTTP real está bloqueada y disparaba el tope de 35 s antes de que el servidor contestara.
+
+### Menores
+
+- `ceilingExceeded` pasó a `AtomicBoolean` (lo escribe el watchdog desde otro hilo).
+- `recheckCardCharge` con la referencia de pantalla vacía cae a la llave durable — tras una
+  muerte de proceso es la única que queda.
+- Los 330 s se dejan como están: el margen sobre los 310 s está justificado en §5 y acortarlo
+  rompería cobros legítimos.
+
+### Verificación de esta pasada
+
+```
+:app:testDebugUnitTest   BUILD SUCCESSFUL · tests=926 failures=0 errors=0   (909 → 926)
+:app:assembleDebug       BUILD SUCCESSFUL
+```
+
+---
+
+## 9. Archivos tocados
 
 | Archivo | Qué |
 |---|---|
@@ -228,8 +324,11 @@ deben espejarse **exactos**.
 | `payment/presentation/PaymentFlowViewModel.kt` | `retry()` re-consulta; `recheckCardCharge()`, `chargeAgainDespiteUndetermined()`, `applyCardCharged()`; `undeterminedRequestId` por venta |
 | `payment/presentation/PaymentResultScreen.kt` | **`PaymentUndeterminedView`** + diálogo de advertencia |
 | `payment/presentation/PaymentFlowScreen.kt` | Ruteo del estado nuevo |
-| `test/.../CardChargeDecisionTest.kt` | **NUEVO** — 21 tests |
-| `test/.../PaymentFlowViewModelTest.kt` | +5 tests |
+| `core/data/local/SecureStorage.kt` | **`pendingCardChargeRequestId`** — la llave durable en disco |
+| `pos/presentation/checkout/CheckoutScreen.kt` | `rememberSaveable` en el host del flujo de cobro |
+| `test/.../CardChargeDecisionTest.kt` | **NUEVO** — 22 tests (decisión pura) |
+| `test/.../TerminalPaymentServiceHttpTest.kt` | **NUEVO** — 16 tests con MockWebServer (el pegamento HTTP) |
+| `test/.../PaymentFlowViewModelTest.kt` | +7 tests (flujo, durabilidad, venta anterior) |
 
 **Tier:** ninguno. Es un fix de corrección en el camino del dinero, no una capacidad nueva — se
 aplica en todos los planes, sin gating ni switch. No hay cambio visible al cliente que obligue a

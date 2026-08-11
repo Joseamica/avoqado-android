@@ -44,6 +44,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.ui.Alignment
@@ -209,7 +210,11 @@ fun CheckoutScreen(
     var selectedTab by remember { mutableStateOf(InputTab.KEYPAD) }
     var showSearch by remember { mutableStateOf(false) }
     var amountCents by remember { mutableIntStateOf(0) }
-    var showPaymentFlow by remember { mutableStateOf(false) }
+    // `rememberSaveable`: con `remember` a secas, cambiar de pestaña desmontaba el flujo de
+    // cobro y la pantalla "Cobro sin confirmar" desaparecía sin dejar rastro. La llave del
+    // cobro vive en disco (ver SecureStorage.pendingCardChargeRequestId), pero además la
+    // pantalla debe seguir ahí al volver.
+    var showPaymentFlow by rememberSaveable { mutableStateOf(false) }
     var paymentCartSnapshot by remember { mutableStateOf<CartState?>(null) }
     var showNoteDialog by remember { mutableStateOf(false) }
     var currentNote by remember { mutableStateOf("") }

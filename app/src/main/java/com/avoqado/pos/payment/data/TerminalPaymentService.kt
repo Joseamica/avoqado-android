@@ -34,6 +34,34 @@ class TerminalPaymentService @Inject constructor(
     private val client = baseClient.newBuilder()
         .readTimeout(310, java.util.concurrent.TimeUnit.SECONDS)
         .build()
+
+    /**
+     * Cliente APARTE para consultar el estado, con plazos cortos.
+     *
+     * 🔴 No reusar el de 310 s: ese plazo largo existe porque alguien tiene que llegar a
+     * pasar la tarjeta — una CONSULTA no espera a nadie. Con el cliente largo, tres sondeos
+     * contra un proxy que acepta la conexión y nunca contesta dan hasta ~15 min de
+     * "Consultando…", que es exactamente el modo de falla que el tope de espera vino a matar.
+     * `callTimeout` acota la llamada COMPLETA (conexión + cuerpo), no sólo el hueco entre bytes.
+     */
+    private val statusClient = baseClient.newBuilder()
+        .connectTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
+        .callTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+        .build()
+
+    /** Seam de pruebas: apuntar a un MockWebServer. En producción es [ApiConstants.BASE_URL]. */
+    @androidx.annotation.VisibleForTesting
+    internal var baseUrl: String = ApiConstants.BASE_URL
+
+    private companion object {
+        /**
+         * Tope de reloj de pared del ciclo de re-consulta. Con `statusClient` cada llamada ya
+         * está acotada a 10 s; esto cierra el caso patológico (3 llamadas lentas + esperas)
+         * para que "Consultando…" nunca se vuelva otro cuelgue.
+         */
+        const val RECONCILE_CEILING_MS = 35_000L
+    }
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true; explicitNulls = false }
 
     // Track current request for cancellation
@@ -41,13 +69,26 @@ class TerminalPaymentService @Inject constructor(
     private var currentTerminalId: String? = null
 
     /**
-     * `requestId` del último cobro con tarjeta que quedó SIN resolver. Es la llave para volver a
-     * preguntarle al server cómo terminó, en vez de cobrar otra vez a ciegas. Se limpia en cuanto
-     * el desenlace consta (cobró / no cobró) — sólo sobrevive mientras hay duda.
+     * `requestId` del cobro con tarjeta que quedó SIN resolver. Es la llave para volver a
+     * preguntarle al server cómo terminó, en vez de cobrar otra vez a ciegas.
+     *
+     * 🔴 **Vive en DISCO** (`SecureStorage`), no en memoria. La pantalla "Cobro sin confirmar"
+     * no basta: el cajero que la ve se va a Transacciones a comprobar si el pago entró, y ese
+     * solo cambio de pestaña —o la muerte del proceso— evaporaba toda la ceremonia de la
+     * advertencia. Con la llave en disco, el siguiente "Cobrar" la encuentra y obliga a
+     * resolver el cobro viejo antes de ofrecer uno nuevo.
+     *
+     * Se limpia SÓLO cuando el desenlace consta (cobró / no cobró) o cuando el cajero asume
+     * el riesgo explícitamente.
      */
-    @Volatile
-    var unresolvedRequestId: String? = null
-        private set
+    var unresolvedRequestId: String?
+        get() = secureStorage.pendingCardChargeRequestId
+        private set(value) { secureStorage.pendingCardChargeRequestId = value }
+
+    /** El cajero vio la advertencia y decidió cobrar de nuevo: la llave deja de gobernar. */
+    fun forgetUnresolvedCharge() {
+        unresolvedRequestId = null
+    }
 
     /**
      * GET /mobile/venues/{venueId}/terminals/online
@@ -59,7 +100,7 @@ class TerminalPaymentService @Inject constructor(
 
         return try {
             val request = Request.Builder()
-                .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/terminals/online")
+                .url("$baseUrl/mobile/venues/$venueId/terminals/online")
                 .header("Authorization", "Bearer $token")
                 .get()
                 .build()
@@ -104,7 +145,8 @@ class TerminalPaymentService @Inject constructor(
         // Desde este instante la tarjeta PUEDE cobrarse. Hasta que el desenlace conste,
         // este id es lo único que permite preguntar "¿cómo quedó?" en vez de cobrar de nuevo.
         unresolvedRequestId = requestId
-        var ceilingExceeded = false
+        // El watchdog corre en OTRO hilo: un `var` local capturado no garantiza visibilidad.
+        val ceilingExceeded = java.util.concurrent.atomic.AtomicBoolean(false)
 
         Log.d("💳", "Sending payment to terminal: $terminalId, amount: $amountCents, tip: $tipCents, requestId: $requestId")
 
@@ -124,7 +166,7 @@ class TerminalPaymentService @Inject constructor(
             ).toRequestBody("application/json".toMediaType())
 
             val request = Request.Builder()
-                .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/terminal-payment")
+                .url("$baseUrl/mobile/venues/$venueId/terminal-payment")
                 .header("Authorization", "Bearer $token")
                 .post(requestBody)
                 .build()
@@ -136,7 +178,7 @@ class TerminalPaymentService @Inject constructor(
             val (responseCode, body) = withContext(Dispatchers.IO) {
                 val watchdog = launch {
                     delay(CardChargeDecision.WAIT_CEILING_MS)
-                    ceilingExceeded = true
+                    ceilingExceeded.set(true)
                     Log.w("💳", "⏱️ Plazo máximo de espera vencido — se corta la espera y se consulta el estado")
                     call.cancel() // cierra el socket → execute() sale de inmediato
                 }
@@ -213,7 +255,7 @@ class TerminalPaymentService @Inject constructor(
             // Corte de red / timeout del cliente / plazo vencido = desenlace DESCONOCIDO.
             // Se le pregunta al server qué pasó de verdad antes de rendirse — es lo que evita
             // el falso "falló" (y el doble cobro que provocaría un reintento a ciegas).
-            val ending = if (ceilingExceeded) ChargeWaitEnding.CeilingExceeded else ChargeWaitEnding.NetworkError
+            val ending = if (ceilingExceeded.get()) ChargeWaitEnding.CeilingExceeded else ChargeWaitEnding.NetworkError
             Log.e("💳", "⚠️ Espera terminada sin resultado ($ending): se consulta el estado durable: ${e.message}")
             if (CardChargeDecision.mustReconcile(ending)) {
                 resolveOutcome(requestId)
@@ -241,13 +283,13 @@ class TerminalPaymentService @Inject constructor(
 
         return try {
             val request = Request.Builder()
-                .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/terminal-payment/$requestId")
+                .url("$baseUrl/mobile/venues/$venueId/terminal-payment/$requestId")
                 .header("Authorization", "Bearer $token")
                 .get()
                 .build()
 
             val (responseCode, body) = withContext(Dispatchers.IO) {
-                val response = client.newCall(request).execute()
+                val response = statusClient.newCall(request).execute()
                 response.code to (response.body?.string() ?: "")
             }
 
@@ -285,24 +327,24 @@ class TerminalPaymentService @Inject constructor(
      * Público a propósito: `retry()` lo usa para re-consultar ANTES de ofrecer cobrar otra vez.
      */
     suspend fun resolveOutcome(requestId: String): TerminalPaymentResult {
-        val attempts = 3
-        var outcome: CardChargeOutcome = CardChargeDecision.exhausted()
+        // Tope de reloj de pared también AQUÍ: `statusClient` acota cada llamada, pero un
+        // "Consultando…" que nunca termina es el mismo pecado que el "Procesando pago…" eterno.
+        val resolved = kotlinx.coroutines.withTimeoutOrNull(RECONCILE_CEILING_MS) {
+            val attempts = 3
+            repeat(attempts) { attempt ->
+                // Respiro entre consultas (500ms → 2s): darle un momento a la terminal para asentarse.
+                if (attempt > 0) delay(if (attempt == 1) 500L else 2000L)
 
-        repeat(attempts) { attempt ->
-            // Respiro entre consultas (500ms → 2s): darle un momento a la terminal para asentarse.
-            if (attempt > 0) delay(if (attempt == 1) 500L else 2000L)
-
-            val probe = getPaymentStatus(requestId)
-            when (val decision = CardChargeDecision.decide(probe, isFinalAttempt = attempt == attempts - 1)) {
-                is ProbeDecision.Resolved -> {
-                    outcome = decision.outcome
-                    return outcome.toResult(requestId)
+                val probe = getPaymentStatus(requestId)
+                when (val decision = CardChargeDecision.decide(probe, isFinalAttempt = attempt == attempts - 1)) {
+                    is ProbeDecision.Resolved -> return@withTimeoutOrNull decision.outcome
+                    ProbeDecision.KeepPolling -> Unit // seguir preguntando
                 }
-                ProbeDecision.KeepPolling -> Unit // seguir preguntando
             }
+            // Se agotaron las consultas y seguía en curso: indeterminado, NUNCA "falló".
+            CardChargeDecision.exhausted()
         }
-        // Se agotaron las consultas y seguía en curso: indeterminado, NUNCA "falló".
-        return outcome.toResult(requestId)
+        return (resolved ?: CardChargeDecision.exhausted()).toResult(requestId)
     }
 
     /** El desenlace, traducido al resultado que consume el flujo de pago. */
@@ -349,7 +391,7 @@ class TerminalPaymentService @Inject constructor(
                 ).toRequestBody("application/json".toMediaType())
 
                 val request = Request.Builder()
-                    .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/terminal-payment/cancel")
+                    .url("$baseUrl/mobile/venues/$venueId/terminal-payment/cancel")
                     .header("Authorization", "Bearer $token")
                     .post(cancelBody)
                     .build()
@@ -417,7 +459,7 @@ class TerminalPaymentService @Inject constructor(
                 .toRequestBody("application/json".toMediaType())
 
             val request = Request.Builder()
-                .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/terminals/$terminalId/print-receipt")
+                .url("$baseUrl/mobile/venues/$venueId/terminals/$terminalId/print-receipt")
                 .header("Authorization", "Bearer $token")
                 .post(bodyJson)
                 .build()
