@@ -320,6 +320,10 @@ fun DiscountFormSheet(
                         text = "Activo",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurface,
+                        // El texto cede y envuelve; el Switch nunca se recorta.
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(end = AvoqadoTheme.spacing.md),
                     )
                     Switch(
                         checked = active,
@@ -341,6 +345,10 @@ fun DiscountFormSheet(
                         text = "Requiere aprobacion",
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurface,
+                        // El texto cede y envuelve; el Switch nunca se recorta.
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(end = AvoqadoTheme.spacing.md),
                     )
                     Switch(
                         checked = requiresApproval,

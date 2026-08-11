@@ -64,7 +64,15 @@ fun KioskSheet(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween,
             ) {
-                Column(modifier = Modifier.padding(end = AvoqadoTheme.spacing.md)) {
+                // 🔴 `weight(1f)`: sin él el Column se queda con todo el ancho que pida su
+                // texto y aplasta al Switch contra el borde. Esta explicación son dos
+                // renglones — es el mismo caso que ya se vio recortado en la hoja de pantalla
+                // del cliente. El texto cede y envuelve; el control nunca.
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = AvoqadoTheme.spacing.md),
+                ) {
                     Text(
                         text = "Fijar Avoqado en pantalla",
                         style = MaterialTheme.typography.bodyLarge,
