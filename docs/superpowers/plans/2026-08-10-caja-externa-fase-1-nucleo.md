@@ -1305,12 +1305,81 @@ Expected: FAIL.
 vale queda `ISSUED` con cobro `NOT_CHARGED`, deja de ser entregable, y quien decida cancelarlo lo
 hace explícitamente por la ruta de Task 5.
 
-- [ ] **Step 4: Correr el test**
+- [ ] **Step 4: Cerrar el hueco del guard de cancelación** (lo encontró la revisión de Task 7)
 
-Run: `npx jest --selectProjects unit --testPathPattern "areaTicketExternal.notCharged"`
-Expected: PASS.
+`cancelAreaTicket` bloquea la cancelación solo cuando el cobro externo está `CONFIRMED`
+(`areaTicketV7.mobile.service.ts`, dos puntos: el chequeo previo a la transacción y el de
+adentro). Cuando se escribió ese guard, `DISCREPANCY` y `ASSUMED` **no eran estados alcanzables
+todavía** — Task 7 los volvió reales.
 
-- [ ] **Step 5: Commit**
+El hueco es concreto: cancelar dispara la reversa de inventario. Con el cobro en `DISCREPANCY`
+—que significa que la otra caja **sí** cobró, solo que por otro importe— devolverías a stock un
+producto que el cliente ya pagó y se llevó.
+
+Amplía **los dos** puntos del guard para que bloqueen cuando el estado esté en:
+
+```typescript
+const YA_COBRADO_AFUERA = [
+  AreaTicketExternalSettlementStatus.CONFIRMED,
+  AreaTicketExternalSettlementStatus.DISCREPANCY,
+  AreaTicketExternalSettlementStatus.ASSUMED,
+]
+```
+
+- `CONFIRMED` y `DISCREPANCY`: alguien afirmó que la otra caja cobró. La devolución se hace ahí.
+- `ASSUMED`: se dio por cobrado sin verificar. Cancelar aquí revierte inventario sobre una venta
+  que probablemente ocurrió, **sin que nadie lo haya afirmado**. La salida correcta es declararlo
+  primero con `markExternalNotCharged` —que es una afirmación humana, con motivo y auditada— y
+  cancelar después. Por eso este paso vive en esta tarea y no antes: `markExternalNotCharged` es
+  lo que lo hace posible.
+
+Se sigue pudiendo cancelar con el cobro en `PENDING` o `NOT_CHARGED`.
+
+Añade a `tests/integration/area-tickets/area-ticket-external-cancel.test.ts`:
+
+```typescript
+it('no se puede cancelar un vale con DISCREPANCY — la otra caja cobró, aunque por otro importe', async () => {
+  const ticket = await issueExternalTicket({ quantity: '1' })
+  await confirmExternalSettlement(venueId, ticket.id, {
+    idempotencyKey: `d-${suffix}`, deviceUid: externalIssueDeviceUid, staffId, externalAmount: '999.00',
+  })
+  await expect(
+    cancelAreaTicket(venueId, ticket.id, { idempotencyKey: `dx-${suffix}`, deviceUid: externalIssueDeviceUid, reason: 'x' }),
+  ).rejects.toMatchObject({ code: 'AREA_TICKET_EXTERNAL_ALREADY_CHARGED' })
+})
+
+it('no se puede cancelar un vale ASSUMED sin declarar primero que no se cobró', async () => {
+  const ticket = await issueAssumedExternalTicket()
+  await expect(
+    cancelAreaTicket(venueId, ticket.id, { idempotencyKey: `ax-${suffix}`, deviceUid: externalIssueDeviceUid, reason: 'x' }),
+  ).rejects.toMatchObject({ code: 'AREA_TICKET_EXTERNAL_ALREADY_CHARGED' })
+})
+
+it('tras marcarlo NOT_CHARGED, el mismo vale SÍ se puede cancelar y el stock vuelve', async () => {
+  const ticket = await issueAssumedExternalTicket()
+  await markExternalNotCharged(venueId, ticket.id, {
+    idempotencyKey: `nc-${suffix}`, deviceUid: externalIssueDeviceUid, staffId, reason: 'El cliente no pasó a caja',
+  })
+  const before = await stockOf(externalInventoryId)
+  await cancelAreaTicket(venueId, ticket.id, { idempotencyKey: `ok-${suffix}`, deviceUid: externalIssueDeviceUid, reason: 'no pasó' })
+  expect((await stockOf(externalInventoryId)).toFixed(3)).toBe(before.plus(1).toFixed(3))
+})
+```
+
+El tercero es el que prueba que el flujo completo funciona: no es un callejón sin salida, es un
+paso explícito de por medio.
+
+- [ ] **Step 5: Correr los tests**
+
+```bash
+npx jest --selectProjects unit --testPathPattern "areaTicketExternal.notCharged"
+set -a; source .env.test.local; set +a
+npx jest --selectProjects integration --testPathPattern "area-ticket-external-cancel"
+```
+Expected: PASS ambos. El de integración incluye los casos previos de Task 5 y Task 7 — si alguno
+truena, el guard ampliado rompió algo que antes funcionaba.
+
+- [ ] **Step 6: Commit**
 
 ```bash
 git add src/services/mobile/areaTicketExternal.mobile.service.ts \
