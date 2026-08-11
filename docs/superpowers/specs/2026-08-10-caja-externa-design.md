@@ -485,6 +485,31 @@ solo comprueba unicidad contra `AreaTicket.code`. Con bloques pre-reservados exi
 terminal offline ya imprimió, y la colisión aparece días después, al sincronizar, sobre un papel que
 el cliente ya usó.
 
+**Y son tres fuentes, no dos.** Verificado en el código vigente: el servicio v3 legacy
+(`areaTicket.mobile.service.ts`) **sigue montado** en `mobile.routes.ts:47` y escribe códigos del
+mismo namespace `9` de 10 dígitos en **otra tabla** — `Order.areaTicketCode`, con su propio unique
+`venueId_areaTicketCode` — acuñados por Android con el esquema de particiones `9 PP NNNNNN C` de
+`src/lib/areaTicketCode.ts`. Coexisten dos generadores incompatibles:
+
+| | v3 legacy | v7 |
+|---|---|---|
+| Dónde | `Order.areaTicketCode` | `AreaTicket.code` |
+| Quién acuña | Android | el servidor |
+| Formato | `9` + partición(2) + contador(6) + C | `9` + 8 aleatorios + C |
+| Valida con | `parseAreaTicketCode` | nada |
+
+Hoy no chocan porque viven en tablas distintas y ningún camino cruza los dos resolutores. Pero un
+código pre-reservado **sí** puede coincidir con uno del v3 en un venue que use ambos, y ahí el
+namespace se vuelve ambiguo de verdad. Antes de implementar §10 hay que resolver una de dos:
+
+1. **Confirmar que ningún venue vivo usa el v3** y dejar constancia — es lo esperable, dado que el
+   handoff de 2026-07-29 lo declaró evidencia histórica; o
+2. Incluir `Order.areaTicketCode` en la validación de unicidad al pre-reservar.
+
+Nótese además que `parseAreaTicketCode` exige partición ∈ [10,99]: **rechazaría ~10% de los códigos
+que genera el v7** (los que caen con dígitos 2-3 entre `00` y `09`). No es un bug hoy porque ningún
+camino v7 lo llama, pero es una mina si alguien "unifica" los dos validadores sin leer esto.
+
 ---
 
 ## 11. Inventario en la ruta externa
