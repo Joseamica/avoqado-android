@@ -1273,13 +1273,44 @@ respuesta del founder.
 | # | Pendiente | Cómo se cierra |
 |---|---|---|
 | R1 | **Tier** (§17.1) | Respuesta del founder al revisar este spec |
-| R2 | **Formato real que acepta la pistola de MyBusiness** | Probar físicamente con la pistola del cliente. Es el riesgo #1: si su POS solo acepta sus códigos `VPZ…` internos y no los códigos de producto, el diseño de mapeos sigue siendo válido pero hay que ver de dónde salen esos códigos |
+| R2 🔴 | **¿`VPZ…` es un código por PRODUCTO o por ETIQUETA?** Ver §25.1 — es el riesgo que puede invalidar la §9 entera | Dos preguntas al cliente, antes de escribir código |
 | R3 | **De dónde se exportan los códigos de MyBusiness** | Pedirle al cliente el catálogo. Si no hay export, el CSV del dashboard es la vía manual |
 | R4 | **Ancho de papel y modelo de impresora por área** | Descubrimiento en instalación |
 | R5 | **Umbral de "cobro sin confirmar"** | Configurable; default cierre del día. Ajustar tras una semana de línea base |
 | R6 | **Tamaño de bloque de folios** | Default 200/50. Medir emisiones por día y por terminal en el piloto |
 | R7 | **¿El cliente quiere `ASSUME_ON_PRINT` desde el día uno?** | Arrancar en `MANUAL`; cambiar solo si la confirmación resulta ser fricción real |
 | R8 | **Productos del área que no existen en el catálogo del POS externo** | Decisión del cliente: darlos de alta allá, o marcarlos `EXCLUDED` y cobrarlos con Avoqado |
+| R9 | **Mantener los mapeos es deuda perpetua** | Cada producto nuevo en cualquiera de los dos catálogos deja un hueco hasta que alguien republique el perfil. §18.5 bloquea la emisión en vez de fallar callado, pero el dashboard debe avisar activamente: al crear un producto en un área con ruta externa, banner de "falta su código de caja externa" |
+| R10 | **La confirmación manual puede no hacerse nunca** | En un piso con fila nadie confirma vale por vale. Es probable que el cliente derive a `ASSUME_ON_PRINT`, y entonces Avoqado no sabe nada del cobro y la cola de conciliación se llena sin lector. No es un defecto del diseño: es que el valor de esta ruta es **emitir**, no **verificar**. Medirlo en el piloto (% confirmado a los 7 días) antes de prometer conciliación a nadie |
+
+### 25.1 🔴 R2 en detalle — la premisa que hay que confirmar antes de codificar
+
+La evidencia disponible es **ambigua**, y las dos lecturas llevan a diseños distintos:
+
+| Control | Código | Producto |
+|---|---|---|
+| `1636226` | `VPZ1636226` | NATA CHOYS 250 ML |
+| `1636227` | `VPZ1636227` | BOLILLO |
+
+Son **consecutivos** y corresponden a productos sin relación entre sí.
+
+- **Lectura A — código por PRODUCTO.** Es el "control" del artículo en el catálogo de MyBusiness, y
+  quedaron consecutivos porque se dieron de alta uno tras otro. → Este spec funciona tal cual.
+- **Lectura B — código por ETIQUETA.** Es un contador de etiquetas impresas: un folio por instancia
+  física, no por producto. → **No existe un código estable por producto** y el modelo de mapeos de
+  §9 no sirve. Habría que rediseñar hacia otra vía (que el POS externo también lea EAN/SKU de
+  fábrica, o captura manual del cajero).
+
+**Test discriminante, en este orden:**
+
+1. Escanear **el mismo producto desde dos etiquetas distintas** (o una impresa otro día). ¿Mismo
+   código o distinto? Distinto ⇒ lectura B.
+2. Escanear un **producto empacado con código de fábrica** — las papas o refrescos que §2 de v7 dice
+   que ya venden. ¿MyBusiness lo reconoce por su EAN? Si sí, existe una vía por código de producto
+   aunque `VPZ…` sea por etiqueta.
+
+No se resuelve razonando ni leyendo código. Cuesta dos mensajes al cliente y decide si la §9 se
+implementa o se rediseña.
 
 ---
 
