@@ -371,4 +371,43 @@ class CorteTicketBuilderTest {
         assertNotNull("el ticket debe traer el efectivo esperado", esperadoA)
         assertEquals("separar el reembolso cambió el esperado", esperadoB, esperadoA)
     }
+
+    // MARK: - El alcance de cada número se dice
+
+    /**
+     * 🔴 El cajón sólo conoce las ventas en EFECTIVO, así que el conteo y el
+     * promedio son de efectivo — pero "Ventas totales" incluye tarjeta cuando
+     * el server manda el desglose. Sin etiquetarlo, las tres filas se leen como
+     * un bloque coherente y no lo son: un gerente deduce un ticket promedio que
+     * no corresponde a nada. Mismos textos en avoqado-ios (CortePrinter.swift).
+     */
+    @Test
+    fun `con desglose del server el conteo y el promedio se marcan como de efectivo`() {
+        val t = papel(tenders = tenders)
+
+        assertTrue("el total es de todos los métodos", t.contains("Ventas totales"))
+        assertTrue("el conteo debe decir que es sólo de efectivo", t.contains("Transacciones en efectivo"))
+        assertTrue("el promedio debe decir que es sólo de efectivo", t.contains("Ticket promedio en efectivo"))
+    }
+
+    /** Sin desglose TODO es efectivo (el encabezado ya lo dice): sin repetirlo. */
+    @Test
+    fun `sin desglose las etiquetas se quedan cortas`() {
+        val t = papel(tenders = emptyList())
+
+        assertTrue(t.contains("RESUMEN DE VENTAS (EFECTIVO)"))
+        assertFalse("no hay que repetir 'en efectivo' en cada fila", t.contains("Transacciones en efectivo"))
+        assertFalse(t.contains("Ticket promedio en efectivo"))
+    }
+
+    /** El promedio se calcula sobre EFECTIVO, nunca sobre el total mezclado. */
+    @Test
+    fun `el ticket promedio sale de las ventas en efectivo`() {
+        // eventos trae 2 CASH_SALE ($30.00 + $20.00 = $50.00) → promedio $25.00.
+        // Con el total mezclado ($208.00 de tenders) habría dado $104.00.
+        val t = papel(tenders = tenders)
+
+        val promedio = Regex("Ticket promedio en efectivo\\s+\\\$([\\d,.]+)").find(t)?.groupValues?.get(1)
+        assertEquals("el promedio debe ser efectivo/transacciones, no total/transacciones", "25.00", promedio)
+    }
 }

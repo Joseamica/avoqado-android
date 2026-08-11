@@ -111,8 +111,19 @@ object CorteTicketBuilder {
         p.printLine(if (hasServerBreakdown) "RESUMEN DE VENTAS" else "RESUMEN DE VENTAS (EFECTIVO)")
         p.setBold(false)
         p.printTwoColumns(if (hasServerBreakdown) "Ventas totales" else "Ventas en efectivo", money(totalSales))
-        p.printTwoColumns("Transacciones", "$txCount")
-        p.printTwoColumns("Ticket promedio", money(if (txCount > 0) totalSales / txCount else 0))
+        // 🔴 `txCount` cuenta SOLO las ventas en efectivo del cajón (es lo único
+        // que el cajón conoce), pero `totalSales` incluye tarjeta y otros cuando
+        // el server manda el desglose. Sin decirlo, las tres filas se leen como
+        // un bloque coherente y no lo son: "$10,274.73 / 3 transacciones" hace
+        // creer que hubo 3 ventas de ~$3,425, y el ticket promedio no
+        // corresponde a nada visible. Se etiqueta el alcance en vez de inventar
+        // un promedio: el server no manda el conteo total.
+        // Mismos textos en avoqado-ios (CortePrinter.swift).
+        p.printTwoColumns(if (hasServerBreakdown) "Transacciones en efectivo" else "Transacciones", "$txCount")
+        p.printTwoColumns(
+            if (hasServerBreakdown) "Ticket promedio en efectivo" else "Ticket promedio",
+            money(if (txCount > 0) cashSales / txCount else 0),
+        )
         p.printDivider()
 
         p.setBold(true)
