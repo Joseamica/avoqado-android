@@ -804,21 +804,13 @@ describe('Cancelación de un vale externo ya consumido', () => {
     expect(r!.status).toBe('WASTE')
   })
 
-  it('no se puede cancelar un vale con el cobro CONFIRMED — eso es una devolución, y ocurre en la otra caja', async () => {
-    const ticket = await issueExternalTicket({ quantity: '1' })
-    await confirmExternalSettlement(venueId, ticket.id, {
-      idempotencyKey: `c-${suffix}`, deviceUid: externalIssueDeviceUid, staffId,
-    })
-    await expect(
-      cancelAreaTicket(venueId, ticket.id, { idempotencyKey: `x-${suffix}`, deviceUid: externalIssueDeviceUid, reason: 'y' }),
-    ).rejects.toMatchObject({ code: 'AREA_TICKET_EXTERNAL_ALREADY_CHARGED' })
-  })
-});
+})
 ```
 
-> El último caso usa `confirmExternalSettlement`, que se implementa en Task 7. Escríbelo ahora y
-> déjalo con `it.skip` hasta esa tarea; ahí lo reactivas. No lo borres: es la invariante que impide
-> "cancelar" dinero que ya se cobró afuera.
+> **El caso "no se puede cancelar un cobro ya CONFIRMED" NO va en esta tarea.** Necesita
+> `confirmExternalSettlement`, que nace en Task 7, y un test en `skip` es un test que no prueba nada.
+> Se escribe completo en Task 7, donde ya existe todo lo que necesita. El guard sí se implementa
+> aquí (Step 3) — lo que se difiere es su test, no su código.
 
 - [ ] **Step 2: Correr y verificar que falla**
 
@@ -994,7 +986,7 @@ la caja."
 **Files:**
 - Modify: `avoqado-server/src/services/mobile/areaTicketExternal.mobile.service.ts`
 - Create: `avoqado-server/tests/unit/services/mobile/areaTicketExternal.confirm.test.ts`
-- Modify: `avoqado-server/tests/integration/area-tickets/area-ticket-external-cancel.test.ts` (quitar el `skip`)
+- Modify: `avoqado-server/tests/integration/area-tickets/area-ticket-external-cancel.test.ts` (añadir el caso diferido de Task 5)
 
 **Interfaces:**
 - Produces:
@@ -1098,9 +1090,25 @@ void logAction({
 })
 ```
 
-- [ ] **Step 4: Reactivar el test de Task 5**
+- [ ] **Step 4: Escribir el caso que Task 5 dejó pendiente**
 
-Quita el `it.skip` del caso "no se puede cancelar un vale con el cobro CONFIRMED".
+El guard `AREA_TICKET_EXTERNAL_ALREADY_CHARGED` se implementó en Task 5, pero no se pudo probar sin
+`confirmExternalSettlement`. Ahora sí. Añade a
+`tests/integration/area-tickets/area-ticket-external-cancel.test.ts`:
+
+```typescript
+it('no se puede cancelar un vale con el cobro CONFIRMED — eso es una devolución, y ocurre en la otra caja', async () => {
+  const ticket = await issueExternalTicket({ quantity: '1' })
+  await confirmExternalSettlement(venueId, ticket.id, {
+    idempotencyKey: `conf-${suffix}`, deviceUid: externalIssueDeviceUid, staffId,
+  })
+  await expect(
+    cancelAreaTicket(venueId, ticket.id, {
+      idempotencyKey: `cx-${suffix}`, deviceUid: externalIssueDeviceUid, reason: 'ya no',
+    }),
+  ).rejects.toMatchObject({ code: 'AREA_TICKET_EXTERNAL_ALREADY_CHARGED' })
+})
+```
 
 - [ ] **Step 5: Correr los tests**
 
