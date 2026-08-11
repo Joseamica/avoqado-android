@@ -1,5 +1,6 @@
 package com.avoqado.pos.settings.presentation
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -8,6 +9,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Info
@@ -176,6 +178,19 @@ fun CustomerDisplaySheet(
                                 // ahí al CAJERO —app completa, campos de texto,
                                 // teclado— porque el puente no da foco de entrada.
                                 // Decir "los toques no llegan" volvería a ser falso.
+                                //
+                                // 🔴 MEDIDO en un T3 Pro (2026-08-10), no deducido: la
+                                // pantalla del cliente es VIRTUAL, de otra app
+                                // (`owner com.sunmi.usbscreen`), y le falta
+                                // FLAG_TRUSTED — la bandera que permite alojar
+                                // actividades ajenas y tener foco de entrada propio.
+                                // Sólo trae FLAG_PRESENTATION. `am start --display 2`
+                                // aterriza en el display 0 dos de dos veces (una con
+                                // el proceso muerto, o sea tarea nueva) y Android ni
+                                // siquiera protesta: redirige en silencio. Por eso
+                                // `invertible` exige pantalla física, y por eso el
+                                // modo normal se queda con Presentation, que es lo
+                                // ÚNICO para lo que esa pantalla está declarada apta.
                                 "El cliente sí puede tocar su pantalla (Avoqado le " +
                                     "reenvía los toques), pero el cajero no podría " +
                                     "escribir ahí: Android no le da teclado a esa pantalla."
@@ -188,11 +203,36 @@ fun CustomerDisplaySheet(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                Switch(
-                    checked = inverted,
-                    enabled = invertible && !ventaEnCurso,
-                    onCheckedChange = { confirmando = true },
-                )
+                // 🔴 Un Switch gris es lo peor de los dos mundos: se lee como control, invita a
+                // picarlo y no contesta nada. Hay que separar DOS cosas que no son iguales:
+                //
+                //   · `!invertible` — el equipo NO PUEDE hacerlo, nunca. Eso no es un ajuste
+                //     apagado, es una capacidad ausente: se dice con palabras. La fila se queda
+                //     con su explicación (apagado se VE y se EXPLICA), pero sin control muerto.
+                //   · `ventaEnCurso` — sí puede, ahora no. Ahí el Switch deshabilitado es
+                //     correcto: en cuanto cierre la venta se enciende solo.
+                if (invertible) {
+                    Switch(
+                        checked = inverted,
+                        enabled = !ventaEnCurso,
+                        onCheckedChange = { confirmando = true },
+                    )
+                } else {
+                    Text(
+                        text = "No disponible",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .background(
+                                color = MaterialTheme.colorScheme.surfaceVariant,
+                                shape = RoundedCornerShape(50),
+                            )
+                            .padding(
+                                horizontal = AvoqadoTheme.spacing.md,
+                                vertical = AvoqadoTheme.spacing.xs,
+                            ),
+                    )
+                }
             }
 
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxxl))
