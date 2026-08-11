@@ -1,5 +1,6 @@
 package com.avoqado.pos.printing.data.model
 
+import com.avoqado.pos.printing.data.ESCPOSPrinter
 import kotlinx.serialization.Serializable
 import java.util.Date
 import java.util.Locale
@@ -72,6 +73,26 @@ enum class PaperWidth(val mm: Int) {
             MM58 -> 384
             MM80 -> 576
         }
+
+    /**
+     * Columnas de aire que sobran a CADA lado si el contenido se centra en el
+     * rollo, en vez de pegarse a donde arranca el papel.
+     *
+     * El rollo de 58 mm mide 464 puntos y el contenido ocupa 384: sobran 80,
+     * o sea 40 por lado, que son ~3 columnas. Medido en papel el 2026-08-10:
+     * con el corrimiento pelón (6) el ticket queda a 2.5 mm del borde izquierdo
+     * y 7.5 mm del derecho — cabe, pero se ve mal puesto. Con 6+3 queda parejo.
+     *
+     * Sirve para que la página de prueba diga QUÉ número capturar, en vez de
+     * dejar que cada quien lo tantee.
+     */
+    val centeringSlackChars: Int
+        get() = ((mm * DOTS_PER_MM - dots) / 2) / ESCPOSPrinter.CHAR_WIDTH_DOTS
+
+    companion object {
+        /** 203 dpi = 8 puntos por milímetro. */
+        const val DOTS_PER_MM = 8
+    }
 }
 
 // MARK: - Saved Printer (persisted to SharedPreferences)

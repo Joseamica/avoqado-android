@@ -309,6 +309,30 @@ class ESCPOSPrinter(
         appendCommand(if (enabled) DOUBLE_HEIGHT_WIDTH_ON else NORMAL_SIZE)
     }
 
+    /**
+     * Título centrado en letra grande, que CAE a tamaño normal cuando no cabe.
+     *
+     * El doble ancho gasta DOS columnas por carácter: en 58 mm entran 16, no 32.
+     * "PRUEBA DE IMPRESIÓN" mide 19, o sea 38 columnas.
+     *
+     * Antes esto no se veía porque el sobrante se iba fuera del papel. Al fijar
+     * el área con `GS W` la impresora ya parte la línea, y entonces el nombre de
+     * la sucursal salía cortado a la mitad en el recibo. Ninguna de las dos
+     * conductas sirve, y por eso no basta con "que dé vuelta": un
+     * [com.avoqado.pos.printing.data.model.AreaTicketData.areaTicketCode]
+     * partido en dos renglones es un vale que la caja no puede leer de un
+     * vistazo, y un nombre de sucursal a medias parece un ticket defectuoso.
+     *
+     * Letra normal COMPLETA le gana a letra grande PARTIDA.
+     */
+    fun printTitle(text: String, bold: Boolean = false) {
+        setLargeText(text.length * 2 <= paperWidth.charsPerLine)
+        if (bold) setBold(true)
+        printLine(text)
+        if (bold) setBold(false)
+        setLargeText(false)
+    }
+
     // MARK: - Printing
 
     fun printLine(text: String = "") {
@@ -508,9 +532,7 @@ class ESCPOSPrinter(
 
         // Header
         setAlignment(TextAlignment.CENTER)
-        setLargeText(true)
-        printLine(receipt.venueName)
-        setLargeText(false)
+        printTitle(receipt.venueName)
 
         receipt.venueAddress?.let { printLine(it) }
         receipt.venuePhone?.let { printLine("Tel: $it") }
@@ -609,11 +631,7 @@ class ESCPOSPrinter(
             printLine()
             printBarcode(code)
             printLine()
-            setLargeText(true)
-            setBold(true)
-            printLine(code)
-            setBold(false)
-            setLargeText(false)
+            printTitle(code, bold = true)
         }
 
         // QR del recibo digital: escanear → recibo, calificar, facturar.
@@ -650,11 +668,7 @@ class ESCPOSPrinter(
         // Priority banner
         if (ticket.priority.displayName.isNotEmpty()) {
             setAlignment(TextAlignment.CENTER)
-            setLargeText(true)
-            setBold(true)
-            printLine(ticket.priority.displayName)
-            setBold(false)
-            setLargeText(false)
+            printTitle(ticket.priority.displayName, bold = true)
             printLine()
         }
 
@@ -663,9 +677,7 @@ class ESCPOSPrinter(
         // wrong/confusing for staff. Falls back to "COCINA" when there is no station
         // (legacy single-ticket path) so old tickets stay byte-for-byte unchanged.
         setAlignment(TextAlignment.CENTER)
-        setLargeText(true)
-        printLine(ticket.stationName?.uppercase(Locale("es", "MX")) ?: "COCINA")
-        setLargeText(false)
+        printTitle(ticket.stationName?.uppercase(Locale("es", "MX")) ?: "COCINA")
 
         printDoubleDivider()
 
@@ -763,11 +775,7 @@ class ESCPOSPrinter(
 
         // El área ES el título: el cliente puede traer tres vales en la mano y tiene que
         // distinguirlos de un vistazo.
-        setLargeText(true)
-        setBold(true)
-        printLine(ticket.areaName.uppercase(Locale("es", "MX")))
-        setBold(false)
-        setLargeText(false)
+        printTitle(ticket.areaName.uppercase(Locale("es", "MX")), bold = true)
 
         printDoubleDivider()
 
@@ -804,11 +812,7 @@ class ESCPOSPrinter(
         setAlignment(TextAlignment.CENTER)
         printBarcode(ticket.areaTicketCode, symbology = symbology)
         printLine()
-        setLargeText(true)
-        setBold(true)
-        printLine(ticket.areaTicketCode)
-        setBold(false)
-        setLargeText(false)
+        printTitle(ticket.areaTicketCode, bold = true)
 
         printLine()
         printLine("Presenta este vale en caja")
@@ -831,9 +835,7 @@ class ESCPOSPrinter(
         reset()
 
         setAlignment(TextAlignment.CENTER)
-        setLargeText(true)
-        printLine("PRUEBA DE IMPRESIÓN")
-        setLargeText(false)
+        printTitle("PRUEBA DE IMPRESIÓN")
         printLine()
 
         printDivider()
@@ -844,7 +846,12 @@ class ESCPOSPrinter(
         printLine(calibrationRuler(tens = true))
         printLine(calibrationRuler(tens = false))
         setAlignment(TextAlignment.CENTER)
-        printLine("Si no ves el 0, ese es tu margen")
+        // Se dice CUÁNTO sumar, no sólo qué contar. El número crudo de la regla
+        // deja el ticket pegado al borde izquierdo con todo el aire del lado
+        // derecho: cabe, pero se ve mal puesto. Sumarle el aire de centrado lo
+        // deja parejo Y hace que la primera impresión ya dé el número bueno, en
+        // vez de dejar a quien instala tanteando de uno en uno.
+        printLine("Cuenta el 1er numero y suma ${paperWidth.centeringSlackChars}")
         printLine("Margen actual: $leftMarginChars")
         printLine()
 

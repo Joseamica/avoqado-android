@@ -121,8 +121,54 @@ class ESCPOSPrintAreaTest {
         assertTrue("falta la fila de unidades", texto.contains("01234567890123456789012345678901"))
         // La de decenas: diez espacios y luego los dieces.
         assertTrue("falta la fila de decenas", texto.contains("          1111111111222222222233"))
-        assertTrue("falta la instrucción", texto.contains("Si no ves el 0, ese es tu margen"))
+        // Dice CUÁNTO sumar, no sólo qué contar: el número crudo de la regla deja
+        // el ticket pegado a la izquierda con todo el aire a la derecha. En 58 mm
+        // sobran 80 puntos (464 del rollo menos 384 de contenido), o sea 3
+        // columnas por lado. Verificado en papel: 6 medido + 3 = 9, y a 9 quedó
+        // parejo.
+        assertTrue("falta la instrucción", texto.contains("Cuenta el 1er numero y suma 3"))
         assertTrue("falta el margen actual", texto.contains("Margen actual: 6"))
+    }
+
+    @Test
+    fun `un titulo que no cabe en doble ancho baja a tamano normal`() {
+        // Verificado en papel el 2026-08-10: al fijar el área, la impresora ya
+        // parte la línea, y "PRUEBA DE IMPRESIÓN" (19 caracteres = 38 columnas)
+        // salía como "PRUEBA DE IMPRES" / "IÓN". Donde de verdad duele es en el
+        // nombre de la sucursal del recibo y en el código del vale.
+        val p = ESCPOSPrinter(paperWidth = PaperWidth.MM58)
+        p.reset()
+        p.printTitle("PRUEBA DE IMPRESIÓN")
+        val bytes = p.getData()
+
+        assertTrue(
+            "un título de 19 caracteres NO cabe en 58 mm: debe ir en tamaño normal",
+            bytes.indexOfSeq(byteArrayOf(0x1B, 0x21, 0x30)) < 0,
+        )
+    }
+
+    @Test
+    fun `un titulo que si cabe conserva la letra grande`() {
+        // 16 caracteres son 32 columnas: cabe justo. No hay que castigar al que
+        // sí cabe — la letra grande es lo que hace legible una comanda de cocina
+        // a un metro de distancia.
+        val p = ESCPOSPrinter(paperWidth = PaperWidth.MM58)
+        p.reset()
+        p.printTitle("COCINA")
+        val bytes = p.getData()
+
+        assertTrue(bytes.indexOfSeq(byteArrayOf(0x1B, 0x21, 0x30)) >= 0)
+    }
+
+    @Test
+    fun `en 80 mm el mismo titulo sigue saliendo grande`() {
+        // 19 caracteres son 38 columnas y en 80 mm caben 48. El ajuste es por
+        // ancho de papel, no un downgrade general.
+        val p = ESCPOSPrinter(paperWidth = PaperWidth.MM80)
+        p.reset()
+        p.printTitle("PRUEBA DE IMPRESIÓN")
+
+        assertTrue(p.getData().indexOfSeq(byteArrayOf(0x1B, 0x21, 0x30)) >= 0)
     }
 
     @Test

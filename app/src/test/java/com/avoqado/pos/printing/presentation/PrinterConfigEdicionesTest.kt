@@ -85,6 +85,43 @@ class PrinterConfigEdicionesTest {
     }
 
     @Test
+    fun `una impresora nueva hereda el margen que ya calibro otra del local`() {
+        // Calibrar es una vez por SUCURSAL, no una vez por aparato: cinco
+        // impresoras iguales con los mismos adaptadores dan el mismo número.
+        val yaCalibrada = base().copy(id = "p1", paperWidthMm = 58, leftMarginChars = 9)
+        val nueva = base().copy(id = "p2", paperWidthMm = 58)
+
+        assertEquals(9, margenHeredado(listOf(yaCalibrada, nueva), exceptoId = "p2", anchoMm = 58))
+    }
+
+    @Test
+    fun `no hereda de una impresora de otro ancho`() {
+        // El corrimiento sólo existe porque el rollo no llena el cabezal. Copiar
+        // el de una de 58 a una de 80 recorrería el ticket sin razón.
+        val de58 = base().copy(id = "p1", paperWidthMm = 58, leftMarginChars = 9)
+
+        assertEquals(null, margenHeredado(listOf(de58), exceptoId = "p2", anchoMm = 80))
+    }
+
+    @Test
+    fun `no se hereda de si misma`() {
+        // Sin esto, la única impresora del local se "heredaría" su propio valor
+        // y el ajuste parecería pegarse solo.
+        val sola = base().copy(id = "p1", paperWidthMm = 58, leftMarginChars = 9)
+
+        assertEquals(null, margenHeredado(listOf(sola), exceptoId = "p1", anchoMm = 58))
+    }
+
+    @Test
+    fun `sin ninguna calibrada no inventa un numero`() {
+        // 0 es el default correcto y seguro. Adivinar un corrimiento en una
+        // impresora nativa de 58 mm le comería el precio por la derecha.
+        val sinCalibrar = base().copy(id = "p1", paperWidthMm = 58, leftMarginChars = 0)
+
+        assertEquals(null, margenHeredado(listOf(sinCalibrar), exceptoId = "p2", anchoMm = 58))
+    }
+
+    @Test
     fun `lo demas que se edita tambien viaja`() {
         val editada = base().conEdiciones(
             name = "Barra",

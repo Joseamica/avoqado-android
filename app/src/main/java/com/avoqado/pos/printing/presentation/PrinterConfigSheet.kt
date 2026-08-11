@@ -230,6 +230,20 @@ fun PrinterConfigSheet(
                         selected = paperWidthMm == width.mm,
                         onClick = {
                             paperWidthMm = width.mm
+                            // Hereda el corrimiento que YA calibró otra impresora
+                            // del local con este mismo ancho. En una flota de
+                            // impresoras iguales con adaptadores iguales el número
+                            // es el mismo, así que se mide una vez por sucursal y
+                            // no una vez por aparato.
+                            //
+                            // Sólo cuando esta impresora sigue en 0 (nadie la ha
+                            // tocado): pisar un valor que alguien ajustó a mano
+                            // sería peor que no ayudar. Y se ve en el stepper de
+                            // abajo, no se aplica a escondidas.
+                            if (leftMarginChars == 0) {
+                                margenHeredado(printerService.savedPrinters.value, printer.id, width.mm)
+                                    ?.let { leftMarginChars = it }
+                            }
                             saveChanges()
                         },
                         shape = SegmentedButtonDefaults.itemShape(
@@ -495,6 +509,25 @@ private fun SectionHeader(text: String) {
         color = MaterialTheme.colorScheme.onSurfaceVariant,
     )
 }
+
+/**
+ * El corrimiento que ya calibró OTRA impresora del local con el mismo ancho de
+ * papel, o `null` si no hay ninguna.
+ *
+ * Existe para que calibrar sea una vez por sucursal y no una vez por aparato:
+ * un local que monta cinco impresoras iguales con los mismos adaptadores tiene
+ * el mismo número en las cinco. Se excluye la impresora que se está editando
+ * ([exceptoId]) para no heredarse de sí misma.
+ *
+ * Vive FUERA del Composable para poder fijarlo con un test.
+ */
+internal fun margenHeredado(
+    guardadas: List<SavedPrinter>,
+    exceptoId: String,
+    anchoMm: Int,
+): Int? = guardadas
+    .firstOrNull { it.id != exceptoId && it.paperWidthMm == anchoMm && it.leftMarginChars > 0 }
+    ?.leftMarginChars
 
 /**
  * Aplica a la impresora lo que hay editado en la hoja de configuración.
