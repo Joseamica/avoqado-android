@@ -830,13 +830,17 @@ for (const reservation of consumedReservations) {
   if (reservation.reversalMovementId) continue   // ya revertida: idempotente
 
   const wastes = settings.recordWasteOnCancel
+  // 🔴 `MovementType` NO tiene WASTE ni RETURN. El enum real es
+  // PURCHASE | SALE | ADJUSTMENT | LOSS | TRANSFER | COUNT.
+  // Sigue el precedente de `restockItem` (la restitución por reembolso), que ya
+  // resolvió este mismo problema: ADJUSTMENT para devolver a stock, LOSS para merma.
   const movement = await tx.inventoryMovement.create({
     data: {
       inventoryId: reservation.inventoryId,
-      type: wastes ? MovementType.WASTE : MovementType.RETURN,
-      // El signo sigue la convención del repo: verifica cómo lo hace deductStockFIFO
-      // antes de escribirlo. Un signo invertido aquí duplica el error en vez de
-      // corregirlo, y no lo nota nadie hasta el conteo físico.
+      type: wastes ? MovementType.LOSS : MovementType.ADJUSTMENT,
+      // El signo es lo inverso del consumo. Verifica cuál usa el consumo ANTES de
+      // escribir el tuyo — un signo invertido duplica el error en vez de corregirlo,
+      // y no lo nota nadie hasta el conteo físico.
       quantity: wastes ? reservation.quantityBaseUnits.neg() : reservation.quantityBaseUnits,
       reference: `area-ticket-cancel:${ticket.id}`,
       // …resto según el contrato de InventoryMovement
