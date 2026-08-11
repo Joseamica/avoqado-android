@@ -91,6 +91,17 @@ class TerminalPaymentService @Inject constructor(
     }
 
     /**
+     * Vuelve a poner (o suelta, con `null`) la llave durable tras un desenlace que llegó TARDE.
+     *
+     * Existe porque el éxito limpia la llave al llegar, y si ese éxito era de un cobro que el
+     * cajero YA canceló, la venta se quedaba sin nadie que supiera del cargo. Quién decide qué
+     * llave queda es [CardChargeDecision.unresolvedKeyAfterStaleResult]; aquí sólo se escribe.
+     */
+    fun rearmUnresolvedCharge(requestId: String?) {
+        unresolvedRequestId = requestId
+    }
+
+    /**
      * GET /mobile/venues/{venueId}/terminals/online
      * Returns terminals currently connected via Socket.IO.
      */
@@ -209,6 +220,7 @@ class TerminalPaymentService @Inject constructor(
                         // descartaba aquí y más adelante se reconstruía desde la base del
                         // API → todo ticket salía con el QR viejo, sin facturación.
                         receiptUrl = response.receipt?.receiptUrl,
+                        requestId = requestId,
                     )
                 }
                 404 -> {
@@ -353,7 +365,7 @@ class TerminalPaymentService @Inject constructor(
             // Consta que se cobró: el desenlace ya no está pendiente.
             unresolvedRequestId = null
             Log.d("💳", "✅ Cobro confirmado por estado durable (paymentId=$paymentId)")
-            TerminalPaymentResult.Success(paymentId = paymentId)
+            TerminalPaymentResult.Success(paymentId = paymentId, requestId = requestId)
         }
         is CardChargeOutcome.NotCharged -> {
             // Consta que NO se cobró: reintentar es seguro.
@@ -498,6 +510,12 @@ sealed class TerminalPaymentResult {
         val receiptAccessKey: String? = null,
         /** URL del recibo ya armada por el backend (dashboard). Preferirla sobre armarla a mano. */
         val receiptUrl: String? = null,
+        /**
+         * La solicitud que produjo este cobro. Viaja incluso en el ÉXITO porque un éxito que
+         * llega TARDE —después de que el cajero canceló— tiene que poder re-armarse como
+         * pendiente: sin esta llave, un cobro real desaparecía sin dejar rastro.
+         */
+        val requestId: String? = null,
     ) : TerminalPaymentResult()
 
     /** Consta que NO se cobró (rechazo, cancelación, terminal desconectada): reintentar es seguro. */

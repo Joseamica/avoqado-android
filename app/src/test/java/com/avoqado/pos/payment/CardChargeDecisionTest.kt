@@ -266,4 +266,132 @@ class CardChargeDecisionTest {
         assertTrue(CardChargeDecision.UNDETERMINED_MESSAGE.contains("No pudimos confirmar el cobro"))
         assertTrue(CardChargeDecision.UNDETERMINED_MESSAGE.contains("Revisa la terminal"))
     }
+
+    // MARK: - Cancelar es una PETICIÓN, no una garantía
+
+    // 🔴 El cajero cancela desde el POS, pero si la tarjeta ya se pasó la terminal cobra igual
+    // y el desenlace llega TARDE (la espera dura hasta 330 s). El guard de resultado obsoleto
+    // tiraba ese desenlace ENTERO —incluido el cobro exitoso—: el dinero salía y la venta
+    // quedaba marcada como impaga. Lo que sigue es predecible: el cajero cobra otra vez.
+    //
+    // La regla: descartar un resultado obsoleto vale para la NAVEGACIÓN, jamás para el DINERO.
+
+    @Test
+    fun `un cobro que SI paso tras cancelar no se tira a la basura`() {
+        val key = CardChargeDecision.unresolvedKeyAfterStaleResult(
+            outcome = CardChargeOutcome.Charged("pay_1"),
+            requestId = "req-1",
+            armedKey = null,
+        )
+
+        assertEquals("canceló, pero la tarjeta SÍ se cobró: no puede desaparecer en silencio", "req-1", key)
+    }
+
+    @Test
+    fun `tras cancelar, un desenlace que sigue sin saberse queda pendiente de resolver`() {
+        val key = CardChargeDecision.unresolvedKeyAfterStaleResult(
+            outcome = CardChargeOutcome.Undetermined(CardChargeDecision.UNDETERMINED_MESSAGE),
+            requestId = "req-1",
+            armedKey = null,
+        )
+
+        assertEquals("req-1", key)
+    }
+
+    @Test
+    fun `solo un NO COBRO comprobado cierra el asunto al cancelar`() {
+        // Éste es el camino feliz: cancelar antes de que la terminal haga nada. El server
+        // contesta 409 'Cancelado' → consta que no hubo cargo → no queda referencia colgada
+        // ni pantalla de "Cobro sin confirmar" fantasma en la venta siguiente.
+        val key = CardChargeDecision.unresolvedKeyAfterStaleResult(
+            outcome = CardChargeOutcome.NotCharged("El cobro se canceló. No se cobró la tarjeta."),
+            requestId = "req-1",
+            armedKey = null,
+        )
+
+        assertEquals("consta que no hubo cargo: no hay nada pendiente de avisar", null, key)
+    }
+
+    @Test
+    fun `un desenlace tardio NO pisa la llave de un cobro POSTERIOR que sigue vivo`() {
+        // 🔴 La venta ya avanzó a otra cosa: el cajero asumió el riesgo del cobro viejo y mandó
+        // uno NUEVO, que quedó sin confirmar y es el que gobierna el disco. Si el rezagado
+        // pisara esa llave, "Volver a consultar" resolvería el cobro VIEJO y el nuevo —el que
+        // de verdad puede tener dinero encima— se perdería para siempre. Sólo hay UNA ranura.
+        val key = CardChargeDecision.unresolvedKeyAfterStaleResult(
+            outcome = CardChargeOutcome.Charged("pay_viejo"),
+            requestId = "req-viejo",
+            armedKey = "req-nuevo",
+        )
+
+        assertEquals("el cobro vivo manda sobre el rezagado", "req-nuevo", key)
+    }
+
+    @Test
+    fun `un rezagado que consta como no cobrado tampoco borra la llave de otro cobro`() {
+        val key = CardChargeDecision.unresolvedKeyAfterStaleResult(
+            outcome = CardChargeOutcome.NotCharged("El cobro se canceló. No se cobró la tarjeta."),
+            requestId = "req-viejo",
+            armedKey = "req-nuevo",
+        )
+
+        assertEquals("req-nuevo", key)
+    }
+
+    @Test
+    fun `si la llave armada es la de ESTE mismo cobro, el desenlace manda`() {
+        // No es "otro cobro": es el propio, que se armó al empezar a enviarlo. Aquí sí resuelve.
+        assertEquals(
+            null,
+            CardChargeDecision.unresolvedKeyAfterStaleResult(
+                outcome = CardChargeOutcome.NotCharged("El cobro fue rechazado. No se cobró la tarjeta."),
+                requestId = "req-1",
+                armedKey = "req-1",
+            ),
+        )
+        assertEquals(
+            "req-1",
+            CardChargeDecision.unresolvedKeyAfterStaleResult(
+                outcome = CardChargeOutcome.Charged("pay_1"),
+                requestId = "req-1",
+                armedKey = "req-1",
+            ),
+        )
+    }
+
+    @Test
+    fun `sin requestId no se puede armar nada, aunque el cobro haya pasado`() {
+        // Defensivo: un desenlace sin llave no es consultable. Nunca se inventa una.
+        val key = CardChargeDecision.unresolvedKeyAfterStaleResult(
+            outcome = CardChargeOutcome.Charged("pay_1"),
+            requestId = null,
+            armedKey = null,
+        )
+
+        assertEquals(null, key)
+    }
+
+    @Test
+    fun `una llave EN BLANCO no ocupa la ranura — no es un cobro ajeno`() {
+        // 🔴 Un "" tratado como llave ajena congelaría la ranura: la venta siguiente mostraría
+        // "Cobro sin confirmar" con una referencia que el server no puede resolver (el GET del
+        // estado iría sin id), y el cajero se quedaría sin salida. Vacío = ranura libre.
+        assertEquals(
+            "req-1",
+            CardChargeDecision.unresolvedKeyAfterStaleResult(
+                outcome = CardChargeOutcome.Charged("pay_1"),
+                requestId = "req-1",
+                armedKey = "",
+            ),
+        )
+        // Y tampoco se ARMA una llave en blanco: nunca se escribe basura en disco.
+        assertEquals(
+            null,
+            CardChargeDecision.unresolvedKeyAfterStaleResult(
+                outcome = CardChargeOutcome.Charged("pay_1"),
+                requestId = "   ",
+                armedKey = null,
+            ),
+        )
+    }
 }

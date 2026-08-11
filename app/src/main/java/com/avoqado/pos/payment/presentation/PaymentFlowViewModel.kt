@@ -26,6 +26,7 @@ import com.avoqado.pos.payment.data.model.PaymentFlowState
 import com.avoqado.pos.payment.data.model.PaymentItem
 import com.avoqado.pos.payment.data.model.PaymentMethod
 import com.avoqado.pos.payment.domain.CardChargeDecision
+import com.avoqado.pos.payment.domain.CardChargeOutcome
 import com.avoqado.pos.pos.data.model.CartItemType
 import com.avoqado.pos.pos.presentation.cart.CartState
 import com.avoqado.pos.core.data.local.SecureStorage
@@ -874,9 +875,10 @@ class PaymentFlowViewModel @Inject constructor(
                     processedByStaffId = selectedStaffId(),
                 )
                 if (generation != paymentGeneration) {
-                    // User cancelled while the send was in flight (up to 310s):
-                    // do NOT mark Success/Error nor print for a dead attempt.
-                    Log.d("PaymentFlow", "⏭️ Ignoring stale terminal result (cancelled)")
+                    // El cajero canceló mientras el envío seguía en vuelo (hasta 330 s): no se
+                    // marca Success/Error ni se imprime sobre una pantalla de la que ya se fue.
+                    // Pero el DINERO no se descarta con la navegación — ver handleStaleCardResult.
+                    handleStaleCardResult(terminalResult)
                     return
                 }
                 when (terminalResult) {
@@ -1379,6 +1381,45 @@ class PaymentFlowViewModel @Inject constructor(
             receiptUrl = charged.receiptUrl,
         )
         createKDSOrderAndPrint(PaymentMethod.CARD)
+    }
+
+    /**
+     * El desenlace de la terminal llegó TARDE, después de que el cajero canceló y la pantalla
+     * ya avanzó a otra cosa. Descartarlo es correcto para la NAVEGACIÓN; para el DINERO, no.
+     *
+     * 🔴 **Cancelar es una PETICIÓN, no una garantía.** Si la tarjeta ya se pasó, la terminal
+     * cobra igual y el server reconcilia la fila a COMPLETED. El guard anterior tiraba ese
+     * desenlace ENTERO —incluido el cobro exitoso—: el dinero salía y la venta quedaba marcada
+     * como impaga. Nadie sabía que ese pago existía, y el cajero cobraba otra vez.
+     *
+     * Ahora la referencia del cobro se re-arma como pendiente en la llave DURABLE (disco), que
+     * es la misma que sobrevive al cambio de pestaña y a la muerte del proceso. La próxima venta
+     * la encuentra en `startFlow` y muestra "Cobro sin confirmar" con su "Volver a consultar",
+     * por la ruta `fromPreviousSale`: informa del cargo viejo SIN pagar la venta nueva.
+     */
+    private fun handleStaleCardResult(result: TerminalPaymentResult) {
+        val (outcome, requestId) = when (result) {
+            is TerminalPaymentResult.Success ->
+                CardChargeOutcome.Charged(result.paymentId) to result.requestId
+            is TerminalPaymentResult.Error ->
+                CardChargeOutcome.NotCharged(result.message) to null
+            is TerminalPaymentResult.Undetermined ->
+                CardChargeOutcome.Undetermined(result.message) to result.requestId
+        }
+        val pending = CardChargeDecision.unresolvedKeyAfterStaleResult(
+            outcome = outcome,
+            requestId = requestId,
+            armedKey = terminalPaymentService.unresolvedRequestId,
+        )
+        terminalPaymentService.rearmUnresolvedCharge(pending)
+        // Esta pantalla ya no gobierna ese cobro: la llave durable manda, y al no coincidir
+        // con ésta la próxima venta lo tratará como "cobro anterior" (no paga la venta nueva).
+        undeterminedRequestId = null
+        if (pending != null) {
+            Log.w("PaymentFlow", "⚠️ Se canceló, pero el cobro no consta como no cobrado (requestId: $pending)")
+        } else {
+            Log.d("PaymentFlow", "⏭️ Resultado obsoleto tras cancelar: consta que no se cobró")
+        }
     }
 
     /**

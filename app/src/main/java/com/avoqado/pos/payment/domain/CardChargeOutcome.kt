@@ -158,6 +158,43 @@ object CardChargeDecision {
     /** Se agotaron las consultas y la solicitud seguía viva: NUNCA "falló" — pudo estar cobrando. */
     fun exhausted(): CardChargeOutcome = CardChargeOutcome.Undetermined(UNDETERMINED_MESSAGE)
 
+    /**
+     * El cajero canceló y el desenlace llegó TARDE (la espera dura hasta [WAIT_CEILING_MS]).
+     * ¿Qué llave durable queda armada para la próxima venta?
+     *
+     * 🔴 **"Cancelé" no es "no se cobró".** El cancel es una PETICIÓN: si la tarjeta ya se pasó,
+     * la terminal cobra igual y el server reconcilia la fila a COMPLETED. Descartar el resultado
+     * obsoleto vale para la NAVEGACIÓN (el cajero ya se fue de esa pantalla), pero jamás para el
+     * DINERO: tirar el desenlace entero dejaba la venta pintada como impaga con el cobro ya
+     * hecho — y el siguiente "Cobrar" cobraba por segunda vez. Es el incidente del 2026-08-10
+     * por otro pasillo.
+     *
+     * Sólo un [CardChargeOutcome.NotCharged] COMPROBADO cierra el asunto; todo lo demás queda
+     * pendiente de avisar y se resuelve en la próxima venta por la ruta "cobro anterior", que
+     * informa del cargo viejo SIN marcar como pagada la venta nueva.
+     *
+     * @param armedKey lo que ya gobierna el disco. Si pertenece a OTRO cobro, ese otro es más
+     *   nuevo y sigue vivo: pisarlo con un rezagado perdería la única llave que permite
+     *   resolverlo. La ranura es una sola, así que gana el cobro que todavía puede tener dinero
+     *   encima.
+     */
+    fun unresolvedKeyAfterStaleResult(
+        outcome: CardChargeOutcome,
+        requestId: String?,
+        armedKey: String?,
+    ): String? {
+        // 🔴 Una llave EN BLANCO no es una referencia: no se puede consultar (el GET del estado
+        // iría sin id) y dejaría la ranura ocupada para siempre, bloqueando la venta siguiente
+        // con una pantalla que nadie puede resolver. Vacío = ranura libre, nunca "otro cobro".
+        val mine = requestId?.takeIf { it.isNotBlank() }
+        val armed = armedKey?.takeIf { it.isNotBlank() }
+        if (armed != null && armed != mine) return armed
+        return when (outcome) {
+            is CardChargeOutcome.NotCharged -> null
+            is CardChargeOutcome.Charged, is CardChargeOutcome.Undetermined -> mine
+        }
+    }
+
     private fun fromTerminalStatus(probe: ChargeStatusProbe.Known): CardChargeOutcome =
         when (probe.status) {
             "COMPLETED" -> CardChargeOutcome.Charged(probe.paymentId)
