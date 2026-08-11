@@ -64,6 +64,15 @@ internal data class DisplayRoles(
  * perfectamente para MOSTRARLE al cliente, pero Android no le entrega toques a
  * la app: poner la caja ahí dejaría al cajero sin poder tocar nada. Ante la
  * duda, no se invierte.
+ *
+ * 🔴 Y el puente táctil ([CustomerTouchBridge]) NO cambia esto — no lo
+ * "simplifiques" a una sola condición junto con `touchCapable`. El puente
+ * reenvía los toques huérfanos a NUESTRA ventana de cliente: le alcanza a un
+ * cliente para apretar botones grandes. Invertir es otra cosa: es el CAJERO
+ * trabajando ahí, con la app completa, campos de texto y teclado en pantalla —
+ * y el puente no da foco de entrada ni IME (la ventana del cliente es
+ * `FLAG_NOT_FOCUSABLE` a propósito, para no robarle el teclado a la caja).
+ * Táctil para el cliente ≠ utilizable como caja.
  */
 internal fun resolveDisplayRoles(
     defaultDisplayId: Int,

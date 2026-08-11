@@ -5,12 +5,15 @@ import android.app.ActivityManager
 import android.app.ActivityOptions
 import android.content.Context
 import android.content.Intent
+import android.graphics.Matrix
 import android.hardware.display.DisplayManager
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import android.view.Display
+import android.view.MotionEvent
+import android.view.View
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -125,6 +128,10 @@ class CustomerDisplayManager @Inject constructor(
     // Quién coloca la caja. Vive aquí porque el manager es el único que se entera
     // de que cambió el hardware de pantallas (ver resync).
     private val cashierGuard: CashierDisplayGuard,
+    // Quién identifica los toques del panel del cliente que Android entrega en la
+    // caja. El manager es el único que sabe QUÉ ventana de cliente hay montada,
+    // así que el reenvío vive aquí. Ver handleCustomerPanelTouch.
+    private val touchBridge: CustomerTouchBridge,
 ) {
     private val tag = "🖥️CustomerDisplay"
 
@@ -194,6 +201,23 @@ class CustomerDisplayManager @Inject constructor(
 
     /** Ver [bringCashierToFront]. Como campo para poder retirarlo del handler. */
     private val refrontCashierRunnable = Runnable { bringCashierToFront() }
+
+    /**
+     * ¿El puente táctil está activo? Solo cuando la caja vive en la pantalla
+     * PRINCIPAL, o sea en el modo normal.
+     *
+     * 🔴 Por qué esta guarda existe y no es opcional: en modo INVERTIDO la caja
+     * se muda a la segunda pantalla, que es FÍSICA y por tanto tiene un táctil
+     * **externo** — el mismo perfil que el panel huérfano que buscamos. Sus
+     * toques sí aterrizan en la caja, porque la caja está ahí. Sin esta guarda
+     * el puente se los tragaría y el cajero se quedaría con una pantalla que no
+     * responde: exactamente el daño que venimos a evitar, causado por el arreglo.
+     *
+     * En invertido no se pierde nada: ese modo exige segunda pantalla física, y
+     * una pantalla física sí recibe sus propios toques — no hay nada que
+     * puentear.
+     */
+    private var bridgeArmed = false
 
     /**
      * Remontes ya gastados en la ráfaga en curso y cuándo se pidió el último.
@@ -279,6 +303,11 @@ class CustomerDisplayManager @Inject constructor(
             dismissPresentation()
         }
         hostActivity = activity
+        // Qué táctiles hay que puentear se resuelve al enganchar (y luego solo
+        // cuando cambie el hardware de entrada, vía su propio listener): leerlo
+        // en cada toque cruzaría a InputManagerService en la ruta más caliente
+        // que tiene la app.
+        touchBridge.refresh()
         val dm = activity.getSystemService(Context.DISPLAY_SERVICE) as? DisplayManager ?: return
         displayManager = dm
         dm.registerDisplayListener(displayListener, handler)
@@ -319,6 +348,9 @@ class CustomerDisplayManager @Inject constructor(
         releaseHostBindings()
         dismiss()
         hostActivity = null
+        // Sin anfitrión no hay a quién puentear ni ventana de cliente colgada de
+        // él. El siguiente refresh() lo vuelve a armar si toca.
+        bridgeArmed = false
     }
 
     /**
@@ -348,6 +380,11 @@ class CustomerDisplayManager @Inject constructor(
 
     private fun refresh() {
         val activity = hostActivity ?: return
+        // El puente táctil solo con la caja en la pantalla principal. Se decide
+        // aquí —el único punto de decisión del manager— y no en cada toque:
+        // preguntar la pantalla de la Activity cruza al WindowManager. Ver
+        // [bridgeArmed] para por qué el modo invertido tiene que quedar fuera.
+        bridgeArmed = activity.currentDisplayId() == Display.DEFAULT_DISPLAY
         // PRESENTATION = pantallas pensadas para mostrar contenido a terceros;
         // es justo la categoría en la que caen los displays de cliente.
         val displays = displayManager
@@ -614,17 +651,127 @@ class CustomerDisplayManager @Inject constructor(
                 isActive = true
                 state.setPresenting(true)
                 // Detección automática por hardware: una pantalla FÍSICA (sin
-                // dueño) sí entrega toques; una virtual de Sunmi (NP511 del T3
-                // Pro) NO. De esto depende delegar propina/calificación.
-                val touchCapable = displayOwnerPackage(target) == null
+                // dueño) recibe sus propios toques y llegan a esta ventana.
+                val fisica = displayOwnerPackage(target) == null
+                // 🔴 Y una virtual de Sunmi (el NP511 del T3 Pro) también cuenta
+                // AHORA, siempre que haya puente: su digitalizador existe, lo
+                // que faltaba era el ruteo, y eso es justo lo que hacemos
+                // nosotros en handleCustomerPanelTouch. Sin esto, el dedo del
+                // cliente sí llegaría a su pantalla pero seguiríamos diciéndole
+                // al resto de la app que no, y propina/calificación se quedarían
+                // del lado del cajero sin motivo.
+                val puenteada = bridgeArmed && touchBridge.hasBridgedDevices()
+                val touchCapable = fisica || puenteada
                 state.setTouchCapable(touchCapable)
-                Log.i(tag, "Pantalla del cliente montada en display ${target.displayId} (${target.name}), táctil=$touchCapable")
+                Log.i(
+                    tag,
+                    "Pantalla del cliente montada en display ${target.displayId} (${target.name}), " +
+                        "táctil=$touchCapable (física=$fisica, puente=$puenteada)",
+                )
             }
         }.onFailure {
             Log.e(tag, "No se pudo montar la pantalla del cliente: ${it.message}")
             isActive = false
             state.setPresenting(false)
         }
+    }
+
+    // MARK: - Puente táctil
+
+    /**
+     * Un toque llegó a la caja. ¿Lo generó el panel del CLIENTE?
+     *
+     * Lo llama `MainActivity.dispatchTouchEvent` antes que nadie. Si contesta
+     * `true`, ese toque NO baja a la interfaz del cajero.
+     *
+     * 🔴 Los dos trabajos que hace, y el primero vale por sí solo: **dejar de
+     * ensuciar la caja** (hoy, en producción, un cliente que toca su pantalla
+     * está apretando cosas en la del cajero) y, si se puede, reenviar el toque
+     * traducido a la ventana del cliente. Por eso el `return true` va afuera del
+     * `runCatching`: si el reenvío falla —no hay ventana montada todavía, la
+     * ventana mide 0, el equipo devuelve un rango imposible— el toque se pierde,
+     * que es infinitamente mejor que dejarlo caer sobre el carrito del cajero.
+     *
+     * 🔴 Y si NO hay puente que armar, esto contesta `false` de inmediato y la
+     * app se comporta EXACTAMENTE como antes de este cambio. Un equipo normal
+     * (teléfono, tablet, POS de una sola pantalla) no paga nada: una consulta a
+     * un `Set` vacío por evento.
+     */
+    fun handleCustomerPanelTouch(event: MotionEvent): Boolean {
+        if (!bridgeArmed) return false
+        if (!touchBridge.isFromCustomerPanel(event)) return false
+        runCatching { forwardTouchToCustomer(event) }
+            .onFailure { Log.w(tag, "No se pudo reenviar el toque a la pantalla del cliente: ${it.message}") }
+        return true
+    }
+
+    /**
+     * Traduce el toque del espacio del digitalizador al de la ventana del
+     * cliente y lo despacha ahí.
+     *
+     * 🔴 Se despacha DIRECTO al `decorView`, no por el sistema de ventanas: esa
+     * ventana es nuestra y vive en nuestro proceso, así que no hay permiso de
+     * inyección de eventos de por medio (inyectar eventos entre apps exige
+     * permisos de sistema, y esto no lo es). Es la misma llamada que hace
+     * Android al entregar un toque a una ventana.
+     *
+     * 🔴 `MotionEvent.transform(Matrix)` y no `setLocation(x, y)`: `setLocation`
+     * DESPLAZA todos los punteros para dejar el primero en el punto dado, no los
+     * escala — con dos pantallas de distinto tamaño eso deja el segundo dedo
+     * donde no va, y la pantalla del cliente es multitáctil de verdad.
+     * `transform` aplica la escala a todos los punteros y a todo el histórico.
+     *
+     * La escala es pura (`computeTouchScale`) y está testeada aparte: es donde
+     * vive el error clásico, y es lo único de esto que se puede probar sin el
+     * aparato enfrente.
+     *
+     * 🔴 El log de crudo → traducido NO es adorno: es la única forma de
+     * comprobar el mapeo contra dónde cae el dedo de verdad. Solo en DOWN/UP —
+     * en MOVE inundaría el logcat y ahogaría justo lo que se busca.
+     */
+    private fun forwardTouchToCustomer(event: MotionEvent) {
+        val decor = customerDecorView() ?: return
+        val targetWidth = decor.width.toFloat()
+        val targetHeight = decor.height.toFloat()
+        // Origen: el rango que reporta el propio digitalizador. Si el equipo no
+        // lo dice, la ventana del cajero — que es a dónde el sistema está
+        // entregando estos toques, y por tanto el espacio en que vienen.
+        val source = touchBridge.sourceSpanFor(event.deviceId) ?: cashierSpan() ?: return
+        val scale = computeTouchScale(source.first, source.second, targetWidth, targetHeight) ?: return
+
+        val copia = MotionEvent.obtain(event)
+        try {
+            copia.transform(Matrix().apply { setScale(scale.x, scale.y) })
+            if (event.actionMasked == MotionEvent.ACTION_DOWN || event.actionMasked == MotionEvent.ACTION_UP) {
+                Log.d(
+                    tag,
+                    "Puente táctil: crudo(${event.x}, ${event.y}) en ${source.first.toInt()}x${source.second.toInt()} → " +
+                        "cliente(${mapTouchCoordinate(event.x, scale.x)}, ${mapTouchCoordinate(event.y, scale.y)}) " +
+                        "en ${targetWidth.toInt()}x${targetHeight.toInt()}",
+                )
+            }
+            decor.dispatchTouchEvent(copia)
+        } finally {
+            copia.recycle()
+        }
+    }
+
+    /**
+     * La ventana del cliente a la que se reenvía.
+     *
+     * Solo la `Presentation` del modo NORMAL a propósito: en modo invertido el
+     * puente ni siquiera está armado (ver [bridgeArmed]), así que la Activity
+     * del cliente nunca es destino de un reenvío.
+     */
+    private fun customerDecorView(): View? =
+        presentation?.takeIf { it.isShowing }?.window?.decorView
+
+    /** Tamaño de la ventana del cajero: el respaldo cuando no hay rango del táctil. */
+    private fun cashierSpan(): Pair<Float, Float>? {
+        val decor = hostActivity?.window?.decorView ?: return null
+        val width = decor.width.toFloat()
+        val height = decor.height.toFloat()
+        return if (width > 0f && height > 0f) width to height else null
     }
 
     /**

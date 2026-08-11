@@ -160,12 +160,19 @@ class CustomerDisplayState @Inject constructor() {
 
     /**
      * ¿La pantalla del cliente puede RECIBIR toques que lleguen a la app?
-     * Detección automática por hardware (la pone el manager): una pantalla FÍSICA
-     * (HDMI del D3, Elo…) sí; una pantalla inteligente USB de Sunmi (T3 Pro, NP511)
-     * NO — su firmware se queda los toques y nunca llegan al Android del POS. Sin
-     * esto delegábamos propina/calificación a una pantalla que nadie podía tocar y
-     * el cobro se quedaba esperando; con esto solo se delega/se muestra teclado
-     * donde el dedo sí sirve. Ver reference_sunmi-t3pro-customer-display-touch.
+     * Detección automática por hardware (la pone el manager). Dos formas de que
+     * sea cierto:
+     *
+     * 1. Pantalla FÍSICA (HDMI del D3, Elo…): recibe sus propios toques.
+     * 2. Pantalla virtual **con puente táctil** (T3 Pro y su panel `SUNMI
+     *    NP511`): el digitalizador SÍ existe —está medido, es multitáctil— pero
+     *    Android no lo asocia a esa pantalla y sus toques caen en la caja. El
+     *    puente los identifica por dispositivo, los saca del camino del cajero y
+     *    los reenvía traducidos. Ver [CustomerTouchBridge].
+     *
+     * Sin esto delegábamos propina/calificación a una pantalla que nadie podía
+     * tocar y el cobro se quedaba esperando; con esto solo se delega/se muestra
+     * teclado donde el dedo sí sirve.
      */
     fun setTouchCapable(value: Boolean) {
         touchCapable = value
@@ -176,7 +183,19 @@ class CustomerDisplayState @Inject constructor() {
         _customerCapturesInput.value = presenting && enabledByUser && touchCapable
     }
 
-    /** ¿Este equipo admite invertir las pantallas? (segunda pantalla física). */
+    /**
+     * ¿Este equipo admite invertir las pantallas? (segunda pantalla física).
+     *
+     * 🔴 NO se deduce de [touchCapable], y la tentación de unir las dos
+     * condiciones es real: son cosas distintas. El puente táctil hace que el
+     * CLIENTE pueda tocar SU pantalla —unos botones grandes, sin teclado—, que es
+     * todo lo que necesita propina/calificación. Invertir exige que el CAJERO
+     * trabaje ahí: la app entera, campos de texto, teclado en pantalla y el foco
+     * de entrada del sistema. Eso el puente no lo resuelve (la ventana del
+     * cliente es `FLAG_NOT_FOCUSABLE` justo para no robarle el teclado a la
+     * caja), así que `invertible` sigue exigiendo pantalla FÍSICA. Ver
+     * `resolveDisplayRoles`.
+     */
     private val _invertible = MutableStateFlow(false)
     val invertible: StateFlow<Boolean> = _invertible.asStateFlow()
 

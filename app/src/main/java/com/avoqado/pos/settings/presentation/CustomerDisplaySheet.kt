@@ -154,12 +154,17 @@ fun CustomerDisplaySheet(
                                 // digitalizador (SUNMI NP511, TOUCH_MT), pero Android
                                 // no lo asocia a esa pantalla —`displayId` vacío— y
                                 // sus toques aterrizan en la pantalla del cajero, con
-                                // las coordenadas del panel grande. El hardware está;
-                                // lo que falta es el ruteo, y eso no se arregla desde
-                                // la app (build de producción sin root, y la pantalla
-                                // es virtual, creada por com.sunmi.usbscreen).
-                                "En este equipo los toques de la segunda pantalla no " +
-                                    "llegan a ella, así que el cajero no podría trabajar ahí."
+                                // las coordenadas del panel grande.
+                                //
+                                // 🔴 Desde el puente táctil (CustomerTouchBridge) el
+                                // CLIENTE sí puede tocar su pantalla: los reenviamos
+                                // nosotros. Lo que sigue sin poder hacerse es poner
+                                // ahí al CAJERO —app completa, campos de texto,
+                                // teclado— porque el puente no da foco de entrada.
+                                // Decir "los toques no llegan" volvería a ser falso.
+                                "El cliente sí puede tocar su pantalla (Avoqado le " +
+                                    "reenvía los toques), pero el cajero no podría " +
+                                    "escribir ahí: Android no le da teclado a esa pantalla."
                             ventaEnCurso ->
                                 "Termina la venta en curso para poder cambiar de pantalla."
                             else ->

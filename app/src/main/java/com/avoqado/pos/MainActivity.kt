@@ -2,6 +2,7 @@ package com.avoqado.pos
 
 import android.animation.ValueAnimator
 import android.os.Bundle
+import android.view.MotionEvent
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.animation.AnimatedVisibility
@@ -82,6 +83,25 @@ class MainActivity : FragmentActivity() {
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         if (hasFocus) hideNavigationBar()
+    }
+
+    /**
+     * 🔴 Puente táctil. En los POS cuya pantalla de cliente es virtual (Sunmi T3
+     * Pro y su panel `SUNMI NP511`), Android **no asocia el digitalizador de esa
+     * pantalla a esa pantalla**: sus toques aterrizan AQUÍ, en la ventana de la
+     * caja, con las coordenadas del panel grande. O sea que hoy, en producción,
+     * un cliente tocando su pantalla está apretando cosas en la caja.
+     *
+     * Se identifica por el DISPOSITIVO que generó el evento (no por dónde cayó),
+     * se saca del camino del cajero y —si hay ventana de cliente montada— se
+     * reenvía traducido. Ver `CustomerDisplayManager.handleCustomerPanelTouch`.
+     *
+     * En un equipo sin ese defecto contesta `false` de inmediato y todo sigue
+     * igual que siempre.
+     */
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        if (customerDisplay.handleCustomerPanelTouch(ev)) return true
+        return super.dispatchTouchEvent(ev)
     }
 
     @OptIn(ExperimentalMaterial3WindowSizeClassApi::class)
