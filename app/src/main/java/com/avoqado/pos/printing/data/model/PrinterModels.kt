@@ -85,6 +85,14 @@ data class SavedPrinter(
     val port: Int? = null, // Only for WiFi (typically 9100)
     val roles: List<String> = listOf("receipt"),
     val paperWidthMm: Int = 80,
+    /**
+     * Corrimiento a la derecha en COLUMNAS, para `GS L`. Ver
+     * [com.avoqado.pos.printing.data.ESCPOSPrinter.leftMarginChars].
+     *
+     * Tiene default para que las impresoras ya guardadas se deserialicen sin
+     * romperse: quien no lo tenga lee 0, que es el comportamiento de siempre.
+     */
+    val leftMarginChars: Int = 0,
     val isEnabled: Boolean = true,
     val autoPrintReceipts: Boolean = false,
     val autoPrintKitchenTickets: Boolean = false,

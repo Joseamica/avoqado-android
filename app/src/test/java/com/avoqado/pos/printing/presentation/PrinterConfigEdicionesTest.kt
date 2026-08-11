@@ -34,6 +34,18 @@ class PrinterConfigEdicionesTest {
         name = name,
         roles = roles,
         paperWidthMm = mm,
+        leftMarginChars = leftMarginChars,
+        autoPrintReceipts = autoPrintReceipts,
+        autoPrintKitchenTickets = autoPrintKitchenTickets,
+        autoOpenCashDrawer = autoOpenCashDrawer,
+        numberOfCopies = numberOfCopies,
+    )
+
+    private fun SavedPrinter.editandoMargen(columnas: Int) = conEdiciones(
+        name = name,
+        roles = roles,
+        paperWidthMm = paperWidthMm,
+        leftMarginChars = columnas,
         autoPrintReceipts = autoPrintReceipts,
         autoPrintKitchenTickets = autoPrintKitchenTickets,
         autoOpenCashDrawer = autoOpenCashDrawer,
@@ -60,11 +72,25 @@ class PrinterConfigEdicionesTest {
     }
 
     @Test
+    fun `ajustar el margen deja la impresora con el margen nuevo, no con el de apertura`() {
+        // Mismo defecto que el ancho, y aquí duele más: la página de prueba ES la
+        // herramienta para calibrar el margen. Si imprimiera con la copia
+        // congelada, subirle al margen no cambiaría nada en el papel y quien
+        // instala concluiría que el ajuste no sirve.
+        val abierta = base()
+        val editada = abierta.editandoMargen(6)
+
+        assertEquals(6, editada.leftMarginChars)
+        assertEquals(0, abierta.leftMarginChars)
+    }
+
+    @Test
     fun `lo demas que se edita tambien viaja`() {
         val editada = base().conEdiciones(
             name = "Barra",
             roles = listOf("kitchen", "bar"),
             paperWidthMm = 58,
+            leftMarginChars = 6,
             autoPrintReceipts = true,
             autoPrintKitchenTickets = true,
             autoOpenCashDrawer = false,
@@ -75,6 +101,7 @@ class PrinterConfigEdicionesTest {
         assertEquals(true, editada.autoPrintReceipts)
         assertEquals(false, editada.autoOpenCashDrawer)
         assertEquals(2, editada.numberOfCopies)
+        assertEquals(6, editada.leftMarginChars)
         // La identidad no cambia: sigue siendo la misma impresora.
         assertEquals("p1", editada.id)
         assertEquals("192.168.1.50", editada.address)

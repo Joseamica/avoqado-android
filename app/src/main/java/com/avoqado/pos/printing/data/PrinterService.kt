@@ -412,6 +412,7 @@ class PrinterService @Inject constructor(
     private fun escposFor(printer: SavedPrinter) = ESCPOSPrinter(
         paperWidth = printer.paperWidth,
         switchToSingleByteFirst = printer.connectionTypeEnum == PrinterConnectionType.INTERNAL,
+        leftMarginChars = printer.leftMarginChars,
     )
 
     suspend fun printTestPage(printer: SavedPrinter) {

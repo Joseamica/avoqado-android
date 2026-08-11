@@ -49,6 +49,7 @@ import androidx.compose.ui.unit.dp
 import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Success
+import com.avoqado.pos.printing.data.ESCPOSPrinter
 import com.avoqado.pos.printing.data.PrinterService
 import com.avoqado.pos.printing.data.model.PaperWidth
 import com.avoqado.pos.printing.data.model.PrinterConnectionType
@@ -72,6 +73,7 @@ fun PrinterConfigSheet(
     var name by remember { mutableStateOf(printer.name) }
     var selectedRoles by remember { mutableStateOf(printer.roles.toSet()) }
     var paperWidthMm by remember { mutableIntStateOf(printer.paperWidthMm) }
+    var leftMarginChars by remember { mutableIntStateOf(printer.leftMarginChars) }
     var autoPrintReceipts by remember { mutableStateOf(printer.autoPrintReceipts) }
     var autoPrintKitchenTickets by remember { mutableStateOf(printer.autoPrintKitchenTickets) }
     var autoOpenCashDrawer by remember { mutableStateOf(printer.autoOpenCashDrawer) }
@@ -97,6 +99,7 @@ fun PrinterConfigSheet(
         name = name,
         roles = selectedRoles.toList(),
         paperWidthMm = paperWidthMm,
+        leftMarginChars = leftMarginChars,
         autoPrintReceipts = autoPrintReceipts,
         autoPrintKitchenTickets = autoPrintKitchenTickets,
         autoOpenCashDrawer = autoOpenCashDrawer,
@@ -238,6 +241,60 @@ fun PrinterConfigSheet(
                     }
                 }
             }
+
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+
+            // Corrimiento a la derecha. Sólo hace falta cuando el rollo NO empieza
+            // donde la impresora cree que empieza — típicamente un rollo angosto
+            // montado con adaptadores en un cabezal más ancho. No se puede
+            // detectar: estas impresoras no traen sensor de ancho ni de posición.
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = AvoqadoTheme.spacing.sm),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("Recorrer a la derecha", modifier = Modifier.weight(1f))
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
+                ) {
+                    TextButton(
+                        onClick = {
+                            if (leftMarginChars > 0) {
+                                leftMarginChars--
+                                saveChanges()
+                            }
+                        },
+                        enabled = leftMarginChars > 0,
+                    ) { Text("-") }
+
+                    Text(
+                        "$leftMarginChars",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                    )
+
+                    TextButton(
+                        onClick = {
+                            if (leftMarginChars < ESCPOSPrinter.MAX_LEFT_MARGIN_CHARS) {
+                                leftMarginChars++
+                                saveChanges()
+                            }
+                        },
+                        enabled = leftMarginChars < ESCPOSPrinter.MAX_LEFT_MARGIN_CHARS,
+                    ) { Text("+") }
+                }
+            }
+
+            Text(
+                "Déjalo en 0 salvo que el ticket salga mocho de la izquierda. " +
+                    "Eso pasa con un rollo angosto puesto con adaptadores en una " +
+                    "impresora más ancha. Imprime la página de prueba, cuenta el " +
+                    "primer número de la regla que alcances a ver y ponlo aquí.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
 
             HorizontalDivider(modifier = Modifier.padding(vertical = AvoqadoTheme.spacing.md))
 
@@ -450,6 +507,7 @@ internal fun SavedPrinter.conEdiciones(
     name: String,
     roles: List<String>,
     paperWidthMm: Int,
+    leftMarginChars: Int,
     autoPrintReceipts: Boolean,
     autoPrintKitchenTickets: Boolean,
     autoOpenCashDrawer: Boolean,
@@ -458,6 +516,7 @@ internal fun SavedPrinter.conEdiciones(
     name = name,
     roles = roles,
     paperWidthMm = paperWidthMm,
+    leftMarginChars = leftMarginChars,
     autoPrintReceipts = autoPrintReceipts,
     autoPrintKitchenTickets = autoPrintKitchenTickets,
     autoOpenCashDrawer = autoOpenCashDrawer,

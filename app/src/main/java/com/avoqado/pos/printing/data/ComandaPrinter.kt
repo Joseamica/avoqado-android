@@ -187,6 +187,7 @@ class ComandaPrinter @Inject constructor(
                 port = null,
                 roles = listOf(PrinterRole.KITCHEN.value),
                 paperWidthMm = paperWidthMm,
+                leftMarginChars = leftMarginChars,
             )
             else -> {
                 Log.w(

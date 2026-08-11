@@ -26,6 +26,24 @@ class ESCPOSPrinter(
      * Las Epson de red/Bluetooth ya están en single-byte y no lo necesitan.
      */
     private val switchToSingleByteFirst: Boolean = false,
+    /**
+     * Corrimiento a la DERECHA, en columnas de fuente A, que se aplica con `GS L`.
+     *
+     * 🔴 Existe porque montar un rollo angosto con adaptadores en un cabezal más
+     * ancho NO deja el papel en el origen del cabezal, y nada lo reporta: estas
+     * impresoras traen sensor de PRESENCIA de papel, no de ancho ni de posición.
+     * Sin el corrimiento el POS escribe a la izquierda de donde empieza el papel
+     * y esos caracteres caen sobre el rodillo: el ticket sale mocho. Medido en
+     * una Epson con adaptadores de 58 mm, se perdían las 6 primeras columnas de
+     * CADA línea alineada a la izquierda, mientras las centradas salían enteras
+     * — el `ESC a 1` las centraba sobre los 80 mm del cabezal, que casualmente
+     * es donde estaba el rollo.
+     *
+     * 0 = sin corrimiento, y es el default: impresora nativa de 58 mm, o rollo
+     * pegado al origen. Lo calibra quien instala, contando en la regla que
+     * imprime [generateTestPrint].
+     */
+    private val leftMarginChars: Int = 0,
 ) {
     private val buffer = ByteArrayOutputStream()
 
@@ -63,6 +81,32 @@ class ESCPOSPrinter(
         // ESC t 16 = Windows-1252 (no 858, como decía el comentario viejo).
         // Trae los acentos del español.
         val CODE_PAGE_LATIN1 = byteArrayOf(0x1B, 0x74, 0x10)
+
+        // MARK: - Área de impresión (GS L / GS W)
+
+        /**
+         * Ancho de una columna de fuente A, en puntos. Es 12 tanto a 180 como a
+         * 203 dpi: la fuente se define en PUNTOS, no en milímetros. Por eso el
+         * corrimiento se configura en COLUMNAS y no en mm — el número que se
+         * cuenta en la regla de la página de prueba es el mismo que entra al
+         * comando, sin conversiones que cambien según el modelo de impresora.
+         */
+        const val CHAR_WIDTH_DOTS = 12
+
+        /**
+         * Tope del corrimiento: es el desperdicio máximo posible, 48 columnas de
+         * un cabezal de 80 mm menos las 32 de un rollo de 58 mm. Pedir más
+         * empujaría el ticket fuera del papel por el OTRO lado.
+         */
+        const val MAX_LEFT_MARGIN_CHARS = 16
+
+        /** `GS L` — margen izquierdo, en puntos desde el borde del área imprimible. */
+        fun setLeftMargin(dots: Int): ByteArray =
+            byteArrayOf(0x1D, 0x4C, (dots and 0xFF).toByte(), ((dots shr 8) and 0xFF).toByte())
+
+        /** `GS W` — ancho del área de impresión, en puntos a partir del margen izquierdo. */
+        fun setPrintAreaWidth(dots: Int): ByteArray =
+            byteArrayOf(0x1D, 0x57, (dots and 0xFF).toByte(), ((dots shr 8) and 0xFF).toByte())
 
         // FS . — pasa a modo de UN SOLO BYTE. Obligatorio en la integrada de
         // Sunmi, que arranca en multibyte GB18030; sin esto el code page de
@@ -195,6 +239,31 @@ class ESCPOSPrinter(
         appendCommand(INITIALIZE)
         if (switchToSingleByteFirst) appendCommand(SINGLE_BYTE_MODE)
         appendCommand(CODE_PAGE_LATIN1)
+        applyPrintArea()
+    }
+
+    /**
+     * Le dice a la impresora CUÁL es su área de impresión, en vez de dejarla con
+     * la de fábrica.
+     *
+     * Sin esto, elegir 58 mm sólo cambiaba cuántos caracteres arma la app: la
+     * impresora seguía creyendo que su papel mide 80 mm. Dos consecuencias, y
+     * las dos se veían en el papel:
+     *
+     * 1. El origen quedaba fuera del rollo angosto → ticket mocho de la
+     *    izquierda (lo que arregla [leftMarginChars]).
+     * 2. La impresora daba vuelta a la línea a las 48 columnas y no a las 32, así
+     *    que una línea larga se salía del papel en vez de partirse.
+     *
+     * Va DESPUÉS de `ESC @`, que es justo lo que resetea ambos valores: así se
+     * fijan siempre desde un estado conocido. Si margen + ancho se pasaran del
+     * área real, la impresora recorta sola el ancho (spec de `GS W`), así que
+     * pedir de más nunca es un error duro.
+     */
+    private fun applyPrintArea() {
+        val marginDots = leftMarginChars.coerceIn(0, MAX_LEFT_MARGIN_CHARS) * CHAR_WIDTH_DOTS
+        appendCommand(setLeftMargin(marginDots))
+        appendCommand(setPrintAreaWidth(paperWidth.dots))
     }
 
     fun getData(): ByteArray = buffer.toByteArray()
@@ -379,6 +448,29 @@ class ESCPOSPrinter(
     fun printDoubleDivider() {
         printDivider('=')
     }
+
+    /**
+     * Una línea de la regla de calibración: [tens] da la fila de decenas y
+     * `false` la de unidades. Mide EXACTAMENTE lo que la impresora acepta por
+     * línea y va alineada a la izquierda a propósito.
+     *
+     * El papel la recorta solo, y ahí está el truco: **el primer número que se
+     * alcanza a leer ES el corrimiento que hay que configurar.** Es la única
+     * manera de medirlo, porque estas impresoras no traen sensor de ancho ni de
+     * posición del rollo — de qué lado se puso el adaptador no lo sabe ni la
+     * impresora ni el protocolo, sólo quien lo instaló.
+     *
+     * Como se imprime con el margen YA aplicado, también sirve de verificación:
+     * si la regla empieza en 0, la impresora está bien calibrada.
+     */
+    private fun calibrationRuler(tens: Boolean): String =
+        (0 until paperWidth.charsPerLine).joinToString("") { i ->
+            when {
+                !tens -> ('0' + i % 10).toString()
+                i < 10 -> " "
+                else -> ('0' + (i / 10) % 10).toString()
+            }
+        }
 
     /** Print two columns (left and right aligned) */
     fun printTwoColumns(left: String, right: String) {
@@ -742,6 +834,18 @@ class ESCPOSPrinter(
         setLargeText(true)
         printLine("PRUEBA DE IMPRESIÓN")
         setLargeText(false)
+        printLine()
+
+        printDivider()
+
+        // Regla de calibración. Tiene que ir ARRIBA y alineada a la izquierda:
+        // es lo primero que hay que mirar cuando el ticket sale mocho.
+        setAlignment(TextAlignment.LEFT)
+        printLine(calibrationRuler(tens = true))
+        printLine(calibrationRuler(tens = false))
+        setAlignment(TextAlignment.CENTER)
+        printLine("Si no ves el 0, ese es tu margen")
+        printLine("Margen actual: $leftMarginChars")
         printLine()
 
         printDivider()

@@ -38,6 +38,11 @@ data class PrinterInfo(
     val address: String? = null,
     val stableKey: String? = null,
     val paperWidthMm: Int = 80,
+    /**
+     * Corrimiento a la derecha en columnas (`GS L`). Opcional con default para
+     * que un server viejo —o un config cacheado de antes— siga deserializando.
+     */
+    val leftMarginChars: Int = 0,
     val charset: String = "CP858",
     val active: Boolean = true,
     val lastStatus: String? = null,
