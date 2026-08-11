@@ -213,20 +213,46 @@ class CardChargeDecisionTest {
 
     @Test
     fun `un 5xx obliga a ir a preguntar el estado, nunca a concluir`() {
-        assertTrue(CardChargeDecision.mustReconcile(ChargeWaitEnding.Http(503)))
-        assertTrue(CardChargeDecision.mustReconcile(ChargeWaitEnding.Http(504)))
+        assertTrue(CardChargeDecision.mustReconcile(ChargeWaitEnding.Http(503), cancelRequested = false))
+        assertTrue(CardChargeDecision.mustReconcile(ChargeWaitEnding.Http(504), cancelRequested = false))
     }
 
     @Test
     fun `un corte de red obliga a ir a preguntar el estado`() {
-        assertTrue(CardChargeDecision.mustReconcile(ChargeWaitEnding.NetworkError))
+        assertTrue(CardChargeDecision.mustReconcile(ChargeWaitEnding.NetworkError, cancelRequested = false))
+    }
+
+    @Test
+    fun `tras cancelar, NINGUN codigo permite concluir — ni siquiera el 409`() {
+        // 🔴 MEDIDO CON TARJETA REAL el 2026-08-10 (Sunmi T3 Pro + terminal N860, $0.15):
+        //
+        //   22:34:57  el cobro sale hacia la terminal
+        //   22:35:16  el cajero cancela  →  la petición original termina en 409
+        //   22:35:22  la TERMINAL cobra y registra el pago          ← SEIS SEGUNDOS DESPUÉS
+        //   22:35:24  el webhook confirma $0.15
+        //
+        // El 409 llegó ANTES de que se supiera la verdad. Tratarlo como "rechazo de negocio"
+        // hizo que la app dijera "consta que no se cobró" con la tarjeta ya cobrada: venta
+        // abierta, cero aviso, y el siguiente "Cobrar" cobrando por segunda vez.
+        //
+        // Cancelar es una PETICIÓN, no una garantía. Un 409 tras cancelar significa "tu
+        // petición quedó superada", jamás "no hubo cargo": la terminal llevaba 19 segundos
+        // con la solicitud en la mano y la tarjeta ya estaba pasando.
+        assertTrue(CardChargeDecision.mustReconcile(ChargeWaitEnding.Http(409), cancelRequested = true))
+        assertTrue(CardChargeDecision.mustReconcile(ChargeWaitEnding.Http(404), cancelRequested = true))
+        assertTrue(CardChargeDecision.mustReconcile(ChargeWaitEnding.Http(422), cancelRequested = true))
+        assertTrue(CardChargeDecision.mustReconcile(ChargeWaitEnding.Http(200), cancelRequested = true))
+        assertTrue(CardChargeDecision.mustReconcile(ChargeWaitEnding.NetworkError, cancelRequested = true))
+        assertTrue(CardChargeDecision.mustReconcile(ChargeWaitEnding.CeilingExceeded, cancelRequested = true))
     }
 
     @Test
     fun `los rechazos de negocio NO mandan a preguntar — ya consta que no se cobró`() {
-        assertFalse(CardChargeDecision.mustReconcile(ChargeWaitEnding.Http(404)))
-        assertFalse(CardChargeDecision.mustReconcile(ChargeWaitEnding.Http(409)))
-        assertFalse(CardChargeDecision.mustReconcile(ChargeWaitEnding.Http(422)))
+        // Sigue valiendo cuando NADIE canceló: ahí el 409 sí es "terminal ocupada", o sea que
+        // el cobro nunca se despachó. Es el matiz que distingue este caso del de arriba.
+        assertFalse(CardChargeDecision.mustReconcile(ChargeWaitEnding.Http(404), cancelRequested = false))
+        assertFalse(CardChargeDecision.mustReconcile(ChargeWaitEnding.Http(409), cancelRequested = false))
+        assertFalse(CardChargeDecision.mustReconcile(ChargeWaitEnding.Http(422), cancelRequested = false))
     }
 
     // MARK: - Desenlace 4: SE VENCIÓ EL PLAZO
@@ -236,7 +262,7 @@ class CardChargeDecisionTest {
         // El operador canceló DESDE la terminal (Nexgo) y la terminal nunca reportó nada:
         // el POS se quedaba en "Procesando pago…" para siempre. Ahora se corta la espera,
         // pero el desenlace lo sigue decidiendo el server, no el reloj.
-        assertTrue(CardChargeDecision.mustReconcile(ChargeWaitEnding.CeilingExceeded))
+        assertTrue(CardChargeDecision.mustReconcile(ChargeWaitEnding.CeilingExceeded, cancelRequested = false))
     }
 
     @Test

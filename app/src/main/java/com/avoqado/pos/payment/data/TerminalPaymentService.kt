@@ -91,6 +91,18 @@ class TerminalPaymentService @Inject constructor(
     }
 
     /**
+     * `requestId` para el que el cajero pidió cancelar. Lo lee el hilo del cobro, que sigue en
+     * vuelo, para no concluir nada por su cuenta — ver [CardChargeDecision.mustReconcile].
+     *
+     * 🔴 `@Volatile` y escrito ANTES de disparar el cancel: el cancel es fire-and-forget en otro
+     * hilo, así que si se marcara desde ahí llegaría tarde justo en la carrera que importa.
+     * Se guarda el id, no un booleano, porque un cancel viejo no debe contaminar el cobro
+     * siguiente — la bandera sólo aplica al cobro que se canceló.
+     */
+    @Volatile
+    private var cancelRequestedFor: String? = null
+
+    /**
      * Vuelve a poner (o suelta, con `null`) la llave durable tras un desenlace que llegó TARDE.
      *
      * Existe porque el éxito limpia la llave al llegar, y si ese éxito era de un cobro que el
@@ -153,6 +165,8 @@ class TerminalPaymentService @Inject constructor(
         val requestId = UUID.randomUUID().toString()
         currentRequestId = requestId
         currentTerminalId = terminalId
+        // Cobro nuevo, carrera nueva: el cancel del anterior no gobierna a éste.
+        cancelRequestedFor = null
         // Desde este instante la tarjeta PUEDE cobrarse. Hasta que el desenlace conste,
         // este id es lo único que permite preguntar "¿cómo quedó?" en vez de cobrar de nuevo.
         unresolvedRequestId = requestId
@@ -251,8 +265,12 @@ class TerminalPaymentService @Inject constructor(
                         val errorResp = json.decodeFromString(TerminalPaymentResponse.serializer(), body)
                         errorResp.errorMessage ?: errorResp.message
                     } catch (_: Exception) { null }
-                    if (CardChargeDecision.mustReconcile(ChargeWaitEnding.Http(responseCode))) {
-                        Log.e("💳", "⏳ Fallo de transporte ($responseCode): se consulta el estado durable")
+                    if (CardChargeDecision.mustReconcile(
+                            ChargeWaitEnding.Http(responseCode),
+                            cancelRequested = cancelRequestedFor == requestId,
+                        )
+                    ) {
+                        Log.e("💳", "⏳ Desenlace no consta ($responseCode): se consulta el estado durable")
                         resolveOutcome(requestId)
                     } else {
                         Log.e("💳", "❌ Terminal payment failed: $responseCode - $body")
@@ -269,7 +287,7 @@ class TerminalPaymentService @Inject constructor(
             // el falso "falló" (y el doble cobro que provocaría un reintento a ciegas).
             val ending = if (ceilingExceeded.get()) ChargeWaitEnding.CeilingExceeded else ChargeWaitEnding.NetworkError
             Log.e("💳", "⚠️ Espera terminada sin resultado ($ending): se consulta el estado durable: ${e.message}")
-            if (CardChargeDecision.mustReconcile(ending)) {
+            if (CardChargeDecision.mustReconcile(ending, cancelRequested = cancelRequestedFor == requestId)) {
                 resolveOutcome(requestId)
             } else {
                 unresolvedRequestId = null
@@ -390,6 +408,12 @@ class TerminalPaymentService @Inject constructor(
         val requestId = currentRequestId
         val venueId = secureStorage.venueId ?: return
         val token = secureStorage.accessToken ?: return
+
+        // 🔴 Marcar ANTES de disparar el cancel, no dentro del hilo: el cobro sigue en vuelo y
+        // en cuanto el server procese este cancel le contestará 409. Si la marca llegara tarde,
+        // ese 409 se leería como "no se cobró" — que es exactamente el doble cobro medido con
+        // tarjeta real el 2026-08-10.
+        cancelRequestedFor = requestId
 
         // Fire-and-forget cancel
         Thread {

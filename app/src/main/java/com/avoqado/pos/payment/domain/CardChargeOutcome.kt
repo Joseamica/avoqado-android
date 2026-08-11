@@ -108,11 +108,29 @@ object CardChargeDecision {
      *
      * Todo final ambiguo (5xx, corte de red, plazo vencido) manda a consultar. Sólo las
      * respuestas reales de negocio (4xx) permiten concluir de una vez, porque constan.
+     *
+     * @param cancelRequested el cajero pidió cancelar ESTE cobro, que ya iba en camino.
+     *
+     * 🔴 **Si se canceló, NINGÚN código permite concluir.** Cancelar es una PETICIÓN, no una
+     * garantía: si la tarjeta ya se pasó, la terminal cobra igual y avisa después. El cancel
+     * gana la carrera contra la respuesta del cobro, así que el server contesta 409 ("tu
+     * petición quedó superada") ANTES de que exista un desenlace — leerlo como "no se cobró"
+     * es afirmar algo que nadie afirmó.
+     *
+     * Medido con tarjeta real (2026-08-10, $0.15): 409 a las 22:35:16, la terminal cobró a las
+     * 22:35:22. La app dijo "consta que no se cobró" con el dinero ya cobrado, dejó la venta
+     * abierta y sin aviso, y el siguiente "Cobrar" habría cobrado por segunda vez.
+     *
+     * El parámetro NO tiene default a propósito: es la ruta del dinero y quien agregue una
+     * salida nueva tiene que decidir explícitamente si hubo cancel, no heredarlo por descuido.
      */
-    fun mustReconcile(ending: ChargeWaitEnding): Boolean = when (ending) {
-        is ChargeWaitEnding.Http -> isTransportFailure(ending.code)
-        ChargeWaitEnding.NetworkError -> true
-        ChargeWaitEnding.CeilingExceeded -> true
+    fun mustReconcile(ending: ChargeWaitEnding, cancelRequested: Boolean): Boolean = when {
+        cancelRequested -> true
+        else -> when (ending) {
+            is ChargeWaitEnding.Http -> isTransportFailure(ending.code)
+            ChargeWaitEnding.NetworkError -> true
+            ChargeWaitEnding.CeilingExceeded -> true
+        }
     }
 
     /**
@@ -121,6 +139,11 @@ object CardChargeDecision {
      * 5xx y 408 = el server/proxy nunca nos dijo el desenlace: la terminal pudo haber cobrado.
      * Los 4xx (404 terminal desconectada, 409 ocupada, 422 sin socket) son respuestas REALES
      * del server: constan como "nunca se despachó" y siguen siendo un error normal.
+     *
+     * 🔴 Eso vale SÓLO si nadie canceló. El mismo 409 significa dos cosas distintas: "la
+     * terminal está ocupada, no despaché nada" (consta) y "tu petición quedó superada por el
+     * cancel que acabas de mandar" (no consta NADA — la terminal ya tenía la solicitud y pudo
+     * cobrar). Por eso el cancel se evalúa ANTES que el código, en [mustReconcile].
      */
     fun isTransportFailure(httpCode: Int): Boolean = httpCode >= 500 || httpCode == 408
 
