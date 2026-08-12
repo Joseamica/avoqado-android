@@ -86,6 +86,7 @@ fun IssueRefundSheet(
     maxRefundable: Double,
     refundRepository: RefundRepository,
     cashDrawerRepository: CashDrawerRepository,
+    terminalPaymentService: com.avoqado.pos.payment.data.TerminalPaymentService,
     onDismiss: () -> Unit,
     onRefunded: () -> Unit,
 ) {
@@ -116,6 +117,65 @@ fun IssueRefundSheet(
         mutableStateOf(transaction.method.equals("CASH", ignoreCase = true))
     }
     var errorMsg by remember(transaction.id) { mutableStateOf<String?>(null) }
+
+    // --- Abrir la devolución en una terminal física ---
+    //
+    // 🔴 Esto NO registra un reembolso en Avoqado: la TPV lo registra ella sola
+    // cuando el dinero se mueve. Registrarlo también aquí lo contaría dos veces.
+    var enviandoATerminal by remember(transaction.id) { mutableStateOf(false) }
+    var terminalMsg by remember(transaction.id) { mutableStateOf<String?>(null) }
+    var terminalAbierta by remember(transaction.id) { mutableStateOf(false) }
+    var terminalesParaElegir by remember(transaction.id) {
+        mutableStateOf<List<com.avoqado.pos.payment.data.OnlineTerminal>>(emptyList())
+    }
+
+    fun mandarATerminal(terminalId: String) {
+        scope.launch {
+            enviandoATerminal = true
+            terminalMsg = null
+            val resultado = terminalPaymentService.requestRefundOnTerminal(
+                terminalId = terminalId,
+                paymentId = transaction.id,
+                reason = reason?.label,
+            )
+            enviandoATerminal = false
+            resultado.fold(
+                onSuccess = {
+                    // 🔴 NO se cierra como "reembolsado": todavía no se devolvió
+                    // nada. Se le dice al cajero exactamente qué pasó y qué falta,
+                    // porque si esto se pintara como éxito daría por cerrada una
+                    // devolución que sigue esperando a alguien en el aparato.
+                    terminalAbierta = true
+                },
+                onFailure = { e ->
+                    terminalMsg = e.message ?: "No se pudo abrir la devolución en la terminal."
+                },
+            )
+        }
+    }
+
+    fun abrirEnTerminal() {
+        scope.launch {
+            enviandoATerminal = true
+            terminalMsg = null
+            when (val lista = terminalPaymentService.fetchOnlineTerminals()) {
+                is com.avoqado.pos.payment.data.TerminalListResult.Error -> {
+                    enviandoATerminal = false
+                    terminalMsg = lista.message
+                }
+                is com.avoqado.pos.payment.data.TerminalListResult.Success -> {
+                    enviandoATerminal = false
+                    when (lista.terminals.size) {
+                        0 -> terminalMsg = "No hay terminales conectadas. Abre la app en la terminal e inténtalo de nuevo."
+                        1 -> mandarATerminal(lista.terminals.first().terminalId)
+                        // Con varias, la elige una persona: mandar la devolución a
+                        // la terminal equivocada la abre lejos de quien la espera.
+                        else -> terminalesParaElegir = lista.terminals
+                    }
+                }
+            }
+        }
+    }
     // Include-tip toggle for amount refunds on payments that had tip. Defaults
     // ON → backend uses proportional split. OFF → send tipRefundCents=0 so the
     // refund pulls 100% from the sale, leaving the staff tip intact.
@@ -140,6 +200,27 @@ fun IssueRefundSheet(
         amountToRefund > 0 &&
         amountToRefund <= maxRefundable + 0.001 &&
         !submitting
+
+    if (terminalesParaElegir.isNotEmpty()) {
+        com.avoqado.pos.designsystem.components.AvoqadoDialog(
+            title = "¿En cuál terminal?",
+            description = "Ahí se abrirá la devolución para que la confirmen con la tarjeta.",
+            onDismiss = { terminalesParaElegir = emptyList() },
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(spacing.sm)) {
+                terminalesParaElegir.forEach { terminal ->
+                    PrimaryButton(
+                        text = terminal.name.ifBlank { terminal.terminalId },
+                        onClick = {
+                            terminalesParaElegir = emptyList()
+                            mandarATerminal(terminal.terminalId)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
+        }
+    }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -198,8 +279,43 @@ fun IssueRefundSheet(
                         fontWeight = FontWeight.SemiBold,
                     )
                     Text(
-                        text = "La devolución a la tarjeta se hace desde la terminal, con su " +
-                            "función de devolución. Dinos cómo se devolvió para que la caja cuadre:",
+                        text = "La devolución a la tarjeta se hace en la terminal. Puedes abrirla " +
+                            "ahí desde aquí, y sólo falta que alguien la confirme con la tarjeta.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+
+                    Spacer(modifier = Modifier.height(spacing.xs))
+                    if (terminalAbierta) {
+                        // Lo que el cajero necesita saber: qué pasó, qué falta, y
+                        // que todavía NO se ha devuelto el dinero.
+                        Text(
+                            text = "Abierta en la terminal. Falta que la confirmen ahí con la " +
+                                "tarjeta — hasta entonces no se ha devuelto nada. Cuando se " +
+                                "haga, la venta se actualiza sola.",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.Medium,
+                        )
+                    } else {
+                        PrimaryButton(
+                            text = if (enviandoATerminal) "Abriendo…" else "Abrir en la terminal",
+                            onClick = { abrirEnTerminal() },
+                            enabled = !enviandoATerminal && !submitting,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                    terminalMsg?.let { msg ->
+                        Text(
+                            text = msg,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(spacing.sm))
+                    Text(
+                        text = "¿Ya la devolviste a mano en la terminal? Dinos cómo se devolvió " +
+                            "para que la caja cuadre:",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

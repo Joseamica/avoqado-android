@@ -521,6 +521,60 @@ class TerminalPaymentService @Inject constructor(
             Result.failure(e)
         }
     }
+
+    /**
+     * Abrir en una terminal la devolución de un cobro con tarjeta.
+     *
+     * 🔴 Devolver éxito significa "la terminal ABRIÓ la pantalla", NUNCA "el
+     * dinero se devolvió": eso lo confirma una persona en el aparato —en Blumon
+     * hay que volver a pasar la tarjeta— y la propia TPV registra el reembolso
+     * cuando ocurre. Por eso quien llama a esto NO debe registrar además un
+     * reembolso en Avoqado: sería contarlo dos veces.
+     */
+    suspend fun requestRefundOnTerminal(
+        terminalId: String,
+        paymentId: String,
+        reason: String? = null,
+    ): Result<Unit> {
+        val venueId = secureStorage.venueId ?: return Result.failure(Exception("No venue selected"))
+        val token = secureStorage.accessToken ?: return Result.failure(Exception("Not authenticated"))
+        val requestId = UUID.randomUUID().toString()
+
+        return try {
+            val bodyJson = JSONObject()
+                .put("requestId", requestId)
+                .put("paymentId", paymentId)
+                .apply { reason?.takeIf { it.isNotBlank() }?.let { put("reason", it) } }
+                .toString()
+                .toRequestBody("application/json".toMediaType())
+
+            val request = Request.Builder()
+                .url("$baseUrl/mobile/venues/$venueId/terminals/$terminalId/refund-request")
+                .header("Authorization", "Bearer $token")
+                .post(bodyJson)
+                .build()
+
+            val (code, body) = withContext(Dispatchers.IO) {
+                val response = client.newCall(request).execute()
+                response.code to (response.body?.string() ?: "")
+            }
+
+            if (code in 200..299) {
+                Log.d("↩️", "✅ Devolución abierta en la TPV $terminalId (pago $paymentId)")
+                Result.success(Unit)
+            } else {
+                Log.e("↩️", "❌ No se pudo abrir la devolución en la TPV ($code): $body")
+                val message = runCatching {
+                    JSONObject(body).optString("message")
+                        .ifBlank { JSONObject(body).optString("errorMessage") }
+                }.getOrNull()?.takeIf { it.isNotBlank() }
+                Result.failure(Exception(message ?: "No se pudo abrir la devolución en la terminal ($code)"))
+            }
+        } catch (e: Exception) {
+            Log.e("↩️", "❌ Error abriendo devolución en TPV: ${e.message}")
+            Result.failure(e)
+        }
+    }
 }
 
 // MARK: - Results

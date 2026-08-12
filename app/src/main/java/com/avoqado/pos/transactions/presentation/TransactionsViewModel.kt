@@ -41,6 +41,8 @@ class TransactionsViewModel @Inject constructor(
     private val repository: TransactionRepository,
     val refundRepository: RefundRepository,
     val cashDrawerRepository: CashDrawerRepository,
+    /** Para abrir la devolución de un cobro con tarjeta en una terminal física. */
+    val terminalPaymentService: com.avoqado.pos.payment.data.TerminalPaymentService,
     val roleManager: RoleManager,
     private val orderRepository: OrderRepository,
     private val printerService: PrinterService,
