@@ -2136,10 +2136,53 @@ grep -i "error" "$LOG" | tail -30
 Un 200 en la respuesta con un `error:` en el log es un bug escondiéndose. Detecta el archivo activo
 por `mtime`, no por número — winston rota y el `tail` se queda mudo sin avisar.
 
-- [ ] **Step 6: Reporte**
+- [ ] **Step 6: Cerrar los minors diferidos que sí valen antes de terminar la fase**
+
+Durante las 17 tareas se difirieron muchos minors. **Estos dos merecen cerrarse aquí** porque son
+los únicos que dejan una invariante de dinero sin test o una decisión sin anclar:
+
+**(a) Falta el test del escenario que motiva la regla central de la Task 10.** El brief de esa
+tarea se blindó contra "cualquier `orderId` nulo accidental de la ruta nativa convertido en una
+entrega gratis", pero el test de regresión nativa usa un vale **con** orden y `paymentStatus:
+PENDING`. El caso exacto —vale nativo `PAID` con `orderId: null`— no tiene test, aunque el código
+sí lo cubre (`!ticket.order` → `AREA_TICKET_NOT_PAID`). Añádelo a
+`tests/integration/area-tickets/area-ticket-external-fulfillment.test.ts`:
+
+```typescript
+it('un vale NATIVO con orderId nulo NO se entrega — el modo de fallo contra el que existe la bifurcación', async () => {
+  // Se fuerza el estado por escritura directa: ninguna ruta de producción lo produce,
+  // y ese es justamente el punto — el guard existe para el día que algo lo produzca.
+  const ticket = await issueNativeTicket({ quantity: '1' })
+  await prisma.areaTicket.update({
+    where: { id: ticket.id },
+    data: { status: 'PAID', orderId: null },
+  })
+  await expect(
+    fulfillAreaTicket(venueId, ticket.id, {
+      idempotencyKey: `nul-${suffix}`, deviceUid: deliveryDeviceUid, method: 'PAPER_CONFIRMATION',
+    }),
+  ).rejects.toMatchObject({ code: 'AREA_TICKET_NOT_PAID' })
+})
+```
+
+**(b) Anclar la decisión sobre `ticket.status` en la rama EXTERNAL de la entrega.** La revisión de
+la Task 10 verificó por tres vías que hoy es inalcanzable que llegue un vale `CANCELLED`/`EXPIRED`
+a esa rama, pero dejó dicho que **si alguien implementa vencimiento de vales externos, esa rama
+entregaría un vencido sin decir nada** — y la decisión vive solo en un reporte. Añade un comentario
+en la rama EXTERNAL de `fulfillAreaTicket` que diga: qué estados son hoy inalcanzables y **por qué**
+(las tres vías), y qué debe decidirse el día que exista vencimiento externo. No cambies el
+comportamiento: solo deja anclada la decisión donde la vea quien la vaya a romper.
+
+Corre después la familia `area-ticket*` completa y confirma que sigue verde.
+
+- [ ] **Step 7: Reporte**
 
 Qué quedó funcionando, qué NO se probó (impresión real, apps, códigos externos — todo eso es Fase 2
 y 3), y el estado de R2.
+
+Incluye una **tabla de cobertura honesta**: qué invariante de la fase está protegida por qué test, y
+cuáles descansan solo en revisión de código. Es el documento que va a leer quien decida si esto sale
+a producción.
 
 ---
 
