@@ -28,6 +28,11 @@ fun PaymentFlowScreen(
     onPaymentCommitted: (PaymentCompletion) -> Unit,
     onDone: () -> Unit,
     onCancel: () -> Unit,
+    /**
+     * Se resolvió un cobro pendiente de OTRA venta: cierra este flujo y muestra el mensaje
+     * en la pantalla que queda. Ver [PaymentFlowViewModel.previousChargeResolved].
+     */
+    onPreviousChargeResolved: (String) -> Unit = { onCancel() },
     splitConfig: SplitConfig = SplitConfig(),
     /** Mesas (Square): link "Dividir importe" en la selección de método. */
     onSplitImporte: (() -> Unit)? = null,
@@ -276,13 +281,14 @@ fun PaymentFlowScreen(
         }
     }
 
-    // Aviso al resolverse un cobro sin confirmar que venía de una venta anterior.
-    val resolvedNotice by viewModel.resolvedNotice.collectAsState()
-    resolvedNotice?.let { notice ->
-        com.avoqado.pos.designsystem.components.AvoqadoSuccessToast(
-            message = notice,
-            onDismiss = { viewModel.clearResolvedNotice() },
-        )
+    // Se resolvió un cobro de OTRA venta: este flujo ya cumplió su único propósito, así que
+    // se cierra y el mensaje lo pinta el checkout — que es quien se queda en pantalla.
+    val previousChargeResolved by viewModel.previousChargeResolved.collectAsState()
+    LaunchedEffect(previousChargeResolved) {
+        previousChargeResolved?.let { message ->
+            viewModel.clearPreviousChargeResolved()
+            onPreviousChargeResolved(message)
+        }
     }
 
     // El server rechazó la cancelación: la orden sigue abierta y el cajero tiene que saberlo.

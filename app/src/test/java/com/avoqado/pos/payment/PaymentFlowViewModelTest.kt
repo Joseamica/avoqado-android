@@ -511,7 +511,14 @@ class PaymentFlowViewModelTest {
             "jamás dar por pagada la venta actual con el cobro de otra",
             viewModel.state.value is PaymentFlowState.Success,
         )
-        assertNotNull(viewModel.resolvedNotice.value)
+        // El desenlace se anuncia por el canal que CIERRA el flujo: el cajero vino a resolver
+        // un pendiente, no a cobrar, así que vuelve a su carrito con el mensaje en pantalla.
+        // Antes se quedaba dentro del flujo y el aviso se desvanecía mientras ya le pedían la
+        // calificación de la venta nueva — el desenlace de un cobro real pasaba volando.
+        assertNotNull(
+            "resolver un cobro ajeno tiene que avisar y devolver al cajero a donde estaba",
+            viewModel.previousChargeResolved.value,
+        )
     }
 
     @Test

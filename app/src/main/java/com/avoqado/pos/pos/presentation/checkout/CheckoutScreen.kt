@@ -215,6 +215,9 @@ fun CheckoutScreen(
     // cobro vive en disco (ver SecureStorage.pendingCardChargeRequestId), pero además la
     // pantalla debe seguir ahí al volver.
     var showPaymentFlow by rememberSaveable { mutableStateOf(false) }
+    // Desenlace de un cobro que quedó pendiente de OTRA venta. Vive aquí —y no en el flujo
+    // de pago— porque el mensaje tiene que sobrevivir al cierre de ese flujo.
+    var previousChargeNotice by rememberSaveable { mutableStateOf<String?>(null) }
     var paymentCartSnapshot by remember { mutableStateOf<CartState?>(null) }
     var showNoteDialog by remember { mutableStateOf(false) }
     var currentNote by remember { mutableStateOf("") }
@@ -944,6 +947,24 @@ fun CheckoutScreen(
         )
     }
 
+    // 🔴 Dinero de una venta ANTERIOR: no es una celebración, es algo que el cajero tiene que
+    // atender (buscar esa venta, dar el recibo). Por eso NO usa el toast verde de palomita —
+    // se queda hasta que lo descarte a conciencia.
+    previousChargeNotice?.let { message ->
+        AvoqadoDialog(
+            title = "Cobro anterior resuelto",
+            description = "$message. Búscala en Ventas si necesitas dar el recibo.",
+            onDismiss = { previousChargeNotice = null },
+            actionButton = {
+                PrimaryButton(
+                    text = "Entendido",
+                    onClick = { previousChargeNotice = null },
+                    fullWidth = true,
+                )
+            },
+        ) {}
+    }
+
     areaOperationsState.message?.let { message ->
         AvoqadoSuccessToast(
             message = message,
@@ -1083,6 +1104,18 @@ fun CheckoutScreen(
                     // que es lo correcto — el cliente lo pidió; lo que no ocurrió es la venta.
                     upsellViewModel.cancelPendingConversion()
                     cartViewModel.refreshCustomerDisplay()
+                },
+                // Se resolvió un cobro que había quedado de OTRA venta: el flujo se cierra y
+                // el cajero vuelve a su carrito intacto. El aviso lo pinta ESTA pantalla,
+                // que es la que se queda — antes lo mostraba la que se iba, y se desvanecía
+                // mientras ya le pedían la calificación de la venta siguiente.
+                onPreviousChargeResolved = { message ->
+                    showPaymentFlow = false
+                    paymentCartSnapshot = null
+                    pendingSplitConfig = SplitConfig()
+                    upsellViewModel.cancelPendingConversion()
+                    cartViewModel.refreshCustomerDisplay()
+                    previousChargeNotice = message
                 },
                 splitConfig = pendingSplitConfig,
             )

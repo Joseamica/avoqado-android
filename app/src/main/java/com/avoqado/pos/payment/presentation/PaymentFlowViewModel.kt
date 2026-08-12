@@ -341,9 +341,20 @@ class PaymentFlowViewModel @Inject constructor(
     private val _printResult = MutableStateFlow<String?>(null)
     val printResult: StateFlow<String?> = _printResult.asStateFlow()
 
-    /** Aviso tras resolver un cobro sin confirmar que había quedado de una venta anterior. */
-    private val _resolvedNotice = MutableStateFlow<String?>(null)
-    val resolvedNotice: StateFlow<String?> = _resolvedNotice.asStateFlow()
+    /**
+     * Se resolvió un cobro pendiente que venía de OTRA venta: el flujo debe CERRARSE y
+     * devolver al cajero a donde estaba, con este mensaje.
+     *
+     * 🔴 No basta con avisar y seguir: el cajero vino a resolver un pendiente, no a cobrar.
+     * Antes se le soltaba en el primer paso de la venta nueva mientras un toast verde se
+     * desvanecía encima — o sea que el desenlace del cobro viejo (¡dinero!) pasaba volando
+     * mientras la pantalla ya le pedía otra cosa. El mensaje lo pinta quien queda en
+     * pantalla, no la pantalla que se va.
+     */
+    private val _previousChargeResolved = MutableStateFlow<String?>(null)
+    val previousChargeResolved: StateFlow<String?> = _previousChargeResolved.asStateFlow()
+
+    fun clearPreviousChargeResolved() { _previousChargeResolved.value = null }
 
     /**
      * La cancelación de la orden fue RECHAZADA por el server (típicamente 409: ya está pagada).
@@ -1440,10 +1451,13 @@ class PaymentFlowViewModel @Inject constructor(
                 is TerminalPaymentResult.Success -> {
                     undeterminedRequestId = null
                     if (fromPreviousSale) {
-                        // 🔴 Ese cobro era de OTRA venta: confirmarlo NO paga ésta. Se informa
-                        // y se sigue con la venta actual desde cero.
-                        _resolvedNotice.value = "El cobro anterior sí se había realizado"
-                        enterInitialState(total)
+                        // 🔴 Ese cobro era de OTRA venta: confirmarlo NO paga ésta.
+                        // Y tampoco arranca ésta: el cajero vino a resolver un pendiente,
+                        // no a cobrar. Soltarlo en el primer paso de la venta nueva —con el
+                        // aviso desvaneciéndose encima— hacía que el desenlace del cobro
+                        // viejo pasara volando mientras la pantalla ya le pedía otra cosa.
+                        // Vuelve a donde estaba, con el carrito intacto, y él decide.
+                        _previousChargeResolved.value = "El cobro anterior sí se había realizado"
                     } else {
                         applyCardCharged(outcome, total)
                     }
@@ -1452,8 +1466,7 @@ class PaymentFlowViewModel @Inject constructor(
                     // Consta que NO se cobró: aquí sí es seguro ofrecer cobrar de nuevo.
                     undeterminedRequestId = null
                     if (fromPreviousSale) {
-                        _resolvedNotice.value = "El cobro anterior no se realizó"
-                        enterInitialState(total)
+                        _previousChargeResolved.value = "El cobro anterior no se realizó"
                     } else {
                         _state.value = PaymentFlowState.SelectingTerminal(total)
                         fetchTerminals()
@@ -1514,8 +1527,6 @@ class PaymentFlowViewModel @Inject constructor(
         fetchTerminals()
     }
 
-    /** Aviso de una sola vez tras resolver un cobro pendiente de una venta anterior. */
-    fun clearResolvedNotice() { _resolvedNotice.value = null }
 
     fun cancel() {
         isProcessingPayment = false
