@@ -222,9 +222,36 @@ class PrinterService @Inject constructor(
     fun loadSavedPrinters() {
         _savedPrinters.value = storage.loadPrinters()
         val statuses = mutableMapOf<String, PrinterStatus>()
-        _savedPrinters.value.forEach { statuses[it.id] = PrinterStatus.Disconnected }
+        _savedPrinters.value.forEach { statuses[it.id] = estadoInicial(it) }
         _printerStatuses.value = statuses
     }
+
+    /**
+     * El estado con el que arranca una impresora al abrir la app.
+     *
+     * 🔴 La INTEGRADA no puede arrancar en `Disconnected`. No hay socket que
+     * abrir: va soldada al equipo y el servicio se re-liga solo, así que
+     * [needsReconnect] ya devuelve `false` cuando el hardware responde — o sea
+     * que imprime perfecto mientras la pantalla dice "Desconectada".
+     *
+     * Reportado en una D3 (2026-08-10): la lista de guardadas decía
+     * "Desconectada" y la de disponibles marcaba la misma impresora con palomita
+     * verde. Dos afirmaciones opuestas del mismo aparato en la misma pantalla, y
+     * la que estaba mal era ésta. La verdad para la integrada es si el hardware
+     * está ahí, no si alguien le picó "Conectar".
+     *
+     * 🔴 Se pregunta por `hasPhysicalPrinter`, NO por `isAvailable`. Sunmi
+     * preinstala el servicio AIDL en toda su gama, así que en una T3 Pro —que no
+     * tiene cabezal— `isAvailable` también da `true` y diríamos "Conectada" de
+     * una impresora que no existe. Sería la misma mentira al revés, y en el lado
+     * peor: el local creería que tiene con qué imprimir.
+     */
+    private fun estadoInicial(printer: SavedPrinter): PrinterStatus =
+        if (printer.connectionTypeEnum == PrinterConnectionType.INTERNAL && innerPrinter.hasPhysicalPrinter) {
+            PrinterStatus.Connected
+        } else {
+            PrinterStatus.Disconnected
+        }
 
     fun savePrinter(printer: SavedPrinter) {
         val list = _savedPrinters.value.toMutableList()
@@ -236,7 +263,10 @@ class PrinterService @Inject constructor(
         }
         _savedPrinters.value = list
         storage.savePrinters(list)
-        updateStatus(printer.id, PrinterStatus.Disconnected)
+        // Ver [estadoInicial]: la integrada no nace desconectada. Éste es el
+        // camino que se recorre al agregarla desde "Impresoras disponibles", que
+        // es donde se vio el defecto.
+        updateStatus(printer.id, estadoInicial(printer))
     }
 
     fun deletePrinter(printer: SavedPrinter) {

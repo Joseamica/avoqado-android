@@ -23,7 +23,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bluetooth
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.Usb
@@ -139,6 +138,20 @@ fun PrinterSettingsSheet(
 
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
 
+            // 🔴 Una impresora ya agregada NO se repite abajo. Es el modelo del
+            // WiFi del sistema: la red conectada vive arriba y desaparece de "otras
+            // redes"; nadie espera verla en las dos listas.
+            //
+            // Repetirla hacía que la pantalla se contradijera sola: arriba decía
+            // "Desconectada" y abajo la misma impresora salía con palomita verde.
+            // Se puede explicar el duplicado con etiquetas, pero la solución real
+            // es no producirlo.
+            val disponibles = remember(discoveredPrinters, savedPrinters) {
+                discoveredPrinters.filter { encontrada ->
+                    savedPrinters.none { it.address == encontrada.address }
+                }
+            }
+
             // Saved printers list
             if (savedPrinters.isNotEmpty()) {
                 Text(
@@ -207,7 +220,7 @@ fun PrinterSettingsSheet(
 
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
 
-            if (discoveredPrinters.isEmpty() && isDiscovering) {
+            if (disponibles.isEmpty() && isDiscovering) {
                 // Scanning, nothing found yet — placeholder instead of a blank gap.
                 Row(
                     modifier = Modifier
@@ -222,7 +235,24 @@ fun PrinterSettingsSheet(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-            } else if (discoveredPrinters.isEmpty()) {
+            } else if (disponibles.isEmpty() && discoveredPrinters.isNotEmpty()) {
+                // Sí se encontraron impresoras, sólo que todas ya están agregadas.
+                // Decir "No se encontraron impresoras" aquí sería mentir, y
+                // mandaría a alguien a revisar el WiFi de una impresora que la app
+                // acaba de ver perfectamente.
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = AvoqadoTheme.spacing.xl),
+                    horizontalArrangement = Arrangement.Center,
+                ) {
+                    Text(
+                        text = "Todas las impresoras que se encontraron ya están agregadas arriba",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            } else if (disponibles.isEmpty()) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -249,23 +279,19 @@ fun PrinterSettingsSheet(
                 }
             } else {
                 LazyColumn {
-                    items(discoveredPrinters) { printer ->
-                        val alreadySaved = savedPrinters.any { it.address == printer.address }
+                    items(disponibles) { printer ->
                         DiscoveredPrinterRow(
                             printer = printer,
-                            alreadySaved = alreadySaved,
                             onClick = {
-                                if (!alreadySaved) {
-                                    val saved = printer.toSavedPrinter()
-                                    printerService.savePrinter(saved)
-                                    scope.launch {
-                                        try {
-                                            printerService.connect(saved)
-                                        } catch (_: Exception) {}
-                                    }
-                                    // Open config for the new printer
-                                    configPrinter = saved
+                                val saved = printer.toSavedPrinter()
+                                printerService.savePrinter(saved)
+                                scope.launch {
+                                    try {
+                                        printerService.connect(saved)
+                                    } catch (_: Exception) {}
                                 }
+                                // Open config for the new printer
+                                configPrinter = saved
                             },
                         )
                         HorizontalDivider()
@@ -377,13 +403,15 @@ private fun SavedPrinterRow(
 @Composable
 private fun DiscoveredPrinterRow(
     printer: DiscoveredPrinter,
-    alreadySaved: Boolean,
     onClick: () -> Unit,
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(enabled = !alreadySaved, onClick = onClick)
+            // Sin estado "ya guardada": el llamador filtra las que ya están, como
+            // hace el WiFi del sistema. Así este renglón SIEMPRE agrega, y nunca
+            // se ve tocable sin responder.
+            .clickable(onClick = onClick)
             .padding(vertical = AvoqadoTheme.spacing.md),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -419,19 +447,11 @@ private fun DiscoveredPrinterRow(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        if (alreadySaved) {
-            Icon(
-                Icons.Filled.Check,
-                contentDescription = "Ya guardada",
-                tint = Success,
-            )
-        } else {
-            Icon(
-                Icons.Filled.ChevronRight,
-                contentDescription = null,
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
+        Icon(
+            Icons.Filled.ChevronRight,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
