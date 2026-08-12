@@ -1,9 +1,11 @@
 package com.avoqado.pos.customerdisplay
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -42,14 +44,20 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.BlendMode
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.avoqado.pos.designsystem.components.AvoqadoAuroraBackground
 import com.avoqado.pos.designsystem.components.Countries
 import com.avoqado.pos.designsystem.components.Country
+import com.avoqado.pos.designsystem.theme.AvoqadoLoaderGreen
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import androidx.compose.foundation.border
 import androidx.compose.material3.Button
@@ -121,8 +129,112 @@ private val CdActionSub = 26.sp    // monto dentro del botón
 
 // MARK: - Sin venta: la marca
 
+/**
+ * Sin sesión no hay negocio del cual mostrar marca: `venueDisplayName` y
+ * `venueLogo` viven en el almacenamiento que llena el login, así que mientras
+ * la caja está en la pantalla de acceso los dos vienen vacíos. Ese es el ÚNICO
+ * momento en que la pantalla del cliente habla por Avoqado; en cuanto alguien
+ * entra, la marca vuelve a ser la del negocio.
+ */
+internal fun idleShowsAvoqadoBrand(venueName: String?, logoUrl: String?): Boolean =
+    venueName.isNullOrBlank() && logoUrl.isNullOrBlank()
+
 @Composable
 private fun IdleBranding(venueName: String?, logoUrl: String?) {
+    if (idleShowsAvoqadoBrand(venueName, logoUrl)) {
+        AvoqadoIdleBranding()
+        return
+    }
+    VenueIdleBranding(venueName, logoUrl)
+}
+
+/**
+ * La caja está en el login: del otro lado del mostrador esto es lo primero que
+ * ve un cliente, y antes era el nombre "Avoqado" en texto pelón sobre blanco.
+ * Ahora es la marca sobre negro con la aurora — el equivalente nativo del video
+ * de fondo que iOS tiene en su landing.
+ */
+@Composable
+private fun AvoqadoIdleBranding() {
+    val enter = remember { Animatable(0f) }
+    LaunchedEffect(Unit) { enter.animateTo(1f, tween(1200)) }
+    // El halo late más despacio que el logo para que no se sienta un latido
+    // único y mecánico.
+    val halo by rememberInfiniteTransition(label = "halo").animateFloat(
+        initialValue = 0.82f,
+        targetValue = 1.12f,
+        animationSpec = infiniteRepeatable(tween(5200), RepeatMode.Reverse),
+        label = "haloScale",
+    )
+
+    AvoqadoAuroraBackground(modifier = Modifier.fillMaxSize()) {
+        // Fracciones del alto real, no dp fijos: la pantalla del cliente es de
+        // 1280x800 px pero la densidad cambia entre modelos, y un tamaño fijo
+        // se veía bien en una terminal y diminuto en la siguiente.
+        BoxWithConstraints(contentAlignment = Alignment.Center) {
+            val logoSize = maxHeight * 0.30f
+            Column(
+                modifier = Modifier
+                    .padding(AvoqadoTheme.spacing.xxl)
+                    .graphicsLayer {
+                        alpha = enter.value
+                        val s = 0.94f + 0.06f * enter.value
+                        scaleX = s; scaleY = s
+                    },
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center,
+            ) {
+                Image(
+                    painter = painterResource(id = com.avoqado.pos.R.drawable.avoqado_logo_mark),
+                    contentDescription = "Avoqado",
+                    modifier = Modifier
+                        .size(logoSize)
+                        // 🔴 El resplandor va en `drawBehind` y NO en un Canvas
+                        // aparte: un Canvas del tamaño del halo MIDE, y ese
+                        // tamaño empujaba el nombre hasta la orilla de abajo
+                        // dejando un hueco enorme en medio. Aquí el halo pinta
+                        // fuera de los límites del logo sin ocupar layout.
+                        .drawBehind {
+                            val r = size.minDimension * 1.15f * halo
+                            drawCircle(
+                                brush = Brush.radialGradient(
+                                    0f to AvoqadoLoaderGreen.copy(alpha = 0.40f),
+                                    0.42f to AvoqadoLoaderGreen.copy(alpha = 0.12f),
+                                    1f to Color.Transparent,
+                                    center = center,
+                                    radius = r,
+                                ),
+                                radius = r,
+                                blendMode = BlendMode.Plus,
+                            )
+                        },
+                )
+                Spacer(Modifier.height(AvoqadoTheme.spacing.xl))
+                Text(
+                    text = "Avoqado",
+                    fontSize = CdTitle,
+                    lineHeight = CdTitle * 1.2f,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 2.sp,
+                    textAlign = TextAlign.Center,
+                    // Blancos explícitos: el tema de esta pantalla es CLARO
+                    // (ver CustomerDisplayPresentation), así que `onBackground`
+                    // aquí sería negro sobre negro.
+                    color = Color.White,
+                )
+                Spacer(Modifier.height(AvoqadoTheme.spacing.md))
+                Text(
+                    text = "Bienvenido",
+                    fontSize = CdBody,
+                    color = Color.White.copy(alpha = 0.68f),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun VenueIdleBranding(venueName: String?, logoUrl: String?) {
     // Screensaver del negocio: entra con un fade + leve zoom, y luego "respira"
     // muy despacio (escala sutil) para que la pantalla no se vea muerta ni queme
     // pixeles. Nada llamativo — es un letrero en reposo, no una animación.

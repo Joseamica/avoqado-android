@@ -1,6 +1,7 @@
 package com.avoqado.pos.printing.presentation
 
 import com.avoqado.pos.printing.data.model.PaperWidth
+import com.avoqado.pos.printing.data.model.PrinterConnectionType
 import com.avoqado.pos.printing.data.model.SavedPrinter
 import org.junit.Assert.assertEquals
 import org.junit.Test
@@ -91,7 +92,7 @@ class PrinterConfigEdicionesTest {
         val yaCalibrada = base().copy(id = "p1", paperWidthMm = 58, leftMarginChars = 9)
         val nueva = base().copy(id = "p2", paperWidthMm = 58)
 
-        assertEquals(9, margenHeredado(listOf(yaCalibrada, nueva), exceptoId = "p2", anchoMm = 58))
+        assertEquals(9, margenHeredado(listOf(yaCalibrada, nueva), "p2", 58, PrinterConnectionType.WIFI))
     }
 
     @Test
@@ -100,7 +101,7 @@ class PrinterConfigEdicionesTest {
         // el de una de 58 a una de 80 recorrería el ticket sin razón.
         val de58 = base().copy(id = "p1", paperWidthMm = 58, leftMarginChars = 9)
 
-        assertEquals(null, margenHeredado(listOf(de58), exceptoId = "p2", anchoMm = 80))
+        assertEquals(null, margenHeredado(listOf(de58), "p2", 80, PrinterConnectionType.WIFI))
     }
 
     @Test
@@ -109,7 +110,7 @@ class PrinterConfigEdicionesTest {
         // y el ajuste parecería pegarse solo.
         val sola = base().copy(id = "p1", paperWidthMm = 58, leftMarginChars = 9)
 
-        assertEquals(null, margenHeredado(listOf(sola), exceptoId = "p1", anchoMm = 58))
+        assertEquals(null, margenHeredado(listOf(sola), "p1", 58, PrinterConnectionType.WIFI))
     }
 
     @Test
@@ -118,7 +119,36 @@ class PrinterConfigEdicionesTest {
         // impresora nativa de 58 mm le comería el precio por la derecha.
         val sinCalibrar = base().copy(id = "p1", paperWidthMm = 58, leftMarginChars = 0)
 
-        assertEquals(null, margenHeredado(listOf(sinCalibrar), exceptoId = "p2", anchoMm = 58))
+        assertEquals(null, margenHeredado(listOf(sinCalibrar), "p2", 58, PrinterConnectionType.WIFI))
+    }
+
+    @Test
+    fun `la integrada NUNCA hereda el margen de una con adaptadores`() {
+        // 🔴 Hueco real, encontrado antes de probar en una D3. El corrimiento
+        // existe SÓLO porque un rollo angosto con adaptadores no empieza donde
+        // el cabezal empieza. Un cabezal soldado al equipo no lleva adaptadores:
+        // su rollo llena su ancho por construcción, y su margen es 0.
+        //
+        // Sin esta exclusión la integrada hereda el 9 de la Epson del mismo
+        // local y se recorre a la derecha, comiéndose la columna del precio —
+        // el peor lado para fallar, porque un ticket mocho de la izquierda se ve
+        // y uno sin el último dígito del total se paga.
+        val epsonConAdaptadores = base().copy(id = "p1", paperWidthMm = 58, leftMarginChars = 9)
+        val integrada = base().copy(id = "p2", connectionType = "internal", paperWidthMm = 58)
+
+        assertEquals(
+            null,
+            margenHeredado(listOf(epsonConAdaptadores, integrada), "p2", 58, PrinterConnectionType.INTERNAL),
+        )
+    }
+
+    @Test
+    fun `una integrada tampoco contagia su margen a las demas`() {
+        // Si alguien le puso margen a la integrada por error, ese error no se
+        // propaga al resto del local.
+        val integradaMalConfigurada = base().copy(id = "p1", connectionType = "internal", paperWidthMm = 58, leftMarginChars = 9)
+
+        assertEquals(null, margenHeredado(listOf(integradaMalConfigurada), "p2", 58, PrinterConnectionType.WIFI))
     }
 
     @Test

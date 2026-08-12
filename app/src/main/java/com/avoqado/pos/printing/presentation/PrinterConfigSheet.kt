@@ -241,8 +241,12 @@ fun PrinterConfigSheet(
                             // sería peor que no ayudar. Y se ve en el stepper de
                             // abajo, no se aplica a escondidas.
                             if (leftMarginChars == 0) {
-                                margenHeredado(printerService.savedPrinters.value, printer.id, width.mm)
-                                    ?.let { leftMarginChars = it }
+                                margenHeredado(
+                                    guardadas = printerService.savedPrinters.value,
+                                    exceptoId = printer.id,
+                                    anchoMm = width.mm,
+                                    destino = printer.connectionTypeEnum,
+                                )?.let { leftMarginChars = it }
                             }
                             saveChanges()
                         },
@@ -525,9 +529,29 @@ internal fun margenHeredado(
     guardadas: List<SavedPrinter>,
     exceptoId: String,
     anchoMm: Int,
-): Int? = guardadas
-    .firstOrNull { it.id != exceptoId && it.paperWidthMm == anchoMm && it.leftMarginChars > 0 }
-    ?.leftMarginChars
+    destino: PrinterConnectionType,
+): Int? {
+    // 🔴 La INTEGRADA queda fuera, como destino y como origen. El corrimiento
+    // existe SÓLO porque un rollo angosto montado con adaptadores no empieza
+    // donde el cabezal empieza; un cabezal soldado al equipo no lleva
+    // adaptadores nunca, así que su rollo llena su ancho por construcción.
+    //
+    // Sin esta exclusión, la integrada de una Sunmi hereda el margen de la
+    // Epson con adaptadores del mismo local y se recorre a la derecha,
+    // comiéndose la columna del precio. Y ése es el peor lado para fallar: un
+    // ticket mocho de la izquierda se ve de inmediato, uno al que le falta el
+    // último dígito del total se paga.
+    if (destino == PrinterConnectionType.INTERNAL) return null
+
+    return guardadas
+        .firstOrNull {
+            it.id != exceptoId &&
+                it.paperWidthMm == anchoMm &&
+                it.leftMarginChars > 0 &&
+                it.connectionTypeEnum != PrinterConnectionType.INTERNAL
+        }
+        ?.leftMarginChars
+}
 
 /**
  * Aplica a la impresora lo que hay editado en la hoja de configuración.

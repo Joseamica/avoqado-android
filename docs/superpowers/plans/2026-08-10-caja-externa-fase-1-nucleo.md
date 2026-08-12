@@ -1993,6 +1993,95 @@ sumados a las ventas de Avoqado, que es dinero que sí entró."
 
 ---
 
+## Task 15b: MCP — la cola de cobros por confirmar
+
+**Files:**
+- Modify: `avoqado-server/src/mcp/tools/areaTickets.ts`
+- Modify: `avoqado-server/tests/unit/mcp-customer/area-tickets.test.ts`
+
+**Interfaces:**
+- Consumes: `listPendingExternalConfirmation` (Task 9), `AreaTicketExternalSettlement` (Task 1).
+- Produces: un tool de lectura que lista los cobros externos pendientes de confirmar.
+
+**Por qué existe:** la encontró la revisión de Task 15. La regla del repo es dura — *"una capacidad
+que existe pero no es alcanzable por el MCP está incompleta"*. Task 9 construyó la cola de cobros
+por confirmar, Task 15 le dio pantalla en el dashboard, y **el MCP nunca la expuso**. Verificado por
+el controlador: `area_ticket_reconciliation_queue` sí trae `externalIncidents` (lo añadió Task 13),
+y `area_ticket_status` devuelve el settlement de **un** vale por su código — pero no hay forma de
+**listar** los pendientes. El operador puede preguntar "¿cómo va este vale?" y no "¿qué cobros me
+faltan confirmar?", que es justo la pregunta que motiva la pantalla.
+
+- [ ] **Step 1: Escribir el test que falla**
+
+En `tests/unit/mcp-customer/area-tickets.test.ts`:
+
+```typescript
+describe('pending_external_confirmations', () => {
+  it('lista los cobros externos en PENDING, con su importe de referencia en pesos', async () => {
+    const r = await callTool('pending_external_confirmations', { venueId })
+    expect(r.items[0]).toMatchObject({
+      code: expect.any(String),
+      referenceAmount: '168.00',        // decimal string, dos posiciones — nunca centavos
+      confirmationMode: 'MANUAL',
+    })
+  })
+
+  it('excluye los ASSUMED — el venue se excluyó de confirmar por diseño', async () => {
+    // mismo criterio que listPendingExternalConfirmation (Task 9)
+  })
+
+  it('excluye confirmados, no-cobrados y cancelados', async () => { /* … */ })
+
+  it('filtra por los venues del scope, no por todos', async () => { /* … */ })
+})
+```
+
+- [ ] **Step 2: Correr y verificar que falla**
+
+Run: `npx jest --selectProjects unit --testPathPattern "mcp-customer/area-tickets"`
+Expected: FAIL — el tool no existe.
+
+- [ ] **Step 3: Implementar**
+
+Añade el tool en `registerAreaTicketTools`, siguiendo la forma exacta de sus tres vecinos
+(`area_ticket_status:14`, `pending_area_ticket_deliveries:147`,
+`area_ticket_reconciliation_queue:248`). Requisitos:
+
+- **Solo lectura.** Nada de confirmar desde el MCP: eso es una afirmación sobre dinero disparada
+  por un modelo interpretando lenguaje natural, y exigiría confirm-gate de dos pasos.
+- **Importes en pesos**, con el helper `decimal()` del archivo — nunca centavos.
+- **Mismo criterio de elegibilidad que `listPendingExternalConfirmation`** (Task 9): ruta EXTERNAL,
+  vale `ISSUED`, settlement `PENDING`. **Ábrela y compárala campo por campo** — la revisión de
+  Task 13 encontró un espejo a medias con un comentario que prometía paridad completa, y ese fue
+  el defecto, no el hueco.
+- **Permiso**: el mismo que gobierna la cola en el dashboard (`area-tickets:configure`).
+- Descripción del tool en inglés, como sus vecinos, explicando que Avoqado nunca vio ese dinero.
+
+- [ ] **Step 4: Correr los tests**
+
+```bash
+npx jest --selectProjects unit --testPathPattern "mcp-customer"
+npm run build
+```
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add src/mcp/tools/areaTickets.ts tests/unit/mcp-customer/area-tickets.test.ts
+git commit -m "feat(mcp): listar los cobros externos pendientes de confirmar
+
+Task 9 construyó la cola y Task 15 le dio pantalla, pero el MCP solo permitía
+consultar un vale por su código — no listar los pendientes. Un operador podía
+preguntar '¿cómo va este vale?' pero no '¿qué cobros me faltan confirmar?',
+que es la pregunta que motiva toda la pantalla.
+
+La regla del repo: una capacidad que el MCP no alcanza está incompleta.
+
+Encontrado por la revisión de Task 15."
+```
+
+---
+
 ## Task 16: Verificación de fase completa
 
 **Files:** ninguno nuevo — es el gate de salida.
