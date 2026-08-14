@@ -14,6 +14,14 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.ui.unit.dp
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 
+/**
+ * Botón primario de Avoqado (píldora, alto `buttonLarge`).
+ *
+ * @param destructive acción que destruye o cobra de menos —anular una cuenta,
+ * borrar, dar de cortesía—. Pinta el botón con el color de error del tema en vez
+ * de un `Color(0xFFD32F2F)` a mano, que era lo que se venía haciendo en los
+ * diálogos de Mesas y no responde a modo claro/oscuro.
+ */
 @Composable
 fun PrimaryButton(
     text: String,
@@ -22,8 +30,11 @@ fun PrimaryButton(
     enabled: Boolean = true,
     isLoading: Boolean = false,
     fullWidth: Boolean = false,
+    destructive: Boolean = false,
 ) {
     val adaptive = AvoqadoTheme.adaptive
+    val container = if (destructive) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+    val content = if (destructive) MaterialTheme.colorScheme.onError else MaterialTheme.colorScheme.onPrimary
 
     Button(
         onClick = onClick,
@@ -34,13 +45,13 @@ fun PrimaryButton(
         shape = RoundedCornerShape(50),
         contentPadding = PaddingValues(horizontal = adaptive.primaryButtonHorizontalPadding),
         colors = ButtonDefaults.buttonColors(
-            containerColor = MaterialTheme.colorScheme.primary,
-            contentColor = MaterialTheme.colorScheme.onPrimary,
+            containerColor = container,
+            contentColor = content,
         ),
     ) {
         if (isLoading) {
             CircularProgressIndicator(
-                color = MaterialTheme.colorScheme.onPrimary,
+                color = content,
                 strokeWidth = 2.dp,
             )
         } else {

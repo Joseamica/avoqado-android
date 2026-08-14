@@ -26,6 +26,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -70,12 +71,16 @@ fun AvoqadoDialog(
             color = MaterialTheme.colorScheme.surfaceContainerHigh,
         ) {
             Column(
-                modifier = Modifier.padding(
-                    start = AvoqadoTheme.spacing.xl,
-                    end = AvoqadoTheme.spacing.sm,
-                    top = AvoqadoTheme.spacing.sm,
-                    bottom = AvoqadoTheme.spacing.xl,
-                ),
+                modifier = Modifier
+                    // Techo de altura: sin esto el diálogo crece con el contenido
+                    // hasta salirse de la pantalla.
+                    .heightIn(max = (LocalConfiguration.current.screenHeightDp * 0.85f).dp)
+                    .padding(
+                        start = AvoqadoTheme.spacing.xl,
+                        end = AvoqadoTheme.spacing.sm,
+                        top = AvoqadoTheme.spacing.sm,
+                        bottom = AvoqadoTheme.spacing.xl,
+                    ),
             ) {
                 // Header: title + X
                 Row(
@@ -116,11 +121,22 @@ fun AvoqadoDialog(
                     )
                 }
 
-                Column(modifier = Modifier.padding(end = AvoqadoTheme.spacing.md)) {
+                // 🔴 El contenido cede espacio ANTES que la acción. Con una lista
+                // larga (Separar en otra cuenta, Fusionar, Menús…) el botón
+                // primario se salía por abajo y NO había forma de confirmar: se
+                // podían marcar artículos y no separar nada. `fill = false` deja
+                // que un diálogo corto siga siendo corto.
+                Column(
+                    modifier = Modifier
+                        .weight(1f, fill = false)
+                        .padding(end = AvoqadoTheme.spacing.md),
+                ) {
                     content()
+                }
 
-                    if (actionButton != null) {
-                        Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
+                if (actionButton != null) {
+                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
+                    Box(modifier = Modifier.padding(end = AvoqadoTheme.spacing.md)) {
                         actionButton()
                     }
                 }
