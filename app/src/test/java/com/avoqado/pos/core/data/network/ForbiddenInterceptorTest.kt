@@ -51,8 +51,13 @@ class ForbiddenInterceptorTest {
         )
     }
 
+    // Estos dos tests afirmaban lo contrario hasta 2026-08-13: que un cuerpo
+    // inválido o vacío DEBÍA presentarse como falta de permisos. Esa premisa era
+    // el bug — un 403 sin nuestro cuerpo no lo mandó nuestra API. Se invierten a
+    // propósito, no se relajan.
+
     @Test
-    fun `403 with invalid JSON sets fallback message`() {
+    fun `403 con cuerpo invalido no se presenta como falta de permiso`() {
         server.enqueue(
             MockResponse()
                 .setResponseCode(403)
@@ -61,11 +66,11 @@ class ForbiddenInterceptorTest {
 
         client.newCall(Request.Builder().url(server.url("/")).build()).execute()
 
-        assertEquals("No tienes permisos para esta acción", errorNotifier.forbiddenError.value)
+        assertNull(errorNotifier.forbiddenError.value)
     }
 
     @Test
-    fun `403 with empty body sets fallback message`() {
+    fun `403 sin cuerpo no se presenta como falta de permiso`() {
         server.enqueue(
             MockResponse()
                 .setResponseCode(403)
@@ -74,7 +79,7 @@ class ForbiddenInterceptorTest {
 
         client.newCall(Request.Builder().url(server.url("/")).build()).execute()
 
-        assertEquals("No tienes permisos para esta acción", errorNotifier.forbiddenError.value)
+        assertNull(errorNotifier.forbiddenError.value)
     }
 
     @Test
@@ -129,5 +134,103 @@ class ForbiddenInterceptorTest {
 
         errorNotifier.clear()
         assertNull(errorNotifier.forbiddenError.value)
+    }
+
+    // MARK: - Un 403 que NO viene de nuestra API no es falta de permiso
+    //
+    // Medido en hardware el 2026-08-13: con el túnel de ngrok caído, la app
+    // decía "No tienes permisos para esta acción" y mandaba a buscar un
+    // problema de roles que no existía. En producción la API vive detrás de
+    // Cloudflare, que también responde 403 con HTML (WAF, rate limit, reglas
+    // de país), y las terminales de PlayTelecom operan dentro de redes
+    // corporativas de Walmart con proxy — el mismo 403 ajeno.
+
+    @Test
+    fun `403 con HTML de ngrok no se presenta como falta de permiso`() {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(403)
+                .setHeader("Content-Type", "text/html")
+                .setBody("<!DOCTYPE html><html><body>ERR_NGROK_727</body></html>"),
+        )
+
+        client.newCall(Request.Builder().url(server.url("/")).build()).execute()
+
+        assertNull(errorNotifier.forbiddenError.value)
+    }
+
+    @Test
+    fun `403 con HTML de Cloudflare no se presenta como falta de permiso`() {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(403)
+                .setHeader("Content-Type", "text/html; charset=UTF-8")
+                .setBody("<!DOCTYPE html><html><head><title>Attention Required! | Cloudflare</title></head></html>"),
+        )
+
+        client.newCall(Request.Builder().url(server.url("/")).build()).execute()
+
+        assertNull(errorNotifier.forbiddenError.value)
+    }
+
+    @Test
+    fun `403 con cuerpo vacio no se presenta como falta de permiso`() {
+        server.enqueue(MockResponse().setResponseCode(403).setBody(""))
+
+        client.newCall(Request.Builder().url(server.url("/")).build()).execute()
+
+        assertNull(errorNotifier.forbiddenError.value)
+    }
+
+    @Test
+    fun `403 con JSON ajeno sin nuestros campos no se presenta como falta de permiso`() {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(403)
+                .setHeader("Content-Type", "application/json")
+                .setBody("""{"detail":"blocked by policy"}"""),
+        )
+
+        client.newCall(Request.Builder().url(server.url("/")).build()).execute()
+
+        assertNull(errorNotifier.forbiddenError.value)
+    }
+
+    // MARK: - El candado de PLAN tampoco es falta de permiso
+    //
+    // Sólo el 403 del candado de plan trae `featureCode`. Presentarlo como
+    // "no tienes permisos" manda al mesero a pedirle permisos a su jefe en vez
+    // de al upsell — el bug silencioso que iOS ya documenta haber evitado
+    // (`APIClient.swift`), y que Android sí tenía.
+
+    @Test
+    fun `403 de candado de plan no se presenta como falta de permiso`() {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(403)
+                .setHeader("Content-Type", "application/json")
+                .setBody("""{"error":"Forbidden","message":"Feature not available","featureCode":"INVENTORY_TRACKING"}"""),
+        )
+
+        client.newCall(Request.Builder().url(server.url("/")).build()).execute()
+
+        assertNull(errorNotifier.forbiddenError.value)
+    }
+
+    @Test
+    fun `403 de permiso real sigue avisando`() {
+        server.enqueue(
+            MockResponse()
+                .setResponseCode(403)
+                .setHeader("Content-Type", "application/json")
+                .setBody("""{"error":"Forbidden","message":"Permission 'orders:void' required","required":"orders:void"}"""),
+        )
+
+        client.newCall(Request.Builder().url(server.url("/")).build()).execute()
+
+        assertEquals(
+            "No tienes permiso para hacer esto. Pídele a un administrador que te active «orders:void».",
+            errorNotifier.forbiddenError.value,
+        )
     }
 }

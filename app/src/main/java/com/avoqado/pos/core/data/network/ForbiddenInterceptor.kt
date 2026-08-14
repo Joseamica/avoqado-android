@@ -17,6 +17,13 @@ private data class ForbiddenResponse(
     val message: String? = null,
     val required: String? = null,
     val userRole: String? = null,
+    /**
+     * Sólo viene cuando el 403 es del CANDADO DE PLAN, no de permisos. Se
+     * distingue porque presentarlo como "no tienes permisos" manda al mesero a
+     * pedirle permisos a su jefe en vez de al upsell — el mismo bug que iOS ya
+     * documenta haber evitado en `APIClient.swift`.
+     */
+    val featureCode: String? = null,
 )
 
 @Singleton
@@ -73,14 +80,46 @@ class ForbiddenInterceptor(
 
         if (response.code == 403) {
             val body = response.peekBody(4096).string()
+
+            // 🔴 Un 403 NO prueba que falten permisos: prueba que ALGUIEN dijo que
+            // no, y ese alguien puede no ser nuestra API.
+            //
+            // Medido en hardware el 2026-08-13: con el túnel de ngrok caído, la
+            // app decía "No tienes permisos" y mandaba a buscar un problema de
+            // roles inexistente — mientras el banner de sin conexión estaba
+            // puesto, o sea contradiciéndose en la misma pantalla. En producción
+            // la API vive detrás de Cloudflare, que responde 403 con HTML (WAF,
+            // rate limit, reglas de país), y las terminales de PlayTelecom operan
+            // dentro de redes corporativas de Walmart con proxy.
+            //
+            // Nuestro 403 SIEMPRE trae JSON con `error` o `message`
+            // (`authorizeRole.middleware.ts`). El del intermediario, no. Si el
+            // cuerpo no es nuestro, esto es un fallo de transporte y le toca al
+            // ConnectivityBanner, no a un modal de permisos.
+            val parsed = try {
+                json.decodeFromString<ForbiddenResponse>(body)
+            } catch (_: Exception) {
+                null
+            }
+            if (parsed == null || (parsed.error == null && parsed.message == null)) {
+                Log.w(
+                    "🔒 RBAC",
+                    "403 sin cuerpo nuestro en ${request.url.encodedPath} " +
+                        "(${response.header("Content-Type")}) — intermediario, no permisos",
+                )
+                return response
+            }
+
+            // El candado de PLAN tampoco es falta de permiso: lo resuelve el
+            // upsell, no un administrador dando permisos.
+            if (parsed.featureCode != null) {
+                Log.w("🔒 RBAC", "403 de candado de plan (${parsed.featureCode}) — sin modal de permisos")
+                return response
+            }
+
             // El server manda el detalle técnico ("Permission 'x' required"), útil
             // para logs; a la persona se le enseña algo que pueda accionar.
-            val message = try {
-                val parsed = json.decodeFromString<ForbiddenResponse>(body)
-                ServerErrorText.humanize(parsed.message, "No tienes permisos para esta acción")
-            } catch (_: Exception) {
-                "No tienes permisos para esta acción"
-            }
+            val message = ServerErrorText.humanize(parsed.message, "No tienes permisos para esta acción")
             Log.w("🔒 RBAC", "403 Forbidden: $message")
             errorNotifier.notify(message)
         }
