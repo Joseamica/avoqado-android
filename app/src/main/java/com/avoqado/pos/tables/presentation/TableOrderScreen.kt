@@ -78,6 +78,8 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.avoqado.pos.designsystem.components.AvoqadoDialog
+import com.avoqado.pos.designsystem.components.AvoqadoPillTextField
 import com.avoqado.pos.designsystem.components.AvoqadoErrorToast
 import com.avoqado.pos.designsystem.components.AvoqadoSuccessToast
 import com.avoqado.pos.designsystem.components.PrimaryButton
@@ -92,7 +94,6 @@ import com.avoqado.pos.tables.data.OrderDetail
 import com.avoqado.pos.tables.data.OrderDetailItem
 import java.time.Instant
 import java.time.OffsetDateTime
-import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 import androidx.compose.material3.SnackbarDuration
@@ -665,25 +666,32 @@ fun TableOrderScreen(
 
     courseMenuTarget?.takeIf { it.second }?.let { (course, _) ->
         val count = check?.items?.filter { it.course == course }?.sumOf { it.quantity } ?: 0
-        AlertDialog(
-            onDismissRequest = { courseMenuTarget = null },
-            title = { Text(course ?: "Inmediato") },
-            text = { Text("$count artículo(s) en este tiempo.") },
-            confirmButton = {
-                Row {
-                    TextButton(onClick = {
+        AvoqadoDialog(
+            title = course ?: "Inmediato",
+            description = "$count artículo(s) en este tiempo.",
+            onDismiss = { courseMenuTarget = null },
+            actionButton = {
+                PrimaryButton(
+                    text = "¡Listo!",
+                    onClick = {
                         courseMenuTarget = null
                         viewModel.marcharCourse(course)
-                    }) { Text("¡Listo!") }
-                    TextButton(onClick = {
-                        courseMenuTarget = null
-                        viewModel.repeatCourse(course)
-                        panelTab = PanelTab.CUENTA
-                    }) { Text("Repetir") }
-                }
+                    },
+                    fullWidth = true,
+                )
             },
-            dismissButton = { TextButton(onClick = { courseMenuTarget = null }) { Text("Cancelar") } },
-        )
+        ) {
+            // "Repetir" es la acción secundaria: queda sobre el botón primario,
+            // no compitiendo a su lado como en el AlertDialog anterior.
+            TextButton(
+                onClick = {
+                    courseMenuTarget = null
+                    viewModel.repeatCourse(course)
+                    panelTab = PanelTab.CUENTA
+                },
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("Repetir") }
+        }
     }
 
     // "Escanear" (Acciones): mismo escáner que la venta rápida — el código se
@@ -713,20 +721,26 @@ fun TableOrderScreen(
     }
 
     unknownBarcode?.let { scannedCode ->
-        AlertDialog(
-            onDismissRequest = { unknownBarcode = null },
-            title = { Text("Producto no encontrado") },
-            text = { Text("Ningún producto del catálogo tiene el código $scannedCode.") },
-            confirmButton = { TextButton(onClick = { unknownBarcode = null }) { Text("Entendido") } },
-        )
+        AvoqadoDialog(
+            title = "Producto no encontrado",
+            description = "Ningún producto del catálogo tiene el código $scannedCode.",
+            onDismiss = { unknownBarcode = null },
+            actionButton = {
+                PrimaryButton(
+                    text = "Entendido",
+                    onClick = { unknownBarcode = null },
+                    fullWidth = true,
+                )
+            },
+        ) {}
     }
 
     if (showCheckSwitcher) {
         val cuentas = floorTable?.openOrders ?: emptyList()
-        AlertDialog(
-            onDismissRequest = { showCheckSwitcher = false },
-            title = { Text("Cuentas de la mesa") },
-            text = {
+        AvoqadoDialog(
+            title = "Cuentas de la mesa",
+            onDismiss = { showCheckSwitcher = false },
+        ) {
                 Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                     cuentas.forEachIndexed { index, cuenta ->
                         val esActual = cuenta.id == session?.orderId
@@ -763,10 +777,7 @@ fun TableOrderScreen(
                         }
                     }
                 }
-            },
-            confirmButton = {},
-            dismissButton = { TextButton(onClick = { showCheckSwitcher = false }) { Text("Cerrar") } },
-        )
+        }
     }
 
     if (showSplitImporte) {
@@ -919,18 +930,24 @@ fun TableOrderScreen(
     }
 
     pendingSwitchTarget?.let { target ->
-        AlertDialog(
-            onDismissRequest = { pendingSwitchTarget = null },
-            title = { Text("Artículos sin enviar") },
-            text = { Text("Tienes artículos sin enviar a cocina. Si cambias de cuenta ahora se descartan.") },
-            confirmButton = {
-                TextButton(onClick = {
-                    pendingSwitchTarget = null
-                    viewModel.switchToCheck(target)?.let { session = it }
-                }) { Text("Descartar y cambiar", color = MaterialTheme.colorScheme.error) }
+        AvoqadoDialog(
+            title = "Artículos sin enviar",
+            description = "Tienes artículos sin enviar a cocina. Si cambias de cuenta ahora se descartan.",
+            onDismiss = { pendingSwitchTarget = null },
+            // Se descarta comanda: no se sale por un toque al vacío.
+            dismissOnClickOutside = false,
+            actionButton = {
+                PrimaryButton(
+                    text = "Descartar y cambiar",
+                    onClick = {
+                        pendingSwitchTarget = null
+                        viewModel.switchToCheck(target)?.let { session = it }
+                    },
+                    fullWidth = true,
+                    destructive = true,
+                )
             },
-            dismissButton = { TextButton(onClick = { pendingSwitchTarget = null }) { Text("Seguir aquí") } },
-        )
+        ) {}
     }
 
     if (showMerge) {
@@ -1141,19 +1158,24 @@ fun TableOrderScreen(
     }
 
     if (showDiscardDialog) {
-        AlertDialog(
-            onDismissRequest = { showDiscardDialog = false },
-            title = { Text("Artículos sin enviar") },
-            text = { Text("Tienes ${viewModel.pendingCount} artículo(s) sin enviar a cocina. Si sales ahora se descartan.") },
-            confirmButton = {
-                TextButton(onClick = {
-                    showDiscardDialog = false
-                    viewModel.exitToFloor()
-                    exitOnce()
-                }) { Text("Descartar y salir", color = Color(0xFFD32F2F)) }
+        AvoqadoDialog(
+            title = "Artículos sin enviar",
+            description = "Tienes ${viewModel.pendingCount} artículo(s) sin enviar a cocina. Si sales ahora se descartan.",
+            onDismiss = { showDiscardDialog = false },
+            dismissOnClickOutside = false,
+            actionButton = {
+                PrimaryButton(
+                    text = "Descartar y salir",
+                    onClick = {
+                        showDiscardDialog = false
+                        viewModel.exitToFloor()
+                        exitOnce()
+                    },
+                    fullWidth = true,
+                    destructive = true,
+                )
             },
-            dismissButton = { TextButton(onClick = { showDiscardDialog = false }) { Text("Seguir aquí") } },
-        )
+        ) {}
     }
 
     compTarget?.let { target ->
@@ -1887,8 +1909,10 @@ private fun parseIsoMs(iso: String?): Long? {
     }
 }
 
+/** Hora del NEGOCIO, no la del aparato: una tablet con la zona mal puesta pintaría
+ *  "Enviado a la cocina" con horas de diferencia. */
 private fun timeDisplay(epochMs: Long): String =
-    Instant.ofEpochMilli(epochMs).atZone(ZoneId.systemDefault())
+    Instant.ofEpochMilli(epochMs).atZone(com.avoqado.pos.core.util.VenueTimeZone.zoneId())
         .format(DateTimeFormatter.ofPattern("HH:mm"))
 
 /** "0:45" elapsed since [iso] — same format the floor canvas uses. */
@@ -2401,38 +2425,35 @@ private fun CustomAmountDialog(
     var amountText by remember { mutableStateOf("") }
     val cents = amountText.toDoubleOrNull()?.let { (it * 100).toInt() } ?: 0
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Importe personalizado") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md)) {
-                Text(
-                    "Se agrega al tiempo seleccionado y se envía a la cuenta con la ronda.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                androidx.compose.material3.OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text("Concepto (opcional)") },
-                    singleLine = true,
-                )
-                androidx.compose.material3.OutlinedTextField(
-                    value = amountText,
-                    onValueChange = { input -> amountText = input.filter { it.isDigit() || it == '.' } },
-                    label = { Text("Monto (pesos)") },
-                    singleLine = true,
-                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(
-                        keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal,
-                    ),
-                )
-            }
+    AvoqadoDialog(
+        title = "Importe personalizado",
+        description = "Se agrega al tiempo seleccionado y se envía a la cuenta con la ronda.",
+        onDismiss = onDismiss,
+        actionButton = {
+            PrimaryButton(
+                text = "Agregar",
+                onClick = { onConfirm(name, cents) },
+                enabled = cents > 0,
+                fullWidth = true,
+            )
         },
-        confirmButton = {
-            TextButton(onClick = { onConfirm(name, cents) }, enabled = cents > 0) { Text("Agregar") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
-    )
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md)) {
+            LabeledPillField(
+                label = "Concepto (opcional)",
+                value = name,
+                onValueChange = { name = it },
+                placeholder = "Ej. descorche",
+            )
+            LabeledPillField(
+                label = "Monto (pesos)",
+                value = amountText,
+                onValueChange = { input -> amountText = input.filter { it.isDigit() || it == '.' } },
+                placeholder = "0.00",
+                keyboardType = androidx.compose.ui.text.input.KeyboardType.Decimal,
+            )
+        }
+    }
 }
 
 
@@ -2445,20 +2466,25 @@ private fun MoveTableDialog(
     onConfirm: (String) -> Unit,
 ) {
     var selectedId by remember { mutableStateOf<String?>(null) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Mover cuenta") },
-        text = {
-            if (tables.isEmpty()) {
-                Text("No hay mesas libres a dónde mover la cuenta.")
-            } else {
+    AvoqadoDialog(
+        title = "Mover cuenta",
+        description = if (tables.isEmpty()) {
+            "No hay mesas libres a dónde mover la cuenta."
+        } else {
+            "La cuenta completa (artículos y tiempos) se mueve a la mesa que elijas."
+        },
+        onDismiss = onDismiss,
+        actionButton = {
+            PrimaryButton(
+                text = "Mover",
+                onClick = { selectedId?.let(onConfirm) },
+                enabled = selectedId != null,
+                fullWidth = true,
+            )
+        },
+    ) {
+            if (tables.isNotEmpty()) {
                 Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-                    Text(
-                        "La cuenta completa (artículos y tiempos) se mueve a la mesa que elijas.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
                     tables.forEach { table ->
                         Row(
                             modifier = Modifier
@@ -2479,12 +2505,7 @@ private fun MoveTableDialog(
                     }
                 }
             }
-        },
-        confirmButton = {
-            TextButton(onClick = { selectedId?.let(onConfirm) }, enabled = selectedId != null) { Text("Mover") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
-    )
+    }
 }
 
 
@@ -2553,36 +2574,38 @@ private fun WholeCortesiaDialog(
         "Especial del administrador",
     )
     var selected by remember { mutableStateOf<String?>(null) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Cortesía en la cuenta") },
-        text = {
-            Column {
-                Text(
-                    "TODOS los artículos se quedan en la cuenta pero dejan de cobrarse.",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
-                Text("Motivo", fontWeight = FontWeight.SemiBold)
-                reasons.forEach { reason ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { selected = reason }
-                            .padding(vertical = AvoqadoTheme.spacing.xs),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        androidx.compose.material3.RadioButton(selected = selected == reason, onClick = { selected = reason })
-                        Text(reason, style = MaterialTheme.typography.bodyMedium)
-                    }
+    AvoqadoDialog(
+        title = "Cortesía en la cuenta",
+        description = "TODOS los artículos se quedan en la cuenta pero dejan de cobrarse.",
+        onDismiss = onDismiss,
+        // Regala la cuenta entera: no se sale por un toque al vacío.
+        dismissOnClickOutside = false,
+        actionButton = {
+            PrimaryButton(
+                text = "Dar de cortesía",
+                onClick = { selected?.let(onConfirm) },
+                enabled = selected != null,
+                fullWidth = true,
+                destructive = true,
+            )
+        },
+    ) {
+        Column {
+            Text("Motivo", fontWeight = FontWeight.SemiBold)
+            reasons.forEach { reason ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { selected = reason }
+                        .padding(vertical = AvoqadoTheme.spacing.xs),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    androidx.compose.material3.RadioButton(selected = selected == reason, onClick = { selected = reason })
+                    Text(reason, style = MaterialTheme.typography.bodyMedium)
                 }
             }
-        },
-        confirmButton = {
-            TextButton(onClick = { selected?.let(onConfirm) }, enabled = selected != null) { Text("Dar de cortesía") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
-    )
+        }
+    }
 }
 
 // MARK: - Nombre y notas de la cuenta
@@ -2596,28 +2619,58 @@ private fun NameNotesDialog(
 ) {
     var name by remember { mutableStateOf(initialName) }
     var notes by remember { mutableStateOf(initialNotes) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Nombre y notas") },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md)) {
-                androidx.compose.material3.OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text("Nombre de la cuenta") },
-                    singleLine = true,
-                )
-                androidx.compose.material3.OutlinedTextField(
-                    value = notes,
-                    onValueChange = { notes = it },
-                    label = { Text("Notas (alergias, ocasión...)") },
-                    minLines = 2,
-                )
-            }
+    AvoqadoDialog(
+        title = "Nombre y notas",
+        onDismiss = onDismiss,
+        actionButton = {
+            PrimaryButton(
+                text = "Guardar",
+                onClick = { onConfirm(name, notes) },
+                fullWidth = true,
+            )
         },
-        confirmButton = { TextButton(onClick = { onConfirm(name, notes) }) { Text("Guardar") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
-    )
+    ) {
+        Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md)) {
+            // Rótulo FUERA del campo: el placeholder de la píldora desaparece en
+            // cuanto hay texto, y con la cuenta ya nombrada no había forma de
+            // saber cuál campo era cuál. El `label` de Material sí flotaba.
+            LabeledPillField(
+                label = "Nombre de la cuenta",
+                value = name,
+                onValueChange = { name = it },
+                placeholder = "Ej. Mesa de Juan",
+            )
+            LabeledPillField(
+                label = "Notas (alergias, ocasión...)",
+                value = notes,
+                onValueChange = { notes = it },
+                placeholder = "Ej. sin cebolla",
+            )
+        }
+    }
+}
+
+@Composable
+private fun LabeledPillField(
+    label: String,
+    value: String,
+    onValueChange: (String) -> Unit,
+    placeholder: String,
+    keyboardType: androidx.compose.ui.text.input.KeyboardType = androidx.compose.ui.text.input.KeyboardType.Text,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.xxs)) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        AvoqadoPillTextField(
+            value = value,
+            onValueChange = onValueChange,
+            placeholder = placeholder,
+            keyboardType = keyboardType,
+        )
+    }
 }
 
 // MARK: - Conteo de clientes (comensales)
@@ -2629,32 +2682,36 @@ private fun CoversDialog(
     onConfirm: (Int) -> Unit,
 ) {
     var covers by remember { mutableStateOf(initial.coerceAtLeast(1)) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Conteo de clientes") },
-        text = {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text("Comensales", modifier = Modifier.weight(1f))
-                androidx.compose.material3.IconButton(onClick = { if (covers > 1) covers-- }) {
-                    Icon(Icons.Filled.Remove, contentDescription = "Menos")
-                }
-                Text(
-                    text = "$covers",
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    modifier = Modifier.padding(horizontal = AvoqadoTheme.spacing.sm),
-                )
-                androidx.compose.material3.IconButton(onClick = { if (covers < 200) covers++ }) {
-                    Icon(Icons.Filled.Add, contentDescription = "Más")
-                }
-            }
+    AvoqadoDialog(
+        title = "Conteo de clientes",
+        onDismiss = onDismiss,
+        actionButton = {
+            PrimaryButton(
+                text = "Guardar",
+                onClick = { onConfirm(covers) },
+                fullWidth = true,
+            )
         },
-        confirmButton = { TextButton(onClick = { onConfirm(covers) }) { Text("Guardar") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
-    )
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text("Comensales", modifier = Modifier.weight(1f))
+            androidx.compose.material3.IconButton(onClick = { if (covers > 1) covers-- }) {
+                Icon(Icons.Filled.Remove, contentDescription = "Menos")
+            }
+            Text(
+                text = "$covers",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(horizontal = AvoqadoTheme.spacing.sm),
+            )
+            androidx.compose.material3.IconButton(onClick = { if (covers < 200) covers++ }) {
+                Icon(Icons.Filled.Add, contentDescription = "Más")
+            }
+        }
+    }
 }
 
 
@@ -2674,28 +2731,32 @@ private fun FulfillmentDialog(
     onConfirm: (String) -> Unit,
 ) {
     var selected by remember { mutableStateOf(current) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Cumplimiento") },
-        text = {
-            Column {
-                FULFILLMENT_OPTIONS.forEach { (code, label) ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { selected = code }
-                            .padding(vertical = AvoqadoTheme.spacing.xs),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        androidx.compose.material3.RadioButton(selected = selected == code, onClick = { selected = code })
-                        Text(label, style = MaterialTheme.typography.bodyMedium)
-                    }
+    AvoqadoDialog(
+        title = "Cumplimiento",
+        onDismiss = onDismiss,
+        actionButton = {
+            PrimaryButton(
+                text = "Guardar",
+                onClick = { onConfirm(selected) },
+                fullWidth = true,
+            )
+        },
+    ) {
+        Column {
+            FULFILLMENT_OPTIONS.forEach { (code, label) ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { selected = code }
+                        .padding(vertical = AvoqadoTheme.spacing.xs),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    androidx.compose.material3.RadioButton(selected = selected == code, onClick = { selected = code })
+                    Text(label, style = MaterialTheme.typography.bodyMedium)
                 }
             }
-        },
-        confirmButton = { TextButton(onClick = { onConfirm(selected) }) { Text("Guardar") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
-    )
+        }
+    }
 }
 
 // MARK: - Descuentos de orden en el cheque
@@ -2708,10 +2769,17 @@ private fun OrderDiscountsDialog(
     onRemove: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Descuentos") },
-        text = {
+    AvoqadoDialog(
+        title = "Descuentos",
+        onDismiss = onDismiss,
+        actionButton = {
+            PrimaryButton(
+                text = "Listo",
+                onClick = onDismiss,
+                fullWidth = true,
+            )
+        },
+    ) {
             Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                 if (applied.isNotEmpty()) {
                     Text("Aplicados", fontWeight = FontWeight.SemiBold)
@@ -2761,9 +2829,7 @@ private fun OrderDiscountsDialog(
                     }
                 }
             }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Listo") } },
-    )
+    }
 }
 
 
@@ -2775,17 +2841,12 @@ private fun MergeOrdersDialog(
     onDismiss: () -> Unit,
     onPick: (String) -> Unit,
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Fusionar cuentas") },
-        text = {
+    AvoqadoDialog(
+        title = "Fusionar cuentas",
+        description = "Los artículos de la cuenta que elijas se pasan a ESTA cuenta y aquella se cierra. Útil cuando dos mesas se juntan.",
+        onDismiss = onDismiss,
+    ) {
             Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-                Text(
-                    "Los artículos de la cuenta que elijas se pasan a ESTA cuenta y aquella se cierra. Útil cuando dos mesas se juntan.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
                 if (otras.isEmpty()) {
                     Text(
                         "No hay otras cuentas abiertas.",
@@ -2816,10 +2877,7 @@ private fun MergeOrdersDialog(
                     }
                 }
             }
-        },
-        confirmButton = {},
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
-    )
+    }
 }
 
 // MARK: - Dividir la cuenta (los 3 modos de Square)
@@ -2832,10 +2890,10 @@ private fun SplitModesDialog(
     onPorArticulo: () -> Unit,
     onPartesIguales: () -> Unit,
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Dividir la cuenta") },
-        text = {
+    AvoqadoDialog(
+        title = "Dividir la cuenta",
+        onDismiss = onDismiss,
+    ) {
             Column {
                 // Por puesto: usa los asientos ya asignados a cada línea.
                 val puedePorPuesto = seatsWithItems >= 2
@@ -2884,10 +2942,7 @@ private fun SplitModesDialog(
                     )
                 }
             }
-        },
-        confirmButton = {},
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
-    )
+    }
 }
 
 // MARK: - Menús por horario
@@ -2899,18 +2954,15 @@ private fun MenusDialog(
     onDismiss: () -> Unit,
     onPick: (String?) -> Unit,
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Menús") },
-        text = {
+    AvoqadoDialog(
+        title = "Menús",
+        description = "Cambia qué productos muestra la cuadrícula. El menú con horario se elige solo según la hora del local.",
+        onDismiss = onDismiss,
+        actionButton = {
+            PrimaryButton(text = "Listo", onClick = onDismiss, fullWidth = true)
+        },
+    ) {
             Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-                Text(
-                    "Cambia qué productos muestra la cuadrícula. El menú con horario se elige solo según la hora del local.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
-
                 // Sin filtro: el catálogo completo, como antes de los menús.
                 Row(
                     modifier = Modifier
@@ -2957,9 +3009,7 @@ private fun MenusDialog(
                     }
                 }
             }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Listo") } },
-    )
+    }
 }
 
 // MARK: - Cobros por servicio (SUMAN al total: ingreso gravable)
@@ -2972,10 +3022,13 @@ private fun ServiceChargesDialog(
     onApply: (String) -> Unit,
     onRemove: (String) -> Unit,
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Cobros por servicio") },
-        text = {
+    AvoqadoDialog(
+        title = "Cobros por servicio",
+        onDismiss = onDismiss,
+        actionButton = {
+            PrimaryButton(text = "Listo", onClick = onDismiss, fullWidth = true)
+        },
+    ) {
             Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
                 if (applied.isNotEmpty()) {
                     Text("Aplicados", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -3029,9 +3082,7 @@ private fun ServiceChargesDialog(
                     }
                 }
             }
-        },
-        confirmButton = { TextButton(onClick = onDismiss) { Text("Listo") } },
-    )
+    }
 }
 
 // MARK: - Recompensas (canje de puntos de lealtad)
@@ -3047,23 +3098,20 @@ private fun RewardsDialog(
     val step = loyalty.minPointsRedeem.coerceAtLeast(1)
     val value = points * loyalty.redemptionRate
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Recompensas") },
-        text = {
+    AvoqadoDialog(
+        title = "Recompensas",
+        description = "${loyalty.customerName ?: "Cliente"} · ${loyalty.balance} puntos disponibles, valen ${money(loyalty.balanceValue)}",
+        onDismiss = onDismiss,
+        actionButton = {
+            PrimaryButton(
+                text = "Canjear",
+                onClick = { onRedeem(points) },
+                enabled = points >= loyalty.minPointsRedeem && points <= loyalty.maxRedeemablePoints,
+                fullWidth = true,
+            )
+        },
+    ) {
             Column {
-                Text(
-                    text = loyalty.customerName ?: "Cliente",
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Text(
-                    text = "${loyalty.balance} puntos disponibles · vale ${money(loyalty.balanceValue)}",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
-
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween,
@@ -3092,15 +3140,7 @@ private fun RewardsDialog(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-        },
-        confirmButton = {
-            TextButton(
-                onClick = { onRedeem(points) },
-                enabled = points >= loyalty.minPointsRedeem && points <= loyalty.maxRedeemablePoints,
-            ) { Text("Canjear") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
-    )
+    }
 }
 
 private fun money(v: Double): String = "$" + String.format(java.util.Locale.US, "%.2f", v)
@@ -3112,32 +3152,24 @@ private fun SortCartDialog(
     onDismiss: () -> Unit,
     onPick: (TableOrderViewModel.CartSort) -> Unit,
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Ordenar carrito") },
-        text = {
-            Column {
+    AvoqadoDialog(
+        title = "Ordenar carrito",
+        description = "Reordena los artículos sin enviar. Lo que ya está en cocina no cambia.",
+        onDismiss = onDismiss,
+    ) {
+        Column {
+            TableOrderViewModel.CartSort.entries.forEach { mode ->
                 Text(
-                    "Reordena los artículos sin enviar. Lo que ya está en cocina no cambia.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    text = mode.label,
+                    style = MaterialTheme.typography.bodyLarge,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { onPick(mode) }
+                        .padding(vertical = AvoqadoTheme.spacing.sm),
                 )
-                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
-                TableOrderViewModel.CartSort.entries.forEach { mode ->
-                    Text(
-                        text = mode.label,
-                        style = MaterialTheme.typography.bodyLarge,
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { onPick(mode) }
-                            .padding(vertical = AvoqadoTheme.spacing.sm),
-                    )
-                }
             }
-        },
-        confirmButton = {},
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
-    )
+        }
+    }
 }
 
 // MARK: - Calculadora (Square's calculator — local, no toca la cuenta)
@@ -3193,10 +3225,19 @@ private fun CalculatorDialog(onDismiss: () -> Unit) {
         listOf("0", ".", "=", "+"),
     )
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Calculadora") },
-        text = {
+    AvoqadoDialog(
+        title = "Calculadora",
+        onDismiss = onDismiss,
+        actionButton = {
+            PrimaryButton(
+                text = "Limpiar",
+                onClick = {
+                    display = "0"; accumulator = null; pendingOp = null; freshEntry = true
+                },
+                fullWidth = true,
+            )
+        },
+    ) {
             Column {
                 Text(
                     text = display,
@@ -3234,14 +3275,7 @@ private fun CalculatorDialog(onDismiss: () -> Unit) {
                     }
                 }
             }
-        },
-        confirmButton = {
-            TextButton(onClick = {
-                display = "0"; accumulator = null; pendingOp = null; freshEntry = true
-            }) { Text("Limpiar") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cerrar") } },
-    )
+    }
 }
 
 // MARK: - Separar en otra cuenta (Square's separate checks)
@@ -3253,17 +3287,20 @@ private fun SplitCheckDialog(
     onConfirm: (List<String>) -> Unit,
 ) {
     var selected by remember { mutableStateOf(setOf<String>()) }
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Separar en otra cuenta") },
-        text = {
+    AvoqadoDialog(
+        title = "Separar en otra cuenta",
+        description = "Los artículos elegidos se mueven a una cuenta NUEVA de esta mesa (debe quedar al menos uno).",
+        onDismiss = onDismiss,
+        actionButton = {
+            PrimaryButton(
+                text = "Separar (${selected.size})",
+                onClick = { onConfirm(selected.toList()) },
+                enabled = selected.isNotEmpty() && selected.size < items.size,
+                fullWidth = true,
+            )
+        },
+    ) {
             Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-                Text(
-                    "Los artículos elegidos se mueven a una cuenta NUEVA de esta mesa (debe quedar al menos uno).",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
                 items.forEach { item ->
                     Row(
                         modifier = Modifier
@@ -3288,13 +3325,5 @@ private fun SplitCheckDialog(
                     }
                 }
             }
-        },
-        confirmButton = {
-            TextButton(
-                onClick = { onConfirm(selected.toList()) },
-                enabled = selected.isNotEmpty() && selected.size < items.size,
-            ) { Text("Separar (${selected.size})") }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
-    )
+    }
 }

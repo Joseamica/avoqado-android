@@ -28,16 +28,15 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.CallMerge
+import androidx.compose.material.icons.automirrored.filled.CallMerge
 import androidx.compose.material.icons.filled.Cancel
 import androidx.compose.material.icons.filled.CardGiftcard
-import androidx.compose.material.icons.filled.DriveFileMove
+import androidx.compose.material.icons.automirrored.filled.DriveFileMove
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material.icons.filled.TableRestaurant
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -65,6 +64,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.avoqado.pos.designsystem.components.AvoqadoDialog
 import com.avoqado.pos.designsystem.components.AvoqadoSuccessToast
 import com.avoqado.pos.designsystem.components.AvoqadoErrorToast
 import com.avoqado.pos.designsystem.components.PlanGateScreen
@@ -299,39 +299,32 @@ fun TablesScreen(
     if (showBulkUnir) {
         // Hay que elegir CUÁL mesa se queda con la cuenta: el server cierra las
         // otras, así que la decisión no puede ser implícita.
-        AlertDialog(
-            onDismissRequest = { showBulkUnir = false },
-            title = { Text("Unir ${selectedOccupied.size} cuentas") },
-            text = {
-                Column {
-                    Text(
-                        "¿En qué mesa se queda la cuenta? Las otras mesas se liberan y TODOS sus artículos pasan a ella, en una sola cuenta.",
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
-                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
-                    selectedOccupied.forEach { table ->
-                        TextButton(
-                            onClick = {
-                                showBulkUnir = false
-                                val sources = selectedOccupied.filter { it.id != table.id }
-                                viewModel.bulkUnir(table, sources) { ok, fail, err ->
-                                    val msg = when {
-                                        fail == 0 -> "Cuentas unidas en la mesa ${table.number}"
-                                        ok == 0 -> err ?: "No se pudieron unir"
-                                        else -> "$ok unidas, $fail no: ${err ?: "error"}"
-                                    }
-                                    if (fail > 0) viewModel.showError(msg) else viewModel.showMessage(msg)
-                                    exitSelection()
+        AvoqadoDialog(
+            title = "Unir ${selectedOccupied.size} cuentas",
+            description = "¿En qué mesa se queda la cuenta? Las otras mesas se liberan y TODOS sus artículos pasan a ella, en una sola cuenta.",
+            onDismiss = { showBulkUnir = false },
+        ) {
+            Column {
+                selectedOccupied.forEach { table ->
+                    TextButton(
+                        onClick = {
+                            showBulkUnir = false
+                            val sources = selectedOccupied.filter { it.id != table.id }
+                            viewModel.bulkUnir(table, sources) { ok, fail, err ->
+                                val msg = when {
+                                    fail == 0 -> "Cuentas unidas en la mesa ${table.number}"
+                                    ok == 0 -> err ?: "No se pudieron unir"
+                                    else -> "$ok unidas, $fail no: ${err ?: "error"}"
                                 }
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                        ) { Text("Mesa ${table.number}", modifier = Modifier.fillMaxWidth()) }
-                    }
+                                if (fail > 0) viewModel.showError(msg) else viewModel.showMessage(msg)
+                                exitSelection()
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) { Text("Mesa ${table.number}", modifier = Modifier.fillMaxWidth()) }
                 }
-            },
-            confirmButton = {},
-            dismissButton = { TextButton(onClick = { showBulkUnir = false }) { Text("Cancelar") } },
-        )
+            }
+        }
     }
 
     if (showBulkAnular) {
@@ -390,35 +383,31 @@ fun TablesScreen(
         val source = selectedOccupied.firstOrNull()
         val freeTables = tables.filter { it.isAvailable }
         if (source != null) {
-            androidx.compose.material3.AlertDialog(
-                onDismissRequest = { showBulkMover = false },
-                title = { Text("Mover cuenta — Mesa ${source.number}") },
-                text = {
-                    Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
-                        var picked by remember { mutableStateOf<String?>(null) }
-                        freeTables.forEach { t ->
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable {
-                                        showBulkMover = false
-                                        viewModel.bulkMover(source, t.id) { ok, msg ->
-                                            viewModel.showMessage(msg)
-                                        }
-                                        exitSelection()
+            AvoqadoDialog(
+                title = "Mover cuenta — Mesa ${source.number}",
+                onDismiss = { showBulkMover = false },
+            ) {
+                Column(modifier = Modifier.verticalScroll(rememberScrollState())) {
+                    freeTables.forEach { t ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    showBulkMover = false
+                                    viewModel.bulkMover(source, t.id) { ok, msg ->
+                                        viewModel.showMessage(msg)
                                     }
-                                    .padding(vertical = AvoqadoTheme.spacing.sm),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Text("Mesa ${t.number}" + (t.areaName?.let { " · $it" } ?: ""))
-                            }
+                                    exitSelection()
+                                }
+                                .padding(vertical = AvoqadoTheme.spacing.sm),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text("Mesa ${t.number}" + (t.areaName?.let { " · $it" } ?: ""))
                         }
-                        if (freeTables.isEmpty()) Text("No hay mesas libres.")
                     }
-                },
-                confirmButton = {},
-                dismissButton = { TextButton(onClick = { showBulkMover = false }) { Text("Cancelar") } },
-            )
+                    if (freeTables.isEmpty()) Text("No hay mesas libres.")
+                }
+            }
         }
     }
 
@@ -500,8 +489,8 @@ private fun BulkActionBar(
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            BulkAction("Unir", Icons.Filled.CallMerge, selectedCount >= 2, onUnir)
-            BulkAction("Mover", Icons.Filled.DriveFileMove, selectedCount == 1, onMover)
+            BulkAction("Unir", Icons.AutoMirrored.Filled.CallMerge, selectedCount >= 2, onUnir)
+            BulkAction("Mover", Icons.AutoMirrored.Filled.DriveFileMove, selectedCount == 1, onMover)
             BulkAction("Asignar", Icons.Filled.Person, hasSel, onAsignar)
             BulkAction("Cortesía", Icons.Filled.CardGiftcard, hasSel, onCortesia)
             BulkAction("Anular", Icons.Filled.Cancel, hasSel, onAnular, destructive = true)
@@ -1020,41 +1009,39 @@ internal fun CortesiaDialog(
     )
     var selected by remember { mutableStateOf<String?>(null) }
 
-    androidx.compose.material3.AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Dar de cortesía") },
-        text = {
-            Column {
-                Text(
-                    "\"$productName\" se queda en la cuenta pero deja de cobrarse.",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
-                Text("Motivo", fontWeight = FontWeight.SemiBold)
-                reasons.forEach { reason ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { selected = reason }
-                            .padding(vertical = AvoqadoTheme.spacing.xs),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        androidx.compose.material3.RadioButton(
-                            selected = selected == reason,
-                            onClick = { selected = reason },
-                        )
-                        Text(reason, style = MaterialTheme.typography.bodyMedium)
-                    }
+    AvoqadoDialog(
+        title = "Dar de cortesía",
+        description = "\"$productName\" se queda en la cuenta pero deja de cobrarse.",
+        onDismiss = onDismiss,
+        actionButton = {
+            PrimaryButton(
+                text = "Dar de cortesía",
+                onClick = { selected?.let(onConfirm) },
+                enabled = selected != null,
+                fullWidth = true,
+                destructive = true,
+            )
+        },
+    ) {
+        Column {
+            Text("Motivo", fontWeight = FontWeight.SemiBold)
+            reasons.forEach { reason ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { selected = reason }
+                        .padding(vertical = AvoqadoTheme.spacing.xs),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    androidx.compose.material3.RadioButton(
+                        selected = selected == reason,
+                        onClick = { selected = reason },
+                    )
+                    Text(reason, style = MaterialTheme.typography.bodyMedium)
                 }
             }
-        },
-        confirmButton = {
-            TextButton(onClick = { selected?.let(onConfirm) }, enabled = selected != null) {
-                Text("Dar de cortesía")
-            }
-        },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancelar") } },
-    )
+        }
+    }
 }
 
 /**
@@ -1074,44 +1061,42 @@ internal fun AnularCuentaDialog(
     )
     var selected by remember { mutableStateOf<String?>(null) }
 
-    androidx.compose.material3.AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text("Anular cuenta — Mesa $tableNumber") },
-        text = {
-            Column {
-                Text(
-                    "Se eliminarán todos los artículos y se cerrará la cuenta inmediatamente.",
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
-                Text("Razón de la anulación", fontWeight = FontWeight.SemiBold)
-                reasons.forEach { reason ->
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable { selected = reason }
-                            .padding(vertical = AvoqadoTheme.spacing.xs),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        androidx.compose.material3.RadioButton(
-                            selected = selected == reason,
-                            onClick = { selected = reason },
-                        )
-                        Text(reason, style = MaterialTheme.typography.bodyMedium)
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(
+    AvoqadoDialog(
+        title = "Anular cuenta — Mesa $tableNumber",
+        description = "Se eliminarán todos los artículos y se cerrará la cuenta inmediatamente.",
+        onDismiss = onDismiss,
+        // Destructivo e irreversible: fuera del click al vacío. Se sale por la X
+        // o por Atrás, nunca por un toque accidental en el fondo.
+        dismissOnClickOutside = false,
+        actionButton = {
+            PrimaryButton(
+                text = "Anular",
                 onClick = { selected?.let(onConfirm) },
                 enabled = selected != null,
-            ) { Text("Anular", color = if (selected != null) Color(0xFFD32F2F) else Color.Gray) }
+                fullWidth = true,
+                destructive = true,
+            )
         },
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("Cancelar") }
-        },
-    )
+    ) {
+        Column {
+            Text("Razón de la anulación", fontWeight = FontWeight.SemiBold)
+            reasons.forEach { reason ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { selected = reason }
+                        .padding(vertical = AvoqadoTheme.spacing.xs),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    androidx.compose.material3.RadioButton(
+                        selected = selected == reason,
+                        onClick = { selected = reason },
+                    )
+                    Text(reason, style = MaterialTheme.typography.bodyMedium)
+                }
+            }
+        }
+    }
 }
 
 @Composable
