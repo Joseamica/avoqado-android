@@ -10,9 +10,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.CalendarMonth
-import androidx.compose.material.icons.filled.Restaurant
-import androidx.compose.material.icons.filled.Storefront
+import androidx.compose.material.icons.outlined.CalendarMonth
+import androidx.compose.material.icons.outlined.Restaurant
+import androidx.compose.material.icons.outlined.Storefront
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -27,6 +27,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
@@ -98,17 +99,22 @@ fun ChangeModeSheet(
 
 // MARK: - Mode Row
 
+/// Ícono por modo. Vive aquí (junto al selector) pero es `internal` porque el
+/// menú Más pinta el modo actual con el MISMO ícono: duplicar el `when` era
+/// garantía de que un día divergieran.
+internal fun posModeIcon(mode: PosMode): ImageVector = when (mode) {
+    PosMode.RETAIL -> Icons.Outlined.Storefront
+    PosMode.RESTAURANT -> Icons.Outlined.Restaurant
+    PosMode.RESERVATIONS -> Icons.Outlined.CalendarMonth
+}
+
 @Composable
 private fun ModeRow(
     mode: PosMode,
     isSelected: Boolean,
     onClick: () -> Unit,
 ) {
-    val icon = when (mode) {
-        PosMode.RETAIL -> Icons.Filled.Storefront
-        PosMode.RESTAURANT -> Icons.Filled.Restaurant
-        PosMode.RESERVATIONS -> Icons.Filled.CalendarMonth
-    }
+    val icon = posModeIcon(mode)
 
     Row(
         modifier = Modifier

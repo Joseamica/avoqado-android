@@ -3,6 +3,7 @@ package com.avoqado.pos.settings
 import android.content.pm.PackageManager
 import android.util.Log
 import androidx.core.content.pm.PackageInfoCompat
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -19,34 +20,44 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+// Set de CONTORNO en todo el menú: es el mismo peso que los SF Symbols de iOS,
+// así que las dos apps dejan de sentirse distintas. Los `AutoMirrored` son los
+// que el propio Material marca como tales — la variante `filled`/no-mirrored de
+// ReceiptLong, FactCheck y HelpOutline está deprecada.
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ExitToApp
-import androidx.compose.material.icons.filled.BarChart
-import androidx.compose.material.icons.filled.ChevronRight
-import androidx.compose.material.icons.filled.Dashboard
-import androidx.compose.material.icons.filled.Description
-import androidx.compose.material.icons.filled.Extension
-import androidx.compose.material.icons.filled.CalendarMonth
-import androidx.compose.material.icons.filled.HourglassEmpty
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.LocalOffer
-import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.Monitor
-import androidx.compose.material.icons.filled.People
-import androidx.compose.material.icons.automirrored.filled.PlaylistAddCheck
-import androidx.compose.material.icons.filled.Assignment
-import androidx.compose.material.icons.filled.PointOfSale
-import androidx.compose.material.icons.filled.Print
-import androidx.compose.material.icons.filled.QrCodeScanner
-import androidx.compose.material.icons.filled.Schedule
-import androidx.compose.material.icons.filled.Security
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Restaurant
-import androidx.compose.material.icons.filled.Store
-import androidx.compose.material.icons.automirrored.filled.HelpOutline
+import androidx.compose.material.icons.automirrored.outlined.FactCheck
+import androidx.compose.material.icons.automirrored.outlined.HelpOutline
+import androidx.compose.material.icons.automirrored.outlined.ReceiptLong
+import androidx.compose.material.icons.outlined.AdminPanelSettings
+import androidx.compose.material.icons.outlined.BarChart
+// Edificio, no tienda: `Storefront` ya es el ícono del MODO Retail y en ese modo
+// salían dos tiendas idénticas, una encima de la otra. Además empareja con el
+// `building.2` que iOS ya usa para Sucursal.
+import androidx.compose.material.icons.outlined.Business
+import androidx.compose.material.icons.outlined.CalendarMonth
+import androidx.compose.material.icons.outlined.Checklist
+import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.material.icons.outlined.Extension
+import androidx.compose.material.icons.outlined.GridView
+import androidx.compose.material.icons.outlined.HourglassEmpty
+import androidx.compose.material.icons.outlined.Key
+import androidx.compose.material.icons.outlined.KeyboardArrowDown
+import androidx.compose.material.icons.outlined.LocalFireDepartment
+import androidx.compose.material.icons.outlined.LocalOffer
+import androidx.compose.material.icons.outlined.Lock
+import androidx.compose.material.icons.outlined.Monitor
+import androidx.compose.material.icons.outlined.Payments
+import androidx.compose.material.icons.outlined.People
+import androidx.compose.material.icons.outlined.Print
+import androidx.compose.material.icons.outlined.QrCodeScanner
+import androidx.compose.material.icons.outlined.RequestQuote
+import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
@@ -64,6 +75,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
@@ -88,6 +100,7 @@ import com.avoqado.pos.printing.presentation.PrinterSettingsSheet
 import com.avoqado.pos.reports.presentation.ReportsScreen
 import com.avoqado.pos.reservations.domain.VenueMode
 import com.avoqado.pos.settings.presentation.ChangeModeSheet
+import com.avoqado.pos.settings.presentation.posModeIcon
 import com.avoqado.pos.settings.presentation.CustomerDisplaySheet
 import com.avoqado.pos.settings.presentation.KioskSheet
 import com.avoqado.pos.settings.presentation.CustomizeMenuSheet
@@ -188,25 +201,26 @@ fun MoreMenuScreen(
         else -> MaterialTheme.typography.displayMedium
     }
     val venueNameStyle = if (denseMenu) MaterialTheme.typography.bodySmall else MaterialTheme.typography.bodyMedium
-    val modeStyle = when {
-        denseMenu -> MaterialTheme.typography.bodyMedium
-        isSmallTablet -> MaterialTheme.typography.bodyLarge
-        else -> MaterialTheme.typography.bodyLarge
-    }
-    val modeRowPadding = if (denseMenu) AvoqadoTheme.spacing.xs else AvoqadoTheme.spacing.sm
     val sectionGap = when {
         denseMenu -> AvoqadoTheme.spacing.lg
         isSmallTablet -> AvoqadoTheme.spacing.xl
         else -> AvoqadoTheme.spacing.xxl
     }
-    val cardPadding = if (denseMenu) AvoqadoTheme.spacing.md else AvoqadoTheme.spacing.lg
-    val venueTitleStyle = if (denseMenu) MaterialTheme.typography.titleSmall else MaterialTheme.typography.titleMedium
 
     Box(modifier = Modifier.fillMaxSize()) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
+            .verticalScroll(rememberScrollState()),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+    // Columna de contenido acotada y centrada — espejo de iOS
+    // (`MoreMenuView.maxContentWidth = 600`). Sin esto, en tablet horizontal
+    // la fila se estira ~2000px y el chevron acaba a media pantalla del texto.
+    Column(
+        modifier = Modifier
+            .widthIn(max = MoreMenuContentMaxWidth)
+            .fillMaxWidth()
             .padding(screenPadding),
     ) {
         // Header (matching iOS: "Más" title + venue subtitle)
@@ -227,6 +241,9 @@ fun MoreMenuScreen(
         // dos "Modo" desincronizados en esta pantalla.
 
         if (isSmallTablet) {
+            // Tablet chica de baja densidad: Sucursal y Modo comparten renglón
+            // para no comerse el alto. Mismo lenguaje visual que la variante
+            // apilada — sólo cambia el acomodo, no la piel.
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
@@ -234,41 +251,15 @@ fun MoreMenuScreen(
             ) {
                 Card(
                     modifier = Modifier
-                        .weight(0.35f)
-                        .clickable { showChangeMode = true },
-                ) {
-                    Column(
-                        modifier = Modifier.padding(horizontal = AvoqadoTheme.spacing.md, vertical = AvoqadoTheme.spacing.sm),
-                        verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.xxs),
-                    ) {
-                        Text(
-                            text = "Modo",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text(
-                                text = currentMode.displayName,
-                                style = modeStyle,
-                                fontWeight = FontWeight.Medium,
-                                color = MaterialTheme.colorScheme.onSurface,
-                            )
-                            Icon(
-                                Icons.Filled.KeyboardArrowDown,
-                                contentDescription = null,
-                                modifier = Modifier.size(AvoqadoTheme.dimensions.iconMedium),
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
-                    }
-                }
-
-                Card(
-                    modifier = Modifier
                         .weight(0.65f)
                         .clickable(enabled = viewModel.hasMultipleVenues && !isSwitching) {
                             showVenueSwitcher = true
                         },
+                    shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.lg),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    ),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
                 ) {
                     Row(
                         modifier = Modifier
@@ -276,11 +267,20 @@ fun MoreMenuScreen(
                             .padding(horizontal = AvoqadoTheme.spacing.md, vertical = AvoqadoTheme.spacing.sm),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Icon(
-                            Icons.Filled.Store,
-                            contentDescription = null,
-                            modifier = Modifier.size(AvoqadoTheme.dimensions.iconMedium),
-                        )
+                        Box(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
+                                .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                Icons.Outlined.Business,
+                                contentDescription = null,
+                                modifier = Modifier.size(AvoqadoTheme.dimensions.iconMedium),
+                                tint = MaterialTheme.colorScheme.onSurface,
+                            )
+                        }
                         Column(
                             modifier = Modifier
                                 .weight(1f)
@@ -303,77 +303,82 @@ fun MoreMenuScreen(
                             )
                         } else {
                             Icon(
-                                Icons.Filled.ChevronRight,
+                                Icons.Outlined.ChevronRight,
                                 contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(AvoqadoTheme.dimensions.iconMedium),
+                                tint = MaterialTheme.colorScheme.outlineVariant,
                             )
                         }
                     }
                 }
-            }
-        } else {
-            // Mode Selector Row
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clickable { showChangeMode = true }
-                    .padding(vertical = modeRowPadding),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = "Modo: ${currentMode.displayName}",
-                    style = modeStyle,
-                    fontWeight = FontWeight.Medium,
-                    color = MaterialTheme.colorScheme.onSurface,
-                )
-                Icon(
-                    Icons.Filled.KeyboardArrowDown,
-                    contentDescription = null,
-                    modifier = Modifier.size(AvoqadoTheme.dimensions.iconLarge),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
 
-            Spacer(modifier = Modifier.height(if (denseMenu) AvoqadoTheme.spacing.xs else AvoqadoTheme.spacing.md))
-
-            // Venue Card (matching iOS: "Sucursal" + venue name + chevron)
-            Card(modifier = Modifier.fillMaxWidth()) {
-                Row(
+                Card(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable(enabled = viewModel.hasMultipleVenues && !isSwitching) {
-                            showVenueSwitcher = true
-                        }
-                        .padding(cardPadding),
-                    verticalAlignment = Alignment.CenterVertically,
+                        .weight(0.35f)
+                        .clickable { showChangeMode = true },
+                    shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.lg),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceVariant,
+                    ),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
                 ) {
-                    Icon(
-                        Icons.Filled.Store,
-                        contentDescription = null,
-                        modifier = Modifier.size(if (denseMenu) AvoqadoTheme.dimensions.iconMedium else AvoqadoTheme.dimensions.iconXLarge),
-                    )
-                    Column(
+                    Row(
                         modifier = Modifier
-                            .weight(1f)
-                            .padding(horizontal = if (denseMenu) AvoqadoTheme.spacing.sm else AvoqadoTheme.spacing.md),
+                            .fillMaxWidth()
+                            .padding(horizontal = AvoqadoTheme.spacing.md, vertical = AvoqadoTheme.spacing.sm),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Text(
-                            text = "Sucursal",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        Text(
-                            text = venueName,
-                            style = venueTitleStyle,
-                        )
-                        if (viewModel.hasMultipleVenues) {
-                            Text(
-                                text = "Toca para cambiar",
-                                style = if (denseMenu) MaterialTheme.typography.labelSmall else MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        Box(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
+                                .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Icon(
+                                posModeIcon(currentMode),
+                                contentDescription = null,
+                                modifier = Modifier.size(AvoqadoTheme.dimensions.iconMedium),
+                                tint = MaterialTheme.colorScheme.onSurface,
                             )
                         }
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(horizontal = AvoqadoTheme.spacing.sm),
+                        ) {
+                            Text(
+                                text = "Modo",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Text(
+                                text = currentMode.displayName,
+                                style = MaterialTheme.typography.titleSmall,
+                            )
+                        }
+                        Icon(
+                            Icons.Outlined.KeyboardArrowDown,
+                            contentDescription = null,
+                            modifier = Modifier.size(AvoqadoTheme.dimensions.iconMedium),
+                            tint = MaterialTheme.colorScheme.outlineVariant,
+                        )
                     }
+                }
+            }
+        } else {
+            // Venue Card (matching iOS: "Sucursal" + venue name + chevron).
+            // Va ARRIBA del modo: la sucursal es el contexto grande y el modo un
+            // ajuste dentro de ella. Mismo orden en iOS.
+            HeaderCard(
+                icon = Icons.Outlined.Business,
+                label = "Sucursal",
+                value = venueName,
+                hint = if (viewModel.hasMultipleVenues) "Toca para cambiar" else null,
+                dense = denseMenu,
+                enabled = viewModel.hasMultipleVenues && !isSwitching,
+                onClick = { showVenueSwitcher = true },
+                trailing = {
                     if (isSwitching) {
                         CircularProgressIndicator(
                             modifier = Modifier.size(20.dp),
@@ -381,177 +386,216 @@ fun MoreMenuScreen(
                         )
                     } else {
                         Icon(
-                            Icons.Filled.ChevronRight,
+                            Icons.Outlined.ChevronRight,
                             contentDescription = null,
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(AvoqadoTheme.dimensions.iconMedium),
+                            tint = MaterialTheme.colorScheme.outlineVariant,
                         )
                     }
-                }
-            }
+                },
+            )
+
+            Spacer(modifier = Modifier.height(if (denseMenu) AvoqadoTheme.spacing.xs else AvoqadoTheme.spacing.sm))
+
+            // El modo deja de ser texto suelto: misma tarjeta que Sucursal, para
+            // que se lea como lo que es — un ajuste tocable, no un rótulo.
+            HeaderCard(
+                icon = posModeIcon(currentMode),
+                label = "Modo",
+                value = currentMode.displayName,
+                hint = null,
+                dense = denseMenu,
+                enabled = true,
+                onClick = { showChangeMode = true },
+                trailing = {
+                    Icon(
+                        Icons.Outlined.KeyboardArrowDown,
+                        contentDescription = null,
+                        modifier = Modifier.size(AvoqadoTheme.dimensions.iconMedium),
+                        tint = MaterialTheme.colorScheme.outlineVariant,
+                    )
+                },
+            )
         }
 
         Spacer(modifier = Modifier.height(sectionGap))
 
-        // General Section
-        SectionHeader("General", dense = denseMenu)
-        if (!viewModel.reservationsEnabled) {
-            // Visible teaser: the entry stays discoverable with a tier badge
-            // when the plan lacks RESERVATIONS; tapping opens the Pro upsell.
-            MenuRow(
-                icon = Icons.Filled.CalendarMonth,
-                label = "Activar reservas",
-                subtitle = if (viewModel.reservationsRequireUpgrade) {
-                    "Incluido en el Plan ${viewModel.reservationsTierLabel}"
-                } else {
-                    "Permite recibir citas. Gratis hoy."
-                },
-                tierBadgeLabel = if (viewModel.reservationsRequireUpgrade) {
-                    viewModel.reservationsTierLabel
-                } else {
-                    null
-                },
-                onClick = onActivateReservations,
-                dense = denseMenu,
+        // Los grupos se arman como DATOS y no como Composables sueltos: así el
+        // filtrado por rol/plan decide la MEMBRESÍA de cada tarjeta. Un grupo que
+        // se queda sin filas no pinta encabezado ni tarjeta vacía, y cada fila
+        // sabe si es la última — el divisor no se dibuja al ras del borde.
+        // El orden y los nombres de grupo se espejan en iOS (`MainTabView.swift`).
+        val operacion = buildList {
+            if (viewModel.canAccessReports) {
+                add(
+                    MenuEntry(
+                        icon = Icons.Outlined.BarChart,
+                        label = "Informes",
+                        onClick = { showReports = true },
+                    ),
+                )
+            }
+            add(
+                MenuEntry(
+                    icon = Icons.AutoMirrored.Outlined.ReceiptLong,
+                    label = "Pedidos",
+                    onClick = { showOrders = true },
+                ),
+            )
+            add(
+                MenuEntry(
+                    icon = Icons.Outlined.QrCodeScanner,
+                    label = "Entregas por área",
+                    subtitle = "Revisar papel o escanear comprobante pagado",
+                    onClick = { showAreaTicketDelivery = true },
+                ),
+            )
+            if (viewModel.canAccessKDS) {
+                add(
+                    MenuEntry(
+                        icon = Icons.Outlined.LocalFireDepartment,
+                        label = "Pantalla de cocina",
+                        onClick = { showKDS = true },
+                    ),
+                )
+            }
+            if (viewModel.canManageCashDrawer) {
+                add(
+                    MenuEntry(
+                        icon = Icons.Outlined.Payments,
+                        label = "Caja",
+                        onClick = { showCashDrawer = true },
+                    ),
+                )
+                add(
+                    MenuEntry(
+                        icon = Icons.AutoMirrored.Outlined.FactCheck,
+                        label = "Cierre del día",
+                        onClick = { showEndOfDay = true },
+                    ),
+                )
+            }
+            if (viewModel.reservationsEnabled) {
+                add(
+                    MenuEntry(
+                        icon = Icons.Outlined.HourglassEmpty,
+                        label = "Lista de espera",
+                        onClick = onOpenWaitlist,
+                    ),
+                )
+            } else {
+                // Visible teaser: the entry stays discoverable with a tier badge
+                // when the plan lacks RESERVATIONS; tapping opens the Pro upsell.
+                add(
+                    MenuEntry(
+                        icon = Icons.Outlined.CalendarMonth,
+                        label = "Activar reservas",
+                        subtitle = if (viewModel.reservationsRequireUpgrade) {
+                            "Incluido en el Plan ${viewModel.reservationsTierLabel}"
+                        } else {
+                            "Permite recibir citas. Gratis hoy."
+                        },
+                        tierBadgeLabel = if (viewModel.reservationsRequireUpgrade) {
+                            viewModel.reservationsTierLabel
+                        } else {
+                            null
+                        },
+                        onClick = onActivateReservations,
+                    ),
+                )
+            }
+            add(
+                MenuEntry(
+                    icon = Icons.Outlined.Schedule,
+                    label = "Reloj checador",
+                    onClick = { showTimeClock = true },
+                ),
             )
         }
-        if (viewModel.reservationsEnabled) {
-            MenuRow(
-                icon = Icons.Filled.HourglassEmpty,
-                label = "Lista de espera",
-                onClick = onOpenWaitlist,
-                dense = denseMenu,
+
+        val catalogo = buildList {
+            if (viewModel.canCreateProducts) {
+                add(
+                    MenuEntry(
+                        icon = Icons.Outlined.LocalOffer,
+                        label = "Artículos",
+                        onClick = { showArticles = true },
+                    ),
+                )
+            }
+            add(
+                MenuEntry(
+                    icon = Icons.Outlined.People,
+                    label = "Clientes",
+                    onClick = { showCustomers = true },
+                ),
+            )
+            add(
+                MenuEntry(
+                    icon = Icons.Outlined.RequestQuote,
+                    label = "Presupuestos",
+                    onClick = { showEstimates = true },
+                ),
             )
         }
-        MenuRow(
-            icon = Icons.Filled.Schedule,
-            label = "Reloj checador",
-            onClick = { showTimeClock = true },
-            dense = denseMenu,
-        )
-        if (viewModel.canAccessReports) {
-            MenuRow(
-                icon = Icons.Filled.BarChart,
-                label = "Informes",
-                onClick = { showReports = true },
-                dense = denseMenu,
-            )
-        }
-        MenuRow(
-            icon = Icons.Filled.Description,
-            label = "Pedidos",
-            onClick = { showOrders = true },
-            dense = denseMenu,
-        )
-        MenuRow(
-            icon = Icons.Filled.QrCodeScanner,
-            label = "Entregas por área",
-            subtitle = "Revisar papel o escanear comprobante pagado",
-            onClick = { showAreaTicketDelivery = true },
-            dense = denseMenu,
-        )
-        if (viewModel.canManageCashDrawer) {
-            MenuRow(
-                icon = Icons.Filled.PointOfSale,
-                label = "Caja",
-                onClick = { showCashDrawer = true },
-                dense = denseMenu,
-            )
-            MenuRow(
-                icon = Icons.Filled.Assignment,
-                label = "Cierre del día",
-                onClick = { showEndOfDay = true },
-                dense = denseMenu,
-            )
-        }
-        if (viewModel.canAccessKDS) {
-            MenuRow(
-                icon = Icons.Filled.Restaurant,
-                label = "Pantalla de cocina",
-                onClick = { showKDS = true },
-                dense = denseMenu,
-            )
-        }
-        if (viewModel.canCreateProducts) {
-            MenuRow(
-                icon = Icons.Filled.LocalOffer,
-                label = "Artículos",
-                onClick = { showArticles = true },
-                dense = denseMenu,
-            )
-        }
-        MenuRow(
-            icon = Icons.Filled.People,
-            label = "Clientes",
-            onClick = { showCustomers = true },
-            dense = denseMenu,
-        )
-        MenuRow(
-            icon = Icons.Filled.Description,
-            label = "Presupuestos",
-            onClick = { showEstimates = true },
-            dense = denseMenu,
-        )
-        MenuRow(
-            icon = Icons.Filled.Security,
-            label = "Permisos",
-            onClick = { showPermissions = true },
-            dense = denseMenu,
-        )
-        MenuRow(
-            icon = Icons.Filled.Settings,
-            label = "Configuración PIN",
-            onClick = { showPinSettings = true },
-            dense = denseMenu,
-        )
-        MenuRow(
-            icon = Icons.AutoMirrored.Filled.PlaylistAddCheck,
-            label = "Configuración",
-            onClick = { showSetupWizard = true },
-            dense = denseMenu,
-        )
-        MenuRow(
-            icon = Icons.Filled.Dashboard,
-            label = "Personalizar menú",
-            onClick = { showCustomizeMenu = true },
-            dense = denseMenu,
-        )
-        MenuRow(
-            icon = Icons.Filled.Extension,
-            label = "Complementos",
-            onClick = { showAddons = true },
-            dense = denseMenu,
-        )
-        MenuRow(
-            icon = Icons.AutoMirrored.Filled.HelpOutline,
-            label = "Atención al cliente",
-            onClick = { showSupport = true },
-            dense = denseMenu,
+
+        val ajustes = listOf(
+            MenuEntry(
+                icon = Icons.Outlined.AdminPanelSettings,
+                label = "Permisos",
+                onClick = { showPermissions = true },
+            ),
+            MenuEntry(
+                icon = Icons.Outlined.Key,
+                label = "Configuración PIN",
+                onClick = { showPinSettings = true },
+            ),
+            MenuEntry(
+                icon = Icons.Outlined.Checklist,
+                label = "Configuración",
+                onClick = { showSetupWizard = true },
+            ),
+            MenuEntry(
+                icon = Icons.Outlined.GridView,
+                label = "Personalizar menú",
+                onClick = { showCustomizeMenu = true },
+            ),
+            MenuEntry(
+                icon = Icons.Outlined.Extension,
+                label = "Complementos",
+                onClick = { showAddons = true },
+            ),
+            MenuEntry(
+                icon = Icons.AutoMirrored.Outlined.HelpOutline,
+                label = "Atención al cliente",
+                onClick = { showSupport = true },
+            ),
         )
 
-        Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
+        val hardware = listOf(
+            MenuEntry(
+                icon = Icons.Outlined.Print,
+                label = "Impresora",
+                onClick = { showPrinter = true },
+            ),
+            MenuEntry(
+                icon = Icons.Outlined.Lock,
+                label = "Modo kiosco",
+                subtitle = if (kioskEnabled) "Activado - la app está fijada" else "Salir de la app",
+                onClick = { showKiosk = true },
+            ),
+            MenuEntry(
+                icon = Icons.Outlined.Monitor,
+                label = "Pantalla del cliente",
+                subtitle = if (customerDisplayDetected) "Detectada" else "No detectada",
+                onClick = { showCustomerDisplay = true },
+            ),
+        )
 
-        // Hardware Section
-        SectionHeader("Hardware", dense = denseMenu)
-        MenuRow(
-            icon = Icons.Filled.Print,
-            label = "Impresora",
-            onClick = { showPrinter = true },
-            dense = denseMenu,
-        )
-        MenuRow(
-            icon = Icons.Filled.Lock,
-            label = "Modo kiosco",
-            subtitle = if (kioskEnabled) "Activado - la app está fijada" else "Salir de la app",
-            onClick = { showKiosk = true },
-            dense = denseMenu,
-        )
-        MenuRow(
-            icon = Icons.Filled.Monitor,
-            label = "Pantalla del cliente",
-            subtitle = if (customerDisplayDetected) "Detectada" else "No detectada",
-            onClick = { showCustomerDisplay = true },
-            dense = denseMenu,
-        )
+        MenuSection(title = "Operación", entries = operacion, dense = denseMenu)
+        MenuSection(title = "Catálogo", entries = catalogo, dense = denseMenu)
+        MenuSection(title = "Ajustes", entries = ajustes, dense = denseMenu)
+        MenuSection(title = "Hardware", entries = hardware, dense = denseMenu)
 
         Spacer(modifier = Modifier.height(sectionGap))
 
@@ -580,7 +624,8 @@ fun MoreMenuScreen(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.align(Alignment.CenterHorizontally),
         )
-    }
+    } // end columna de contenido acotada
+    } // end columna con scroll
 
     // Articles Fullscreen Overlay (inside Box, stacks over the Column)
     if (showArticles) {
@@ -979,9 +1024,124 @@ private fun PlaceholderSheet(
     }
 }
 
+/// Ancho máximo de la columna de contenido. Espejo exacto de iOS
+/// (`MoreMenuView.maxContentWidth = 600`): en tablet horizontal el menú se lee
+/// como una columna centrada, no como filas de 2000px con el chevron perdido.
+private val MoreMenuContentMaxWidth = 600.dp
+
+/// Tarjeta de encabezado (Sucursal / Modo): chip de ícono + rótulo + valor +
+/// acción a la derecha. Las dos comparten forma a propósito — antes el modo era
+/// texto suelto y no se leía como algo tocable.
 @Composable
-private fun SectionHeader(title: String) {
-    SectionHeader(title = title, dense = false)
+private fun HeaderCard(
+    icon: ImageVector,
+    label: String,
+    value: String,
+    hint: String?,
+    dense: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    trailing: @Composable () -> Unit,
+) {
+    val padding = if (dense) AvoqadoTheme.spacing.md else AvoqadoTheme.spacing.lg
+    val chipSize = if (dense) 36.dp else 44.dp
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.lg),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+        ),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(enabled = enabled, onClick = onClick)
+                .padding(padding),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(chipSize)
+                    .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
+                    .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    icon,
+                    contentDescription = null,
+                    modifier = Modifier.size(AvoqadoTheme.dimensions.iconLarge),
+                    tint = MaterialTheme.colorScheme.onSurface,
+                )
+            }
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(horizontal = if (dense) AvoqadoTheme.spacing.sm else AvoqadoTheme.spacing.md),
+            ) {
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    text = value,
+                    style = if (dense) MaterialTheme.typography.titleSmall else MaterialTheme.typography.titleMedium,
+                )
+                if (hint != null) {
+                    Text(
+                        text = hint,
+                        style = if (dense) MaterialTheme.typography.labelSmall else MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            trailing()
+        }
+    }
+}
+
+/// Una entrada del menú. Se modela como dato para poder filtrar por rol/plan
+/// ANTES de pintar: el grupo conoce su membresía final y por tanto sabe cuál es
+/// su última fila (sin divisor) y si quedó vacío (no se pinta).
+private data class MenuEntry(
+    val icon: ImageVector,
+    val label: String,
+    val onClick: () -> Unit,
+    val subtitle: String? = null,
+    val tierBadgeLabel: String? = null,
+)
+
+@Composable
+private fun MenuSection(
+    title: String,
+    entries: List<MenuEntry>,
+    dense: Boolean,
+) {
+    // Un grupo sin filas no deja encabezado colgado ni tarjeta hueca.
+    if (entries.isEmpty()) return
+
+    SectionHeader(title = title, dense = dense)
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.lg),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+        ),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+    ) {
+        Column(modifier = Modifier.fillMaxWidth()) {
+            entries.forEachIndexed { index, entry ->
+                MenuRow(
+                    entry = entry,
+                    dense = dense,
+                    showDivider = index != entries.lastIndex,
+                )
+            }
+        }
+    }
+    Spacer(modifier = Modifier.height(if (dense) AvoqadoTheme.spacing.md else AvoqadoTheme.spacing.lg))
 }
 
 @Composable
@@ -991,68 +1151,85 @@ private fun SectionHeader(
 ) {
     Text(
         text = title,
-            style = if (dense) MaterialTheme.typography.labelMedium else MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(vertical = if (dense) AvoqadoTheme.spacing.xs else AvoqadoTheme.spacing.sm),
-        )
+        style = if (dense) MaterialTheme.typography.titleSmall else MaterialTheme.typography.titleMedium,
+        fontWeight = FontWeight.SemiBold,
+        color = MaterialTheme.colorScheme.onSurface,
+        modifier = Modifier.padding(
+            start = AvoqadoTheme.spacing.xxs,
+            bottom = if (dense) AvoqadoTheme.spacing.xs else AvoqadoTheme.spacing.sm,
+        ),
+    )
 }
 
 @Composable
 private fun MenuRow(
-    icon: ImageVector,
-    label: String,
-    onClick: () -> Unit,
-    dense: Boolean = false,
-    subtitle: String? = null,
-    tierBadgeLabel: String? = null,
+    entry: MenuEntry,
+    dense: Boolean,
+    showDivider: Boolean,
 ) {
-    val verticalPadding = if (dense) AvoqadoTheme.spacing.xs else AvoqadoTheme.spacing.md
+    val verticalPadding = if (dense) AvoqadoTheme.spacing.sm else AvoqadoTheme.spacing.md
+    val horizontalPadding = if (dense) AvoqadoTheme.spacing.md else AvoqadoTheme.spacing.lg
     val rowTextStyle = if (dense) MaterialTheme.typography.bodyMedium else MaterialTheme.typography.bodyLarge
     val iconSize = if (dense) AvoqadoTheme.dimensions.iconMedium else AvoqadoTheme.dimensions.iconLarge
-    val chevronSize = if (dense) AvoqadoTheme.dimensions.iconMedium else AvoqadoTheme.dimensions.iconLarge
+    val chevronSize = if (dense) AvoqadoTheme.dimensions.iconSmall else AvoqadoTheme.dimensions.iconMedium
+    val gap = if (dense) AvoqadoTheme.spacing.sm else AvoqadoTheme.spacing.md
+    // Sangría del divisor = padding + ancho fijo del ícono + hueco, para que
+    // arranque bajo el texto y no de borde a borde (look de hoja de cálculo).
+    val dividerInset = horizontalPadding + AvoqadoTheme.dimensions.iconLarge + gap
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(vertical = verticalPadding),
+            .clickable(onClick = entry.onClick)
+            .padding(horizontal = horizontalPadding, vertical = verticalPadding),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Icon(
-            icon,
-            contentDescription = null,
-            modifier = Modifier.size(iconSize),
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        // Ancho fijo (no el tamaño del glifo) para que todas las etiquetas
+        // arranquen en la misma columna, tengan el ícono que tengan.
+        Box(
+            modifier = Modifier.width(AvoqadoTheme.dimensions.iconLarge),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                entry.icon,
+                contentDescription = null,
+                modifier = Modifier.size(iconSize),
+                // Jerarquía: el ícono acompaña al texto (espejo de iOS `.primary`),
+                // el chevron se apaga. Antes los tres eran el mismo gris.
+                tint = MaterialTheme.colorScheme.onSurface,
+            )
+        }
         Column(
             modifier = Modifier
                 .weight(1f)
-                .padding(horizontal = if (dense) AvoqadoTheme.spacing.sm else AvoqadoTheme.spacing.md),
+                .padding(horizontal = gap),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    text = label,
+                    text = entry.label,
                     style = rowTextStyle,
                 )
-                if (tierBadgeLabel != null) {
+                if (entry.tierBadgeLabel != null) {
                     Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
-                    TierBadge(tierLabel = tierBadgeLabel)
+                    TierBadge(tierLabel = entry.tierBadgeLabel)
                 }
             }
-            if (subtitle != null) {
+            if (entry.subtitle != null) {
                 Text(
-                    text = subtitle,
+                    text = entry.subtitle,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
         Icon(
-            Icons.Filled.ChevronRight,
+            Icons.Outlined.ChevronRight,
             contentDescription = null,
             modifier = Modifier.size(chevronSize),
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            tint = MaterialTheme.colorScheme.outlineVariant,
         )
     }
-    HorizontalDivider()
+    if (showDivider) {
+        HorizontalDivider(modifier = Modifier.padding(start = dividerInset))
+    }
 }
