@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.domain.RoleManager
+import com.avoqado.pos.core.domain.refresh.RefreshGateFactory
 import com.avoqado.pos.payment.data.OrderRepository
 import com.avoqado.pos.printing.data.PrinterService
 import com.avoqado.pos.printing.data.model.ReceiptData
@@ -24,6 +25,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -47,6 +49,7 @@ class TransactionsViewModel @Inject constructor(
     private val orderRepository: OrderRepository,
     private val printerService: PrinterService,
     private val secureStorage: SecureStorage,
+    refreshGateFactory: RefreshGateFactory,
 ) : ViewModel() {
 
     val transactions = repository.transactions
@@ -88,8 +91,53 @@ class TransactionsViewModel @Inject constructor(
     private val _refundState = MutableStateFlow<RefundUiState>(RefundUiState.Idle)
     val refundState: StateFlow<RefundUiState> = _refundState.asStateFlow()
 
+    private val gate = refreshGateFactory.create(viewModelScope)
+
+    private val _isManualRefreshing = MutableStateFlow(false)
+    val isManualRefreshing: StateFlow<Boolean> = _isManualRefreshing.asStateFlow()
+
+    private val _detailRefundActive = MutableStateFlow(false)
+
+    /** Espejo del refundFlowActive de iOS: la vista del detalle reporta aquí su sheet local. */
+    fun setRefundFlowActive(active: Boolean) {
+        _detailRefundActive.value = active
+    }
+
+    /** Guard §4.5 — dinero: con la devolución abierta (lista o detalle) o corriendo, ni el gesto refresca. */
+    private fun workInProgress(): Boolean =
+        _showRefundSheet.value || _refundState.value is RefundUiState.Loading || _detailRefundActive.value
+
+    /** Contrato §4.2: sin launch interno; el gate decide y sella el reloj. */
+    suspend fun refreshNow(): Result<Unit> =
+        repository.fetchTransactions(page = 1, search = _searchText.value.ifBlank { null })
+
+    fun autoRefresh() {
+        viewModelScope.launch {
+            gate.run(workInProgress = ::workInProgress, manual = false, block = ::refreshNow)
+        }
+    }
+
+    fun manualRefresh() {
+        viewModelScope.launch {
+            _isManualRefreshing.value = true
+            try {
+                gate.run(workInProgress = ::workInProgress, manual = true, block = ::refreshNow)
+            } finally {
+                _isManualRefreshing.value = false
+            }
+        }
+    }
+
+    /** Mutación local (devolución, etc.) = identidad nueva: invalida el TTL y re-pide (spec §4.4).
+     *  Sin guard de busy: es post-mutación — recargar la lista no pisa ningún borrador. */
+    fun invalidateAndRefresh() {
+        gate.invalidate()
+        viewModelScope.launch {
+            gate.run(workInProgress = { false }, manual = false, block = ::refreshNow)
+        }
+    }
+
     init {
-        refresh()
         observeSearch()
     }
 
@@ -97,23 +145,18 @@ class TransactionsViewModel @Inject constructor(
     private fun observeSearch() {
         viewModelScope.launch {
             _searchText
+                .drop(1) // la emisión inicial cruda no es una búsqueda del usuario
                 .debounce(400)
                 .distinctUntilChanged()
-                .collect { refresh() }
+                .collect {
+                    gate.invalidate()
+                    gate.run(workInProgress = ::workInProgress, manual = false, block = ::refreshNow)
+                }
         }
     }
 
     fun setSearchText(text: String) {
         _searchText.value = text
-    }
-
-    fun refresh() {
-        viewModelScope.launch {
-            repository.fetchTransactions(
-                page = 1,
-                search = _searchText.value.ifBlank { null },
-            )
-        }
     }
 
     fun loadMoreIfNeeded(currentItem: Transaction) {
@@ -298,8 +341,8 @@ class TransactionsViewModel @Inject constructor(
                         refundResult.message ?: "Reembolso procesado",
                     )
 
-                    // Refresh transactions list
-                    refresh()
+                    // Refresh transactions list — mutación local = identidad nueva.
+                    invalidateAndRefresh()
                 },
                 onFailure = { error ->
                     Log.e("💸", "❌ Refund failed: ${error.message}")

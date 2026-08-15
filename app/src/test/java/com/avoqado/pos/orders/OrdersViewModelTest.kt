@@ -37,7 +37,12 @@ class OrdersViewModelTest {
         every { repository.currentPage } returns MutableStateFlow(1)
     }
 
-    private fun createViewModel() = OrdersViewModel(repository)
+    private fun createViewModel(): OrdersViewModel {
+        val refreshGateFactory = mockk<com.avoqado.pos.core.domain.refresh.RefreshGateFactory>()
+        every { refreshGateFactory.create(any(), any()) } returns
+            com.avoqado.pos.core.domain.refresh.RefreshGate(clock = { kotlin.time.Duration.ZERO })
+        return OrdersViewModel(repository, refreshGateFactory)
+    }
 
     // MARK: - Initial State
 
@@ -55,9 +60,14 @@ class OrdersViewModelTest {
     }
 
     @Test
-    fun `init calls refresh on construction`() = runTest {
+    fun `init NO fetchea - la carga inicial la dispara la UI via el gate`() = runTest {
         val viewModel = createViewModel()
-        coVerify(atLeast = 1) {
+        coVerify(exactly = 0) {
+            repository.loadOrders(any(), any(), any(), any())
+        }
+        // El primer autoRefresh (LaunchedEffect de la pantalla) sí pide.
+        viewModel.autoRefresh()
+        coVerify(exactly = 1) {
             repository.loadOrders(page = 1, search = null, status = null, append = false)
         }
     }
@@ -260,8 +270,10 @@ class OrdersViewModelTest {
     fun `refresh loads page 1 with current search and filter`() = runTest {
         val viewModel = createViewModel()
         viewModel.updateSearch("taco")
+        // setStatusFilter ya invalida y re-pide vía el gate (identidad nueva);
+        // autoRefresh posterior queda dentro del TTL y el single-flight/TTL lo absorbe.
         viewModel.setStatusFilter("PENDING")
-        viewModel.refresh()
+        viewModel.autoRefresh()
 
         coVerify(atLeast = 1) {
             repository.loadOrders(page = 1, search = "taco", status = "PENDING", append = false)

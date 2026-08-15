@@ -128,6 +128,22 @@ class CartViewModel @Inject constructor(
     private val _isStaffLoading = MutableStateFlow(false)
     val isStaffLoading: StateFlow<Boolean> = _isStaffLoading.asStateFlow()
 
+    // Aviso NO bloqueante al agregar un producto que marca 0 o menos: la venta
+    // procede y el inventario quedará en negativo (señal de descuadre). La UI lo
+    // pinta como toast ámbar y lo consume con consumeStockWarning().
+    private val _stockWarning = MutableStateFlow<String?>(null)
+    val stockWarning: StateFlow<String?> = _stockWarning.asStateFlow()
+
+    fun consumeStockWarning() {
+        _stockWarning.value = null
+    }
+
+    private fun avisarSiAgotado(product: Product) {
+        if (product.isOutOfStock) {
+            _stockWarning.value = "\"${product.name}\" marcaba 0 en inventario. Se agregó a la venta: revisa tus existencias."
+        }
+    }
+
     private val _staffError = MutableStateFlow<String?>(null)
     val staffError: StateFlow<String?> = _staffError.asStateFlow()
 
@@ -367,9 +383,10 @@ class CartViewModel @Inject constructor(
     // MARK: - Cart Operations
 
     fun addProduct(product: Product) {
-        // Guard de inventario (búsqueda/escáner llegan sin pasar por el tile);
-        // sin seguimiento (trackInventory false/null) nunca bloquea.
-        if (product.isOutOfStock) return
+        // Agotado AVISA, nunca bloquea (Square-parity 2026-08-12): el registro
+        // del sistema puede estar desfasado y el producto sí existir en el
+        // anaquel. El stock queda en negativo como señal de descuadre.
+        avisarSiAgotado(product)
         _cartState.update { state ->
             // Check if same product without modifiers already in cart
             val existingIndex = state.items.indexOfFirst {
@@ -409,7 +426,8 @@ class CartViewModel @Inject constructor(
         priceAdjustment: Int? = null,
         discountId: String? = null,
     ) {
-        if (product.isOutOfStock) return
+        // Ver addProduct: agotado avisa, nunca bloquea.
+        avisarSiAgotado(product)
         val newItem = CartItem(
             type = CartItemType.ProductItem(product.id),
             name = product.name,

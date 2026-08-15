@@ -516,9 +516,11 @@ fun TimeClockSheet(
  * pintar la hora a pintar una equivocada en un dato que decide cuánto se le
  * paga a alguien.
  */
-/** Hora del dispositivo, para el acuse. */
+/** Hora del NEGOCIO para el acuse — no la del aparato: un reloj mal puesto haría que
+ *  el acuse de una checada cante una hora que no cuadra con lo que registró el server. */
 private fun horaActual(): String =
-    java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date())
+    java.time.ZonedDateTime.now(com.avoqado.pos.core.util.VenueTimeZone.zoneId())
+        .format(DateTimeFormatter.ofPattern("HH:mm"))
 
 /**
  * Cuánto lleva trabajado desde la entrada, en palabras ("5 h 20 min").

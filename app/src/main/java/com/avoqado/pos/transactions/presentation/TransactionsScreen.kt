@@ -2,6 +2,8 @@ package com.avoqado.pos.transactions.presentation
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -47,9 +49,7 @@ import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -71,6 +71,8 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.LifecycleResumeEffect
+import com.avoqado.pos.designsystem.components.AvoqadoRefreshable
 import com.avoqado.pos.designsystem.components.SearchPillField
 import com.avoqado.pos.designsystem.components.AvoqadoLoadingState
 import com.avoqado.pos.designsystem.theme.AvoqadoAdaptiveSizeClass
@@ -191,22 +193,14 @@ private fun TransactionListPanel(
     val searchText by viewModel.searchText.collectAsState()
     val filters by viewModel.filters.collectAsState()
     val selectedTransactionId by viewModel.selectedTransactionId.collectAsState()
+    val isManualRefreshing by viewModel.isManualRefreshing.collectAsState()
 
-    // Auto-refresh every time this composable enters composition
-    val refreshKey = remember { mutableIntStateOf(0) }
-    LaunchedEffect(refreshKey.intValue) {
-        viewModel.refresh()
-    }
-    // Increment key when lifecycle resumes (tab re-selected)
-    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner) {
-        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
-            if (event == androidx.lifecycle.Lifecycle.Event.ON_RESUME) {
-                refreshKey.intValue++
-            }
-        }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    // Disparadores del spec §4.8: entrada + regreso de background/re-selección de tab.
+    // La doble llamada la absorbe el single-flight del gate, no el TTL.
+    LaunchedEffect(Unit) { viewModel.autoRefresh() }
+    LifecycleResumeEffect(Unit) {
+        viewModel.autoRefresh()
+        onPauseOrDispose { }
     }
 
     val filteredTransactions = remember(transactions, filters) {
@@ -355,64 +349,70 @@ private fun TransactionListPanel(
         )
 
         // Content
-        when {
-            isLoading && transactions.isEmpty() -> {
-                AvoqadoLoadingState(message = "Cargando transacciones...")
-            }
-            filteredTransactions.isEmpty() -> {
-                EmptyState(
-                    hasFilters = filters.hasActiveFilters,
-                    searchText = searchText,
-                )
-            }
-            else -> {
-                val listState = rememberLazyListState()
+        AvoqadoRefreshable(
+            isRefreshing = isManualRefreshing,
+            onRefresh = viewModel::manualRefresh,
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            when {
+                isLoading && transactions.isEmpty() -> {
+                    AvoqadoLoadingState(message = "Cargando transacciones...")
+                }
+                filteredTransactions.isEmpty() -> {
+                    EmptyState(
+                        hasFilters = filters.hasActiveFilters,
+                        searchText = searchText,
+                    )
+                }
+                else -> {
+                    val listState = rememberLazyListState()
 
-                LazyColumn(
-                    state = listState,
-                    contentPadding = PaddingValues(horizontal = horizontalPadding),
-                    modifier = Modifier.fillMaxSize(),
-                ) {
-                    grouped.forEach { (dateGroup, groupTransactions) ->
-                        item(key = "header_$dateGroup") {
-                            Text(
-                                text = dateGroup,
-                                style = if (denseList) MaterialTheme.typography.labelMedium else MaterialTheme.typography.labelLarge,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(
-                                    top = dateHeaderTopPadding,
-                                    bottom = dateHeaderBottomPadding,
-                                ),
-                            )
-                        }
+                    LazyColumn(
+                        state = listState,
+                        contentPadding = PaddingValues(horizontal = horizontalPadding),
+                        modifier = Modifier.fillMaxSize(),
+                    ) {
+                        grouped.forEach { (dateGroup, groupTransactions) ->
+                            item(key = "header_$dateGroup") {
+                                Text(
+                                    text = dateGroup,
+                                    style = if (denseList) MaterialTheme.typography.labelMedium else MaterialTheme.typography.labelLarge,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.padding(
+                                        top = dateHeaderTopPadding,
+                                        bottom = dateHeaderBottomPadding,
+                                    ),
+                                )
+                            }
 
-                        items(groupTransactions, key = { it.id }) { transaction ->
-                            val isSelected = isTablet && selectedTransactionId == transaction.id
+                            items(groupTransactions, key = { it.id }) { transaction ->
+                                val isSelected = isTablet && selectedTransactionId == transaction.id
 
-                            TransactionRow(
-                                transaction = transaction,
-                                dense = denseList,
-                                isSelected = isSelected,
-                                onClick = { viewModel.selectTransaction(transaction.id) },
-                            )
+                                TransactionRow(
+                                    transaction = transaction,
+                                    dense = denseList,
+                                    isSelected = isSelected,
+                                    onClick = { viewModel.selectTransaction(transaction.id) },
+                                )
 
-                            // Trigger load-more
-                            LaunchedEffect(transaction.id) {
-                                viewModel.loadMoreIfNeeded(transaction)
+                                // Trigger load-more
+                                LaunchedEffect(transaction.id) {
+                                    viewModel.loadMoreIfNeeded(transaction)
+                                }
                             }
                         }
-                    }
 
-                    // Loading more indicator
-                    if (isLoadingMore) {
-                        item {
-                            Box(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(if (denseList) AvoqadoTheme.spacing.md else AvoqadoTheme.spacing.lg),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                        // Loading more indicator
+                        if (isLoadingMore) {
+                            item {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(if (denseList) AvoqadoTheme.spacing.md else AvoqadoTheme.spacing.lg),
+                                    contentAlignment = Alignment.Center,
+                                ) {
+                                    CircularProgressIndicator(modifier = Modifier.size(24.dp))
+                                }
                             }
                         }
                     }
@@ -521,9 +521,15 @@ private fun EmptyState(
     hasFilters: Boolean,
     searchText: String,
 ) {
-    Box(
-        modifier = Modifier.fillMaxSize(),
-        contentAlignment = Alignment.Center,
+    // Desplazable a propósito (spec §4.7 / caso nº1): PullToRefreshBox sólo dispara
+    // el gesto sobre un hijo con scroll, y este es el estado que se ve al no ver la
+    // venta nueva — sin esto, jalar en la lista vacía no hace nada.
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState()),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
     ) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,

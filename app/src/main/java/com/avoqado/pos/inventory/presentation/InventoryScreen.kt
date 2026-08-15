@@ -4,6 +4,8 @@ import android.widget.Toast
 import com.avoqado.pos.core.util.Plurales
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.lifecycle.compose.LifecycleResumeEffect
+import com.avoqado.pos.designsystem.components.AvoqadoRefreshable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -103,6 +105,16 @@ fun InventoryScreen(
             snackbarHostState.showSnackbar(it)
             viewModel.clearError()
         }
+    }
+
+    // Disparadores del spec de refresco §4.8: entrada + regreso de background.
+    // Van ANTES de los returns tempranos (composición incondicional). La doble
+    // llamada la absorbe el single-flight del gate; con un conteo en curso el
+    // guard del ViewModel deja el auto-refresh en SkippedBusy.
+    LaunchedEffect(Unit) { viewModel.autoRefresh() }
+    LifecycleResumeEffect(Unit) {
+        viewModel.autoRefresh()
+        onPauseOrDispose { }
     }
 
     // Stock counting state
@@ -215,6 +227,15 @@ fun InventoryScreen(
             com.avoqado.pos.designsystem.components.ImmersiveWindow()
             StockCountTypeSheet(viewModel = viewModel)
         }
+    }
+
+    // Detalle de artículo tocado en la Descripción general
+    val selectedStockItem by viewModel.selectedStockItem.collectAsState()
+    selectedStockItem?.let { item ->
+        StockItemDetailSheet(
+            item = item,
+            onDismiss = { viewModel.selectStockItem(null) },
+        )
     }
 }
 
@@ -519,17 +540,22 @@ private fun SectionContent(
         featureName = section.label,
         requiredTierLabel = viewModel.inventoryTierLabel,
     ) {
-        when (section) {
+        val isManualRefreshing by viewModel.isManualRefreshing.collectAsState()
+        val sectionBody: @Composable () -> Unit = {
+            when (section) {
             InventorySection.OVERVIEW -> {
                 val stockItems by viewModel.stockItems.collectAsState()
+                val rawMaterials by viewModel.countableRawMaterials.collectAsState()
                 val searchQuery by viewModel.searchQuery.collectAsState()
                 val sortOption by viewModel.sortOption.collectAsState()
                 StockOverviewContent(
                     items = stockItems,
+                    rawMaterials = rawMaterials,
                     searchQuery = searchQuery,
                     sortOption = sortOption,
                     onSearchChange = { viewModel.updateSearch(it) },
                     onSortChange = { viewModel.updateSort(it) },
+                    onItemTap = { viewModel.selectStockItem(it) },
                 )
             }
             InventorySection.COUNTS -> {
@@ -548,41 +574,76 @@ private fun SectionContent(
             InventorySection.METRICS -> {
                 InventoryMetricsView(viewModel = viewModel)
             }
+            }
+        }
+        if (section == InventorySection.INTER_VENUE) {
+            // Traslados tiene su propio ViewModel: envolverlo con el gate de
+            // ESTE VM animaría un gesto que no refresca lo visible (spec §10).
+            sectionBody()
+        } else {
+            AvoqadoRefreshable(
+                isRefreshing = isManualRefreshing,
+                onRefresh = viewModel::manualRefresh,
+                modifier = Modifier.fillMaxSize(),
+            ) {
+                sectionBody()
+            }
         }
     }
 }
 
-// MARK: - Stock Overview (matching iOS: search + sort + item rows)
-
-@Composable
-private fun StockOverviewContent(
-    items: List<StockItem>,
+/** Búsqueda por nombre/SKU/GTIN + orden, compartido por productos e insumos. */
+private fun List<StockItem>.filtrarYOrdenar(
     searchQuery: String,
     sortOption: StockSortOption,
-    onSearchChange: (String) -> Unit,
-    onSortChange: (StockSortOption) -> Unit,
-) {
-    var showSortSheet by remember { mutableStateOf(false) }
-    val context = LocalContext.current
-
-    // Filter by search
-    val filteredItems = if (searchQuery.isBlank()) {
-        items
+): List<StockItem> {
+    val filtered = if (searchQuery.isBlank()) {
+        this
     } else {
         val query = searchQuery.lowercase()
-        items.filter {
+        filter {
             it.productName.lowercase().contains(query) ||
                 it.sku?.lowercase()?.contains(query) == true ||
                 it.gtin?.lowercase()?.contains(query) == true
         }
     }
+    return when (sortOption) {
+        StockSortOption.NAME_ASC -> filtered.sortedBy { it.productName }
+        StockSortOption.NAME_DESC -> filtered.sortedByDescending { it.productName }
+        StockSortOption.STOCK_LOW -> filtered.sortedBy { it.onHand }
+        StockSortOption.STOCK_HIGH -> filtered.sortedByDescending { it.onHand }
+    }
+}
 
-    // Sort
-    val sortedItems = when (sortOption) {
-        StockSortOption.NAME_ASC -> filteredItems.sortedBy { it.productName }
-        StockSortOption.NAME_DESC -> filteredItems.sortedByDescending { it.productName }
-        StockSortOption.STOCK_LOW -> filteredItems.sortedBy { it.onHand }
-        StockSortOption.STOCK_HIGH -> filteredItems.sortedByDescending { it.onHand }
+// MARK: - Stock Overview (matching iOS: search + sort + item rows)
+
+/**
+ * @param rawMaterials INSUMOS (lo que se cocina con: champiñones, masa, jamón).
+ *   Se pueden contar desde el conteo de existencias, pero esta pantalla no los
+ *   listaba: el conteo los ajustaba bien y en la descripción general nunca
+ *   aparecían, así que parecía que el ajuste no había servido de nada. Van en
+ *   su propia sección para no confundir lo que SE VENDE con lo que SE USA.
+ */
+@Composable
+private fun StockOverviewContent(
+    items: List<StockItem>,
+    rawMaterials: List<StockItem>,
+    searchQuery: String,
+    sortOption: StockSortOption,
+    onSearchChange: (String) -> Unit,
+    onSortChange: (StockSortOption) -> Unit,
+    onItemTap: (StockItem) -> Unit = {},
+) {
+    var showSortSheet by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+
+    // La búsqueda y el orden se aplican IGUAL a productos e insumos: buscar
+    // "champiñón" tiene que encontrarlo esté donde esté.
+    val sortedItems = remember(items, searchQuery, sortOption) {
+        items.filtrarYOrdenar(searchQuery, sortOption)
+    }
+    val sortedRawMaterials = remember(rawMaterials, searchQuery, sortOption) {
+        rawMaterials.filtrarYOrdenar(searchQuery, sortOption)
     }
 
     Column {
@@ -646,9 +707,13 @@ private fun StockOverviewContent(
             }
         }
 
-        if (sortedItems.isEmpty()) {
+        if (sortedItems.isEmpty() && sortedRawMaterials.isEmpty()) {
             Box(
-                modifier = Modifier.fillMaxSize(),
+                // Desplazable aunque esté vacío: el gesto de refresco DEBE
+                // funcionar justo cuando "no veo mis artículos".
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState()),
                 contentAlignment = Alignment.Center,
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
@@ -684,9 +749,26 @@ private fun StockOverviewContent(
             LazyColumn(
                 contentPadding = PaddingValues(horizontal = AvoqadoTheme.spacing.lg),
             ) {
-                items(sortedItems, key = { it.id }) { item ->
-                    StockItemRow(item = item)
+                // Sin insumos que mostrar, la lista se ve EXACTAMENTE como antes:
+                // los encabezados sólo aparecen cuando de verdad hay dos grupos.
+                val conSecciones = sortedRawMaterials.isNotEmpty() && sortedItems.isNotEmpty()
+
+                if (conSecciones) {
+                    item(key = "encabezado-productos") { StockSectionHeader("Productos") }
+                }
+                items(sortedItems, key = { "producto-${it.id}" }) { item ->
+                    StockItemRow(item = item, onTap = { onItemTap(item) })
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                }
+
+                if (sortedRawMaterials.isNotEmpty()) {
+                    if (conSecciones) {
+                        item(key = "encabezado-insumos") { StockSectionHeader("Insumos") }
+                    }
+                    items(sortedRawMaterials, key = { "insumo-${it.id}" }) { item ->
+                        StockItemRow(item = item)
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    }
                 }
             }
         }
@@ -705,13 +787,29 @@ private fun StockOverviewContent(
     }
 }
 
+/** Encabezado de grupo dentro de la descripción general ("Productos"/"Insumos"). */
+@Composable
+private fun StockSectionHeader(title: String) {
+    Text(
+        text = title,
+        style = MaterialTheme.typography.labelLarge,
+        fontWeight = FontWeight.SemiBold,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(
+            top = AvoqadoTheme.spacing.lg,
+            bottom = AvoqadoTheme.spacing.xs,
+        ),
+    )
+}
+
 // MARK: - Stock Item Row (matching iOS: avatar + name/SKU + stock quantities)
 
 @Composable
-private fun StockItemRow(item: StockItem) {
+private fun StockItemRow(item: StockItem, onTap: () -> Unit = {}) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .clickable(onClick = onTap)
             .padding(vertical = AvoqadoTheme.spacing.md),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -755,14 +853,30 @@ private fun StockItemRow(item: StockItem) {
             item.isLowStock -> Warning
             else -> MaterialTheme.colorScheme.onSurface
         }
-        Text(
-            text = item.currentQuantityDisplay,
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = if (item.onHand <= 0) FontWeight.SemiBold else FontWeight.Bold,
-            color = qtyColor,
-        )
+        Column(horizontalAlignment = Alignment.End) {
+            Text(
+                text = item.currentQuantityDisplay,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = if (item.onHand <= 0) FontWeight.SemiBold else FontWeight.Bold,
+                color = qtyColor,
+            )
+            // El negativo EXPLICADO: es la señal de descuadre que el conteo
+            // corrige (mockup aprobado 2026-08-12). Sin esta línea, el −11 se
+            // ve como un bug en vez de como "vendiste más de lo registrado".
+            if (item.onHand < 0) {
+                Text(
+                    text = "vendiste ${formatQtyEntera(-item.onHand)} más de lo registrado — haz un conteo",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
+        }
     }
 }
+
+/** "11" · "0.75" — sin decimales de sobra para la leyenda del descuadre. */
+private fun formatQtyEntera(value: Double): String =
+    if (value == value.toLong().toDouble()) value.toLong().toString() else String.format("%.2f", value)
 
 // MARK: - Stock Counts Content (matching iOS: count type button + list)
 

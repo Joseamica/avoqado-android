@@ -42,19 +42,22 @@ class TransactionRepository @Inject constructor(
     suspend fun fetchTransactions(
         page: Int = 1,
         search: String? = null,
-    ) {
-        val venueId = secureStorage.venueId ?: return
-        val token = secureStorage.accessToken ?: return
+    ): Result<Unit> {
+        val venueId = secureStorage.venueId
+            ?: return Result.failure(IllegalStateException("Sin venue activo"))
+        val token = secureStorage.accessToken
+            ?: return Result.failure(IllegalStateException("Sin sesión"))
 
         if (page == 1) {
-            _isLoading.value = true
+            // Refresh de fondo silencioso: sin skeleton encima de datos buenos (spec §6).
+            _isLoading.value = _transactions.value.isEmpty()
             currentPage = 1
             hasMore = true
         } else {
             _isLoadingMore.value = true
         }
 
-        try {
+        return try {
             val urlBuilder = StringBuilder(
                 "${ApiConstants.BASE_URL}/mobile/venues/$venueId/transactions?page=$page&pageSize=$pageSize",
             )
@@ -78,11 +81,14 @@ class TransactionRepository @Inject constructor(
                 currentPage = page
                 hasMore = result.meta?.let { page < it.pageCount } ?: false
                 Log.d("📦", "✅ Loaded ${result.data.size} transactions (page $page)")
+                Result.success(Unit)
             } else {
                 Log.e("📦", "❌ Transactions fetch failed: $responseCode")
+                Result.failure(Exception("Transactions HTTP $responseCode"))
             }
         } catch (e: Exception) {
             Log.e("📦", "❌ Transactions fetch error: ${e.message}")
+            Result.failure(e)
         } finally {
             _isLoading.value = false
             _isLoadingMore.value = false

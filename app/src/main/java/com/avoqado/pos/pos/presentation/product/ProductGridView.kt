@@ -42,7 +42,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
@@ -73,17 +72,11 @@ fun ProductGridView(
      *  (y sus productos) del menú activo. Null = catálogo completo, como siempre. */
     menuCategoryIds: Set<String>? = null,
 ) {
-    // Agotado (espejo de avoqado-tpv): el tile SIGUE siendo clickeable, pero el
-    // tap abre el modal informativo (QUÉ falta) en vez de agregar. Interceptado
-    // aquí para que TODOS los consumidores del grid (register, mesas, phone) lo
-    // hereden sin tocar sus call sites.
-    var unavailableInfo by remember { mutableStateOf<Product?>(null) }
-    val tapOrInfo: (Product) -> Unit = { p ->
-        if (p.isOutOfStock) unavailableInfo = p else onProductTap(p)
-    }
-    unavailableInfo?.let { product ->
-        UnavailableProductDialog(product = product, onDismiss = { unavailableInfo = null })
-    }
+    // Agotado AVISA, nunca bloquea (Square-parity 2026-08-12): el tap agrega
+    // siempre — el registro puede estar desfasado y el producto sí existir en
+    // el anaquel. El aviso lo emite el ViewModel al agregar; el chip del tile
+    // conserva la etiqueta. (Antes el tap abría un modal que mataba la venta.)
+    val tapOrInfo: (Product) -> Unit = { p -> onProductTap(p) }
 
     val allProductsUnfiltered by viewModel.products.collectAsState()
     val categoriesUnfiltered by viewModel.categories.collectAsState()
@@ -429,7 +422,9 @@ private fun ProductTile(
         color = MaterialTheme.colorScheme.surface,
         onClick = onClick,
     ) {
-        Column(modifier = if (product.isOutOfStock) Modifier.alpha(0.45f) else Modifier) {
+        // Agotado ya NO se atenúa: el tile sigue vendible (Square-parity
+        // 2026-08-12) y la etiqueta viaja en el chip de la esquina.
+        Column {
             // Image container
             Box(
                 modifier = Modifier
@@ -463,15 +458,20 @@ private fun ProductTile(
                 }
 
                 if (product.isOutOfStock) {
+                    // Chip en la esquina, no badge central: informa sin estorbar
+                    // el tap — el producto SIGUE vendible y el stock quedará en
+                    // negativo como señal (mockup aprobado 2026-08-12).
+                    val existencia = product.availableQuantityExact ?: product.availableQuantity?.toDouble()
                     Text(
-                        text = "Agotado",
+                        text = if (existencia != null && existencia < 0) "Agotado · ${formatChipQty(existencia)}" else "Agotado · 0",
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.SemiBold,
                         color = Color.White,
                         modifier = Modifier
-                            .align(Alignment.Center)
+                            .align(Alignment.TopEnd)
+                            .padding(AvoqadoTheme.spacing.xs)
                             .background(Color.Black.copy(alpha = 0.65f), RoundedCornerShape(50))
-                            .padding(horizontal = AvoqadoTheme.spacing.md, vertical = AvoqadoTheme.spacing.xs),
+                            .padding(horizontal = AvoqadoTheme.spacing.sm, vertical = 2.dp),
                     )
                 }
 
@@ -549,4 +549,11 @@ private fun parseHexColor(hex: String): Color? {
     } catch (_: Exception) {
         null
     }
+}
+
+/** "−2" · "−0.75": el chip del tile muestra el faltante sin decimales de sobra. */
+private fun formatChipQty(value: Double): String {
+    val abs = kotlin.math.abs(value)
+    val texto = if (abs == abs.toLong().toDouble()) abs.toLong().toString() else String.format("%.2f", abs)
+    return "−$texto"
 }

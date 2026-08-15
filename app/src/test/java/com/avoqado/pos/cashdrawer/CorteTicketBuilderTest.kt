@@ -273,10 +273,14 @@ class CorteTicketBuilderTest {
      * mesero. Sin esto el cajero paga las propinas y su corte sale con faltante.
      */
     @Test
-    fun `avisa cuanta propina esta en el cajon y como sacarla`() {
+    fun `avisa cuanta propina esta en el cajon y que se reparte al cerrar`() {
         val t = papel()
         assertTrue("dice cuánto es en efectivo", t.contains("estan en el cajon"))
-        assertTrue("y cómo registrarlo", t.contains("egreso"))
+        assertTrue("dice que le toca al personal", t.contains("le tocan al personal"))
+        // 🔴 NO debe pedir un egreso: el arqueo se cuenta ANTES de repartir, así que la
+        // propina tiene que seguir en el cajón para que cuadre (el efectivo esperado del
+        // server ya la incluye). Pedir el egreso inducía justo el descuadre que evita.
+        assertFalse("no pide registrar un egreso", t.contains("egreso"))
     }
 
     @Test

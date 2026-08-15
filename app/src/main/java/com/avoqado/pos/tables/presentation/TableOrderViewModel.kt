@@ -226,10 +226,10 @@ class TableOrderViewModel @Inject constructor(
      *  two courses must stay two lines (they fire at different moments). */
     fun addProduct(product: Product) {
         invalidateBlockedNotice()
-        // Guard de inventario (búsqueda/escáner llegan sin pasar por el tile).
+        // Agotado AVISA, nunca bloquea (Square-parity 2026-08-12): el stock
+        // queda en negativo como señal de descuadre.
         if (product.isOutOfStock) {
-            _actionMessage.value = "\"${product.name}\" está agotado"
-            return
+            _actionMessage.value = "⚠️ \"${product.name}\" marcaba 0 — se agregó, revisa tus existencias"
         }
         val course = _selectedCourse.value
         val existing = _pending.value.firstOrNull { line ->
@@ -265,9 +265,9 @@ class TableOrderViewModel @Inject constructor(
         isCortesia: Boolean = false,
         cortesiaReason: String? = null,
     ) {
+        // Ver addProduct: agotado avisa, nunca bloquea.
         if (product.isOutOfStock) {
-            _actionMessage.value = "\"${product.name}\" está agotado"
-            return
+            _actionMessage.value = "⚠️ \"${product.name}\" marcaba 0 — se agregó, revisa tus existencias"
         }
         _pending.value = _pending.value + PendingLine(
             item = CartItem(

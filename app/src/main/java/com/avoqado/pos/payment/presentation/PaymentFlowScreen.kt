@@ -16,6 +16,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.avoqado.pos.customers.data.model.Customer
+import com.avoqado.pos.designsystem.components.AvoqadoWarningToast
 import com.avoqado.pos.customers.presentation.CreateCustomerView
 import com.avoqado.pos.customers.presentation.CustomersView
 import com.avoqado.pos.customers.presentation.CustomersViewModel
@@ -255,6 +256,20 @@ fun PaymentFlowScreen(
                             onDone()
                         },
                     )
+
+                    // Aviso de inventario post-cobro (Square-parity, mockup ②): el cobro
+                    // YA quedó registrado; el server avisa que el stock quedó en negativo
+                    // o no se pudo descontar. Ámbar, nunca bloquea ni sugiere reintentar.
+                    var inventoryWarningShown by rememberSaveable(splashKey) { mutableStateOf(false) }
+                    if (!inventoryWarningShown) {
+                        currentState.inventoryWarningMessage?.let { aviso ->
+                            AvoqadoWarningToast(
+                                message = "Revisa tu inventario",
+                                subtitle = aviso,
+                                onDismiss = { inventoryWarningShown = true },
+                            )
+                        }
+                    }
                 }
             }
             is PaymentFlowState.Error -> {

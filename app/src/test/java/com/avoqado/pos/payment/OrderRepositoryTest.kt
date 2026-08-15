@@ -113,6 +113,40 @@ class OrderRepositoryTest {
         assertEquals("cm9cashorderpayment456", paymentId)
     }
 
+    // MARK: - inventoryWarning extraction (toast ámbar post-cobro, Square-parity)
+
+    @Test
+    fun `extractInventoryWarningMessageFromResponse reads payment inventoryWarning shape`() {
+        val body = """
+            {
+              "success": true,
+              "payment": {
+                "paymentId": "cm9cashorderpayment456",
+                "inventoryWarning": {
+                  "code": "INSUFFICIENT_INVENTORY",
+                  "inventoryDeducted": true,
+                  "message": "El cobro quedó registrado. Cerveza Corona quedó en negativo."
+                }
+              }
+            }
+        """.trimIndent()
+
+        val message = OrderRepository.extractInventoryWarningMessageFromResponse(body)
+        assertEquals("El cobro quedó registrado. Cerveza Corona quedó en negativo.", message)
+    }
+
+    @Test
+    fun `extractInventoryWarningMessageFromResponse returns null when warning is absent`() {
+        val body = """
+            {
+              "success": true,
+              "payment": { "paymentId": "cm9cashorderpayment456" }
+            }
+        """.trimIndent()
+
+        assertEquals(null, OrderRepository.extractInventoryWarningMessageFromResponse(body))
+    }
+
     @Test
     fun `extractPaymentIdFromResponse returns null when payment id is missing`() {
         val body = """

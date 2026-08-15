@@ -273,8 +273,11 @@ fun DailyReportView(
                 if (propinaEfectivo > 0) {
                     Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xs))
                     Text(
-                        text = "De estas, ${formatCurrency(propinaEfectivo)} están en el cajón y se " +
-                            "pagan al mesero. Regístralo como egreso para que el corte cuadre.",
+                        // El arqueo se cuenta ANTES de repartir, así que la propina tiene que
+                        // seguir en el cajón para que cuadre — el efectivo esperado del server
+                        // ya la incluye. Por eso NO se pide registrar un egreso.
+                        text = "De estas, ${formatCurrency(propinaEfectivo)} están en el cajón y le " +
+                            "tocan al personal. Repártelas al cerrar el turno.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

@@ -287,12 +287,13 @@ private fun WeightCaptureContent(
                 }
             }
 
-            // Aviso de stock (no bloquea — el backend es la autoridad al cobrar), espejo del
-            // aviso de ProductDetailPanel.
+            // Aviso de stock (no bloquea): desde 2026-08-12 el cobro NUNCA se
+            // rechaza por inventario — la venta procede y el stock queda en
+            // negativo como señal de descuadre.
             if (product.isOutOfStock) {
                 Spacer(Modifier.height(AvoqadoTheme.spacing.sm))
                 Text(
-                    text = "⚠ Sin existencias — el cobro puede ser rechazado",
+                    text = "⚠ Sin existencias — quedará en negativo, revisa tu inventario",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.error,
                 )

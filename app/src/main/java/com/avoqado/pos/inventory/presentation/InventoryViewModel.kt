@@ -15,7 +15,9 @@ import com.avoqado.pos.inventory.data.model.StockCountItem
 import com.avoqado.pos.inventory.data.model.StockCountType
 import com.avoqado.pos.inventory.data.model.StockItem
 import com.avoqado.pos.inventory.data.model.StockSortOption
+import com.avoqado.pos.inventory.domain.StockRefresher
 import com.avoqado.pos.core.domain.PlanManager
+import com.avoqado.pos.core.domain.refresh.RefreshGateFactory
 import com.avoqado.pos.scale.ScaleSettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -54,7 +56,14 @@ class InventoryViewModel @Inject constructor(
     private val repository: InventoryRepository,
     private val planManager: PlanManager,
     private val scaleSettingsRepository: ScaleSettingsRepository,
+    private val stockRefresher: StockRefresher,
+    refreshGateFactory: RefreshGateFactory,
 ) : ViewModel() {
+
+    private val gate = refreshGateFactory.create(viewModelScope)
+
+    private val _isManualRefreshing = MutableStateFlow(false)
+    val isManualRefreshing: StateFlow<Boolean> = _isManualRefreshing.asStateFlow()
 
     // MARK: - Plan gating (Phase ① — UI teaser only)
 
@@ -152,6 +161,14 @@ class InventoryViewModel @Inject constructor(
     private val _selectedDetail = MutableStateFlow<StockCount?>(null)
     val selectedDetail: StateFlow<StockCount?> = _selectedDetail.asStateFlow()
 
+    // Detalle de un artículo tocado en la Descripción general.
+    private val _selectedStockItem = MutableStateFlow<StockItem?>(null)
+    val selectedStockItem: StateFlow<StockItem?> = _selectedStockItem.asStateFlow()
+
+    fun selectStockItem(item: StockItem?) {
+        _selectedStockItem.value = item
+    }
+
     fun clearError() {
         _errorMessage.value = null
     }
@@ -194,18 +211,15 @@ class InventoryViewModel @Inject constructor(
         }
     }
 
-    init {
-        refresh()
-    }
-
     fun selectSection(section: InventorySection) {
         _selectedSection.value = section
         // Load data for the section if needed
         when (section) {
             InventorySection.PURCHASE_ORDERS -> loadPurchaseOrders()
             InventorySection.TRANSFERS -> loadTransfers()
+            InventorySection.COUNTS -> viewModelScope.launch { repository.fetchStockCounts() }
             InventorySection.METRICS -> { /* Computed from existing data, no fetch needed */ }
-            else -> { /* Already loaded on init */ }
+            else -> { /* La carga inicial la dispara la UI vía el gate (autoRefresh) */ }
         }
     }
 
@@ -237,12 +251,62 @@ class InventoryViewModel @Inject constructor(
         _selectedTransfer.value = transfer
     }
 
-    fun refresh() {
+    // MARK: - Refresco (spec estrategia-de-refresco: gate + despacho por sección)
+
+    /** Guard §4.5 — stock: con un conteo en curso, en revisión o guardando,
+     *  ni el auto-refresh ni el gesto pisan la pantalla. */
+    private fun workInProgress(): Boolean =
+        _showCounting.value || _showReview.value || _isSaving.value
+
+    /**
+     * Contrato §4.2: sin launch interno; refresca lo que la sección ACTIVA
+     * muestra (§10 del spec: un gesto que anima sin refrescar lo visible es
+     * mentira). NO toca el catálogo del POS a propósito: ese sólo se vuelve a
+     * pedir cuando algo MUEVE stock (ver [refreshStockLevels]).
+     */
+    suspend fun refreshNow(): Result<Unit> = when (_selectedSection.value) {
+        InventorySection.OVERVIEW, InventorySection.METRICS -> combineResults(
+            repository.fetchStockOverview(),
+            repository.fetchRawMaterials(),
+        )
+        InventorySection.COUNTS -> repository.fetchStockCounts()
+        InventorySection.PURCHASE_ORDERS -> combineResults(
+            repository.fetchPurchaseOrders(),
+            repository.fetchSuppliers(),
+        )
+        InventorySection.TRANSFERS -> repository.fetchTransfers()
+        // Traslados entre sucursales vive en InterVenueTransfersViewModel:
+        // esa sección no se envuelve con el gesto (ver InventoryScreen).
+        InventorySection.INTER_VENUE -> Result.success(Unit)
+    }
+
+    private fun combineResults(a: Result<Unit>, b: Result<Unit>): Result<Unit> =
+        if (a.isFailure) a else b
+
+    fun autoRefresh() {
         viewModelScope.launch {
-            repository.fetchStockOverview()
-            repository.fetchRawMaterials()
-            repository.fetchStockCounts()
+            gate.run(workInProgress = ::workInProgress, manual = false, block = ::refreshNow)
         }
+    }
+
+    fun manualRefresh() {
+        viewModelScope.launch {
+            _isManualRefreshing.value = true
+            try {
+                gate.run(workInProgress = ::workInProgress, manual = true, block = ::refreshNow)
+            } finally {
+                _isManualRefreshing.value = false
+            }
+        }
+    }
+
+    /**
+     * Existencias tras un movimiento de stock. Delega en [StockRefresher], que
+     * refresca TAMBIÉN el catálogo del POS — si no, lo que acabas de reponer
+     * contándolo se queda "Agotado" en la pantalla de cobro.
+     */
+    private suspend fun refreshStockLevels() {
+        stockRefresher.refreshAfterStockChange()
     }
 
     private fun loadPurchaseOrders() {
@@ -304,6 +368,9 @@ class InventoryViewModel @Inject constructor(
                     Log.d(TAG, "✅ PO received: $poId")
                     // Refresh the selected PO to reflect updated quantities
                     _selectedPurchaseOrder.value = null
+                    // Recibir mercancía SUBE el stock — misma pantalla, mismo
+                    // refresco obligatorio que al confirmar un conteo.
+                    refreshStockLevels()
                     onSuccess()
                 }.onFailure { e ->
                     Log.e(TAG, "❌ Receive PO failed: ${e.message}")
@@ -571,6 +638,14 @@ class InventoryViewModel @Inject constructor(
         if (text.isBlank()) return
         if (index >= 0 && index < _countItems.value.size) {
             val counted = text.toDoubleOrNull() ?: 0.0
+            // Un conteo físico no puede ser negativo: nadie cuenta "menos siete
+            // cervezas" en el anaquel (una báscula con la tara mal puesta sí
+            // puede mandarlo). El server también lo rechaza; aquí se avisa
+            // ANTES de perder la captura. Espejo exacto de iOS.
+            if (counted < 0) {
+                _errorMessage.value = "La cantidad contada no puede ser negativa"
+                return
+            }
             val updated = _countItems.value.toMutableList()
             val item = updated[index]
             updated[index] = item.copy(
@@ -665,6 +740,9 @@ class InventoryViewModel @Inject constructor(
                     _showCounting.value = false
                     _activeCount.value = null
                     _countItems.value = emptyList()
+                    // El conteo YA movió el stock: sin esto la descripción
+                    // general se queda con las cantidades de antes de contar.
+                    refreshStockLevels()
                     repository.fetchStockCounts()
                     Log.d(TAG, "✅ Stock count confirmed")
                 }

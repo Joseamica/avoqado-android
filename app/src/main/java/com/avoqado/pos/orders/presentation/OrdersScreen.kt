@@ -49,6 +49,8 @@ import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.lifecycle.compose.LifecycleResumeEffect
+import com.avoqado.pos.designsystem.components.AvoqadoRefreshable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.snapshotFlow
@@ -108,6 +110,16 @@ fun OrdersScreen(
     onDismiss: () -> Unit,
     viewModel: OrdersViewModel = hiltViewModel(),
 ) {
+    // Overlay del Más (spec de refresco §4.8): LaunchedEffect cubre el "al
+    // mostrarse" (el ON_RESUME de la Activity NO dispara al abrir un overlay)
+    // y LifecycleResumeEffect el regreso desde background. La duplicación la
+    // absorbe el single-flight del gate.
+    LaunchedEffect(Unit) { viewModel.autoRefresh() }
+    LifecycleResumeEffect(Unit) {
+        viewModel.autoRefresh()
+        onPauseOrDispose { }
+    }
+
     if (isTablet) {
         TabletOrdersLayout(viewModel = viewModel, onDismiss = onDismiss)
     } else {
@@ -245,7 +257,14 @@ private fun OrderListView(
             onFilterSelected = { viewModel.setStatusFilter(it) },
         )
 
-        // Content
+        // Content — envuelto con el gesto de refresco (spec §4.7):
+        // isRefreshing = SOLO el gesto manual, nunca la carga inicial.
+        val isManualRefreshing by viewModel.isManualRefreshing.collectAsState()
+        AvoqadoRefreshable(
+            isRefreshing = isManualRefreshing,
+            onRefresh = viewModel::manualRefresh,
+            modifier = Modifier.fillMaxSize(),
+        ) {
         when {
             isLoading && orders.isEmpty() -> {
                 Box(
@@ -309,6 +328,7 @@ private fun OrderListView(
                     }
                 }
             }
+        }
         }
     }
 }
@@ -1055,7 +1075,11 @@ private fun OrderSearchBar(
 @Composable
 private fun OrdersEmptyState() {
     Box(
-        modifier = Modifier.fillMaxSize(),
+        // Desplazable aunque esté vacío: el gesto de refresco DEBE funcionar
+        // justo cuando "no veo mis órdenes".
+        modifier = Modifier
+            .fillMaxSize()
+            .verticalScroll(rememberScrollState()),
         contentAlignment = Alignment.Center,
     ) {
         Column(

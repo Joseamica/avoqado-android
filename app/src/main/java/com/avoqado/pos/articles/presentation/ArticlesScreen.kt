@@ -22,6 +22,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.lifecycle.compose.LifecycleResumeEffect
+import com.avoqado.pos.designsystem.components.AvoqadoRefreshable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -55,6 +57,16 @@ fun ArticlesScreen(
     onDismiss: () -> Unit,
     viewModel: ArticlesViewModel = hiltViewModel(),
 ) {
+    // Overlay del Más (spec de refresco §4.8): LaunchedEffect cubre el "al
+    // mostrarse" (el ON_RESUME de la Activity NO dispara al abrir un overlay)
+    // y LifecycleResumeEffect el regreso desde background. La duplicación la
+    // absorbe el single-flight del gate.
+    LaunchedEffect(Unit) { viewModel.autoRefresh() }
+    LifecycleResumeEffect(Unit) {
+        viewModel.autoRefresh()
+        onPauseOrDispose { }
+    }
+
     if (isTablet) {
         TabletArticlesLayout(
             viewModel = viewModel,
@@ -356,15 +368,23 @@ private fun SectionContent(
         featureName = section.label,
         requiredTierLabel = viewModel.promotionsTierLabel,
     ) {
-        when (section) {
-            ArticleSection.PRODUCTS -> ProductListView(viewModel = viewModel)
-            ArticleSection.CATEGORIES -> CategoryListView(viewModel = viewModel)
-            ArticleSection.MODIFIERS -> ModifierGroupListView(viewModel = viewModel)
-            ArticleSection.OPTIONS -> OptionsView(viewModel = viewModel)
-            ArticleSection.DISCOUNTS -> DiscountListView(viewModel = viewModel)
-            ArticleSection.COUPONS -> CouponListView(viewModel = viewModel)
-            ArticleSection.CREDIT_PACKS -> CreditPackListView(viewModel = viewModel)
-            ArticleSection.UNITS -> UnitsView(viewModel = viewModel)
+        // Gesto de refresco (spec §4.7): isRefreshing = SOLO el gesto manual.
+        val isManualRefreshing by viewModel.isManualRefreshing.collectAsState()
+        AvoqadoRefreshable(
+            isRefreshing = isManualRefreshing,
+            onRefresh = viewModel::manualRefresh,
+            modifier = Modifier.fillMaxSize(),
+        ) {
+            when (section) {
+                ArticleSection.PRODUCTS -> ProductListView(viewModel = viewModel)
+                ArticleSection.CATEGORIES -> CategoryListView(viewModel = viewModel)
+                ArticleSection.MODIFIERS -> ModifierGroupListView(viewModel = viewModel)
+                ArticleSection.OPTIONS -> OptionsView(viewModel = viewModel)
+                ArticleSection.DISCOUNTS -> DiscountListView(viewModel = viewModel)
+                ArticleSection.COUPONS -> CouponListView(viewModel = viewModel)
+                ArticleSection.CREDIT_PACKS -> CreditPackListView(viewModel = viewModel)
+                ArticleSection.UNITS -> UnitsView(viewModel = viewModel)
+            }
         }
     }
 }

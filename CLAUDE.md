@@ -47,6 +47,53 @@ behind a paywall.
   construye aquí si se toca durante el turno desde el piso, y entonces va en Android **e** iOS en el mismo
   trabajo. Apagado se ve y se explica, nunca desaparece en silencio.
 
+## 🔴 Comparar contra Square ANTES de juzgar una feature o un bug
+
+Regla completa en el `CLAUDE.md` del workspace (`../CLAUDE.md`), que auto-carga con este archivo.
+En corto: **investiga cómo lo hace Square, compáralo con lo nuestro, y trae las dos versiones al
+reporte — la decisión se toma entre el founder y tú.** Lo que parece un bug suele ser una decisión
+deliberada (caso real: el stock negativo, que Square permite a propósito y nosotros bloqueábamos).
+Aquí tienes las dos mejores fuentes a mano: `../square-ui-reference/` y la app real por
+`adb -s <device-serial>` (ver punto 3 de UI/UX Rules).
+
+### 🔴 El orden importa: PRIMERO abre la app de Square en el device, DESPUÉS planea
+
+Si la funcionalidad existe en el POS de Square, **ábrela en el mismo dispositivo donde tengas
+depuración inalámbrica o USB y recórrela tú mismo ANTES de escribir un plan.** No la deduzcas de
+capturas, de documentación ni de memoria: úsala. Verás el orden real de los pasos, qué pide y qué no,
+qué pasa en los casos raros, y cuántos taps cuesta — que es justo lo que no se ve en un screenshot y
+lo que decide si nuestro diseño es mejor o solo distinto.
+
+**Sólo después** de haberla usado: revisa cómo lo resuelve nuestro backend, el schema y el resto de
+la implementación. Al revés se planea contra lo que uno *imagina* que hace Square, y eso se descubre
+tarde — a medio construir.
+
+```bash
+adb devices                                   # el device físico, no el emulador
+adb -s <serial> shell monkey -p com.squareup -c android.intent.category.LAUNCHER 1
+adb -s <serial> shell uiautomator dump        # el árbol de la pantalla: textos exactos, ids
+adb -s <serial> shell screencap -p /sdcard/sq.png && adb -s <serial> pull /sdcard/sq.png
+```
+
+Trampas verificadas: **BACK saca de la app** (navega dentro, no con el botón del sistema). Y con adb
+inalámbrico, si el daemon se reinicia se pierde el device — se recupera con `adb mdns services` (da
+el puerto real, **cambia cada vez**) y `adb connect <ip>:<puerto>`; **el 5555 no sirve en Android 11+**.
+
+#### ⚠️ Modo mesas / modo restaurante: NO está en el Android — hace falta el iPad físico
+
+**No lo busques por adb, no está.** El modo mesas y el modo restaurante de Square sólo corren en
+**iPad o en hardware propio de Square** (Register, Terminal, Stand); la app de Android es el Point of
+Sale genérico y no los trae. Si vas a diseñar contra ese modo — plano de mesas, abrir/mover/juntar
+cuentas, cursos, comandas — **tiene que ser en el iPad físico**, recorriéndolo a mano: ahí no hay adb
+ni `uiautomator`, así que la captura es manual (screenshot del propio iPad).
+
+Por eso `../square-ui-reference/` son capturas **de iPad** y no de Android: se tomaron justamente
+porque ese modo no existe en la app Android. **Empieza por ahí antes de pedir el iPad** — hay ~103
+capturas del full-service en `../square-ui-reference/fullservice/` (ojo: en ese subdirectorio, no en
+la raíz), numeradas por flujo y ya cubriendo lo más pedido: `05a_check_plano.png` (plano de mesas),
+`72_menu_curso_no_enviado.png` (cursos), `80_acciones_cheque_vivo.png`, `52_anular.png`. Si lo que
+buscas ya está ahí, te ahorras el hardware.
+
 ## UI/UX Rules (BLOCKING — read before ANY UI work)
 
 **Before creating or modifying ANY Composable, you MUST:**

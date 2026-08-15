@@ -45,6 +45,8 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -203,6 +205,12 @@ private fun LoadedDetailView(
     // Receipt dialog states
     var showReceiptMethodDialog by remember { mutableStateOf(false) }
     var showRefundSheet by remember { mutableStateOf(false) }
+
+    // Espejo del refundFlowActive de iOS (guard §4.5): este sheet local del detalle
+    // también debe bloquear autoRefresh/manualRefresh mientras está abierto.
+    LaunchedEffect(showRefundSheet) { viewModel.setRefundFlowActive(showRefundSheet) }
+    DisposableEffect(Unit) { onDispose { viewModel.setRefundFlowActive(false) } }
+
     var showEmailInput by remember { mutableStateOf(false) }
     var showWhatsAppInput by remember { mutableStateOf(false) }
     var emailAddress by remember { mutableStateOf("") }
@@ -449,7 +457,7 @@ private fun LoadedDetailView(
             onDismiss = { showRefundSheet = false },
             onRefunded = {
                 showRefundSheet = false
-                viewModel.refresh()
+                viewModel.invalidateAndRefresh()
                 viewModel.selectTransaction(transaction.id)
             },
         )

@@ -3,6 +3,7 @@ package com.avoqado.pos.reports.presentation
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.core.domain.PlanManager
+import com.avoqado.pos.core.domain.refresh.RefreshGateFactory
 import com.avoqado.pos.reports.data.ReportsRepository
 import com.avoqado.pos.reports.data.model.ReportPeriod
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -21,7 +22,15 @@ import javax.inject.Inject
 class ReportsViewModel @Inject constructor(
     private val repository: ReportsRepository,
     private val planManager: PlanManager,
+    refreshGateFactory: RefreshGateFactory,
 ) : ViewModel() {
+
+    // MARK: - Refresco (spec estrategia-de-refresco)
+
+    private val gate = refreshGateFactory.create(viewModelScope)
+
+    private val _isManualRefreshing = MutableStateFlow(false)
+    val isManualRefreshing: StateFlow<Boolean> = _isManualRefreshing.asStateFlow()
 
     // MARK: - Repository State (forwarded)
 
@@ -64,10 +73,7 @@ class ReportsViewModel @Inject constructor(
     val showDetailedSummary: StateFlow<Boolean> = _showDetailedSummary.asStateFlow()
 
     // MARK: - Init
-
-    init {
-        loadReport()
-    }
+    // La carga inicial la dispara la UI vía el gate (autoRefresh).
 
     // MARK: - Public Actions
 
@@ -83,7 +89,8 @@ class ReportsViewModel @Inject constructor(
             _showCustomDatePicker.value = true
         } else {
             _showCustomDatePicker.value = false
-            loadReport()
+            // Otro periodo = otra identidad (spec §4.4): invalida el TTL y re-pide.
+            invalidateAndRefresh()
         }
     }
 
@@ -97,26 +104,47 @@ class ReportsViewModel @Inject constructor(
 
     fun applyCustomDates() {
         _showCustomDatePicker.value = false
-        loadReport()
+        // Otras fechas = otra identidad (spec §4.4).
+        invalidateAndRefresh()
     }
 
     fun toggleDetailedSummary() {
         _showDetailedSummary.value = !_showDetailedSummary.value
     }
 
-    fun refresh() {
-        loadReport()
+    /** Contrato §4.2: sin launch interno; el gate decide y sella el reloj. */
+    suspend fun refreshNow(): Result<Unit> {
+        val (startDate, endDate) = getDateRange()
+        return repository.loadReport(startDate, endDate, _selectedPeriod.value.chartReportType)
+    }
+
+    // Pantalla de solo lectura: sin borradores que proteger (spec §4.5).
+    fun autoRefresh() {
+        viewModelScope.launch {
+            gate.run(workInProgress = { false }, manual = false, block = ::refreshNow)
+        }
+    }
+
+    fun manualRefresh() {
+        viewModelScope.launch {
+            _isManualRefreshing.value = true
+            try {
+                gate.run(workInProgress = { false }, manual = true, block = ::refreshNow)
+            } finally {
+                _isManualRefreshing.value = false
+            }
+        }
+    }
+
+    /** Periodo o fechas nuevas = identidad nueva: invalida el TTL y re-pide. */
+    fun invalidateAndRefresh() {
+        gate.invalidate()
+        viewModelScope.launch {
+            gate.run(workInProgress = { false }, manual = false, block = ::refreshNow)
+        }
     }
 
     // MARK: - Private Helpers
-
-    private fun loadReport() {
-        viewModelScope.launch {
-            val (startDate, endDate) = getDateRange()
-            val reportType = _selectedPeriod.value.chartReportType
-            repository.loadReport(startDate, endDate, reportType)
-        }
-    }
 
     private fun getDateRange(): Pair<String, String> {
         val period = _selectedPeriod.value

@@ -79,8 +79,8 @@ class OrdersRepository @Inject constructor(
         pageSize: Int = 20,
         search: String? = null,
         status: String? = null,
-    ): OrderPage {
-        val base = baseUrl() ?: return OrderPage()
+    ): Result<OrderPage> {
+        val base = baseUrl() ?: return Result.failure(IllegalStateException("Sin venue activo"))
 
         val urlBuilder = StringBuilder("$base/orders?page=$page&pageSize=$pageSize")
         if (!search.isNullOrBlank()) {
@@ -100,7 +100,8 @@ class OrdersRepository @Inject constructor(
             val (code, body) = executeRequest(request)
             if (code in 200..299 && body.isNotEmpty()) {
                 val root = json.parseToJsonElement(body).jsonObject
-                val dataArray = root["data"]?.jsonArray ?: return OrderPage()
+                val dataArray = root["data"]?.jsonArray
+                    ?: return Result.failure(Exception("Orders: respuesta sin data"))
                 val meta = root["meta"]?.jsonObject
 
                 val orders = dataArray.map {
@@ -115,19 +116,24 @@ class OrdersRepository @Inject constructor(
                 val pageCount = meta?.get("pageCount")?.jsonPrimitive?.intOrNull ?: 1
 
                 Log.d(TAG, "✅ Loaded ${orders.size} orders (page $currentPage/$pageCount)")
-                OrderPage(
-                    orders = orders,
-                    total = total,
-                    page = currentPage,
-                    pageCount = pageCount,
+                Result.success(
+                    OrderPage(
+                        orders = orders,
+                        total = total,
+                        page = currentPage,
+                        pageCount = pageCount,
+                    ),
                 )
             } else {
+                // Fallo TIPADO: nunca una página vacía que pise datos buenos
+                // (spec estrategia-de-refresco §4.1 — era el bug rojo de la
+                // auditoría: entrar sin red borraba visualmente los pedidos).
                 Log.e(TAG, "❌ fetchOrders error: HTTP $code")
-                OrderPage()
+                Result.failure(Exception("Orders HTTP $code"))
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ fetchOrders exception: ${e.message}", e)
-            OrderPage()
+            Result.failure(e)
         }
     }
 
@@ -166,30 +172,35 @@ class OrdersRepository @Inject constructor(
         search: String?,
         status: String?,
         append: Boolean = false,
-    ) {
+    ): Result<Unit> {
         if (append) {
             _isLoadingMore.value = true
         } else {
-            _isLoading.value = true
+            // Refresh de fondo silencioso: sin skeleton encima de datos buenos.
+            _isLoading.value = _orders.value.isEmpty()
         }
         _errorMessage.value = null
 
-        try {
-            val result = fetchOrders(page = page, search = search, status = status)
+        val result = fetchOrders(page = page, search = search, status = status)
+        result.onSuccess { pageData ->
             if (append) {
-                _orders.value = _orders.value + result.orders
+                _orders.value = _orders.value + pageData.orders
             } else {
-                _orders.value = result.orders
+                _orders.value = pageData.orders
             }
-            _currentPage.value = result.page
-            _hasMore.value = result.hasMore
-        } catch (e: Exception) {
-            Log.e(TAG, "❌ loadOrders exception: ${e.message}", e)
-            _errorMessage.value = "Error al cargar órdenes"
-        } finally {
-            _isLoading.value = false
-            _isLoadingMore.value = false
+            _currentPage.value = pageData.page
+            _hasMore.value = pageData.hasMore
+        }.onFailure { e ->
+            // Datos previos INTACTOS (spec §4.1); el error visible sólo cuando
+            // no hay nada que mostrar (spec §6).
+            Log.e(TAG, "❌ loadOrders: ${e.message}")
+            if (_orders.value.isEmpty()) {
+                _errorMessage.value = "Error al cargar órdenes"
+            }
         }
+        _isLoading.value = false
+        _isLoadingMore.value = false
+        return result.map { }
     }
 
     suspend fun loadOrderDetail(orderId: String) {

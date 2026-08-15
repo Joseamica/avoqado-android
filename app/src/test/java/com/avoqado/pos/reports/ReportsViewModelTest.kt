@@ -39,7 +39,10 @@ class ReportsViewModelTest {
         val storage = mockk<SecureStorage>()
         every { storage.planTier } returns planTier
         every { storage.planExempt } returns planExempt
-        return ReportsViewModel(repository, PlanManager(storage))
+        val refreshGateFactory = mockk<com.avoqado.pos.core.domain.refresh.RefreshGateFactory>()
+        every { refreshGateFactory.create(any(), any()) } returns
+            com.avoqado.pos.core.domain.refresh.RefreshGate(clock = { kotlin.time.Duration.ZERO })
+        return ReportsViewModel(repository, PlanManager(storage), refreshGateFactory)
     }
 
     // MARK: - Initial State
@@ -63,9 +66,11 @@ class ReportsViewModelTest {
     }
 
     @Test
-    fun `init loads report on construction`() = runTest {
+    fun `init NO fetchea - la carga inicial la dispara la UI via el gate`() = runTest {
         val viewModel = createViewModel()
-        coVerify(atLeast = 1) { repository.loadReport(any(), any(), any()) }
+        coVerify(exactly = 0) { repository.loadReport(any(), any(), any()) }
+        viewModel.autoRefresh()
+        coVerify(exactly = 1) { repository.loadReport(any(), any(), any()) }
     }
 
     // MARK: - Period Selection
@@ -177,17 +182,17 @@ class ReportsViewModelTest {
     // MARK: - Refresh
 
     @Test
-    fun `refresh calls repository loadReport`() = runTest {
+    fun `autoRefresh calls repository loadReport`() = runTest {
         val viewModel = createViewModel()
-        viewModel.refresh()
-        // Should have been called at least twice: once in init, once on refresh
-        coVerify(atLeast = 2) { repository.loadReport(any(), any(), any()) }
+        // El init ya NO fetchea (la carga inicial la dispara la UI vía el gate).
+        viewModel.autoRefresh()
+        coVerify(atLeast = 1) { repository.loadReport(any(), any(), any()) }
     }
 
     @Test
-    fun `refresh calls loadReport with TODAY chartReportType when period is TODAY`() = runTest {
+    fun `autoRefresh calls loadReport with TODAY chartReportType when period is TODAY`() = runTest {
         val viewModel = createViewModel()
-        viewModel.refresh()
+        viewModel.autoRefresh()
         // TODAY has chartReportType = "hours"
         coVerify(atLeast = 1) { repository.loadReport(any(), any(), "hours") }
     }

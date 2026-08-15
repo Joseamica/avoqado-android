@@ -63,6 +63,7 @@ import com.avoqado.pos.customers.presentation.CustomersViewModel
 import com.avoqado.pos.designsystem.components.AvoqadoDialog
 import com.avoqado.pos.designsystem.components.AvoqadoPillTextField
 import com.avoqado.pos.designsystem.components.AvoqadoSuccessToast
+import com.avoqado.pos.designsystem.components.AvoqadoWarningToast
 import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.payment.presentation.PaymentFlowScreen
@@ -944,6 +945,17 @@ fun CheckoutScreen(
             message = "¡Vale agregado!",
             subtitle = "$count ${if (count == 1) "vale" else "vales"} en esta venta",
             onDismiss = { areaTicketAddedCount = null },
+        )
+    }
+
+    // Producto agotado agregado a la venta: aviso ámbar, nunca bloqueo — el
+    // stock quedará en negativo como señal de descuadre (Square-parity).
+    val stockWarning by cartViewModel.stockWarning.collectAsState()
+    stockWarning?.let { aviso ->
+        AvoqadoWarningToast(
+            message = "Producto sin existencias",
+            subtitle = aviso,
+            onDismiss = cartViewModel::consumeStockWarning,
         )
     }
 

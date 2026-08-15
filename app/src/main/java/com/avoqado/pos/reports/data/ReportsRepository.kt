@@ -70,8 +70,9 @@ class ReportsRepository @Inject constructor(
     suspend fun fetchSalesSummary(
         startDate: String,
         endDate: String,
-    ): Pair<SalesSummaryReport?, List<PaymentMethodBreakdown>> {
-        val url = baseUrl() ?: return Pair(null, emptyList())
+    ): Pair<SalesSummaryReport?, List<PaymentMethodBreakdown>>? {
+        // null = FALLO (red/parse); un Pair con summary null es "sin ventas", que es válido.
+        val url = baseUrl() ?: return null
         return try {
             val request = Request.Builder()
                 .url("$url/reports/sales-summary?startDate=$startDate&endDate=$endDate&groupBy=paymentMethod&reportType=hourlySum")
@@ -79,10 +80,10 @@ class ReportsRepository @Inject constructor(
                 .build()
 
             val body = executeRequest(request)
-            if (body.isEmpty()) return Pair(null, emptyList())
+            if (body.isEmpty()) return null
 
             val root = json.parseToJsonElement(body).jsonObject
-            val data = root["data"]?.jsonObject ?: return Pair(null, emptyList())
+            val data = root["data"]?.jsonObject ?: return null
 
             val summary = data["summary"]?.jsonObject?.let { parseSalesSummary(it) }
             val paymentMethods = data["byPaymentMethod"]?.jsonArray
@@ -93,7 +94,7 @@ class ReportsRepository @Inject constructor(
             Pair(summary, paymentMethods)
         } catch (e: Exception) {
             Log.e(TAG, "❌ fetchSalesSummary exception: ${e.message}", e)
-            Pair(null, emptyList())
+            null
         }
     }
 
@@ -103,8 +104,9 @@ class ReportsRepository @Inject constructor(
         startDate: String,
         endDate: String,
         reportType: String,
-    ): List<PeriodSales> {
-        val url = baseUrl() ?: return emptyList()
+    ): List<PeriodSales>? {
+        // null = FALLO; emptyList() = respuesta válida sin filas.
+        val url = baseUrl() ?: return null
         return try {
             val request = Request.Builder()
                 .url("$url/reports/sales-summary?startDate=$startDate&endDate=$endDate&reportType=$reportType")
@@ -112,10 +114,10 @@ class ReportsRepository @Inject constructor(
                 .build()
 
             val body = executeRequest(request)
-            if (body.isEmpty()) return emptyList()
+            if (body.isEmpty()) return null
 
             val root = json.parseToJsonElement(body).jsonObject
-            val data = root["data"]?.jsonObject ?: return emptyList()
+            val data = root["data"]?.jsonObject ?: return null
 
             val result = data["byPeriod"]?.jsonArray?.mapNotNull { element ->
                 try {
@@ -141,7 +143,7 @@ class ReportsRepository @Inject constructor(
             result
         } catch (e: Exception) {
             Log.e(TAG, "❌ fetchPeriodSales exception: ${e.message}", e)
-            emptyList()
+            null
         }
     }
 
@@ -150,8 +152,9 @@ class ReportsRepository @Inject constructor(
     suspend fun fetchTopProducts(
         startDate: String,
         endDate: String,
-    ): List<TopProduct> {
-        val url = baseUrl() ?: return emptyList()
+    ): List<TopProduct>? {
+        // null = FALLO; emptyList() = respuesta válida sin filas.
+        val url = baseUrl() ?: return null
         return try {
             val request = Request.Builder()
                 .url("$url/reports/sales-by-item?startDate=$startDate&endDate=$endDate")
@@ -159,10 +162,10 @@ class ReportsRepository @Inject constructor(
                 .build()
 
             val body = executeRequest(request)
-            if (body.isEmpty()) return emptyList()
+            if (body.isEmpty()) return null
 
             val root = json.parseToJsonElement(body).jsonObject
-            val data = root["data"]?.jsonObject ?: return emptyList()
+            val data = root["data"]?.jsonObject ?: return null
 
             val result = data["items"]?.jsonArray?.mapNotNull { element ->
                 try {
@@ -179,7 +182,7 @@ class ReportsRepository @Inject constructor(
             result
         } catch (e: Exception) {
             Log.e(TAG, "❌ fetchTopProducts exception: ${e.message}", e)
-            emptyList()
+            null
         }
     }
 
@@ -188,8 +191,9 @@ class ReportsRepository @Inject constructor(
     suspend fun fetchCategories(
         startDate: String,
         endDate: String,
-    ): List<CategorySales> {
-        val url = baseUrl() ?: return emptyList()
+    ): List<CategorySales>? {
+        // null = FALLO; emptyList() = respuesta válida sin filas.
+        val url = baseUrl() ?: return null
         return try {
             val request = Request.Builder()
                 .url("$url/reports/sales-by-item?startDate=$startDate&endDate=$endDate&groupBy=category")
@@ -197,10 +201,10 @@ class ReportsRepository @Inject constructor(
                 .build()
 
             val body = executeRequest(request)
-            if (body.isEmpty()) return emptyList()
+            if (body.isEmpty()) return null
 
             val root = json.parseToJsonElement(body).jsonObject
-            val data = root["data"]?.jsonObject ?: return emptyList()
+            val data = root["data"]?.jsonObject ?: return null
 
             val result = data["items"]?.jsonArray?.mapNotNull { element ->
                 try {
@@ -216,7 +220,7 @@ class ReportsRepository @Inject constructor(
             result
         } catch (e: Exception) {
             Log.e(TAG, "❌ fetchCategories exception: ${e.message}", e)
-            emptyList()
+            null
         }
     }
 
@@ -226,8 +230,9 @@ class ReportsRepository @Inject constructor(
         startDate: String,
         endDate: String,
         reportType: String,
-    ): ReportData = coroutineScope {
-        _isLoading.value = true
+    ): Result<Unit> = coroutineScope {
+        // Refresh de fondo silencioso: skeleton sólo sin datos (spec refresco §6).
+        _isLoading.value = _reportData.value == null
         _errorMessage.value = null
 
         try {
@@ -236,10 +241,26 @@ class ReportsRepository @Inject constructor(
             val productsDeferred = async { fetchTopProducts(startDate, endDate) }
             val categoriesDeferred = async { fetchCategories(startDate, endDate) }
 
-            val (summary, paymentMethods) = summaryDeferred.await()
-            val periodSales = periodDeferred.await()
-            val topProducts = productsDeferred.await()
-            val categories = categoriesDeferred.await()
+            val summaryPair = summaryDeferred.await()
+            val periodSalesResult = periodDeferred.await()
+            val topProductsResult = productsDeferred.await()
+            val categoriesResult = categoriesDeferred.await()
+
+            // 🔴 Regla §4.1 (era el caso rojo de la auditoría): un fallo PARCIAL
+            // o total jamás publica un reporte de CEROS encima del bueno. Un
+            // reporte de dinero en cero que no es cero es peor que uno viejo.
+            if (summaryPair == null || periodSalesResult == null ||
+                topProductsResult == null || categoriesResult == null
+            ) {
+                Log.e(TAG, "❌ loadReport: sub-reporte fallido; datos previos intactos")
+                if (_reportData.value == null) _errorMessage.value = "Error al cargar el reporte"
+                _isLoading.value = false
+                return@coroutineScope Result.failure(Exception("Reporte incompleto"))
+            }
+            val (summary, paymentMethods) = summaryPair
+            val periodSales = periodSalesResult
+            val topProducts = topProductsResult
+            val categories = categoriesResult
 
             // Extract hourly sales from summary when reportType is "hours"
             val hourlySales = if (reportType == "hours") {
@@ -266,20 +287,12 @@ class ReportsRepository @Inject constructor(
 
             _reportData.value = report
             Log.d(TAG, "✅ loadReport complete")
-            report
+            Result.success(Unit)
         } catch (e: Exception) {
             Log.e(TAG, "❌ loadReport exception: ${e.message}", e)
-            _errorMessage.value = "Error al cargar el reporte"
-            val empty = ReportData(
-                summary = SalesSummaryReport(),
-                paymentMethods = emptyList(),
-                hourlySales = emptyList(),
-                periodSales = emptyList(),
-                topProducts = emptyList(),
-                categories = emptyList(),
-            )
-            _reportData.value = empty
-            empty
+            // Datos previos INTACTOS; error visible sólo cuando no hay nada (spec §6).
+            if (_reportData.value == null) _errorMessage.value = "Error al cargar el reporte"
+            Result.failure(e)
         } finally {
             _isLoading.value = false
         }

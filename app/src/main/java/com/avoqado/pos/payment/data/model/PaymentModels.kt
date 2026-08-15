@@ -36,6 +36,12 @@ sealed class PaymentFlowState {
          * Preferirla sobre construirla desde el accessKey — ver `resolveReceiptUrl`.
          */
         val receiptUrl: String? = null,
+        /**
+         * Aviso de inventario del server (Square-parity): el cobro SÍ quedó registrado,
+         * pero el stock quedó en negativo o no se pudo descontar. Español, listo para
+         * el toast ámbar. null = sin faltantes.
+         */
+        val inventoryWarningMessage: String? = null,
     ) : PaymentFlowState()
     data class Error(val message: String, val source: PaymentErrorSource) : PaymentFlowState()
 

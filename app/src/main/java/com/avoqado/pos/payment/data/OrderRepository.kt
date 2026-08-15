@@ -174,6 +174,25 @@ class OrderRepository @Inject constructor(
             }
         }
 
+        /**
+         * Mensaje del aviso de inventario post-cobro (payment.inventoryWarning.message,
+         * Square-parity). La primera frase del server SIEMPRE confirma que el cobro
+         * quedó registrado; el resto dice qué stock quedó en negativo o sin descontar.
+         * Español, listo para el toast ámbar. Mismos tres lugares que el recibo;
+         * tolerante a que la respuesta no lo traiga (server viejo o sin faltantes).
+         */
+        fun extractInventoryWarningMessageFromResponse(responseBody: String): String? {
+            return try {
+                val root = idExtractorJson.parseToJsonElement(responseBody).jsonObject
+                val message = root["payment"]?.jsonObject?.get("inventoryWarning")?.jsonObject?.get("message")?.jsonPrimitive?.contentOrNull
+                    ?: root["data"]?.jsonObject?.get("inventoryWarning")?.jsonObject?.get("message")?.jsonPrimitive?.contentOrNull
+                    ?: root["inventoryWarning"]?.jsonObject?.get("message")?.jsonPrimitive?.contentOrNull
+                message?.takeIf { it.isNotBlank() }
+            } catch (_: Exception) {
+                null
+            }
+        }
+
         fun hasProductItems(request: CreateOrderRequest): Boolean {
             return request.items.any { !it.productId.isNullOrBlank() }
         }
@@ -406,8 +425,9 @@ class OrderRepository @Inject constructor(
                 val paymentId = extractPaymentIdFromResponse(body)
                 val accessKey = extractReceiptAccessKeyFromResponse(body)
                 val receiptUrl = extractReceiptUrlFromResponse(body)
-                Log.d("💵", "Extracted paymentId: $paymentId, receiptAccessKey: $accessKey, receiptUrl: $receiptUrl")
-                Result.success(CashPayResult(paymentId, accessKey, receiptUrl))
+                val inventoryWarning = extractInventoryWarningMessageFromResponse(body)
+                Log.d("💵", "Extracted paymentId: $paymentId, receiptAccessKey: $accessKey, receiptUrl: $receiptUrl, inventoryWarning: ${inventoryWarning != null}")
+                Result.success(CashPayResult(paymentId, accessKey, receiptUrl, inventoryWarning))
             } else {
                 Log.e("💵", "❌ Fast cash payment failed ($code): $body")
                 Result.failure(ServerException(code, "Error al registrar pago rápido ($code)"))
@@ -430,6 +450,12 @@ class OrderRepository @Inject constructor(
         val paymentId: String?,
         val receiptAccessKey: String?,
         val receiptUrl: String? = null,
+        /**
+         * Mensaje del aviso de inventario post-cobro (payment.inventoryWarning.message).
+         * El cobro SIEMPRE quedó registrado; esto avisa si el stock quedó en negativo
+         * o no se pudo descontar. null = sin faltantes o versión vieja del server.
+         */
+        val inventoryWarningMessage: String? = null,
     )
 
     suspend fun recordCashPayment(
@@ -480,8 +506,9 @@ class OrderRepository @Inject constructor(
                 val paymentId = extractPaymentIdFromResponse(body)
                 val accessKey = extractReceiptAccessKeyFromResponse(body)
                 val receiptUrl = extractReceiptUrlFromResponse(body)
-                Log.d("💵", "   paymentId: $paymentId, receiptAccessKey: $accessKey, receiptUrl: $receiptUrl")
-                Result.success(CashPayResult(paymentId, accessKey, receiptUrl))
+                val inventoryWarning = extractInventoryWarningMessageFromResponse(body)
+                Log.d("💵", "   paymentId: $paymentId, receiptAccessKey: $accessKey, receiptUrl: $receiptUrl, inventoryWarning: ${inventoryWarning != null}")
+                Result.success(CashPayResult(paymentId, accessKey, receiptUrl, inventoryWarning))
             } else {
                 Log.e("💵", "❌ Cash payment failed ($code): $body")
                 Result.failure(ServerException(code, "Error al registrar pago ($code)"))

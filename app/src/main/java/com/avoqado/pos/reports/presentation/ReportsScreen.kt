@@ -46,8 +46,11 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.lifecycle.compose.LifecycleResumeEffect
+import com.avoqado.pos.designsystem.components.AvoqadoRefreshable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -102,9 +105,19 @@ fun ReportsScreen(
     onDismiss: () -> Unit,
     viewModel: ReportsViewModel = hiltViewModel(),
 ) {
+    // Overlay del Más (spec de refresco §4.8): LaunchedEffect cubre el "al
+    // mostrarse" y LifecycleResumeEffect el regreso desde background. La
+    // duplicación la absorbe el single-flight del gate.
+    LaunchedEffect(Unit) { viewModel.autoRefresh() }
+    LifecycleResumeEffect(Unit) {
+        viewModel.autoRefresh()
+        onPauseOrDispose { }
+    }
+
     val spacing = AvoqadoTheme.spacing
     val reportData by viewModel.reportData.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
+    val isManualRefreshing by viewModel.isManualRefreshing.collectAsState()
     val selectedPeriod by viewModel.selectedPeriod.collectAsState()
     val showCustomDatePicker by viewModel.showCustomDatePicker.collectAsState()
     val showDetailedSummary by viewModel.showDetailedSummary.collectAsState()
@@ -115,6 +128,12 @@ fun ReportsScreen(
         // Top Bar
         ReportsTopBar(onDismiss = onDismiss)
 
+        // Gesto de refresco (spec §4.7): isRefreshing = SOLO el gesto manual.
+        AvoqadoRefreshable(
+            isRefreshing = isManualRefreshing,
+            onRefresh = viewModel::manualRefresh,
+            modifier = Modifier.fillMaxSize(),
+        ) {
         when {
             isLoading && reportData == null -> {
                 AvoqadoLoadingState(message = "Cargando informes...")
@@ -211,6 +230,7 @@ fun ReportsScreen(
                     }
                 }
             }
+        }
         }
     }
 }

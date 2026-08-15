@@ -1337,6 +1337,18 @@ Son **consecutivos** y corresponden a productos sin relación entre sí.
 No se resuelve razonando ni leyendo código. Cuesta dos mensajes al cliente y decide si la §9 se
 implementa o se rediseña.
 
+**Hallazgo del QA en device (2026-08-11) que ACOTA la pregunta 2** — dato de la base, no del spec:
+**ningún producto del venue tiene GTIN cargado**; sólo SKU interno (`PIZZAS-003`, `TACOS-MEXICANOS-001`).
+Y lo que vende La Galeterie — pan, café, jamón por kilo — en su mayoría **no tiene GTIN de fábrica
+siquiera**, porque no son productos empacados.
+
+Consecuencia: aunque la pregunta 2 salga "sí, MyBusiness reconoce el EAN de fábrica", **esa vía no
+cubre el catálogo real de este cliente**. Sigue valiendo la pena preguntarla —dice si el POS admite
+códigos que él no acuñó, que es información de diseño— pero no es una salida. Los caminos vivos
+quedan en dos: la tabla de mapeo de §9 (si la lectura A es cierta) o un rediseño (si es la B). Y en
+cualquier caso, si algún día se apoya en GTIN, primero hay que **cargar los códigos de fábrica**,
+que hoy no existen en la base.
+
 ---
 
 ## 26. Referencias

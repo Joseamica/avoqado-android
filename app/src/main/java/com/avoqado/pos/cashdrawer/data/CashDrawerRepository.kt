@@ -438,6 +438,7 @@ class CashDrawerRepository @Inject constructor(
                         staffName = staffName,
                         orderId = orderId,
                         createdAt = java.time.Instant.ofEpochMilli(event.createdAt).toString(),
+                        localId = event.id,
                     ),
                 ),
             )
@@ -463,6 +464,16 @@ class CashDrawerRepository @Inject constructor(
         val staffName: String,
         val orderId: String? = null,
         val createdAt: String,
+        /**
+         * Llave de idempotencia: el MISMO id con el que el evento vive en Room.
+         *
+         * Este push es fire-and-forget y sin cola de reintento: si la respuesta se pierde y
+         * el lote se reenvía, sin esta llave el server insertaba las filas otra vez y el
+         * cajón quedaba con efectivo que nunca existió. Con ella el server deduplica contra
+         * `@@unique([venueId, localId])`. NUNCA generar un UUID nuevo aquí — tiene que ser
+         * el de Room, o la llave deja de ser estable entre reintentos y no sirve de nada.
+         */
+        val localId: String,
     )
 
     @kotlinx.serialization.Serializable

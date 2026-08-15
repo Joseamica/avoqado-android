@@ -13,6 +13,7 @@ import com.avoqado.pos.articles.data.model.ProductOption
 import com.avoqado.pos.articles.data.model.ProductType
 import com.avoqado.pos.articles.data.model.RawMaterial
 import com.avoqado.pos.core.domain.PlanManager
+import com.avoqado.pos.core.domain.refresh.RefreshGateFactory
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -32,7 +33,15 @@ private const val TAG = "🗂️ ArticlesVM"
 class ArticlesViewModel @Inject constructor(
     private val repository: ArticlesRepository,
     private val planManager: PlanManager,
+    refreshGateFactory: RefreshGateFactory,
 ) : ViewModel() {
+
+    // MARK: - Refresco (spec estrategia-de-refresco)
+
+    private val gate = refreshGateFactory.create(viewModelScope)
+
+    private val _isManualRefreshing = MutableStateFlow(false)
+    val isManualRefreshing: StateFlow<Boolean> = _isManualRefreshing.asStateFlow()
 
     // MARK: - Plan gating (Phase ① — UI teaser only)
 
@@ -103,10 +112,7 @@ class ArticlesViewModel @Inject constructor(
     )
 
     // MARK: - Init
-
-    init {
-        loadSectionData(ArticleSection.PRODUCTS)
-    }
+    // La carga inicial la dispara la UI vía el gate (autoRefresh).
 
     // MARK: - Navigation
 
@@ -149,8 +155,43 @@ class ArticlesViewModel @Inject constructor(
         }
     }
 
-    fun refresh() {
-        loadSectionData(_selectedSection.value)
+    /**
+     * Contrato §4.2: sin launch interno; refresca lo que la sección ACTIVA
+     * muestra (§10: un gesto que anima sin refrescar lo visible es mentira).
+     */
+    suspend fun refreshNow(): Result<Unit> = when (_selectedSection.value) {
+        ArticleSection.PRODUCTS -> combine(repository.fetchProducts(), repository.fetchCategories())
+        ArticleSection.CATEGORIES -> repository.fetchCategories()
+        ArticleSection.MODIFIERS -> repository.fetchModifierGroups()
+        ArticleSection.DISCOUNTS -> repository.fetchDiscounts()
+        ArticleSection.COUPONS -> combine(repository.fetchCoupons(), repository.fetchDiscounts())
+        ArticleSection.OPTIONS -> repository.fetchProductOptions()
+        ArticleSection.CREDIT_PACKS -> combine(repository.fetchCreditPacks(), repository.fetchProducts())
+        // Unidades integradas: no hay nada remoto que refrescar.
+        ArticleSection.UNITS -> Result.success(Unit)
+    }
+
+    private fun combine(a: Result<Unit>, b: Result<Unit>): Result<Unit> =
+        if (a.isFailure) a else b
+
+    /** Guard §4.5: con una mutación guardándose no se pisa la pantalla. */
+    private fun workInProgress(): Boolean = _isSaving.value
+
+    fun autoRefresh() {
+        viewModelScope.launch {
+            gate.run(workInProgress = ::workInProgress, manual = false, block = ::refreshNow)
+        }
+    }
+
+    fun manualRefresh() {
+        viewModelScope.launch {
+            _isManualRefreshing.value = true
+            try {
+                gate.run(workInProgress = ::workInProgress, manual = true, block = ::refreshNow)
+            } finally {
+                _isManualRefreshing.value = false
+            }
+        }
     }
 
     fun updateSearch(query: String) {

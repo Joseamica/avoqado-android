@@ -2,6 +2,7 @@ package com.avoqado.pos.orders.presentation
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.avoqado.pos.core.domain.refresh.RefreshGateFactory
 import com.avoqado.pos.orders.data.OrdersRepository
 import com.avoqado.pos.orders.data.model.OrderSummary
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -11,13 +12,22 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
 @HiltViewModel
 class OrdersViewModel @Inject constructor(
     private val repository: OrdersRepository,
+    refreshGateFactory: RefreshGateFactory,
 ) : ViewModel() {
+
+    // MARK: - Refresco (spec estrategia-de-refresco)
+
+    private val gate = refreshGateFactory.create(viewModelScope)
+
+    private val _isManualRefreshing = MutableStateFlow(false)
+    val isManualRefreshing: StateFlow<Boolean> = _isManualRefreshing.asStateFlow()
 
     // MARK: - Repository-backed State
 
@@ -43,7 +53,7 @@ class OrdersViewModel @Inject constructor(
     // MARK: - Init
 
     init {
-        refresh()
+        // La carga inicial la dispara la UI vía el gate (autoRefresh).
         observeSearch()
     }
 
@@ -55,17 +65,41 @@ class OrdersViewModel @Inject constructor(
 
     fun setStatusFilter(status: String?) {
         _statusFilter.value = status
-        refresh()
+        // Otro filtro = otra identidad (spec §4.4): invalida el TTL y re-pide.
+        invalidateAndRefresh()
     }
 
-    fun refresh() {
+    /** Contrato §4.2: sin launch interno; el gate decide y sella el reloj. */
+    suspend fun refreshNow(): Result<Unit> = repository.loadOrders(
+        page = 1,
+        search = _searchText.value.takeIf { it.isNotBlank() },
+        status = _statusFilter.value,
+        append = false,
+    )
+
+    // Pantalla de solo lectura: sin borradores que proteger (spec §4.5).
+    fun autoRefresh() {
         viewModelScope.launch {
-            repository.loadOrders(
-                page = 1,
-                search = _searchText.value.takeIf { it.isNotBlank() },
-                status = _statusFilter.value,
-                append = false,
-            )
+            gate.run(workInProgress = { false }, manual = false, block = ::refreshNow)
+        }
+    }
+
+    fun manualRefresh() {
+        viewModelScope.launch {
+            _isManualRefreshing.value = true
+            try {
+                gate.run(workInProgress = { false }, manual = true, block = ::refreshNow)
+            } finally {
+                _isManualRefreshing.value = false
+            }
+        }
+    }
+
+    /** Búsqueda o filtro nuevos = identidad nueva: invalida el TTL y re-pide. */
+    fun invalidateAndRefresh() {
+        gate.invalidate()
+        viewModelScope.launch {
+            gate.run(workInProgress = { false }, manual = false, block = ::refreshNow)
         }
     }
 
@@ -113,9 +147,14 @@ class OrdersViewModel @Inject constructor(
     private fun observeSearch() {
         viewModelScope.launch {
             _searchText
+                // drop(1) ANTES del debounce: la emisión inicial cruda no es una
+                // búsqueda del usuario (la lección del fix de Transacciones — con
+                // el orden invertido, teclear en los primeros 400 ms perdía la
+                // primera búsqueda).
+                .drop(1)
                 .debounce(400)
                 .distinctUntilChanged()
-                .collect { refresh() }
+                .collect { invalidateAndRefresh() }
         }
     }
 }

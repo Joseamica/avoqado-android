@@ -137,11 +137,12 @@ class ArticlesRepository @Inject constructor(
 
     // MARK: - Products
 
-    suspend fun fetchProducts() {
-        val url = baseUrl() ?: return
-        _isLoading.value = true
+    suspend fun fetchProducts(): Result<Unit> {
+        val url = baseUrl() ?: return Result.failure(IllegalStateException("Sin venue activo"))
+        // Refresh de fondo silencioso: sin skeleton encima de datos buenos (spec refresco §6).
+        _isLoading.value = _products.value.isEmpty()
 
-        try {
+        return try {
             val request = Request.Builder()
                 .url("$url/products")
                 .get()
@@ -152,13 +153,17 @@ class ArticlesRepository @Inject constructor(
                 val list = decodeListEnvelope(body, ArticleProduct.serializer())
                 _products.value = list
                 Log.d(TAG, "✅ Loaded ${list.size} products")
+                Result.success(Unit)
             } else {
+                // Fallo tipado, datos previos INTACTOS; error visible sólo sin datos (spec §4.1/§6).
                 Log.e(TAG, "❌ fetchProducts error: HTTP $code")
-                _errorMessage.value = "Error al cargar productos"
+                if (_products.value.isEmpty()) _errorMessage.value = "Error al cargar productos"
+                Result.failure(Exception("Products HTTP $code"))
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ fetchProducts exception: ${e.message}", e)
-            _errorMessage.value = "Error al cargar productos"
+            if (_products.value.isEmpty()) _errorMessage.value = "Error al cargar productos"
+            Result.failure(e)
         } finally {
             _isLoading.value = false
         }
@@ -243,11 +248,12 @@ class ArticlesRepository @Inject constructor(
 
     // MARK: - Categories
 
-    suspend fun fetchCategories() {
-        val url = baseUrl() ?: return
-        _isLoading.value = true
+    suspend fun fetchCategories(): Result<Unit> {
+        val url = baseUrl() ?: return Result.failure(IllegalStateException("Sin venue activo"))
+        // Refresh de fondo silencioso: sin skeleton encima de datos buenos (spec refresco §6).
+        _isLoading.value = _categories.value.isEmpty()
 
-        try {
+        return try {
             val request = Request.Builder()
                 .url("$url/categories")
                 .get()
@@ -258,13 +264,17 @@ class ArticlesRepository @Inject constructor(
                 val list = decodeListEnvelope(body, ArticleCategory.serializer())
                 _categories.value = list
                 Log.d(TAG, "✅ Loaded ${list.size} categories")
+                Result.success(Unit)
             } else {
+                // Fallo tipado, datos previos INTACTOS; error visible sólo sin datos (spec §4.1/§6).
                 Log.e(TAG, "❌ fetchCategories error: HTTP $code")
-                _errorMessage.value = "Error al cargar categorías"
+                if (_categories.value.isEmpty()) _errorMessage.value = "Error al cargar categorías"
+                Result.failure(Exception("Categories HTTP $code"))
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ fetchCategories exception: ${e.message}", e)
-            _errorMessage.value = "Error al cargar categorías"
+            if (_categories.value.isEmpty()) _errorMessage.value = "Error al cargar categorías"
+            Result.failure(e)
         } finally {
             _isLoading.value = false
         }
@@ -349,11 +359,12 @@ class ArticlesRepository @Inject constructor(
 
     // MARK: - Modifier Groups
 
-    suspend fun fetchModifierGroups() {
-        val url = modifierBaseUrl() ?: return
-        _isLoading.value = true
+    suspend fun fetchModifierGroups(): Result<Unit> {
+        val url = modifierBaseUrl() ?: return Result.failure(IllegalStateException("Sin venue activo"))
+        // Refresh de fondo silencioso: sin skeleton encima de datos buenos (spec refresco §6).
+        _isLoading.value = _modifierGroups.value.isEmpty()
 
-        try {
+        return try {
             val request = Request.Builder()
                 .url("$url/modifier-groups")
                 .get()
@@ -364,13 +375,17 @@ class ArticlesRepository @Inject constructor(
                 val list = decodeListEnvelope(body, ModifierGroup.serializer())
                 _modifierGroups.value = list
                 Log.d(TAG, "✅ Loaded ${list.size} modifier groups")
+                Result.success(Unit)
             } else {
+                // Fallo tipado, datos previos INTACTOS; error visible sólo sin datos (spec §4.1/§6).
                 Log.e(TAG, "❌ fetchModifierGroups error: HTTP $code")
-                _errorMessage.value = "Error al cargar grupos de modificadores"
+                if (_modifierGroups.value.isEmpty()) _errorMessage.value = "Error al cargar grupos de modificadores"
+                Result.failure(Exception("ModifierGroups HTTP $code"))
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ fetchModifierGroups exception: ${e.message}", e)
-            _errorMessage.value = "Error al cargar grupos de modificadores"
+            if (_modifierGroups.value.isEmpty()) _errorMessage.value = "Error al cargar grupos de modificadores"
+            Result.failure(e)
         } finally {
             _isLoading.value = false
         }
@@ -534,11 +549,12 @@ class ArticlesRepository @Inject constructor(
 
     // MARK: - Discounts
 
-    suspend fun fetchDiscounts() {
-        val url = baseUrl() ?: return
-        _isLoading.value = true
+    suspend fun fetchDiscounts(): Result<Unit> {
+        val url = baseUrl() ?: return Result.failure(IllegalStateException("Sin venue activo"))
+        // Refresh de fondo silencioso: sin skeleton encima de datos buenos (spec refresco §6).
+        _isLoading.value = _discounts.value.isEmpty()
 
-        try {
+        return try {
             val request = Request.Builder()
                 .url("$url/discounts")
                 .get()
@@ -549,13 +565,17 @@ class ArticlesRepository @Inject constructor(
                 val list = decodeListEnvelope(body, AdminDiscount.serializer())
                 _discounts.value = list
                 Log.d(TAG, "✅ Loaded ${list.size} discounts")
+                Result.success(Unit)
             } else {
+                // Fallo tipado, datos previos INTACTOS; error visible sólo sin datos (spec §4.1/§6).
                 Log.e(TAG, "❌ fetchDiscounts error: HTTP $code")
-                _errorMessage.value = "Error al cargar descuentos"
+                if (_discounts.value.isEmpty()) _errorMessage.value = "Error al cargar descuentos"
+                Result.failure(Exception("Discounts HTTP $code"))
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ fetchDiscounts exception: ${e.message}", e)
-            _errorMessage.value = "Error al cargar descuentos"
+            if (_discounts.value.isEmpty()) _errorMessage.value = "Error al cargar descuentos"
+            Result.failure(e)
         } finally {
             _isLoading.value = false
         }
@@ -640,11 +660,12 @@ class ArticlesRepository @Inject constructor(
 
     // MARK: - Coupons
 
-    suspend fun fetchCoupons() {
-        val url = baseUrl() ?: return
-        _isLoading.value = true
+    suspend fun fetchCoupons(): Result<Unit> {
+        val url = baseUrl() ?: return Result.failure(IllegalStateException("Sin venue activo"))
+        // Refresh de fondo silencioso: sin skeleton encima de datos buenos (spec refresco §6).
+        _isLoading.value = _coupons.value.isEmpty()
 
-        try {
+        return try {
             val request = Request.Builder()
                 .url("$url/coupons")
                 .get()
@@ -655,13 +676,17 @@ class ArticlesRepository @Inject constructor(
                 val list = decodeListEnvelope(body, AdminCoupon.serializer())
                 _coupons.value = list
                 Log.d(TAG, "✅ Loaded ${list.size} coupons")
+                Result.success(Unit)
             } else {
+                // Fallo tipado, datos previos INTACTOS; error visible sólo sin datos (spec §4.1/§6).
                 Log.e(TAG, "❌ fetchCoupons error: HTTP $code")
-                _errorMessage.value = "Error al cargar cupones"
+                if (_coupons.value.isEmpty()) _errorMessage.value = "Error al cargar cupones"
+                Result.failure(Exception("Coupons HTTP $code"))
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ fetchCoupons exception: ${e.message}", e)
-            _errorMessage.value = "Error al cargar cupones"
+            if (_coupons.value.isEmpty()) _errorMessage.value = "Error al cargar cupones"
+            Result.failure(e)
         } finally {
             _isLoading.value = false
         }
@@ -746,11 +771,12 @@ class ArticlesRepository @Inject constructor(
 
     // MARK: - Credit Packs
 
-    suspend fun fetchCreditPacks() {
-        val url = creditPackBaseUrl() ?: return
-        _isLoading.value = true
+    suspend fun fetchCreditPacks(): Result<Unit> {
+        val url = creditPackBaseUrl() ?: return Result.failure(IllegalStateException("Sin venue activo"))
+        // Refresh de fondo silencioso: sin skeleton encima de datos buenos (spec refresco §6).
+        _isLoading.value = _creditPacks.value.isEmpty()
 
-        try {
+        return try {
             val request = Request.Builder()
                 .url("$url/credit-packs")
                 .get()
@@ -761,13 +787,17 @@ class ArticlesRepository @Inject constructor(
                 val list = decodeListEnvelope(body, CreditPack.serializer())
                 _creditPacks.value = list
                 Log.d(TAG, "✅ Loaded ${list.size} credit packs")
+                Result.success(Unit)
             } else {
+                // Fallo tipado, datos previos INTACTOS; error visible sólo sin datos (spec §4.1/§6).
                 Log.e(TAG, "❌ fetchCreditPacks error: HTTP $code")
-                _errorMessage.value = "Error al cargar paquetes de crédito"
+                if (_creditPacks.value.isEmpty()) _errorMessage.value = "Error al cargar paquetes de crédito"
+                Result.failure(Exception("CreditPacks HTTP $code"))
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ fetchCreditPacks exception: ${e.message}", e)
-            _errorMessage.value = "Error al cargar paquetes de crédito"
+            if (_creditPacks.value.isEmpty()) _errorMessage.value = "Error al cargar paquetes de crédito"
+            Result.failure(e)
         } finally {
             _isLoading.value = false
         }
@@ -929,12 +959,12 @@ class ArticlesRepository @Inject constructor(
 
     // MARK: - Product Options
 
-    suspend fun fetchProductOptions() {
-        val venueId = secureStorage.venueId ?: return
+    suspend fun fetchProductOptions(): Result<Unit> {
+        val venueId = secureStorage.venueId ?: return Result.failure(IllegalStateException("Sin venue activo"))
         val url = "${ApiConstants.BASE_URL}/mobile/venues/$venueId/product-options"
-        _isLoading.value = true
+        _isLoading.value = _productOptions.value.isEmpty()
 
-        try {
+        return try {
             val request = Request.Builder()
                 .url(url)
                 .get()
@@ -946,13 +976,16 @@ class ArticlesRepository @Inject constructor(
                 val list = wrapper.data
                 _productOptions.value = list
                 Log.d(TAG, "✅ Loaded ${list.size} product options")
+                Result.success(Unit)
             } else {
                 Log.e(TAG, "❌ fetchProductOptions error: HTTP $code")
-                _errorMessage.value = "Error al cargar opciones de producto"
+                if (_productOptions.value.isEmpty()) _errorMessage.value = "Error al cargar opciones de producto"
+                Result.failure(Exception("ProductOptions HTTP $code"))
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ fetchProductOptions exception: ${e.message}", e)
-            _errorMessage.value = "Error al cargar opciones de producto"
+            if (_productOptions.value.isEmpty()) _errorMessage.value = "Error al cargar opciones de producto"
+            Result.failure(e)
         } finally {
             _isLoading.value = false
         }

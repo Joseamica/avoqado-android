@@ -130,11 +130,12 @@ class InventoryRepository @Inject constructor(
 
     // MARK: - Stock Overview
 
-    suspend fun fetchStockOverview() {
-        val base = venueBaseUrl() ?: return
-        _isLoading.value = true
+    suspend fun fetchStockOverview(): Result<Unit> {
+        val base = venueBaseUrl() ?: return Result.failure(IllegalStateException("Sin venue activo"))
+        // Refresh de fondo silencioso: sin skeleton encima de datos buenos (spec refresco §6).
+        _isLoading.value = _stockItems.value.isEmpty()
 
-        try {
+        return try {
             val request = Request.Builder()
                 .url("$base/inventory/stock-overview")
                 .build()
@@ -147,9 +148,15 @@ class InventoryRepository @Inject constructor(
                 val result = json.decodeFromString<StockOverviewResponse>(body)
                 _stockItems.value = result.items
                 Log.d("📦", "✅ Loaded ${result.items.size} stock items")
+                Result.success(Unit)
+            } else {
+                // Fallo tipado, datos previos INTACTOS (spec refresco §4.1).
+                Log.e("📦", "❌ Stock overview fetch failed: HTTP $responseCode")
+                Result.failure(Exception("Stock overview HTTP $responseCode"))
             }
         } catch (e: Exception) {
             Log.e("📦", "❌ Stock overview fetch error: ${e.message}")
+            Result.failure(e)
         } finally {
             _isLoading.value = false
         }
@@ -177,9 +184,9 @@ class InventoryRepository @Inject constructor(
     @kotlinx.serialization.Serializable
     private data class RawMaterialsResponse(val success: Boolean = false, val rawMaterials: List<RawMaterialLite> = emptyList())
 
-    suspend fun fetchRawMaterials() {
-        val base = venueBaseUrl() ?: return
-        try {
+    suspend fun fetchRawMaterials(): Result<Unit> {
+        val base = venueBaseUrl() ?: return Result.failure(IllegalStateException("Sin venue activo"))
+        return try {
             val request = Request.Builder().url("$base/inventory/raw-materials").build()
             val (code, body) = withContext(Dispatchers.IO) {
                 val response = client.newCall(request).execute()
@@ -196,18 +203,23 @@ class InventoryRepository @Inject constructor(
                 }
                 rawMaterialIdSet = result.rawMaterials.map { it.id }.toSet()
                 Log.d("📦", "✅ Loaded ${rawMaterialIdSet.size} raw materials")
+                Result.success(Unit)
+            } else {
+                Log.e("📦", "❌ Raw materials fetch failed: HTTP $code")
+                Result.failure(Exception("Raw materials HTTP $code"))
             }
         } catch (e: Exception) {
             Log.e("📦", "❌ Raw materials fetch error: ${e.message}")
+            Result.failure(e)
         }
     }
 
     // MARK: - Stock Counts
 
-    suspend fun fetchStockCounts() {
-        val base = venueBaseUrl() ?: return
+    suspend fun fetchStockCounts(): Result<Unit> {
+        val base = venueBaseUrl() ?: return Result.failure(IllegalStateException("Sin venue activo"))
 
-        try {
+        return try {
             val request = Request.Builder()
                 .url("$base/inventory/stock-counts")
                 .build()
@@ -220,9 +232,14 @@ class InventoryRepository @Inject constructor(
                 val result = json.decodeFromString<StockCountsResponse>(body)
                 _stockCounts.value = result.counts
                 Log.d("📦", "✅ Loaded ${result.counts.size} stock counts")
+                Result.success(Unit)
+            } else {
+                Log.e("📦", "❌ Stock counts fetch failed: HTTP $responseCode")
+                Result.failure(Exception("Stock counts HTTP $responseCode"))
             }
         } catch (e: Exception) {
             Log.e("📦", "❌ Stock counts fetch error: ${e.message}")
+            Result.failure(e)
         }
     }
 
@@ -348,11 +365,11 @@ class InventoryRepository @Inject constructor(
 
     // MARK: - Purchase Orders
 
-    suspend fun fetchPurchaseOrders() {
-        val base = venueBaseUrl() ?: return
-        val venueId = secureStorage.venueId ?: return
+    suspend fun fetchPurchaseOrders(): Result<Unit> {
+        val base = venueBaseUrl() ?: return Result.failure(IllegalStateException("Sin venue activo"))
+        val venueId = secureStorage.venueId ?: return Result.failure(IllegalStateException("Sin venue activo"))
 
-        try {
+        return try {
             val request = Request.Builder()
                 .url("$base/purchase-orders")
                 .build()
@@ -372,11 +389,17 @@ class InventoryRepository @Inject constructor(
                 purchaseOrderDao.deleteForVenue(venueId)
                 purchaseOrderDao.insertAll(entities)
                 Log.d("📦", "✅ Loaded ${orders.size} purchase orders")
+                Result.success(Unit)
+            } else {
+                Log.e("📦", "❌ Purchase orders fetch failed: HTTP $responseCode")
+                Result.failure(Exception("Purchase orders HTTP $responseCode"))
             }
         } catch (e: Exception) {
             Log.e("📦", "❌ Purchase orders fetch error: ${e.message}")
-            // Fall back to cached data
+            // Fall back to cached data — la UI se llena del caché, pero el fetch FALLÓ
+            // y el gate no debe sellar su reloj (spec refresco §4.3).
             loadCachedPurchaseOrders()
+            Result.failure(e)
         }
     }
 
@@ -562,11 +585,11 @@ class InventoryRepository @Inject constructor(
 
     // MARK: - Inventory Transfers
 
-    suspend fun fetchTransfers() {
-        val base = venueBaseUrl() ?: return
-        val venueId = secureStorage.venueId ?: return
+    suspend fun fetchTransfers(): Result<Unit> {
+        val base = venueBaseUrl() ?: return Result.failure(IllegalStateException("Sin venue activo"))
+        val venueId = secureStorage.venueId ?: return Result.failure(IllegalStateException("Sin venue activo"))
 
-        try {
+        return try {
             val request = Request.Builder()
                 .url("$base/transfers")
                 .build()
@@ -586,11 +609,16 @@ class InventoryRepository @Inject constructor(
                 inventoryTransferDao.deleteForVenue(venueId)
                 inventoryTransferDao.insertAll(entities)
                 Log.d("📦", "✅ Loaded ${transferList.size} transfers")
+                Result.success(Unit)
+            } else {
+                Log.e("📦", "❌ Transfers fetch failed: HTTP $responseCode")
+                Result.failure(Exception("Transfers HTTP $responseCode"))
             }
         } catch (e: Exception) {
             Log.e("📦", "❌ Transfers fetch error: ${e.message}")
-            // Fall back to cached data
+            // Fall back to cached data — fetch fallido igual (ver fetchPurchaseOrders).
             loadCachedTransfers()
+            Result.failure(e)
         }
     }
 
@@ -703,11 +731,11 @@ class InventoryRepository @Inject constructor(
 
     // MARK: - Suppliers
 
-    suspend fun fetchSuppliers() {
-        val venueId = secureStorage.venueId ?: return
-        val token = secureStorage.accessToken ?: return
+    suspend fun fetchSuppliers(): Result<Unit> {
+        val venueId = secureStorage.venueId ?: return Result.failure(IllegalStateException("Sin sesión"))
+        val token = secureStorage.accessToken ?: return Result.failure(IllegalStateException("Sin sesión"))
 
-        try {
+        return try {
             val request = Request.Builder()
                 .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/suppliers?active=true")
                 .header("Authorization", "Bearer $token")
@@ -719,10 +747,11 @@ class InventoryRepository @Inject constructor(
             }
             Log.d("📦", "Suppliers response: HTTP $responseCode, body length=${body.length}")
             if (responseCode == 404) {
-                // Some venues/environments may not expose suppliers yet.
+                // Some venues/environments may not expose suppliers yet — ausencia
+                // por diseño, no un fallo de red: cuenta como éxito para el gate.
                 _suppliers.value = emptyList()
                 Log.d("📦", "ℹ️ Suppliers endpoint not available for this venue")
-                return
+                return Result.success(Unit)
             }
             if (responseCode in 200..299 && body.isNotEmpty()) {
                 // Backend may return {"data": [...]} or bare array [...]
@@ -733,11 +762,14 @@ class InventoryRepository @Inject constructor(
                 }
                 _suppliers.value = suppliers
                 Log.d("📦", "✅ Loaded ${suppliers.size} suppliers")
-            } else if (responseCode !in 200..299) {
+                Result.success(Unit)
+            } else {
                 Log.w("📦", "⚠️ Suppliers fetch failed: HTTP $responseCode")
+                Result.failure(Exception("Suppliers HTTP $responseCode"))
             }
         } catch (e: Exception) {
             Log.e("📦", "❌ Suppliers fetch error: ${e.message}")
+            Result.failure(e)
         }
     }
 

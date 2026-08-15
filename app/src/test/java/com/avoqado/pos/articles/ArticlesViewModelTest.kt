@@ -47,7 +47,10 @@ class ArticlesViewModelTest {
         val storage = mockk<SecureStorage>()
         every { storage.planTier } returns planTier
         every { storage.planExempt } returns false
-        return ArticlesViewModel(repository, PlanManager(storage))
+        val refreshGateFactory = mockk<com.avoqado.pos.core.domain.refresh.RefreshGateFactory>()
+        every { refreshGateFactory.create(any(), any()) } returns
+            com.avoqado.pos.core.domain.refresh.RefreshGate(clock = { kotlin.time.Duration.ZERO })
+        return ArticlesViewModel(repository, PlanManager(storage), refreshGateFactory)
     }
 
     // MARK: - Initial State
@@ -282,10 +285,10 @@ class ArticlesViewModelTest {
     // MARK: - Refresh
 
     @Test
-    fun `refresh calls loadSectionData for current section`() = runTest {
+    fun `el gesto manual refresca la seccion actual`() = runTest {
         val viewModel = createViewModel()
-        viewModel.selectSection(ArticleSection.MODIFIERS)
-        viewModel.refresh()
+        viewModel.selectSection(ArticleSection.MODIFIERS) // carga eager (1)
+        viewModel.manualRefresh() // gesto vía el gate (2)
 
         coVerify(atLeast = 2) { repository.fetchModifierGroups() }
     }

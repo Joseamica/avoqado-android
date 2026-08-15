@@ -161,10 +161,14 @@ object CorteTicketBuilder {
             p.setBold(false)
             val propinaEfectivo = tips.firstOrNull { it.method == "CASH" }?.tipsCents ?: 0
             if (propinaEfectivo > 0) {
-                // El dato que el cajero necesita para no descuadrar: de lo que hay en
-                // el cajón, esto le toca al mesero. Se saca con un egreso.
+                // De lo que hay en el cajón, esto le toca al personal.
+                //
+                // NO se pide registrar un egreso: el arqueo se cuenta ANTES de repartir,
+                // así que la propina tiene que estar adentro para que cuadre (el efectivo
+                // esperado del server ya la incluye). El egreso sólo haría falta si se
+                // repartiera a media jornada, y eso desharía el cuadre del cierre.
                 p.printLine("De estas, " + money(propinaEfectivo) + " estan en el cajon")
-                p.printLine("y se pagan al mesero (registra un egreso).")
+                p.printLine("y le tocan al personal. Repartelas al cerrar.")
             }
             p.printDivider()
         }

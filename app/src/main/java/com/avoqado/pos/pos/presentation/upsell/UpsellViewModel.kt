@@ -4,6 +4,7 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.core.util.VenueTimeZone
 import com.avoqado.pos.customerdisplay.CustomerContent
 import com.avoqado.pos.customerdisplay.CustomerDisplayState
 import com.avoqado.pos.pos.data.ProductsRepository
@@ -124,7 +125,9 @@ class UpsellViewModel @Inject constructor(
             cartProductIds = cartProductIds,
             cartCategoryIds = cartProductIds.mapNotNull { catalog[it]?.categoryId }.toSet(),
             catalog = catalog,
-            nowLocal = LocalDateTime.now(),
+            // El resolver espera hora LOCAL DEL VENUE: con el reloj del aparato, una
+            // tablet mal configurada dispara las reglas de otra franja horaria.
+            nowLocal = LocalDateTime.now(VenueTimeZone.zoneId()),
         )
         if (cards.isEmpty()) return null
 

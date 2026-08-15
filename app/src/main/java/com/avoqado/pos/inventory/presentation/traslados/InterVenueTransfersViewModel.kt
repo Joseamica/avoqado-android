@@ -17,6 +17,7 @@ import com.avoqado.pos.inventory.data.transfers.ReceiveTransferBody
 import com.avoqado.pos.inventory.data.transfers.TransferMode
 import com.avoqado.pos.inventory.data.transfers.TransferPickerRawMaterial
 import com.avoqado.pos.inventory.data.transfers.TransferStatus
+import com.avoqado.pos.inventory.domain.StockRefresher
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -55,6 +56,7 @@ class InterVenueTransfersViewModel @Inject constructor(
     private val api: InterVenueTransferApi,
     private val secureStorage: SecureStorage,
     val roleManager: RoleManager,
+    private val stockRefresher: StockRefresher,
 ) : ViewModel() {
 
     val currentVenueId: String get() = secureStorage.venueId.orEmpty()
@@ -202,7 +204,8 @@ class InterVenueTransfersViewModel @Inject constructor(
             },
         )
         if (body.items.isEmpty()) { _error.value = "El traslado no tiene renglones para despachar"; return }
-        mutate("Traslado despachado") { api.dispatch(id, body) }
+        // TRANSFER_OUT: el insumo sale de ESTE venue.
+        mutate("Traslado despachado", movesStock = true) { api.dispatch(id, body) }
     }
 
     fun updateReceiveLine(itemId: String, quantityText: String) {
@@ -229,7 +232,8 @@ class InterVenueTransfersViewModel @Inject constructor(
         val items = parsed.filter { (_, qty) -> (qty ?: 0.0) > 0.0 }
             .map { (line, qty) -> ReceiveItemInput(itemId = line.itemId, quantity = qty!!) }
         if (items.isEmpty()) { _error.value = "Captura al menos una cantidad recibida"; return false }
-        mutate("Recepción registrada") { api.receive(id, ReceiveTransferBody(items = items)) }
+        // TRANSFER_IN: el insumo entra a ESTE venue.
+        mutate("Recepción registrada", movesStock = true) { api.receive(id, ReceiveTransferBody(items = items)) }
         return true
     }
 
@@ -293,7 +297,18 @@ class InterVenueTransfersViewModel @Inject constructor(
 
     // MARK: - Helpers
 
-    private fun mutate(successMessage: String, block: suspend () -> Result<InterVenueTransferDetail>) {
+    /**
+     * @param movesStock despachar SACA insumos de este venue y recibir los METE.
+     *   Sin refrescar las existencias, la mercancía que acabas de recibir de
+     *   otra sucursal no aparece en inventario NI en la pantalla de cobro —
+     *   el mismo bug que el conteo que no actualizaba nada.
+     *   Aprobar/rechazar/cancelar sólo cambian el estado: no mueven stock.
+     */
+    private fun mutate(
+        successMessage: String,
+        movesStock: Boolean = false,
+        block: suspend () -> Result<InterVenueTransferDetail>,
+    ) {
         if (_isMutating.value) return
         viewModelScope.launch {
             _isMutating.value = true
@@ -303,6 +318,7 @@ class InterVenueTransfersViewModel @Inject constructor(
                     _successMessage.value = successMessage
                     _screen.value = TrasladosScreen.Detail(updated.id)
                     refresh()
+                    if (movesStock) stockRefresher.refreshAfterStockChange()
                 }
                 .onFailure { _error.value = ServerErrorText.humanize(it.message) }
             _isMutating.value = false

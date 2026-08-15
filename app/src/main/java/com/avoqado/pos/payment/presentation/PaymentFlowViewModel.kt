@@ -943,6 +943,7 @@ class PaymentFlowViewModel @Inject constructor(
                                 paymentId = result.paymentId,
                                 receiptAccessKey = result.receiptAccessKey,
                                 receiptUrl = result.receiptUrl,
+                                inventoryWarningMessage = result.inventoryWarningMessage,
                             )
                             createKDSOrderAndPrint(PaymentMethod.CASH)
                         },
@@ -1244,6 +1245,7 @@ class PaymentFlowViewModel @Inject constructor(
                     paymentId = result.paymentId,
                     receiptAccessKey = result.receiptAccessKey,
                     receiptUrl = result.receiptUrl,
+                    inventoryWarningMessage = result.inventoryWarningMessage,
                 )
                 createKDSOrderAndPrint(PaymentMethod.CASH, changeCents)
             },
