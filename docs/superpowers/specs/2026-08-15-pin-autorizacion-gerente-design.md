@@ -67,8 +67,14 @@ membresía ("No access to this venue") **no** lo llevan — siguen su camino act
 
 - Busca el `StaffVenue` del venue cuyo `pin` coincida.
 - Sin coincidencia → 401 "Código incorrecto".
-- Coincide pero SIN el permiso efectivo (Json override > permissionSet > rol) → 403 con código
-  propio `OVERRIDE_INSUFFICIENT` → la UI dice "Ese código tampoco tiene este permiso".
+- Coincide pero SIN el permiso efectivo → 403 con código propio `OVERRIDE_INSUFFICIENT` →
+  la UI dice "Ese código tampoco tiene este permiso". El permiso efectivo se evalúa
+  **exactamente como lo evalúa `checkPermission`** (permissionSet + `VenueRolePermission`);
+  el Json de `StaffVenue.permissions` NO participa en esa puerta hoy, así que tampoco aquí —
+  divergir aceptaría PINs para acciones que igual fallarían.
+- El intento con PIN válido pero insuficiente **se registra en `ActivityLog`** — es la señal
+  clásica de fraude interno (alguien probando códigos ajenos) y el rate limiter solo lo
+  frena, no lo deja escrito.
 - Coincide y puede → crea el registro y devuelve `{ token, authorizedBy: { id, name } }`.
 
 **Modelo nuevo = token Y auditoría en una sola tabla** (sin Redis; el consumo atómico es un
@@ -130,6 +136,10 @@ para esas acciones. Square hace lo contrario: la acción se ve, y al tocarla pid
   red).
 - Caso merge: hoy es visible para todos (viaja con `orders:update`), así que ahí no cambia
   nada visual — el server empieza a rechazar y el PIN aparece solo.
+- **Alcance v1 del candado:** se aplica a **Reembolsar** (hoy escondida), que es donde el
+  override más se necesita. Las demás acciones gateadas ya son visibles y el 403 las cubre
+  sin cambio de UI. Más candados se agregan cuando el piso los pida — el mecanismo es
+  genérico.
 
 ### 3.5 Dashboard
 
@@ -146,10 +156,16 @@ add/remove `2050/2063`, comp `2072`, service-charges add/remove `2105/2117`. Sep
 `orders:cancel` (`794`) y `payments:create` (`748`).
 
 v1 separa **únicamente merge** (lo decidió el founder). Roles ADMIN/OWNER/MANAGER lo traen;
-WAITER no. Venues con sets personalizados NO lo reciben automático — restringido a propósito.
-🔴 **Avisar a los venues antes de liberar**: un mesero que hoy junta mesas dejará de poder
-(quedará a un PIN de distancia). Las otras 9 acciones se separan después si el piso lo pide —
-el override ya las cubre a todas por diseño.
+WAITER no. 🔴 **Avisar a los venues antes de liberar**: un mesero que hoy junta mesas dejará
+de poder (quedará a un PIN de distancia). Las otras 9 acciones se separan después si el piso
+lo pide — el override ya las cubre a todas por diseño.
+
+🔶 **ABIERTO (founder) — venues con conjuntos personalizados:** un conjunto custom reemplaza
+los defaults del rol, así que sin migración **nadie** en esos venues (ni el gerente) podría
+fusionar ni autorizar con PIN hasta editar el conjunto en el dashboard. Opciones: (A)
+migración que otorga `orders:merge` a los conjuntos que ya tienen `orders:cancel` — preserva
+la intención "gerentes sí, meseros no" sin bloquear a nadie; (B) no migrar y avisar venue por
+venue. v1 implementa los defaults de rol; la migración espera la respuesta.
 
 ## 5. Seguridad
 
@@ -178,6 +194,9 @@ El PIN se valida en el server y **no se guarda nada del PIN en el dispositivo**.
 
 ## 7. Fuera de v1 (v2 explícito)
 
+- **Pantalla de equipo/permisos del POS estilo Square** (crear empleado + elegir conjunto,
+  ver conjuntos con el ojito, editar el conjunto de uno existente en gris): la decisión está
+  tomada en §2 pero se construye como proyecto propio — el override no la necesita.
 - Pantalla `Seguridad` estilo Square: re-pedir código después de cada venta / al cancelar /
   timeout. Es un sistema distinto (sesión, no override).
 - Código compartido de equipo.
