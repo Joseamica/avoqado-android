@@ -38,8 +38,24 @@ enum class EstadoCatalogo {
     SIN_CARGAR,
     CARGANDO,
 
-    /** Ya sabemos qué hay — aunque lo que haya sea nada. */
+    /**
+     * Ya sabemos qué hay — aunque lo que haya sea nada. Es el ÚNICO estado en el
+     * que se puede afirmar "este local no tiene promociones".
+     */
     CARGADO,
+
+    /**
+     * Se intentó y no se pudo: falló el fetch **y** no había nada en disco.
+     *
+     * 🔴 No es lo mismo que [CARGADO] con el catálogo vacío, y colapsarlos es un
+     * defecto de la misma familia que este enum vino a matar: afirmar un negativo
+     * con confianza cuando el estado real es "no sé". Peor aún, el texto de
+     * "vacío" manda a RECREAR promociones que probablemente ya existen, cuando lo
+     * que toca es reintentar con red. Ver §2.3 de
+     * `.claude/rules/offline-first-y-hub-lan.md`: sin red es estado normal, no
+     * error, y se le dice al usuario lo que es.
+     */
+    NO_SE_PUDO,
 }
 
 /**
@@ -76,6 +92,9 @@ class PromotionsRepository @Inject constructor(
         }
 
         _estado.value = EstadoCatalogo.CARGANDO
+        // Pesimista a propósito: si algo revienta por un camino que no previmos,
+        // el estado que queda es "no sé", nunca "sé que no hay".
+        var resultado = EstadoCatalogo.NO_SE_PUDO
         try {
             val request = Request.Builder()
                 .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/promotions")
@@ -91,6 +110,9 @@ class PromotionsRepository @Inject constructor(
                     val result = json.decodeFromString<PromotionsResponse>(body)
                     _promotions.value = result.data
                     payloadCache.save(TYPE, venueId, body)
+                    // El server contestó: éste es el único camino que puede
+                    // afirmar "este local no tiene promociones".
+                    resultado = EstadoCatalogo.CARGADO
                     Log.d(TAG, "✅ ${result.data.active.size} activas, ${result.data.upcoming.size} próximas")
                 }
 
@@ -98,6 +120,9 @@ class PromotionsRepository @Inject constructor(
                 code == 403 && isPlanLock(body) -> {
                     _promotions.value = PromotionsPayload()
                     payloadCache.clear(TYPE, venueId)
+                    // También es una respuesta del server, no una falla: el panel
+                    // pinta el candado de plan, no un error de conexión.
+                    resultado = EstadoCatalogo.CARGADO
                     Log.w(TAG, "🔒 El local ya no tiene el plan de promociones — catálogo borrado")
                 }
 
@@ -106,17 +131,33 @@ class PromotionsRepository @Inject constructor(
                     // apaga la función: se queda lo que ya había.
                     Log.e(TAG, "❌ promotions $code — se conserva lo cacheado")
                     hydrateIfEmpty(venueId)
+                    resultado = estadoTrasRescate()
                 }
             }
         } catch (e: Exception) {
             // Sin red NO se toca el cache: es justo cuando más se necesita.
             Log.e(TAG, "❌ promotions sin red: ${e.message}")
             hydrateIfEmpty(venueId)
+            resultado = estadoTrasRescate()
         } finally {
-            // Pase lo que pase se sale del estado de carga: ya sabemos lo que hay
-            // (aunque sea el cache del disco, o nada).
-            _estado.value = EstadoCatalogo.CARGADO
+            // Pase lo que pase se sale del estado de carga. Qué queda depende de
+            // si de verdad supimos algo — ver `resultado`.
+            _estado.value = resultado
         }
+    }
+
+    /**
+     * Después de un intento fallido: ¿alcanzamos a saber algo?
+     *
+     * 🔴 **El cache viejo GANA.** Si quedó algo —de esta sesión o del disco— el
+     * panel pinta esas promociones y no dice nada de error: un catálogo un poco
+     * viejo es infinitamente mejor que uno vacío, y la ley del repo es que el
+     * fail-safe nunca puede ser quedarse sin poder vender. Sólo si no hay
+     * absolutamente nada se admite que no pudimos preguntar.
+     */
+    private fun estadoTrasRescate(): EstadoCatalogo {
+        val hayAlgo = _promotions.value.active.isNotEmpty() || _promotions.value.upcoming.isNotEmpty()
+        return if (hayAlgo) EstadoCatalogo.CARGADO else EstadoCatalogo.NO_SE_PUDO
     }
 
     /** Arranque en modo avión: levantar el último catálogo bueno del disco. */

@@ -193,23 +193,22 @@ fun CheckoutScreen(
     // puede hacerlo desaparecer, porque lo eligió el propio dueño.
     val promotionsViewModel: PromotionsPanelViewModel = hiltViewModel()
     val promociones by promotionsViewModel.promociones.collectAsState()
-    val promocionesCargadas by promotionsViewModel.cargado.collectAsState()
+    val estadoPromociones by promotionsViewModel.estado.collectAsState()
     val ajustePanelPromos by promotionsViewModel.ajustePanelCajero.collectAsState()
     LaunchedEffect(Unit) { promotionsViewModel.refresh() }
     // 🔴 `remember`, no lectura directa: `puedeAplicar` desemboca en
     // `venuePermissions`, que descifra EncryptedSharedPreferences y decodifica
     // JSON. Leerlo en cada recomposición de la pantalla más caliente de la app es
     // caro y no aporta nada.
-    // La llave incluye `promocionesCargadas` a propósito: ese booleano baja y
-    // sube en CADA ciclo de refresco —incluido el que dispara un cambio de
-    // local—, así que un upgrade de plan o un cambio de permisos a media sesión
-    // se recogen en el siguiente refresco en vez de quedarse congelados hasta
-    // reiniciar la app. (El juez sigue siendo el server al aplicar; esto sólo
-    // decide qué se pinta.)
-    val promosPlanPermitido = remember(promociones, promocionesCargadas) {
+    // La llave incluye `estadoPromociones` a propósito: ese estado se mueve en
+    // CADA ciclo de refresco —incluido el que dispara un cambio de local—, así
+    // que un upgrade de plan o un cambio de permisos a media sesión se recogen en
+    // el siguiente refresco en vez de quedarse congelados hasta reiniciar la app.
+    // (El juez sigue siendo el server al aplicar; esto sólo decide qué se pinta.)
+    val promosPlanPermitido = remember(promociones, estadoPromociones) {
         promotionsViewModel.planPermitido
     }
-    val promosPuedeAplicar = remember(promociones, promocionesCargadas) {
+    val promosPuedeAplicar = remember(promociones, estadoPromociones) {
         promotionsViewModel.puedeAplicar
     }
     // 🔴 Seam de la Task 6: ahí se abre la hoja de opciones del combo y la
@@ -583,7 +582,7 @@ fun CheckoutScreen(
                                     PromotionsPanel(
                                         vigentes = promociones.active,
                                         proximas = promociones.upcoming,
-                                        cargado = promocionesCargadas,
+                                        estado = estadoPromociones,
                                         planPermitido = promosPlanPermitido,
                                         puedeAplicar = promosPuedeAplicar,
                                         onPromotionTap = onPromotionTap,
@@ -626,7 +625,7 @@ fun CheckoutScreen(
                         PromotionsPanel(
                             vigentes = promociones.active,
                             proximas = promociones.upcoming,
-                            cargado = promocionesCargadas,
+                            estado = estadoPromociones,
                             planPermitido = promosPlanPermitido,
                             puedeAplicar = promosPuedeAplicar,
                             onPromotionTap = onPromotionTap,
@@ -800,7 +799,7 @@ fun CheckoutScreen(
                                 PromotionsPanel(
                                     vigentes = promociones.active,
                                     proximas = promociones.upcoming,
-                                    cargado = promocionesCargadas,
+                                    estado = estadoPromociones,
                                     planPermitido = promosPlanPermitido,
                                     puedeAplicar = promosPuedeAplicar,
                                     onPromotionTap = onPromotionTap,

@@ -75,9 +75,9 @@ class PromotionsPanelViewModel @Inject constructor(
             roleManager.hasVenuePermission(PERMISO_APLICAR_PROMOCION)
 
     /**
-     * ¿Ya sabemos qué hay en el catálogo? Distingue "todavía no cargó" de "cargó
-     * y está vacío", que es lo que decide si el panel puede decir "Aún no hay
-     * promociones. Créalas desde el dashboard".
+     * En qué situación está el catálogo: "todavía no sé", "sé que no hay" o "no
+     * pude preguntar". Es lo que decide qué escribe el panel cuando no tiene ni
+     * una tarjeta que pintar (ver `mensajeSinTarjetas`).
      *
      * 🔴 Se DERIVA del repositorio, no es una bandera de este ViewModel. Lo
      * intenté primero como latch local y estaba mal: el cambio de local llama
@@ -89,13 +89,7 @@ class PromotionsPanelViewModel @Inject constructor(
      * montaje y cambio de local— quedan cubiertos por construcción, sin depender
      * de quién llame a quién.
      */
-    val cargado: StateFlow<Boolean> = repository.estado
-        .map { it == EstadoCatalogo.CARGADO }
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.Eagerly,
-            initialValue = repository.estado.value == EstadoCatalogo.CARGADO,
-        )
+    val estado: StateFlow<EstadoCatalogo> = repository.estado
 
     /**
      * Baja el catálogo del venue activo. Cache-first: si falla, se conserva lo

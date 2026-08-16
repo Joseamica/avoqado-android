@@ -254,11 +254,48 @@ class PromotionsRepositoryTest {
     }
 
     @Test
-    fun `sin red tambien se sale del estado de carga`() = runTest {
-        // Ya sabemos lo que hay: el cache del disco, o nada. Quedarse en
-        // "Cargando…" para siempre es otra forma de mentir, y encima no dice
-        // qué hacer.
+    fun `sin red y sin cache NO se afirma que el local no tiene promociones`() = runTest {
+        // 🔴 El defecto que cierra este test: decir "Aún no hay promociones,
+        // créalas desde el dashboard" cuando la verdad es "no pude preguntarle a
+        // nadie". Además de afirmar un negativo sin saberlo, manda a RECREAR
+        // promociones que probablemente ya existen.
         val repo = PromotionsRepository(secureStorage(), clientThrowing(IOException("sin red")), fakePayloadCache())
+
+        repo.refresh("venue-1")
+
+        assertEquals(EstadoCatalogo.NO_SE_PUDO, repo.estado.value)
+    }
+
+    @Test
+    fun `sin red pero con cache en disco, el cache gana y no se habla de error`() = runTest {
+        // La ley del repo: el fail-safe nunca puede ser quedarse sin poder
+        // vender. Un catálogo un poco viejo es infinitamente mejor que uno vacío.
+        val cache = fakePayloadCache()
+        PromotionsRepository(secureStorage(), clientReturning(200, successBody(listOf(promotion()))), cache)
+            .refresh("venue-1")
+
+        val sinRed = PromotionsRepository(secureStorage(), clientThrowing(IOException("sin red")), cache)
+        sinRed.refresh("venue-1")
+
+        assertEquals(EstadoCatalogo.CARGADO, sinRed.estado.value)
+        assertEquals(1, sinRed.promotions.value.active.size)
+    }
+
+    @Test
+    fun `un rechazo del server sin cache tampoco afirma que no hay`() = runTest {
+        // 500, proxy corporativo, permisos del mesero: no supimos nada.
+        val repo = PromotionsRepository(secureStorage(), clientReturning(500, "boom"), fakePayloadCache())
+
+        repo.refresh("venue-1")
+
+        assertEquals(EstadoCatalogo.NO_SE_PUDO, repo.estado.value)
+    }
+
+    @Test
+    fun `el candado de plan SI es una respuesta, no una falla`() = runTest {
+        // El server contestó: el local perdió el plan. El panel pinta el candado
+        // de PRO, no un error de conexión.
+        val repo = PromotionsRepository(secureStorage(), clientReturning(403, planLockBody()), fakePayloadCache())
 
         repo.refresh("venue-1")
 
@@ -279,7 +316,8 @@ class PromotionsRepositoryTest {
 
         runCatching { repo.refresh("venue-1") }
 
-        assertEquals(EstadoCatalogo.CARGADO, repo.estado.value)
+        // No se pudo preguntar ni rescatar nada, pero el estado SALIÓ de CARGANDO.
+        assertEquals(EstadoCatalogo.NO_SE_PUDO, repo.estado.value)
     }
 
     @Test

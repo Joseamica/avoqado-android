@@ -41,6 +41,7 @@ import com.avoqado.pos.core.util.VenueTimeZone
 import com.avoqado.pos.designsystem.components.SearchPillField
 import com.avoqado.pos.designsystem.components.TierBadge
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
+import com.avoqado.pos.pos.data.EstadoCatalogo
 import com.avoqado.pos.pos.data.model.Promotion
 import com.avoqado.pos.pos.data.model.PromotionGroup
 import com.avoqado.pos.pos.data.model.PromotionOption
@@ -94,6 +95,29 @@ const val ANCHO_MINIMO_PANEL_LATERAL_DP = 960
 
 /** A partir de cuántas promociones vale la pena el buscador. */
 const val PROMOCIONES_PARA_BUSCADOR = 8
+
+/** Confirmado con el server: este local no tiene promociones. */
+const val TEXTO_SIN_PROMOCIONES = "Aún no hay promociones. Créalas desde el dashboard."
+
+/** No confirmamos nada: no se pudo preguntar y no había nada en disco. */
+const val TEXTO_NO_SE_PUDO_CARGAR = "No pudimos cargar las promociones. Revisa tu conexión."
+
+/**
+ * Qué escribe el panel cuando no hay NINGUNA tarjeta que pintar. `null` = todavía
+ * no sabemos, va el spinner.
+ *
+ * 🔴 Los dos textos son distintos porque los dos estados son distintos, y la
+ * diferencia es lo que el cajero hace después: "créalas desde el dashboard" manda
+ * a REHACER algo que probablemente ya existe, y sólo se puede decir cuando el
+ * server contestó. Si no se pudo preguntar, lo que toca es reintentar con red.
+ * Colapsar los dos en un booleano es el defecto que este mapeo existe para
+ * impedir.
+ */
+fun mensajeSinTarjetas(estado: EstadoCatalogo): String? = when (estado) {
+    EstadoCatalogo.SIN_CARGAR, EstadoCatalogo.CARGANDO -> null
+    EstadoCatalogo.CARGADO -> TEXTO_SIN_PROMOCIONES
+    EstadoCatalogo.NO_SE_PUDO -> TEXTO_NO_SE_PUDO_CARGAR
+}
 
 /**
  * Permiso que el server exige para aplicar una promoción, en los DOS caminos
@@ -261,7 +285,7 @@ private fun dinero(centavos: Int): String = String.format(Locale.US, "$%.2f", ce
 fun PromotionsPanel(
     vigentes: List<Promotion>,
     proximas: List<Promotion>,
-    cargado: Boolean,
+    estado: EstadoCatalogo,
     planPermitido: Boolean,
     puedeAplicar: Boolean,
     onPromotionTap: (Promotion) -> Unit,
@@ -292,22 +316,24 @@ fun PromotionsPanel(
             return@Column
         }
 
-        // 🔴 "No hay promociones" y "todavía no sé si hay" NO son lo mismo. El
-        // catálogo arranca vacío y se llena cuando responde el fetch: decir
-        // "créalas desde el dashboard" en esa ventana es mentirle al cajero de un
-        // local que SÍ tiene promociones — y con el panel lateral esa ventana
-        // aparece en cada montaje de la pantalla de cobro, no sólo si alguien
-        // entra a la pestaña. En frío sin red es peor: el cache del disco sólo se
-        // levanta DESPUÉS de que la petición falla.
+        // 🔴 Tres cosas distintas que un booleano colapsaría en una: "todavía no
+        // sé" (spinner), "el server dijo que no hay" (créalas en el dashboard) y
+        // "no pude preguntar" (revisa tu conexión). El catálogo arranca vacío y se
+        // llena cuando responde el fetch: decir "créalas desde el dashboard" antes
+        // de tiempo, o cuando lo que falló fue la red, es mentirle al cajero de un
+        // local que SÍ tiene promociones — y encima mandarlo a rehacerlas.
+        // Ojo al ORDEN: esto sólo corre si no hay NINGUNA tarjeta. Con cache viejo
+        // en pantalla se pintan las promociones y nunca se habla de errores.
         if (vigentes.isEmpty() && proximas.isEmpty()) {
-            if (cargado) {
+            val mensaje = mensajeSinTarjetas(estado)
+            if (mensaje == null) {
+                CargandoPromociones()
+            } else {
                 Text(
-                    text = "Aún no hay promociones. Créalas desde el dashboard.",
+                    text = mensaje,
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-            } else {
-                CargandoPromociones()
             }
             return@Column
         }
@@ -609,7 +635,7 @@ private fun PreviewPanelConPromociones() {
             promocionDemo(id = "p2", nombre = "Combo comida", pricingMode = "FIXED_TOTAL", priceCents = 9900),
         ),
         proximas = listOf(promocionDemo(id = "p3", nombre = "Happy hour", startsAt = "18:00")),
-        cargado = true,
+        estado = EstadoCatalogo.CARGADO,
         planPermitido = true,
         puedeAplicar = true,
         onPromotionTap = {},
@@ -623,7 +649,7 @@ private fun PreviewPanelSinPlan() {
     PromotionsPanel(
         vigentes = emptyList(),
         proximas = emptyList(),
-        cargado = true,
+        estado = EstadoCatalogo.CARGADO,
         planPermitido = false,
         puedeAplicar = true,
         onPromotionTap = {},
@@ -636,7 +662,7 @@ private fun PreviewPanelSinPermiso() {
     PromotionsPanel(
         vigentes = listOf(promocionDemo()),
         proximas = emptyList(),
-        cargado = true,
+        estado = EstadoCatalogo.CARGADO,
         planPermitido = true,
         puedeAplicar = false,
         onPromotionTap = {},
@@ -649,7 +675,7 @@ private fun PreviewPanelVacio() {
     PromotionsPanel(
         vigentes = emptyList(),
         proximas = emptyList(),
-        cargado = true,
+        estado = EstadoCatalogo.CARGADO,
         planPermitido = true,
         puedeAplicar = true,
         onPromotionTap = {},

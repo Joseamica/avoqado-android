@@ -1,5 +1,6 @@
 package com.avoqado.pos.pos.presentation.promotions
 
+import com.avoqado.pos.pos.data.EstadoCatalogo
 import com.avoqado.pos.pos.data.model.Promotion
 import com.avoqado.pos.pos.data.model.PromotionGroup
 import com.avoqado.pos.pos.data.model.PromotionOption
@@ -7,6 +8,7 @@ import com.avoqado.pos.pos.presentation.checkout.InputTab
 import com.avoqado.pos.tpvsettings.data.PanelMode
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -51,6 +53,31 @@ class PromotionsPanelLayoutTest {
         // se puede ajustar con una tablet enfrente; bajar del piso no: ahí la
         // cuadrícula de productos deja de caber en 3 columnas.
         assertTrue(ANCHO_MINIMO_PANEL_LATERAL_DP >= ANCHO_ESTRICTO_PANEL_LATERAL_DP)
+    }
+
+    // ── "No hay" vs "no pude preguntar" ────────────────────────────────────
+
+    @Test
+    fun `mientras no sabemos, el panel no afirma nada`() {
+        assertNull(mensajeSinTarjetas(EstadoCatalogo.SIN_CARGAR))
+        assertNull(mensajeSinTarjetas(EstadoCatalogo.CARGANDO))
+    }
+
+    @Test
+    fun `solo con respuesta del server se dice que no hay promociones`() {
+        assertEquals(TEXTO_SIN_PROMOCIONES, mensajeSinTarjetas(EstadoCatalogo.CARGADO))
+    }
+
+    @Test
+    fun `si no se pudo preguntar se habla de conexion, no de crear promociones`() {
+        val mensaje = mensajeSinTarjetas(EstadoCatalogo.NO_SE_PUDO)
+        assertEquals(TEXTO_NO_SE_PUDO_CARGAR, mensaje)
+        // 🔴 Este es el test que falla si alguien vuelve a colapsar los dos casos
+        // en un solo booleano: mandar a "crearlas desde el dashboard" cuando lo
+        // que falló fue la red es mandar a REHACER algo que ya existe.
+        assertNotEquals(mensajeSinTarjetas(EstadoCatalogo.CARGADO), mensaje)
+        assertFalse(mensaje!!.contains("dashboard"))
+        assertFalse(mensaje.contains("Créalas"))
     }
 
     // ── Qué pestañas se pintan ─────────────────────────────────────────────
