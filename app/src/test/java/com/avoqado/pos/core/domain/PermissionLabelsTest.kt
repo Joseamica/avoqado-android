@@ -32,7 +32,7 @@ class PermissionLabelsTest {
         // Un CASHIER cobrando vio "te active «tpv:read»" en la pantalla de
         // propina: la app consulta sola qué terminales PAX están conectadas.
         // El código crudo no le dice a nadie qué estaba pasando.
-        assertEquals("cobrar con terminal", PermissionLabels.of("tpv:read"))
+        assertEquals("ver las terminales del local", PermissionLabels.of("tpv:read"))
     }
 
     // MARK: - labelOrNull: quien arma el mensaje necesita SABER si hubo etiqueta
@@ -45,7 +45,7 @@ class PermissionLabelsTest {
     fun `labelOrNull devuelve null cuando no hay etiqueta, y nunca el respaldo`() {
         assertNull(PermissionLabels.labelOrNull("cosas:raras"))
         assertNull(PermissionLabels.labelOrNull(""))
-        assertEquals("cobrar con terminal", PermissionLabels.labelOrNull("tpv:read"))
+        assertEquals("ver las terminales del local", PermissionLabels.labelOrNull("tpv:read"))
     }
 
     // MARK: - Cobertura: todo permiso que una ruta de mobile/tpv puede rechazar

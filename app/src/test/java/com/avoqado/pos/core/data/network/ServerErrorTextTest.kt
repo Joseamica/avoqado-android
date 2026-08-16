@@ -31,7 +31,7 @@ class ServerErrorTextTest {
         // de propina porque la app consulta sola qué terminales están en línea.
         val out = ServerErrorText.humanize("Permission 'tpv:read' required")
         assertEquals(
-            "No tienes permiso para hacer esto. Pídele a un administrador que te active «cobrar con terminal».",
+            "No tienes permiso para hacer esto. Pídele a un administrador que te active «ver las terminales del local».",
             out,
         )
     }

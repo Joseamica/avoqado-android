@@ -25,10 +25,17 @@ object PermissionLabels {
     private val LABELS = mapOf(
         // MARK: - Terminales de cobro (PAX)
         //
-        // `tpv:read` es, en el dashboard, "ver y administrar las terminales".
-        // Aquí se nombra por lo que significa EN EL PISO: sin él la app no sabe
-        // qué terminal está en línea y no puede pasar la tarjeta.
-        "tpv:read" to "cobrar con terminal",
+        // 🔴 `tpv:read` NO es "cobrar". Desde 2026-08-16 (server c74f6593) la
+        // ruta que el POS usa para saber qué terminal está en línea exige
+        // `payments:create`, no esto. Lo que queda detrás de `tpv:read` son las
+        // cuatro rutas de ADMINISTRACIÓN del dashboard: listar terminales, ver
+        // una, y sus dos de salud.
+        //
+        // Nombrarlo "cobrar con terminal" fue correcto UN día — contra el server
+        // viejo — y se vuelve mentira en cuanto ese fix se despliegue: mandaría
+        // a pedir un permiso de administración a alguien que sólo quiere cobrar,
+        // que es exactamente el bug que el fix eliminó.
+        "tpv:read" to "ver las terminales del local",
         "tpv:create" to "dar de alta una terminal",
         "tpv:update" to "cambiar la configuración de una terminal",
         "tpv:delete" to "dar de baja una terminal",
