@@ -81,7 +81,14 @@ class PendingGrantQueue @Inject constructor(
                     remaining.add(grant) // belongs to another venue — keep
                     continue
                 }
-                val ok = articlesRepository.sellPackToCustomer(grant.packId, grant.customerId)
+                // Reintento automático (arranque de la app / vuelta de la red): su 403
+                // no puede saltar como modal encima de quien esté cobrando. Lo que
+                // falla se queda en la cola, que es donde se ve y se resuelve.
+                val ok = articlesRepository.sellPackToCustomer(
+                    grant.packId,
+                    grant.customerId,
+                    background = true,
+                )
                 if (ok) {
                     Log.d("🎟️", "PendingGrantQueue: delivered ${grant.packId} → ${grant.customerId}")
                 } else {

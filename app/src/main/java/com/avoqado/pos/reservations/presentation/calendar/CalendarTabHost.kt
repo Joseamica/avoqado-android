@@ -83,7 +83,8 @@ fun CalendarTabHost(
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) viewModel.refresh()
+            // Volver a la pestaña no es pedir nada: es la app poniéndose al día.
+            if (event == Lifecycle.Event.ON_RESUME) viewModel.refresh(background = true)
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
@@ -92,7 +93,9 @@ fun CalendarTabHost(
     LaunchedEffect(isOnline) {
         while (isOnline) {
             delay(30_000)
-            viewModel.refresh(showLoading = false)
+            // Tick automático: si el server dice 403 se anota en la pantalla, pero
+            // jamás salta un modal sobre el mesero cada 30 segundos.
+            viewModel.refresh(showLoading = false, background = true)
         }
     }
 

@@ -708,10 +708,20 @@ class PaymentFlowViewModel @Inject constructor(
         processCashPayment(tenderedCents)
     }
 
-    fun probeTerminalAvailability() {
+    /**
+     * Sonda de disponibilidad: pregunta si hay terminales conectadas para poder
+     * deshabilitar "Cobrar con terminal" ANTES de que el cajero lo intente.
+     *
+     * @param background por defecto SÍ, porque el arranque del cobro la dispara
+     * solo — nadie la pidió, y su fracaso no impide nada (falla en abierto: la
+     * opción se queda habilitada y el error real sale al enviar). Sólo el enlace
+     * "Reintentar", que es un toque explícito sobre esta misma pantalla, la corre
+     * en primer plano: ahí el "no" tiene que verse.
+     */
+    fun probeTerminalAvailability(background: Boolean = true) {
         _terminalAvailability.value = TerminalAvailability.CHECKING
         viewModelScope.launch {
-            when (val result = terminalPaymentService.fetchOnlineTerminals()) {
+            when (val result = terminalPaymentService.fetchOnlineTerminals(background = background)) {
                 is TerminalListResult.Success -> {
                     _onlineTerminals.value = result.terminals
                     _terminalAvailability.value =
@@ -728,6 +738,11 @@ class PaymentFlowViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Trae la lista para ELEGIR terminal. Nace del toque "Cobrar con terminal" y
+     * su fracaso impide exactamente lo que el cajero pidió, así que NO va marcada
+     * como de fondo: aquí el 403 debe verse.
+     */
     private fun fetchTerminals() {
         viewModelScope.launch {
             when (val result = terminalPaymentService.fetchOnlineTerminals()) {

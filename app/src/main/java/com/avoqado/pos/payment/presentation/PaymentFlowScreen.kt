@@ -140,7 +140,8 @@ fun PaymentFlowScreen(
                         onManualMethodSelected = { viewModel.confirmManualMethod(it) },
                         onCancel = onCancel,
                         terminalsUnavailable = terminalAvailability == PaymentFlowViewModel.TerminalAvailability.NONE,
-                        onRetryTerminals = { viewModel.probeTerminalAvailability() },
+                        // Toque explícito del cajero: si el server dice que no, tiene que verse.
+                        onRetryTerminals = { viewModel.probeTerminalAvailability(background = false) },
                     )
                     TipSelectionSheet(
                         amountCents = currentState.amount,
@@ -161,7 +162,8 @@ fun PaymentFlowScreen(
                         onManualMethodSelected = { viewModel.confirmManualMethod(it) },
                     onCancel = onCancel,
                     terminalsUnavailable = terminalAvailability == PaymentFlowViewModel.TerminalAvailability.NONE,
-                    onRetryTerminals = { viewModel.probeTerminalAvailability() },
+                    // Toque explícito del cajero: si el server dice que no, tiene que verse.
+                    onRetryTerminals = { viewModel.probeTerminalAvailability(background = false) },
                     onSplitImporte = onSplitImporte,
                 )
             }

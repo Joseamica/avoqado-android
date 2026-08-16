@@ -41,7 +41,9 @@ fun CartCreditsCard(
     val busyId by viewModel.busyBalanceId.collectAsStateWithLifecycle()
     val loadError by viewModel.loadError.collectAsStateWithLifecycle()
 
-    LaunchedEffect(customerId) { viewModel.load(customerId) }
+    // Corre sola al adjuntar un cliente: el cajero pidió adjuntarlo, no ver sus
+    // créditos. Si el server dice que no, se cuenta abajo, en esta tarjeta.
+    LaunchedEffect(customerId) { viewModel.load(customerId, background = true) }
 
     val items = balances.flatMap { it.itemBalances }
     if (items.isEmpty() && loadError) {

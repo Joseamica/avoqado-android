@@ -75,12 +75,15 @@ class CalendarViewModel @Inject constructor(
     private var fetchJob: Job? = null
 
     init {
-        fetch()
+        // Nadie pidió esta carga: la pantalla se abrió sola. Su 403 se cuenta en
+        // línea (`state.error`), nunca como modal encima de otra pantalla.
+        fetch(background = true)
         // Refetch whenever a reservation mutation happens elsewhere (cancel, reschedule, edit,
         // create, state transition) so the calendar stays in sync without depending on
         // ON_RESUME, which doesn't fire when nested sheets close on top of this screen.
         viewModelScope.launch {
-            merge(repository.changes, classSessionRepository.changes).collect { fetch(showLoading = false) }
+            merge(repository.changes, classSessionRepository.changes)
+                .collect { fetch(showLoading = false, background = true) }
         }
     }
 
@@ -108,7 +111,13 @@ class CalendarViewModel @Inject constructor(
         secureStorage.showClassSessionsForCurrentVenue = show
     }
 
-    fun refresh(showLoading: Boolean = true) = fetch(showLoading = showLoading)
+    /**
+     * @param background la recarga corre SOLA (el tick de 30 s, el ON_RESUME al
+     * volver a la pestaña). El botón de recargar de la barra la deja en `false`:
+     * ése sí es un toque, y su "no" tiene que verse.
+     */
+    fun refresh(showLoading: Boolean = true, background: Boolean = false) =
+        fetch(showLoading = showLoading, background = background)
 
     private val _rescheduleSubmitting = MutableStateFlow(false)
     val rescheduleSubmitting: StateFlow<Boolean> = _rescheduleSubmitting.asStateFlow()
@@ -190,7 +199,7 @@ class CalendarViewModel @Inject constructor(
         _rescheduleOverCapacityConfirmation.value = null
     }
 
-    private fun fetch(showLoading: Boolean = true) {
+    private fun fetch(showLoading: Boolean = true, background: Boolean = false) {
         val s = _state.value
         val (from, to) = when (s.view) {
             CalendarView.DAY -> s.selectedDate to s.selectedDate
@@ -206,8 +215,12 @@ class CalendarViewModel @Inject constructor(
         fetchJob = viewModelScope.launch {
             val fromString = from.format(DateTimeFormatter.ISO_LOCAL_DATE)
             val toString = to.format(DateTimeFormatter.ISO_LOCAL_DATE)
-            val reservationsDeferred = async { repository.fetchCalendar(fromString, toString) }
-            val classSessionsDeferred = async { classSessionRepository.fetchList(fromString, toString) }
+            val reservationsDeferred = async {
+                repository.fetchCalendar(fromString, toString, background = background)
+            }
+            val classSessionsDeferred = async {
+                classSessionRepository.fetchList(fromString, toString, background = background)
+            }
             val r = reservationsDeferred.await()
             val classResult = classSessionsDeferred.await()
             _state.update {

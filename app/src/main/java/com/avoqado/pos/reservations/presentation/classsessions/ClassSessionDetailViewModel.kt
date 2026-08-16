@@ -60,13 +60,19 @@ class ClassSessionDetailViewModel @Inject constructor(
         refresh()
         viewModelScope.launch { customersRepository.fetchCustomers().onSuccess { _customers.value = it } }
         viewModelScope.launch { staffRepository.getActiveStaff().onSuccess { _staff.value = it } }
-        viewModelScope.launch { repository.changes.collect { refresh() } }
+        // Recarga reactiva: la disparó un cambio, no un dedo.
+        viewModelScope.launch { repository.changes.collect { refresh(background = true) } }
     }
 
-    fun refresh() {
+    /**
+     * @param background la recarga corre SOLA (tras un cambio hecho en otro
+     * lado). La carga inicial NO va marcada: el usuario abrió ESTA sesión y su
+     * fracaso impide exactamente lo que pidió.
+     */
+    fun refresh(background: Boolean = false) {
         if (sessionId.isBlank()) return
         viewModelScope.launch {
-            repository.fetchOne(sessionId).onSuccess { _session.value = it }
+            repository.fetchOne(sessionId, background = background).onSuccess { _session.value = it }
         }
     }
 

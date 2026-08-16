@@ -116,8 +116,17 @@ class TerminalPaymentService @Inject constructor(
     /**
      * GET /mobile/venues/{venueId}/terminals/online
      * Returns terminals currently connected via Socket.IO.
+     *
+     * @param background la consulta corre SOLA (la sonda que precalienta la
+     * pantalla de cobro), nadie la pidió. Esa ruta exige `tpv:read` —el permiso
+     * de ADMINISTRAR terminales— que un CASHIER no tiene aunque su trabajo sea
+     * cobrar: medido el 2026-08-16, el modal global "no tienes permiso" saltaba
+     * encima de la pantalla de PROPINA a media venta. Marcada así, el 403 cae en
+     * el mismo camino de siempre ([TerminalListResult.Error] → fail-open) sin
+     * interrumpir a nadie. En `false` —el usuario eligió "Cobrar con terminal"—
+     * el "no" SÍ tiene que verse: es justo lo que pidió.
      */
-    suspend fun fetchOnlineTerminals(): TerminalListResult {
+    suspend fun fetchOnlineTerminals(background: Boolean = false): TerminalListResult {
         val venueId = secureStorage.venueId ?: return TerminalListResult.Error("No venue selected")
         val token = secureStorage.accessToken ?: return TerminalListResult.Error("Not authenticated")
 
@@ -125,6 +134,11 @@ class TerminalPaymentService @Inject constructor(
             val request = Request.Builder()
                 .url("$baseUrl/mobile/venues/$venueId/terminals/online")
                 .header("Authorization", "Bearer $token")
+                .apply {
+                    if (background) {
+                        header(com.avoqado.pos.core.data.network.ForbiddenInterceptor.BACKGROUND_HEADER, "1")
+                    }
+                }
                 .get()
                 .build()
 

@@ -1,6 +1,7 @@
 package com.avoqado.pos.payment
 
 import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.core.data.network.ForbiddenInterceptor
 import com.avoqado.pos.payment.data.TerminalPaymentResult
 import com.avoqado.pos.payment.data.TerminalPaymentService
 import com.avoqado.pos.payment.domain.ChargeStatusProbe
@@ -12,6 +13,7 @@ import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -211,5 +213,32 @@ class TerminalPaymentServiceHttpTest {
 
         // Ausencia ≠ prueba: entre que el request llega y la fila se escribe hay una ventana.
         assertTrue(result is TerminalPaymentResult.Undetermined)
+    }
+
+    // MARK: - La sonda de terminales corre SOLA
+    //
+    // Medido el 2026-08-16 en hardware: un CASHIER cobrando veía, en la pantalla
+    // de PROPINA, el modal "No tienes permiso — pídele a un administrador que te
+    // active «tpv:read»". Nadie pidió esa consulta: la dispara el arranque del
+    // cobro para saber si hay terminales conectadas, y `tpv:read` es el permiso
+    // de ADMINISTRAR terminales, que un cajero no tiene. Marcada como de fondo,
+    // el interceptor global la deja pasar sin diálogo.
+
+    @Test
+    fun `la sonda automatica viaja marcada como tarea de fondo`() = runBlocking {
+        enqueue(200, """{"success":true,"terminals":[]}""")
+
+        service.fetchOnlineTerminals(background = true)
+
+        assertEquals("1", server.takeRequest().getHeader(ForbiddenInterceptor.BACKGROUND_HEADER))
+    }
+
+    @Test
+    fun `elegir Cobrar con terminal NO va marcada — ese 403 si tiene que verse`() = runBlocking {
+        enqueue(200, """{"success":true,"terminals":[]}""")
+
+        service.fetchOnlineTerminals()
+
+        assertNull(server.takeRequest().getHeader(ForbiddenInterceptor.BACKGROUND_HEADER))
     }
 }

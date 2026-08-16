@@ -31,7 +31,7 @@ class ReservationActionsRetrierTest {
         coEvery { dao.all() } returns listOf(
             PendingReservationActionEntity(rowId = 1, reservationId = "r1", action = "CONFIRM"),
         )
-        coEvery { api.confirm("r1") } returns Result.success(stub("r1"))
+        coEvery { api.confirm("r1", background = true) } returns Result.success(stub("r1"))
 
         retrier.drain()
 
@@ -44,7 +44,7 @@ class ReservationActionsRetrierTest {
         coEvery { dao.all() } returns listOf(
             PendingReservationActionEntity(rowId = 2, reservationId = "r2", action = "CHECK_IN"),
         )
-        coEvery { api.checkIn("r2") } returns Result.failure(RuntimeException("timeout"))
+        coEvery { api.checkIn("r2", background = true) } returns Result.failure(RuntimeException("timeout"))
 
         retrier.drain()
 
@@ -68,7 +68,7 @@ class ReservationActionsRetrierTest {
         retrier.drain()
 
         coVerify(exactly = 0) { dao.delete(3L) }
-        coVerify(exactly = 0) { api.complete(any()) }
+        coVerify(exactly = 0) { api.complete(any(), any()) }
     }
 
     @Test
@@ -88,8 +88,8 @@ class ReservationActionsRetrierTest {
             PendingReservationActionEntity(rowId = 10, reservationId = "r10", action = "CONFIRM"),
             PendingReservationActionEntity(rowId = 11, reservationId = "r11", action = "CHECK_IN"),
         )
-        coEvery { api.confirm("r10") } returns Result.success(stub("r10"))
-        coEvery { api.checkIn("r11") } returns Result.success(stub("r11"))
+        coEvery { api.confirm("r10", background = true) } returns Result.success(stub("r10"))
+        coEvery { api.checkIn("r11", background = true) } returns Result.success(stub("r11"))
 
         retrier.drain()
 
@@ -138,7 +138,7 @@ class ReservationActionsRetrierTest {
 
         retrier.drain()
 
-        coVerify(exactly = 0) { api.confirm(any()) }
+        coVerify(exactly = 0) { api.confirm(any(), any()) }
     }
 
     /**
@@ -155,7 +155,7 @@ class ReservationActionsRetrierTest {
         coEvery { dao.all() } returns listOf(
             PendingReservationActionEntity(rowId = 7, reservationId = "r7", action = "CONFIRM"),
         )
-        coEvery { api.confirm("r7") } returns Result.failure(RuntimeException(motivo))
+        coEvery { api.confirm("r7", background = true) } returns Result.failure(RuntimeException(motivo))
 
         retrier.drain()
 

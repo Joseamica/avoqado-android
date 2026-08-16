@@ -60,37 +60,42 @@ class ReservationActionsRetrier @Inject constructor(
                 pendingDao.delete(entry.rowId)
                 continue
             }
+            // 🔴 TODO reintento va marcado como de fondo: lo dispara la vuelta de la
+            // conexión, no un dedo. Un 403 aquí ya tiene su sitio —la cuarentena, que
+            // guarda el motivo y la enseña— y sacarlo además como modal lo pintaba
+            // encima de la pantalla en la que estuviera el mesero, una vez por acción
+            // pendiente. Es el mismo defecto que el replay del outbox ya resolvió.
             val result: Result<Unit> = when (action) {
-                ReservationAction.CONFIRM -> api.confirm(entry.reservationId).map { Unit }
-                ReservationAction.CHECK_IN -> api.checkIn(entry.reservationId).map { Unit }
-                ReservationAction.COMPLETE -> api.complete(entry.reservationId).map { Unit }
-                ReservationAction.NO_SHOW -> api.noShow(entry.reservationId).map { Unit }
+                ReservationAction.CONFIRM -> api.confirm(entry.reservationId, background = true).map { Unit }
+                ReservationAction.CHECK_IN -> api.checkIn(entry.reservationId, background = true).map { Unit }
+                ReservationAction.COMPLETE -> api.complete(entry.reservationId, background = true).map { Unit }
+                ReservationAction.NO_SHOW -> api.noShow(entry.reservationId, background = true).map { Unit }
                 ReservationAction.CANCEL -> {
                     val req = entry.payloadJson
                         ?.let { json.decodeFromString(CancelReservationRequest.serializer(), it) }
                         ?: CancelReservationRequest()
-                    api.cancel(entry.reservationId, req)
+                    api.cancel(entry.reservationId, req, background = true)
                 }
                 ReservationAction.RESCHEDULE -> {
                     val req = json.decodeFromString(
                         RescheduleRequest.serializer(),
                         entry.payloadJson ?: error("Missing reschedule payload for ${entry.rowId}"),
                     )
-                    api.reschedule(entry.reservationId, req).map { Unit }
+                    api.reschedule(entry.reservationId, req, background = true).map { Unit }
                 }
                 ReservationAction.CREATE -> {
                     val req = json.decodeFromString(
                         CreateReservationRequest.serializer(),
                         entry.payloadJson ?: error("Missing create payload for ${entry.rowId}"),
                     )
-                    api.create(req).map { Unit }
+                    api.create(req, background = true).map { Unit }
                 }
                 ReservationAction.UPDATE -> {
                     val req = json.decodeFromString(
                         UpdateReservationRequest.serializer(),
                         entry.payloadJson ?: error("Missing update payload for ${entry.rowId}"),
                     )
-                    api.update(entry.reservationId, req).map { Unit }
+                    api.update(entry.reservationId, req, background = true).map { Unit }
                 }
             }
             if (result.isSuccess) {

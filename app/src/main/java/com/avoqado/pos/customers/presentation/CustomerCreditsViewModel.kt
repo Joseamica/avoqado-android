@@ -45,10 +45,16 @@ class CustomerCreditsViewModel @Inject constructor(
     private val _loadError = MutableStateFlow(false)
     val loadError: StateFlow<Boolean> = _loadError.asStateFlow()
 
-    fun load(customerId: String) {
+    /**
+     * @param background la consulta corre SOLA (la tarjeta del carrito la lanza
+     * al adjuntar un cliente). En la ficha del cliente se deja en `false`: ahí
+     * el usuario abrió justamente ese expediente, y esa pantalla presenta un
+     * saldo vacío como "Sin paquetes activos" — callar el 403 la haría mentir.
+     */
+    fun load(customerId: String, background: Boolean = false) {
         viewModelScope.launch {
             _isLoading.value = true
-            val result = articlesRepository.fetchCustomerCredits(customerId)
+            val result = articlesRepository.fetchCustomerCredits(customerId, background = background)
             _loadError.value = result == null
             _balances.value = result ?: emptyList()
             _isLoading.value = false
@@ -60,7 +66,9 @@ class CustomerCreditsViewModel @Inject constructor(
         // do not issue a request that the effective venue permissions already
         // tell us will be rejected (and would surface as a global 403 toast).
         if (!roleManager.canReadCreditPacks) return
-        viewModelScope.launch { articlesRepository.fetchCreditPacks() }
+        // Y aunque el espejo de permisos del cliente se desfase del server, el
+        // 403 tampoco puede saltar: esta precarga la dispara pintar la pantalla.
+        viewModelScope.launch { articlesRepository.fetchCreditPacks(background = true) }
     }
 
     fun sell(packId: String, customerId: String, onDone: () -> Unit) {
@@ -80,7 +88,8 @@ class CustomerCreditsViewModel @Inject constructor(
     fun grantPacks(packIds: List<String>, customerId: String) {
         viewModelScope.launch {
             packIds.forEach { packId ->
-                val ok = articlesRepository.sellPackToCustomer(packId, customerId)
+                // Post-cobro automático: si falla, se encola. Nunca un modal.
+                val ok = articlesRepository.sellPackToCustomer(packId, customerId, background = true)
                 if (!ok) {
                     // The customer already PAID — never drop the grant. Queue it
                     // durably; the queue retries on next app start / drain.

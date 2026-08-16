@@ -72,14 +72,21 @@ class ReservationRepository @Inject constructor(
     /** El gerente la resolvió a mano (volvió a agendar, llamó al cliente) y la descarta. */
     suspend fun dismissQuarantined(rowId: Long) = pendingDao.delete(rowId)
 
-    suspend fun fetchList(filters: ReservationFilters): Result<ReservationListResponse> {
-        val r = api.list(filters)
+    suspend fun fetchList(
+        filters: ReservationFilters,
+        background: Boolean = false,
+    ): Result<ReservationListResponse> {
+        val r = api.list(filters, background = background)
         r.getOrNull()?.let { _lastList.value = it }
         return r
     }
 
-    suspend fun fetchCalendar(dateFrom: String, dateTo: String): Result<List<Reservation>> =
-        api.calendar(dateFrom, dateTo)
+    suspend fun fetchCalendar(
+        dateFrom: String,
+        dateTo: String,
+        background: Boolean = false,
+    ): Result<List<Reservation>> =
+        api.calendar(dateFrom, dateTo, background = background)
 
     suspend fun fetchOne(id: String): Result<Reservation> = api.get(id)
 

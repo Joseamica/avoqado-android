@@ -14,6 +14,7 @@ import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -136,6 +137,51 @@ class ReservationApiTest {
 
         assertTrue(settings.isStaffAware)
         assertEquals(listOf("staff-1"), mapping.staff.map { it.staffId })
+    }
+
+    // MARK: - Lo que corre solo no interrumpe a nadie
+    //
+    // El calendario se recarga en el arranque de la pantalla y cada 30 s, y el
+    // retrier reproduce solo las acciones encoladas. Esas peticiones no las pidió
+    // nadie: su 403 se cuenta en línea (o en la cuarentena), nunca como un modal
+    // encima de la pantalla en la que esté el mesero.
+
+    @Test
+    fun `una carga automatica del calendario viaja marcada como tarea de fondo`() = runTest {
+        server.enqueue(MockResponse().setBody("[]"))
+
+        api.calendar("2026-08-16", "2026-08-16", background = true)
+
+        assertEquals(
+            "1",
+            server.takeRequest()
+                .getHeader(com.avoqado.pos.core.data.network.ForbiddenInterceptor.BACKGROUND_HEADER),
+        )
+    }
+
+    @Test
+    fun `un reintento automatico del retrier tambien va marcado`() = runTest {
+        server.enqueue(MockResponse().setBody(File("src/test/resources/fixtures/reservation_single.json").readText()))
+
+        api.confirm("res-1", background = true)
+
+        assertEquals(
+            "1",
+            server.takeRequest()
+                .getHeader(com.avoqado.pos.core.data.network.ForbiddenInterceptor.BACKGROUND_HEADER),
+        )
+    }
+
+    @Test
+    fun `una accion del usuario NO va marcada — ese 403 si tiene que verse`() = runTest {
+        server.enqueue(MockResponse().setBody(File("src/test/resources/fixtures/reservation_single.json").readText()))
+
+        api.confirm("res-1")
+
+        assertNull(
+            server.takeRequest()
+                .getHeader(com.avoqado.pos.core.data.network.ForbiddenInterceptor.BACKGROUND_HEADER),
+        )
     }
 
     @Test

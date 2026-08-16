@@ -41,7 +41,7 @@ class ReservationsListViewModelTest {
     fun `initial load filters by HOY tab statuses`() = runTest {
         val repo: ReservationRepository = mockk()
         every { repo.changes } returns kotlinx.coroutines.flow.MutableSharedFlow<Unit>()
-        coEvery { repo.fetchList(match { it.statuses.containsAll(listOf(ReservationStatus.PENDING, ReservationStatus.CONFIRMED, ReservationStatus.CHECKED_IN)) }) } returns
+        coEvery { repo.fetchList(match { it.statuses.containsAll(listOf(ReservationStatus.PENDING, ReservationStatus.CONFIRMED, ReservationStatus.CHECKED_IN)) }, any()) } returns
             Result.success(ReservationListResponse(data = listOf(stub("r1", ReservationStatus.CONFIRMED))))
 
         val vm = ReservationsListViewModel(repo)
@@ -57,7 +57,7 @@ class ReservationsListViewModelTest {
     fun `runTransition optimistically removes when terminal`() = runTest {
         val repo: ReservationRepository = mockk()
         every { repo.changes } returns kotlinx.coroutines.flow.MutableSharedFlow<Unit>()
-        coEvery { repo.fetchList(any()) } returns Result.success(ReservationListResponse(data = listOf(stub("r1", ReservationStatus.PENDING))))
+        coEvery { repo.fetchList(any(), any()) } returns Result.success(ReservationListResponse(data = listOf(stub("r1", ReservationStatus.PENDING))))
         coEvery { repo.runAction("r1", ReservationAction.NO_SHOW, null) } returns Result.success(stub("r1", ReservationStatus.NO_SHOW))
 
         val vm = ReservationsListViewModel(repo)
@@ -77,7 +77,7 @@ class ReservationsListViewModelTest {
     fun `runTransition rolls back on failure with error`() = runTest {
         val repo: ReservationRepository = mockk()
         every { repo.changes } returns kotlinx.coroutines.flow.MutableSharedFlow<Unit>()
-        coEvery { repo.fetchList(any()) } returns Result.success(ReservationListResponse(data = listOf(stub("r1", ReservationStatus.PENDING))))
+        coEvery { repo.fetchList(any(), any()) } returns Result.success(ReservationListResponse(data = listOf(stub("r1", ReservationStatus.PENDING))))
         coEvery { repo.runAction("r1", ReservationAction.CONFIRM, null) } returns Result.failure(RuntimeException("HTTP 409"))
 
         val vm = ReservationsListViewModel(repo)

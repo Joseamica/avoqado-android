@@ -22,10 +22,11 @@ class ReservationsListViewModel @Inject constructor(
     val state: StateFlow<ReservationsListUiState> = _state.asStateFlow()
 
     init {
-        refresh()
+        // Carga automática de la agenda: nadie la pidió, su error va en línea.
+        refresh(background = true)
         // Refetch whenever a reservation mutation happens elsewhere so the list stays in sync.
         viewModelScope.launch {
-            repository.changes.collect { refresh() }
+            repository.changes.collect { refresh(background = true) }
         }
     }
 
@@ -39,7 +40,12 @@ class ReservationsListViewModel @Inject constructor(
         refresh()
     }
 
-    fun refresh() {
+    /**
+     * @param background la recarga corre SOLA (arranque de la pantalla, cambio
+     * hecho desde otro lado). Los filtros y la búsqueda la dejan en `false`:
+     * son toques del usuario y su fracaso impide justo lo que pidió.
+     */
+    fun refresh(background: Boolean = false) {
         val s = _state.value
         _state.update { it.copy(isLoading = true, error = null) }
         viewModelScope.launch {
@@ -50,7 +56,7 @@ class ReservationsListViewModel @Inject constructor(
                 search = s.search.takeIf { it.isNotBlank() },
                 channel = s.channelFilter,
             )
-            val r = repository.fetchList(filters)
+            val r = repository.fetchList(filters, background = background)
             _state.update {
                 if (r.isSuccess) it.copy(isLoading = false, items = r.getOrNull()?.data.orEmpty(), error = null)
                 else it.copy(isLoading = false, error = r.exceptionOrNull()?.message ?: "Error cargando reservas")

@@ -470,4 +470,65 @@ class ForbiddenInterceptorTest {
         assertNull(coordinator.askedFor)
         assertNull(errorNotifier.forbiddenError.value)
     }
+
+    /**
+     * 🔴 El caso real medido el 2026-08-16, que es el 403 de permiso NORMAL —sin
+     * `overridable`— y por eso no lo cubría el test de arriba.
+     *
+     * Un CASHIER cobrando veía en la pantalla de PROPINA el modal "No tienes
+     * permiso… «tpv:read»", porque la app consulta sola qué terminales están
+     * conectadas y esa ruta exige el permiso de ADMINISTRAR terminales. La
+     * consulta corre sola: su "no" no puede saltar encima de una venta.
+     */
+    @Test
+    fun `un 403 de permiso normal en tarea de FONDO tampoco saca el modal`() {
+        val coordinator = FakeCoordinator("tok_abc")
+        val client = clientWith(coordinator)
+
+        server.enqueue(
+            MockResponse().setResponseCode(403)
+                .setHeader("Content-Type", "application/json")
+                .setBody(
+                    """{"error":"Forbidden","message":"Permission 'tpv:read' required","required":"tpv:read","userRole":"CASHIER"}""",
+                ),
+        )
+
+        val response = client.newCall(
+            Request.Builder()
+                .url(server.url("/mobile/venues/venue-1/terminals/online"))
+                .header(ForbiddenInterceptor.BACKGROUND_HEADER, "1")
+                .build(),
+        ).execute()
+
+        // Ni modal, ni teclado de gerente: el 403 vuelve tal cual y quien llamó
+        // decide qué hacer con él (aquí, seguir con la opción de tarjeta viva).
+        assertNull(errorNotifier.forbiddenError.value)
+        assertNull(coordinator.askedFor)
+        assertEquals(403, response.code)
+        assertEquals(1, server.requestCount)
+    }
+
+    /**
+     * El contrapunto obligatorio: marcar de fondo NO puede volverse un silencio
+     * general. La MISMA ruta, cuando nace de un toque ("Cobrar con terminal"),
+     * sigue avisando — si no, el cajero se queda con un botón mudo.
+     */
+    @Test
+    fun `el mismo 403 SIN la marca de fondo sigue avisando`() {
+        server.enqueue(
+            MockResponse().setResponseCode(403)
+                .setHeader("Content-Type", "application/json")
+                .setBody(
+                    """{"error":"Forbidden","message":"Permission 'tpv:read' required","required":"tpv:read","userRole":"CASHIER"}""",
+                ),
+        )
+
+        client.newCall(
+            Request.Builder().url(server.url("/mobile/venues/venue-1/terminals/online")).build(),
+        ).execute()
+
+        // Se afirma que AVISA, no el texto exacto: cómo se nombra el permiso es
+        // asunto de `ServerErrorText`/`PermissionLabels` y tiene sus propios tests.
+        assertNotNull(errorNotifier.forbiddenError.value)
+    }
 }

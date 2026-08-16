@@ -84,12 +84,17 @@ class ReservationApi @Inject constructor(
         Request.Builder().url("${base() ?: error("No venue")}/products/$productId/staff").get().build()
     }.mapCatching { json.decodeFromString(ProductStaffContract.serializer(), it) }
 
-    suspend fun list(filters: ReservationFilters): Result<ReservationListResponse> = call {
+    suspend fun list(filters: ReservationFilters, background: Boolean = false): Result<ReservationListResponse> = call(background) {
         val url = "${base() ?: error("No venue")}?${filters.toQueryString()}"
         Request.Builder().url(url).get().build()
     }.mapCatching { json.decodeFromString(ReservationListResponse.serializer(), it) }
 
-    suspend fun calendar(dateFrom: String, dateTo: String, groupBy: String? = null): Result<List<Reservation>> = call {
+    suspend fun calendar(
+        dateFrom: String,
+        dateTo: String,
+        groupBy: String? = null,
+        background: Boolean = false,
+    ): Result<List<Reservation>> = call(background) {
         val params = buildList {
             add("dateFrom=$dateFrom"); add("dateTo=$dateTo")
             groupBy?.let { add("groupBy=$it") }
@@ -112,37 +117,54 @@ class ReservationApi @Inject constructor(
         Request.Builder().url("${base() ?: error("No venue")}/$id").get().build()
     }.mapCatching { json.decodeFromString(Reservation.serializer(), it) }
 
-    suspend fun confirm(id: String) = stateTransition(id, "confirm")
-    suspend fun checkIn(id: String) = stateTransition(id, "check-in")
-    suspend fun complete(id: String) = stateTransition(id, "complete")
-    suspend fun noShow(id: String) = stateTransition(id, "no-show")
+    suspend fun confirm(id: String, background: Boolean = false) = stateTransition(id, "confirm", background)
+    suspend fun checkIn(id: String, background: Boolean = false) = stateTransition(id, "check-in", background)
+    suspend fun complete(id: String, background: Boolean = false) = stateTransition(id, "complete", background)
+    suspend fun noShow(id: String, background: Boolean = false) = stateTransition(id, "no-show", background)
 
-    suspend fun reschedule(id: String, body: RescheduleRequest): Result<Reservation> = call {
+    suspend fun reschedule(id: String, body: RescheduleRequest, background: Boolean = false): Result<Reservation> = call(background) {
         val payload = json.encodeToString(RescheduleRequest.serializer(), body).toRequestBody(jsonMedia)
         Request.Builder().url("${base() ?: error("No venue")}/$id/reschedule").post(payload).build()
     }.mapCatching { json.decodeFromString(Reservation.serializer(), it) }
 
-    suspend fun cancel(id: String, body: CancelReservationRequest): Result<Unit> = call {
+    suspend fun cancel(id: String, body: CancelReservationRequest, background: Boolean = false): Result<Unit> = call(background) {
         val payload = json.encodeToString(CancelReservationRequest.serializer(), body).toRequestBody(jsonMedia)
         Request.Builder().url("${base() ?: error("No venue")}/$id").delete(payload).build()
     }.map { Unit }
 
-    suspend fun create(body: CreateReservationRequest): Result<Reservation> = call {
+    suspend fun create(body: CreateReservationRequest, background: Boolean = false): Result<Reservation> = call(background) {
         val payload = json.encodeToString(CreateReservationRequest.serializer(), body).toRequestBody(jsonMedia)
         Request.Builder().url(base() ?: error("No venue")).post(payload).build()
     }.mapCatching { json.decodeFromString(Reservation.serializer(), it) }
 
-    suspend fun update(id: String, body: UpdateReservationRequest): Result<Reservation> = call {
+    suspend fun update(id: String, body: UpdateReservationRequest, background: Boolean = false): Result<Reservation> = call(background) {
         val payload = json.encodeToString(UpdateReservationRequest.serializer(), body).toRequestBody(jsonMedia)
         Request.Builder().url("${base() ?: error("No venue")}/$id").put(payload).build()
     }.mapCatching { json.decodeFromString(Reservation.serializer(), it) }
 
-    private suspend fun stateTransition(id: String, action: String): Result<Reservation> = call {
+    private suspend fun stateTransition(id: String, action: String, background: Boolean = false): Result<Reservation> = call(background) {
         Request.Builder().url("${base() ?: error("No venue")}/$id/$action").post(ByteArray(0).toRequestBody(jsonMedia)).build()
     }.mapCatching { json.decodeFromString(Reservation.serializer(), it) }
 
-    private suspend inline fun call(crossinline buildRequest: () -> Request): Result<String> = runCatching {
-        val req = buildRequest()
+    /**
+     * @param background la petición corre SOLA (carga inicial de una pantalla, el
+     * tick de 30 s, la recarga tras un cambio ajeno, el reintento del retrier).
+     * Nadie la pidió, así que su 403 no puede saltar como modal encima de lo que
+     * el usuario esté haciendo — la pantalla ya tiene su error en línea y los
+     * reintentos ya tienen su cuarentena.
+     */
+    private suspend inline fun call(
+        background: Boolean = false,
+        crossinline buildRequest: () -> Request,
+    ): Result<String> = runCatching {
+        val built = buildRequest()
+        val req = if (background) {
+            built.newBuilder()
+                .header(com.avoqado.pos.core.data.network.ForbiddenInterceptor.BACKGROUND_HEADER, "1")
+                .build()
+        } else {
+            built
+        }
         val (code, body) = withContext(Dispatchers.IO) {
             client.newCall(req).execute().use { it.code to (it.body?.string() ?: "") }
         }

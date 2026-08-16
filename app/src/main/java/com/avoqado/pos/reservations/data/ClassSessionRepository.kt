@@ -26,10 +26,15 @@ class ClassSessionRepository @Inject constructor(
     )
     val changes: SharedFlow<Unit> = _changes.asSharedFlow()
 
-    suspend fun fetchList(dateFrom: String, dateTo: String): Result<List<ClassSession>> =
-        api.list(dateFrom = dateFrom, dateTo = dateTo)
+    suspend fun fetchList(
+        dateFrom: String,
+        dateTo: String,
+        background: Boolean = false,
+    ): Result<List<ClassSession>> =
+        api.list(dateFrom = dateFrom, dateTo = dateTo, background = background)
 
-    suspend fun fetchOne(sessionId: String): Result<ClassSession> = api.get(sessionId)
+    suspend fun fetchOne(sessionId: String, background: Boolean = false): Result<ClassSession> =
+        api.get(sessionId, background = background)
 
     suspend fun create(request: CreateClassSessionRequest): Result<ClassSession> =
         mutate { api.create(request) }

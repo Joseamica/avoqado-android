@@ -135,6 +135,18 @@ class ArticlesRepository @Inject constructor(
             response.code to (response.body?.string() ?: "")
         }
 
+    /**
+     * Marca una petición como "corre sola": su 403 no saca el modal global de
+     * permisos ni abre el teclado del gerente. Se usa en las consultas que la
+     * app dispara por su cuenta (precarga de una pantalla, reintento de una
+     * cola), nunca en la acción que el usuario acaba de tocar.
+     */
+    private fun Request.Builder.markBackground(background: Boolean): Request.Builder = apply {
+        if (background) {
+            header(com.avoqado.pos.core.data.network.ForbiddenInterceptor.BACKGROUND_HEADER, "1")
+        }
+    }
+
     // MARK: - Products
 
     suspend fun fetchProducts(): Result<Unit> {
@@ -771,7 +783,12 @@ class ArticlesRepository @Inject constructor(
 
     // MARK: - Credit Packs
 
-    suspend fun fetchCreditPacks(): Result<Unit> {
+    /**
+     * @param background la lista de membresías se precarga sola al pintar la
+     * cuadrícula de productos: nadie la pidió y es opcional (no todos los venues
+     * las usan). Su 403 no puede interrumpir una venta en curso.
+     */
+    suspend fun fetchCreditPacks(background: Boolean = false): Result<Unit> {
         val url = creditPackBaseUrl() ?: return Result.failure(IllegalStateException("Sin venue activo"))
         // Refresh de fondo silencioso: sin skeleton encima de datos buenos (spec refresco §6).
         _isLoading.value = _creditPacks.value.isEmpty()
@@ -779,6 +796,7 @@ class ArticlesRepository @Inject constructor(
         return try {
             val request = Request.Builder()
                 .url("$url/credit-packs")
+                .markBackground(background)
                 .get()
                 .build()
 
@@ -886,11 +904,22 @@ class ArticlesRepository @Inject constructor(
     /** null = fetch FAILED (network/HTTP) — distinct from "customer has no
      *  credits". Collapsing both into emptyList made a fetch failure look like
      *  no membership, risking a re-charge. */
-    suspend fun fetchCustomerCredits(customerId: String): List<CreditPurchaseBalance>? {
+    /**
+     * @param background la consulta corre SOLA al adjuntar un cliente al
+     * carrito: el cajero pidió adjuntar al cliente, no ver sus créditos. La
+     * tarjeta del carrito ya cuenta el fallo en línea ("No se pudieron cargar
+     * los créditos… Toca para reintentar"), así que el modal global sólo
+     * duplicaría el aviso encima de la pantalla de cobro.
+     */
+    suspend fun fetchCustomerCredits(
+        customerId: String,
+        background: Boolean = false,
+    ): List<CreditPurchaseBalance>? {
         val url = baseUrl() ?: return null
         return try {
             val request = Request.Builder()
                 .url("$url/customers/$customerId/credit-balance")
+                .markBackground(background)
                 .get()
                 .build()
             val (code, body) = executeRequest(request)
@@ -907,7 +936,15 @@ class ArticlesRepository @Inject constructor(
     }
 
     /** Sell a pack to a customer in person (paid through the POS, not Stripe). */
-    suspend fun sellPackToCustomer(packId: String, customerId: String): Boolean {
+    /**
+     * @param background la entrega la dispara la cola durable (`PendingGrantQueue`)
+     * o el post-cobro, no un toque. Un fallo ahí NO se pierde: vuelve a la cola.
+     */
+    suspend fun sellPackToCustomer(
+        packId: String,
+        customerId: String,
+        background: Boolean = false,
+    ): Boolean {
         val url = baseUrl() ?: return false
         return try {
             val payload = kotlinx.serialization.json.buildJsonObject {
@@ -915,6 +952,7 @@ class ArticlesRepository @Inject constructor(
             }.toString()
             val request = Request.Builder()
                 .url("$url/credit-packs/$packId/sell")
+                .markBackground(background)
                 .post(payload.toRequestBody(JSON_MEDIA))
                 .build()
             val (code, _) = executeRequest(request)

@@ -41,7 +41,8 @@ class ClassSessionApi @Inject constructor(
         dateTo: String,
         productId: String? = null,
         status: String? = null,
-    ): Result<List<ClassSession>> = call {
+        background: Boolean = false,
+    ): Result<List<ClassSession>> = call(background) {
         val params = buildList {
             add("dateFrom=$dateFrom")
             add("dateTo=$dateTo")
@@ -51,7 +52,7 @@ class ClassSessionApi @Inject constructor(
         Request.Builder().url("${base() ?: error("No venue")}?$params").get().build()
     }.mapCatching { json.decodeFromString(ListSerializer(ClassSession.serializer()), it) }
 
-    suspend fun get(sessionId: String): Result<ClassSession> = call {
+    suspend fun get(sessionId: String, background: Boolean = false): Result<ClassSession> = call(background) {
         Request.Builder().url("${base() ?: error("No venue")}/$sessionId").get().build()
     }.mapCatching { json.decodeFromString(ClassSession.serializer(), it) }
 
@@ -86,8 +87,23 @@ class ClassSessionApi @Inject constructor(
         Request.Builder().url("${base() ?: error("No venue")}/$sessionId/attendees/$reservationId").delete().build()
     }.map { Unit }
 
-    private suspend inline fun call(crossinline buildRequest: () -> Request): Result<String> = runCatching {
-        val req = buildRequest()
+    /**
+     * @param background la petición corre SOLA (carga inicial, tick periódico,
+     * recarga tras un cambio ajeno). Nadie la pidió, así que su 403 no puede
+     * saltar como modal encima de la pantalla en la que esté el usuario.
+     */
+    private suspend inline fun call(
+        background: Boolean = false,
+        crossinline buildRequest: () -> Request,
+    ): Result<String> = runCatching {
+        val built = buildRequest()
+        val req = if (background) {
+            built.newBuilder()
+                .header(com.avoqado.pos.core.data.network.ForbiddenInterceptor.BACKGROUND_HEADER, "1")
+                .build()
+        } else {
+            built
+        }
         val (code, body) = withContext(Dispatchers.IO) {
             client.newCall(req).execute().use { it.code to (it.body?.string() ?: "") }
         }

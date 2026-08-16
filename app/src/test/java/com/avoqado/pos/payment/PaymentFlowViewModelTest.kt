@@ -88,7 +88,9 @@ class PaymentFlowViewModelTest {
         } returns TpvSettings(showReviewScreen = false, showTipScreen = false)
 
         coEvery {
-            terminalPaymentService.fetchOnlineTerminals()
+            // `any()` cubre las dos rutas: la sonda automática la pide marcada como
+            // de fondo, y elegir "Cobrar con terminal" la pide sin marcar.
+            terminalPaymentService.fetchOnlineTerminals(any())
         } returns TerminalListResult.Success(
             listOf(
                 OnlineTerminal(
@@ -450,7 +452,7 @@ class PaymentFlowViewModelTest {
         coEvery {
             terminalPaymentService.resolveOutcome("req-1")
         } returns TerminalPaymentResult.Error("El cobro fue rechazado. No se cobró la tarjeta.")
-        coEvery { terminalPaymentService.fetchOnlineTerminals() } returns TerminalListResult.Success(
+        coEvery { terminalPaymentService.fetchOnlineTerminals(any()) } returns TerminalListResult.Success(
             listOf(OnlineTerminal(terminalId = "t1", name = "Caja 1")),
         )
 
