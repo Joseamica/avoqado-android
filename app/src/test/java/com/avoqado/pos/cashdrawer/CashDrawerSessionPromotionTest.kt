@@ -1,26 +1,11 @@
 package com.avoqado.pos.cashdrawer
 
-import com.avoqado.pos.cashdrawer.data.CashDrawerDao
-import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
-import com.avoqado.pos.cashdrawer.data.model.CashDrawerEventEntity
-import com.avoqado.pos.cashdrawer.data.model.CashDrawerSessionEntity
-import com.avoqado.pos.core.data.local.SecureStorage
-import io.mockk.every
-import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
-import okhttp3.Call
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
-import okhttp3.Protocol
-import okhttp3.Request
-import okhttp3.Response
-import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
-import java.io.IOException
 
 /**
  * 🔴 EL ID DE LA CAJA: la tablet lo INVENTA, y el del server nunca lo adopta.
@@ -46,159 +31,11 @@ import java.io.IOException
  *
  * Los números de estos tests son los del caso real:
  *   fondo $5,000.00 · venta en efectivo $280.00 · reembolso $150.00 → esperado $5,130.00
+ *
+ * El andamio (DAO falso, HTTP por path, payloads) vive en `CashDrawerTestFixtures.kt`,
+ * compartido con [CashDrawerEventKeyMergeTest].
  */
 class CashDrawerSessionPromotionTest {
-
-    private val venueId = "venue-1"
-
-    private val fondoCents = 500_000 // $5,000.00
-    private val ventaCents = 28_000 // $280.00
-    private val reembolsoCents = 15_000 // $150.00
-
-    // MARK: - Fake DAO (semántica de Room/SQLite, a propósito hostil)
-
-    /**
-     * Réplica en memoria del DAO real. Dos detalles NO son cosméticos:
-     *
-     * 1. `getOpenSession` devuelve la PRIMERA fila abierta en orden de inserción —
-     *    es lo que hace hoy `LIMIT 1` sin `ORDER BY` sobre el rowid.
-     * 2. `insertSession/insertEvent` son `INSERT OR REPLACE`: SQLite BORRA la fila
-     *    vieja y mete una nueva, o sea que reemplazar **manda la fila al final**.
-     *
-     * Así, un test que pase aquí no puede estar apoyándose en que Room "casualmente"
-     * devuelva la fila buena.
-     */
-    private class FakeCashDrawerDao : CashDrawerDao {
-        val sessions = LinkedHashMap<String, CashDrawerSessionEntity>()
-        val events = LinkedHashMap<String, CashDrawerEventEntity>()
-
-        override suspend fun getOpenSession(venueId: String): CashDrawerSessionEntity? =
-            sessions.values.firstOrNull { it.venueId == venueId && it.status == "OPEN" }
-
-        override suspend fun getOpenSessions(venueId: String): List<CashDrawerSessionEntity> =
-            sessions.values.filter { it.venueId == venueId && it.status == "OPEN" }
-
-        override suspend fun insertSession(session: CashDrawerSessionEntity) {
-            sessions.remove(session.id)
-            sessions[session.id] = session
-        }
-
-        override suspend fun updateSession(session: CashDrawerSessionEntity) {
-            if (sessions.containsKey(session.id)) sessions[session.id] = session
-        }
-
-        override suspend fun deleteSession(sessionId: String) {
-            sessions.remove(sessionId)
-        }
-
-        override suspend fun getClosedSessions(venueId: String): List<CashDrawerSessionEntity> =
-            sessions.values.filter { it.venueId == venueId && it.status == "CLOSED" }
-
-        override suspend fun getSessionEvents(sessionId: String): List<CashDrawerEventEntity> =
-            events.values.filter { it.sessionId == sessionId }.sortedBy { it.createdAt }
-
-        override suspend fun getEvent(eventId: String): CashDrawerEventEntity? = events[eventId]
-
-        override suspend fun insertEvent(event: CashDrawerEventEntity) {
-            events.remove(event.id)
-            events[event.id] = event
-        }
-
-        override suspend fun deleteEvent(eventId: String) {
-            events.remove(eventId)
-        }
-
-        override suspend fun repointEvents(fromSessionId: String, toSessionId: String) {
-            events.values.filter { it.sessionId == fromSessionId }.forEach {
-                events[it.id] = it.copy(sessionId = toSessionId)
-            }
-        }
-
-        override suspend fun deleteUnconfirmedEvents(
-            sessionId: String,
-            serverOwnedTypes: List<String>,
-            confirmedIds: List<String>,
-        ) {
-            events.values
-                .filter { it.sessionId == sessionId && it.type in serverOwnedTypes && it.id !in confirmedIds }
-                .map { it.id }
-                .forEach { events.remove(it) }
-        }
-
-        override suspend fun sumEventsByType(sessionId: String, type: String): Int =
-            events.values.filter { it.sessionId == sessionId && it.type == type }.sumOf { it.amountCents }
-    }
-
-    // MARK: - HTTP falso, ruteado por path
-
-    private fun response(code: Int, body: String, url: String) = Response.Builder()
-        .request(Request.Builder().url(url).build())
-        .protocol(Protocol.HTTP_1_1)
-        .code(code)
-        .message(if (code in 200..299) "OK" else "Error")
-        .body(body.toResponseBody("application/json".toMediaType()))
-        .build()
-
-    /**
-     * Devuelve la respuesta cuyo path COINCIDE con el sufijo pedido. Un path sin
-     * respuesta configurada revienta con IOException — o sea, "sin red" para esa
-     * llamada, que es justo lo que hace falta para probar el modo isla.
-     */
-    private fun client(vararg rutas: Pair<String, String>): OkHttpClient {
-        val porRuta = rutas.toMap()
-        return mockk {
-            every { newCall(any()) } answers {
-                val request = firstArg<Request>()
-                val path = request.url.encodedPath
-                val cuerpo = porRuta.entries.firstOrNull { path.endsWith(it.key) }?.value
-                val call = mockk<Call>()
-                if (cuerpo == null) {
-                    every { call.execute() } throws IOException("sin red: $path")
-                } else {
-                    every { call.execute() } returns response(200, cuerpo, request.url.toString())
-                }
-                call
-            }
-        }
-    }
-
-    private fun secureStorage(): SecureStorage = mockk(relaxed = true) {
-        every { this@mockk.venueId } returns "venue-1"
-        every { venueName } returns "Testarudo Cafe"
-        every { userId } returns "staff-1"
-        every { userFirstName } returns "Ana"
-        every { userLastName } returns "Ruiz"
-    }
-
-    private fun repo(dao: CashDrawerDao, client: OkHttpClient) =
-        CashDrawerRepository(dao = dao, secureStorage = secureStorage(), client = client)
-
-    // MARK: - Payloads del server (forma real de `formatSession`/`formatEvent`)
-
-    private fun eventoJson(
-        id: String,
-        type: String,
-        amount: String,
-        note: String? = null,
-        createdAt: String = "2026-08-16T18:00:00.000Z",
-    ) = """
-        {"id":"$id","type":"$type","amount":$amount,
-         "note":${note?.let { "\"$it\"" } ?: "null"},
-         "staffId":"staff-1","staffName":"Ana Ruiz","orderId":null,"createdAt":"$createdAt"}
-    """.trimIndent()
-
-    private fun sesionJson(id: String, vararg eventos: String) = """
-        {"success":true,"data":{
-          "id":"$id","venueId":"venue-1","deviceName":"Sunmi D3","status":"OPEN",
-          "openedByStaffId":"staff-1","openedByName":"Ana Ruiz",
-          "openedAt":"2026-08-16T17:00:00.000Z","startingAmount":5000.00,
-          "closedByStaffId":null,"closedByName":null,"closedAt":null,
-          "actualAmount":null,"overShort":null,"closingNote":null,
-          "events":[${eventos.joinToString(",")}]
-        }}
-    """.trimIndent()
-
-    private val aperturaDelServer = eventoJson("srv-ev-open", "OPEN", "5000.00", "Caja abierta con \$5000.00")
 
     // MARK: - 1. Abrir con red
 
@@ -211,9 +48,9 @@ class CashDrawerSessionPromotionTest {
     @Test
     fun `abrir la caja con red deja UNA sola sesion, con el id del server`() = runTest {
         val dao = FakeCashDrawerDao()
-        val repo = repo(dao, client("/cash-drawer/open" to sesionJson("srv-1", aperturaDelServer)))
+        val repo = cashDrawerRepo(dao, cashDrawerClient("/cash-drawer/open" to sesionJson("srv-1", aperturaDelServer)))
 
-        repo.openSession(fondoCents)
+        repo.openSession(FONDO_CENTS)
 
         assertEquals(
             "Room quedó con más de una caja abierta: ${dao.sessions.keys}",
@@ -229,13 +66,13 @@ class CashDrawerSessionPromotionTest {
     @Test
     fun `abrir la caja SIN red sigue funcionando`() = runTest {
         val dao = FakeCashDrawerDao()
-        val repo = repo(dao, client()) // nada responde
+        val repo = cashDrawerRepo(dao, cashDrawerClient()) // nada responde
 
-        val sesion = repo.openSession(fondoCents)
+        val sesion = repo.openSession(FONDO_CENTS)
 
         assertEquals(1, dao.sessions.size)
         assertEquals("OPEN", sesion.status)
-        assertEquals(fondoCents, sesion.startingAmountCents)
+        assertEquals(FONDO_CENTS, sesion.startingAmountCents)
         assertEquals(sesion.id, repo.getOpenSession()?.id)
     }
 
@@ -246,10 +83,10 @@ class CashDrawerSessionPromotionTest {
     @Test
     fun `la caja abierta sin red se promueve al reconectar y sigue habiendo UNA`() = runTest {
         val dao = FakeCashDrawerDao()
-        val sinRed = repo(dao, client())
-        val local = sinRed.openSession(fondoCents)
+        val sinRed = cashDrawerRepo(dao, cashDrawerClient())
+        val local = sinRed.openSession(FONDO_CENTS)
 
-        val conRed = repo(dao, client("/cash-drawer/current" to sesionJson("srv-1", aperturaDelServer)))
+        val conRed = cashDrawerRepo(dao, cashDrawerClient("/cash-drawer/current" to sesionJson("srv-1", aperturaDelServer)))
         conRed.syncFromApi()
 
         assertEquals(
@@ -271,11 +108,11 @@ class CashDrawerSessionPromotionTest {
     @Test
     fun `los eventos creados contra el id local siguen contando despues de la promocion`() = runTest {
         val dao = FakeCashDrawerDao()
-        val sinRed = repo(dao, client())
-        sinRed.openSession(fondoCents)
+        val sinRed = cashDrawerRepo(dao, cashDrawerClient())
+        sinRed.openSession(FONDO_CENTS)
         sinRed.addPayOut(20_000, "Compra de hielo") // $200.00, sin red: no llega al server
 
-        val conRed = repo(dao, client("/cash-drawer/current" to sesionJson("srv-1", aperturaDelServer)))
+        val conRed = cashDrawerRepo(dao, cashDrawerClient("/cash-drawer/current" to sesionJson("srv-1", aperturaDelServer)))
         conRed.syncFromApi()
 
         val sesion = conRed.getOpenSession()
@@ -283,7 +120,7 @@ class CashDrawerSessionPromotionTest {
         assertEquals("srv-1", sesion!!.id)
         assertEquals(
             "el retiro registrado sin red se perdió al promover la sesión",
-            fondoCents - 20_000,
+            FONDO_CENTS - 20_000,
             conRed.computeExpectedAmount(sesion.id, sesion.startingAmountCents),
         )
     }
@@ -302,13 +139,13 @@ class CashDrawerSessionPromotionTest {
     @Test
     fun `el esperado del corte CUADRA con lo que dice el server`() = runTest {
         val dao = FakeCashDrawerDao()
-        val alAbrir = repo(dao, client("/cash-drawer/open" to sesionJson("srv-1", aperturaDelServer)))
-        alAbrir.openSession(fondoCents)
-        alAbrir.addCashSale(ventaCents, "order-9") // el POS pinta la venta al instante
+        val alAbrir = cashDrawerRepo(dao, cashDrawerClient("/cash-drawer/open" to sesionJson("srv-1", aperturaDelServer)))
+        alAbrir.openSession(FONDO_CENTS)
+        alAbrir.addCashSale(VENTA_CENTS, "order-9") // el POS pinta la venta al instante
 
-        val alSincronizar = repo(
+        val alSincronizar = cashDrawerRepo(
             dao,
-            client(
+            cashDrawerClient(
                 "/cash-drawer/current" to sesionJson(
                     "srv-1",
                     aperturaDelServer,
@@ -337,14 +174,14 @@ class CashDrawerSessionPromotionTest {
     @Test
     fun `la tablet que NO abrio la caja no cuenta la venta dos veces`() = runTest {
         val dao = FakeCashDrawerDao()
-        val primerSync = repo(dao, client("/cash-drawer/current" to sesionJson("srv-1", aperturaDelServer)))
+        val primerSync = cashDrawerRepo(dao, cashDrawerClient("/cash-drawer/current" to sesionJson("srv-1", aperturaDelServer)))
         primerSync.syncFromApi()
 
-        primerSync.addCashSale(ventaCents, "order-9")
+        primerSync.addCashSale(VENTA_CENTS, "order-9")
 
-        val segundoSync = repo(
+        val segundoSync = cashDrawerRepo(
             dao,
-            client(
+            cashDrawerClient(
                 "/cash-drawer/current" to sesionJson(
                     "srv-1",
                     aperturaDelServer,
@@ -357,7 +194,7 @@ class CashDrawerSessionPromotionTest {
         val sesion = segundoSync.getOpenSession()!!
         assertEquals(
             "la venta de \$280 se contó dos veces",
-            fondoCents + ventaCents,
+            FONDO_CENTS + VENTA_CENTS,
             segundoSync.computeExpectedAmount(sesion.id, sesion.startingAmountCents),
         )
     }
@@ -373,21 +210,21 @@ class CashDrawerSessionPromotionTest {
     @Test
     fun `un retiro confirmado por el server no se cuenta dos veces`() = runTest {
         val dao = FakeCashDrawerDao()
-        val abrir = repo(dao, client("/cash-drawer/open" to sesionJson("srv-1", aperturaDelServer)))
-        abrir.openSession(fondoCents)
+        val abrir = cashDrawerRepo(dao, cashDrawerClient("/cash-drawer/open" to sesionJson("srv-1", aperturaDelServer)))
+        abrir.openSession(FONDO_CENTS)
 
-        val retirar = repo(
+        val retirar = cashDrawerRepo(
             dao,
-            client(
+            cashDrawerClient(
                 "/cash-drawer/pay-out" to
                     """{"success":true,"data":${eventoJson("srv-ev-retiro", "PAY_OUT", "50.00", note = "Propinas")}}""",
             ),
         )
         retirar.addPayOut(5_000, "Propinas")
 
-        val sincronizar = repo(
+        val sincronizar = cashDrawerRepo(
             dao,
-            client(
+            cashDrawerClient(
                 "/cash-drawer/current" to sesionJson(
                     "srv-1",
                     aperturaDelServer,
@@ -400,7 +237,7 @@ class CashDrawerSessionPromotionTest {
         val sesion = sincronizar.getOpenSession()!!
         assertEquals(
             "el retiro de \$50 se restó dos veces",
-            fondoCents - 5_000,
+            FONDO_CENTS - 5_000,
             sincronizar.computeExpectedAmount(sesion.id, sesion.startingAmountCents),
         )
     }
@@ -413,19 +250,19 @@ class CashDrawerSessionPromotionTest {
     @Test
     fun `un retiro que el server aun no conoce NO se borra al sincronizar`() = runTest {
         val dao = FakeCashDrawerDao()
-        val abrir = repo(dao, client("/cash-drawer/open" to sesionJson("srv-1", aperturaDelServer)))
-        abrir.openSession(fondoCents)
+        val abrir = cashDrawerRepo(dao, cashDrawerClient("/cash-drawer/open" to sesionJson("srv-1", aperturaDelServer)))
+        abrir.openSession(FONDO_CENTS)
 
-        val sinRed = repo(dao, client()) // el POST del retiro no sale
+        val sinRed = cashDrawerRepo(dao, cashDrawerClient()) // el POST del retiro no sale
         sinRed.addPayOut(5_000, "Compra de hielo")
 
-        val sincronizar = repo(dao, client("/cash-drawer/current" to sesionJson("srv-1", aperturaDelServer)))
+        val sincronizar = cashDrawerRepo(dao, cashDrawerClient("/cash-drawer/current" to sesionJson("srv-1", aperturaDelServer)))
         sincronizar.syncFromApi()
 
         val sesion = sincronizar.getOpenSession()!!
         assertEquals(
             "el retiro pendiente de sincronizar se borró",
-            fondoCents - 5_000,
+            FONDO_CENTS - 5_000,
             sincronizar.computeExpectedAmount(sesion.id, sesion.startingAmountCents),
         )
     }
@@ -441,48 +278,39 @@ class CashDrawerSessionPromotionTest {
      * ciegas o pierde movimientos o los cuenta doble. Se reconcilia en el PRIMER
      * sync, que es cuando la única fuente que puede desempatar —el server— está
      * disponible. Este test es esa promesa.
+     *
+     * Las dos filas son del MISMO turno: la local nació minutos después de que el
+     * server abriera la caja, que es como se ve el estado heredado real. Ese detalle
+     * dejó de ser cosmético cuando la reconciliación se acotó a la ventana de la caja
+     * del server — una fila de OTRO turno ya no se fusiona (ver
+     * [CashDrawerEventKeyMergeTest]).
      */
     @Test
     fun `una tablet que ya tiene las DOS filas se reconcilia en el siguiente sync`() = runTest {
         val dao = FakeCashDrawerDao()
+        val cajaDelServerAbrioHace = haceMinutos(60)
 
-        // Estado heredado: la fila local (rowid más bajo: gana el LIMIT 1) …
-        val local = CashDrawerSessionEntity(
-            id = "local-uuid",
-            venueId = venueId,
-            deviceName = "Sunmi D3",
-            openedByStaffId = "staff-1",
-            openedByName = "Ana Ruiz",
-            openedAt = 1_000L,
-            startingAmountCents = fondoCents,
-            status = "OPEN",
-        )
+        // Estado heredado: la fila local del mismo turno …
+        val local = sesionLocal("local-uuid", openedAt = haceMinutos(55))
         dao.insertSession(local)
         dao.insertEvent(
-            CashDrawerEventEntity(
-                id = "local-ev-open", sessionId = local.id, venueId = venueId, type = "OPEN",
-                amountCents = fondoCents, note = null, staffId = "staff-1", staffName = "Ana Ruiz",
-                createdAt = 1_000L,
-            ),
+            eventoLocal("local-ev-open", local.id, "OPEN", FONDO_CENTS, createdAt = haceMinutos(55)),
         )
         dao.insertEvent(
-            CashDrawerEventEntity(
-                id = "local-ev-venta", sessionId = local.id, venueId = venueId, type = "CASH_SALE",
-                amountCents = ventaCents, note = null, staffId = "staff-1", staffName = "Ana Ruiz",
-                orderId = "order-9", createdAt = 2_000L,
-            ),
+            eventoLocal("local-ev-venta", local.id, "CASH_SALE", VENTA_CENTS, orderId = "order-9", createdAt = haceMinutos(40)),
         )
         // … y la del server, insertada después por el sync viejo.
-        dao.insertSession(local.copy(id = "srv-1", openedAt = 900L))
+        dao.insertSession(sesionLocal("srv-1", openedAt = cajaDelServerAbrioHace))
 
-        val repo = repo(
+        val repo = cashDrawerRepo(
             dao,
-            client(
+            cashDrawerClient(
                 "/cash-drawer/current" to sesionJson(
                     "srv-1",
                     aperturaDelServer,
                     eventoJson("srv-ev-venta", "CASH_SALE", "280.00"),
                     eventoJson("srv-ev-reembolso", "PAY_OUT", "150.00", note = "Reembolso: Producto defectuoso"),
+                    openedAt = cajaDelServerAbrioHace,
                 ),
             ),
         )

@@ -233,10 +233,30 @@ class CashDrawerRepository @Inject constructor(
      *  1. Entra la fila del server. Va primero para que ningún evento quede
      *     apuntando a una sesión que no existe, ni siquiera por un instante.
      *  2. Las provisionales adoptan su id: los eventos se MUDAN con ellas
-     *     (`repointEvents`) y la fila vieja desaparece. Un retiro registrado sin red
-     *     sigue contando; si no se mudara, el cajón "aparecería" con ese dinero de más.
-     *  3. Entran los eventos confirmados y se borran las copias locales de los tipos
-     *     que el server escribe por su cuenta (ver [SERVER_OWNED_EVENT_TYPES]).
+     *     (`repointEventsFrom`) y la fila vieja desaparece. Un retiro registrado sin
+     *     red sigue contando; si no se mudara, el cajón "aparecería" con ese dinero
+     *     de más. 🔴 La mudanza está ACOTADA a la ventana de la caja del server (ver
+     *     abajo), y sólo se borra la fila provisional si ya no le queda nada.
+     *  3. Entran los eventos confirmados. Antes de insertar cada uno se intenta la
+     *     FUSIÓN POR LLAVE ([promoteEvent] con el `localId` que ahora manda el
+     *     server); después se borran las copias locales de los tipos que el server
+     *     escribe por su cuenta (ver [SERVER_OWNED_EVENT_TYPES]).
+     *
+     * 🔴 **Por qué la mudanza se acota por tiempo.** Antes se llevaba TODOS los
+     * eventos de cualquier otra sesión abierta — incluida la caja de un turno
+     * anterior que este aparato nunca vio cerrar. El `CASH_SALE` de ayer sí lo
+     * borraba la limpieza por tipo, pero el retiro a mano de ayer se colaba al turno
+     * de hoy: medido, $5,050.00 donde debía decir $5,130.00, un sobrante inventado
+     * del tamaño exacto del retiro de ayer.
+     *
+     * La cota es `server.openedAt`, y no es un número arbitrario: es la MISMA ventana
+     * con la que el server calcula su esperado (`calculateExpectedAmount` suma los
+     * eventos colgados de la sesión, y un evento anterior a su apertura no puede
+     * estar colgado de ella). Cliente y server quedan atados por construcción.
+     *
+     * Lo que queda fuera de la ventana NO se borra ni se toca: es dinero que salió de
+     * verdad, sigue colgado de su propia caja. No contaminar nunca puede significar
+     * destruir.
      */
     private suspend fun adoptServerSession(
         sessionObj: JsonObject,
@@ -250,14 +270,25 @@ class CashDrawerRepository @Inject constructor(
                 .filter { it.id != server.id }
                 .forEach { provisional ->
                     Log.d(TAG, "⬆️ Promoviendo caja provisional ${provisional.id} → ${server.id}")
-                    dao.repointEvents(provisional.id, server.id)
-                    dao.deleteSession(provisional.id)
+                    dao.repointEventsFrom(provisional.id, server.id, server.openedAt)
+                    if (dao.getSessionEvents(provisional.id).isEmpty()) {
+                        dao.deleteSession(provisional.id)
+                    } else {
+                        Log.d(TAG, "🗄️ Caja ${provisional.id} conservada: tiene movimientos anteriores a esta caja")
+                    }
                 }
         }
 
         val eventsArray = sessionObj["events"]?.jsonArray ?: fallbackEvents
         val confirmedIds = eventsArray.orEmpty().map { eventJson ->
-            val event = parseEventFromApi(eventJson.jsonObject, server.id)
+            val obj = eventJson.jsonObject
+            val event = parseEventFromApi(obj, server.id)
+            // 🔑 Si el server dice que este evento es el MÍO, mi fila adopta su id
+            // ANTES de insertarlo: así queda UNA sola fila y gana el contenido del
+            // server. La llave es un hecho, no una inferencia — por eso vence a la
+            // ventana de arriba: un movimiento mal archivado en la caja vieja que el
+            // server cuenta en la de hoy tiene que venirse, o lo perderíamos.
+            promoteEvent(obj["localId"]?.jsonPrimitive?.contentOrNull, event.id)
             dao.insertEvent(event)
             event.id
         }
@@ -279,9 +310,22 @@ class CashDrawerRepository @Inject constructor(
      * propio cuid) y el mismo retiro de $50 se resta dos veces. La copia local es
      * necesaria —el cajero tiene que ver el movimiento al instante, con o sin red—
      * así que la salida no es dejar de escribirla, es que comparta identidad.
+     *
+     * Se llama desde DOS lados, y el segundo es el que cierra el agujero:
+     *  - **al ESCRIBIR** el movimiento, con el id que devuelve el POST. Sólo alcanza
+     *    a lo que esta app escribe estando corriendo.
+     *  - **al SINCRONIZAR**, con el `localId` que el server ahora devuelve en cada
+     *    evento. Es lo único que alcanza a una fila que ya estaba en Room desde antes
+     *    de actualizar la app: la limpieza por tipo excluye `PAY_IN`/`PAY_OUT` a
+     *    propósito y la promoción al escribir ya no puede correr para ellas, así que
+     *    sin la llave el movimiento heredado se contaba dos veces PARA SIEMPRE.
+     *
+     * 🔴 Degradación: `localId` nulo o en blanco (server viejo, o fila sin llave) →
+     * no hace nada y el comportamiento es idéntico al de antes. La llave mejora la
+     * fusión; no es requisito para funcionar.
      */
-    private suspend fun promoteEvent(localId: String, serverId: String?): CashDrawerEventEntity? {
-        if (serverId.isNullOrBlank() || serverId == localId) return null
+    private suspend fun promoteEvent(localId: String?, serverId: String?): CashDrawerEventEntity? {
+        if (localId.isNullOrBlank() || serverId.isNullOrBlank() || serverId == localId) return null
         val local = dao.getEvent(localId) ?: return null
         val promoted = local.copy(id = serverId)
         dao.insertEvent(promoted)

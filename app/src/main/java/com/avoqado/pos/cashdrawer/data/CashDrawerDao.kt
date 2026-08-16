@@ -75,9 +75,21 @@ interface CashDrawerDao {
      * Los eventos se mudan con su sesión cuando ésta adopta el id del server. Sin
      * esto la promoción dejaría el dinero registrado contra un id que ya no existe
      * — que es exactamente el bug que la promoción viene a arreglar.
+     *
+     * 🔴 `sinceMillis` ACOTA la mudanza a la ventana de la caja del server, y no es
+     * un adorno: mudar TODO se llevaba también los movimientos de un turno anterior
+     * que este aparato nunca vio cerrar. El retiro a mano de ayer aterrizaba en la
+     * caja de hoy y le inventaba al cajero un sobrante del tamaño exacto de ese
+     * retiro. La cota es `openedAt` de la caja del server — la MISMA ventana con la
+     * que el server calcula su esperado (`calculateExpectedAmount` suma los eventos
+     * de la sesión, y un evento anterior a su apertura no puede estar colgado de
+     * ella), así que cliente y server no pueden divergir por construcción.
      */
-    @Query("UPDATE cash_drawer_events SET sessionId = :toSessionId WHERE sessionId = :fromSessionId")
-    suspend fun repointEvents(fromSessionId: String, toSessionId: String)
+    @Query(
+        "UPDATE cash_drawer_events SET sessionId = :toSessionId " +
+            "WHERE sessionId = :fromSessionId AND createdAt >= :sinceMillis",
+    )
+    suspend fun repointEventsFrom(fromSessionId: String, toSessionId: String, sinceMillis: Long)
 
     /**
      * Borra las copias locales de los eventos que el SERVER escribe por su cuenta
