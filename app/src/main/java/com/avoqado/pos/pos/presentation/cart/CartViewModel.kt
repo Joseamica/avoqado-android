@@ -149,6 +149,185 @@ class CartViewModel @Inject constructor(
     private val _staffError = MutableStateFlow<String?>(null)
     val staffError: StateFlow<String?> = _staffError.asStateFlow()
 
+    // MARK: - Split de mostrador: la venta que quedó a medio cobrar
+
+    /**
+     * 🔴 DINERO. Vínculo entre el carrito ACTUAL y la orden que ya está abierta
+     * porque una parte de esta misma venta ya se cobró.
+     *
+     * Vive aquí, y no en el flujo de pago, por una razón concreta: el carrito
+     * ES la venta. Al morir el carrito muere el vínculo, así que el id no puede
+     * sobrevivir a la venta que lo creó — que es el único riesgo real de todo
+     * esto (un id de más cobra la venta NUEVA contra la orden vieja).
+     *
+     * @param itemIds  qué renglones venían de esa venta.
+     * @param totalCents  cuánto valía el carrito al quedar el saldo.
+     */
+    private data class PendingSplitOrder(
+        val orderId: String,
+        val itemIds: Set<String>,
+        val totalCents: Int,
+    )
+
+    private val _pendingSplitOrder = MutableStateFlow<PendingSplitOrder?>(null)
+
+    /**
+     * 🔴 DINERO. La orden contra la que corre el cobro que está ABIERTO ahora
+     * mismo. Se congela al abrir el cobro ([resolvePendingSplitOrderForCharge])
+     * y se suelta al cerrarlo ([releaseChargingOrder]).
+     *
+     * **Vive en el ViewModel para sobrevivir a que se recree la Activity.** Antes
+     * era un `remember` de la pantalla y bastaba **girar la tablet** —o cambiar
+     * tamaño de fuente, tema, idioma— para perderlo: `MainActivity` no declara
+     * `configChanges`, la pantalla de cobro sí revive (`rememberSaveable`) pero
+     * el vínculo no, y la parte 2 volvía a crear una SEGUNDA orden. El bug
+     * original, entero, en una tablet de mostrador que alguien gira.
+     *
+     * 🔴 Es una propiedad simple **a propósito, no un StateFlow**: se lee durante
+     * la composición y NO debe reaccionar sola. Congelarlo es el punto — si
+     * cambiara a media venta, `PaymentFlowScreen` reiniciaría su `LaunchedEffect`
+     * y borraría la pantalla de recibo. Cada cambio real va acompañado de una
+     * escritura a `showPaymentFlow`, que es lo que recompone.
+     *
+     * 🔴 Por esa misma razón **`clearCart()` NO lo toca**, aunque sí borre el
+     * vínculo durable de abajo: el checkout llama a `clearCart()` DENTRO de
+     * `onPaymentCommitted`, con el recibo todavía en pantalla. Soltarlo ahí
+     * cambiaba el valor a media venta y reiniciaba el cobro encima del recibo —
+     * lo cazó su propio test. No hace falta: [resolvePendingSplitOrderForCharge]
+     * lo reescribe SIEMPRE (id o null) antes de cada cobro, así que nunca se lee
+     * uno viejo.
+     */
+    var chargingAgainstOrderId: String? = null
+        private set
+
+    /** Se cerró el flujo de cobro (terminó, se canceló, o se resolvió otro). */
+    fun releaseChargingOrder() {
+        chargingAgainstOrderId = null
+    }
+
+    // MARK: - Membresías capturadas al abrir el cobro
+
+    /** Las membresías que este cobro tiene que otorgar, y a quién. */
+    data class PendingPackGrant(val customerId: String, val packIds: List<String>)
+
+    /**
+     * 🔴 DINERO. Membresías (credit packs) que el carrito llevaba al abrirse el
+     * cobro, junto con el cliente que las recibe. Se congelan aquí y se entregan
+     * cuando el pago se confirma.
+     *
+     * **Vive en el ViewModel por la MISMA razón que [chargingAgainstOrderId]:
+     * para sobrevivir a que se recree la Activity.** Era un `remember` pelón de
+     * `CheckoutScreen`, dos líneas más arriba del vínculo de orden y con el mismo
+     * defecto — pero éste cuesta dinero de verdad: el cliente compra "Membresía
+     * 10 clases $500", el cajero toca Cobrar, **gira la tablet** (o Android entra
+     * en modo oscuro al anochecer, o cambia el tamaño de fuente), la Activity se
+     * recrea, `showPaymentFlow` revive porque es `rememberSaveable` y esto volvía
+     * a null. Se cobraban los $500, `grantPacks` no se llamaba nunca y
+     * `clearCart()` borraba la evidencia: cliente sin una sola clase.
+     *
+     * Igual que el vínculo de orden, **`clearCart()` no lo toca**: se reescribe
+     * SIEMPRE al abrir el cobro ([capturePendingPackGrant]), así que nunca se
+     * puede leer uno viejo.
+     */
+    var pendingPackGrant: PendingPackGrant? = null
+        private set
+
+    /**
+     * Congela las membresías del carrito al abrir el cobro. Escribe siempre —
+     * con `null` cuando no hay cliente o no hay packs— para que una venta nunca
+     * herede la captura de la anterior.
+     */
+    fun capturePendingPackGrant(customerId: String?, cart: CartState) {
+        val id = customerId?.trim()?.takeIf { it.isNotEmpty() }
+        val packIds = cart.items.mapNotNull { (it.type as? CartItemType.CreditPack)?.packId }
+        pendingPackGrant = if (id == null || packIds.isEmpty()) null else PendingPackGrant(id, packIds)
+    }
+
+    /**
+     * Entrega las membresías UNA sola vez: devolver y limpiar en el mismo acto,
+     * para que un segundo commit del mismo cobro no las otorgue por duplicado.
+     */
+    fun consumePendingPackGrant(): PendingPackGrant? {
+        val grant = pendingPackGrant
+        pendingPackGrant = null
+        return grant
+    }
+
+    /**
+     * Aviso ámbar (no bloqueante) de que la continuidad con la venta a medio
+     * cobrar se rompió. Mismo patrón que [stockWarning]: la UI lo pinta y lo
+     * consume. NUNCA impide cobrar.
+     */
+    private val _splitWarning = MutableStateFlow<String?>(null)
+    val splitWarning: StateFlow<String?> = _splitWarning.asStateFlow()
+
+    fun consumeSplitWarning() {
+        _splitWarning.value = null
+    }
+
+    /**
+     * Marca el carrito TAL COMO ESTÁ AHORA como la continuación de [orderId].
+     * Se llama desde el checkout justo después de dejar el saldo en el carrito
+     * (o de quitar los artículos ya cobrados, en el split por artículos).
+     *
+     * `null` o vacío borra el vínculo — es la forma explícita de cerrar la venta.
+     */
+    fun markPendingSplitOrder(orderId: String?) {
+        val id = orderId?.trim()?.takeIf { it.isNotEmpty() }
+        if (id == null) {
+            _pendingSplitOrder.value = null
+            return
+        }
+        val cart = _cartState.value
+        _pendingSplitOrder.value = PendingSplitOrder(
+            orderId = id,
+            itemIds = cart.items.map { it.id }.toSet(),
+            totalCents = cart.totalCents,
+        )
+        Log.d("🛒", "Split de mostrador a medias: la venta sigue contra la orden $id")
+    }
+
+    /**
+     * Resuelve —y si hace falta ROMPE— la continuidad, justo antes de cobrar, y
+     * **congela** el resultado en [chargingAgainstOrderId] para que el cobro
+     * abierto sobreviva a que se recree la Activity (girar la tablet).
+     *
+     * Se valida contra el carrito REAL en este momento y no en cada toque, para
+     * que un producto agregado por error y quitado enseguida no mate la venta.
+     *
+     * 🔴 El vínculo sólo vale si el carrito sigue siendo lo que la orden ya
+     * tiene registrado: sin renglones nuevos y sin haber crecido en dinero. Ojo
+     * con lo segundo: `addProduct` FUSIONA en la línea existente, así que
+     * mirar sólo los ids dejaría pasar una cantidad que subió de 1 a 2 y
+     * cobraríamos dos artículos contra una orden que sólo tiene uno.
+     *
+     * Cuando se rompe NO se bloquea nada: la venta arranca su propia orden y el
+     * cajero se entera por el aviso ámbar. Lo que no puede pasar —y esto lo
+     * impide— es que se cobre en silencio contra la orden vieja.
+     */
+    fun resolvePendingSplitOrderForCharge(): String? {
+        val pending = _pendingSplitOrder.value
+        if (pending == null) {
+            chargingAgainstOrderId = null
+            return null
+        }
+        val cart = _cartState.value
+        val hayRenglonNuevo = cart.items.any { it.id !in pending.itemIds }
+        val crecioElImporte = cart.totalCents > pending.totalCents
+        if (!hayRenglonNuevo && !crecioElImporte) {
+            chargingAgainstOrderId = pending.orderId
+            return pending.orderId
+        }
+
+        chargingAgainstOrderId = null
+        _pendingSplitOrder.value = null
+        _splitWarning.value =
+            "Agregaste artículos después de un cobro parcial: esto se cobra como una venta NUEVA " +
+            "y la anterior queda con su saldo abierto. Para cerrarla, cobra primero el saldo pendiente."
+        Log.w("🛒", "Split de mostrador: el carrito cambió, se rompe el vínculo con ${pending.orderId}")
+        return null
+    }
+
     // MARK: - Referral capture (Plan 5B)
 
     /**
@@ -285,6 +464,10 @@ class CartViewModel @Inject constructor(
                     } else if (selectedId.isNotBlank() && selected == null) {
                         secureStorage.clearSelectedStaffForCurrentVenue()
                         _cartState.value = defaultCartState()
+                        // Segundo reemplazo directo de `_cartState` que no pasa por
+                        // `clearCart()`: el vínculo con la venta a medio cobrar se
+                        // limpia aquí por la misma razón que en `restoreSavedCart`.
+                        _pendingSplitOrder.value = null
                     }
                 },
                 onFailure = { error ->
@@ -815,6 +998,21 @@ class CartViewModel @Inject constructor(
         // already lives on cartState.orderDiscount and is dropped above.
         _referralCode.value = ""
         _referralValidation.value = ReferralCaptureUiState.Idle
+        // 🔴 DINERO. Vaciar el carrito es el fin de la venta, así que el vínculo
+        // con la orden a medio cobrar muere aquí. Es el camino por el que pasa
+        // *casi* todo arranque de venta nueva (cobro completo, guardar carrito,
+        // pagar después, vaciar, cambio de local).
+        //
+        // 🔴 Pero NO es el único: `restoreSavedCart` y el descarte de staff en
+        // `fetchStaff` reemplazan `_cartState` a pelo sin pasar por aquí, y por
+        // eso limpian el vínculo ellos mismos. Si agregas otro reemplazo directo
+        // de `_cartState.value`, **límpialo ahí también** — esto no te cubre solo.
+        //
+        // Sólo el vínculo DURABLE: `chargingAgainstOrderId` (el cobro abierto) no
+        // se toca aquí a propósito — ver su doc.
+        //
+        // El split lo vuelve a marcar DESPUÉS de dejar el saldo en el carrito.
+        _pendingSplitOrder.value = null
         Log.d("🛒", "Cart cleared")
     }
 
@@ -1180,6 +1378,13 @@ class CartViewModel @Inject constructor(
             selectedStaffId = _cartState.value.selectedStaffId,
             selectedStaffName = _cartState.value.selectedStaffName,
         )
+        // 🔴 DINERO. Este camino reemplaza el carrito SIN pasar por `clearCart()`,
+        // así que el vínculo con una venta a medio cobrar se limpia aquí. Hoy los
+        // ids restaurados son UUID nuevos y el guard de `resolvePendingSplit…` ya
+        // los cazaría, pero el margen de un invariante de dinero no puede ser un
+        // solo guard — y sin esto el cajero vería un aviso falso de "venta
+        // anterior a medio cobrar" sobre una venta que ya terminó.
+        _pendingSplitOrder.value = null
         _selectedCustomerId.value = savedCart.attachedCustomerId
         savedCartsRepository.deleteCart(savedCart.id)
         Log.d("🛒", "Restored saved cart: ${savedCart.name}")

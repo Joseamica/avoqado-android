@@ -14,6 +14,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
@@ -210,6 +211,69 @@ class OrderRepository @Inject constructor(
                     ?: root["data"]?.jsonObject?.get("inventoryWarning")?.jsonObject?.get("message")?.jsonPrimitive?.contentOrNull
                     ?: root["inventoryWarning"]?.jsonObject?.get("message")?.jsonPrimitive?.contentOrNull
                 message?.takeIf { it.isNotBlank() }
+            } catch (_: Exception) {
+                null
+            }
+        }
+
+        /**
+         * 🔴 DINERO. Saldo que le queda por cobrar a la ORDEN después de este
+         * pago, tal como lo calculó el server (`payCashOrder`:
+         * `remainingBalance = max(0, total - paidAmount)`, con la propina ya
+         * neteada de los dos lados). Es la única fuente que conoce los pagos
+         * que ESTE dispositivo no vio: otra caja, un link, un abono anterior.
+         *
+         * 🔴 **Llega en CENTAVOS, entero** — igual que `amount` y `tipAmount` de
+         * esta misma respuesta, que también son centavos. **NO se multiplica por
+         * 100.** (El primer corte del server mandó pesos; ese contrato nunca
+         * llegó a producción, así que tampoco hay fallback al nombre viejo.)
+         *
+         * `null` = el server no lo mandó (versión vieja, o un camino que no
+         * pasa por una orden): el cliente se queda con su aritmética local. `0`
+         * NO es null: significa "ya no se debe nada" y es lo que cierra la venta.
+         *
+         * 🔴 Un valor NEGATIVO —sobrepago— se acota a 0, **no se descarta**:
+         * descartarlo caería a la aritmética local del carrito, que es la fuente
+         * MENOS autoritativa de las dos. "Ya no se debe nada" es la lectura
+         * correcta de un saldo negativo.
+         */
+        fun extractRemainingBalanceCentsFromResponse(responseBody: String): Int? {
+            return try {
+                val root = idExtractorJson.parseToJsonElement(responseBody).jsonObject
+                val centavos = root["payment"]?.jsonObject?.get("remainingBalanceCents")?.jsonPrimitive
+                    ?: root["data"]?.jsonObject?.get("remainingBalanceCents")?.jsonPrimitive
+                    ?: root["remainingBalanceCents"]?.jsonPrimitive
+                // `doubleOrNull` sobre un string ("42") lo aceptaría; el saldo
+                // tiene que llegar como NÚMERO o no se cree.
+                if (centavos == null || centavos.isString) return null
+                centavos.doubleOrNull
+                    ?.takeIf { it.isFinite() }
+                    ?.let { Math.round(it).coerceIn(0L, Int.MAX_VALUE.toLong()).toInt() }
+            } catch (_: Exception) {
+                null
+            }
+        }
+
+        /**
+         * 🔴 DINERO. Estado de pago de la ORDEN después de este cobro
+         * (`PENDING` · `PARTIAL` · `PAID`), tal como quedó en el server.
+         *
+         * Va de la mano de [extractRemainingBalanceCentsFromResponse] y existe
+         * por una trampa concreta: el server tolera hasta un centavo antes de
+         * dejar una orden PARTIAL, así que puede marcarla **PAID con
+         * `remainingBalance` = 0.01**. Sin este dato, el cliente arrastraría un
+         * "Saldo pendiente" de un centavo que ya nadie puede cobrar —la orden
+         * está cerrada— y el cajero se quedaría atrapado con él.
+         *
+         * null = el server no lo mandó (versión vieja).
+         */
+        fun extractOrderPaymentStatusFromResponse(responseBody: String): String? {
+            return try {
+                val root = idExtractorJson.parseToJsonElement(responseBody).jsonObject
+                val status = root["payment"]?.jsonObject?.get("orderPaymentStatus")?.jsonPrimitive?.contentOrNull
+                    ?: root["data"]?.jsonObject?.get("orderPaymentStatus")?.jsonPrimitive?.contentOrNull
+                    ?: root["orderPaymentStatus"]?.jsonPrimitive?.contentOrNull
+                status?.takeIf { it.isNotBlank() }?.uppercase()
             } catch (_: Exception) {
                 null
             }
@@ -516,6 +580,18 @@ class OrderRepository @Inject constructor(
          * o no se pudo descontar. null = sin faltantes o versión vieja del server.
          */
         val inventoryWarningMessage: String? = null,
+        /**
+         * 🔴 DINERO. Saldo (centavos) que le queda a la ORDEN según el server.
+         * Manda sobre la aritmética local del carrito en pago dividido — ver
+         * [extractRemainingBalanceCentsFromResponse]. null = no vino.
+         */
+        val remainingBalanceCents: Int? = null,
+        /**
+         * 🔴 DINERO. `PENDING` · `PARTIAL` · `PAID` de la ORDEN tras este cobro.
+         * Manda sobre [remainingBalanceCents] cuando dice PAID — ver
+         * [extractOrderPaymentStatusFromResponse]. null = no vino.
+         */
+        val orderPaymentStatus: String? = null,
     )
 
     suspend fun recordCashPayment(
@@ -567,8 +643,12 @@ class OrderRepository @Inject constructor(
                 val accessKey = extractReceiptAccessKeyFromResponse(body)
                 val receiptUrl = extractReceiptUrlFromResponse(body)
                 val inventoryWarning = extractInventoryWarningMessageFromResponse(body)
-                Log.d("💵", "   paymentId: $paymentId, receiptAccessKey: $accessKey, receiptUrl: $receiptUrl, inventoryWarning: ${inventoryWarning != null}")
-                Result.success(CashPayResult(paymentId, accessKey, receiptUrl, inventoryWarning))
+                val remainingBalance = extractRemainingBalanceCentsFromResponse(body)
+                val orderPaymentStatus = extractOrderPaymentStatusFromResponse(body)
+                Log.d("💵", "   paymentId: $paymentId, receiptAccessKey: $accessKey, receiptUrl: $receiptUrl, inventoryWarning: ${inventoryWarning != null}, remainingBalance: $remainingBalance, orderPaymentStatus: $orderPaymentStatus")
+                Result.success(
+                    CashPayResult(paymentId, accessKey, receiptUrl, inventoryWarning, remainingBalance, orderPaymentStatus),
+                )
             } else {
                 Log.e("💵", "❌ Cash payment failed ($code): $body")
                 Result.failure(ServerException(code, "Error al registrar pago ($code)"))

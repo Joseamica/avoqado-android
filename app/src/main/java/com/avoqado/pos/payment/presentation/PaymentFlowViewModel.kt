@@ -335,6 +335,18 @@ class PaymentFlowViewModel @Inject constructor(
      */
     private var serverOrderTotalCents: Int? = null
 
+    /**
+     * 🔴 DINERO. Saldo (centavos) que el SERVER dice que le queda a la orden
+     * después del pago que acaba de entrar. Manda sobre la aritmética local del
+     * carrito en [buildCompletion]: es el único que conoce los pagos que este
+     * dispositivo no vio (otra caja, un link, un abono anterior).
+     *
+     * null = el server no lo mandó (versión vieja, camino de tarjeta, cobro
+     * encolado sin red) y se usa el cálculo de siempre. Se limpia al arrancar
+     * cada venta: arrastrarlo dejaría un saldo fantasma en la siguiente.
+     */
+    private var serverRemainingBalanceCents: Int? = null
+
     // WhatsApp receipt sending state
     private val _whatsAppSending = MutableStateFlow(false)
     val whatsAppSending: StateFlow<Boolean> = _whatsAppSending.asStateFlow()
@@ -583,8 +595,19 @@ class PaymentFlowViewModel @Inject constructor(
      *   facturación). Va como parámetro de ESTA función —y no en un setter
      *   aparte— porque aquí mismo se limpia el estado de la venta anterior: un
      *   setter externo se podía llamar antes y quedar borrado en silencio.
+     * @param resumeOrderId 🔴 DINERO. La orden que esta venta ya tiene abierta
+     *   porque una parte se cobró antes (split de MOSTRADOR, sin mesa). Va como
+     *   parámetro por lo mismo que `customerId`: aquí se borra el estado de la
+     *   venta anterior, así que un setter externo se perdería en silencio — y
+     *   perderlo es exactamente el bug que esto cierra. Lo resuelve el carrito,
+     *   que es el dueño de la venta (`CartViewModel.resolvePendingSplitOrderForCharge`).
      */
-    fun startPaymentFlow(cart: CartState, customerId: String? = null, customerName: String? = null) {
+    fun startPaymentFlow(
+        cart: CartState,
+        customerId: String? = null,
+        customerName: String? = null,
+        resumeOrderId: String? = null,
+    ) {
         cartState = cart
         completionConsumed = false
         splitBaseAmountOverride = resolveSplitBaseAmount(cart)
@@ -592,6 +615,7 @@ class PaymentFlowViewModel @Inject constructor(
         // esta venta al precio de la pasada.
         serverTotalOverrideCents = null
         serverOrderTotalCents = null
+        serverRemainingBalanceCents = null
         val amount = currentBaseAmount()
 
         // Reset transient state from any previous session.
@@ -602,6 +626,26 @@ class PaymentFlowViewModel @Inject constructor(
         currentTipCents = 0
         createdOrderId = null
         createdOrderNumber = null
+
+        // 🔴 DINERO — MOSTRADOR: partes 2..N de un split.
+        //
+        // Al quedar saldo, el checkout sustituye el carrito por una línea
+        // "Saldo pendiente" (o le quita los artículos ya cobrados). Sin esto, la
+        // parte 2 arrancaba sin orden: efectivo caía al cobro rápido y tarjeta
+        // creaba un pago suelto —o, con productos reales, una SEGUNDA orden con
+        // las líneas duplicadas—. La venta quedaba partida en dos, la orden
+        // original PARTIAL para siempre y **el stock nunca se descontaba** (sólo
+        // se descuenta al llegar a PAID).
+        //
+        // Sembrarlo aquí basta: las dos ramas de cobro ya prefieren la orden que
+        // existe (`recordCashPaymentForOrder` en efectivo, `orderId` a la
+        // terminal en tarjeta), y el importe sale de `currentBaseAmount()`, que
+        // ya refleja el resto.
+        //
+        // Quién garantiza que NO se filtre a la venta siguiente: el carrito. El
+        // vínculo muere con él (`CartViewModel.clearCart`), y se revalida contra
+        // el carrito real antes de cada cobro.
+        resumeOrderId?.takeIf { it.isNotBlank() }?.let { createdOrderId = it }
 
         // TABLE_SERVICE (PRO) seam — a PAYING table session means this payment
         // settles the table's EXISTING order: preset its id so (a) the card path
@@ -913,7 +957,11 @@ class PaymentFlowViewModel @Inject constructor(
                             },
                         )
                     } else {
-                        // Retry card flow: reuse existing order instead of creating a new one.
+                        // Ya hay orden: se reusa en vez de crear otra. Entran por
+                        // aquí el reintento de tarjeta y —desde el fix del split de
+                        // mostrador— la parte 2 de una venta por artículos, donde el
+                        // carrito conserva productos reales y crear una segunda orden
+                        // duplicaría esas líneas en base.
                         processPaymentMethod(total)
                     }
                 } else {
@@ -998,6 +1046,8 @@ class PaymentFlowViewModel @Inject constructor(
                     payResult.fold(
                         onSuccess = { result ->
                             lastPaymentId = result.paymentId
+                            // 🔴 El saldo que queda lo dice el server. Ver `buildCompletion`.
+                            adoptarSaldoDelServer(result.remainingBalanceCents, result.orderPaymentStatus)
                             // accessKey del recibo → QR en pantalla del cliente y recibo
                             // impreso, igual que en tarjeta. Se setea ANTES de imprimir y
                             // de armar el estado Success para que el QR ya esté disponible.
@@ -1314,6 +1364,8 @@ class PaymentFlowViewModel @Inject constructor(
         payResult.fold(
             onSuccess = { result ->
                 lastPaymentId = result.paymentId
+                // 🔴 El saldo que queda lo dice el server. Ver `buildCompletion`.
+                adoptarSaldoDelServer(result.remainingBalanceCents, result.orderPaymentStatus)
                 // Recibo → QR en pantalla del cliente y recibo impreso.
                 result.receiptAccessKey?.let { lastReceiptAccessKey = it }
                 result.receiptUrl?.let { lastReceiptUrl = it }
@@ -1939,6 +1991,46 @@ class PaymentFlowViewModel @Inject constructor(
         )
     }
 
+    /**
+     * 🔴 DINERO. Guarda el saldo que el server le puso a la orden tras ESTE
+     * cobro. Sólo lo pisa cuando de verdad vino un número: un `null` (server
+     * viejo, camino de tarjeta, cobro encolado sin red) deja lo que hubiera y
+     * el cliente se queda con su aritmética local.
+     */
+    private fun adoptarSaldoDelServer(remainingBalanceCents: Int?, orderPaymentStatus: String?) {
+        // La orden ya está cerrada: no queda nada por cobrar, diga lo que diga
+        // el número. Cobrarle más la rechazaría y el cajero quedaría con una
+        // venta que no cierra.
+        //
+        // 🔴 `uppercase()` no es adorno: `orderPaymentStatus` es un String libre y
+        // la normalización vive en el extractor, así que un `"paid"` armado por
+        // otro camino (cola offline, un mock) haría fallar el guard EN SILENCIO.
+        // Esta clase de bug ya se vio 3 veces en el workspace — ver la memoria
+        // `serial-case-sensitivity-bug-class`.
+        if (orderPaymentStatus?.uppercase() == "PAID") {
+            serverRemainingBalanceCents = 0
+            return
+        }
+        val saldo = (remainingBalanceCents ?: return).coerceAtLeast(0)
+
+        // 🔴 EL MONTO NO DISTINGUE; SÓLO EL ESTADO. El mismo "1 centavo" son dos
+        // cosas opuestas, y la aritmética del server lo demuestra:
+        //
+        //   50.00 − 49.99 = 0.00999999999999801  → PAID     → redondea a 1¢
+        //   35.70 − 35.69 = 0.010000000000005116 → PARTIAL  → redondea a 1¢
+        //
+        // Por eso el perdón del residuo SÓLO aplica con un server VIEJO, que no
+        // manda estado y donde no hay forma de distinguirlos. Si el server dijo
+        // PARTIAL, ese centavo es deuda REAL: perdonarlo cerraría el carrito
+        // dejando la orden abierta, **con el stock sin descontar** — el mismo bug
+        // que esta tarea existe para cerrar, a escala de un centavo. Y sería
+        // regresión: hoy la aritmética local deja "Saldo pendiente $0.01" y el
+        // cajero lo cobra, que es justo lo que cierra la orden.
+        val serverViejoSinEstado = orderPaymentStatus == null
+        serverRemainingBalanceCents = if (serverViejoSinEstado && saldo <= 1) 0 else saldo
+        Log.d("💵", "Saldo del server tras el cobro: $saldo centavos (estado: $orderPaymentStatus)")
+    }
+
     fun buildCompletion(): PaymentCompletion {
         val cart = cartState
         val splitTypeValue = _splitType.value
@@ -1958,7 +2050,9 @@ class PaymentFlowViewModel @Inject constructor(
                     .coerceAtLeast(0)
                 PaymentCompletion(
                     splitType = splitTypeValue,
-                    remainingBalanceCents = remaining,
+                    // 🔴 El saldo del server gana; los artículos pagados NO son
+                    // suyos —eso lo eligió el cajero— y siguen saliendo de aquí.
+                    remainingBalanceCents = serverRemainingBalanceCents ?: remaining,
                     paidItemIds = validPaidIds,
                     orderId = createdOrderId,
                 )
@@ -1978,11 +2072,27 @@ class PaymentFlowViewModel @Inject constructor(
                 val remaining = (totalDeLaVenta - currentBaseAmount()).coerceAtLeast(0)
                 PaymentCompletion(
                     splitType = splitTypeValue,
-                    remainingBalanceCents = remaining,
+                    // 🔴 Cuando el server dice cuánto queda, ÉSE gana: es el
+                    // único que ve los pagos que este aparato no vio (otra caja,
+                    // un link, un abono anterior). La resta local es el respaldo.
+                    remainingBalanceCents = serverRemainingBalanceCents ?: remaining,
                     orderId = createdOrderId,
                 )
             }
             else -> {
+                // 🔴 PAGO COMPLETO: el saldo del server NO manda aquí, A PROPÓSITO.
+                // Es el camino de más tráfico del mostrador y preferirlo rompía dos
+                // cosas: (1) revierte la decisión deliberada de cobrar el estimado
+                // local cuando el efectivo no alcanza para el total del server
+                // ("en vez de dejar al cajero pidiendo centavos de vuelta", ver
+                // `processCashPayment`), y (2) un residuo desviaría el commit a la
+                // rama de saldo pendiente, donde `pendingPackGrant` NO se otorga —
+                // un cliente pagaría $500 de membresía y no recibiría un solo
+                // crédito, sin forma de recuperarlos.
+                //
+                // Queda vivo el caso preexistente "pago completo con centavos de
+                // diferencia ⇒ orden PARTIAL": no lo introdujo este fix y cambiar
+                // lo que el cajero hace todos los días es decisión del founder.
                 PaymentCompletion(
                     splitType = splitTypeValue,
                     remainingBalanceCents = 0,

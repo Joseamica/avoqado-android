@@ -301,7 +301,11 @@ fun CheckoutScreen(
     var showPackCustomerRequired by remember { mutableStateOf(false) }
     var showPackNoSplitAlert by remember { mutableStateOf(false) }
     var showClearCartConfirm by remember { mutableStateOf(false) }
-    var pendingPackGrant by remember { mutableStateOf<Pair<String, List<String>>?>(null) }
+    // 🔴 DINERO. Las membresías capturadas viven en el CARRITO, no en un `remember`
+    // de aquí: girar la tablet recrea la Activity, `showPaymentFlow` revive
+    // (`rememberSaveable`) y un `remember` pelón volvía a null — se cobraban los
+    // $500 y el cliente se quedaba sin una sola clase. Ver
+    // `CartViewModel.pendingPackGrant`.
     var showCustomersSheet by remember { mutableStateOf(false) }
     var showCreateCustomer by remember { mutableStateOf(false) }
     var createCustomerSearchText by remember { mutableStateOf("") }
@@ -422,11 +426,18 @@ fun CheckoutScreen(
      * lo borraría después — el negocio regala el producto y la orden ni lo registra.
      */
     fun proceedToPayment(cart: CartState = cartViewModel.cartState.value) {
-        pendingPackGrant = selectedCustomer?.id?.let { customerId ->
-            val ids = cart.items.mapNotNull { (it.type as? CartItemType.CreditPack)?.packId }
-            if (ids.isEmpty()) null else customerId to ids
-        }
+        cartViewModel.capturePendingPackGrant(selectedCustomer?.id, cart)
         paymentCartSnapshot = cart.paymentSnapshot()
+        // 🔴 DINERO. ¿Esta venta ya tiene una orden abierta de una parte anterior?
+        // Se resuelve AQUÍ, en el momento del cobro, contra el carrito real: si el
+        // cajero agregó mercancía nueva el vínculo se rompe (y avisa) en vez de
+        // cobrarle en silencio a la orden vieja algo que no tiene registrado.
+        // En mesa manda la sesión, que ya siembra su propia orden.
+        //
+        // El resultado se congela DENTRO del carrito (`chargingAgainstOrderId`),
+        // no en un `remember` de esta pantalla: así sobrevive a que se recree la
+        // Activity —girar la tablet— que antes borraba el vínculo y revivía el bug.
+        if (isTablePaying) cartViewModel.releaseChargingOrder() else cartViewModel.resolvePendingSplitOrderForCharge()
         showPaymentFlow = true
     }
 
@@ -1268,6 +1279,18 @@ fun CheckoutScreen(
     // Payment flow overlay (full screen, matching iOS fullScreenCover)
     if (showPaymentFlow) {
         val paymentCart = paymentCartSnapshot ?: cartState.paymentSnapshot()
+        // 🔴 DINERO. La orden que esta venta ya tiene abierta de una parte anterior.
+        // Sale del CARRITO —que sobrevive a que se recree la Activity, cosa que un
+        // `remember` no hace— y el `remember` la CONGELA mientras el cobro está
+        // abierto: al rotar, la composición es nueva y vuelve a leer del ViewModel.
+        //
+        // Congelarla hace LOCAL un invariante que si no es global: hoy funciona
+        // porque toda escritura al valor va acompañada de una transición de
+        // `showPaymentFlow`, pero `releaseChargingOrder()` es público y
+        // `TableOrderScreen` ya monta su propio `PaymentFlowScreen`. El día que
+        // otra pantalla lo toque con el cobro abierto, esto lo absorbe en vez de
+        // reiniciar el flujo encima del recibo.
+        val resumeOrderId = remember(showPaymentFlow) { cartViewModel.chargingAgainstOrderId }
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -1290,6 +1313,16 @@ fun CheckoutScreen(
                 preselectedCustomerId = selectedCustomer?.id,
                 preselectedCustomerName = selectedCustomer?.fullName,
                 onPaymentCommitted = { completion ->
+                    // 🔴 DINERO. Quedó saldo ⇒ la venta SIGUE VIVA contra la MISMA
+                    // orden, y la parte que falta se cobra ahí. Antes esto se
+                    // perdía: el carrito se sustituía por "Saldo pendiente" y la
+                    // parte 2 nacía sin orden, partiendo la venta en dos y dejando
+                    // la primera PARTIAL para siempre — con el stock sin descontar.
+                    //
+                    // En mesa NO: ese camino ya re-siembra su orden desde la sesión
+                    // (`TableSession` en PAYING) y funciona; es el modelo a igualar.
+                    val ordenQueSigueViva = completion.orderId
+                        ?.takeIf { !isTablePaying && completion.remainingBalanceCents > 0 }
                     when {
                         completion.splitType == "BYPRODUCT" && completion.paidItemIds.isNotEmpty() -> {
                             completion.paidItemIds.forEach { paidItemId ->
@@ -1312,8 +1345,11 @@ fun CheckoutScreen(
                         }
                         else -> {
                             // Full payment — grant any captured membership credits.
-                            pendingPackGrant?.let { creditsViewModel.grantPacks(it.second, it.first) }
-                            pendingPackGrant = null
+                            // Consumir = entregar y limpiar en el mismo acto, para
+                            // que un segundo commit no las otorgue por duplicado.
+                            cartViewModel.consumePendingPackGrant()?.let {
+                                creditsViewModel.grantPacks(it.packIds, it.customerId)
+                            }
                             cartViewModel.clearCart()
                             // TABLE_SERVICE (PAYING): the table's order was just
                             // fully paid through the normal flow — release it.
@@ -1322,6 +1358,12 @@ fun CheckoutScreen(
                             }
                         }
                     }
+                    // 🔴 Va DESPUÉS del `when`, nunca antes: las tres ramas tocan el
+                    // carrito (`clearCart` incluido, que borra el vínculo a propósito)
+                    // y el marcado tiene que fotografiar el carrito ya en su forma
+                    // final. Con `null` cierra la venta: el cobro completo no deja
+                    // nada vivo y el siguiente arranca su propia orden.
+                    cartViewModel.markPendingSplitOrder(ordenQueSigueViva)
                     // Referral is real now: capture on actual payment success
                     // (a cancelled payment no longer leaves a dangling referral).
                     checkoutScope.launch { cartViewModel.captureReferralOnPayment(orderId = null) }
@@ -1333,6 +1375,10 @@ fun CheckoutScreen(
                 onDone = {
                     showPaymentFlow = false
                     paymentCartSnapshot = null
+                    // Se congela al abrir el cobro y se suelta al cerrarlo: el
+                    // próximo lo vuelve a resolver contra el carrito de entonces,
+                    // nunca contra el de la venta que acaba de cerrarse.
+                    cartViewModel.releaseChargingOrder()
                     pendingSplitConfig = SplitConfig()
                     // El "Gracias" del cliente vuelve al logo del negocio (o al
                     // carrito si quedó saldo) en cuanto se cierra el pago.
@@ -1341,6 +1387,10 @@ fun CheckoutScreen(
                 onCancel = {
                     showPaymentFlow = false
                     paymentCartSnapshot = null
+                    // Se congela al abrir el cobro y se suelta al cerrarlo: el
+                    // próximo lo vuelve a resolver contra el carrito de entonces,
+                    // nunca contra el de la venta que acaba de cerrarse.
+                    cartViewModel.releaseChargingOrder()
                     pendingSplitConfig = SplitConfig()
                     // El cobro se canceló: la impresión se queda SIN convertir (aporta
                     // $0 y no cuenta para el promedio). Lo aceptado sigue en el carrito,
@@ -1355,14 +1405,36 @@ fun CheckoutScreen(
                 onPreviousChargeResolved = { message ->
                     showPaymentFlow = false
                     paymentCartSnapshot = null
+                    // Se congela al abrir el cobro y se suelta al cerrarlo: el
+                    // próximo lo vuelve a resolver contra el carrito de entonces,
+                    // nunca contra el de la venta que acaba de cerrarse.
+                    cartViewModel.releaseChargingOrder()
                     pendingSplitConfig = SplitConfig()
                     upsellViewModel.cancelPendingConversion()
                     cartViewModel.refreshCustomerDisplay()
                     previousChargeNotice = message
                 },
                 splitConfig = pendingSplitConfig,
+                resumeOrderId = resumeOrderId,
             )
         }
+    }
+
+    // 🔴 DINERO. Se agregó mercancía a una venta que quedó a medio cobrar: NO se
+    // bloquea (un POS jamás impide vender), pero tampoco se cobra en silencio
+    // contra la orden vieja. Va DESPUÉS del overlay de pago a propósito — lo que
+    // se compone después se dibuja encima, y este aviso sale justo al abrirse el
+    // cobro; detrás del overlay no lo vería nadie.
+    val splitWarning by cartViewModel.splitWarning.collectAsState()
+    splitWarning?.let { aviso ->
+        AvoqadoWarningToast(
+            message = "Venta anterior a medio cobrar",
+            subtitle = aviso,
+            // Más que el default de 2.6 s: esto tiene consecuencia en el dinero
+            // (una orden queda abierta) y hay que darle tiempo de leerlo.
+            durationMs = 6000L,
+            onDismiss = cartViewModel::consumeSplitWarning,
+        )
     }
 
     // ── Upsell "¿Algo más?" — la tira del cajero ──────────────────────────────
@@ -1400,6 +1472,10 @@ fun CheckoutScreen(
                 showSplitPayment = false
                 pendingSplitConfig = splitConfig
                 paymentCartSnapshot = cartState.paymentSnapshot()
+                // Misma resolución que en `proceedToPayment`: dividir la cuenta
+                // es otra puerta al MISMO cobro, y sin esto la parte 2 hecha
+                // desde aquí volvería a nacer sin orden.
+                if (isTablePaying) cartViewModel.releaseChargingOrder() else cartViewModel.resolvePendingSplitOrderForCharge()
                 showPaymentFlow = true
             },
         )

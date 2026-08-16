@@ -44,6 +44,13 @@ fun PaymentFlowScreen(
      */
     preselectedCustomerId: String? = null,
     preselectedCustomerName: String? = null,
+    /**
+     * 🔴 DINERO. Orden que esta venta YA tiene abierta porque una parte se cobró
+     * antes (split de MOSTRADOR, sin mesa). Con esto la parte 2 se cobra contra
+     * ella en vez de nacer suelta o crear una segunda orden. Lo resuelve el
+     * carrito, que es el dueño de la venta. null = venta nueva, como siempre.
+     */
+    resumeOrderId: String? = null,
     viewModel: PaymentFlowViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsState()
@@ -69,7 +76,7 @@ fun PaymentFlowScreen(
         viewModel.attachCustomerToCurrentPayment(customer.id, customer.fullName)
     }
 
-    LaunchedEffect(cartState, splitConfig, preselectedCustomerId, preselectedCustomerName) {
+    LaunchedEffect(cartState, splitConfig, preselectedCustomerId, preselectedCustomerName, resumeOrderId) {
         viewModel.setSplitConfig(
             type = splitConfig.type.toApiSplitType(),
             selectedItemIds = splitConfig.selectedItemIds,
@@ -80,6 +87,7 @@ fun PaymentFlowScreen(
             cart = cartState,
             customerId = preselectedCustomerId,
             customerName = preselectedCustomerName,
+            resumeOrderId = resumeOrderId,
         )
     }
 

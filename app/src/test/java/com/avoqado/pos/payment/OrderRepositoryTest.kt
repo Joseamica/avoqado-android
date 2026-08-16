@@ -147,6 +147,127 @@ class OrderRepositoryTest {
         assertEquals(null, OrderRepository.extractInventoryWarningMessageFromResponse(body))
     }
 
+    // MARK: - remainingBalanceCents extraction (saldo AUTORITATIVO del server)
+
+    /**
+     * 🔴 DINERO. El saldo que queda por cobrar lo dice el SERVER, no la
+     * aritmética del carrito: `payCashOrder` lo calcula como
+     * `total - paidAmount` con la propina ya neteada de los dos lados.
+     *
+     * 🔴 Llega en CENTAVOS, igual que `amount` y `tipAmount` de esta misma
+     * respuesta. NO se multiplica por 100.
+     */
+    @Test
+    fun `extractRemainingBalanceCentsFromResponse lee centavos tal cual`() {
+        val body = """
+            {
+              "success": true,
+              "payment": {
+                "paymentId": "cm9cashorderpayment456",
+                "amount": 5800,
+                "tipAmount": 0,
+                "orderPaymentStatus": "PARTIAL",
+                "orderTotalCents": 10000,
+                "totalPaidCents": 5800,
+                "remainingBalanceCents": 4200
+              }
+            }
+        """.trimIndent()
+
+        assertEquals(4200, OrderRepository.extractRemainingBalanceCentsFromResponse(body))
+    }
+
+    @Test
+    fun `extractRemainingBalanceCentsFromResponse acepta saldo cero`() {
+        val body = """{"success":true,"payment":{"remainingBalanceCents":0}}"""
+
+        // 0 NO es "no vino": es "ya no se debe nada". Distinguirlo de null es lo
+        // que deja cerrar la venta en vez de arrastrar un saldo fantasma.
+        assertEquals(0, OrderRepository.extractRemainingBalanceCentsFromResponse(body))
+    }
+
+    /**
+     * 🔴 Un sobrepago se ACOTA a 0, no se descarta: descartarlo devolvería null y
+     * caería a la aritmética local del carrito, que es la fuente MENOS
+     * autoritativa. "Ya no se debe nada" es la lectura correcta de un negativo.
+     */
+    @Test
+    fun `extractRemainingBalanceCentsFromResponse acota un saldo negativo a cero`() {
+        val body = """{"success":true,"payment":{"remainingBalanceCents":-350}}"""
+
+        assertEquals(0, OrderRepository.extractRemainingBalanceCentsFromResponse(body))
+    }
+
+    @Test
+    fun `extractRemainingBalanceCentsFromResponse devuelve null en un server viejo`() {
+        val body = """
+            {
+              "success": true,
+              "payment": { "paymentId": "cm9cashorderpayment456" }
+            }
+        """.trimIndent()
+
+        assertEquals(null, OrderRepository.extractRemainingBalanceCentsFromResponse(body))
+    }
+
+    /**
+     * El primer corte del server mandó `remainingBalance` en pesos. Ese contrato
+     * NUNCA llegó a producción, así que no se acepta: leerlo como centavos
+     * cobraría 100× de menos.
+     */
+    @Test
+    fun `extractRemainingBalanceCentsFromResponse ignora el nombre viejo en pesos`() {
+        val body = """{"success":true,"payment":{"remainingBalance":42.00}}"""
+
+        assertEquals(null, OrderRepository.extractRemainingBalanceCentsFromResponse(body))
+    }
+
+    /**
+     * 🔴 El caso que de verdad ejercita el guard `isString` es un string
+     * NUMÉRICO: `doubleOrNull` lo parsearía feliz y daríamos por autoritativo un
+     * saldo que llegó con el tipo equivocado. Un `"cuatro mil doscientos"` cae
+     * solo por `doubleOrNull` y no prueba nada.
+     */
+    @Test
+    fun `extractRemainingBalanceCentsFromResponse rechaza un saldo numerico mandado como string`() {
+        val body = """{"success":true,"payment":{"remainingBalanceCents":"4200"}}"""
+
+        assertEquals(null, OrderRepository.extractRemainingBalanceCentsFromResponse(body))
+    }
+
+    @Test
+    fun `extractRemainingBalanceCentsFromResponse ignora un saldo que no es numero`() {
+        val body = """{"success":true,"payment":{"remainingBalanceCents":"cuatro mil doscientos"}}"""
+
+        assertEquals(null, OrderRepository.extractRemainingBalanceCentsFromResponse(body))
+    }
+
+    @Test
+    fun `extractRemainingBalanceCentsFromResponse tambien lo busca en data y en la raiz`() {
+        assertEquals(
+            4200,
+            OrderRepository.extractRemainingBalanceCentsFromResponse("""{"data":{"remainingBalanceCents":4200}}"""),
+        )
+        assertEquals(
+            4200,
+            OrderRepository.extractRemainingBalanceCentsFromResponse("""{"remainingBalanceCents":4200}"""),
+        )
+    }
+
+    @Test
+    fun `extractOrderPaymentStatusFromResponse lee el estado de la orden y lo normaliza`() {
+        val body = """{"success":true,"payment":{"orderPaymentStatus":"partial"}}"""
+
+        assertEquals("PARTIAL", OrderRepository.extractOrderPaymentStatusFromResponse(body))
+    }
+
+    @Test
+    fun `extractOrderPaymentStatusFromResponse devuelve null en un server viejo`() {
+        val body = """{"success":true,"payment":{"paymentId":"cm9pay"}}"""
+
+        assertEquals(null, OrderRepository.extractOrderPaymentStatusFromResponse(body))
+    }
+
     @Test
     fun `extractPaymentIdFromResponse returns null when payment id is missing`() {
         val body = """
