@@ -70,8 +70,9 @@ fun gruposIncluidos(promocion: Promotion): List<PromotionOption> =
     promocion.groups.filter { it.options.size == 1 }.map { it.options.single() }
 
 /**
- * Lo que va a costar la promoción, en centavos. `null` = no se puede saber, y
- * entonces **no se muestra precio** (nunca un $0.00 que miente).
+ * Lo que va a costar la promoción, en centavos. `null` = **no sabemos calcularla**
+ * (un `pricingMode` que esta versión de la app no conoce) y entonces no se
+ * muestra precio. Un `0` NO es `null`: es una promoción gratis, y se cobra en 0.
  *
  * 🔴 Esto NO es sólo para pintar: en la venta rápida el importe que se cobra
  * sale del carrito (`PaymentFlowViewModel.currentBaseAmount()`), así que este
@@ -83,30 +84,42 @@ fun gruposIncluidos(promocion: Promotion): List<PromotionOption> =
 fun estimadoDePromocion(promocion: Promotion, selecciones: Map<String, String>): Int? =
     opcionesElegidas(promocion, selecciones)?.let { estimadoDeOpciones(promocion, it) }
 
-/** @see estimadoDePromocion — variante para cuando las opciones ya están resueltas. */
+/**
+ * @see estimadoDePromocion — variante para cuando las opciones ya están resueltas.
+ *
+ * 🔴 **$0 es un precio, no un "no sé".** `validatePromotionForPublish` sólo
+ * rechaza `priceCents < 0`, o sea que una promoción **gratis se publica** y el
+ * server la resuelve dejando todas las líneas en cero. Tratar el 0 como "no lo
+ * sé" y caer al precio de lista cobraría $150 por lo que la orden registra en
+ * $0. Por eso lo único que devuelve `null` es un `pricingMode` que esta versión
+ * de la app no conoce: ahí de verdad no sabemos la semántica.
+ */
 fun estimadoDeOpciones(promocion: Promotion, elegidas: List<OpcionDePromocion>): Int? {
     if (elegidas.isEmpty()) return null
     val bruto = elegidas.sumOf { brutoDeLinea(it.opcion) }
     val objetivo: Long = when (promocion.pricingMode) {
         // El precio lo pone la promoción; el sobreprecio de cada opción se suma.
+        // `priceCents = 0` = promoción gratis, y así se cobra.
         "FIXED_TOTAL" ->
-            (promocion.priceCents.toLong() + elegidas.sumOf { it.opcion.priceDeltaCents.toLong() })
-                .takeIf { it > 0 } ?: return null
+            promocion.priceCents.toLong() + elegidas.sumOf { it.opcion.priceDeltaCents.toLong() }
 
         // El precio sale del PRODUCTO: `chargedQuantity` es lo que se cobra
-        // (2x1 = entran 2, se cobra 1). Sin precios de producto no hay nada que
-        // estimar — y jamás se cae a `priceCents`, que en un PER_UNIT sería $0.
+        // (2x1 = entran 2, se cobra 1; `chargedQuantity = 0` = regalo). Si el
+        // catálogo no trae precios, el bruto es 0 y el server también resuelve
+        // 0 — se reproduce eso, no se inventa un precio de lista.
         "PER_UNIT" ->
-            if (bruto <= 0) return null
-            else elegidas.sumOf { it.opcion.productPriceCents.toLong() * it.opcion.chargedQuantity.coerceAtLeast(0) }
+            elegidas.sumOf { it.opcion.productPriceCents.toLong() * it.opcion.chargedQuantity.coerceAtLeast(0) }
 
-        // Un `pricingMode` que esta versión de la app no conoce: se degrada a
-        // "no sé", nunca a un precio equivocado (misma ley que ganchoDePromocion).
+        // Modo desconocido (server más nuevo): se degrada a "no sé", nunca a un
+        // precio equivocado. Misma ley que `ganchoDePromocion`.
         else -> return null
     }
-    // Espejo de `resolvePromotionLines`: el descuento nunca es negativo, o sea
-    // que la promoción no puede cobrar más que la suma de catálogo.
-    return (if (bruto > 0) minOf(bruto, objetivo) else objetivo).toInt()
+    // Espejo EXACTO de `resolvePromotionLines`: `discount = max(0, bruto − objetivo)`
+    // y `neto = bruto − discount`, o sea `neto = min(bruto, objetivo)`. La
+    // promoción nunca cobra más que el catálogo. El `coerceAtLeast(0)` es por si
+    // un `priceDeltaCents` negativo pusiera el objetivo bajo cero: dinero
+    // negativo no se cobra.
+    return minOf(bruto, objetivo).coerceAtLeast(0L).toInt()
 }
 
 /**
@@ -118,17 +131,29 @@ fun estimadoDeOpciones(promocion: Promotion, elegidas: List<OpcionDePromocion>):
  * desglose (cada línea a precio de lista + su parte del descuento); lo que aquí
  * tiene que cuadrar es el TOTAL, que es lo que se cobra.
  *
- * ⚠️ Con precios que no dividen exacto entre la cantidad de la línea (un 2x1 de
- * un producto con centavos impares) el unitario se redondea al centavo y el
- * total puede quedar a ±1 centavo del neto. El server sigue siendo la autoridad
- * del precio del pedido.
+ * ⚠️ **El total del carrito puede diferir del neto del server, y no por
+ * centavos impares.** `CartItem` sólo sabe `unitPrice × quantity`, y el neto que
+ * le toca a una línea rara vez es múltiplo de su cantidad: un 3x2 de $50 vale
+ * 10000 en el server y 3 × round(10000/3) = 9999 aquí. **Cota:
+ * `Σ floor(cantidad_i / 2)` centavos.** Medido con fuzz sobre configuraciones
+ * publicables (300k casos): 59% difieren, peor caso +11 centavos; con precios
+ * "normales" y ≤3 líneas, 36% difieren, hasta ±5. Sólo desaparece cuando todas
+ * las cantidades son 1 (el combo típico), que es el caso mayoritario.
+ *
+ * El estimado ([estimadoDeOpciones]) SÍ es exacto: la desviación nace al bajarlo
+ * a un precio unitario entero. El server sigue siendo la autoridad del precio
+ * del pedido; cerrar el hueco de raíz —cobrar el total que devuelve el server
+ * cuando hay red— es decisión de la Task 8, que es la que habla con él.
  */
 fun preciosUnitariosDePromocion(promocion: Promotion, elegidas: List<OpcionDePromocion>): List<Int> {
     val cantidades = elegidas.map { it.opcion.quantity.coerceAtLeast(1) }
-    // Sin estimado no se inventa nada: la línea entra a precio de lista y el
-    // server aplicará la promoción al pedido de todos modos.
+    // Sin estimado (modo de precio desconocido) la línea entra al **precio de
+    // catálogo pelón**, sin el `priceDeltaCents`: el delta es el sobreprecio que
+    // cobra la promoción, y sumarlo cuando ni siquiera sabemos calcularla
+    // rompería la única invariante que el server enuncia explícito — una
+    // promoción nunca cobra MÁS que el catálogo (`resolvePromotionLines.ts:70-72`).
     val neto = estimadoDeOpciones(promocion, elegidas)
-        ?: return elegidas.map { it.opcion.productPriceCents + it.opcion.priceDeltaCents }
+        ?: return elegidas.map { it.opcion.productPriceCents }
     val brutos = elegidas.map { brutoDeLinea(it.opcion) }
     val pesos = if (brutos.sum() > 0) brutos else cantidades.map { it.toLong() }
     return repartirPorPesos(neto.toLong(), pesos).mapIndexed { i, monto ->

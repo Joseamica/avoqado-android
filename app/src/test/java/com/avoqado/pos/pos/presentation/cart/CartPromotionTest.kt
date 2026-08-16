@@ -339,9 +339,69 @@ class CartPromotionTest {
     }
 
     @Test
-    fun `una promocion sin precio conocido no inventa un precio`() {
-        // `PER_UNIT` sin precios de producto: no se puede estimar, y jamás se
-        // muestra `priceCents` (sería $0.00 en un PER_UNIT).
+    fun `tocar el producto suelto no se fusiona con la linea de la promocion`() {
+        // 🔴 El caso diario: 2x1 aplicado y el cliente pide una cerveza más.
+        // Fusionarla dejaría la línea de la PROMOCIÓN en cantidad 3 → $75 en vez
+        // de $100 (el local pierde $25), `quantity = 3` viajando junto a
+        // `promotionRef` (400 del server) y 3 unidades descontadas bajo un 2x1.
+        val vm = createViewModel()
+        val cervezaSuelta = Product(id = "p-cerveza", name = "Cerveza", priceValue = 50.0)
+
+        vm.aplicarPromocion(dosPorUno, emptyMap())
+        vm.addProduct(cervezaSuelta)
+
+        val items = vm.cartState.value.items
+        assertEquals(2, items.size)
+        val promo = items.single { it.isPromotionLine }
+        val suelta = items.single { !it.isPromotionLine }
+        assertEquals(2, promo.quantity)
+        assertEquals(5000, promo.totalPrice)
+        assertEquals(1, suelta.quantity)
+        assertEquals(5000, suelta.totalPrice)
+        // 💰 $50 del 2x1 + $50 de la suelta.
+        assertEquals(10000, vm.cartState.value.totalCents)
+    }
+
+    @Test
+    fun `el producto suelto agregado ANTES tampoco absorbe la promocion`() {
+        val vm = createViewModel()
+        val cervezaSuelta = Product(id = "p-cerveza", name = "Cerveza", priceValue = 50.0)
+
+        vm.addProduct(cervezaSuelta)
+        vm.aplicarPromocion(dosPorUno, emptyMap())
+        vm.addProduct(cervezaSuelta)
+
+        val items = vm.cartState.value.items
+        assertEquals(2, items.size)
+        // La suelta fusiona con la suelta (comportamiento normal), no con la promo.
+        assertEquals(2, items.single { !it.isPromotionLine }.quantity)
+        assertEquals(2, items.single { it.isPromotionLine }.quantity)
+        assertEquals(10000 + 5000, vm.cartState.value.totalCents)
+    }
+
+    @Test
+    fun `una promocion gratis se cobra en cero, no a precio de lista`() {
+        // 🔴 `validatePromotionForPublish` sólo rechaza `priceCents < 0`, así que
+        // una promo a $0 SE PUBLICA y el server deja todas sus líneas en cero.
+        // Tratar el 0 como "no sé el precio" cobraría $150 por una orden de $0.
+        val gratis = combo.copy(priceCents = 0)
+        val sinSobreprecio = mapOf("g-plato" to "o-hamburguesa", "g-bebida" to "o-refresco")
+        val vm = createViewModel()
+
+        assertEquals(0, estimadoDePromocion(gratis, sinSobreprecio))
+        assertTrue(vm.aplicarPromocion(gratis, sinSobreprecio))
+        // $150 de catálogo (hamburguesa + refresco) regalados: se cobra $0.
+        assertEquals(0, vm.cartState.value.totalCents)
+
+        // Y si la opción elegida trae sobreprecio, se cobra ESE sobreprecio —
+        // que es justo la prueba de que el 0 es un precio y no un "no sé".
+        assertEquals(1500, estimadoDePromocion(gratis, eleccionEnsaladaConRefresco))
+    }
+
+    @Test
+    fun `un PER_UNIT sin precios de producto vale cero, igual que en el server`() {
+        // Bruto 0 ⇒ el server resuelve neto 0 (descuento = max(0, 0−objetivo)).
+        // `priceCents` NUNCA se usa en un PER_UNIT: mostrarlo sería inventar.
         val sinPrecios = dosPorUno.copy(
             priceCents = 9900,
             groups = listOf(
@@ -350,7 +410,113 @@ class CartPromotionTest {
                 ),
             ),
         )
+        val vm = createViewModel()
 
-        assertNull(estimadoDePromocion(sinPrecios, emptyMap()))
+        assertEquals(0, estimadoDePromocion(sinPrecios, emptyMap()))
+        vm.aplicarPromocion(sinPrecios, emptyMap())
+        assertEquals(0, vm.cartState.value.totalCents)
     }
+
+    @Test
+    fun `un pricingMode desconocido no inventa precio y cobra el catalogo pelon`() {
+        // Único caso de "no sé": un modo que esta versión de la app no conoce.
+        // La línea entra a precio de CATÁLOGO, sin sumarle `priceDeltaCents` —
+        // una promoción nunca puede cobrar MÁS que el catálogo.
+        val modoNuevo = combo.copy(pricingMode = "TIERED_SOMETHING")
+        val vm = createViewModel()
+
+        assertNull(estimadoDePromocion(modoNuevo, eleccionEnsaladaConRefresco))
+        vm.aplicarPromocion(modoNuevo, eleccionEnsaladaConRefresco)
+        // Ensalada $110 (NO $125: el +$15 no se suma) + refresco $30.
+        assertEquals(listOf(11000, 3000), vm.cartState.value.items.map { it.totalPrice })
+        assertEquals(14000, vm.cartState.value.totalCents)
+    }
+
+    // MARK: - Los números del server, fijados (si el reparto cambia, esto truena)
+
+    @Test
+    fun `el split de un FIXED_TOTAL reproduce el reparto del server`() {
+        // Caso pineado del server: neto 10000 sobre brutos 20000 / 10000 / 5000
+        // → [5714, 2857, 1429] (proporcional al bruto, sobrante al mayor residuo,
+        // `allocateByWeights`). Con cantidad 1 el unitario ES la parte.
+        val tresLineas = Promotion(
+            id = "promo-3",
+            name = "Combo grande",
+            pricingMode = "FIXED_TOTAL",
+            priceCents = 10000,
+            groups = listOf(
+                grupoDeUnaOpcion("g-a", "o-a", "p-a", "Plato", 20000),
+                grupoDeUnaOpcion("g-b", "o-b", "p-b", "Postre", 10000),
+                grupoDeUnaOpcion("g-c", "o-c", "p-c", "Bebida", 5000),
+            ),
+        )
+        val vm = createViewModel()
+
+        assertEquals(10000, estimadoDePromocion(tresLineas, emptyMap()))
+        vm.aplicarPromocion(tresLineas, emptyMap())
+
+        assertEquals(listOf(5714, 2857, 1429), vm.cartState.value.items.map { it.unitPrice })
+        assertEquals(10000, vm.cartState.value.totalCents)
+    }
+
+    @Test
+    fun `un 3x2 pinea el neto del server y deja a la vista la desviacion del carrito`() {
+        // Server: 3 entran, 2 se cobran, $50 c/u → neto 10000, EXACTO.
+        val tresPorDos = Promotion(
+            id = "promo-3x2",
+            name = "3x2 Cervezas",
+            pricingMode = "PER_UNIT",
+            groups = listOf(
+                PromotionGroup(
+                    id = "g-cerveza",
+                    name = "Cerveza",
+                    options = listOf(
+                        PromotionOption(
+                            id = "o-cerveza",
+                            productId = "p-cerveza",
+                            quantity = 3,
+                            chargedQuantity = 2,
+                            productName = "Cerveza",
+                            productPriceCents = 5000,
+                        ),
+                    ),
+                ),
+            ),
+        )
+        val vm = createViewModel()
+
+        // El estimado —lo que dice la hoja— coincide con el server al centavo.
+        assertEquals(10000, estimadoDePromocion(tresPorDos, emptyMap()))
+
+        vm.aplicarPromocion(tresPorDos, emptyMap())
+        // 🔴 Pero el carrito cobra 3 × round(10000/3) = 9999: `CartItem` sólo
+        // sabe `unitPrice × quantity` y 10000 no es múltiplo de 3. La cota es
+        // `Σ floor(cantidad/2)` = 1 centavo aquí. Se fija a propósito: si
+        // alguien cambia el reparto, este número cambia y hay que volver a
+        // mirarlo, en vez de que la desviación crezca sin que nadie se entere.
+        val cobrado = vm.cartState.value.totalCents
+        assertEquals(3333, vm.cartState.value.items.single().unitPrice)
+        assertEquals(9999, cobrado)
+        val desviacion = kotlin.math.abs(10000 - cobrado)
+        assertTrue("desviación $desviacion > cota Σ floor(cantidad/2)", desviacion <= 3 / 2)
+    }
+
+    private fun grupoDeUnaOpcion(
+        grupoId: String,
+        opcionId: String,
+        productId: String,
+        nombre: String,
+        precioCents: Int,
+    ) = PromotionGroup(
+        id = grupoId,
+        name = nombre,
+        options = listOf(
+            PromotionOption(
+                id = opcionId,
+                productId = productId,
+                productName = nombre,
+                productPriceCents = precioCents,
+            ),
+        ),
+    )
 }

@@ -392,11 +392,19 @@ class CartViewModel @Inject constructor(
         avisarSiAgotado(product)
         _cartState.update { state ->
             // Check if same product without modifiers already in cart
+            // 🔴 Una línea de promoción JAMÁS se fusiona: si el cliente pide una
+            // cerveza suelta después de aplicar el 2x1, fusionarla subiría la
+            // línea de la PROMOCIÓN a cantidad 3 — se cobraría $75 en vez de
+            // $100 (el local pierde $25), la instancia viajaría con
+            // `quantity = 3` (que el server rechaza junto a `promotionRef`) y el
+            // inventario descontaría 3 unidades bajo un 2x1. Los guards de
+            // `esLineaFija` no cubren esta puerta: el merge no pasa por ellos.
             val existingIndex = state.items.indexOfFirst {
                 it.type is CartItemType.ProductItem &&
                     (it.type as CartItemType.ProductItem).productId == product.id &&
                     it.selectedModifiers.isEmpty() &&
-                    !it.isCortesia
+                    !it.isCortesia &&
+                    it.promotionInstanceId == null
             }
 
             if (existingIndex >= 0 && !product.hasModifiers) {
