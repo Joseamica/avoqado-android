@@ -231,4 +231,89 @@ class PromotionsRepositoryTest {
         assertTrue(repo.promotions.value.active.isEmpty())
         verify(exactly = 0) { client.newCall(any()) }
     }
+
+    // ── "no sé" vs "sé que no hay" ───────────────────────────────────────────
+    // El panel de cobro escribe "Aún no hay promociones. Créalas desde el
+    // dashboard" con esta señal. Si dice CARGADO antes de tiempo, le miente al
+    // cajero de un local que sí tiene promociones.
+
+    @Test
+    fun `arranca sin saber, no diciendo que no hay`() {
+        val repo = PromotionsRepository(secureStorage(), clientThrowing(IOException("no debería llamarse")), fakePayloadCache())
+
+        assertEquals(EstadoCatalogo.SIN_CARGAR, repo.estado.value)
+    }
+
+    @Test
+    fun `tras un refresh exitoso ya sabemos que hay`() = runTest {
+        val repo = PromotionsRepository(secureStorage(), clientReturning(200, successBody(listOf(promotion()))), fakePayloadCache())
+
+        repo.refresh("venue-1")
+
+        assertEquals(EstadoCatalogo.CARGADO, repo.estado.value)
+    }
+
+    @Test
+    fun `sin red tambien se sale del estado de carga`() = runTest {
+        // Ya sabemos lo que hay: el cache del disco, o nada. Quedarse en
+        // "Cargando…" para siempre es otra forma de mentir, y encima no dice
+        // qué hacer.
+        val repo = PromotionsRepository(secureStorage(), clientThrowing(IOException("sin red")), fakePayloadCache())
+
+        repo.refresh("venue-1")
+
+        assertEquals(EstadoCatalogo.CARGADO, repo.estado.value)
+    }
+
+    @Test
+    fun `ni con el disco roto se queda cargando para siempre`() = runTest {
+        // Es lo que justifica el `finally` y no una línea al final del try: si el
+        // rescate del cache truena (disco lleno, cache corrupto), el estado tiene
+        // que salir de CARGANDO igual. Sin red Y sin poder leer el disco es
+        // exactamente el momento en que una pantalla girando para siempre sería
+        // lo peor.
+        val cacheRoto: PayloadCache = mockk(relaxed = true) {
+            coEvery { load(any(), any()) } throws IllegalStateException("cache corrupto")
+        }
+        val repo = PromotionsRepository(secureStorage(), clientThrowing(IOException("sin red")), cacheRoto)
+
+        runCatching { repo.refresh("venue-1") }
+
+        assertEquals(EstadoCatalogo.CARGADO, repo.estado.value)
+    }
+
+    @Test
+    fun `sin token no se queda cargando para siempre`() = runTest {
+        val repo = PromotionsRepository(secureStorage(token = null), mockk(relaxed = true), fakePayloadCache())
+
+        repo.refresh("venue-1")
+
+        assertEquals(EstadoCatalogo.CARGADO, repo.estado.value)
+    }
+
+    @Test
+    fun `cambiar de local deja de saber — no hereda el CARGADO del anterior`() = runTest {
+        // El bug que cierra este test: `switchVenue` llama derecho al repositorio
+        // (clearCache + refresh) sin pasar por el ViewModel del panel, y ese
+        // ViewModel sobrevive al cambio de pestaña. Con una bandera local, el
+        // panel del local NUEVO enseñaba "Aún no hay promociones" usando el "ya
+        // cargué" del ANTERIOR, con el catálogo recién vaciado.
+        val repo = PromotionsRepository(secureStorage(), clientReturning(200, successBody(listOf(promotion()))), fakePayloadCache())
+        repo.refresh("venue-a")
+        assertEquals(EstadoCatalogo.CARGADO, repo.estado.value)
+
+        repo.clearCache()
+
+        assertEquals(EstadoCatalogo.SIN_CARGAR, repo.estado.value)
+        assertTrue(repo.promotions.value.active.isEmpty())
+    }
+
+    @Test
+    fun `sin venue activo no se queda girando`() {
+        val repo = PromotionsRepository(secureStorage(), clientThrowing(IOException("no debería llamarse")), fakePayloadCache())
+
+        repo.marcarSinVenue()
+
+        assertEquals(EstadoCatalogo.CARGADO, repo.estado.value)
+    }
 }

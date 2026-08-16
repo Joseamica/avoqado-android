@@ -20,6 +20,29 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
+ * En qué situación está el catálogo de ESTE venue.
+ *
+ * 🔴 Existe para que la UI pueda distinguir **"todavía no sé"** de **"sé que no
+ * hay"**. Sin esta señal, el panel enseña "Aún no hay promociones. Créalas desde
+ * el dashboard" durante toda la ventana de carga — mintiéndole al cajero de un
+ * local que sí las tiene.
+ *
+ * Vive en el repositorio, y no como una bandera del ViewModel, porque el cambio
+ * de venue entra por aquí (`clearCache()` + `refresh()` desde
+ * `AuthRepository.switchVenue`) sin pasar NUNCA por el ViewModel. Una bandera
+ * local se quedaría en "ya cargué" con el catálogo del local anterior recién
+ * borrado.
+ */
+enum class EstadoCatalogo {
+    /** Nadie ha traído nada todavía, o se acaba de limpiar por cambio de local. */
+    SIN_CARGAR,
+    CARGANDO,
+
+    /** Ya sabemos qué hay — aunque lo que haya sea nada. */
+    CARGADO,
+}
+
+/**
  * Catálogo de promociones (combos, paquetes, 2x1) — el panel de cobro.
  *
  * Plan: .superpowers/sdd/2026-08-15-promociones-pos-cliente/task-2-brief.md
@@ -38,9 +61,21 @@ class PromotionsRepository @Inject constructor(
     private val _promotions = MutableStateFlow(PromotionsPayload())
     val promotions: StateFlow<PromotionsPayload> = _promotions.asStateFlow()
 
-    suspend fun refresh(venueId: String) {
-        val token = secureStorage.accessToken ?: return
+    private val _estado = MutableStateFlow(EstadoCatalogo.SIN_CARGAR)
 
+    /** Ver [EstadoCatalogo]: deja a la UI distinguir "no sé" de "no hay". */
+    val estado: StateFlow<EstadoCatalogo> = _estado.asStateFlow()
+
+    suspend fun refresh(venueId: String) {
+        // Sin sesión no va a llegar nada NUNCA: se marca cargado (vacío) en vez
+        // de dejar la pantalla girando para siempre. Un "Cargando…" eterno es
+        // otra forma de mentir, y encima no dice qué hacer.
+        val token = secureStorage.accessToken ?: run {
+            _estado.value = EstadoCatalogo.CARGADO
+            return
+        }
+
+        _estado.value = EstadoCatalogo.CARGANDO
         try {
             val request = Request.Builder()
                 .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/promotions")
@@ -77,6 +112,10 @@ class PromotionsRepository @Inject constructor(
             // Sin red NO se toca el cache: es justo cuando más se necesita.
             Log.e(TAG, "❌ promotions sin red: ${e.message}")
             hydrateIfEmpty(venueId)
+        } finally {
+            // Pase lo que pase se sale del estado de carga: ya sabemos lo que hay
+            // (aunque sea el cache del disco, o nada).
+            _estado.value = EstadoCatalogo.CARGADO
         }
     }
 
@@ -105,9 +144,26 @@ class PromotionsRepository @Inject constructor(
         !obj["featureCode"]?.jsonPrimitive?.content.isNullOrBlank()
     }.getOrDefault(false)
 
-    /** Al cambiar de venue: borra lo que se ve YA, antes de que llegue el refresh nuevo. */
+    /**
+     * No hay de dónde traer (sesión sin venue activo). Se da por cargado —vacío—
+     * para que la UI no se quede girando esperando algo que no va a llegar nunca.
+     */
+    fun marcarSinVenue() {
+        _estado.value = EstadoCatalogo.CARGADO
+    }
+
+    /**
+     * Al cambiar de venue: borra lo que se ve YA, antes de que llegue el refresh
+     * nuevo.
+     *
+     * 🔴 Y vuelve a `SIN_CARGAR`. Sin esta línea el panel enseñaría "Aún no hay
+     * promociones. Créalas desde el dashboard" del local NUEVO usando el "ya
+     * cargué" del ANTERIOR — con el catálogo recién vaciado y el fetch todavía
+     * en camino.
+     */
     fun clearCache() {
         _promotions.value = PromotionsPayload()
+        _estado.value = EstadoCatalogo.SIN_CARGAR
     }
 
     companion object {

@@ -20,9 +20,12 @@ import java.time.LocalTime
  * y no en el otro y nadie entiende por qué.
  */
 class PromotionsPanelLayoutTest {
-    // Con panel lateral, la columna de entrada se queda con el 37.5% del ancho.
-    // Una celda de producto necesita ~120dp y son 3 columnas -> 360dp -> el
-    // lateral sólo cabe a partir de ~960dp. Debajo de eso es ilegible.
+    // La columna de entrada se queda con el 50% del ancho TAMBIÉN con el lateral
+    // abierto (quien paga la tercera columna es el carrito), así que el piso que
+    // impone la cuadrícula son 3 celdas de 120dp dentro de ese 50% = 720dp. El
+    // umbral que usamos, 960, es ese piso MÁS un margen elegido a mano: a 720
+    // cada columna lateral cae a ~180dp y la tarjeta se ve apretada.
+    // Ver ANCHO_MINIMO_PANEL_LATERAL_DP y el test del piso, más abajo.
     @Test
     fun `el panel lateral cae a pestana bajo el umbral`() {
         assertEquals(PanelMode.TAB, resolverModoPanel(PanelMode.SIDE_PANEL, anchoDp = 800))

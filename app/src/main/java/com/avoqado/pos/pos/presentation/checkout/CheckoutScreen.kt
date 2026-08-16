@@ -198,13 +198,20 @@ fun CheckoutScreen(
     LaunchedEffect(Unit) { promotionsViewModel.refresh() }
     // 🔴 `remember`, no lectura directa: `puedeAplicar` desemboca en
     // `venuePermissions`, que descifra EncryptedSharedPreferences y decodifica
-    // JSON. Leerlo en cada recomposición de la pantalla más caliente de la app
-    // es caro y no aporta nada. La llave es el catálogo porque es lo que cambia
-    // exactamente cuando cambian estas dos respuestas: al cambiar de venue se
-    // limpia y se vuelve a bajar, y el candado de plan (403 con `featureCode`)
-    // también lo vacía.
-    val promosPlanPermitido = remember(promociones) { promotionsViewModel.planPermitido }
-    val promosPuedeAplicar = remember(promociones) { promotionsViewModel.puedeAplicar }
+    // JSON. Leerlo en cada recomposición de la pantalla más caliente de la app es
+    // caro y no aporta nada.
+    // La llave incluye `promocionesCargadas` a propósito: ese booleano baja y
+    // sube en CADA ciclo de refresco —incluido el que dispara un cambio de
+    // local—, así que un upgrade de plan o un cambio de permisos a media sesión
+    // se recogen en el siguiente refresco en vez de quedarse congelados hasta
+    // reiniciar la app. (El juez sigue siendo el server al aplicar; esto sólo
+    // decide qué se pinta.)
+    val promosPlanPermitido = remember(promociones, promocionesCargadas) {
+        promotionsViewModel.planPermitido
+    }
+    val promosPuedeAplicar = remember(promociones, promocionesCargadas) {
+        promotionsViewModel.puedeAplicar
+    }
     // 🔴 Seam de la Task 6: ahí se abre la hoja de opciones del combo y la
     // promoción entra al carrito (con su `AvoqadoSuccessToast`). Esta task sólo
     // pinta y deja tocar — a propósito NO se celebra un "¡Combo agregado!" que

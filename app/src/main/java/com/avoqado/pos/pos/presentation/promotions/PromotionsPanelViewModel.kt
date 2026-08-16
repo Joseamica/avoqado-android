@@ -5,15 +5,14 @@ import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.domain.PlanManager
 import com.avoqado.pos.core.domain.RoleManager
+import com.avoqado.pos.pos.data.EstadoCatalogo
 import com.avoqado.pos.pos.data.PromotionsRepository
 import com.avoqado.pos.pos.data.model.PromotionsPayload
 import com.avoqado.pos.tpvsettings.data.PanelMode
 import com.avoqado.pos.tpvsettings.data.TpvSettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -76,37 +75,40 @@ class PromotionsPanelViewModel @Inject constructor(
             roleManager.hasVenuePermission(PERMISO_APLICAR_PROMOCION)
 
     /**
-     * ¿Ya sabemos qué hay en el catálogo?
+     * ¿Ya sabemos qué hay en el catálogo? Distingue "todavía no cargó" de "cargó
+     * y está vacío", que es lo que decide si el panel puede decir "Aún no hay
+     * promociones. Créalas desde el dashboard".
      *
-     * 🔴 Distingue "todavía no cargó" de "cargó y está vacío". Sin esto, el panel
-     * dice "Aún no hay promociones. Créalas desde el dashboard" durante toda la
-     * ventana entre el montaje y la respuesta del fetch — mintiéndole al cajero de
-     * un local que SÍ tiene promociones.
+     * 🔴 Se DERIVA del repositorio, no es una bandera de este ViewModel. Lo
+     * intenté primero como latch local y estaba mal: el cambio de local llama
+     * derecho al repositorio (`AuthRepository.switchVenue` → `clearCache()` +
+     * `refresh(venue.id)`) sin tocar este ViewModel nunca, y su instancia
+     * sobrevive al cambio de pestaña (`saveState`/`restoreState` del NavGraph).
+     * O sea que el latch se quedaba en "ya cargué" del local ANTERIOR mientras el
+     * catálogo del nuevo estaba vacío. Derivándolo, los dos caminos —primer
+     * montaje y cambio de local— quedan cubiertos por construcción, sin depender
+     * de quién llame a quién.
      */
-    private val _cargado = MutableStateFlow(false)
-    val cargado: StateFlow<Boolean> = _cargado.asStateFlow()
+    val cargado: StateFlow<Boolean> = repository.estado
+        .map { it == EstadoCatalogo.CARGADO }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.Eagerly,
+            initialValue = repository.estado.value == EstadoCatalogo.CARGADO,
+        )
 
     /**
      * Baja el catálogo del venue activo. Cache-first: si falla, se conserva lo
      * que ya había (el repositorio nunca borra por un fallo de red).
+     *
+     * El estado de carga lo mueve el repositorio — aquí no se toca nada.
      */
     fun refresh() {
         val venueId = secureStorage.venueId
         if (venueId == null) {
-            // Sin venue no va a llegar nada nunca: quedarse en "Cargando…" para
-            // siempre sería otra forma de mentir.
-            _cargado.value = true
+            repository.marcarSinVenue()
             return
         }
-        viewModelScope.launch {
-            // `finally`: pase lo que pase se sale del estado de carga. El
-            // repositorio ya atrapa red y parseo, pero un "cargando" eterno es
-            // peor que un "no hay".
-            try {
-                repository.refresh(venueId)
-            } finally {
-                _cargado.value = true
-            }
-        }
+        viewModelScope.launch { repository.refresh(venueId) }
     }
 }
