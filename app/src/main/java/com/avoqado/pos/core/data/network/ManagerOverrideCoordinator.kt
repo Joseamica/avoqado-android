@@ -29,7 +29,12 @@ import javax.inject.Singleton
 open class ManagerOverrideCoordinator @Inject constructor(
     private val repository: PermissionOverrideRepository,
 ) {
-    data class Prompt(val permission: String, val actionLabel: String)
+    /**
+     * @param id identifica ESTE teclado. La UI lo usa como key de su estado, de
+     *   forma que el PIN tecleado en uno nunca sobreviva al siguiente, y para
+     *   que una cancelación tardía no tumbe la espera de otra acción.
+     */
+    data class Prompt(val id: Long, val permission: String, val actionLabel: String)
 
     private val _prompt = MutableStateFlow<Prompt?>(null)
     val prompt: StateFlow<Prompt?> = _prompt.asStateFlow()
@@ -43,10 +48,37 @@ open class ManagerOverrideCoordinator @Inject constructor(
         const val PROMPT_TIMEOUT_MS = 120_000L
     }
 
+    /**
+     * Tope efectivo de la espera. Es `open` para que las pruebas puedan usar
+     * milisegundos en vez de dos minutos: `awaitToken` bloquea de verdad y su
+     * timeout corre en tiempo real, así que no hay scheduler virtual que valga.
+     */
+    internal open val promptTimeoutMs: Long = PROMPT_TIMEOUT_MS
+
     private val queue = Mutex()
 
+    /**
+     * La espera viva, en UN solo objeto.
+     *
+     * 🔴 El deferred, el permiso y la identidad del teclado se leen JUNTOS o no
+     * se leen. Cuando vivían en campos separados (`pending` + `_prompt`),
+     * `submitPin` podía capturar el deferred de A y, una línea después, el
+     * permiso de B —porque el timeout de A y el `awaitToken` de B corren en
+     * otro hilo—: se pedía un token para B y se completaba la espera de A, que
+     * ya no tenía a nadie escuchando, mientras B seguía esperando para siempre
+     * aunque la UI dijera "autorizado".
+     */
+    private data class Waiting(
+        val id: Long,
+        val permission: String,
+        val deferred: CompletableDeferred<String?>,
+    )
+
     @Volatile
-    private var pending: CompletableDeferred<String?>? = null
+    private var pending: Waiting? = null
+
+    /** Sube con cada teclado presentado; identifica QUÉ espera está viva. */
+    private var nextId: Long = 0
 
     /**
      * Devuelve el token, o null si el usuario canceló / caducó / no se pudo.
@@ -62,10 +94,11 @@ open class ManagerOverrideCoordinator @Inject constructor(
     open fun awaitToken(permission: String): String? = runBlocking {
         queue.withLock {
             val deferred = CompletableDeferred<String?>()
-            pending = deferred
-            _prompt.value = Prompt(permission, PermissionLabels.of(permission))
+            val id = ++nextId
+            pending = Waiting(id, permission, deferred)
+            _prompt.value = Prompt(id, permission, PermissionLabels.of(permission))
             try {
-                withTimeoutOrNull(PROMPT_TIMEOUT_MS) { deferred.await() }
+                withTimeoutOrNull(promptTimeoutMs) { deferred.await() }
             } finally {
                 _prompt.value = null
                 pending = null
@@ -75,33 +108,41 @@ open class ManagerOverrideCoordinator @Inject constructor(
 
     /** La UI llama esto al teclear el código. Sólo `Granted` cierra el diálogo. */
     open suspend fun submitPin(venueId: String, pin: String): OverrideResult {
-        // 🔴 Se captura AQUÍ la espera que se va a resolver, antes de la red.
+        // 🔴 UNA sola lectura: deferred, permiso e identidad salen del MISMO
+        // objeto, así que no pueden pertenecer a esperas distintas.
         //
-        // Antes se leía `pending` al volver: si durante la llamada alguien
-        // cerraba el teclado, el finally liberaba el Mutex, el siguiente de la
-        // fila instalaba SU espera, y el token de esta acción terminaba
-        // completando la de OTRA —con un permiso distinto, que el server
-        // rechaza—. La segunda acción fallaba sin que nadie pudiera autorizarla
-        // y su teclado se cerraba solo.
+        // Antes eran dos lecturas (`pending` y luego `_prompt.value.permission`)
+        // y el timeout de A más el `awaitToken` de B corren en otro hilo: se
+        // podía pedir un token para el permiso de B y completar la espera de A,
+        // que ya no tenía a nadie escuchando, dejando a B esperando para siempre
+        // aunque la UI dijera "autorizado".
         //
-        // Capturado, si esta espera ya se resolvió (cancelación, timeout),
-        // `complete` no hace nada y el token simplemente se descarta.
+        // Si esta espera ya se resolvió (cancelación, timeout), `complete` no
+        // hace nada y el token simplemente se descarta.
         val awaiting = pending
-        val permission = _prompt.value?.permission
             ?: return OverrideResult.Failed("La acción ya no está esperando autorización.")
         if (venueId.isBlank()) {
             return OverrideResult.Failed("No hay una sucursal activa. Vuelve a entrar.")
         }
-        val result = repository.requestToken(venueId, pin, permission)
+        val result = repository.requestToken(venueId, pin, awaiting.permission)
         if (result is OverrideResult.Granted) {
-            Log.d("🔐 Override", "Autorizado por ${result.authorizedByName} para $permission")
-            awaiting?.complete(result.token)
+            Log.d("🔐 Override", "Autorizado por ${result.authorizedByName} para ${awaiting.permission}")
+            awaiting.deferred.complete(result.token)
         }
         return result
     }
 
-    /** El usuario cerró el teclado: la acción falla como fallaba antes. */
-    open fun cancel() {
-        pending?.complete(null)
+    /**
+     * El usuario cerró el teclado: la acción falla como fallaba antes.
+     *
+     * @param promptId id del teclado que se estaba viendo. Si ya no es el
+     *   vigente, la cancelación llega TARDE —ese teclado se cerró solo al
+     *   autorizar o al vencer, y otra acción de la fila ya instaló el suyo— y se
+     *   ignora en vez de tumbar la espera de la siguiente. Espejo de iOS.
+     */
+    open fun cancel(promptId: Long? = null) {
+        val awaiting = pending ?: return
+        if (promptId != null && awaiting.id != promptId) return
+        awaiting.deferred.complete(null)
     }
 }

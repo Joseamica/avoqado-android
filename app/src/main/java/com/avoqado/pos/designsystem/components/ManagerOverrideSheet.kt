@@ -39,9 +39,17 @@ fun ManagerOverrideSheet(
     onSubmit: suspend (String) -> OverrideResult,
     onDismiss: () -> Unit,
 ) {
-    var pin by remember { mutableStateOf("") }
-    var error by remember { mutableStateOf<String?>(null) }
-    var isLoading by remember { mutableStateOf(false) }
+    // 🔴 Keyed por el teclado, no por el slot de composición.
+    //
+    // Sin la key, el estado sobrevivía al cambio de prompt: dos acciones en fila
+    // y el `StateFlow` conflatando el null intermedio hacían que el teclado de
+    // la SEGUNDA apareciera con el PIN que el encargado había tecleado en la
+    // primera, con "Autorizar" ya habilitado. Limpiarlo sólo en `Granted` no
+    // bastaba —el teclado también se cierra al vencer y al cancelarse, y por
+    // esos dos caminos el PIN seguía ahí—, así que la limpieza vive en la key.
+    var pin by remember(prompt.id) { mutableStateOf("") }
+    var error by remember(prompt.id) { mutableStateOf<String?>(null) }
+    var isLoading by remember(prompt.id) { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
     AvoqadoDialog(

@@ -48,6 +48,22 @@ class TerminalPaymentService @Inject constructor(
         .connectTimeout(5, java.util.concurrent.TimeUnit.SECONDS)
         .readTimeout(8, java.util.concurrent.TimeUnit.SECONDS)
         .callTimeout(10, java.util.concurrent.TimeUnit.SECONDS)
+        .apply {
+            // 🔴 Misma regla que `OrderRepository.moneyClient`: NINGUNA llamada
+            // corta de la ruta del dinero se queda esperando a que una persona
+            // teclee un PIN. La consulta de recuperación pega a una ruta con
+            // `payments:read`, así que un 403 overridable abriría el teclado
+            // dentro de estos 10 s — reventando el plazo y dejando el cobro en
+            // desenlace indeterminado. Posición 0 para que el
+            // `ForbiddenInterceptor` copiado la vea ya marcada.
+            interceptors().add(0, okhttp3.Interceptor { chain ->
+                chain.proceed(
+                    chain.request().newBuilder()
+                        .header(com.avoqado.pos.core.data.network.ForbiddenInterceptor.FAIL_FAST_HEADER, "1")
+                        .build(),
+                )
+            })
+        }
         .build()
 
     /** Seam de pruebas: apuntar a un MockWebServer. En producción es [ApiConstants.BASE_URL]. */
