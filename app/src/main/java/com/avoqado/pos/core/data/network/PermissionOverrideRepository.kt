@@ -91,7 +91,22 @@ open class PermissionOverrideRepository @Inject constructor(
                                 OverrideResult.Granted(data.token, data.authorizedBy?.name.orEmpty())
                             }
                         }
-                        401 -> OverrideResult.WrongPin
+                        // 🔴 Dos 401 distintos llegan por aquí y sólo uno es un
+                        // PIN malo: `authenticateTokenMiddleware` corre ANTES y
+                        // también responde 401 cuando el token de sesión caducó
+                        // —y este repositorio usa un cliente propio, sin
+                        // renovación—. Pintarlos igual mandaba al encargado a
+                        // reteclear un código correcto hasta agotar el límite,
+                        // sin decirle nunca que lo que hacía falta era volver a
+                        // entrar. El PIN malo trae `code`; el de sesión, no.
+                        401 -> {
+                            val err = runCatching { json.decodeFromString<OverrideErrorBody>(raw) }.getOrNull()
+                            if (err?.code == "OVERRIDE_INVALID_PIN") {
+                                OverrideResult.WrongPin
+                            } else {
+                                OverrideResult.Failed("Tu sesión expiró. Vuelve a entrar.")
+                            }
+                        }
                         403 -> {
                             val err = runCatching { json.decodeFromString<OverrideErrorBody>(raw) }.getOrNull()
                             if (err?.code == "OVERRIDE_INSUFFICIENT") {
