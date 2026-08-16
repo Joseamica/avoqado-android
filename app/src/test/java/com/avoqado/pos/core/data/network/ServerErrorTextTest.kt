@@ -14,11 +14,37 @@ import org.junit.Test
 class ServerErrorTextTest {
 
     @Test
-    fun `el error de permiso del server se vuelve legible y conserva el codigo`() {
+    fun `el error de permiso del server nombra la ACCION, no el codigo`() {
+        // 🔴 2026-08-16: el founder vio "te active «tpv:read»" y su queja fue
+        // exacta — "tiene tpv:read, no explica la causa real". El código no le
+        // dice nada a quien está cobrando; la acción sí.
         val out = ServerErrorText.humanize("Permission 'reservations:create' required")
-        assertTrue("debe hablarle a la persona", out.startsWith("No tienes permiso"))
-        assertTrue("el admin necesita el código para activarlo", out.contains("reservations:create"))
-        assertTrue("sin jerga en inglés", !out.contains("Permission"))
+        assertTrue("debe hablarle a la persona: $out", out.startsWith("No tienes permiso"))
+        assertTrue("debe nombrar la acción: $out", out.contains("agendar una reservación"))
+        assertFalse("el código técnico no se enseña: $out", out.contains("reservations:create"))
+        assertFalse("sin jerga en inglés: $out", out.contains("Permission"))
+    }
+
+    @Test
+    fun `el caso real del cajero — tpv read deja de ser un codigo`() {
+        // Medido en hardware: un CASHIER cobrando vio este modal en la pantalla
+        // de propina porque la app consulta sola qué terminales están en línea.
+        val out = ServerErrorText.humanize("Permission 'tpv:read' required")
+        assertEquals(
+            "No tienes permiso para hacer esto. Pídele a un administrador que te active «cobrar con terminal».",
+            out,
+        )
+    }
+
+    @Test
+    fun `un permiso sin etiqueta sigue siendo entendible, y NUNCA muestra el codigo`() {
+        // El respaldo no puede dejar la frase coja ("que te active «esta
+        // acción»") ni caer otra vez en el código técnico.
+        val out = ServerErrorText.humanize("Permission 'cosas:raras' required")
+        assertFalse("nada de códigos: $out", out.contains("cosas:raras"))
+        assertFalse("ni la frase coja del respaldo: $out", out.contains("«"))
+        assertTrue("tiene que decir a quién pedírselo: $out", out.contains("administrador"))
+        assertTrue("y que el problema es de permisos: $out", out.startsWith("No tienes permiso"))
     }
 
     @Test
@@ -79,7 +105,7 @@ class ServerErrorTextTest {
         // culpa al WiFi de algo que el server rechazó a propósito.
         val msg = ServerErrorText.humanize(RuntimeException("Permission 'customers:create' required"))
         assertTrue("debe seguir siendo el de permiso: $msg", msg.contains("No tienes permiso"))
-        assertTrue("y conservar el código: $msg", msg.contains("customers:create"))
+        assertTrue("y nombrar la acción: $msg", msg.contains("dar de alta un cliente"))
     }
 
     @Test
@@ -137,6 +163,9 @@ class ServerErrorTextTest {
             "fallback",
         )
         assertTrue(texto.contains("No tienes permiso"))
-        assertTrue("el código del permiso se conserva para pedir ayuda", texto.contains("tables:manage-all"))
+        assertTrue(
+            "la acción se nombra igual que cuando viene en texto plano: $texto",
+            texto.contains("modificar mesas de otro mesero"),
+        )
     }
 }

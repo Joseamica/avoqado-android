@@ -65,10 +65,10 @@ class ForbiddenInterceptorTest {
 
         // El mensaje del server es para depurar ("Permission 'orders:create'
         // required"); lo que ve el mesero tiene que estar en su idioma y decirle qué
-        // hacer, sin perder el código que el administrador necesita para activarlo.
+        // hacer, nombrando la ACCIÓN que le bloquearon y nunca el código técnico.
         val shown = errorNotifier.forbiddenError.value
         assertEquals(
-            "No tienes permiso para hacer esto. Pídele a un administrador que te active «orders:create».",
+            "No tienes permiso para hacer esto. Pídele a un administrador que te active «abrir una cuenta».",
             shown,
         )
     }
@@ -251,7 +251,7 @@ class ForbiddenInterceptorTest {
         client.newCall(Request.Builder().url(server.url("/")).build()).execute()
 
         assertEquals(
-            "No tienes permiso para hacer esto. Pídele a un administrador que te active «orders:void».",
+            "No tienes permiso para hacer esto. Pídele a un administrador que te active «anular artículos».",
             errorNotifier.forbiddenError.value,
         )
     }
@@ -366,7 +366,7 @@ class ForbiddenInterceptorTest {
         assertEquals(403, response.code)
         assertNull(coordinator.askedFor)
         assertEquals(
-            "No tienes permiso para hacer esto. Pídele a un administrador que te active «orders:merge».",
+            "No tienes permiso para hacer esto. Pídele a un administrador que te active «fusionar cuentas».",
             errorNotifier.forbiddenError.value,
         )
     }
@@ -391,7 +391,7 @@ class ForbiddenInterceptorTest {
         assertEquals(403, response.code)
         assertEquals("orders:merge", coordinator.askedFor)
         assertEquals(
-            "No tienes permiso para hacer esto. Pídele a un administrador que te active «orders:merge».",
+            "No tienes permiso para hacer esto. Pídele a un administrador que te active «fusionar cuentas».",
             errorNotifier.forbiddenError.value,
         )
     }
@@ -411,7 +411,7 @@ class ForbiddenInterceptorTest {
 
         assertNull(coordinator.askedFor)
         assertEquals(
-            "No tienes permiso para hacer esto. Pídele a un administrador que te active «orders:merge».",
+            "No tienes permiso para hacer esto. Pídele a un administrador que te active «fusionar cuentas».",
             errorNotifier.forbiddenError.value,
         )
     }

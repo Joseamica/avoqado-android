@@ -206,8 +206,17 @@ class ForbiddenInterceptor(
 
         // El server manda el detalle técnico ("Permission 'x' required"), útil
         // para logs; a la persona se le enseña algo que pueda accionar.
+        //
+        // 🔴 El código del permiso se loguea A PROPÓSITO, y con la ruta: desde
+        // 2026-08-16 ya no aparece en pantalla —ahí va la acción en español— así
+        // que este renglón es el único sitio donde queda registrado cuál fue.
+        // Sin él, un reporte de "no me deja" se vuelve imposible de rastrear.
         val message = ServerErrorText.humanize(parsed.message, "No tienes permisos para esta acción")
-        Log.w("🔒 RBAC", "403 Forbidden: $message")
+        Log.w(
+            "🔒 RBAC",
+            "403 Forbidden en ${request.url.encodedPath} — falta '${parsed.required ?: "?"}' " +
+                "(rol ${parsed.userRole ?: "?"}); en pantalla: $message",
+        )
         errorNotifier.notify(message)
 
         return response

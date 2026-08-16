@@ -1,5 +1,6 @@
 package com.avoqado.pos.core.data.network
 
+import com.avoqado.pos.core.domain.PermissionLabels
 import kotlinx.serialization.json.contentOrNull
 
 /**
@@ -140,10 +141,29 @@ object ServerErrorText {
 
         PERMISSION_REGEX.find(text)?.let { match ->
             val permiso = match.groupValues[1]
-            // Se conserva el código del permiso: es lo que el administrador necesita
-            // buscar para activarlo, y sin él el mesero no tiene cómo pedir ayuda.
-            return "No tienes permiso para hacer esto. Pídele a un administrador que te " +
-                "active «$permiso»."
+            // 🔴 Se nombra la ACCIÓN, nunca el código.
+            //
+            // Hasta 2026-08-16 aquí se enseñaba el código crudo ("que te active
+            // «tpv:read»"), con el argumento de que el administrador lo
+            // necesitaba para buscarlo. En hardware se vio lo que costaba: un
+            // CASHIER cobrando leyó exactamente eso en la pantalla de propina
+            // —la app consulta sola qué terminales PAX están en línea— y el
+            // texto no explicaba nada. Queja textual del founder: "tiene
+            // tpv:read, no explica la causa real".
+            //
+            // `PermissionLabels` ya traducía permiso → acción, pero sólo lo
+            // usaba el teclado del PIN de gerente. El código sigue existiendo
+            // para quien depura: va al logcat en `ForbiddenInterceptor`, que es
+            // donde sirve, no en la cara de quien está atendiendo.
+            val accion = PermissionLabels.labelOrNull(permiso)
+            return if (accion != null) {
+                "No tienes permiso para hacer esto. Pídele a un administrador que te active «$accion»."
+            } else {
+                // Sin etiqueta NO se cae al código ni al respaldo metido a
+                // fuerzas ("que te active «esta acción»", que suena a app rota):
+                // la frase tiene que sostenerse sola.
+                "No tienes permiso para hacer esto. Pídele a un administrador que te dé permiso para esta acción."
+            }
         }
 
         // Otros errores que el server manda en inglés y no significan nada para quien
