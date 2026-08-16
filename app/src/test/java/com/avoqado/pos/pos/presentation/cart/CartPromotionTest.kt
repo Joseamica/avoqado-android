@@ -399,6 +399,46 @@ class CartPromotionTest {
     }
 
     @Test
+    fun `un chargedQuantity de cero es un regalo y se cobra en cero`() {
+        // 🔴 El regalo EXPLÍCITO de un PER_UNIT: entran 2, se cobran 0, con precio
+        // de catálogo REAL ($50). Es el otro camino por el que un 0 legítimo se
+        // puede confundir con "no sé el precio" — y confundirlo aquí cobraría
+        // $100 por lo que el server registra en $0. El código ya era correcto;
+        // hasta ahora nada lo protegía. (Agregado desde la Task 7 de iOS, donde
+        // vive el mismo test: `CartPromotionTests.swift`.)
+        val regalo = Promotion(
+            id = "promo-regalo",
+            name = "Segunda cerveza de cortesía",
+            pricingMode = "PER_UNIT",
+            groups = listOf(
+                PromotionGroup(
+                    id = "g-cerveza",
+                    name = "Cerveza",
+                    options = listOf(
+                        PromotionOption(
+                            id = "o-cerveza",
+                            productId = "p-cerveza",
+                            quantity = 2,
+                            chargedQuantity = 0,
+                            productName = "Cerveza",
+                            productPriceCents = 5000,
+                        ),
+                    ),
+                ),
+            ),
+        )
+        val vm = createViewModel()
+
+        assertEquals(0, estimadoDePromocion(regalo, emptyMap()))
+        assertTrue(vm.aplicarPromocion(regalo, emptyMap()))
+
+        val linea = vm.cartState.value.items.single()
+        assertEquals(2, linea.quantity) // entran 2 unidades al inventario
+        assertEquals(0, linea.unitPrice)
+        assertEquals(0, vm.cartState.value.totalCents) // 💰 y se cobran 0
+    }
+
+    @Test
     fun `un PER_UNIT sin precios de producto vale cero, igual que en el server`() {
         // Bruto 0 ⇒ el server resuelve neto 0 (descuento = max(0, 0−objetivo)).
         // `priceCents` NUNCA se usa en un PER_UNIT: mostrarlo sería inventar.
