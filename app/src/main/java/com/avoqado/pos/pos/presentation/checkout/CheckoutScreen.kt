@@ -7,6 +7,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
@@ -72,6 +73,7 @@ import com.avoqado.pos.payment.presentation.SplitPaymentSheet
 import com.avoqado.pos.pos.data.model.CartItem
 import com.avoqado.pos.pos.data.model.CartItemType
 import com.avoqado.pos.pos.data.model.Product
+import com.avoqado.pos.pos.data.model.Promotion
 import com.avoqado.pos.pos.presentation.cart.CartPanelView
 import com.avoqado.pos.pos.presentation.cart.CartState
 import com.avoqado.pos.pos.presentation.cart.CartViewModel
@@ -81,6 +83,10 @@ import com.avoqado.pos.pos.presentation.product.CreateProductView
 import com.avoqado.pos.pos.presentation.product.ProductDetailPanel
 import com.avoqado.pos.pos.presentation.product.ProductGridView
 import com.avoqado.pos.pos.presentation.product.WeightCapturePanel
+import com.avoqado.pos.pos.presentation.promotions.PromotionsPanel
+import com.avoqado.pos.pos.presentation.promotions.PromotionsPanelViewModel
+import com.avoqado.pos.pos.presentation.promotions.resolverModoPanel
+import com.avoqado.pos.tpvsettings.data.PanelMode
 import com.avoqado.pos.pos.presentation.scanner.BarcodeScannerView
 import com.avoqado.pos.core.domain.RoleManager
 import com.avoqado.pos.pos.presentation.search.SearchOverlayView
@@ -93,6 +99,12 @@ enum class InputTab(val label: String) {
     KEYPAD("Teclado"),
     SHORTCUTS("Shortcuts"),
     PRODUCTS("Todos los productos"),
+    /**
+     * Promociones. 🔴 Sólo aparece cuando el modo resuelto del panel es `TAB`:
+     * con el panel lateral el cajero tendría DOS entradas a lo mismo, y con
+     * `HIDDEN` el local lo apagó a propósito. Ver `resolverModoPanel`.
+     */
+    PROMOS("Promociones"),
     MOSAIC("Configurar"),
 }
 
@@ -173,6 +185,20 @@ fun CheckoutScreen(
     val isTablePaying = tableSessionActive?.mode == com.avoqado.pos.tables.data.TableSession.Mode.PAYING
     val upsellContext = com.avoqado.pos.pos.presentation.upsell.UpsellContext.COUNTER
     LaunchedEffect(Unit) { upsellViewModel.refresh() }
+
+    // Promociones (PRO) — combos, paquetes y 2x1 a la vista del cajero. Dónde se
+    // pinta lo decide el ajuste del local corregido por el ancho REAL de la
+    // superficie (ver `resolverModoPanel`); `HIDDEN` lo apaga y es lo único que
+    // puede hacerlo desaparecer, porque lo eligió el propio dueño.
+    val promotionsViewModel: PromotionsPanelViewModel = hiltViewModel()
+    val promociones by promotionsViewModel.promociones.collectAsState()
+    val ajustePanelPromos by promotionsViewModel.ajustePanelCajero.collectAsState()
+    LaunchedEffect(Unit) { promotionsViewModel.refresh() }
+    // 🔴 Seam de la Task 6: ahí se abre la hoja de opciones del combo y la
+    // promoción entra al carrito (con su `AvoqadoSuccessToast`). Esta task sólo
+    // pinta y deja tocar — a propósito NO se celebra un "¡Combo agregado!" que
+    // hoy sería mentira, porque todavía no entra nada al carrito.
+    val onPromotionTap: (Promotion) -> Unit = { }
     LaunchedEffect(tableSessionActive?.orderId, tableSessionActive?.mode) {
         cartViewModel.consumePendingTableCobrar()
     }
@@ -424,179 +450,242 @@ fun CheckoutScreen(
     }
 
     if (isTablet) {
-        // iPad-style: 50/50 split with left=input, right=cart
-        Row(modifier = Modifier.fillMaxSize()) {
-            // Left panel - Input area
-            Box(
-                modifier = Modifier
-                    .weight(0.5f)
-                    .fillMaxHeight()
-                    .background(MaterialTheme.colorScheme.surface),
-            ) {
-                if (showSearch) {
-                    SearchOverlayView(
-                        viewModel = cartViewModel,
-                        onProductTap = { product ->
-                            handleProductTap(product, cartViewModel, { selectedProduct = it }, { weightProduct = it })
-                            showSearch = false
-                        },
-                        onCreateProduct = if (roleManager?.canCreateProducts != false) {
-                            { searchName ->
+        // iPad-style: 50/50 split con entrada + carrito — o 50/25/25 cuando el
+        // panel de promociones entra como TERCERA columna.
+        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+            // 🔴 Manda el ancho REAL de esta superficie, no el booleano `isTablet`:
+            // ese colapsa "tablet chica" y "tablet grande" en el mismo valor, y aquí
+            // hay que decidir si cabe una tercera columna. Además `maxWidth` ya viene
+            // sin lo que se come la barra de navegación lateral.
+            val modoPanelPromos = resolverModoPanel(ajustePanelPromos, maxWidth.value.toInt())
+            val pestanasTablet = pestanasVisibles(modoPanelPromos)
+            // La pestaña de promociones puede desaparecer al girar la tablet o al
+            // cambiar el ajuste. Si el cajero estaba parado en ella se le devuelve al
+            // teclado, en vez de dejarlo mirando una pestaña que ya no existe.
+            LaunchedEffect(pestanasTablet) {
+                if (selectedTab !in pestanasTablet) selectedTab = InputTab.KEYPAD
+            }
+            Row(modifier = Modifier.fillMaxSize()) {
+                // Left panel - Input area
+                Box(
+                    modifier = Modifier
+                        .weight(0.5f)
+                        .fillMaxHeight()
+                        .background(MaterialTheme.colorScheme.surface),
+                ) {
+                    if (showSearch) {
+                        SearchOverlayView(
+                            viewModel = cartViewModel,
+                            onProductTap = { product ->
+                                handleProductTap(product, cartViewModel, { selectedProduct = it }, { weightProduct = it })
                                 showSearch = false
-                                createProductInitialName = searchName
-                                showCreateProduct = true
-                            }
-                        } else null,
-                        onDismiss = { showSearch = false },
-                    )
-                } else {
-                    Column(modifier = Modifier.fillMaxSize()) {
-                        // Search bar + refresh + barcode
-                        SearchBarView(
-                            isLoading = isLoading,
-                            onSearchTap = { showSearch = true },
-                            onRefresh = { cartViewModel.refreshProducts() },
-                            onBarcodeScan = { showBarcodeScanner = true },
+                            },
+                            onCreateProduct = if (roleManager?.canCreateProducts != false) {
+                                { searchName ->
+                                    showSearch = false
+                                    createProductInitialName = searchName
+                                    showCreateProduct = true
+                                }
+                            } else null,
+                            onDismiss = { showSearch = false },
                         )
+                    } else {
+                        Column(modifier = Modifier.fillMaxSize()) {
+                            // Search bar + refresh + barcode
+                            SearchBarView(
+                                isLoading = isLoading,
+                                onSearchTap = { showSearch = true },
+                                onRefresh = { cartViewModel.refreshProducts() },
+                                onBarcodeScan = { showBarcodeScanner = true },
+                            )
 
-                        // Tab selector
-                        TabSelectorView(
-                            selectedTab = selectedTab,
-                            onTabSelected = { selectedTab = it },
-                        )
+                            // Tab selector
+                            TabSelectorView(
+                                tabs = pestanasTablet,
+                                selectedTab = selectedTab,
+                                onTabSelected = { selectedTab = it },
+                            )
 
-                        // Tab content
-                        when (selectedTab) {
-                            InputTab.KEYPAD -> {
-                                NumericKeypadView(
-                                    amountCents = amountCents,
-                                    onAmountChange = { amountCents = it },
-                                    onAddToCart = {
-                                        if (amountCents > 0) {
-                                            cartViewModel.addCustomAmount(
-                                                name = currentNote.ifBlank { "Importe personalizado" },
-                                                amountCents = amountCents,
+                            // Tab content
+                            when (selectedTab) {
+                                InputTab.KEYPAD -> {
+                                    NumericKeypadView(
+                                        amountCents = amountCents,
+                                        onAmountChange = { amountCents = it },
+                                        onAddToCart = {
+                                            if (amountCents > 0) {
+                                                cartViewModel.addCustomAmount(
+                                                    name = currentNote.ifBlank { "Importe personalizado" },
+                                                    amountCents = amountCents,
+                                                )
+                                                amountCents = 0
+                                                currentNote = ""
+                                            }
+                                        },
+                                        onNoteTap = { showNoteDialog = true },
+                                        noteText = currentNote,
+                                        useCompactSizing = true,
+                                    )
+                                }
+                                InputTab.SHORTCUTS -> {
+                                    ShortcutsGridView(
+                                        cartViewModel = cartViewModel,
+                                        discountsRepository = cartViewModel.discountsRepository,
+                                        onCustomerSearch = openPayLaterCustomerPicker,
+                                        reopenPayLaterToken = reopenPayLaterToken,
+                                        selectedPayLaterCustomerName = selectedCustomer?.fullName,
+                                        onConfirmPayLater = ::confirmPayLaterOrder,
+                                        isConfirmingPayLater = isSubmittingPayLater,
+                                        onCreateItem = { showCreateProduct = true },
+                                        onProductTap = { product ->
+                                            handleProductTap(product, cartViewModel, { selectedProduct = it }, { weightProduct = it })
+                                        },
+                                        canCreateProducts = roleManager?.canCreateProducts ?: true,
+                                    )
+                                }
+                                InputTab.PRODUCTS -> {
+                                    ProductGridView(
+                                        viewModel = cartViewModel,
+                                        onProductTap = { product ->
+                                            handleProductTap(
+                                                product,
+                                                cartViewModel,
+                                                { selectedProduct = it },
+                                                { weightProduct = it },
                                             )
-                                            amountCents = 0
-                                            currentNote = ""
-                                        }
-                                    },
-                                    onNoteTap = { showNoteDialog = true },
-                                    noteText = currentNote,
-                                    useCompactSizing = true,
-                                )
-                            }
-                            InputTab.SHORTCUTS -> {
-                                ShortcutsGridView(
-                                    cartViewModel = cartViewModel,
-                                    discountsRepository = cartViewModel.discountsRepository,
-                                    onCustomerSearch = openPayLaterCustomerPicker,
-                                    reopenPayLaterToken = reopenPayLaterToken,
-                                    selectedPayLaterCustomerName = selectedCustomer?.fullName,
-                                    onConfirmPayLater = ::confirmPayLaterOrder,
-                                    isConfirmingPayLater = isSubmittingPayLater,
-                                    onCreateItem = { showCreateProduct = true },
-                                    onProductTap = { product ->
-                                        handleProductTap(product, cartViewModel, { selectedProduct = it }, { weightProduct = it })
-                                    },
-                                    canCreateProducts = roleManager?.canCreateProducts ?: true,
-                                )
-                            }
-                            InputTab.PRODUCTS -> {
-                                ProductGridView(
-                                    viewModel = cartViewModel,
-                                    onProductTap = { product ->
-                                        handleProductTap(
-                                            product,
-                                            cartViewModel,
-                                            { selectedProduct = it },
-                                            { weightProduct = it },
-                                        )
-                                    },
-                                    onPackTap = if (roleManager?.canReadCreditPacks == true) {
-                                        { cartViewModel.addCreditPack(it) }
-                                    } else {
-                                        null
-                                    },
-                                )
-                            }
-                            InputTab.MOSAIC -> {
-                                MosaicConfigView(
-                                    cartViewModel = cartViewModel,
-                                )
+                                        },
+                                        onPackTap = if (roleManager?.canReadCreditPacks == true) {
+                                            { cartViewModel.addCreditPack(it) }
+                                        } else {
+                                            null
+                                        },
+                                    )
+                                }
+                                InputTab.PROMOS -> {
+                                    PromotionsPanel(
+                                        vigentes = promociones.active,
+                                        proximas = promociones.upcoming,
+                                        planPermitido = promotionsViewModel.planPermitido,
+                                        puedeAplicar = promotionsViewModel.puedeAplicar,
+                                        onPromotionTap = onPromotionTap,
+                                    )
+                                }
+                                InputTab.MOSAIC -> {
+                                    MosaicConfigView(
+                                        cartViewModel = cartViewModel,
+                                    )
+                                }
                             }
                         }
                     }
                 }
-            }
 
-            // Vertical divider
-            Box(
-                modifier = Modifier
-                    .width(1.dp)
-                    .fillMaxHeight()
-                    .background(MaterialTheme.colorScheme.outlineVariant),
-            )
-
-            // Right panel - Cart
-            Box(
-                modifier = Modifier
-                    .weight(0.5f)
-                    .fillMaxHeight(),
-            ) {
-                CartPanelView(
-                    cartState = cartState,
-                    onItemTap = { item -> selectedCartItem = item },
-                    onOrderTypeChange = { cartViewModel.setOrderType(it) },
-                    onCharge = {
-                        runPrimaryAction()
-                    },
-                    onClearCart = { showClearCartConfirm = true },
-                    onSaveCart = {
-                        if (cartViewModel.saveCurrentCart()) {
-                            showSavedSnackbar = true
-                        }
-                    },
-                    onAddCustomAmount = { selectedTab = InputTab.KEYPAD },
-                    onRemoveItem = { cartViewModel.removeItem(it) },
-                    onApplyTaxPercent = { cartViewModel.applyOrderTaxPercent(it) },
-                    customerName = selectedCustomer?.fullName,
-                    customerId = selectedCustomer?.id,
-                    onCustomerTap = openGeneralCustomerPicker,
-                    staffName = cartState.selectedStaffName,
-                    onStaffTap = {
-                        cartViewModel.fetchStaff()
-                        showStaffSelector = true
-                    },
-                    onSplitPayment = {
-                        // Membresías grant only on FULL payment — a split sale
-                        // charged the pack without ever granting credits.
-                        if (cartViewModel.hasCreditPack) showPackNoSplitAlert = true
-                        else showSplitPayment = true
-                    },
-                    referralCode = referralCodeState,
-                    referralUiState = referralUiState,
-                    customerSelectedForReferral = selectedCustomer != null,
-                    onReferralCodeChange = { cartViewModel.onReferralCodeChange(it) },
-                    onValidateReferral = { cartViewModel.validateReferralCode() },
-                    onClearReferral = { cartViewModel.clearReferral() },
-                    onForceOverrideReferral = {
-                        // v1: placeholder hook — the manager-PIN dialog lands in v2.
-                        // Disabled at the button level, but keep the lambda wired
-                        // so future work just flips the `enabled` flag.
-                    },
-                    referralPlanAllowed = cartViewModel.referralPlanAllowed,
-                    primaryActionLabel = if (areaOperationsState.issueWorkspace) {
-                        "Emitir vale ${cartState.totalDisplay}"
-                    } else {
-                        null
-                    },
+                // Vertical divider
+                Box(
+                    modifier = Modifier
+                        .width(1.dp)
+                        .fillMaxHeight()
+                        .background(MaterialTheme.colorScheme.outlineVariant),
                 )
+
+                // Middle panel - Promociones (sólo en modo columna). La entrada se
+                // queda con el 50% y el 50% restante se parte entre promociones y
+                // carrito: es de ahí que sale el umbral de 960dp, porque debajo la
+                // cuadrícula de productos deja de caber en 3 columnas.
+                if (modoPanelPromos == PanelMode.SIDE_PANEL) {
+                    Box(
+                        modifier = Modifier
+                            .weight(0.25f)
+                            .fillMaxHeight()
+                            .background(MaterialTheme.colorScheme.surface),
+                    ) {
+                        PromotionsPanel(
+                            vigentes = promociones.active,
+                            proximas = promociones.upcoming,
+                            planPermitido = promotionsViewModel.planPermitido,
+                            puedeAplicar = promotionsViewModel.puedeAplicar,
+                            onPromotionTap = onPromotionTap,
+                        )
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .width(1.dp)
+                            .fillMaxHeight()
+                            .background(MaterialTheme.colorScheme.outlineVariant),
+                    )
+                }
+
+                // Right panel - Cart
+                Box(
+                    modifier = Modifier
+                        .weight(if (modoPanelPromos == PanelMode.SIDE_PANEL) 0.25f else 0.5f)
+                        .fillMaxHeight(),
+                ) {
+                    CartPanelView(
+                        cartState = cartState,
+                        onItemTap = { item -> selectedCartItem = item },
+                        onOrderTypeChange = { cartViewModel.setOrderType(it) },
+                        onCharge = {
+                            runPrimaryAction()
+                        },
+                        onClearCart = { showClearCartConfirm = true },
+                        onSaveCart = {
+                            if (cartViewModel.saveCurrentCart()) {
+                                showSavedSnackbar = true
+                            }
+                        },
+                        onAddCustomAmount = { selectedTab = InputTab.KEYPAD },
+                        onRemoveItem = { cartViewModel.removeItem(it) },
+                        onApplyTaxPercent = { cartViewModel.applyOrderTaxPercent(it) },
+                        customerName = selectedCustomer?.fullName,
+                        customerId = selectedCustomer?.id,
+                        onCustomerTap = openGeneralCustomerPicker,
+                        staffName = cartState.selectedStaffName,
+                        onStaffTap = {
+                            cartViewModel.fetchStaff()
+                            showStaffSelector = true
+                        },
+                        onSplitPayment = {
+                            // Membresías grant only on FULL payment — a split sale
+                            // charged the pack without ever granting credits.
+                            if (cartViewModel.hasCreditPack) showPackNoSplitAlert = true
+                            else showSplitPayment = true
+                        },
+                        referralCode = referralCodeState,
+                        referralUiState = referralUiState,
+                        customerSelectedForReferral = selectedCustomer != null,
+                        onReferralCodeChange = { cartViewModel.onReferralCodeChange(it) },
+                        onValidateReferral = { cartViewModel.validateReferralCode() },
+                        onClearReferral = { cartViewModel.clearReferral() },
+                        onForceOverrideReferral = {
+                            // v1: placeholder hook — the manager-PIN dialog lands in v2.
+                            // Disabled at the button level, but keep the lambda wired
+                            // so future work just flips the `enabled` flag.
+                        },
+                        referralPlanAllowed = cartViewModel.referralPlanAllowed,
+                        primaryActionLabel = if (areaOperationsState.issueWorkspace) {
+                            "Emitir vale ${cartState.totalDisplay}"
+                        } else {
+                            null
+                        },
+                    )
+                }
             }
         }
     } else {
         // iPhone-style: full-screen with bottom cart bar
-        Box(modifier = Modifier.fillMaxSize()) {
+        BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+            // Un teléfono es siempre Compact (<600dp), o sea que el lateral SIEMPRE
+            // cae a pestaña aquí. Se calcula con el ancho real igual, para no tener
+            // dos reglas; y la pestaña se muestra con cualquier modo que no sea
+            // HIDDEN, para que un valor inesperado no la haga desaparecer en
+            // silencio en el único layout que no tiene tercera columna.
+            val modoPanelPromos = resolverModoPanel(ajustePanelPromos, maxWidth.value.toInt())
+            val pestanasTelefono = pestanasVisibles(modoPanelPromos, siempreComoPestana = true)
+            LaunchedEffect(pestanasTelefono) {
+                if (selectedTab !in pestanasTelefono) selectedTab = InputTab.KEYPAD
+            }
             Column(modifier = Modifier.fillMaxSize()) {
                 if (showSearch) {
                     SearchOverlayView(
@@ -625,6 +714,7 @@ fun CheckoutScreen(
 
                     // Tab selector
                     TabSelectorView(
+                        tabs = pestanasTelefono,
                         selectedTab = selectedTab,
                         onTabSelected = { selectedTab = it },
                     )
@@ -679,6 +769,15 @@ fun CheckoutScreen(
                                         )
                                     },
                                     onPackTap = { cartViewModel.addCreditPack(it) },
+                                )
+                            }
+                            InputTab.PROMOS -> {
+                                PromotionsPanel(
+                                    vigentes = promociones.active,
+                                    proximas = promociones.upcoming,
+                                    planPermitido = promotionsViewModel.planPermitido,
+                                    puedeAplicar = promotionsViewModel.puedeAplicar,
+                                    onPromotionTap = onPromotionTap,
                                 )
                             }
                             InputTab.MOSAIC -> {
@@ -1857,8 +1956,27 @@ private fun SearchBarView(
 
 // MARK: - Tab Selector (matching iOS: underline style tabs)
 
+/**
+ * Qué pestañas se pintan. `PROMOS` sólo entra cuando el panel de promociones va
+ * COMO pestaña: con el panel lateral el cajero tendría dos entradas a lo mismo,
+ * y con `HIDDEN` el local lo apagó desde su dashboard.
+ *
+ * @param siempreComoPestana para el layout de un solo panel (teléfono), donde no
+ *   existe la tercera columna: cualquier modo que no sea `HIDDEN` se ve como
+ *   pestaña, para que nunca desaparezca en silencio.
+ */
+private fun pestanasVisibles(
+    modoPanelPromos: PanelMode,
+    siempreComoPestana: Boolean = false,
+): List<InputTab> {
+    val hayPestanaPromos = modoPanelPromos == PanelMode.TAB ||
+        (siempreComoPestana && modoPanelPromos != PanelMode.HIDDEN)
+    return InputTab.entries.filter { it != InputTab.PROMOS || hayPestanaPromos }
+}
+
 @Composable
 private fun TabSelectorView(
+    tabs: List<InputTab>,
     selectedTab: InputTab,
     onTabSelected: (InputTab) -> Unit,
 ) {
@@ -1870,7 +1988,7 @@ private fun TabSelectorView(
             .padding(bottom = AvoqadoTheme.spacing.xxs),
         horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.lg),
     ) {
-        InputTab.entries.forEach { tab ->
+        tabs.forEach { tab ->
             val isSelected = selectedTab == tab
             Column(
                 modifier = Modifier

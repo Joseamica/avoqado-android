@@ -23,6 +23,35 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/**
+ * Dónde pinta el POS el panel de promociones. Espejo EXACTO del enum
+ * `PromotionPanelMode` del server (`schema.prisma`) y de iOS — un nombre que no
+ * coincida falla en silencio.
+ *
+ * 🔴 `HIDDEN` es preferencia de LAYOUT del propio local (la eligió el dueño en
+ * el dashboard y la puede revertir ahí), no un candado de plan. Por eso ésta sí
+ * puede ocultar el panel sin explicar nada: el que lo apagó sabe dónde
+ * prenderlo. El candado de TIER es otra cosa y siempre se ve (ver
+ * `PromotionsPanel`).
+ */
+@Serializable
+enum class PanelMode { HIDDEN, TAB, SIDE_PANEL }
+
+/**
+ * Ajuste de VENUE (no de terminal) que dice dónde va el panel de promociones en
+ * cada una de las dos pantallas. Viaja en su propio objeto `promotions` del
+ * payload de settings, al lado de `plan` — NO dentro de `settings`, que es por
+ * terminal (ver `tpvSettings.mobile.controller.ts:147-150`).
+ *
+ * Defaults = los del server. Campo ausente (server viejo) ⇒ estos mismos
+ * valores, nunca un crash.
+ */
+@Serializable
+data class PromotionsPanelSettings(
+    val panelCashier: PanelMode = PanelMode.TAB,
+    val panelCustomer: PanelMode = PanelMode.SIDE_PANEL,
+)
+
 @Serializable
 data class TpvSettings(
     val showReviewScreen: Boolean = true,
@@ -40,6 +69,13 @@ data class TpvSettings(
     val showQuickPayment: Boolean = true,
     val showOrderManagement: Boolean = true,
     val includeTaxInTipBase: Boolean = false,
+    /**
+     * 🔴 El server NO lo manda aquí dentro: viaja como `data.promotions`, hermano
+     * de `settings`. Se copia a este objeto en `refreshSettingsForVenue` porque
+     * es lo que la pantalla de cobro ya lee (y así el cache del disco lo
+     * conserva para el arranque sin red). Nunca se parsea de `data.settings`.
+     */
+    val promotions: PromotionsPanelSettings = PromotionsPanelSettings(),
 ) {
     companion object {
         val DEFAULT = TpvSettings()
@@ -77,7 +113,14 @@ class TpvSettingsRepository @Inject constructor(
     private val preferencesDataStore: PreferencesDataStore,
     private val displayModePrefs: DisplayModePrefs,
 ) {
-    private val json = Json { ignoreUnknownKeys = true }
+    // `coerceInputValues`: un server NUEVO con un modo de panel que esta versión
+    // de la app todavía no conoce cae al default del campo en vez de reventar el
+    // parseo COMPLETO de settings. Fail-open: un valor desconocido no puede
+    // dejar al local sin su configuración de terminal.
+    private val json = Json {
+        ignoreUnknownKeys = true
+        coerceInputValues = true
+    }
 
     private val _settings = MutableStateFlow(TpvSettings.DEFAULT)
     val settings: StateFlow<TpvSettings> = _settings.asStateFlow()
@@ -187,9 +230,13 @@ class TpvSettingsRepository @Inject constructor(
             _managerPinOverrideEnabled.value = overrideEnabled
             secureStorage.managerPinOverrideEnabled = overrideEnabled
 
+            // Panel de promociones: es de VENUE, así que aplica HAYA o NO una
+            // terminal activa — por eso se resuelve fuera del `if` de abajo.
+            val promotionsPanel = result.data?.promotions ?: PromotionsPanelSettings()
+
             if (result.data?.settings != null) {
                 val resolvedSettings = applyIncludeTaxOverride(
-                    base = result.data.settings,
+                    base = result.data.settings.copy(promotions = promotionsPanel),
                     localOverride = localIncludeTaxOverride,
                 )
                 _settings.value = resolvedSettings
@@ -198,7 +245,7 @@ class TpvSettingsRepository @Inject constructor(
             } else {
                 Log.d("📦", "No active terminal, using defaults")
                 val resolvedSettings = applyIncludeTaxOverride(
-                    base = TpvSettings.DEFAULT,
+                    base = TpvSettings.DEFAULT.copy(promotions = promotionsPanel),
                     localOverride = localIncludeTaxOverride,
                 )
                 _settings.value = resolvedSettings
@@ -358,6 +405,12 @@ internal data class VenueSettingsData(
     val activeTerminalId: String? = null,
     val deviceTerminal: DeviceTerminalSettingsDto? = null,
     val plan: VenuePlanDto? = null,
+    /**
+     * Panel de promociones. Es de VENUE (`VenueSettings`), no de terminal — por
+     * eso viaja aquí y no dentro de `settings`. Ausente (server viejo) ⇒ null ⇒
+     * el repositorio aplica los defaults.
+     */
+    val promotions: PromotionsPanelSettings? = null,
     /**
      * PIN de autorización de gerente. Es de VENUE, no de terminal — por eso vive
      * aquí y no dentro de `settings`. Default false: un server viejo (campo
