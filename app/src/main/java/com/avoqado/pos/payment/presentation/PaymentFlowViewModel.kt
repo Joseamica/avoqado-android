@@ -325,6 +325,16 @@ class PaymentFlowViewModel @Inject constructor(
      */
     private var serverTotalOverrideCents: Int? = null
 
+    /**
+     * 🔴 DINERO. Total (centavos, propina incluida) que el server le puso a la
+     * orden de ESTA venta, cuando la venta llevaba promoción.
+     *
+     * Se guarda SIEMPRE que la orden se crea — también en pago DIVIDIDO, donde
+     * no manda sobre lo que se cobra ahora (ese importe lo eligió el cajero)
+     * pero sí sobre **lo que queda por cobrar**: ver `buildCompletion`.
+     */
+    private var serverOrderTotalCents: Int? = null
+
     // WhatsApp receipt sending state
     private val _whatsAppSending = MutableStateFlow(false)
     val whatsAppSending: StateFlow<Boolean> = _whatsAppSending.asStateFlow()
@@ -581,6 +591,7 @@ class PaymentFlowViewModel @Inject constructor(
         // El total autoritativo es de la venta ANTERIOR: arrastrarlo cobraría
         // esta venta al precio de la pasada.
         serverTotalOverrideCents = null
+        serverOrderTotalCents = null
         val amount = currentBaseAmount()
 
         // Reset transient state from any previous session.
@@ -1953,7 +1964,18 @@ class PaymentFlowViewModel @Inject constructor(
                 )
             }
             "EQUALPARTS", "CUSTOMAMOUNT" -> {
-                val remaining = (cart.totalCents - currentBaseAmount()).coerceAtLeast(0)
+                // 🔴 DINERO. Con promoción, lo que vale la venta lo dice el
+                // server, no el estimado del carrito. Si el resto se calculara
+                // del estimado, la suma de las partes quedaría hasta ±11¢ del
+                // total de la orden: el cliente paga otra cosa y la cuenta no
+                // cierra. La ÚLTIMA parte absorbe la diferencia.
+                //
+                // El total del server viene CON la propina de la parte que ya se
+                // cobró; el resto se mide sin ella, igual que `currentBaseAmount`.
+                val totalDeLaVenta = serverOrderTotalCents
+                    ?.let { (it - currentTipCents).coerceAtLeast(0) }
+                    ?: cart.totalCents
+                val remaining = (totalDeLaVenta - currentBaseAmount()).coerceAtLeast(0)
                 PaymentCompletion(
                     splitType = splitTypeValue,
                     remainingBalanceCents = remaining,
@@ -2035,11 +2057,18 @@ class PaymentFlowViewModel @Inject constructor(
         response: CreateOrderResponse,
         estimadoLocal: Int,
     ): Int {
+        val laVentaLlevaPromocion = orderRequest.items.any { it.promotionRef != null }
+        // Se GUARDA aunque no se adopte. En pago dividido el importe de ESTA
+        // parte lo eligió el cajero y no se toca, pero el RESTO tiene que salir
+        // del total real o la suma de las partes no es lo que vale la venta.
+        if (laVentaLlevaPromocion) {
+            serverOrderTotalCents = response.data?.totalCents?.takeIf { it >= 0 }
+        }
         val total = totalACobrarCents(
             estimadoLocalCents = estimadoLocal,
             orden = response.data,
             esPagoCompleto = _splitType.value == "FULLPAYMENT" && splitBaseAmountOverride == null,
-            laVentaLlevaPromocion = orderRequest.items.any { it.promotionRef != null },
+            laVentaLlevaPromocion = laVentaLlevaPromocion,
         )
         if (total != estimadoLocal) {
             serverTotalOverrideCents = total

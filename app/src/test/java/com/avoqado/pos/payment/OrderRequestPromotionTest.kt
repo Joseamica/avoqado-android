@@ -55,6 +55,7 @@ import io.mockk.slot
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
@@ -162,23 +163,39 @@ class OrderRequestPromotionTest {
 
     @Test
     fun `el payload que sale por el cable no lleva ni name ni unitPrice en la promocion`() {
+        // 🔴 Carrito MIXTO a propósito: sobre uno de puras promociones, un
+        // `!payload.contains("name")` pasa por accidente y no cazaría una fuga
+        // cuando conviven las dos clases de línea. Se inspecciona el OBJETO de
+        // la promoción, no el texto suelto.
         val request = CreateOrderRequest(
-            items = buildOrderItemRequests(lineasDelCombo()),
-            subtotal = 9900,
-            total = 9900,
+            items = buildOrderItemRequests(lineasDelCombo() + lineaNormal),
+            subtotal = 18900,
+            total = 18900,
             paymentMethod = "CASH",
         )
 
         val payload = OrderRepository.buildCreateOrderPayload(request = request, staffId = "staff-1")
+        val items = kotlinx.serialization.json.Json.parseToJsonElement(payload)
+            .jsonObject.getValue("items").jsonArray.map { it.jsonObject }
+        val promo = items.single { it.containsKey("promotionRef") }
+        val normal = items.single { !it.containsKey("promotionRef") }
 
         // El server rechaza con 400 un item que traiga promotionRef Y (productId |
         // name | unitPrice). `unitPrice: 0` cuenta: `typeof 0 === 'number'`.
-        assertTrue("falta promotionRef en el JSON", payload.contains("\"promotionRef\""))
+        assertEquals(
+            "la línea de promoción viaja SOLA: sólo promotionRef",
+            setOf("promotionRef"),
+            promo.keys,
+        )
+        val ref = promo.getValue("promotionRef").jsonObject
+        assertEquals(setOf("promotionId", "promotionInstanceId", "selections"), ref.keys)
         assertTrue(payload.contains("\"promotionId\":\"promo-combo\""))
         assertTrue(payload.contains("\"promotionInstanceId\":\"inst-1\""))
-        assertFalse("la línea de promoción no puede llevar name", payload.contains("\"name\""))
-        assertFalse("la línea de promoción no puede llevar unitPrice", payload.contains("\"unitPrice\""))
-        assertFalse("la línea de promoción no puede llevar productId", payload.contains("\"productId\""))
+
+        // Y la línea normal del MISMO payload sigue llevando lo suyo: la
+        // aserción de arriba no puede pasar por "aquí no hay líneas normales".
+        assertTrue(normal.containsKey("productId"))
+        assertTrue(normal.containsKey("quantity"))
     }
 
     @Test
@@ -499,6 +516,76 @@ class OrderRequestPromotionTest {
         assertEquals(9901, orden.totalCents)
         assertEquals("ORD-123", orden.orderNumber)
         assertEquals("inst-1", orden.promotions.single().instanceId)
+    }
+
+    // MARK: - 7b. Pago dividido: la suma de las partes vale la venta
+
+    /**
+     * 🔴 El resto de un pago dividido salía del estimado del carrito, así que
+     * `parte1 + parte2` quedaba hasta ±11¢ del total real de la orden: el
+     * cliente pagaba otra cosa y la cuenta no cerraba
+     * (`remainingAfterPayment <= 0.01` es la tolerancia del server).
+     *
+     * La parte que se cobra AHORA no se toca —ese importe lo eligió el cajero y
+     * ya se lo dijo al cliente—; la que absorbe la diferencia es la última.
+     */
+    @Test
+    fun `en pago dividido el resto sale del total del server, no del estimado`() = runTest {
+        val carrito = lineasDelCombo().mapIndexed { index, item ->
+            if (index == 0) item.copy(unitPrice = 7424) else item // estimado local: 9899
+        }
+        every { cashPaymentRepository.processCashPayment(5000, 5000) } returns
+            CashPaymentResult.Success(changeCents = 0)
+        coEvery {
+            orderRepository.createOrder(any(), any(), any(), any(), any())
+        } returns Result.success(
+            CreateOrderResponse(success = true, data = OrderData(id = "order-1", total = 99.0)),
+        )
+        coEvery {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any())
+        } returns Result.success(OrderRepository.CashPayResult(paymentId = "pay-1", receiptAccessKey = null))
+
+        paymentViewModel.setSplitConfig(type = "CUSTOMAMOUNT", customAmountCents = 5000)
+        paymentViewModel.startPaymentFlow(CartState(items = carrito))
+        paymentViewModel.selectPaymentMethod(PaymentMethod.CASH)
+        paymentViewModel.processCashPayment(5000)
+        advanceUntilIdle()
+
+        val completion = paymentViewModel.consumeCompletion()!!
+        assertEquals("el resto cierra contra el total del server", 4900, completion.remainingBalanceCents)
+        assertEquals(
+            "la suma de las partes tiene que valer lo que el server le puso a la orden",
+            9900,
+            5000 + completion.remainingBalanceCents,
+        )
+    }
+
+    @Test
+    fun `sin promocion el resto de un pago dividido sigue saliendo del carrito`() = runTest {
+        every { cashPaymentRepository.processCashPayment(5000, 5000) } returns
+            CashPaymentResult.Success(changeCents = 0)
+        coEvery {
+            orderRepository.createOrder(any(), any(), any(), any(), any())
+        } returns Result.success(
+            CreateOrderResponse(success = true, data = OrderData(id = "order-1", total = 120.0)),
+        )
+        coEvery {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any())
+        } returns Result.success(OrderRepository.CashPayResult(paymentId = "pay-1", receiptAccessKey = null))
+
+        val cart = CartState(items = listOf(lineaNormal)) // 9000
+        paymentViewModel.setSplitConfig(type = "CUSTOMAMOUNT", customAmountCents = 5000)
+        paymentViewModel.startPaymentFlow(cart)
+        paymentViewModel.selectPaymentMethod(PaymentMethod.CASH)
+        paymentViewModel.processCashPayment(5000)
+        advanceUntilIdle()
+
+        val completion = paymentViewModel.consumeCompletion()!!
+        assertEquals(
+            "una venta sin promoción se comporta EXACTAMENTE igual que antes",
+            cart.totalCents - 5000,
+            completion.remainingBalanceCents,
+        )
     }
 
     // MARK: - 8. Reintento tras un 4xx
