@@ -90,4 +90,31 @@ class RoleManager @Inject constructor(
      *  (inventory-transfers:approve|dispatch|receive): MANAGER, ADMIN, OWNER, SUPERADMIN */
     val canDecideInventoryTransfers: Boolean
         get() = role in setOf("MANAGER", "ADMIN", "OWNER", "SUPERADMIN")
+
+    // MARK: - PIN de autorización de gerente
+
+    /**
+     * Cómo pintar una acción según si el rol la tiene y si el local activó el
+     * PIN de autorización.
+     *
+     * 🔴 NO es lógica nueva de permisos: el juez sigue siendo el server. Esto
+     * sólo decide si el control se ve. Con candado se toca igual, sale la
+     * llamada, el server responde 403 `overridable` y el teclado aparece solo.
+     */
+    fun visibilityOf(allowed: Boolean, overrideEnabled: Boolean): ActionVisibility = when {
+        allowed -> ActionVisibility.ALLOWED
+        overrideEnabled -> ActionVisibility.LOCKED
+        else -> ActionVisibility.HIDDEN
+    }
 }
+
+/**
+ * Cómo se pinta una acción que el rol no tiene.
+ *
+ * 🔴 Espejo EXACTO de `ActionVisibility` en avoqado-ios/Services/RoleManager.swift.
+ *
+ * Esconder un botón parece limpio, pero deja al piso sin salida: sin botón no
+ * hay 403, y sin 403 no hay a quién pedirle autorización. Con el PIN de gerente
+ * encendido, la acción se VE con un candado y el "no" llega con una puerta.
+ */
+enum class ActionVisibility { ALLOWED, LOCKED, HIDDEN }

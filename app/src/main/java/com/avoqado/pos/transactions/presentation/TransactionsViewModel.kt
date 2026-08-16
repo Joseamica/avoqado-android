@@ -46,6 +46,12 @@ class TransactionsViewModel @Inject constructor(
     /** Para abrir la devolución de un cobro con tarjeta en una terminal física. */
     val terminalPaymentService: com.avoqado.pos.payment.data.TerminalPaymentService,
     val roleManager: RoleManager,
+    /**
+     * Sólo para saber si el local activó el PIN de autorización de gerente: es
+     * lo que decide si "Emitir reembolso" se esconde (como hoy) o se ve con
+     * candado para que el 403 pueda abrir el teclado.
+     */
+    val tpvSettingsRepository: com.avoqado.pos.tpvsettings.data.TpvSettingsRepository,
     private val orderRepository: OrderRepository,
     private val printerService: PrinterService,
     private val secureStorage: SecureStorage,

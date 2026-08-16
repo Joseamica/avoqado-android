@@ -188,6 +188,16 @@ class SecureStorage @Inject constructor(
         set(value) { prefs.edit().putBoolean(KEY_PLAN_EXEMPT, value).apply() }
 
     /**
+     * Último valor conocido del switch de PIN de autorización del venue activo.
+     *
+     * Decide si una acción sin permiso se ve con candado o se esconde. Default
+     * false: un server viejo (campo ausente) se comporta exactamente como hoy.
+     */
+    var managerPinOverrideEnabled: Boolean
+        get() = prefs.getBoolean(KEY_MANAGER_PIN_OVERRIDE_ENABLED, false)
+        set(value) { prefs.edit().putBoolean(KEY_MANAGER_PIN_OVERRIDE_ENABLED, value).apply() }
+
+    /**
      * Permissions for the active venue (e.g. "reservations:create", "menu:read").
      * Server resolves these per-venue from role + custom overrides; client mirrors them
      * to gate UI affordances. See server lib/permissions.ts DEFAULT_PERMISSIONS.
@@ -379,6 +389,10 @@ class SecureStorage @Inject constructor(
         // fail OPEN until the new venue's settings (with plan) are fetched.
         this.planTier = null
         this.planExempt = false
+        // El PIN de autorización también es POR VENUE. Se apaga hasta que
+        // lleguen los ajustes de la nueva sucursal: heredar un ON ajeno pintaría
+        // candados que ese local no activó, y al tocarlos saldría el 403 pelón.
+        this.managerPinOverrideEnabled = false
     }
 
     fun saveBiometricCredentials(
@@ -481,6 +495,7 @@ class SecureStorage @Inject constructor(
         private const val KEY_PENDING_AREA_TICKET_PRINT_VENUE_ID = "pendingAreaTicketPrintVenueId"
         private const val KEY_PLAN_TIER = "planTier"
         private const val KEY_PLAN_EXEMPT = "planExempt"
+        private const val KEY_MANAGER_PIN_OVERRIDE_ENABLED = "managerPinOverrideEnabled"
         private const val KEY_VENUE_PERMISSIONS = "venuePermissions"
         private const val KEY_ACCESS_TOKEN = "accessToken"
         private const val KEY_REFRESH_TOKEN = "refreshToken"

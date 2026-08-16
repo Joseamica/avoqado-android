@@ -43,6 +43,7 @@ class TransactionsViewModelRefreshTest {
             cashDrawerRepository = mockk(relaxed = true),
             terminalPaymentService = mockk(relaxed = true),
             roleManager = mockk(relaxed = true),
+            tpvSettingsRepository = mockk(relaxed = true),
             orderRepository = mockk(relaxed = true),
             printerService = mockk(relaxed = true),
             secureStorage = mockk(relaxed = true),

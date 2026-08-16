@@ -261,6 +261,38 @@ class RoleManagerTest {
         assertTrue(roleManager.canViewCustomers)
     }
 
+    // MARK: - Candado del PIN de autorización de gerente
+    //
+    // Esconder un botón parece limpio, pero deja al piso sin salida: sin botón
+    // no hay 403, y sin 403 no hay a quién pedirle autorización.
+
+    @Test
+    fun `con permiso, la accion se ve normal`() {
+        every { secureStorage.userRole } returns "MANAGER"
+        assertEquals(ActionVisibility.ALLOWED, roleManager.visibilityOf(allowed = true, overrideEnabled = false))
+        assertEquals(ActionVisibility.ALLOWED, roleManager.visibilityOf(allowed = true, overrideEnabled = true))
+    }
+
+    @Test
+    fun `sin permiso y con el switch APAGADO, se esconde como hoy`() {
+        every { secureStorage.userRole } returns "WAITER"
+        assertEquals(ActionVisibility.HIDDEN, roleManager.visibilityOf(allowed = false, overrideEnabled = false))
+    }
+
+    @Test
+    fun `sin permiso y con el switch PRENDIDO, se ve con candado`() {
+        every { secureStorage.userRole } returns "WAITER"
+        assertEquals(ActionVisibility.LOCKED, roleManager.visibilityOf(allowed = false, overrideEnabled = true))
+    }
+
+    @Test
+    fun `el reembolso sigue permitido para MANAGER y prohibido para WAITER`() {
+        every { secureStorage.userRole } returns "MANAGER"
+        assertTrue(roleManager.canIssueRefund)
+        every { secureStorage.userRole } returns "WAITER"
+        assertFalse(roleManager.canIssueRefund)
+    }
+
     // MARK: - Unknown role treated as no access
 
     @Test

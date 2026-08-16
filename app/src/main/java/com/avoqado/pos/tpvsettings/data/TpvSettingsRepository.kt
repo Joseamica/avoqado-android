@@ -88,6 +88,14 @@ class TpvSettingsRepository @Inject constructor(
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
+    private val _managerPinOverrideEnabled = MutableStateFlow(secureStorage.managerPinOverrideEnabled)
+
+    /**
+     * ¿El local activó el PIN de autorización de gerente? Decide si una acción
+     * sin permiso se ve con candado o se esconde como hoy.
+     */
+    val managerPinOverrideEnabled: StateFlow<Boolean> = _managerPinOverrideEnabled.asStateFlow()
+
     private var loadedVenueId: String? = null
 
     fun getCurrentSettings(): TpvSettings = _settings.value
@@ -172,6 +180,13 @@ class TpvSettingsRepository @Inject constructor(
             secureStorage.planExempt = result.data?.plan?.exempt == true
             Log.d("📦", "Plan: tier=${result.data?.plan?.tier ?: "none"} exempt=${result.data?.plan?.exempt == true}")
 
+            // PIN de autorización de gerente. Igual que el plan: SÓLO en el
+            // camino exitoso. El `catch` de red no lo toca — un bache de WiFi no
+            // puede borrar lo bueno y dejar al piso sin la puerta del candado.
+            val overrideEnabled = result.data?.managerPinOverrideEnabled ?: false
+            _managerPinOverrideEnabled.value = overrideEnabled
+            secureStorage.managerPinOverrideEnabled = overrideEnabled
+
             if (result.data?.settings != null) {
                 val resolvedSettings = applyIncludeTaxOverride(
                     base = result.data.settings,
@@ -250,6 +265,9 @@ class TpvSettingsRepository @Inject constructor(
         loadedVenueId = null
         _settings.value = TpvSettings.DEFAULT
         _terminalNavigation.value = TerminalNavigationSettings.DEFAULT
+        // El switch es por venue: al soltar el cache no puede quedarse encendido
+        // el de la sucursal anterior.
+        _managerPinOverrideEnabled.value = false
     }
 
     private suspend fun hydrateLastKnownSettings(
@@ -340,6 +358,12 @@ internal data class VenueSettingsData(
     val activeTerminalId: String? = null,
     val deviceTerminal: DeviceTerminalSettingsDto? = null,
     val plan: VenuePlanDto? = null,
+    /**
+     * PIN de autorización de gerente. Es de VENUE, no de terminal — por eso vive
+     * aquí y no dentro de `settings`. Default false: un server viejo (campo
+     * ausente) se comporta exactamente como hoy.
+     */
+    val managerPinOverrideEnabled: Boolean = false,
 )
 
 @Serializable

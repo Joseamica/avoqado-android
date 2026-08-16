@@ -35,6 +35,7 @@ import com.avoqado.pos.designsystem.components.PrimaryButton
 import androidx.compose.material.icons.automirrored.filled.ReceiptLong
 import androidx.compose.material.icons.filled.CreditCard
 import androidx.compose.material.icons.filled.Description
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Payments
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material3.CircularProgressIndicator
@@ -64,6 +65,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.avoqado.pos.core.domain.ActionVisibility
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.transactions.data.model.Transaction
 import com.avoqado.pos.transactions.data.model.TransactionRefund
@@ -313,13 +315,22 @@ private fun LoadedDetailView(
                         showReceiptMethodDialog = true
                     },
                 )
-                if (viewModel.roleManager.canIssueRefund) {
-                    ActionButton(
-                        label = "Emitir reembolso",
-                        modifier = Modifier.weight(1f),
-                        enabled = transaction.remainingRefundable > 0.001,
-                        onClick = { showRefundSheet = true },
-                    )
+                // 🔴 Sin el candado, el PIN de gerente es inalcanzable aquí: un
+                // botón que no existe nunca produce el 403 que abre el teclado.
+                // Con el switch OFF se esconde exactamente como hoy.
+                val overrideEnabled by viewModel.tpvSettingsRepository.managerPinOverrideEnabled.collectAsState()
+                val canRefund = viewModel.roleManager.canIssueRefund
+                when (viewModel.roleManager.visibilityOf(canRefund, overrideEnabled)) {
+                    ActionVisibility.HIDDEN -> Unit
+                    ActionVisibility.ALLOWED, ActionVisibility.LOCKED -> {
+                        ActionButton(
+                            label = "Emitir reembolso",
+                            modifier = Modifier.weight(1f),
+                            enabled = transaction.remainingRefundable > 0.001,
+                            locked = !canRefund,
+                            onClick = { showRefundSheet = true },
+                        )
+                    }
                 }
             }
 
@@ -480,6 +491,12 @@ private fun ActionButton(
     label: String,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
+    /**
+     * Candado del PIN de autorización de gerente. NO deshabilita nada: el botón
+     * se toca igual, la llamada sale igual y el server decide. El candado sólo
+     * avisa que va a pedir el código de un encargado.
+     */
+    locked: Boolean = false,
     onClick: () -> Unit,
 ) {
     val metrics = LocalDetailMetrics.current
@@ -493,12 +510,30 @@ private fun ActionButton(
             .clickable(enabled = enabled, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
-        Text(
-            text = label,
-            fontSize = metrics.actionButtonTextSize,
-            fontWeight = FontWeight.Medium,
-            color = if (enabled) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        val contentColor = if (enabled) {
+            MaterialTheme.colorScheme.onSurface
+        } else {
+            MaterialTheme.colorScheme.onSurfaceVariant
+        }
+        Row(
+            horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.xs),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            if (locked) {
+                Icon(
+                    imageVector = Icons.Filled.Lock,
+                    contentDescription = "Necesita autorización",
+                    tint = contentColor,
+                    modifier = Modifier.size(14.dp),
+                )
+            }
+            Text(
+                text = label,
+                fontSize = metrics.actionButtonTextSize,
+                fontWeight = FontWeight.Medium,
+                color = contentColor,
+            )
+        }
     }
 }
 
