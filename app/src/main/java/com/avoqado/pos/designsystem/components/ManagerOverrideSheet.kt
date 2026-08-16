@@ -61,7 +61,14 @@ fun ManagerOverrideSheet(
                         val result = onSubmit(pin)
                         isLoading = false
                         when (result) {
-                            is OverrideResult.Granted -> Unit // el coordinator cierra el diálogo
+                            // El coordinator cierra el diálogo, pero el código
+                            // se borra AQUÍ igual: si otra acción venía en la
+                            // fila, su teclado reusa este mismo slot de
+                            // composición y el `remember` conservaba el PIN del
+                            // encargado ya tecleado, con "Autorizar" habilitado
+                            // — el mesero podía aprobar solo una segunda acción
+                            // que el encargado nunca vio.
+                            is OverrideResult.Granted -> pin = ""
                             OverrideResult.WrongPin -> {
                                 error = "Código incorrecto"
                                 pin = ""
