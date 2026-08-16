@@ -89,7 +89,17 @@ fun CartPanelView(
     onCustomerTap: () -> Unit = {},
     staffName: String = cartState.selectedStaffName,
     onStaffTap: () -> Unit = {},
-    onSplitPayment: () -> Unit = {},
+    /**
+     * "Dividir cuenta" del menú de sección.
+     *
+     * 🔴 SIN default a propósito. Con `= {}`, el carrito de teléfono
+     * (`IPhoneCartSheet`) simplemente no lo pasaba: el renglón se dibujaba en el
+     * menú y **no hacía absolutamente nada** en pantallas de teléfono, mientras
+     * en tablet sí funcionaba. Encontrado en device real, 2026-08-16. Un
+     * callback que dispara una acción visible no lleva default: que el
+     * compilador cace al siguiente que lo olvide.
+     */
+    onSplitPayment: () -> Unit,
     /** Cumplimiento de la venta (header de la sección, antes fijo "En tienda"). */
     onOrderTypeChange: (String) -> Unit = {},
     // Referral capture (Plan 5B) — optional, the cart still works without it.

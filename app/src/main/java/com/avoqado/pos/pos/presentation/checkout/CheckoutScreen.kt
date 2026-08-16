@@ -1015,6 +1015,19 @@ fun CheckoutScreen(
                 cartViewModel.fetchStaff()
                 showStaffSelector = true
             },
+            onSplitPayment = {
+                // Membresías grant only on FULL payment — mismo guard que en tablet.
+                if (cartViewModel.hasCreditPack) {
+                    showPackNoSplitAlert = true
+                } else {
+                    // 🔴 El carrito de teléfono ocupa la pantalla completa: hay que
+                    // cerrarlo ANTES de abrir la hoja de dividir, o la hoja queda
+                    // detrás y el renglón parece no hacer nada. Mismo patrón que
+                    // `onAddCustomAmount` y `onCharge(closePhoneCart = true)`.
+                    showIPhoneCart = false
+                    showSplitPayment = true
+                }
+            },
             customerName = selectedCustomer?.fullName,
             customerId = selectedCustomer?.id,
             onCustomerTap = openGeneralCustomerPicker,
@@ -1696,6 +1709,13 @@ private fun IPhoneCartSheet(
     onApplyTaxPercent: (Int?) -> Unit,
     staffName: String,
     onStaffTap: () -> Unit,
+    /**
+     * "Dividir cuenta" del menú de sección. 🔴 SIN default a propósito: cuando lo
+     * tenía, esta hoja simplemente no lo pasaba y el renglón se veía en el menú
+     * sin hacer NADA en pantallas de teléfono. Obligar a pasarlo hace que el
+     * compilador cace el próximo olvido.
+     */
+    onSplitPayment: () -> Unit,
     customerName: String? = null,
     customerId: String? = null,
     onCustomerTap: () -> Unit = {},
@@ -1769,6 +1789,7 @@ private fun IPhoneCartSheet(
                 onCustomerTap = onCustomerTap,
                 staffName = staffName,
                 onStaffTap = onStaffTap,
+                onSplitPayment = onSplitPayment,
                 referralCode = referralCode,
                 referralUiState = referralUiState,
                 customerSelectedForReferral = customerSelectedForReferral,
