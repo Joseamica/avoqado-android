@@ -192,27 +192,111 @@ class CashDrawerRepository @Inject constructor(
         if (code in 200..299 && body.isNotEmpty()) {
             try {
                 val root = json.decodeFromString<JsonObject>(body)
-                // Server envelope is {success, data: session} with the events
-                // ARRAY EMBEDDED in the session; accept legacy top-level keys too.
-                val sessionObj = (root["data"] as? JsonObject)
-                    ?: root["data"]?.let { if (it is kotlinx.serialization.json.JsonNull) null else it.jsonObject }
-                    ?: root["session"]?.jsonObject
+                val sessionObj = parseSessionEnvelope(root)
                 if (sessionObj != null) {
-                    val session = parseSessionFromApi(sessionObj)
-                    dao.insertSession(session)
-
                     // Events live inside the session payload (fallback: top-level).
-                    val eventsArray = sessionObj["events"]?.jsonArray ?: root["events"]?.jsonArray
-                    eventsArray?.forEach { eventJson ->
-                        val event = parseEventFromApi(eventJson.jsonObject, session.id)
-                        dao.insertEvent(event)
-                    }
-                    Log.d(TAG, "✅ Synced current session from API: ${session.id} (${eventsArray?.size ?: 0} events)")
+                    val session = adoptServerSession(sessionObj, root["events"]?.jsonArray)
+                    Log.d(TAG, "✅ Caja del server sincronizada: ${session.id}")
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "❌ Parse current session error: ${e.message}")
             }
         }
+    }
+
+    /**
+     * Server envelope is {success, data: session} with the events ARRAY EMBEDDED in
+     * the session; accept legacy top-level keys too. `null` = no hay caja abierta.
+     */
+    private fun parseSessionEnvelope(root: JsonObject): JsonObject? =
+        (root["data"] as? JsonObject)
+            ?: root["data"]?.let { if (it is kotlinx.serialization.json.JsonNull) null else it.jsonObject }
+            ?: root["session"]?.jsonObject
+
+    /**
+     * 🔴 LA CAJA ADOPTA EL ID DEL SERVER — el corazón de la reconciliación.
+     *
+     * Sin red, la sesión NACE LOCAL a propósito: el POS no puede pedirle un id a
+     * nadie antes de dejar abrir la caja. Pero cuando el server confirma, la fila
+     * local tiene que **promoverse** a su id en vez de quedarse como una segunda
+     * caja abierta. Es el mismo patrón que el outbox ya usa con las órdenes
+     * (`TableSession.promoteProvisional`, `localOrderId → orderId`), sólo que aquí
+     * la promoción vive en Room.
+     *
+     * Lo que costaba no hacerlo, medido con sqlite3 (2026-08-16): Room terminaba con
+     * DOS sesiones OPEN del mismo local y `getOpenSession` devolvía siempre la
+     * provisional, así que los movimientos que manda el server —el PAY_OUT del
+     * reembolso, entre ellos— caían en la sesión que la pantalla no lee. El server ya
+     * restaba bien y en el corte del cajero seguían sobrando los $150.
+     *
+     * Tres pasos, en este orden:
+     *  1. Entra la fila del server. Va primero para que ningún evento quede
+     *     apuntando a una sesión que no existe, ni siquiera por un instante.
+     *  2. Las provisionales adoptan su id: los eventos se MUDAN con ellas
+     *     (`repointEvents`) y la fila vieja desaparece. Un retiro registrado sin red
+     *     sigue contando; si no se mudara, el cajón "aparecería" con ese dinero de más.
+     *  3. Entran los eventos confirmados y se borran las copias locales de los tipos
+     *     que el server escribe por su cuenta (ver [SERVER_OWNED_EVENT_TYPES]).
+     */
+    private suspend fun adoptServerSession(
+        sessionObj: JsonObject,
+        fallbackEvents: kotlinx.serialization.json.JsonArray? = null,
+    ): CashDrawerSessionEntity {
+        val server = parseSessionFromApi(sessionObj)
+        dao.insertSession(server)
+
+        if (server.status == CashDrawerStatus.OPEN.name && venueId.isNotEmpty()) {
+            dao.getOpenSessions(venueId)
+                .filter { it.id != server.id }
+                .forEach { provisional ->
+                    Log.d(TAG, "⬆️ Promoviendo caja provisional ${provisional.id} → ${server.id}")
+                    dao.repointEvents(provisional.id, server.id)
+                    dao.deleteSession(provisional.id)
+                }
+        }
+
+        val eventsArray = sessionObj["events"]?.jsonArray ?: fallbackEvents
+        val confirmedIds = eventsArray.orEmpty().map { eventJson ->
+            val event = parseEventFromApi(eventJson.jsonObject, server.id)
+            dao.insertEvent(event)
+            event.id
+        }
+
+        // Un payload SIN eventos no autoriza a borrar nada: sería el mismo error que
+        // pisar la config de impresoras con un refresh fallido. Sólo se limpia cuando
+        // el server efectivamente dijo qué eventos tiene.
+        if (confirmedIds.isNotEmpty()) {
+            dao.deleteUnconfirmedEvents(server.id, SERVER_OWNED_EVENT_TYPES, confirmedIds)
+        }
+        return server
+    }
+
+    /**
+     * ⬆️ Un movimiento que el cliente escribió y el server confirmó adopta el id
+     * real, igual que la sesión.
+     *
+     * Sin esto, el eco del sync entra como una fila NUEVA (el server le pone su
+     * propio cuid) y el mismo retiro de $50 se resta dos veces. La copia local es
+     * necesaria —el cajero tiene que ver el movimiento al instante, con o sin red—
+     * así que la salida no es dejar de escribirla, es que comparta identidad.
+     */
+    private suspend fun promoteEvent(localId: String, serverId: String?): CashDrawerEventEntity? {
+        if (serverId.isNullOrBlank() || serverId == localId) return null
+        val local = dao.getEvent(localId) ?: return null
+        val promoted = local.copy(id = serverId)
+        dao.insertEvent(promoted)
+        dao.deleteEvent(localId)
+        Log.d(TAG, "⬆️ Movimiento confirmado $localId → $serverId")
+        return promoted
+    }
+
+    /** El id que el server le puso al evento que acabamos de registrar, si lo mandó. */
+    private fun parseEventId(body: String): String? = try {
+        val root = json.decodeFromString<JsonObject>(body)
+        (root["data"] as? JsonObject)?.get("id")?.jsonPrimitive?.contentOrNull
+            ?: root["event"]?.jsonObject?.get("id")?.jsonPrimitive?.contentOrNull
+    } catch (_: Exception) {
+        null
     }
 
     private suspend fun syncHistory() {
@@ -272,13 +356,13 @@ class CashDrawerRepository @Inject constructor(
 
         Log.d(TAG, "✅ Session opened locally: ${session.id}, starting: $startingAmountCents")
 
-        // Fire API call in background
-        fireApiOpen(startingAmountCents)
-
-        return session
+        // Si el server contesta, la caja adopta SU id aquí mismo. Si no contesta
+        // —sin red, o 409 porque otra tablet ya la abrió— se queda provisional y la
+        // adopta el primer sync que lo logre. Abrir la caja nunca depende de eso.
+        return fireApiOpen(startingAmountCents) ?: session
     }
 
-    private suspend fun fireApiOpen(startingAmountCents: Int) {
+    private suspend fun fireApiOpen(startingAmountCents: Int): CashDrawerSessionEntity? {
         try {
             val dollars = startingAmountCents / 100.0
             val requestBody = json.encodeToString(
@@ -298,12 +382,15 @@ class CashDrawerRepository @Inject constructor(
 
             if (code in 200..299) {
                 Log.d(TAG, "✅ API open session success")
+                val sessionObj = parseSessionEnvelope(json.decodeFromString<JsonObject>(body))
+                return sessionObj?.let { adoptServerSession(it) }
             } else {
                 Log.e(TAG, "❌ API open session failed: $code - $body")
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ API open session error: ${e.message}")
         }
+        return null
     }
 
     // MARK: - Events
@@ -324,13 +411,11 @@ class CashDrawerRepository @Inject constructor(
         dao.insertEvent(event)
         Log.d(TAG, "✅ Pay-in recorded locally: $amountCents")
 
-        // Fire API call in background
-        fireApiPayIn(amountCents, note)
-
-        return event
+        // La fila local nace provisional y adopta el id del server si éste confirma.
+        return fireApiPayIn(amountCents, note, event.id) ?: event
     }
 
-    private suspend fun fireApiPayIn(amountCents: Int, note: String?) {
+    private suspend fun fireApiPayIn(amountCents: Int, note: String?, localEventId: String): CashDrawerEventEntity? {
         try {
             val dollars = amountCents / 100.0
             val requestBody = json.encodeToString(
@@ -350,12 +435,14 @@ class CashDrawerRepository @Inject constructor(
 
             if (code in 200..299) {
                 Log.d(TAG, "✅ API pay-in success")
+                return promoteEvent(localEventId, parseEventId(body))
             } else {
                 Log.e(TAG, "❌ API pay-in failed: $code - $body")
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ API pay-in error: ${e.message}")
         }
+        return null
     }
 
     suspend fun addPayOut(amountCents: Int, note: String?): CashDrawerEventEntity? {
@@ -374,13 +461,11 @@ class CashDrawerRepository @Inject constructor(
         dao.insertEvent(event)
         Log.d(TAG, "✅ Pay-out recorded locally: $amountCents")
 
-        // Fire API call in background
-        fireApiPayOut(amountCents, note)
-
-        return event
+        // La fila local nace provisional y adopta el id del server si éste confirma.
+        return fireApiPayOut(amountCents, note, event.id) ?: event
     }
 
-    private suspend fun fireApiPayOut(amountCents: Int, note: String?) {
+    private suspend fun fireApiPayOut(amountCents: Int, note: String?, localEventId: String): CashDrawerEventEntity? {
         try {
             val dollars = amountCents / 100.0
             val requestBody = json.encodeToString(
@@ -400,14 +485,27 @@ class CashDrawerRepository @Inject constructor(
 
             if (code in 200..299) {
                 Log.d(TAG, "✅ API pay-out success")
+                return promoteEvent(localEventId, parseEventId(body))
             } else {
                 Log.e(TAG, "❌ API pay-out failed: $code - $body")
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ API pay-out error: ${e.message}")
         }
+        return null
     }
 
+    /**
+     * La venta en efectivo que el cajero acaba de cobrar, PROVISIONAL en Room.
+     *
+     * 🔴 El dueño de este movimiento es el SERVER: lo crea al cobrar
+     * (`shared/cashDrawerPosting.postCashSaleToDrawer`) y el endpoint
+     * `/cash-drawer/sync` descarta a propósito el que empuja el cliente. Esta fila
+     * existe sólo para que la pantalla no se quede muda entre el cobro y el
+     * siguiente sync —con o sin red— y desaparece en cuanto llega la confirmada, vía
+     * [SERVER_OWNED_EVENT_TYPES]. Si no desapareciera, la MISMA venta sumaría dos
+     * veces y el cajón inventaría un sobrante.
+     */
     suspend fun addCashSale(amountCents: Int, orderId: String?): CashDrawerEventEntity? {
         val session = getOpenSession() ?: return null
         val event = CashDrawerEventEntity(
@@ -615,6 +713,32 @@ class CashDrawerRepository @Inject constructor(
             staffName = obj["staffName"]?.jsonPrimitive?.contentOrNull ?: "",
             orderId = obj["orderId"]?.jsonPrimitive?.contentOrNull,
             createdAt = parseTimestamp(obj["createdAt"]?.jsonPrimitive?.contentOrNull),
+        )
+    }
+
+    companion object {
+        /**
+         * 🔴 Tipos que el SERVER escribe POR SU CUENTA, y de los que esta app sólo
+         * guarda una copia provisional para pintar la pantalla al instante.
+         *
+         * - `OPEN`: lo crea `cash-drawer.mobile.service.openSession` junto con la caja.
+         * - `CASH_SALE`: lo crea `shared/cashDrawerPosting.postCashSaleToDrawer` al
+         *   cobrar, y el endpoint `/cash-drawer/sync` **descarta** el que manda el
+         *   cliente. O sea que el del server existe siempre y el local es, por
+         *   definición, la misma venta con otro id.
+         *
+         * Cuando el sync trae la lista confirmada, las copias locales de estos tipos
+         * se borran: si no, la MISMA venta suma dos veces y el cajón inventa un
+         * sobrante — el mismo defecto del reembolso duplicado (commit `3acc7bb`),
+         * pero al revés.
+         *
+         * `PAY_IN`/`PAY_OUT` NO van aquí: los escribe el cliente y uno registrado sin
+         * red todavía no existe en el server. Borrarlo le inventaría al cajero un
+         * faltante. Ésos se reconcilian por identidad, en [promoteEvent].
+         */
+        private val SERVER_OWNED_EVENT_TYPES = listOf(
+            CashDrawerEventType.OPEN.name,
+            CashDrawerEventType.CASH_SALE.name,
         )
     }
 

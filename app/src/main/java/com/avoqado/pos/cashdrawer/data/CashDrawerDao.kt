@@ -13,14 +13,46 @@ interface CashDrawerDao {
 
     // MARK: - Sessions
 
-    @Query("SELECT * FROM cash_drawer_sessions WHERE venueId = :venueId AND status = 'OPEN' LIMIT 1")
+    /**
+     * La caja abierta del local.
+     *
+     * 🔴 El `ORDER BY` no es adorno. Con `LIMIT 1` a secas, QUÉ CAJA está abierta lo
+     * decidía SQLite: devolvía el rowid más bajo, que es un detalle de
+     * implementación —un `VACUUM` o un índice nuevo lo cambian sin avisar— y que
+     * además favorecía sistemáticamente a la fila provisional del dispositivo por
+     * encima de la confirmada por el server.
+     *
+     * Criterio: la más RECIENTE por `openedAt`, con `id` como desempate para que el
+     * resultado no dependa del azar ni cuando dos filas comparten instante. Una caja
+     * vieja ganando pegaría las ventas de hoy al fondo de ayer. Es el mismo orden
+     * que ya usa iOS (`CashDrawerStore`, `.order(Column("openedAt").desc)`).
+     *
+     * Cinturón y tirantes: `adoptServerSession` ya evita que existan dos filas
+     * abiertas; esto sostiene el caso en que alguna aparezca igual.
+     */
+    @Query(
+        "SELECT * FROM cash_drawer_sessions WHERE venueId = :venueId AND status = 'OPEN' " +
+            "ORDER BY openedAt DESC, id DESC LIMIT 1",
+    )
     suspend fun getOpenSession(venueId: String): CashDrawerSessionEntity?
+
+    /**
+     * TODAS las cajas abiertas del local — normalmente una. Existe para la
+     * reconciliación: cuando el server dice cuál es la suya, cualquier otra fila
+     * abierta es una provisional que hay que promover (ver
+     * `CashDrawerRepository.adoptServerSession`).
+     */
+    @Query("SELECT * FROM cash_drawer_sessions WHERE venueId = :venueId AND status = 'OPEN'")
+    suspend fun getOpenSessions(venueId: String): List<CashDrawerSessionEntity>
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertSession(session: CashDrawerSessionEntity)
 
     @Update
     suspend fun updateSession(session: CashDrawerSessionEntity)
+
+    @Query("DELETE FROM cash_drawer_sessions WHERE id = :sessionId")
+    suspend fun deleteSession(sessionId: String)
 
     @Query("SELECT * FROM cash_drawer_sessions WHERE venueId = :venueId AND status = 'CLOSED' ORDER BY closedAt DESC")
     suspend fun getClosedSessions(venueId: String): List<CashDrawerSessionEntity>
@@ -30,8 +62,42 @@ interface CashDrawerDao {
     @Query("SELECT * FROM cash_drawer_events WHERE sessionId = :sessionId ORDER BY createdAt ASC")
     suspend fun getSessionEvents(sessionId: String): List<CashDrawerEventEntity>
 
+    @Query("SELECT * FROM cash_drawer_events WHERE id = :eventId")
+    suspend fun getEvent(eventId: String): CashDrawerEventEntity?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertEvent(event: CashDrawerEventEntity)
+
+    @Query("DELETE FROM cash_drawer_events WHERE id = :eventId")
+    suspend fun deleteEvent(eventId: String)
+
+    /**
+     * Los eventos se mudan con su sesión cuando ésta adopta el id del server. Sin
+     * esto la promoción dejaría el dinero registrado contra un id que ya no existe
+     * — que es exactamente el bug que la promoción viene a arreglar.
+     */
+    @Query("UPDATE cash_drawer_events SET sessionId = :toSessionId WHERE sessionId = :fromSessionId")
+    suspend fun repointEvents(fromSessionId: String, toSessionId: String)
+
+    /**
+     * Borra las copias locales de los eventos que el SERVER escribe por su cuenta
+     * (`OPEN` al abrir, `CASH_SALE` al cobrar) y que ya llegaron confirmadas con su
+     * id real. Sin esto, la copia local y la confirmada conviven bajo la misma
+     * sesión y la venta se cuenta DOS VECES.
+     *
+     * 🔴 Sólo esos tipos. `PAY_IN`/`PAY_OUT` los escribe el cliente: uno que el
+     * server todavía no conoce (registrado sin red) tiene que sobrevivir, o el
+     * cajero cierra con un faltante que sí existe.
+     */
+    @Query(
+        "DELETE FROM cash_drawer_events WHERE sessionId = :sessionId " +
+            "AND type IN (:serverOwnedTypes) AND id NOT IN (:confirmedIds)",
+    )
+    suspend fun deleteUnconfirmedEvents(
+        sessionId: String,
+        serverOwnedTypes: List<String>,
+        confirmedIds: List<String>,
+    )
 
     @Query("SELECT COALESCE(SUM(amountCents), 0) FROM cash_drawer_events WHERE sessionId = :sessionId AND type = :type")
     suspend fun sumEventsByType(sessionId: String, type: String): Int
