@@ -89,6 +89,7 @@ import dagger.hilt.android.EntryPointAccessors
 import java.time.format.DateTimeFormatter
 import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.components.AvoqadoDialog
+import com.avoqado.pos.designsystem.components.ManagerOverrideSheet
 
 // MARK: - Hilt entry point for singleton dependencies needed in NavGraph composables
 @dagger.hilt.EntryPoint
@@ -96,6 +97,8 @@ import com.avoqado.pos.designsystem.components.AvoqadoDialog
 interface FormatterEntryPoint {
     fun formatter(): VenueDateTimeFormatter
     fun errorNotifier(): com.avoqado.pos.core.data.network.ErrorNotifier
+    fun managerOverrideCoordinator(): com.avoqado.pos.core.data.network.ManagerOverrideCoordinator
+    fun secureStorage(): com.avoqado.pos.core.data.local.SecureStorage
 }
 
 @Composable
@@ -264,6 +267,22 @@ private fun MainScaffold(
                 PrimaryButton(text = "Entendido", onClick = { forbiddenDialog = null })
             },
             content = {},
+        )
+    }
+
+    // PIN de autorización de gerente. Va aquí, en la raíz y junto al diálogo de
+    // 403, para que exista UNA sola instancia sin importar qué pantalla disparó
+    // la acción bloqueada.
+    val overrideCoordinator = remember { entryPoint.managerOverrideCoordinator() }
+    val overrideSecureStorage = remember { entryPoint.secureStorage() }
+    val overridePrompt by overrideCoordinator.prompt.collectAsState()
+    overridePrompt?.let { prompt ->
+        ManagerOverrideSheet(
+            prompt = prompt,
+            // El venue se lee AL ENVIAR, no al componer: si alguien cambió de
+            // sucursal, el código tiene que validarse contra la sucursal activa.
+            onSubmit = { pin -> overrideCoordinator.submitPin(overrideSecureStorage.venueId.orEmpty(), pin) },
+            onDismiss = { overrideCoordinator.cancel() },
         )
     }
 
