@@ -1,5 +1,6 @@
 package com.avoqado.pos.core.data.network
 
+import io.mockk.mockk
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.mockwebserver.MockResponse
@@ -16,14 +17,34 @@ class ForbiddenInterceptorTest {
     private lateinit var errorNotifier: ErrorNotifier
     private lateinit var client: OkHttpClient
 
+    /**
+     * Doble de prueba: responde el token que le digamos, sin UI ni red.
+     *
+     * `awaitToken` es el punto donde el interceptor BLOQUEA su hilo esperando a
+     * que alguien teclee. En el test se resuelve al instante.
+     */
+    private class FakeCoordinator(
+        private val tokenToReturn: String?,
+    ) : ManagerOverrideCoordinator(mockk(relaxed = true)) {
+        var askedFor: String? = null
+
+        override fun awaitToken(permission: String): String? {
+            askedFor = permission
+            return tokenToReturn
+        }
+    }
+
+    private fun clientWith(coordinator: ManagerOverrideCoordinator): OkHttpClient =
+        OkHttpClient.Builder()
+            .addInterceptor(ForbiddenInterceptor(errorNotifier, coordinator))
+            .build()
+
     @Before
     fun setUp() {
         server = MockWebServer()
         server.start()
         errorNotifier = ErrorNotifier()
-        client = OkHttpClient.Builder()
-            .addInterceptor(ForbiddenInterceptor(errorNotifier))
-            .build()
+        client = clientWith(FakeCoordinator(null))
     }
 
     @After
@@ -232,5 +253,178 @@ class ForbiddenInterceptorTest {
             "No tienes permiso para hacer esto. Pídele a un administrador que te active «orders:void».",
             errorNotifier.forbiddenError.value,
         )
+    }
+
+    // MARK: - PIN de autorización de gerente
+    //
+    // El 403 `overridable` es el ÚNICO que abre el teclado. El de plan y el del
+    // intermediario NO: ningún código de encargado arregla un plan sin pagar ni
+    // un túnel caído, y ofrecer el teclado ahí sería un bucle sin salida.
+
+    private val overridable403 =
+        """{"error":"Forbidden","message":"Permission 'orders:merge' required","required":"orders:merge","userRole":"WAITER","overridable":true}"""
+
+    @Test
+    fun `403 overridable pide el codigo y reintenta la peticion con el header`() {
+        val coordinator = FakeCoordinator("tok_abc")
+        val client = clientWith(coordinator)
+
+        server.enqueue(
+            MockResponse().setResponseCode(403)
+                .setHeader("Content-Type", "application/json")
+                .setBody(overridable403),
+        )
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"ok":true}"""))
+
+        val response = client.newCall(Request.Builder().url(server.url("/merge")).build()).execute()
+
+        assertEquals(200, response.code)
+        assertEquals("orders:merge", coordinator.askedFor)
+        server.takeRequest()
+        val retried = server.takeRequest()
+        assertEquals("tok_abc", retried.getHeader("X-Permission-Override"))
+        // Éxito: no se pinta el diálogo de "no tienes permiso".
+        assertNull(errorNotifier.forbiddenError.value)
+    }
+
+    @Test
+    fun `si el usuario cancela, el 403 llega tal cual y SIN dialogo generico`() {
+        val coordinator = FakeCoordinator(null)
+        val client = clientWith(coordinator)
+
+        server.enqueue(
+            MockResponse().setResponseCode(403)
+                .setHeader("Content-Type", "application/json")
+                .setBody(overridable403),
+        )
+
+        val response = client.newCall(Request.Builder().url(server.url("/merge")).build()).execute()
+
+        assertEquals(403, response.code)
+        assertEquals("orders:merge", coordinator.askedFor)
+        assertNull(errorNotifier.forbiddenError.value)
+    }
+
+    @Test
+    fun `un 403 con el header ya puesto NO vuelve a pedir codigo (sin bucle)`() {
+        val coordinator = FakeCoordinator("tok_abc")
+        val client = clientWith(coordinator)
+
+        server.enqueue(
+            MockResponse().setResponseCode(403)
+                .setHeader("Content-Type", "application/json")
+                .setBody(overridable403),
+        )
+
+        val response = client.newCall(
+            Request.Builder().url(server.url("/merge")).header("X-Permission-Override", "tok_viejo").build(),
+        ).execute()
+
+        assertEquals(403, response.code)
+        assertNull(coordinator.askedFor)
+        assertEquals(
+            "No tienes permiso para hacer esto. Pídele a un administrador que te active «orders:merge».",
+            errorNotifier.forbiddenError.value,
+        )
+    }
+
+    @Test
+    fun `si el token no alcanza, el reintento avisa en vez de quedarse mudo`() {
+        val coordinator = FakeCoordinator("tok_quemado")
+        val client = clientWith(coordinator)
+
+        // Los dos 403 son overridable: el segundo llega YA con el header, así que
+        // el teclado no se vuelve a abrir — pero el "no" tiene que verse.
+        repeat(2) {
+            server.enqueue(
+                MockResponse().setResponseCode(403)
+                    .setHeader("Content-Type", "application/json")
+                    .setBody(overridable403),
+            )
+        }
+
+        val response = client.newCall(Request.Builder().url(server.url("/merge")).build()).execute()
+
+        assertEquals(403, response.code)
+        assertEquals("orders:merge", coordinator.askedFor)
+        assertEquals(
+            "No tienes permiso para hacer esto. Pídele a un administrador que te active «orders:merge».",
+            errorNotifier.forbiddenError.value,
+        )
+    }
+
+    @Test
+    fun `403 SIN overridable sigue abriendo el dialogo de siempre`() {
+        val coordinator = FakeCoordinator("tok_abc")
+        val client = clientWith(coordinator)
+
+        server.enqueue(
+            MockResponse().setResponseCode(403)
+                .setHeader("Content-Type", "application/json")
+                .setBody("""{"error":"Forbidden","message":"Permission 'orders:merge' required","required":"orders:merge"}"""),
+        )
+
+        client.newCall(Request.Builder().url(server.url("/merge")).build()).execute()
+
+        assertNull(coordinator.askedFor)
+        assertEquals(
+            "No tienes permiso para hacer esto. Pídele a un administrador que te active «orders:merge».",
+            errorNotifier.forbiddenError.value,
+        )
+    }
+
+    @Test
+    fun `403 de plan sigue sin pedir codigo (va al upsell, no al PIN)`() {
+        val coordinator = FakeCoordinator("tok_abc")
+        val client = clientWith(coordinator)
+
+        server.enqueue(
+            MockResponse().setResponseCode(403)
+                .setHeader("Content-Type", "application/json")
+                .setBody("""{"error":"Forbidden","message":"Feature not available","featureCode":"INVENTORY_TRACKING","overridable":true}"""),
+        )
+
+        client.newCall(Request.Builder().url(server.url("/x")).build()).execute()
+
+        assertNull(coordinator.askedFor)
+        assertNull(errorNotifier.forbiddenError.value)
+    }
+
+    @Test
+    fun `403 de intermediario sigue sin pedir codigo (ningun PIN arregla un tunel caido)`() {
+        val coordinator = FakeCoordinator("tok_abc")
+        val client = clientWith(coordinator)
+
+        server.enqueue(
+            MockResponse().setResponseCode(403)
+                .setHeader("Content-Type", "text/html")
+                .setBody("<!DOCTYPE html><html><body>tunnel down</body></html>"),
+        )
+
+        client.newCall(Request.Builder().url(server.url("/x")).build()).execute()
+
+        assertNull(coordinator.askedFor)
+        assertNull(errorNotifier.forbiddenError.value)
+    }
+
+    @Test
+    fun `un 403 overridable en tarea de FONDO no abre el teclado a nadie`() {
+        val coordinator = FakeCoordinator("tok_abc")
+        val client = clientWith(coordinator)
+
+        server.enqueue(
+            MockResponse().setResponseCode(403)
+                .setHeader("Content-Type", "application/json")
+                .setBody(overridable403),
+        )
+
+        client.newCall(
+            Request.Builder().url(server.url("/merge")).header("X-Avoqado-Background", "1").build(),
+        ).execute()
+
+        // El replay del outbox corre solo: pedirle un código a nadie dejaría el
+        // hilo de red bloqueado hasta el timeout. Va a cuarentena, como siempre.
+        assertNull(coordinator.askedFor)
+        assertNull(errorNotifier.forbiddenError.value)
     }
 }

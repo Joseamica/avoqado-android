@@ -8,6 +8,7 @@ import com.avoqado.pos.core.data.network.ConnectivityInterceptor
 import com.avoqado.pos.core.data.network.DeviceHeadersInterceptor
 import com.avoqado.pos.core.data.network.ErrorNotifier
 import com.avoqado.pos.core.data.network.ForbiddenInterceptor
+import com.avoqado.pos.core.data.network.ManagerOverrideCoordinator
 import com.avoqado.pos.core.data.network.TokenRefreshAuthenticator
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import dagger.Module
@@ -43,6 +44,9 @@ object NetworkModule {
         tokenRefreshAuthenticator: TokenRefreshAuthenticator,
         errorNotifier: ErrorNotifier,
         connectivityMonitor: ConnectivityMonitor,
+        // No hay ciclo: ManagerOverrideCoordinator → PermissionOverrideRepository
+        // → SecureStorage, y el repositorio construye su PROPIO OkHttpClient.
+        managerOverrideCoordinator: ManagerOverrideCoordinator,
     ): OkHttpClient {
         val logging = HttpLoggingInterceptor().apply {
             redactHeader("Authorization")
@@ -59,7 +63,7 @@ object NetworkModule {
             // los headers X-Device-* para que el server registre este aparato en el
             // venue. Si falla, el request sigue sin ellos — nunca bloquea un cobro.
             .addInterceptor(deviceHeadersInterceptor)
-            .addInterceptor(ForbiddenInterceptor(errorNotifier))
+            .addInterceptor(ForbiddenInterceptor(errorNotifier, managerOverrideCoordinator))
             .addInterceptor(ConnectivityInterceptor(connectivityMonitor))
             .addInterceptor(logging)
             .authenticator(tokenRefreshAuthenticator)
