@@ -7,6 +7,7 @@ import com.avoqado.pos.addons.domain.AddonsManager
 import com.avoqado.pos.auth.data.AuthRepository
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.local.StoredVenue
+import com.avoqado.pos.core.data.local.roleDisplayName
 import com.avoqado.pos.core.domain.PlanManager
 import com.avoqado.pos.core.domain.RoleManager
 import com.avoqado.pos.core.data.sync.SyncOutbox
@@ -17,8 +18,11 @@ import com.avoqado.pos.settings.domain.PosModeManager
 import com.avoqado.pos.timeclock.data.TimeEntryRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -48,6 +52,33 @@ class MoreMenuViewModel @Inject constructor(
 
     private val _venueRole = MutableStateFlow(secureStorage.userRole)
     val venueRole: StateFlow<String?> = _venueRole.asStateFlow()
+
+    // MARK: - Identidad de la sesión
+    //
+    // Quién inició sesión y con qué rol. El rol va como flujo y el resto como
+    // getters a propósito: el rol es POR SUCURSAL — la misma persona puede ser
+    // Gerente aquí y Cajero allá, así que tiene que repintarse al cambiar de
+    // establecimiento. El nombre y el correo no cambian dentro de una sesión.
+
+    /** Nombre completo del usuario, o null si la sesión no lo guardó. */
+    val userDisplayName: String?
+        get() = listOfNotNull(secureStorage.userFirstName, secureStorage.userLastName)
+            .joinToString(" ")
+            .trim()
+            .takeIf { it.isNotBlank() }
+
+    /** Correo con el que se inició sesión, o null si no consta. */
+    val userEmail: String?
+        get() = secureStorage.userEmail?.takeIf { it.isNotBlank() }
+
+    /** Rol legible en español del establecimiento ACTIVO. Null = no consta. */
+    val roleLabel: StateFlow<String?> = _venueRole
+        .map { roleDisplayName(it) }
+        .stateIn(
+            viewModelScope,
+            SharingStarted.Eagerly,
+            roleDisplayName(secureStorage.userRole),
+        )
 
     private val _isSwitching = MutableStateFlow(false)
     val isSwitching: StateFlow<Boolean> = _isSwitching.asStateFlow()

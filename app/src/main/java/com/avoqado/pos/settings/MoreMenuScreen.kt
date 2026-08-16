@@ -52,6 +52,7 @@ import androidx.compose.material.icons.outlined.Lock
 import androidx.compose.material.icons.outlined.Monitor
 import androidx.compose.material.icons.outlined.Payments
 import androidx.compose.material.icons.outlined.People
+import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Print
 import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material.icons.outlined.RequestQuote
@@ -81,6 +82,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.avoqado.pos.addons.presentation.AddonsScreen
@@ -118,6 +120,9 @@ fun MoreMenuScreen(
     viewModel: MoreMenuViewModel = hiltViewModel(),
 ) {
     val venueName by viewModel.venueName.collectAsState()
+    // El rol es POR SUCURSAL: se colecta para que cambie solo al cambiar de
+    // establecimiento, en vez de quedarse pegado al de la sucursal anterior.
+    val roleLabel by viewModel.roleLabel.collectAsState()
     val isSwitching by viewModel.isSwitching.collectAsState()
     val sessionGuardMessage by viewModel.sessionGuardMessage.collectAsState()
     val currentMode by viewModel.posModeManager.currentMode.collectAsState()
@@ -235,6 +240,23 @@ fun MoreMenuScreen(
         )
 
         Spacer(modifier = Modifier.height(if (denseMenu) AvoqadoTheme.spacing.sm else AvoqadoTheme.spacing.lg))
+
+        // Identidad de la sesión: quién está adentro y con qué rol.
+        //
+        // Va PRIMERO, antes de Sucursal y Modo, porque es el contexto más grande
+        // de los tres: sucursal y modo sólo significan algo una vez que sabes con
+        // qué cuenta los estás mirando. Antes esta pantalla no lo decía en ningún
+        // lado, así que una sesión de CASHIER olvidada de unas pruebas se veía
+        // idéntica a la del dueño — y el menú recortado por rol parecía una app
+        // rota, no un permiso.
+        IdentityCard(
+            name = viewModel.userDisplayName,
+            email = viewModel.userEmail,
+            roleLabel = roleLabel,
+            dense = denseMenu,
+        )
+
+        Spacer(modifier = Modifier.height(if (denseMenu) AvoqadoTheme.spacing.xs else AvoqadoTheme.spacing.sm))
 
         // El selector legacy Estándar/Reservas ya NO existe: "Reservas" es una
         // opción más del ÚNICO selector de modo (ChangeModeSheet) — antes había
@@ -1028,6 +1050,159 @@ private fun PlaceholderSheet(
 /// (`MoreMenuView.maxContentWidth = 600`): en tablet horizontal el menú se lee
 /// como una columna centrada, no como filas de 2000px con el chevron perdido.
 private val MoreMenuContentMaxWidth = 600.dp
+
+/// Tarjeta de identidad: con qué cuenta se inició sesión y con qué rol.
+///
+/// Comparte chrome exacto con [HeaderCard] (misma tarjeta, mismo chip, mismos
+/// rótulos) para que se lea como parte del mismo sistema y no como un parche.
+/// Se diferencia en dos cosas deliberadas: NO es tocable —hoy no hay pantalla de
+/// cuenta a la que llevar, y una tarjeta que no responde al tacto enseña que no
+/// hay nada detrás— y el rol viaja en una píldora propia, porque es el dato que
+/// se viene a buscar y no puede quedar recortado detrás de un nombre largo.
+///
+/// 🔴 Nunca esconde un dato que falta: si no hay correo lo DICE. El modo de falla
+/// que originó esta tarjeta fue justamente una app que callaba, y una identidad
+/// a medias que se ve completa es peor que un hueco declarado.
+@Composable
+private fun IdentityCard(
+    name: String?,
+    email: String?,
+    roleLabel: String?,
+    dense: Boolean,
+) {
+    val padding = if (dense) AvoqadoTheme.spacing.md else AvoqadoTheme.spacing.lg
+    // Mismo tamaño de chip que HeaderCard, vía tokens: las tres tarjetas del
+    // encabezado tienen que alinear su columna de texto al pixel.
+    val chipSize = if (dense) AvoqadoTheme.dimensions.buttonSmall else AvoqadoTheme.dimensions.touchTarget
+    val initials = initialsFor(name, email)
+
+    // El nombre manda; si no hay nombre, el correo sube a primario para no
+    // repetirlo abajo. El correo faltante se declara, no se omite.
+    val primary = name ?: email ?: "Cuenta sin nombre"
+    val secondary = when {
+        name != null -> email ?: "Correo no disponible"
+        email != null -> null // ya está arriba
+        else -> "Correo no disponible"
+    }
+
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.lg),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant,
+        ),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(padding),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(chipSize)
+                    .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
+                    .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                contentAlignment = Alignment.Center,
+            ) {
+                if (initials != null) {
+                    Text(
+                        text = initials,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                } else {
+                    Icon(
+                        Icons.Outlined.Person,
+                        contentDescription = null,
+                        modifier = Modifier.size(AvoqadoTheme.dimensions.iconLarge),
+                        tint = MaterialTheme.colorScheme.onSurface,
+                    )
+                }
+            }
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(horizontal = if (dense) AvoqadoTheme.spacing.sm else AvoqadoTheme.spacing.md),
+            ) {
+                Text(
+                    text = "Sesión iniciada",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // El nombre cede espacio y se recorta; la píldora del rol
+                    // nunca — es el dato que se vino a buscar.
+                    Text(
+                        text = primary,
+                        style = if (dense) {
+                            MaterialTheme.typography.titleSmall
+                        } else {
+                            MaterialTheme.typography.titleMedium
+                        },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
+                    RolePill(roleLabel = roleLabel)
+                }
+                if (secondary != null) {
+                    Text(
+                        text = secondary,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+        }
+    }
+}
+
+/// El rol, en una píldora. Sin rol guardado lo dice con todas sus letras: el
+/// server manda en permisos, y adivinar aquí un rol que la app no tiene sería
+/// mentir sobre lo que la persona puede hacer.
+@Composable
+private fun RolePill(roleLabel: String?) {
+    Row(
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+            .padding(horizontal = AvoqadoTheme.spacing.sm, vertical = AvoqadoTheme.spacing.xxs),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = roleLabel ?: "Rol no disponible",
+            style = MaterialTheme.typography.labelSmall,
+            fontWeight = FontWeight.SemiBold,
+            color = if (roleLabel != null) {
+                MaterialTheme.colorScheme.onSurface
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+            maxLines = 1,
+        )
+    }
+}
+
+/// Iniciales para el chip: del nombre si lo hay, si no la primera letra del
+/// correo. Null → quien llama pinta el ícono genérico.
+internal fun initialsFor(name: String?, email: String?): String? {
+    val fromName = name.orEmpty()
+        .split(' ')
+        .filter { it.isNotBlank() }
+        .take(2)
+        .mapNotNull { it.firstOrNull() }
+        .joinToString("") { it.uppercaseChar().toString() }
+    if (fromName.isNotBlank()) return fromName
+
+    val fromEmail = email.orEmpty().trim().firstOrNull { it.isLetterOrDigit() }
+    return fromEmail?.uppercaseChar()?.toString()
+}
 
 /// Tarjeta de encabezado (Sucursal / Modo): chip de ícono + rótulo + valor +
 /// acción a la derecha. Las dos comparten forma a propósito — antes el modo era

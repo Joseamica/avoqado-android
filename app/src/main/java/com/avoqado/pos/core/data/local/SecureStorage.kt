@@ -548,17 +548,34 @@ data class StoredVenue(
     val organizationId: String? = null,
 ) {
     val displayRole: String
-        get() = when (role?.uppercase()) {
-            "SUPERADMIN" -> "Super Admin"
-            "OWNER" -> "Propietario"
-            "ADMIN" -> "Administrador"
-            "MANAGER" -> "Gerente"
-            "CASHIER" -> "Cajero"
-            "WAITER" -> "Mesero"
-            "KITCHEN" -> "Cocina"
-            "HOST" -> "Anfitrion"
-            "VIEWER" -> "Observador"
-            "STAFF" -> "Staff"
-            else -> role ?: "Staff"
-        }
+        get() = roleDisplayName(role) ?: "Staff"
+}
+
+/**
+ * Rol del server → etiqueta en español. Única fuente: la usan el switcher de
+ * sucursal y el bloque de identidad de "Más", para que el mismo rol no se llame
+ * distinto según la pantalla.
+ *
+ * 🔴 Devuelve **null** cuando no hay rol guardado, y quien llama decide qué
+ * decir. "No sé qué rol tienes" no es lo mismo que "eres Staff": esta pantalla
+ * existe justo para contestar esa pregunta, así que inventar un rol ahí sería
+ * peor que admitir el hueco. [StoredVenue.displayRole] conserva su "Staff"
+ * histórico para no cambiar el switcher de sucursal.
+ */
+fun roleDisplayName(role: String?): String? {
+    val normalized = role?.trim().orEmpty()
+    if (normalized.isEmpty()) return null
+    return when (normalized.uppercase()) {
+        "SUPERADMIN" -> "Super Admin"
+        "OWNER" -> "Propietario"
+        "ADMIN" -> "Administrador"
+        "MANAGER" -> "Gerente"
+        "CASHIER" -> "Cajero"
+        "WAITER" -> "Mesero"
+        "KITCHEN" -> "Cocina"
+        "HOST" -> "Anfitrion"
+        "VIEWER" -> "Observador"
+        "STAFF" -> "Staff"
+        else -> normalized
+    }
 }
