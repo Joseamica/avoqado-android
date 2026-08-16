@@ -21,6 +21,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.LocalOffer
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Schedule
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -43,6 +44,7 @@ import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.pos.data.model.Promotion
 import com.avoqado.pos.pos.data.model.PromotionGroup
 import com.avoqado.pos.pos.data.model.PromotionOption
+import com.avoqado.pos.pos.presentation.checkout.InputTab
 import com.avoqado.pos.tpvsettings.data.PanelMode
 import java.time.LocalTime
 import java.time.temporal.ChronoUnit
@@ -52,19 +54,43 @@ import java.util.Locale
 // La caída automática — lógica PURA, espejada en iOS (Task 5)
 // ──────────────────────────────────────────────────────────────────────────
 
+/** Lo que mide una celda de producto legible. */
+const val ANCHO_MINIMO_CELDA_PRODUCTO_DP = 120
+
+/** Columnas que quiere la cuadrícula de productos. */
+const val COLUMNAS_CUADRICULA_PRODUCTOS = 3
+
+/** Qué fracción del ancho se queda la columna de entrada. NO cambia al abrir el lateral. */
+const val FRACCION_COLUMNA_ENTRADA = 0.5
+
 /**
- * Ancho mínimo para que el panel lateral sea usable. Derivado, no inventado:
- * con el lateral, la columna de entrada baja al 37.5%; 3 columnas de producto
- * a ~120dp piden 360dp. Ajustable con un dispositivo real enfrente.
+ * Piso ESTRICTO que impone la cuadrícula de productos: 720dp.
+ *
+ * La columna de entrada se queda con el 50% del ancho **también con el panel
+ * lateral abierto** — quien paga la tercera columna es el carrito, no la
+ * cuadrícula (ver el `Row` de `CheckoutScreen`). Así que lo único que la
+ * cuadrícula exige es que ese 50% dé para 3 celdas de 120dp: 360 / 0.5 = 720.
+ */
+const val ANCHO_ESTRICTO_PANEL_LATERAL_DP: Int =
+    ((ANCHO_MINIMO_CELDA_PRODUCTO_DP * COLUMNAS_CUADRICULA_PRODUCTOS) / FRACCION_COLUMNA_ENTRADA).toInt()
+
+/**
+ * Ancho mínimo REAL para ofrecer el panel lateral.
+ *
+ * 🔴 **No es una derivación: es una elección con margen, y hay que decirlo.** El
+ * piso estricto de la cuadrícula es 720 ([ANCHO_ESTRICTO_PANEL_LATERAL_DP]),
+ * pero a 720 el otro 50% se parte en DOS columnas de ~180dp, y ahí una tarjeta
+ * con gancho + nombre + imagen se ve apretada. A 960 cada columna lateral queda
+ * en ~240dp, que es lo que se eligió.
+ *
+ * Queda pendiente ajustarlo con una tablet real enfrente — es un juicio de
+ * legibilidad, no un cálculo.
  *
  * 🔴 iOS usa la MISMA cifra en puntos (Task 5). Si cambia aquí, cambia allá en
  * el mismo trabajo: si divergen, el mismo local ve el panel lateral en la
  * tablet y no en el iPad, y nadie entiende por qué.
  */
 const val ANCHO_MINIMO_PANEL_LATERAL_DP = 960
-
-/** Lo que mide una celda de producto legible. Es de dónde sale el 960. */
-const val ANCHO_MINIMO_CELDA_PRODUCTO_DP = 120
 
 /** A partir de cuántas promociones vale la pena el buscador. */
 const val PROMOCIONES_PARA_BUSCADOR = 8
@@ -87,6 +113,29 @@ const val PERMISO_APLICAR_PROMOCION = "discounts:apply"
 fun resolverModoPanel(ajuste: PanelMode, anchoDp: Int): PanelMode =
     if (ajuste == PanelMode.SIDE_PANEL && anchoDp < ANCHO_MINIMO_PANEL_LATERAL_DP) PanelMode.TAB else ajuste
 
+/**
+ * Qué pestañas se pintan en la pantalla de cobro.
+ *
+ * 🔴 `PROMOS` entra SÓLO cuando el panel va como pestaña: con el panel lateral
+ * el cajero tendría DOS entradas a lo mismo, y con `HIDDEN` el local lo apagó
+ * desde su dashboard.
+ *
+ * Vive aquí y no en la pantalla porque es la misma regla que iOS tiene que
+ * copiar, y porque `private` dentro del archivo de UI no se puede testear.
+ *
+ * @param siempreComoPestana para el layout de un solo panel (teléfono), donde no
+ *   existe la tercera columna: cualquier modo que no sea `HIDDEN` se ve como
+ *   pestaña, para que no desaparezca en silencio.
+ */
+fun pestanasVisibles(
+    modoPanelPromos: PanelMode,
+    siempreComoPestana: Boolean = false,
+): List<InputTab> {
+    val hayPestanaPromos = modoPanelPromos == PanelMode.TAB ||
+        (siempreComoPestana && modoPanelPromos != PanelMode.HIDDEN)
+    return InputTab.entries.filter { it != InputTab.PROMOS || hayPestanaPromos }
+}
+
 // ──────────────────────────────────────────────────────────────────────────
 // Textos derivados de la promoción — puros y testeables
 // ──────────────────────────────────────────────────────────────────────────
@@ -98,6 +147,11 @@ fun resolverModoPanel(ajuste: PanelMode, anchoDp: Int): PanelMode =
  * `PER_UNIT` el precio sale del producto elegido, así que pintar `priceCents`
  * ahí mostraría "$0.00" — dinero que miente. Por eso el 2x1 se deriva de
  * `quantity`/`chargedQuantity` y, si no se puede, se dice "Promo" y ya.
+ *
+ * 🔴 El `else` es para un `pricingMode` que esta versión de la app NO conoce
+ * (el campo viaja como String y el server puede estrenar modos). NO puede caer
+ * al camino de `FIXED_TOTAL`: pintaría un `priceCents` cuya semántica
+ * desconocemos. Un modo nuevo degrada a "Promo", nunca a un precio equivocado.
  */
 fun ganchoDePromocion(promocion: Promotion): String = when (promocion.pricingMode) {
     "PER_UNIT" -> promocion.groups.firstOrNull()?.options?.firstOrNull()
@@ -105,7 +159,9 @@ fun ganchoDePromocion(promocion: Promotion): String = when (promocion.pricingMod
         ?.let { "${it.quantity}x${it.chargedQuantity}" }
         ?: GANCHO_SIN_DATO
 
-    else -> promocion.priceCents.takeIf { it > 0 }?.let { dinero(it) } ?: GANCHO_SIN_DATO
+    "FIXED_TOTAL" -> promocion.priceCents.takeIf { it > 0 }?.let { dinero(it) } ?: GANCHO_SIN_DATO
+
+    else -> GANCHO_SIN_DATO
 }
 
 const val GANCHO_SIN_DATO = "Promo"
@@ -205,6 +261,7 @@ private fun dinero(centavos: Int): String = String.format(Locale.US, "$%.2f", ce
 fun PromotionsPanel(
     vigentes: List<Promotion>,
     proximas: List<Promotion>,
+    cargado: Boolean,
     planPermitido: Boolean,
     puedeAplicar: Boolean,
     onPromotionTap: (Promotion) -> Unit,
@@ -235,12 +292,23 @@ fun PromotionsPanel(
             return@Column
         }
 
+        // 🔴 "No hay promociones" y "todavía no sé si hay" NO son lo mismo. El
+        // catálogo arranca vacío y se llena cuando responde el fetch: decir
+        // "créalas desde el dashboard" en esa ventana es mentirle al cajero de un
+        // local que SÍ tiene promociones — y con el panel lateral esa ventana
+        // aparece en cada montaje de la pantalla de cobro, no sólo si alguien
+        // entra a la pestaña. En frío sin red es peor: el cache del disco sólo se
+        // levanta DESPUÉS de que la petición falla.
         if (vigentes.isEmpty() && proximas.isEmpty()) {
-            Text(
-                text = "Aún no hay promociones. Créalas desde el dashboard.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            if (cargado) {
+                Text(
+                    text = "Aún no hay promociones. Créalas desde el dashboard.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                CargandoPromociones()
+            }
             return@Column
         }
 
@@ -350,6 +418,26 @@ private fun EncabezadoPanel(planPermitido: Boolean) {
             Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
             TierBadge(tierLabel = "Pro")
         }
+    }
+}
+
+@Composable
+private fun CargandoPromociones() {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        CircularProgressIndicator(
+            modifier = Modifier.size(16.dp),
+            strokeWidth = 2.dp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
+        Text(
+            text = "Cargando promociones…",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
@@ -521,6 +609,7 @@ private fun PreviewPanelConPromociones() {
             promocionDemo(id = "p2", nombre = "Combo comida", pricingMode = "FIXED_TOTAL", priceCents = 9900),
         ),
         proximas = listOf(promocionDemo(id = "p3", nombre = "Happy hour", startsAt = "18:00")),
+        cargado = true,
         planPermitido = true,
         puedeAplicar = true,
         onPromotionTap = {},
@@ -534,6 +623,7 @@ private fun PreviewPanelSinPlan() {
     PromotionsPanel(
         vigentes = emptyList(),
         proximas = emptyList(),
+        cargado = true,
         planPermitido = false,
         puedeAplicar = true,
         onPromotionTap = {},
@@ -546,6 +636,7 @@ private fun PreviewPanelSinPermiso() {
     PromotionsPanel(
         vigentes = listOf(promocionDemo()),
         proximas = emptyList(),
+        cargado = true,
         planPermitido = true,
         puedeAplicar = false,
         onPromotionTap = {},
@@ -558,6 +649,7 @@ private fun PreviewPanelVacio() {
     PromotionsPanel(
         vigentes = emptyList(),
         proximas = emptyList(),
+        cargado = true,
         planPermitido = true,
         puedeAplicar = true,
         onPromotionTap = {},

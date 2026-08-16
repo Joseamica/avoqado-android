@@ -85,6 +85,7 @@ import com.avoqado.pos.pos.presentation.product.ProductGridView
 import com.avoqado.pos.pos.presentation.product.WeightCapturePanel
 import com.avoqado.pos.pos.presentation.promotions.PromotionsPanel
 import com.avoqado.pos.pos.presentation.promotions.PromotionsPanelViewModel
+import com.avoqado.pos.pos.presentation.promotions.pestanasVisibles
 import com.avoqado.pos.pos.presentation.promotions.resolverModoPanel
 import com.avoqado.pos.tpvsettings.data.PanelMode
 import com.avoqado.pos.pos.presentation.scanner.BarcodeScannerView
@@ -192,8 +193,18 @@ fun CheckoutScreen(
     // puede hacerlo desaparecer, porque lo eligió el propio dueño.
     val promotionsViewModel: PromotionsPanelViewModel = hiltViewModel()
     val promociones by promotionsViewModel.promociones.collectAsState()
+    val promocionesCargadas by promotionsViewModel.cargado.collectAsState()
     val ajustePanelPromos by promotionsViewModel.ajustePanelCajero.collectAsState()
     LaunchedEffect(Unit) { promotionsViewModel.refresh() }
+    // 🔴 `remember`, no lectura directa: `puedeAplicar` desemboca en
+    // `venuePermissions`, que descifra EncryptedSharedPreferences y decodifica
+    // JSON. Leerlo en cada recomposición de la pantalla más caliente de la app
+    // es caro y no aporta nada. La llave es el catálogo porque es lo que cambia
+    // exactamente cuando cambian estas dos respuestas: al cambiar de venue se
+    // limpia y se vuelve a bajar, y el candado de plan (403 con `featureCode`)
+    // también lo vacía.
+    val promosPlanPermitido = remember(promociones) { promotionsViewModel.planPermitido }
+    val promosPuedeAplicar = remember(promociones) { promotionsViewModel.puedeAplicar }
     // 🔴 Seam de la Task 6: ahí se abre la hoja de opciones del combo y la
     // promoción entra al carrito (con su `AvoqadoSuccessToast`). Esta task sólo
     // pinta y deja tocar — a propósito NO se celebra un "¡Combo agregado!" que
@@ -565,8 +576,9 @@ fun CheckoutScreen(
                                     PromotionsPanel(
                                         vigentes = promociones.active,
                                         proximas = promociones.upcoming,
-                                        planPermitido = promotionsViewModel.planPermitido,
-                                        puedeAplicar = promotionsViewModel.puedeAplicar,
+                                        cargado = promocionesCargadas,
+                                        planPermitido = promosPlanPermitido,
+                                        puedeAplicar = promosPuedeAplicar,
                                         onPromotionTap = onPromotionTap,
                                     )
                                 }
@@ -589,9 +601,14 @@ fun CheckoutScreen(
                 )
 
                 // Middle panel - Promociones (sólo en modo columna). La entrada se
-                // queda con el 50% y el 50% restante se parte entre promociones y
-                // carrito: es de ahí que sale el umbral de 960dp, porque debajo la
-                // cuadrícula de productos deja de caber en 3 columnas.
+                // queda con su 50% y el 50% restante se parte entre promociones y
+                // carrito: quien paga la tercera columna es el CARRITO, no la
+                // cuadrícula de productos.
+                // Por eso el piso estricto de la cuadrícula es 720dp
+                // (ANCHO_ESTRICTO_PANEL_LATERAL_DP: 3 celdas de 120dp dentro del
+                // 50%), y el umbral que usamos —960— es ese piso MÁS un margen
+                // elegido a mano: a 720 cada columna lateral cae a ~180dp y la
+                // tarjeta se ve apretada. Ver ANCHO_MINIMO_PANEL_LATERAL_DP.
                 if (modoPanelPromos == PanelMode.SIDE_PANEL) {
                     Box(
                         modifier = Modifier
@@ -602,8 +619,9 @@ fun CheckoutScreen(
                         PromotionsPanel(
                             vigentes = promociones.active,
                             proximas = promociones.upcoming,
-                            planPermitido = promotionsViewModel.planPermitido,
-                            puedeAplicar = promotionsViewModel.puedeAplicar,
+                            cargado = promocionesCargadas,
+                            planPermitido = promosPlanPermitido,
+                            puedeAplicar = promosPuedeAplicar,
                             onPromotionTap = onPromotionTap,
                         )
                     }
@@ -775,8 +793,9 @@ fun CheckoutScreen(
                                 PromotionsPanel(
                                     vigentes = promociones.active,
                                     proximas = promociones.upcoming,
-                                    planPermitido = promotionsViewModel.planPermitido,
-                                    puedeAplicar = promotionsViewModel.puedeAplicar,
+                                    cargado = promocionesCargadas,
+                                    planPermitido = promosPlanPermitido,
+                                    puedeAplicar = promosPuedeAplicar,
                                     onPromotionTap = onPromotionTap,
                                 )
                             }
@@ -1955,24 +1974,6 @@ private fun SearchBarView(
 }
 
 // MARK: - Tab Selector (matching iOS: underline style tabs)
-
-/**
- * Qué pestañas se pintan. `PROMOS` sólo entra cuando el panel de promociones va
- * COMO pestaña: con el panel lateral el cajero tendría dos entradas a lo mismo,
- * y con `HIDDEN` el local lo apagó desde su dashboard.
- *
- * @param siempreComoPestana para el layout de un solo panel (teléfono), donde no
- *   existe la tercera columna: cualquier modo que no sea `HIDDEN` se ve como
- *   pestaña, para que nunca desaparezca en silencio.
- */
-private fun pestanasVisibles(
-    modoPanelPromos: PanelMode,
-    siempreComoPestana: Boolean = false,
-): List<InputTab> {
-    val hayPestanaPromos = modoPanelPromos == PanelMode.TAB ||
-        (siempreComoPestana && modoPanelPromos != PanelMode.HIDDEN)
-    return InputTab.entries.filter { it != InputTab.PROMOS || hayPestanaPromos }
-}
 
 @Composable
 private fun TabSelectorView(

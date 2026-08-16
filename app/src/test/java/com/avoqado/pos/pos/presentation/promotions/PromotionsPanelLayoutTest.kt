@@ -3,9 +3,12 @@ package com.avoqado.pos.pos.presentation.promotions
 import com.avoqado.pos.pos.data.model.Promotion
 import com.avoqado.pos.pos.data.model.PromotionGroup
 import com.avoqado.pos.pos.data.model.PromotionOption
+import com.avoqado.pos.pos.presentation.checkout.InputTab
 import com.avoqado.pos.tpvsettings.data.PanelMode
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.time.LocalTime
 
@@ -36,6 +39,45 @@ class PromotionsPanelLayoutTest {
         assertEquals(PanelMode.HIDDEN, resolverModoPanel(PanelMode.HIDDEN, anchoDp = 1370))
     }
 
+    @Test
+    fun `el umbral elegido nunca puede bajar del piso que impone la cuadricula`() {
+        // La entrada se queda con el 50% también con el lateral abierto, así que
+        // el piso estricto son 3 celdas de 120dp dentro de ese 50% = 720dp.
+        assertEquals(720, ANCHO_ESTRICTO_PANEL_LATERAL_DP)
+        // 960 es ese piso MÁS un margen de legibilidad elegido a mano. El margen
+        // se puede ajustar con una tablet enfrente; bajar del piso no: ahí la
+        // cuadrícula de productos deja de caber en 3 columnas.
+        assertTrue(ANCHO_MINIMO_PANEL_LATERAL_DP >= ANCHO_ESTRICTO_PANEL_LATERAL_DP)
+    }
+
+    // ── Qué pestañas se pintan ─────────────────────────────────────────────
+
+    @Test
+    fun `la pestana de promociones sale SOLO en modo pestana`() {
+        assertTrue(InputTab.PROMOS in pestanasVisibles(PanelMode.TAB))
+        // Con el panel lateral el cajero tendría DOS entradas a lo mismo.
+        assertFalse(InputTab.PROMOS in pestanasVisibles(PanelMode.SIDE_PANEL))
+        assertFalse(InputTab.PROMOS in pestanasVisibles(PanelMode.HIDDEN))
+    }
+
+    @Test
+    fun `en el layout de un solo panel cualquier modo visible es pestana`() {
+        // El teléfono no tiene tercera columna: SIDE_PANEL no puede significar
+        // "no se ve", o el panel desaparecería en silencio.
+        assertTrue(InputTab.PROMOS in pestanasVisibles(PanelMode.TAB, siempreComoPestana = true))
+        assertTrue(InputTab.PROMOS in pestanasVisibles(PanelMode.SIDE_PANEL, siempreComoPestana = true))
+        // HIDDEN sigue siendo HIDDEN en los DOS layouts: lo apagó el propio local.
+        assertFalse(InputTab.PROMOS in pestanasVisibles(PanelMode.HIDDEN, siempreComoPestana = true))
+    }
+
+    @Test
+    fun `esconder promociones no se lleva ninguna otra pestana`() {
+        val conPromos = pestanasVisibles(PanelMode.TAB)
+        val sinPromos = pestanasVisibles(PanelMode.HIDDEN)
+        assertEquals(InputTab.entries.toList(), conPromos)
+        assertEquals(InputTab.entries.filter { it != InputTab.PROMOS }, sinPromos)
+    }
+
     // ── El gancho de la tarjeta: es dinero en pantalla ──────────────────────
 
     @Test
@@ -56,6 +98,16 @@ class PromotionsPanelLayoutTest {
     fun `un FIXED_TOTAL pinta su precio, y nunca un cero`() {
         assertEquals("$99.00", ganchoDePromocion(promocion(pricingMode = "FIXED_TOTAL", priceCents = 9900)))
         assertEquals(GANCHO_SIN_DATO, ganchoDePromocion(promocion(pricingMode = "FIXED_TOTAL", priceCents = 0)))
+    }
+
+    @Test
+    fun `un pricingMode que esta app no conoce no pinta un precio`() {
+        // Un modo nuevo del server no puede caer al camino de FIXED_TOTAL: ahí
+        // pintaríamos un priceCents cuya semántica desconocemos.
+        assertEquals(
+            GANCHO_SIN_DATO,
+            ganchoDePromocion(promocion(pricingMode = "MODO_QUE_NO_EXISTE_AUN", priceCents = 9900)),
+        )
     }
 
     // ── La hora del negocio, nunca la del aparato ───────────────────────────

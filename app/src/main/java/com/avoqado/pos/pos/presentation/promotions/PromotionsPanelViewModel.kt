@@ -10,8 +10,10 @@ import com.avoqado.pos.pos.data.model.PromotionsPayload
 import com.avoqado.pos.tpvsettings.data.PanelMode
 import com.avoqado.pos.tpvsettings.data.TpvSettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
@@ -74,11 +76,37 @@ class PromotionsPanelViewModel @Inject constructor(
             roleManager.hasVenuePermission(PERMISO_APLICAR_PROMOCION)
 
     /**
+     * ¿Ya sabemos qué hay en el catálogo?
+     *
+     * 🔴 Distingue "todavía no cargó" de "cargó y está vacío". Sin esto, el panel
+     * dice "Aún no hay promociones. Créalas desde el dashboard" durante toda la
+     * ventana entre el montaje y la respuesta del fetch — mintiéndole al cajero de
+     * un local que SÍ tiene promociones.
+     */
+    private val _cargado = MutableStateFlow(false)
+    val cargado: StateFlow<Boolean> = _cargado.asStateFlow()
+
+    /**
      * Baja el catálogo del venue activo. Cache-first: si falla, se conserva lo
      * que ya había (el repositorio nunca borra por un fallo de red).
      */
     fun refresh() {
-        val venueId = secureStorage.venueId ?: return
-        viewModelScope.launch { repository.refresh(venueId) }
+        val venueId = secureStorage.venueId
+        if (venueId == null) {
+            // Sin venue no va a llegar nada nunca: quedarse en "Cargando…" para
+            // siempre sería otra forma de mentir.
+            _cargado.value = true
+            return
+        }
+        viewModelScope.launch {
+            // `finally`: pase lo que pase se sale del estado de carga. El
+            // repositorio ya atrapa red y parseo, pero un "cargando" eterno es
+            // peor que un "no hay".
+            try {
+                repository.refresh(venueId)
+            } finally {
+                _cargado.value = true
+            }
+        }
     }
 }
