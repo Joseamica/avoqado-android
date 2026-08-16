@@ -19,7 +19,16 @@ import com.avoqado.pos.printing.data.model.PaperWidth
  */
 object CorteTicketBuilder {
 
-    /** Lo que esta app escribe en la nota al registrar el egreso de un reembolso. */
+    /**
+     * Prefijo con el que llega la nota del egreso de un reembolso.
+     *
+     * 🔴 Ya NO lo escribe esta app: desde el 2026-08-16 lo escribe el SERVIDOR
+     * (`DRAWER_REFUND_NOTE_PREFIX` en `avoqado-server/src/services/shared/
+     * cashDrawerPosting.ts`), y el evento baja por `syncFromApi()`. Es un contrato
+     * entre repos: si allá cambia la cadena, aquí el dinero sí sale del cajón pero
+     * el ticket lo cuenta como un retiro a mano y el dueño no puede explicar el
+     * hueco. Mismo valor en iOS.
+     */
     const val PREFIJO_REEMBOLSO = "Reembolso:"
 
 
@@ -59,9 +68,9 @@ object CorteTicketBuilder {
         // saber cuánto se devolvió, que es lo que el dueño quiere revisar cuando
         // el cajón sale corto.
         //
-        // Se distinguen por el prefijo de la nota, que pone esta misma app al
-        // registrar el egreso. Frágil a propósito y a falta de un tipo de evento
-        // propio: añadirlo obliga a tocar el enum del server y migrar.
+        // Se distinguen por el prefijo de la nota, que pone el SERVIDOR al registrar
+        // el egreso (ver `PREFIJO_REEMBOLSO`). Frágil a propósito y a falta de un
+        // tipo de evento propio: añadirlo obliga a tocar el enum del server y migrar.
         val reembolsos = events
             .filter { it.type == CashDrawerEventType.PAY_OUT.name && it.note?.startsWith(PREFIJO_REEMBOLSO) == true }
             .sumOf { it.amountCents }

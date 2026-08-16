@@ -37,7 +37,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import com.avoqado.pos.cashdrawer.data.CorteTicketBuilder
 import com.avoqado.pos.designsystem.theme.Warning
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -58,7 +57,6 @@ import androidx.compose.ui.unit.dp
 import com.avoqado.pos.designsystem.components.CircleBackButton
 import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
-import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
 import com.avoqado.pos.transactions.data.AssociatedRefundItem
 import com.avoqado.pos.transactions.data.RefundApiException
 import com.avoqado.pos.transactions.data.RefundRepository
@@ -85,7 +83,10 @@ fun IssueRefundSheet(
     transaction: Transaction,
     maxRefundable: Double,
     refundRepository: RefundRepository,
-    cashDrawerRepository: CashDrawerRepository,
+    // 🔴 NO recibe el CashDrawerRepository, y es a propósito: esta pantalla no
+    // tiene por qué saber que el cajón existe. El egreso del reembolso lo escribe
+    // el SERVIDOR (ver el comentario en `onSuccess`); volver a pasar el repositorio
+    // aquí es el primer paso para que alguien reinstale el doble descuento.
     terminalPaymentService: com.avoqado.pos.payment.data.TerminalPaymentService,
     onDismiss: () -> Unit,
     onRefunded: () -> Unit,
@@ -105,17 +106,6 @@ fun IssueRefundSheet(
     var reason by remember(transaction.id) { mutableStateOf<ReasonOption?>(null) }
     var reasonMenuOpen by remember(transaction.id) { mutableStateOf(false) }
     var submitting by remember(transaction.id) { mutableStateOf(false) }
-    /**
-     * Cómo se le devuelve el dinero al cliente — NO cómo pagó.
-     *
-     * Lo que decide si sale dinero del cajón es esto, no el método del cobro
-     * original. Antes se miraba el original: devolver en efectivo un cobro con
-     * tarjeta NO registraba el egreso, y el arqueo quedaba con un dinero de más
-     * que ya no estaba en el cajón.
-     */
-    var devuelveEnEfectivo by remember(transaction.id) {
-        mutableStateOf(transaction.method.equals("CASH", ignoreCase = true))
-    }
     var errorMsg by remember(transaction.id) { mutableStateOf<String?>(null) }
 
     // --- Abrir la devolución en una terminal física ---
@@ -312,35 +302,25 @@ fun IssueRefundSheet(
                         )
                     }
 
+                    // 🔴 Aquí vivían dos pastillas ("En efectivo" / "En la terminal") que
+                    // decidían si esta app mandaba el egreso al cajón. Ya no lo manda —lo
+                    // manda el servidor— así que el control se quedó SIN EFECTO: tocarlo
+                    // no cambiaba nada y la leyenda "Saldrá del efectivo de la caja" pasó a
+                    // ser mentira. Un control muerto miente más que no tener control.
+                    //
+                    // Y el hueco es real, no se está escondiendo: el servidor decide con la
+                    // semántica del cobro ORIGINAL, así que una venta con tarjeta devuelta
+                    // en efectivo NO baja del cajón. Cerrarlo de verdad exige mandarle al
+                    // servidor CÓMO se entregó el dinero (`issueAssociatedRefund` no lleva
+                    // método) y que él lo honre: cambio de servidor + cliente, pendiente y
+                    // anotado. Mientras tanto se dice en voz alta y con qué hacer, en vez de
+                    // dejar que el cajero crea que ya quedó.
                     Spacer(modifier = Modifier.height(spacing.sm))
                     Text(
-                        text = "¿Ya la devolviste a mano en la terminal? Dinos cómo se devolvió " +
-                            "para que la caja cuadre:",
+                        text = "Si le entregas efectivo de la caja, regístralo tú como retiro " +
+                            "en Caja: el sistema no lo descuenta solo, porque el cobro no fue " +
+                            "en efectivo.",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Spacer(modifier = Modifier.height(spacing.xs))
-                    Row(horizontalArrangement = Arrangement.spacedBy(spacing.sm)) {
-                        TabPill(
-                            label = "En efectivo",
-                            active = devuelveEnEfectivo,
-                            modifier = Modifier.weight(1f),
-                            onClick = { devuelveEnEfectivo = true },
-                        )
-                        TabPill(
-                            label = "En la terminal",
-                            active = !devuelveEnEfectivo,
-                            modifier = Modifier.weight(1f),
-                            onClick = { devuelveEnEfectivo = false },
-                        )
-                    }
-                    Text(
-                        text = if (devuelveEnEfectivo) {
-                            "Saldrá del efectivo de la caja."
-                        } else {
-                            "No toca la caja: sólo se registra para que la venta deje de contar."
-                        },
-                        style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
@@ -542,26 +522,28 @@ fun IssueRefundSheet(
                             result.fold(
                                 onSuccess = {
                                     Log.d("💸", "Refund OK: $it")
-                                    // El egreso depende de cómo se DEVOLVIÓ, no de cómo se cobró:
-                                    // devolver en efectivo un cobro con tarjeta también saca dinero
-                                    // del cajón, y antes no se registraba.
-                                    if (devuelveEnEfectivo) {
-                                        try {
-                                            val openSession = cashDrawerRepository.getOpenSession()
-                                            if (openSession != null) {
-                                                val refundCents = (amountToRefund * 100).toInt()
-                                                cashDrawerRepository.addPayOut(
-                                                    amountCents = refundCents,
-                                                    // El prefijo lo lee el corte para separar los reembolsos del
-                                                    // resto de egresos: si cambia aquí, cambia allá.
-                                                    note = "${CorteTicketBuilder.PREFIJO_REEMBOLSO} ${chosenReason.label}",
-                                                )
-                                                Log.d("💸", "✅ Cash drawer PAY_OUT recorded for refund ($refundCents)")
-                                            }
-                                        } catch (e: Exception) {
-                                            Log.e("💸", "⚠️ Could not record cash drawer pay-out: ${e.message}")
-                                        }
-                                    }
+                                    // 🔴 AQUÍ NO SE ESCRIBE EN EL CAJÓN. El servidor ya lo hace.
+                                    //
+                                    // Hasta el 2026-08-16 esta pantalla mandaba su propio PAY_OUT
+                                    // después de cada reembolso, porque la ruta que usa
+                                    // (`refund.dashboard.service.issueRefund`) no tocaba la caja y el
+                                    // arqueo inventaba un SOBRANTE del tamaño de lo devuelto — medido
+                                    // en hardware: $50,380 en pantalla contra $50,230 físicos.
+                                    //
+                                    // Ese lado se arregló en el SERVIDOR
+                                    // (`shared/cashDrawerPosting.postCashRefundToDrawer`, `08a3fe6f`).
+                                    // Volver a escribir desde aquí restaría DOS VECES y le cobraría al
+                                    // cajero un faltante que nadie se robó: la llave del servidor
+                                    // (`srv-refund:<refundId>`) no puede deduplicar contra un UUID
+                                    // local, y un PAY_OUT que llega por `/cash-drawer/sync` es
+                                    // indistinguible de un retiro a mano.
+                                    //
+                                    // El movimiento aparece en la tablet en cuanto se abre Caja:
+                                    // `CashDrawerViewModel.init` → `syncFromApi()` baja los eventos
+                                    // que el servidor confirmó y de ahí sale el corte. La copia local
+                                    // se ALIMENTA de lo confirmado; no se adelanta a ciegas.
+                                    //
+                                    // Vigilado por `RefundCashDrawerOwnershipTest`.
                                     onRefunded()
                                 },
                                 onFailure = { throwable ->

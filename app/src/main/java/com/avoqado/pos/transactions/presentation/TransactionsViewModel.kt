@@ -42,6 +42,14 @@ sealed interface RefundUiState {
 class TransactionsViewModel @Inject constructor(
     private val repository: TransactionRepository,
     val refundRepository: RefundRepository,
+    /**
+     * 🔴 Inyectado a propósito aunque el flujo de reembolso ya NO lo use.
+     *
+     * Es el ancla del test que verifica que nadie vuelva a escribir el egreso desde
+     * el cliente (`RefundCashDrawerOwnershipTest`): sin la dependencia inyectada, el
+     * `coVerify(exactly = 0)` no vigilaría nada. Si algún día se quita de aquí, hay
+     * que quitar también ese test — no al revés.
+     */
     val cashDrawerRepository: CashDrawerRepository,
     /** Para abrir la devolución de un cobro con tarjeta en una terminal física. */
     val terminalPaymentService: com.avoqado.pos.payment.data.TerminalPaymentService,
@@ -329,19 +337,22 @@ class TransactionsViewModel @Inject constructor(
                 onSuccess = { refundResult ->
                     Log.d("💸", "✅ Refund processed: ${refundResult.message}")
 
-                    // Record PAY_OUT in cash drawer if session is open
-                    try {
-                        val openSession = cashDrawerRepository.getOpenSession()
-                        if (openSession != null) {
-                            cashDrawerRepository.addPayOut(
-                                amountCents = amountCents,
-                                note = "Reembolso desasociado: $reason",
-                            )
-                            Log.d("💸", "✅ Cash drawer PAY_OUT recorded for refund")
-                        }
-                    } catch (e: Exception) {
-                        Log.e("💸", "⚠️ Could not record cash drawer pay-out: ${e.message}")
-                    }
+                    // 🔴 AQUÍ NO SE ESCRIBE EN EL CAJÓN. El servidor ya lo hace.
+                    //
+                    // Esta ruta (`POST /mobile/venues/:id/refunds` →
+                    // `refund.mobile.service.createRefund`) SIEMPRE creó su PAY_OUT, y este
+                    // cliente manda `method = "CASH"` fijo (`RefundRepository:214`), así que
+                    // el movimiento del servidor está garantizado. O sea que esto llevaba
+                    // tiempo restando DOS VECES, sólo que nadie lo había medido: el defecto
+                    // que se midió el 2026-08-16 fue el de la OTRA ruta, la del sheet.
+                    //
+                    // Además el mensaje mentía: "✅ Cash drawer PAY_OUT recorded" se escribía
+                    // aunque no hubiera caja abierta (`addPayOut` devuelve null) y aunque el
+                    // POST al servidor fallara (`fireApiPayOut` se traga el error).
+                    //
+                    // El movimiento aparece en la tablet en cuanto se abre Caja:
+                    // `CashDrawerViewModel.init` → `syncFromApi()`. Vigilado por
+                    // `RefundCashDrawerOwnershipTest`.
 
                     _refundState.value = RefundUiState.Success(
                         refundResult.message ?: "Reembolso procesado",

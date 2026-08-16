@@ -463,7 +463,6 @@ private fun LoadedDetailView(
             transaction = transaction,
             maxRefundable = transaction.remainingRefundable,
             refundRepository = viewModel.refundRepository,
-            cashDrawerRepository = viewModel.cashDrawerRepository,
             terminalPaymentService = viewModel.terminalPaymentService,
             onDismiss = { showRefundSheet = false },
             onRefunded = {
