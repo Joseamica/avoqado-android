@@ -160,12 +160,11 @@ WAITER no. 🔴 **Avisar a los venues antes de liberar**: un mesero que hoy junt
 de poder (quedará a un PIN de distancia). Las otras 9 acciones se separan después si el piso
 lo pide — el override ya las cubre a todas por diseño.
 
-🔶 **ABIERTO (founder) — venues con conjuntos personalizados:** un conjunto custom reemplaza
-los defaults del rol, así que sin migración **nadie** en esos venues (ni el gerente) podría
-fusionar ni autorizar con PIN hasta editar el conjunto en el dashboard. Opciones: (A)
-migración que otorga `orders:merge` a los conjuntos que ya tienen `orders:cancel` — preserva
-la intención "gerentes sí, meseros no" sin bloquear a nadie; (B) no migrar y avisar venue por
-venue. v1 implementa los defaults de rol; la migración espera la respuesta.
+✅ **RESUELTO (founder, 2026-08-15) — venues con conjuntos personalizados: opción A, migrar.**
+Todo conjunto personalizado (`PermissionSet` y `VenueRolePermission`) que ya incluya
+`orders:cancel` recibe también `orders:merge`; los que tienen `orders:*` no necesitan nada.
+Preserva la intención "quien puede anular, puede fusionar; los demás piden PIN" y nadie queda
+bloqueado el día del deploy. Migración idempotente, verificada contra Postgres.
 
 ## 5. Seguridad
 
