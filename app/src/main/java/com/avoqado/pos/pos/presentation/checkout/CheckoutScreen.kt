@@ -122,6 +122,9 @@ fun CheckoutScreen(
     cartViewModel: CartViewModel = hiltViewModel(),
 ) {
     val creditsViewModel: com.avoqado.pos.customers.presentation.CustomerCreditsViewModel = hiltViewModel()
+    // Membresías cobradas que NO se entregaron: dinero adentro sin su
+    // contraparte. Se avisa aquí, en el mostrador, no sólo en el log.
+    val membresiasSinEntregar by creditsViewModel.undeliveredGrants.collectAsState()
     val cartState by cartViewModel.cartState.collectAsState()
     val isLoading by cartViewModel.isLoading.collectAsState()
     val staffOptions by cartViewModel.staffOptions.collectAsState()
@@ -1170,6 +1173,35 @@ fun CheckoutScreen(
                 PrimaryButton(
                     text = "Entendido",
                     onClick = { previousChargeNotice = null },
+                    fullWidth = true,
+                )
+            },
+        ) {}
+    }
+
+    // 🔴 El cliente PAGÓ su membresía y el paquete no se le entregó. La entrega
+    // quedó encolada y se reintenta sola, pero eso no basta: si el motivo es
+    // permanente (un 403 de permiso, p. ej.) la cola reintenta para siempre sin
+    // éxito, y sin este aviso NADIE en el mostrador se entera de que hay dinero
+    // cobrado sin su contraparte. Mismo trato que el cobro anterior resuelto: se
+    // acusa de recibo, no se desvanece como un toast. Y espera a que cierre el
+    // cobro para no secuestrarle al cliente la propina/el recibo.
+    if (membresiasSinEntregar > 0 && !showPaymentFlow) {
+        val varias = membresiasSinEntregar > 1
+        AvoqadoDialog(
+            title = if (varias) "Membresías pendientes de entregar" else "Membresía pendiente de entregar",
+            description = if (varias) {
+                "El cobro sí se hizo, pero los $membresiasSinEntregar paquetes no se le " +
+                    "entregaron al cliente. La app lo sigue intentando. Avísale a un encargado."
+            } else {
+                "El cobro sí se hizo, pero el paquete no se le entregó al cliente. " +
+                    "La app lo sigue intentando. Avísale a un encargado."
+            },
+            onDismiss = { creditsViewModel.clearUndeliveredGrants() },
+            actionButton = {
+                PrimaryButton(
+                    text = "Entendido",
+                    onClick = { creditsViewModel.clearUndeliveredGrants() },
                     fullWidth = true,
                 )
             },

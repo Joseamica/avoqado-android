@@ -46,6 +46,19 @@ class CustomerCreditsViewModel @Inject constructor(
     val loadError: StateFlow<Boolean> = _loadError.asStateFlow()
 
     /**
+     * Cuántas membresías YA COBRADAS se quedaron sin entregar en el último
+     * intento. Van encoladas (no se pierden), pero el mostrador tiene que
+     * enterarse en el momento: la pantalla lo pinta y luego lo limpia.
+     */
+    private val _undeliveredGrants = MutableStateFlow(0)
+    val undeliveredGrants: StateFlow<Int> = _undeliveredGrants.asStateFlow()
+
+    /** El aviso ya se mostró y el usuario lo acusó de recibo. */
+    fun clearUndeliveredGrants() {
+        _undeliveredGrants.value = 0
+    }
+
+    /**
      * @param background la consulta corre SOLA (la tarjeta del carrito la lanza
      * al adjuntar un cliente). En la ficha del cliente se deja en `false`: ahí
      * el usuario abrió justamente ese expediente, y esa pantalla presenta un
@@ -87,15 +100,36 @@ class CustomerCreditsViewModel @Inject constructor(
      *  sell-from-grid flow: charge goes through the cart, credits granted on success). */
     fun grantPacks(packIds: List<String>, customerId: String) {
         viewModelScope.launch {
+            var sinEntregar = 0
             packIds.forEach { packId ->
-                // Post-cobro automático: si falla, se encola. Nunca un modal.
+                // ── El criterio del modal global, con sus DOS mitades ──────────
+                // El modal crudo de permisos sólo puede salir de una petición que
+                //   (a) nació de un TOQUE del usuario en esta pantalla y cuyo
+                //       fracaso impide justo lo que pidió, O BIEN
+                //   (b) cuyo fracaso deja DINERO YA COBRADO sin su contraparte.
+                // La mitad (b) faltaba, y por eso esto se silenció de más.
+                //
+                // Ésta corre sola al confirmarse el cobro, así que (a) no aplica:
+                // `background = true` se queda — a un cajero, "activa
+                // «creditPacks:create»" no le sirve de nada y le tapa la pantalla
+                // a media venta. Pero (b) SÍ aplica: el cliente pagó su membresía
+                // y no la recibió. Callar del todo era el bug — nadie en el
+                // mostrador se enteraba, y con un motivo permanente (403) la cola
+                // reintentaba para siempre sin éxito y sin avisar jamás.
+                //
+                // Por eso el fallo hace las DOS cosas: se encola (durable, no se
+                // pierde la entrega) y se expone para que la pantalla lo avise.
+                // No lo vuelvas a silenciar razonando sólo "corre sola": eso es
+                // la mitad (a), y aquí manda la (b).
                 val ok = articlesRepository.sellPackToCustomer(packId, customerId, background = true)
                 if (!ok) {
                     // The customer already PAID — never drop the grant. Queue it
                     // durably; the queue retries on next app start / drain.
                     pendingGrantQueue.enqueue(packId, customerId)
+                    sinEntregar++
                 }
             }
+            if (sinEntregar > 0) _undeliveredGrants.value = sinEntregar
         }
     }
 
