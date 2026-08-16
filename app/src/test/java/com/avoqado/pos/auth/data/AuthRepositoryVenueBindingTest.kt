@@ -8,6 +8,7 @@ import com.avoqado.pos.inventory.data.InventoryRepository
 import com.avoqado.pos.notifications.data.NotificationsRepository
 import com.avoqado.pos.pos.data.DiscountsRepository
 import com.avoqado.pos.pos.data.ProductsRepository
+import com.avoqado.pos.pos.data.PromotionsRepository
 import com.avoqado.pos.pos.data.SavedCartsRepository
 import com.avoqado.pos.transactions.data.TransactionRepository
 import com.avoqado.pos.tpvsettings.data.TpvSettingsRepository
@@ -29,6 +30,7 @@ class AuthRepositoryVenueBindingTest {
         secureStorage = secureStorage,
         productsRepository = mockk<ProductsRepository>(relaxed = true),
         discountsRepository = mockk<DiscountsRepository>(relaxed = true),
+        promotionsRepository = mockk<PromotionsRepository>(relaxed = true),
         tpvSettingsRepository = mockk<TpvSettingsRepository>(relaxed = true),
         savedCartsRepository = mockk<SavedCartsRepository>(relaxed = true),
         inventoryRepository = mockk<InventoryRepository>(relaxed = true),

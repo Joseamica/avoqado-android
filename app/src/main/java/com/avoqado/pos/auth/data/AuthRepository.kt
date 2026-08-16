@@ -13,6 +13,7 @@ import com.avoqado.pos.inventory.data.InventoryRepository
 import com.avoqado.pos.notifications.data.NotificationsRepository
 import com.avoqado.pos.pos.data.DiscountsRepository
 import com.avoqado.pos.pos.data.ProductsRepository
+import com.avoqado.pos.pos.data.PromotionsRepository
 import com.avoqado.pos.pos.data.SavedCartsRepository
 import com.avoqado.pos.transactions.data.TransactionRepository
 import com.avoqado.pos.tpvsettings.data.TpvSettingsRepository
@@ -28,6 +29,7 @@ class AuthRepository @Inject constructor(
     private val secureStorage: SecureStorage,
     private val productsRepository: ProductsRepository,
     private val discountsRepository: DiscountsRepository,
+    private val promotionsRepository: PromotionsRepository,
     private val tpvSettingsRepository: TpvSettingsRepository,
     private val savedCartsRepository: SavedCartsRepository,
     private val inventoryRepository: InventoryRepository,
@@ -176,6 +178,7 @@ class AuthRepository @Inject constructor(
         // 2. Clear ALL venue-specific cached data
         productsRepository.clearCache()
         discountsRepository.clearCache()
+        promotionsRepository.clearCache()
         tpvSettingsRepository.clearCache()
         savedCartsRepository.clearCache()
         inventoryRepository.clearCache()
@@ -185,6 +188,7 @@ class AuthRepository @Inject constructor(
         // 3. Refetch essential data for the new venue
         productsRepository.fetchProducts()
         discountsRepository.fetchDiscounts()
+        promotionsRepository.refresh(venue.id)
         tpvSettingsRepository.refreshSettings()
 
         // 4. Notify observers (CartViewModel) to clear cart
