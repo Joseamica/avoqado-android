@@ -3,6 +3,7 @@ package com.avoqado.pos.payment.data
 import android.util.Log
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ApiConstants
+import com.avoqado.pos.core.data.network.ForbiddenInterceptor
 import com.avoqado.pos.payment.data.model.CreateOrderRequest
 import com.avoqado.pos.payment.data.model.CreateOrderResponse
 import com.avoqado.pos.payment.data.model.OrderData
@@ -51,6 +52,27 @@ class OrderRepository @Inject constructor(
         .readTimeout(10, TimeUnit.SECONDS)
         .writeTimeout(10, TimeUnit.SECONDS)
         .callTimeout(15, TimeUnit.SECONDS)
+        .apply {
+            // 🔴 El plazo de 15 s y el teclado del PIN son incompatibles: el
+            // teclado se abre DENTRO de la llamada, así que un gerente que
+            // tarda en llegar hacía que OkHttp cancelara con
+            // `InterruptedIOException` — un fallo de RED a ojos de
+            // `isQueueableError`. Resultado medido en el review: una venta que
+            // el server rechazó por permisos quedaba encolada, pintada como
+            // cobrada y con comanda impresa.
+            //
+            // Se marca en el CLIENTE y no en cada llamada para que ningún call
+            // site nuevo pueda olvidarlo. Va en la posición 0 porque el
+            // `ForbiddenInterceptor` viene copiado de `client` y tiene que ver
+            // la petición YA marcada.
+            interceptors().add(0, okhttp3.Interceptor { chain ->
+                chain.proceed(
+                    chain.request().newBuilder()
+                        .header(ForbiddenInterceptor.FAIL_FAST_HEADER, "1")
+                        .build(),
+                )
+            })
+        }
         .build()
 
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }

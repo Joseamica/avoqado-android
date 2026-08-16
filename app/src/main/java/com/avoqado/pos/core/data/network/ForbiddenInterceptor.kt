@@ -58,6 +58,21 @@ class ForbiddenInterceptor(
         /** La función interpreta y presenta su propio error con contexto operativo. */
         const val LOCAL_ERROR_HEADER = "X-Avoqado-Local-Error"
 
+        /**
+         * La petición corre con un plazo CORTO y no puede quedarse esperando a
+         * que una persona teclee un PIN.
+         *
+         * 🔴 Lo pone la ruta del dinero (`OrderRepository.moneyClient`,
+         * `callTimeout` de 15 s). Sin esto, el teclado se abría DENTRO de la
+         * llamada: a los 15 s OkHttp la cancelaba con `InterruptedIOException`,
+         * que `isQueueableError` clasifica como fallo de red — y una venta que
+         * el server RECHAZÓ por permisos terminaba encolada, pintada como
+         * cobrada, sumada al corte y con su comanda impresa. Marcada así, el
+         * 403 vuelve como RESPUESTA (no como excepción) y sigue el camino de
+         * siempre: rechazo de negocio, visible, sin encolar.
+         */
+        const val FAIL_FAST_HEADER = "X-Avoqado-Fail-Fast"
+
         /** Token de un solo uso del PIN de autorización de gerente. */
         const val PERMISSION_OVERRIDE_HEADER = "X-Permission-Override"
     }
@@ -158,7 +173,13 @@ class ForbiddenInterceptor(
         // pedir; se cae al mensaje de siempre.
         if (parsed.overridable == true &&
             parsed.required != null &&
-            request.header(PERMISSION_OVERRIDE_HEADER) == null
+            request.header(PERMISSION_OVERRIDE_HEADER) == null &&
+            // Una llamada con plazo corto (la ruta del dinero) NO se retiene
+            // esperando a una persona: se cae al mensaje de abajo, que el
+            // cajero SÍ ve, en vez de morir por timeout y encolarse como venta
+            // buena. Autorizar un cobro con PIN necesita pedir el token FUERA
+            // de la llamada; hasta entonces, aquí el "no" es un no.
+            request.header(FAIL_FAST_HEADER) == null
         ) {
             val token = overrideCoordinator.awaitToken(parsed.required)
             if (token != null) {

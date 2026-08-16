@@ -7,6 +7,7 @@ import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Before
 import org.junit.Test
@@ -285,6 +286,48 @@ class ForbiddenInterceptorTest {
         assertEquals("tok_abc", retried.getHeader("X-Permission-Override"))
         // Éxito: no se pinta el diálogo de "no tienes permiso".
         assertNull(errorNotifier.forbiddenError.value)
+    }
+
+    /**
+     * 🔴 Regresión del review 2026-08-16 (el hallazgo más caro del lote).
+     *
+     * La ruta del dinero corre con `callTimeout(15 s)` y HEREDA este
+     * interceptor. Si el teclado se abre dentro de esa llamada, un gerente que
+     * tarda en llegar hace que OkHttp la cancele con `InterruptedIOException`
+     * — y `OrderRepository.isQueueableError` la clasifica como fallo de red.
+     * Una venta que el server RECHAZÓ por permisos terminaba encolada, pintada
+     * como cobrada, sumada al corte y con comanda impresa.
+     *
+     * Marcada como fail-fast, el 403 tiene que volver como RESPUESTA —jamás
+     * como excepción— para que el repositorio lo trate como rechazo de negocio.
+     */
+    @Test
+    fun `una peticion fail-fast NO abre el teclado y devuelve el 403 tal cual`() {
+        val coordinator = FakeCoordinator("tok_abc")
+        val client = clientWith(coordinator)
+
+        server.enqueue(
+            MockResponse().setResponseCode(403)
+                .setHeader("Content-Type", "application/json")
+                .setBody(overridable403),
+        )
+
+        val response = client.newCall(
+            Request.Builder()
+                .url(server.url("/orders"))
+                .header(ForbiddenInterceptor.FAIL_FAST_HEADER, "1")
+                .build(),
+        ).execute()
+
+        // El 403 llega como respuesta: el repositorio lo convierte en
+        // ServerException(403), que NO es encolable.
+        assertEquals(403, response.code)
+        // Nadie esperó a un humano dentro de la llamada.
+        assertNull(coordinator.askedFor)
+        // Y el cajero SÍ se entera: no es un "no" mudo.
+        assertNotNull(errorNotifier.forbiddenError.value)
+        // Una sola petición: no hubo reintento.
+        assertEquals(1, server.requestCount)
     }
 
     @Test
