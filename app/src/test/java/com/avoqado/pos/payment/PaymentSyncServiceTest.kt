@@ -126,6 +126,59 @@ class PaymentSyncServiceTest {
 
     // MARK: - Backoff calculation (tested via formula — calculateBackoff is private)
 
+    // MARK: - 409 handling (regresión de dinero)
+    //
+    // Un 409 NO afirma que el cobro haya quedado registrado. El reintento idempotente de
+    // verdad responde 200 con el pago existente; los 409 de ese endpoint significan lo
+    // contrario ("no lo registré, vuelve a intentar"). Marcarlo SYNCED lo BORRABA de la
+    // cola y perdía la venta con el efectivo ya en el cajón.
+
+    private fun pendingPayment(retryCount: Int = 0) = PendingPaymentEntity(
+        // 🔑 `id` ES la llave de idempotencia que viaja en cada reintento, por eso
+        // reintentar un 409 nunca puede duplicar el cobro: el server deduplica por
+        // [venueId, idempotencyKey].
+        id = "local-pay-1",
+        venueId = "venue-123",
+        staffId = "staff-1",
+        amountCents = 4500,
+        tipCents = 0,
+        method = "CASH",
+        paymentType = "ORDER",
+        orderId = "order-1",
+        retryCount = retryCount,
+    )
+
+    @Test
+    fun `409 NO marca el pago como sincronizado`() = runTest {
+        service.handleSyncResult(pendingPayment(), 409, """{"message":"La cuenta cambio","code":"ORDER_PAYMENT_CONFLICT"}""")
+
+        coVerify(exactly = 0) { dao.updateStatus("local-pay-1", PaymentSyncStatus.SYNCED.name) }
+    }
+
+    @Test
+    fun `409 reintenta y corta el batch para preservar el FIFO`() = runTest {
+        val stop = service.handleSyncResult(pendingPayment(), 409, """{"code":"ORDER_PAYMENT_CONFLICT"}""")
+
+        assertTrue("un 409 debe cortar el batch para no romper el orden FIFO", stop)
+        coVerify(exactly = 1) { dao.incrementRetry("local-pay-1", any()) }
+    }
+
+    @Test
+    fun `409 agotados los reintentos cae a cuarentena VISIBLE, nunca a borrado silencioso`() = runTest {
+        service.handleSyncResult(pendingPayment(retryCount = 10), 409, """{"code":"ORDER_PAYMENT_CONFLICT"}""")
+
+        coVerify(exactly = 1) { dao.updateStatusWithError("local-pay-1", PaymentSyncStatus.FAILED.name, any()) }
+        coVerify(exactly = 0) { dao.updateStatus("local-pay-1", PaymentSyncStatus.SYNCED.name) }
+    }
+
+    @Test
+    fun `200 si marca el pago como sincronizado (no rompimos el camino feliz)`() = runTest {
+        val stop = service.handleSyncResult(pendingPayment(), 200, """{"success":true}""")
+
+        assertTrue("el camino feliz no corta el batch", !stop)
+        coVerify(exactly = 1) { dao.updateStatus("local-pay-1", PaymentSyncStatus.SYNCED.name) }
+    }
+
     @Test
     fun `backoff formula returns 1s for first retry`() {
         val retryCount = 1

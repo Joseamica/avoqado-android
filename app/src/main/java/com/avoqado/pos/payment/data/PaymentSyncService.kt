@@ -448,7 +448,8 @@ class PaymentSyncService @Inject constructor(
 
     private fun extractOrderId(body: String): String? = Companion.extractOrderId(body)
 
-    private suspend fun handleSyncResult(
+    @androidx.annotation.VisibleForTesting
+    internal suspend fun handleSyncResult(
         payment: PendingPaymentEntity,
         code: Int,
         body: String,
@@ -469,10 +470,27 @@ class PaymentSyncService @Inject constructor(
                 true  // STOP batch
             }
             code == 409 -> {
-                // Duplicate — already processed (idempotency key matched)
-                Log.d(TAG, "✅ Payment ${payment.id} already exists (409), marking synced")
-                dao.updateStatus(payment.id, PaymentSyncStatus.SYNCED.name)
-                false
+                // 🔴 Un 409 NO afirma que el cobro haya quedado registrado.
+                //
+                // Se daba por hecho que 409 == "duplicado, ya lo tengo" y se marcaba SYNCED,
+                // o sea que se BORRABA de la cola. Pero el reintento idempotente de verdad
+                // responde 200 con el pago existente (`order.mobile.service.ts`, rama
+                // `Reintento idempotente detectado`) — nunca 409. Los 409 que sí manda ese
+                // endpoint significan lo contrario: `ORDER_PAYMENT_CONFLICT` es
+                // "la cuenta cambió mientras se cobraba, NO lo registré, vuelve a intentar".
+                // Marcarlo SYNCED perdía la venta con el efectivo ya en el cajón.
+                //
+                // Reintentar es seguro SIEMPRE: `idempotencyKey` = el id local del pago y
+                // viaja idéntico en cada intento, así que el server deduplica por
+                // [venueId, idempotencyKey]. O cae en el camino idempotente (200) o lo
+                // registra bien. Agotados los reintentos cae a cuarentena VISIBLE, nunca
+                // a un borrado silencioso.
+                //
+                // Es la misma lección del doble cobro con tarjeta: nunca concluir un
+                // desenlace desde una respuesta que no lo afirma.
+                Log.w(TAG, "⚠️ Payment ${payment.id} recibió 409 (no confirma registro) — se reintenta: $body")
+                handleNetworkError(payment, "Conflicto al registrar el cobro; se reintentará")
+                true  // corta el batch para preservar el FIFO
             }
             // 🔴 Un 4xx de un INTERMEDIARIO (portal cautivo, proxy de plaza,
             // túnel caído) no dice nada de la venta: es red, no negocio. Mandarlo
