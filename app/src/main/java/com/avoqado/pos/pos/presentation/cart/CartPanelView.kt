@@ -288,7 +288,10 @@ fun CartPanelView(
                             key(item.id) {
                                 CartItemRow(
                                     item = item,
-                                    onClick = { if (!item.locked) onItemTap(item) },
+                                    // Una línea de promoción no se edita suelta
+                                    // (cantidad, cortesía y precio los decide el
+                                    // combo). Se quita completa, deslizando.
+                                    onClick = { if (!item.locked && !item.isPromotionLine) onItemTap(item) },
                                     onDelete = { onRemoveItem(item.id) },
                                     useDenseTabletLayout = useDenseTabletLayout,
                                 )
@@ -596,7 +599,11 @@ private fun CartItemRow(
         confirmValueChange = { value ->
             if (value == SwipeToDismissBoxValue.EndToStart) {
                 onDelete()
-                true
+                // En una promoción el borrado abre un aviso ("se quitará el
+                // combo completo"), así que la fila NO se da por desaparecida:
+                // si el cajero cancela, se quedaría barrida fuera de pantalla
+                // con el producto todavía en el carrito.
+                !item.isPromotionLine
             } else {
                 false
             }

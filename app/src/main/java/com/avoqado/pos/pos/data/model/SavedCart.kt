@@ -34,6 +34,14 @@ data class SavedCartItem(
     /// Credit-pack (membresía) identity — before, a saved pack line restored
     /// as a plain CustomAmount: charged, never granted, gate bypassed.
     val packId: String? = null,
+    /// Promoción de la que nació la línea. Sin esto un carrito guardado con un
+    /// 2x1 se restauraba como dos productos sueltos a precio de lista: se cobra
+    /// de más y el combo no llega al server. Mismo defecto que tenía `packId`.
+    val promotionInstanceId: String? = null,
+    val promotionName: String? = null,
+    val promotionId: String? = null,
+    val promotionGroupId: String? = null,
+    val promotionOptionId: String? = null,
 )
 
 @Serializable

@@ -24,10 +24,13 @@ import com.avoqado.pos.pos.data.model.CartItem
 import com.avoqado.pos.pos.data.model.CartItemType
 import com.avoqado.pos.pos.data.model.Discount
 import com.avoqado.pos.pos.data.model.Product
+import com.avoqado.pos.pos.data.model.Promotion
 import com.avoqado.pos.pos.data.model.SavedCart
 import com.avoqado.pos.pos.data.model.SavedCartItem
 import com.avoqado.pos.pos.data.model.SavedModifier
 import com.avoqado.pos.pos.data.model.SelectedModifier
+import com.avoqado.pos.pos.presentation.promotions.opcionesElegidas
+import com.avoqado.pos.pos.presentation.promotions.preciosUnitariosDePromocion
 import com.avoqado.pos.referrals.domain.model.ValidationResult as ReferralValidationResult
 import com.avoqado.pos.referrals.domain.repository.ReferralValidationException
 import com.avoqado.pos.referrals.domain.usecase.CaptureReferralUseCase
@@ -509,7 +512,85 @@ class CartViewModel @Inject constructor(
     /** True when the cart contains a credit-pack line (needs a customer to charge). */
     val hasCreditPack: Boolean get() = _cartState.value.items.any { it.type is CartItemType.CreditPack }
 
+    // MARK: - Promociones (combos, paquetes, 2x1)
+
+    /**
+     * Mete una promoción al carrito: UNA línea por opción elegida, todas atadas
+     * por el mismo `promotionInstanceId`.
+     *
+     * Reglas que el server impone y que aquí se respetan por construcción:
+     * - **Un 2x1 entra como UNA línea de cantidad 2** (la `quantity` de la
+     *   opción), porque la deducción de inventario del server multiplica por
+     *   ella. No son dos líneas de 1.
+     * - 🔴 **3 combos = 3 instancias distintas, NUNCA `quantity: 3`**: el server
+     *   responde 400 con `quantity ≠ 1` junto a `promotionRef`. Por eso cada
+     *   toque genera su propio UUID y la cantidad de una línea de promoción no
+     *   se puede editar desde el carrito.
+     * - **Media promoción no entra**: si a un grupo le falta su elección, no se
+     *   agrega nada y se devuelve `false`.
+     *
+     * El precio de las líneas es el estimado local
+     * ([preciosUnitariosDePromocion]) — que además es lo que se cobra en la
+     * venta rápida. El precio del PEDIDO lo calcula el server al aplicar.
+     *
+     * @return `true` sólo si de verdad entró — la UI celebra con eso, así que un
+     *   "¡Combo agregado!" nunca puede mentir.
+     */
+    fun aplicarPromocion(promotion: Promotion, selecciones: Map<String, String> = emptyMap()): Boolean {
+        val elegidas = opcionesElegidas(promotion, selecciones)
+        if (elegidas.isNullOrEmpty()) {
+            Log.w("🎁", "Promoción sin elección completa, no se agrega: ${promotion.name}")
+            return false
+        }
+        val precios = preciosUnitariosDePromocion(promotion, elegidas)
+        val instanceId = UUID.randomUUID().toString()
+        val nuevas = elegidas.mapIndexed { index, elegida ->
+            CartItem(
+                type = CartItemType.ProductItem(elegida.opcion.productId),
+                name = elegida.opcion.productName.ifBlank { promotion.name },
+                // El carrito ya pinta `subtitle` bajo el nombre: es donde se lee
+                // "Combo del día" sin volver al catálogo.
+                subtitle = promotion.name,
+                unitPrice = precios.getOrElse(index) { elegida.opcion.productPriceCents },
+                quantity = elegida.opcion.quantity.coerceAtLeast(1),
+                promotionInstanceId = instanceId,
+                promotionName = promotion.name,
+                promotionId = promotion.id,
+                promotionGroupId = elegida.grupo.id,
+                promotionOptionId = elegida.opcion.id,
+            )
+        }
+        _cartState.update { it.copy(items = it.items + nuevas) }
+        Log.d("🎁", "Promoción aplicada: ${promotion.name} (${nuevas.size} líneas, instancia $instanceId)")
+        return true
+    }
+
+    /**
+     * Una promoción se quita COMPLETA: quitar una línea quita a todas sus
+     * hermanas. Dejar media promoción en el carrito cobraría un combo a medias,
+     * y el cajero no tendría cómo notarlo.
+     */
+    fun quitarPromocion(instanceId: String) {
+        _cartState.update { state ->
+            val restantes = state.items.filterNot { it.promotionInstanceId == instanceId }
+            state.copy(
+                items = restantes,
+                reservationId = if (restantes.isEmpty()) null else state.reservationId,
+            )
+        }
+        Log.d("🎁", "Promoción quitada: instancia $instanceId")
+    }
+
     fun removeItem(itemId: String) {
+        // 🔴 La promoción se quita completa venga de donde venga el borrado
+        // (deslizar, anular artículos, panel de detalle). El aviso previo
+        // ("Se quitará el combo completo") lo da la UI; esta red de seguridad
+        // impide que quede media promoción aunque alguien no lo pregunte.
+        val promotionInstanceId = _cartState.value.items.firstOrNull { it.id == itemId }?.promotionInstanceId
+        if (promotionInstanceId != null) {
+            quitarPromocion(promotionInstanceId)
+            return
+        }
         val areaTicketId = _cartState.value.items.firstOrNull { it.id == itemId }?.areaTicketId
         if (areaTicketId != null) {
             viewModelScope.launch {
@@ -532,8 +613,18 @@ class CartViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Líneas que no se editan sueltas: las de un vale (precio del server) y las
+     * de una promoción. En una promoción la cantidad es parte del contrato —
+     * el 2x1 ES una línea de 2— y subirla mandaría `quantity ≠ 1` junto a
+     * `promotionRef`, que el server rechaza. Para vender 3 combos se tocan 3
+     * veces las tarjetas: 3 instancias.
+     */
+    private fun esLineaFija(itemId: String): Boolean =
+        _cartState.value.items.any { it.id == itemId && (it.locked || it.isPromotionLine) }
+
     fun updateQuantity(itemId: String, newQuantity: Int) {
-        if (_cartState.value.items.any { it.id == itemId && it.locked }) return
+        if (esLineaFija(itemId)) return
         if (newQuantity <= 0) {
             removeItem(itemId)
             return
@@ -548,7 +639,7 @@ class CartViewModel @Inject constructor(
     }
 
     fun incrementQuantity(itemId: String) {
-        if (_cartState.value.items.any { it.id == itemId && it.locked }) return
+        if (esLineaFija(itemId)) return
         _cartState.update { state ->
             state.copy(
                 items = state.items.map {
@@ -559,7 +650,7 @@ class CartViewModel @Inject constructor(
     }
 
     fun decrementQuantity(itemId: String) {
-        if (_cartState.value.items.any { it.id == itemId && it.locked }) return
+        if (esLineaFija(itemId)) return
         _cartState.update { state ->
             val item = state.items.find { it.id == itemId } ?: return@update state
             if (item.quantity <= 1) {
@@ -598,6 +689,12 @@ class CartViewModel @Inject constructor(
     }
 
     fun markItemAsCortesia(itemId: String, reason: String?) {
+        // Una promoción no se regala línea por línea: el server cobra la
+        // promoción completa, así que poner la línea en $0 aquí cobraría algo
+        // distinto de lo que queda en la orden. Se quita el combo y se da el
+        // producto suelto de cortesía. (El guard es sólo de promoción: el de
+        // `locked` no estaba aquí y no es de esta task cambiarlo.)
+        if (_cartState.value.items.any { it.id == itemId && it.isPromotionLine }) return
         _cartState.update { state ->
             state.copy(
                 items = state.items.map {
@@ -621,7 +718,7 @@ class CartViewModel @Inject constructor(
     }
 
     fun updateItemCortesia(itemId: String, isCortesia: Boolean, reason: String?) {
-        if (_cartState.value.items.any { it.id == itemId && it.locked }) return
+        if (esLineaFija(itemId)) return
         _cartState.update { state ->
             state.copy(
                 items = state.items.map {
@@ -633,7 +730,7 @@ class CartViewModel @Inject constructor(
     }
 
     fun updateItemPriceAdjustment(itemId: String, priceCents: Int?) {
-        if (_cartState.value.items.any { it.id == itemId && it.locked }) return
+        if (esLineaFija(itemId)) return
         _cartState.update { state ->
             state.copy(
                 items = state.items.map {
@@ -679,6 +776,11 @@ class CartViewModel @Inject constructor(
                     cortesiaReason = item.cortesiaReason,
                     priceAdjustment = item.priceAdjustment,
                     itemDiscountId = item.itemDiscountId,
+                    promotionInstanceId = item.promotionInstanceId,
+                    promotionName = item.promotionName,
+                    promotionId = item.promotionId,
+                    promotionGroupId = item.promotionGroupId,
+                    promotionOptionId = item.promotionOptionId,
                 )
             },
             orderDiscount = state.orderDiscount,
@@ -1047,6 +1149,15 @@ class CartViewModel @Inject constructor(
                 cortesiaReason = savedItem.cortesiaReason,
                 priceAdjustment = savedItem.priceAdjustment,
                 itemDiscountId = savedItem.itemDiscountId,
+                // El combo vuelve como combo: mismo `promotionInstanceId` y las
+                // mismas elecciones, o el carrito restaurado cobraría el 2x1
+                // como dos productos a precio de lista.
+                promotionInstanceId = savedItem.promotionInstanceId,
+                promotionName = savedItem.promotionName,
+                promotionId = savedItem.promotionId,
+                promotionGroupId = savedItem.promotionGroupId,
+                promotionOptionId = savedItem.promotionOptionId,
+                subtitle = savedItem.promotionName,
             )
         }
         // Referral-sourced discounts must NOT survive a restore without a live

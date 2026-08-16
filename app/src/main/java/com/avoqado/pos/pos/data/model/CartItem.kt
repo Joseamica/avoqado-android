@@ -28,6 +28,27 @@ data class CartItem(
     val areaTicketLineId: String? = null,
     val locked: Boolean = false,
 
+    // Promociones (combos, paquetes, 2x1) — mismo patrón que areaTicketId:
+    // varias líneas PLANAS atadas por un id común, no modificadores dentro de
+    // una sola línea.
+    /** Instancia de promoción a la que pertenece esta línea. null = línea normal.
+     *  Varias líneas comparten el mismo valor: es lo que las agrupa y lo que
+     *  hace que se quiten juntas. Es también la llave de idempotencia que el
+     *  server usa (`@@unique(orderId, instanceId)`). */
+    val promotionInstanceId: String? = null,
+    /** Para etiquetar "Combo del día" en el carrito sin volver al catálogo. */
+    val promotionName: String? = null,
+    /** Qué promoción del catálogo es. La Task 8 lo manda como
+     *  `promotionRef.promotionId`: sin él la línea no se puede cobrar como
+     *  promoción y el server la trataría como venta normal a precio de lista. */
+    val promotionId: String? = null,
+    /** Grupo y opción que representa ESTA línea. Agrupadas por
+     *  [promotionInstanceId] reconstruyen el `selections: [{groupId, optionId}]`
+     *  que el server necesita para volver a resolver el combo. Sin ellos las
+     *  líneas se pueden agrupar pero no se pueden mandar. */
+    val promotionGroupId: String? = null,
+    val promotionOptionId: String? = null,
+
     // Customizations
     var selectedModifiers: List<SelectedModifier> = emptyList(),
     var itemNote: String? = null,
@@ -69,6 +90,10 @@ data class CartItem(
         get() = weightKg?.let {
             "${formatWeightKg(it)} kg × $${String.format(java.util.Locale.US, "%.2f", effectiveUnitPrice / 100.0)}/kg"
         }
+
+    /** Línea nacida de una promoción: no se edita suelta y se quita con sus hermanas. */
+    val isPromotionLine: Boolean
+        get() = promotionInstanceId != null
 
     val hasCustomizations: Boolean
         get() = selectedModifiers.isNotEmpty() ||

@@ -83,6 +83,7 @@ import com.avoqado.pos.pos.presentation.product.CreateProductView
 import com.avoqado.pos.pos.presentation.product.ProductDetailPanel
 import com.avoqado.pos.pos.presentation.product.ProductGridView
 import com.avoqado.pos.pos.presentation.product.WeightCapturePanel
+import com.avoqado.pos.pos.presentation.promotions.PromotionSheet
 import com.avoqado.pos.pos.presentation.promotions.PromotionsPanel
 import com.avoqado.pos.pos.presentation.promotions.PromotionsPanelViewModel
 import com.avoqado.pos.pos.presentation.promotions.pestanasVisibles
@@ -211,11 +212,36 @@ fun CheckoutScreen(
     val promosPuedeAplicar = remember(promociones, estadoPromociones) {
         promotionsViewModel.puedeAplicar
     }
-    // 🔴 Seam de la Task 6: ahí se abre la hoja de opciones del combo y la
-    // promoción entra al carrito (con su `AvoqadoSuccessToast`). Esta task sólo
-    // pinta y deja tocar — a propósito NO se celebra un "¡Combo agregado!" que
-    // hoy sería mentira, porque todavía no entra nada al carrito.
-    val onPromotionTap: (Promotion) -> Unit = { }
+    // Al tocar una promoción: si algún grupo tiene más de una opción se abre la
+    // hoja para elegir; si no, entra directo al carrito. La lógica vive en
+    // `PromotionSheet.kt` y en `CartViewModel`, no aquí.
+    var promocionEnEleccion by remember { mutableStateOf<Promotion?>(null) }
+    var promocionAgregada by remember { mutableStateOf<String?>(null) }
+    var promocionNoAgregada by remember { mutableStateOf<String?>(null) }
+    // Se celebra SÓLO si de verdad entró (`aplicarPromocion` devuelve false
+    // cuando falta elegir un grupo): un "¡Combo agregado!" que miente es peor
+    // que no celebrar.
+    val agregarPromocion: (Promotion, Map<String, String>) -> Unit = { promo, selecciones ->
+        if (cartViewModel.aplicarPromocion(promo, selecciones)) {
+            promocionAgregada = promo.name
+        } else {
+            // Un toque que no hace NADA es peor que un error: pasa cuando la
+            // promoción llega sin opciones que resolver (dato incompleto del
+            // catálogo), y el cajero se queda picando la tarjeta.
+            promocionNoAgregada = promo.name
+        }
+    }
+    val onPromotionTap: (Promotion) -> Unit = { promo ->
+        if (promo.requiereEleccion) promocionEnEleccion = promo else agregarPromocion(promo, emptyMap())
+    }
+    // Quitar una línea de promoción quita el combo COMPLETO — se avisa antes.
+    // El `CartViewModel` lo garantiza igual venga de donde venga el borrado;
+    // esto es el aviso, no la regla.
+    var promocionAQuitar by remember { mutableStateOf<CartItem?>(null) }
+    val quitarLineaDelCarrito: (String) -> Unit = { itemId ->
+        val linea = cartState.items.firstOrNull { it.id == itemId }
+        if (linea?.promotionInstanceId != null) promocionAQuitar = linea else cartViewModel.removeItem(itemId)
+    }
     LaunchedEffect(tableSessionActive?.orderId, tableSessionActive?.mode) {
         cartViewModel.consumePendingTableCobrar()
     }
@@ -660,7 +686,7 @@ fun CheckoutScreen(
                             }
                         },
                         onAddCustomAmount = { selectedTab = InputTab.KEYPAD },
-                        onRemoveItem = { cartViewModel.removeItem(it) },
+                        onRemoveItem = quitarLineaDelCarrito,
                         onApplyTaxPercent = { cartViewModel.applyOrderTaxPercent(it) },
                         customerName = selectedCustomer?.fullName,
                         customerId = selectedCustomer?.id,
@@ -870,6 +896,55 @@ fun CheckoutScreen(
         )
     }
 
+    // Promociones: hoja de elección, aviso al quitar y celebración al agregar.
+    promocionEnEleccion?.let { promo ->
+        PromotionSheet(
+            promocion = promo,
+            onDismiss = { promocionEnEleccion = null },
+            onConfirm = { selecciones ->
+                agregarPromocion(promo, selecciones)
+                promocionEnEleccion = null
+            },
+        )
+    }
+
+    promocionAQuitar?.let { linea ->
+        AvoqadoDialog(
+            title = "¿Quitar ${linea.promotionName ?: "la promoción"}?",
+            description = "Se quitará el combo completo: todos sus productos salen del carrito.",
+            onDismiss = { promocionAQuitar = null },
+            actionButton = {
+                PrimaryButton(
+                    text = "Quitar combo",
+                    destructive = true,
+                    fullWidth = true,
+                    onClick = {
+                        linea.promotionInstanceId?.let { cartViewModel.quitarPromocion(it) }
+                        promocionAQuitar = null
+                        selectedCartItem = null
+                    },
+                )
+            },
+            content = {},
+        )
+    }
+
+    promocionAgregada?.let { nombre ->
+        AvoqadoSuccessToast(
+            message = "¡Combo agregado!",
+            subtitle = nombre,
+            onDismiss = { promocionAgregada = null },
+        )
+    }
+
+    promocionNoAgregada?.let { nombre ->
+        AvoqadoWarningToast(
+            message = "No se pudo agregar la promoción",
+            subtitle = "$nombre no trae opciones que aplicar. Revísala en el dashboard.",
+            onDismiss = { promocionNoAgregada = null },
+        )
+    }
+
     // Cart item detail overlay (matching iOS: side panel on tablet, sheet on phone)
     selectedCartItem?.let { item ->
         CartItemDetailPanel(
@@ -893,7 +968,7 @@ fun CheckoutScreen(
                 selectedCartItem = cartViewModel.cartState.value.items.find { it.id == item.id }
             },
             onDelete = {
-                cartViewModel.removeItem(item.id)
+                quitarLineaDelCarrito(item.id)
                 selectedCartItem = null
             },
             onDismiss = { selectedCartItem = null },
@@ -919,7 +994,7 @@ fun CheckoutScreen(
                 showIPhoneCart = false
                 selectedTab = InputTab.KEYPAD
             },
-            onRemoveItem = { cartViewModel.removeItem(it) },
+            onRemoveItem = quitarLineaDelCarrito,
             onApplyTaxPercent = { cartViewModel.applyOrderTaxPercent(it) },
             staffName = cartState.selectedStaffName,
             onStaffTap = {
@@ -1731,8 +1806,11 @@ private fun CartItemDetailContent(
 
         HorizontalDivider()
 
-        // Quantity selector — oculto en líneas por peso (D9: cada pesada es 1 línea con cantidad 1).
-        if (item.weightKg == null) {
+        // Quantity selector — oculto en líneas por peso (D9: cada pesada es 1 línea con cantidad 1)
+        // y en líneas de promoción (la cantidad es parte del combo: un 2x1 ES
+        // una línea de 2, y `quantity ≠ 1` junto a `promotionRef` lo rechaza el
+        // server; 3 combos son 3 instancias).
+        if (item.weightKg == null && !item.isPromotionLine) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
