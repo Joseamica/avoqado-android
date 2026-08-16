@@ -21,7 +21,7 @@ class RoleDisplayNameTest {
         assertEquals("Cajero", roleDisplayName("CASHIER"))
         assertEquals("Mesero", roleDisplayName("WAITER"))
         assertEquals("Cocina", roleDisplayName("KITCHEN"))
-        assertEquals("Anfitrion", roleDisplayName("HOST"))
+        assertEquals("Anfitrión", roleDisplayName("HOST"))
         assertEquals("Observador", roleDisplayName("VIEWER"))
         assertEquals("Staff", roleDisplayName("STAFF"))
     }

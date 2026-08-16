@@ -48,7 +48,7 @@ class StoredVenueTest {
 
     @Test
     fun `HOST displays as Anfitrion`() {
-        assertEquals("Anfitrion", venueWithRole("HOST").displayRole)
+        assertEquals("Anfitrión", venueWithRole("HOST").displayRole)
     }
 
     @Test

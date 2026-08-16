@@ -573,7 +573,7 @@ fun roleDisplayName(role: String?): String? {
         "CASHIER" -> "Cajero"
         "WAITER" -> "Mesero"
         "KITCHEN" -> "Cocina"
-        "HOST" -> "Anfitrion"
+        "HOST" -> "Anfitrión"
         "VIEWER" -> "Observador"
         "STAFF" -> "Staff"
         else -> normalized
