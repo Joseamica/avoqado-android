@@ -11,8 +11,6 @@ import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.domain.PlanManager
 import com.avoqado.pos.payment.data.OrderRepository
 import com.avoqado.pos.payment.data.model.CreateOrderRequest
-import com.avoqado.pos.payment.data.model.OrderItemRequest
-import com.avoqado.pos.payment.data.model.OrderModifierRequest
 import com.avoqado.pos.pos.data.ActiveCartState
 import com.avoqado.pos.pos.data.ClassCheckoutSeed
 import com.avoqado.pos.pos.data.DiscountsRepository
@@ -29,6 +27,7 @@ import com.avoqado.pos.pos.data.model.SavedCart
 import com.avoqado.pos.pos.data.model.SavedCartItem
 import com.avoqado.pos.pos.data.model.SavedModifier
 import com.avoqado.pos.pos.data.model.SelectedModifier
+import com.avoqado.pos.pos.data.model.buildOrderItemRequests
 import com.avoqado.pos.pos.presentation.promotions.opcionesElegidas
 import com.avoqado.pos.pos.presentation.promotions.preciosUnitariosDePromocion
 import com.avoqado.pos.referrals.domain.model.ValidationResult as ReferralValidationResult
@@ -1200,29 +1199,10 @@ class CartViewModel @Inject constructor(
             return Result.failure(Exception("Selecciona un cliente para diferir el pago"))
         }
 
-        val items = currentCart.items.map { item ->
-            OrderItemRequest(
-                productId = when (val type = item.type) {
-                    is CartItemType.ProductItem -> type.productId
-                    CartItemType.CustomAmount -> null
-                    is CartItemType.CreditPack -> null
-                },
-                name = item.name,
-                quantity = item.quantity,
-                unitPrice = item.effectiveUnitPrice,
-                modifiers = item.selectedModifiers.map { modifier ->
-                    OrderModifierRequest(
-                        modifierId = modifier.modifierId,
-                        name = modifier.modifierName,
-                        price = modifier.priceInCents,
-                    )
-                },
-                note = item.itemNote,
-                isCortesia = item.isCortesia,
-                discountId = item.itemDiscountId,
-                weightQuantity = item.weightKg,
-            )
-        }
+        // El MISMO mapeo que usa el cobro (`PaymentFlowViewModel.buildOrderRequest`).
+        // Estaba copiado, y una copia que se olvida deja "pagar después" cobrando
+        // el combo a precio de lista mientras el cobro normal sí lo manda.
+        val items = buildOrderItemRequests(currentCart.items)
 
         val orderRequest = CreateOrderRequest(
             items = items,

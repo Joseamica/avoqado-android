@@ -215,8 +215,17 @@ class OrderRepository @Inject constructor(
             }
         }
 
+        /**
+         * ¿Esta venta tiene que crear una ORDEN (y no un cobro suelto "fast")?
+         *
+         * 🔴 Una línea de promoción NO trae `productId` —la promoción es la
+         * línea— pero sí es mercancía. Sin contarla, una venta de puras
+         * promociones se rechazaba con "No hay productos válidos" y, sin red,
+         * se encolaba como cobro FAST: el importe llegaba pero el combo no,
+         * dejando la venta sin artículos y el inventario sin descontar.
+         */
         fun hasProductItems(request: CreateOrderRequest): Boolean {
-            return request.items.any { !it.productId.isNullOrBlank() }
+            return request.items.any { !it.productId.isNullOrBlank() || it.promotionRef != null }
         }
 
         internal fun buildCreateOrderPayload(
@@ -234,8 +243,35 @@ class OrderRepository @Inject constructor(
                         request.items.forEach { item ->
                             add(
                                 buildJsonObject {
+                                    val promotionRef = item.promotionRef
                                     val productId = item.productId?.takeIf { it.isNotBlank() }
-                                    if (productId != null) {
+                                    if (promotionRef != null) {
+                                        // 🔴 Una promoción viaja SOLA. El server rechaza con 400
+                                        // ("un item no puede ser producto y promoción a la vez")
+                                        // cualquier item que traiga promotionRef Y productId, name
+                                        // o unitPrice — y `unitPrice: 0` cuenta como precio. Ni la
+                                        // cantidad se manda: el motor cobra UNA instancia por ref.
+                                        put(
+                                            "promotionRef",
+                                            buildJsonObject {
+                                                put("promotionId", promotionRef.promotionId)
+                                                put("promotionInstanceId", promotionRef.promotionInstanceId)
+                                                put(
+                                                    "selections",
+                                                    buildJsonArray {
+                                                        promotionRef.selections.forEach { selection ->
+                                                            add(
+                                                                buildJsonObject {
+                                                                    put("groupId", selection.groupId)
+                                                                    put("optionId", selection.optionId)
+                                                                },
+                                                            )
+                                                        }
+                                                    },
+                                                )
+                                            },
+                                        )
+                                    } else if (productId != null) {
                                         put("productId", productId)
                                         // Venta por peso: quantity SIEMPRE 1 y el peso (kg) viaja en
                                         // weightQuantity; el server recalcula el total desde el
@@ -266,10 +302,12 @@ class OrderRepository @Inject constructor(
                                         put("unitPrice", item.unitPrice)
                                     }
 
-                                    item.note
-                                        ?.trim()
-                                        ?.takeIf { it.isNotEmpty() }
-                                        ?.let { put("notes", it) }
+                                    if (promotionRef == null) {
+                                        item.note
+                                            ?.trim()
+                                            ?.takeIf { it.isNotEmpty() }
+                                            ?.let { put("notes", it) }
+                                    }
                                 },
                             )
                         }

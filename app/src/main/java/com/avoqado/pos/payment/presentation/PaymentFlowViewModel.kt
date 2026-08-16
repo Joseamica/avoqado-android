@@ -18,16 +18,17 @@ import com.avoqado.pos.payment.data.TerminalListResult
 import com.avoqado.pos.payment.data.TerminalPaymentResult
 import com.avoqado.pos.payment.data.TerminalPaymentService
 import com.avoqado.pos.payment.data.model.CreateOrderRequest
-import com.avoqado.pos.payment.data.model.OrderItemRequest
-import com.avoqado.pos.payment.data.model.OrderModifierRequest
+import com.avoqado.pos.payment.data.model.CreateOrderResponse
 import com.avoqado.pos.payment.data.model.PaymentContext
 import com.avoqado.pos.payment.data.model.PaymentErrorSource
 import com.avoqado.pos.payment.data.model.PaymentFlowState
 import com.avoqado.pos.payment.data.model.PaymentItem
 import com.avoqado.pos.payment.data.model.PaymentMethod
+import com.avoqado.pos.payment.data.model.totalACobrarCents
 import com.avoqado.pos.payment.domain.CardChargeDecision
 import com.avoqado.pos.payment.domain.CardChargeOutcome
 import com.avoqado.pos.pos.data.model.CartItemType
+import com.avoqado.pos.pos.data.model.buildOrderItemRequests
 import com.avoqado.pos.pos.presentation.cart.CartState
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.domain.printing.ComandaDispatcher
@@ -125,6 +126,28 @@ class PaymentFlowViewModel @Inject constructor(
 
     private fun sessionIdempotencyKey(): String =
         paymentIdempotencyKey ?: java.util.UUID.randomUUID().toString().also { paymentIdempotencyKey = it }
+
+    /**
+     * 🔴 Un 4xx al crear la orden NO significa "no pasó nada".
+     *
+     * Con promociones el server crea la orden PRIMERO y aplica el combo después:
+     * si el combo no se puede aplicar, anula la orden y libera el `externalId`
+     * — pero esa limpieza es best-effort. Si falla, la llave queda tomada por
+     * una orden CANCELADA y vacía, y el reintento con la MISMA llave entra por
+     * el atajo de idempotencia: 201 con una orden de $0 y el combo regalado.
+     *
+     * Por eso un rechazo de negocio estrena llave. Es seguro: si la orden no se
+     * creó, no hubo cobro que deduplicar.
+     *
+     * 🔴 Y SÓLO un rechazo de negocio (4xx de nuestra API). Un fallo de RED
+     * —timeout, socket cerrado— conserva la llave a propósito: ahí el intento
+     * lento SÍ pudo aterrizar, y estrenarla crearía una SEGUNDA orden en vez de
+     * deduplicar contra la primera. Es la regla 2.4 de offline-first.
+     */
+    private fun estrenarLlaveTrasRechazoDeOrden(error: Throwable) {
+        val esRechazoDeNegocio = error is OrderRepository.ServerException && error.code in 400..499
+        if (esRechazoDeNegocio) paymentIdempotencyKey = null
+    }
 
     /// Invalidates in-flight terminal sends: cancel() bumps it, and a late
     /// result from a cancelled send is ignored instead of overwriting the
@@ -290,6 +313,17 @@ class PaymentFlowViewModel @Inject constructor(
     private var splitNumberOfParts: Int? = null
     private var splitCustomAmountCents: Int? = null
     private var splitBaseAmountOverride: Int? = null
+
+    /**
+     * 🔴 DINERO. Total (centavos, propina incluida) de la orden que el server
+     * acaba de crear, cuando difiere del estimado del carrito. Manda sobre el
+     * estimado: la orden es la deuda real y el server tolera 1 centavo antes de
+     * dejarla PARTIAL. null = se cobra el carrito, como siempre.
+     *
+     * Se llena SÓLO en ventas con promoción y pago completo (ver
+     * `totalACobrarCents`), y se limpia al arrancar cada venta.
+     */
+    private var serverTotalOverrideCents: Int? = null
 
     // WhatsApp receipt sending state
     private val _whatsAppSending = MutableStateFlow(false)
@@ -544,6 +578,9 @@ class PaymentFlowViewModel @Inject constructor(
         cartState = cart
         completionConsumed = false
         splitBaseAmountOverride = resolveSplitBaseAmount(cart)
+        // El total autoritativo es de la venta ANTERIOR: arrastrarlo cobraría
+        // esta venta al precio de la pasada.
+        serverTotalOverrideCents = null
         val amount = currentBaseAmount()
 
         // Reset transient state from any previous session.
@@ -815,7 +852,10 @@ class PaymentFlowViewModel @Inject constructor(
                                 }
                                 createdOrderId = orderId
                                 createdOrderNumber = response.data?.orderNumber
-                                processPaymentMethod(total)
+                                // La orden ya existe y todavía no se ha tomado
+                                // dinero: se cobra lo que dice el server, no el
+                                // estimado del carrito. Ver `totalACobrarCents`.
+                                processPaymentMethod(adoptarTotalDelServer(orderRequest, response, total))
                             },
                             onFailure = { error ->
                                 // For CASH payments: queue offline if network/server error
@@ -846,12 +886,14 @@ class PaymentFlowViewModel @Inject constructor(
                                         )
                                         createKDSOrderAndPrint(PaymentMethod.CASH)
                                     } else {
+                                        estrenarLlaveTrasRechazoDeOrden(error)
                                         _state.value = PaymentFlowState.Error(
                                             message = error.message ?: "Error al crear la orden",
                                             source = PaymentErrorSource.SERVER,
                                         )
                                     }
                                 } else {
+                                    estrenarLlaveTrasRechazoDeOrden(error)
                                     _state.value = PaymentFlowState.Error(
                                         message = error.message ?: "Error al crear la orden",
                                         source = PaymentErrorSource.SERVER,
@@ -1076,11 +1118,23 @@ class PaymentFlowViewModel @Inject constructor(
                                         return@fold
                                     }
                                     createdOrderId = orderId
+                                    // El efectivo ya está en la mano, así que el
+                                    // total del server sólo se adopta si el
+                                    // dinero recibido alcanza; si no, se cobra el
+                                    // estimado (como hasta hoy) en vez de dejar
+                                    // al cajero pidiendo centavos de vuelta.
+                                    val totalFinal = adoptarTotalDelServer(orderRequest, orderResponse, total)
+                                        .takeIf { it <= cashReceivedCents }
+                                        ?: total.also { serverTotalOverrideCents = null }
                                     recordCashPaymentForOrder(
                                         orderId = orderId,
-                                        total = total,
+                                        total = totalFinal,
                                         cashReceivedCents = cashReceivedCents,
-                                        changeCents = result.changeCents,
+                                        changeCents = if (totalFinal == total) {
+                                            result.changeCents
+                                        } else {
+                                            (cashReceivedCents - totalFinal).coerceAtLeast(0)
+                                        },
                                         orderRequest = orderRequest,
                                     )
                                 },
@@ -1111,6 +1165,7 @@ class PaymentFlowViewModel @Inject constructor(
                                         createKDSOrderAndPrint(PaymentMethod.CASH, result.changeCents)
                                     } else {
                                         // Non-queueable error (validation, auth, etc.)
+                                        estrenarLlaveTrasRechazoDeOrden(error)
                                         _state.value = PaymentFlowState.Error(
                                             message = error.message ?: "Error al crear la orden",
                                             source = PaymentErrorSource.SERVER,
@@ -1853,29 +1908,11 @@ class PaymentFlowViewModel @Inject constructor(
         // Keep full cart context here. OrderRepository strips non-product lines
         // when building the backend /orders payload, but mixed carts still need
         // full totals locally for payment and offline queue handling.
-        val items = cart.items.map { item ->
-            OrderItemRequest(
-                productId = when (val type = item.type) {
-                    is CartItemType.ProductItem -> type.productId
-                    CartItemType.CustomAmount -> null
-                    is CartItemType.CreditPack -> null // not a product line; credits granted separately
-                },
-                name = item.name,
-                quantity = item.quantity,
-                unitPrice = item.effectiveUnitPrice,
-                modifiers = item.selectedModifiers.map {
-                    OrderModifierRequest(
-                        modifierId = it.modifierId,
-                        name = it.modifierName,
-                        price = it.priceInCents,
-                    )
-                },
-                note = item.itemNote,
-                isCortesia = item.isCortesia,
-                discountId = item.itemDiscountId,
-                weightQuantity = item.weightKg,
-            )
-        }
+        //
+        // El mapeo vive en `buildOrderItemRequests` porque "pagar después"
+        // (CartViewModel.createPayLaterOrder) tiene que producir EXACTAMENTE lo
+        // mismo. Ahí es donde el combo se colapsa en una línea con promotionRef.
+        val items = buildOrderItemRequests(cart.items)
 
         return CreateOrderRequest(
             items = items,
@@ -1982,7 +2019,33 @@ class PaymentFlowViewModel @Inject constructor(
     }
 
     private fun currentBaseAmount(): Int {
+        // El total del server llega CON propina (se la mandamos al crear la
+        // orden); la base es lo que queda al quitársela.
+        serverTotalOverrideCents?.let { return (it - currentTipCents).coerceAtLeast(0) }
         return splitBaseAmountOverride ?: (cartState?.totalCents ?: 0)
+    }
+
+    /**
+     * Fija el total que se va a cobrar cuando el server acaba de crear la orden
+     * y devuelve ese total. Ver `totalACobrarCents` para el porqué y para las
+     * cuatro condiciones que tiene que cumplir para adoptarse.
+     */
+    private fun adoptarTotalDelServer(
+        orderRequest: CreateOrderRequest,
+        response: CreateOrderResponse,
+        estimadoLocal: Int,
+    ): Int {
+        val total = totalACobrarCents(
+            estimadoLocalCents = estimadoLocal,
+            orden = response.data,
+            esPagoCompleto = _splitType.value == "FULLPAYMENT" && splitBaseAmountOverride == null,
+            laVentaLlevaPromocion = orderRequest.items.any { it.promotionRef != null },
+        )
+        if (total != estimadoLocal) {
+            serverTotalOverrideCents = total
+            Log.d("🎁", "Total del server $total ≠ estimado del carrito $estimadoLocal — se cobra el del server")
+        }
+        return total
     }
 
     private fun computeTipPercentageBaseAmount(baseAmount: Int): Int {

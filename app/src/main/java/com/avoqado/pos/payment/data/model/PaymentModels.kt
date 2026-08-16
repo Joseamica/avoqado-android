@@ -106,6 +106,29 @@ data class CreateOrderRequest(
     val reservationId: String? = null,
 )
 
+/** Una elección de la persona dentro de la promoción: qué grupo y qué opción. */
+@Serializable
+data class PromotionSelectionRequest(
+    val groupId: String,
+    val optionId: String,
+)
+
+/**
+ * QUÉ promoción tocó el cajero y QUÉ eligió la persona. **Nunca precios**: el
+ * server resuelve el combo contra su propio catálogo y arma sus líneas.
+ *
+ * @param promotionInstanceId una instancia = UN combo. Es la llave de
+ *   idempotencia del server (`@@unique(orderId, instanceId)`), así que 3 combos
+ *   son 3 líneas con 3 instancias distintas — nunca `quantity: 3`, que el server
+ *   rechaza con 400.
+ */
+@Serializable
+data class PromotionRefRequest(
+    val promotionId: String,
+    val promotionInstanceId: String,
+    val selections: List<PromotionSelectionRequest> = emptyList(),
+)
+
 @Serializable
 data class OrderItemRequest(
     val productId: String? = null,
@@ -127,7 +150,30 @@ data class OrderItemRequest(
      * producto normal, quantity≠1 en pesado, o fuera de 0.001–99.999 kg.
      */
     val weightQuantity: Double? = null,
-)
+    /**
+     * Línea de PROMOCIÓN. Cuando viene, esta línea es la promoción entera y
+     * viaja SOLA: `OrderRepository.buildCreateOrderPayload` emite únicamente
+     * `promotionRef` y omite `productId`, `name` y `unitPrice` — el server
+     * rechaza con 400 un item que traiga las dos cosas, y `unitPrice: 0` cuenta
+     * como precio (`typeof 0 === 'number'`).
+     *
+     * Por eso [name] y [unitPrice] quedan en `""` / `0` en una línea de
+     * promoción: son relleno del modelo local que NUNCA sale por el cable.
+     * Constrúyela con [promocion], no a mano.
+     */
+    val promotionRef: PromotionRefRequest? = null,
+) {
+    /** Línea de promoción: el ref y nada más. Ver [promotionRef]. */
+    companion object {
+        fun promocion(ref: PromotionRefRequest): OrderItemRequest = OrderItemRequest(
+            productId = null,
+            name = "",
+            quantity = 1,
+            unitPrice = 0,
+            promotionRef = ref,
+        )
+    }
+}
 
 @Serializable
 data class OrderModifierRequest(
@@ -143,6 +189,40 @@ data class CreateOrderResponse(
     val message: String? = null,
 )
 
+/**
+ * 🔴 DINERO — cuánto se cobra cuando el server ACABA de crear la orden.
+ *
+ * Con una promoción el POS sólo **estima** el precio del combo: reproduce la
+ * aritmética del server, pero una línea del carrito sólo sabe expresar
+ * `precio × cantidad` y el neto que le toca rara vez es múltiplo de su cantidad.
+ * La desviación está acotada (`Σ floor(cantidad_i / 2)` centavos) pero existe, y
+ * el server tolera sólo **1 centavo** al decidir si una cuenta quedó PAGADA
+ * (`remainingAfterPayment <= 0.01`): cobrar el estimado deja la orden PARTIAL
+ * para siempre por unos centavos, o pagada de más.
+ *
+ * Cuando la orden se crea ANTES de tomar el dinero —que es como funciona el
+ * cobro— la respuesta ya trae el total real. Ése es el que se cobra.
+ *
+ * Se adopta SÓLO si se cumplen las cuatro:
+ *  - la venta lleva promoción (es el único origen conocido de la desviación, y
+ *    así una venta normal se comporta byte por byte como antes);
+ *  - es pago COMPLETO — el total del server es de la ORDEN entera, así que en un
+ *    pago dividido cobraría de más al primero que pasa;
+ *  - el server mandó total (uno viejo no lo manda);
+ *  - no es negativo.
+ */
+fun totalACobrarCents(
+    estimadoLocalCents: Int,
+    orden: OrderData?,
+    esPagoCompleto: Boolean,
+    laVentaLlevaPromocion: Boolean,
+): Int {
+    if (!laVentaLlevaPromocion || !esPagoCompleto) return estimadoLocalCents
+    val delServer = orden?.totalCents ?: return estimadoLocalCents
+    if (delServer < 0) return estimadoLocalCents
+    return delServer
+}
+
 @Serializable
 data class OrderData(
     val id: String,
@@ -150,5 +230,35 @@ data class OrderData(
     // takeLast(4) del id interno — que no es un folio y salía "---".
     val orderNumber: String? = null,
     val totalAmount: Int? = null,
+    /**
+     * 🔴 DINERO. Total de la orden **en pesos con decimales** (`114.0`), que es
+     * como lo devuelve el server (`toCreatedOrderResponse` → `Number(order.total)`).
+     * Ya trae la promoción resuelta, el descuento y la propina.
+     *
+     * Es el único campo de total que el backend manda de verdad: `totalAmount`
+     * (centavos) no existe en esa respuesta y por eso siempre llegaba null.
+     */
+    val total: Double? = null,
     val status: String? = null,
+    /** Promociones que el server resolvió en esta orden. Vacío = venta normal. */
+    val promotions: List<OrderPromotionData> = emptyList(),
+) {
+    /**
+     * El total de la orden en CENTAVOS, que es la unidad en la que cobra el POS.
+     * null si el server no lo mandó (versión vieja) — y entonces no hay nada que
+     * adoptar: se cobra el estimado local.
+     */
+    val totalCents: Int?
+        get() = total?.let { kotlin.math.round(it * 100).toInt() } ?: totalAmount
+}
+
+/** Una promoción tal como quedó registrada en la orden. */
+@Serializable
+data class OrderPromotionData(
+    val id: String? = null,
+    val instanceId: String? = null,
+    val name: String? = null,
+    val netCents: Int? = null,
+    val discountCents: Int? = null,
+    val needsReview: Boolean = false,
 )
