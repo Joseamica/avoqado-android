@@ -1721,6 +1721,31 @@ class PaymentFlowViewModel @Inject constructor(
         }
     }
 
+    /**
+     * 🔴 CINCO de los diez sitios que llaman aquí registran la venta SIN orden
+     * (`orderId = null`): es el cobro de MOSTRADOR, que se cobra antes de que exista
+     * orden alguna. Son, por flujo:
+     *
+     *  1. la orden con productos que no se pudo crear y se encoló;
+     *  2. el camino de cobro rápido de `processPaymentMethod` ("No orderId — fast
+     *     payment path");
+     *  3. la orden que falló al crearse dentro de `processCashPayment` y se encoló;
+     *  4. el cobro rápido que SÍ pasó en línea;
+     *  5. el cobro rápido que falló y se encoló.
+     *
+     * Se cuentan por FIRMA, no por número de línea (que se mueve con cada edición). La
+     * expresión se ancla al principio de la línea a propósito: sin eso el propio
+     * comentario que estás leyendo entra en la cuenta y da 5 por el motivo equivocado.
+     *
+     * ```
+     * grep -cE '^ +recordCashSale\(total(, null)?\)$' PaymentFlowViewModel.kt   # → 5 (de 10 sitios)
+     * ```
+     *
+     * Importa porque una fila sin orden no se puede parear por identidad con su cobro
+     * encolado: es la que `PendingCashSales` tiene que salvar por MONTO.
+     *
+     * @param amountCents el total CON propina — el dinero que quedó en el cajón.
+     */
     private fun recordCashSale(amountCents: Int, orderId: String? = null) {
         // Un cobro declarado a mano (terminal ajena, transferencia) NUNCA entró al
         // cajón. Meterlo como venta en efectivo le inventa al cajero un faltante por
@@ -1729,6 +1754,22 @@ class PaymentFlowViewModel @Inject constructor(
         // que NO debe tocar es el arqueo de efectivo.
         manualMethod?.let { declarado ->
             Log.d("💰", "Cobro '${declarado.label}' fuera de Avoqado: no entra al arqueo de efectivo")
+            return
+        }
+        // 🔴 Una venta en CERO (cuenta cortesiada al 100%) no movió efectivo. El server
+        // ya la rechaza a propósito (`postCashSaleToDrawer` → `NOT_DRAWER_CASH` cuando
+        // el total es <= 0, "sólo ensucia el listado del corte"), así que una fila local
+        // en cero es un huérfano permanente: su gemelo del server no va a existir nunca
+        // y ninguna confirmación la puede limpiar.
+        //
+        // También es lo que hace coincidir POR CONSTRUCCIÓN los dos guards del cobro
+        // rápido encolado, donde esta llamada vive fuera del `if (cart != null)` que
+        // encola: sin carrito el total es forzosamente 0 (`currentBaseAmount()` sale de
+        // `cartState`/`splitBaseAmountOverride`, y los dos nacen del carrito), así que
+        // la única fila que ese `if` dejaba entrar al cajón sin nadie en la cola que la
+        // respaldara es exactamente la que aquí ya no se escribe.
+        if (amountCents <= 0) {
+            Log.d("💰", "Venta en \$0: no movió efectivo, no entra al arqueo")
             return
         }
         viewModelScope.launch {

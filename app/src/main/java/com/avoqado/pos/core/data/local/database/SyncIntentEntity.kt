@@ -53,6 +53,17 @@ data class SyncIntentEntity(
     }
 }
 
+/**
+ * Un intent pendiente reducido a lo que el cajón necesita: el payload y CUÁNDO se
+ * encoló. Proyección de Room — no una entidad.
+ */
+data class SyncIntentPayload(
+    @ColumnInfo(name = "payload_json")
+    val payloadJson: String,
+    @ColumnInfo(name = "created_at")
+    val createdAt: Long,
+)
+
 @Dao
 interface SyncIntentDao {
     /** IGNORE: el mismo intent nunca se encola dos veces (dedup local). */
@@ -79,13 +90,19 @@ interface SyncIntentDao {
     suspend fun pendingCount(venueId: String): Int
 
     /**
-     * Los payloads de un tipo que siguen esperando a reproducirse. Lo usa el cajón
-     * para saber qué ventas en efectivo el server todavía no puede conocer — ver
-     * `PendingCashSales`. Devuelve el JSON crudo: quien pregunta sabe qué campo
-     * necesita, y así no hay que deserializar 14 formas distintas de payload.
+     * Los payloads de un tipo que siguen esperando a reproducirse, **con la hora en
+     * que se encolaron**. Lo usa el cajón para saber qué ventas en efectivo el server
+     * todavía no puede conocer — ver `PendingCashSales`. Devuelve el JSON crudo: quien
+     * pregunta sabe qué campo necesita, y así no hay que deserializar 14 formas
+     * distintas de payload.
+     *
+     * 🔴 `created_at` viaja porque el cajón tiene que ACOTAR a la ventana de su caja: un
+     * `PAY_CASH` atorado del turno anterior no puede protegerle una venta a la caja de
+     * hoy. La consulta sólo TRAE el dato; quién queda dentro de la ventana lo decide
+     * `PendingCashSales`, en Kotlin, que es donde los tests lo fijan.
      */
-    @Query("SELECT payload_json FROM pos_sync_intents WHERE venue_id = :venueId AND status = 'PENDING' AND type = :type")
-    suspend fun pendingPayloads(venueId: String, type: String): List<String>
+    @Query("SELECT payload_json, created_at FROM pos_sync_intents WHERE venue_id = :venueId AND status = 'PENDING' AND type = :type")
+    suspend fun pendingPayloads(venueId: String, type: String): List<SyncIntentPayload>
 
     @Query("SELECT COUNT(*) FROM pos_sync_intents WHERE venue_id = :venueId AND status = 'REJECTED'")
     suspend fun rejectedCount(venueId: String): Int

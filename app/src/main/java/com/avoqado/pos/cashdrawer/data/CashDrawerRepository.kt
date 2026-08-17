@@ -298,15 +298,32 @@ class CashDrawerRepository @Inject constructor(
         }
 
         val eventsArray = sessionObj["events"]?.jsonArray ?: fallbackEvents
+        // Las ventas que el server trae POR PRIMERA VEZ: ni una fila mía renombrada, ni
+        // una que un sync anterior ya copió. Ver [PendingCashSales.ventasProtegidas].
+        val ventasNuevasDelServer = mutableListOf<VentaConfirmadaPorPrimeraVez>()
+        var servidorConfirmaVentas = false
         val confirmedIds = eventsArray.orEmpty().map { eventJson ->
             val obj = eventJson.jsonObject
             val event = parseEventFromApi(obj, server.id)
+            // 🔴 Se pregunta ANTES de tocar Room: después de insertar, TODA fila
+            // "ya estaba". Es justo la diferencia entre la venta que el server acaba de
+            // confirmar y la que trae en cada payload desde hace tres syncs.
+            val yaEstaba = dao.getEvent(event.id) != null
             // 🔑 Si el server dice que este evento es el MÍO, mi fila adopta su id
             // ANTES de insertarlo: así queda UNA sola fila y gana el contenido del
             // server. La llave es un hecho, no una inferencia — por eso vence a la
             // ventana de arriba: un movimiento mal archivado en la caja vieja que el
             // server cuenta en la de hoy tiene que venirse, o lo perderíamos.
-            promoteEvent(obj["localId"]?.jsonPrimitive?.contentOrNull, event.id)
+            val adoptada = promoteEvent(obj["localId"]?.jsonPrimitive?.contentOrNull, event.id) != null
+            if (event.type == CashDrawerEventType.CASH_SALE.name) {
+                servidorConfirmaVentas = true
+                if (!yaEstaba && !adoptada) {
+                    ventasNuevasDelServer += VentaConfirmadaPorPrimeraVez(
+                        orderId = event.orderId,
+                        totalCents = event.amountCents,
+                    )
+                }
+            }
             dao.insertEvent(event)
             event.id
         }
@@ -319,9 +336,9 @@ class CashDrawerRepository @Inject constructor(
         // confirmada: el server todavía no la conoce. Borrarla ahí le desaparecía al
         // cajero dinero que sí está en el cajón, justo al abrir esta pantalla para
         // cerrar su turno. Quién se salva lo decide [PendingCashSales.ventasProtegidas]
-        // —por orden si la hay, si no por monto y de la más reciente hacia atrás—
-        // consumiendo cada cobro pendiente UNA sola vez, para que proteger no se
-        // convierta en duplicar.
+        // —lo que el server ya cubre deja de ser candidato; del resto, por orden si la
+        // hay y si no por monto— consumiendo cada cobro pendiente UNA sola vez, para
+        // que proteger no se convierta en duplicar.
         if (confirmedIds.isNotEmpty()) {
             // Las copias locales de venta que el server NO confirmó: las candidatas a
             // borrarse, y por tanto las únicas que un cobro encolado puede proteger.
@@ -333,11 +350,14 @@ class CashDrawerRepository @Inject constructor(
             }
             dao.deleteUnconfirmedEvents(
                 server.id,
-                SERVER_OWNED_EVENT_TYPES,
+                tiposABorrar(servidorConfirmaVentas),
                 confirmedIds,
                 PendingCashSales.ventasProtegidas(
                     ventasLocales = ventasLocales,
-                    cobrosSinReproducir = pendingCashSales.sinReproducir(venueId),
+                    // 🔴 La ventana de la caja: un cobro atorado del turno anterior no
+                    // puede protegerle una venta a la caja de hoy (ver `sinReproducir`).
+                    cobrosSinReproducir = pendingCashSales.sinReproducir(venueId, server.openedAt),
+                    ventasConfirmadasPorPrimeraVez = ventasNuevasDelServer,
                 ).toList(),
             )
         }
@@ -828,6 +848,30 @@ class CashDrawerRepository @Inject constructor(
             CashDrawerEventType.OPEN.name,
             CashDrawerEventType.CASH_SALE.name,
         )
+
+        /**
+         * 🔴 **UN PAYLOAD SIN VENTAS NO AUTORIZA A SOLTAR NINGUNA VENTA.** Espejo del
+         * guard de iOS (`CashDrawerServerMerge.ventasLocalesQueElServidorYaCubre`, que
+         * abre con `guard servidorConfirmaVentas else { return [] }`).
+         *
+         * Que el server no reporte ni una venta NO es prueba de que la mía no exista —
+         * es el estado normal de una tienda que lleva rato sin red, donde lo único que
+         * confirma es su propia apertura. Barrer ahí le desaparecía al cajero dinero
+         * que sí está en el cajón: el MISMO cajón daba 500000 en la tablet y 530000 en
+         * el iPad. En este dominio el fail-safe no puede ser desaparecer dinero (mismo
+         * criterio que la config de impresoras, que no se pisa con un refresh fallido).
+         *
+         * El `OPEN` sí se sigue barriendo siempre: su duplicado no mueve un centavo
+         * (`computeExpectedAmount` no lo suma), sólo pinta la apertura dos veces en el
+         * detalle del corte, y dejar de limpiarlo convertiría este guard en una excusa
+         * para no reconciliar nada.
+         */
+        private fun tiposABorrar(servidorConfirmaVentas: Boolean): List<String> =
+            if (servidorConfirmaVentas) {
+                SERVER_OWNED_EVENT_TYPES
+            } else {
+                listOf(CashDrawerEventType.OPEN.name)
+            }
     }
 
     private fun parseTimestamp(value: String?): Long {

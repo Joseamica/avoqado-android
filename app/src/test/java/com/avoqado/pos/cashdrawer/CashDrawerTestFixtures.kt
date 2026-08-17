@@ -9,6 +9,7 @@ import com.avoqado.pos.cashdrawer.data.model.CashDrawerSessionEntity
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.local.database.PaymentSyncStatus
 import com.avoqado.pos.core.data.local.database.PendingPaymentEntity
+import com.avoqado.pos.core.data.local.database.SyncIntentPayload
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
@@ -200,7 +201,7 @@ internal fun cashDrawerSecureStorage(): SecureStorage = mockk(relaxed = true) {
  * de un local con red. Los tests que prueban la venta encolada lo dicen explícito.
  */
 internal fun sinCobrosEnCola(): PendingCashSales = mockk {
-    coEvery { sinReproducir(any()) } returns emptyList()
+    coEvery { sinReproducir(any(), any()) } returns emptyList()
 }
 
 /** Un cobro en efectivo que sigue esperando a reproducirse, como lo ve el cajón. */
@@ -216,7 +217,7 @@ internal fun cobroSinOrden(totalCents: Int) =
     CobroSinReproducir(orderId = null, totalCents = totalCents)
 
 internal fun cobrosEnCola(vararg cobros: CobroSinReproducir): PendingCashSales = mockk {
-    coEvery { sinReproducir(any()) } returns cobros.toList()
+    coEvery { sinReproducir(any(), any()) } returns cobros.toList()
 }
 
 /**
@@ -227,7 +228,7 @@ internal fun cobrosEnCola(vararg cobros: CobroSinReproducir): PendingCashSales =
  */
 internal fun colaDeCobros(
     cobros: List<PendingPaymentEntity> = emptyList(),
-    intents: List<String> = emptyList(),
+    intents: List<SyncIntentPayload> = emptyList(),
 ): PendingCashSales = PendingCashSales(
     intentDao = mockk { coEvery { pendingPayloads(any(), any()) } returns intents },
     pendingPaymentDao = mockk { coEvery { forVenue(any()) } returns cobros },
@@ -245,6 +246,7 @@ internal fun cobroEncolado(
     method: String = "CASH",
     orderId: String? = null,
     syncStatus: String = PaymentSyncStatus.PENDING.name,
+    createdAt: Long = haceMinutos(5),
 ) = PendingPaymentEntity(
     id = id,
     venueId = VENUE_ID,
@@ -255,19 +257,27 @@ internal fun cobroEncolado(
     paymentType = if (orderId != null) "ORDER" else "FAST",
     orderId = orderId,
     syncStatus = syncStatus,
+    createdAt = createdAt,
 )
 
-/** Un payload `PAY_CASH` del outbox, con la forma que arma `PaymentFlowViewModel`. */
+/**
+ * Un `PAY_CASH` del outbox, con la forma que arma `PaymentFlowViewModel` y con la HORA
+ * en que se encoló — que es lo que decide si cae dentro de la ventana de esta caja.
+ */
 internal fun intentPayCash(
     localOrderId: String,
     amountCents: Int,
     tipCents: Int = 0,
     method: String? = null,
-) = buildString {
-    append("""{"localOrderId":"$localOrderId","amountCents":$amountCents,"tipCents":$tipCents""")
-    if (method != null) append(""","method":"$method"""")
-    append("}")
-}
+    createdAt: Long = haceMinutos(5),
+) = SyncIntentPayload(
+    payloadJson = buildString {
+        append("""{"localOrderId":"$localOrderId","amountCents":$amountCents,"tipCents":$tipCents""")
+        if (method != null) append(""","method":"$method"""")
+        append("}")
+    },
+    createdAt = createdAt,
+)
 
 internal fun cashDrawerRepo(
     dao: CashDrawerDao,

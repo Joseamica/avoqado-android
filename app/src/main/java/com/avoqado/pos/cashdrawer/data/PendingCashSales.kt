@@ -26,6 +26,23 @@ import javax.inject.Singleton
 data class CobroSinReproducir(val orderId: String?, val totalCents: Int)
 
 /**
+ * Una venta que el server confirma en ESTE sync y que llega **por primera vez**: ni es
+ * una fila mía que adoptó su id ([CashDrawerRepository.promoteEvent]), ni una que un
+ * sync anterior ya copió.
+ *
+ * 🔴 Es la prueba de que un cobro SÍ aterrizó. La cola dice "yo todavía no lo he
+ * reproducido"; NO dice "el server no lo tiene". Cuando la respuesta se pierde después
+ * del commit —medido en producción: 6 reintentos, cero deduplicaciones— las dos cosas
+ * son ciertas a la vez, y la copia local tiene que ceder en vez de protegerse.
+ *
+ * @param orderId la orden con la que el server la registró, si la tiene. En la venta de
+ *   mostrador es la orden que creó ÉL, un id que este aparato nunca vio.
+ * @param totalCents el importe con propina, el mismo número que escribe el cajón
+ *   (`postCashSaleToDrawer` suma `amount + tipAmount`).
+ */
+data class VentaConfirmadaPorPrimeraVez(val orderId: String?, val totalCents: Int)
+
+/**
  * Los cobros en efectivo que este aparato YA cobró y que el server TODAVÍA no ha
  * visto.
  *
@@ -65,10 +82,19 @@ data class CobroSinReproducir(val orderId: String?, val totalCents: Int)
  * Espejo de `avoqado-ios/CashDrawer/Services/PendingCashSales.swift` (commit
  * `f85f4c6`). El pareo por `orderId` solo dejaba fuera justo al flujo más común de
  * una tienda en apagón: la venta de MOSTRADOR se cobra antes de que exista orden, así
- * que su fila del cajón nace con `orderId = null` (los cuatro
- * `recordCashSale(total, null)` de `PaymentFlowViewModel`, líneas 935, 1219, 1256 y
- * 1285). Sin nada con qué emparejarse, se borraba aunque su `PAY_CASH` siguiera en el
- * outbox: 500000 en pantalla donde el cajón tenía 530000.
+ * que su fila del cajón nace con `orderId = null`. Sin nada con qué emparejarse, se
+ * borraba aunque su `PAY_CASH` siguiera en el outbox: 500000 en pantalla donde el
+ * cajón tenía 530000.
+ *
+ * 🔴 Son **CINCO** los sitios de `PaymentFlowViewModel` que registran la venta sin
+ * orden, no cuatro — el mensaje de `82fda27` y su reporte listaban cuatro cada uno, y
+ * ni siquiera los mismos. La cuenta se saca por FIRMA, nunca de memoria ni por número
+ * de línea (que se mueve con cada edición); el desglose por flujo está en el KDoc de
+ * `PaymentFlowViewModel.recordCashSale`:
+ *
+ * ```
+ * grep -cE '^ +recordCashSale\(total(, null)?\)$' PaymentFlowViewModel.kt   # → 5 (de 10 sitios)
+ * ```
  *
  * ⚠️ **Divergencia deliberada contra iOS, y a favor de Android:** allá TODO se parea
  * por monto; aquí el `orderId`, cuando existe, gana primero. La orden es un HECHO y el
@@ -83,15 +109,27 @@ class PendingCashSales @Inject constructor(
     private val json = Json { ignoreUnknownKeys = true }
 
     /**
-     * Los cobros EN EFECTIVO que siguen esperando a reproducirse, de las DOS colas.
+     * Los cobros EN EFECTIVO de ESTA caja que siguen esperando a reproducirse, de las
+     * DOS colas.
      *
      * Es una LISTA y no un conjunto a propósito: cada cobro pendiente protege UNA
      * fila del cajón y sólo una. Dos cobros del mismo monto protegen dos filas; uno
      * solo no puede proteger dos, o el barrido dejaría vivo un duplicado y el cajero
      * cerraría con un faltante inventado.
+     *
+     * 🔴 **La ventana de la caja NO es un adorno** ([desdeMillis]). Sin cota, un cobro
+     * que quedó atorado ayer —o uno hecho con la caja cerrada— pareaba por monto una
+     * venta de HOY que el server ya confirmó, la copia local sobrevivía y el arqueo
+     * pedía ese dinero dos veces. Es la misma fuga que cerró `729b0a8` ("el retiro de
+     * ayer no se cuela a hoy"), reabierta por otra puerta, y se cierra con el mismo
+     * criterio: `createdAt >= session.openedAt`, que es la MISMA ventana con la que el
+     * server calcula su esperado — cliente y server no pueden divergir por
+     * construcción.
+     *
+     * @param desdeMillis `openedAt` de la caja del server.
      */
-    suspend fun sinReproducir(venueId: String): List<CobroSinReproducir> =
-        deLaColaDeCobros(venueId) + deLosIntentsDelOutbox(venueId)
+    suspend fun sinReproducir(venueId: String, desdeMillis: Long): List<CobroSinReproducir> =
+        deLaColaDeCobros(venueId, desdeMillis) + deLosIntentsDelOutbox(venueId, desdeMillis)
 
     /**
      * `pending_payments`: el cobro que ya tenía orden, o el de mostrador cuyo POST
@@ -102,10 +140,11 @@ class PendingCashSales @Inject constructor(
      * protegido aquí. Al revés no: un filtro que vive únicamente en un `@Query` no lo
      * ejercita ninguna prueba de esta suite.
      */
-    private suspend fun deLaColaDeCobros(venueId: String): List<CobroSinReproducir> =
+    private suspend fun deLaColaDeCobros(venueId: String, desdeMillis: Long): List<CobroSinReproducir> =
         pendingPaymentDao.forVenue(venueId)
             .filter { it.syncStatus in COLA_VIVA }
             .filter { it.method == METODO_EFECTIVO }
+            .filter { it.createdAt >= desdeMillis }
             .map {
                 CobroSinReproducir(
                     orderId = it.orderId?.takeIf(String::isNotBlank),
@@ -120,10 +159,12 @@ class PendingCashSales @Inject constructor(
      * (ver `PaymentFlowViewModel.recordCashPaymentForOrder`), que sumados son
      * exactamente lo que entró al cajón.
      */
-    private suspend fun deLosIntentsDelOutbox(venueId: String): List<CobroSinReproducir> =
-        intentDao.pendingPayloads(venueId, SyncIntentTypes.PAY_CASH).mapNotNull { payload ->
+    private suspend fun deLosIntentsDelOutbox(venueId: String, desdeMillis: Long): List<CobroSinReproducir> =
+        intentDao.pendingPayloads(venueId, SyncIntentTypes.PAY_CASH)
+            .filter { it.createdAt >= desdeMillis }
+            .mapNotNull { pendiente ->
             runCatching {
-                val obj = json.parseToJsonElement(payload) as JsonObject
+                val obj = json.parseToJsonElement(pendiente.payloadJson) as JsonObject
                 // Un cobro declarado a mano no entra al cajón, así que tampoco puede
                 // proteger una fila (mismo criterio que la otra cola).
                 if (obj["method"] != null) return@runCatching null
@@ -151,8 +192,25 @@ class PendingCashSales @Inject constructor(
          * @param ventasLocales las copias locales de `CASH_SALE` de esta caja que el
          *   server NO confirmó (las confirmadas ya se filtraron fuera por quien llama).
          * @param cobrosSinReproducir lo que devolvió [sinReproducir].
+         * @param ventasConfirmadasPorPrimeraVez las ventas que el server trae en ESTE
+         *   sync y que no son filas mías renombradas — ver
+         *   [VentaConfirmadaPorPrimeraVez].
          *
-         * Dos pasadas, y el orden importa:
+         * 🔴 **Pasada 0 — lo que el server YA cubre deja de ser candidato.** La cola
+         * dice "yo todavía no lo he reproducido", no "el server no lo tiene": cuando la
+         * respuesta se pierde después del commit, las dos cosas son ciertas a la vez.
+         * Cada venta que el server confirma por primera vez RECLAMA una copia local
+         * —por orden si la hay, si no por monto y de la más VIEJA hacia adelante— y una
+         * fila reclamada ya no se puede proteger. Sin esto, la copia local se salvaba
+         * por error junto a la fila del server y la MISMA venta sumaba dos veces:
+         * 560000 en pantalla con 530000 en el cajón, que es la dirección que acusa a
+         * una persona de robar.
+         *
+         * De la más VIEJA hacia adelante porque la que el server ya tiene es la que se
+         * cobró primero; la reciente es la que sigue esperando. Es el espejo exacto de
+         * la pasada de protección, que va de la más reciente hacia atrás.
+         *
+         * Después, sobre lo que quedó, las dos pasadas de siempre:
          *
          *  1. **Identidad.** Un cobro nombrado con la MISMA orden que la fila es un
          *     hecho, no una inferencia: gana sobre cualquier pareo por monto y CONSUME
@@ -169,13 +227,37 @@ class PendingCashSales @Inject constructor(
         fun ventasProtegidas(
             ventasLocales: List<CashDrawerEventEntity>,
             cobrosSinReproducir: List<CobroSinReproducir>,
+            ventasConfirmadasPorPrimeraVez: List<VentaConfirmadaPorPrimeraVez> = emptyList(),
         ): Set<String> {
-            if (ventasLocales.isEmpty() || cobrosSinReproducir.isEmpty()) return emptySet()
+            if (ventasLocales.isEmpty()) return emptySet()
+            val deLaMasRecienteHaciaAtras = ventasLocales.sortedByDescending { it.createdAt }
+            val deLaMasViejaHaciaAdelante = deLaMasRecienteHaciaAtras.asReversed()
+
+            // Pasada 0: el server ya las tiene. Primero por orden (identidad), y sólo
+            // las que no encontraron orden compiten por monto — el mismo orden con el
+            // que se decide la protección, para que las dos listas no se contradigan.
+            val reclamadas = mutableSetOf<String>()
+            val sinOrdenQueParear = mutableListOf<VentaConfirmadaPorPrimeraVez>()
+            for (confirmada in ventasConfirmadasPorPrimeraVez) {
+                val orderId = confirmada.orderId?.takeIf(String::isNotBlank)
+                val porOrden = orderId?.let { buscada ->
+                    deLaMasViejaHaciaAdelante.firstOrNull { it.id !in reclamadas && it.orderId == buscada }
+                }
+                if (porOrden != null) reclamadas += porOrden.id else sinOrdenQueParear += confirmada
+            }
+            for (confirmada in sinOrdenQueParear) {
+                val porMonto = deLaMasViejaHaciaAdelante.firstOrNull {
+                    it.id !in reclamadas && it.amountCents == confirmada.totalCents
+                }
+                if (porMonto != null) reclamadas += porMonto.id
+            }
+
+            if (cobrosSinReproducir.isEmpty()) return emptySet()
             val pendientes = cobrosSinReproducir.toMutableList()
             val protegidas = mutableSetOf<String>()
-            val deLaMasRecienteHaciaAtras = ventasLocales.sortedByDescending { it.createdAt }
 
             for (venta in deLaMasRecienteHaciaAtras) {
+                if (venta.id in reclamadas) continue
                 val orderId = venta.orderId?.takeIf(String::isNotBlank) ?: continue
                 val i = pendientes.indexOfFirst { it.orderId == orderId }
                 if (i >= 0) {
@@ -185,7 +267,7 @@ class PendingCashSales @Inject constructor(
             }
 
             for (venta in deLaMasRecienteHaciaAtras) {
-                if (venta.id in protegidas) continue
+                if (venta.id in reclamadas || venta.id in protegidas) continue
                 val i = pendientes.indexOfFirst { it.totalCents == venta.amountCents }
                 if (i >= 0) {
                     pendientes.removeAt(i)

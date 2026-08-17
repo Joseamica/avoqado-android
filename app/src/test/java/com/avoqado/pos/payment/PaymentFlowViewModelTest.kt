@@ -1044,6 +1044,49 @@ class PaymentFlowViewModelTest {
         coVerify(exactly = 1) { cashDrawerRepository.addCashSale(800, any()) }
     }
 
+    /**
+     * 🔴 UNA VENTA EN CERO NO MUEVE EFECTIVO, ASÍ QUE NO ENTRA AL CAJÓN.
+     *
+     * Es la misma regla que el server ya aplica y documenta
+     * (`shared/cashDrawerPosting.postCashSaleToDrawer`: *"Un cobro en $0 (cuenta
+     * cortesiada al 100%) es una venta legítima que NO movió efectivo: un movimiento
+     * de caja en cero sólo ensucia el listado del corte"*, y devuelve
+     * `NOT_DRAWER_CASH`). Escribirla del lado del cliente creaba una fila que **ninguna
+     * confirmación puede limpiar nunca**, porque el gemelo del server no va a existir.
+     *
+     * Y de paso cierra la asimetría del camino encolado del cobro rápido: ahí
+     * `recordCashSale` vive FUERA del `if (cart != null)` que encola, así que sin
+     * carrito la fila entraba al cajón sin nadie en la cola que la respaldara. Sin
+     * carrito el total es forzosamente 0 —`currentBaseAmount()` se apoya en
+     * `cartState`/`splitBaseAmountOverride`, y los dos nacen del carrito—, o sea que
+     * con esta regla los dos guards coinciden POR CONSTRUCCIÓN y no por casualidad:
+     * la única fila que el `if` dejaba pasar sin cola es exactamente la que ahora no se
+     * escribe.
+     */
+    @Test
+    fun `una venta en CERO no entra al arqueo de efectivo`() = runTest {
+        every {
+            tpvSettingsRepository.getCurrentSettings()
+        } returns TpvSettings(showReviewScreen = false, showTipScreen = false)
+
+        val cart = CartState(
+            items = listOf(
+                CartItem(
+                    id = "line-1",
+                    type = CartItemType.CustomAmount,
+                    name = "Cortesía 100%",
+                    unitPrice = 0,
+                ),
+            ),
+        )
+
+        viewModel.startPaymentFlow(cart)
+        viewModel.confirmCashPreset(tenderedCents = 0)
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) { cashDrawerRepository.addCashSale(any(), any()) }
+    }
+
     @Test
     fun `el cliente elegido en el carrito nace con la orden`() = runTest {
         // 🔴 El cajero elegía "Juan Perez" en el encabezado del carrito, cobraba,

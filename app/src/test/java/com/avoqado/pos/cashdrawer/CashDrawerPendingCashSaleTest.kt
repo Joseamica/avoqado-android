@@ -35,11 +35,14 @@ import org.junit.Test
  *
  * 🔴 **El agujero que dejaba abierto el pareo por `orderId` solo, y que estos tests
  * cierran:** el flujo MÁS común de una tienda en apagón —cobrar de mostrador sin red—
- * entra al cajón con `orderId = null` (ver `PaymentFlowViewModel`, los cuatro
- * `recordCashSale(total, null)` de las líneas 935, 1219, 1256 y 1285). Una fila sin
- * orden no aparecía en el conjunto de órdenes pendientes, así que no se protegía y se
- * borraba **aunque su `PAY_CASH` siguiera esperando en el outbox**. Medido: 500000
- * donde el cajón tiene 530000.
+ * entra al cajón con `orderId = null`. Una fila sin orden no aparecía en el conjunto de
+ * órdenes pendientes, así que no se protegía y se borraba **aunque su `PAY_CASH`
+ * siguiera esperando en el outbox**. Medido: 500000 donde el cajón tiene 530000.
+ *
+ * Son **CINCO** los sitios que registran la venta sin orden, no cuatro (el mensaje de
+ * `82fda27` decía 935/1219/1256/1285 y su reporte 935/1219/1285/1104: ninguna lista
+ * estaba completa). Se cuentan por firma —`grep -cE '^ +recordCashSale\(total(, null)?\)$'`—
+ * y el desglose por flujo vive en el KDoc de `PaymentFlowViewModel.recordCashSale`.
  *
  * La salida es la de iOS (`PendingCashSales.swift`, commit `f85f4c6`): esas filas se
  * parean por **MONTO TOTAL**, de la más reciente hacia atrás. Cada cobro pendiente
