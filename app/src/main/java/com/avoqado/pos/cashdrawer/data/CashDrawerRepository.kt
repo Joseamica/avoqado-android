@@ -356,7 +356,7 @@ class CashDrawerRepository @Inject constructor(
                     ventasLocales = ventasLocales,
                     // 🔴 La ventana de la caja: un cobro atorado del turno anterior no
                     // puede protegerle una venta a la caja de hoy (ver `sinReproducir`).
-                    cobrosSinReproducir = pendingCashSales.sinReproducir(venueId, server.openedAt),
+                    cobrosSinReproducir = pendingCashSales.sinReproducir(venueId, ventanaDeLaCaja(sessionObj)),
                     ventasConfirmadasPorPrimeraVez = ventasNuevasDelServer,
                 ).toList(),
             )
@@ -874,8 +874,48 @@ class CashDrawerRepository @Inject constructor(
             }
     }
 
-    private fun parseTimestamp(value: String?): Long {
-        if (value == null) return System.currentTimeMillis()
+    /**
+     * 🔴 **DESDE CUÁNDO CUENTA ESTA CAJA, LEÍDO DEL PAYLOAD Y NO DE LA SESIÓN YA
+     * PARSEADA. `0` = el server no lo dijo, o sea SIN COTA.**
+     *
+     * Espejo de iOS (`CashDrawerRepository.ventanaDeLaCaja(delPayload:)`, commit
+     * `ca4aa65`), que lo resolvió bien desde el principio y aquí seguía abierto.
+     *
+     * [parseSessionFromApi] rellena `openedAt` con `now` cuando el campo falta, para que
+     * la pantalla tenga algo que pintar y para que `getOpenSession` pueda ordenar. Ese
+     * `now` sirve para PINTAR; como cota de la protección del cajón sería catastrófico:
+     * una ventana "de ahora en adelante" deja fuera a TODOS los cobros pendientes —todos
+     * se encolaron antes de "ahora"—, la protección se colapsa entera y cada venta
+     * cobrada sin red desaparece del arqueo de golpe.
+     *
+     * Entre las dos degradaciones se elige la de siempre: **primero no desaparecer
+     * dinero de la pantalla del cajero.** Sin cota se vuelve al comportamiento anterior
+     * a la ventana, que como mucho deja vivo un cobro atorado de ayer; con la cota
+     * inventada se pierde TODO lo cobrado sin red. Es el mismo criterio con el que
+     * `PrintConfigRepository` conserva una config vieja antes que quedarse sin imprimir:
+     * un campo que falta puede quitar una cota, nunca hacer desaparecer dinero.
+     *
+     * Hoy es latente —el server siempre manda `openedAt`
+     * (`cash-drawer.mobile.service.ts`)— pero la degradación iba en la dirección
+     * prohibida, así que se cierra igual.
+     *
+     * 🔴 Por eso el arreglo NO es tocar [parseTimestamp]: sus otros tres llamadores
+     * necesitan el `now`. Un `openedAt` en 0 pondría la sesión en 1970 y rompería el
+     * orden de `getOpenSession` y la ventana del corte; un evento en 0 se caería de
+     * toda ventana. La decisión se resuelve AQUÍ, en el sitio de la ventana, que es el
+     * único que quiere "sin cota".
+     */
+    internal fun ventanaDeLaCaja(sessionObj: JsonObject): Long =
+        parseTimestampOrNull((sessionObj["openedAt"] ?: sessionObj["createdAt"])?.jsonPrimitive?.contentOrNull) ?: 0L
+
+    /**
+     * `null` = no se pudo leer (campo ausente, `null` explícito, o texto que no es una
+     * fecha). Con qué rellenar NO es la misma respuesta en todos lados, así que la
+     * decide quien llama: [parseTimestamp] pone `now` para pintar, [ventanaDeLaCaja]
+     * pone `0` para no acotar.
+     */
+    private fun parseTimestampOrNull(value: String?): Long? {
+        if (value == null) return null
         // Server sends full ISO-8601 with millis + Z ("2026-07-17T19:50:18.274Z").
         return try {
             java.time.Instant.parse(value).toEpochMilli()
@@ -883,10 +923,17 @@ class CashDrawerRepository @Inject constructor(
             try {
                 java.text.SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", java.util.Locale.US).apply {
                     timeZone = java.util.TimeZone.getTimeZone("UTC")
-                }.parse(value)?.time ?: System.currentTimeMillis()
+                }.parse(value)?.time
             } catch (_: Exception) {
-                value.toLongOrNull() ?: System.currentTimeMillis()
+                value.toLongOrNull()
             }
         }
     }
+
+    /**
+     * La fecha del server para PINTAR: si no se pudo leer, `now`. Lo usan la sesión y el
+     * evento, donde un 0 sería una fecha de 1970 en pantalla y un orden roto.
+     */
+    private fun parseTimestamp(value: String?): Long =
+        parseTimestampOrNull(value) ?: System.currentTimeMillis()
 }

@@ -126,10 +126,20 @@ class PendingCashSales @Inject constructor(
      * server calcula su esperado — cliente y server no pueden divergir por
      * construcción.
      *
-     * @param desdeMillis `openedAt` de la caja del server.
+     * 🔴 **La banda de duda del reloj se suma UNA vez, ANTES de partir en dos colas.**
+     * Las dos quedan acotadas por CONSTRUCCIÓN y no por repetir el filtro en dos sitios,
+     * que es como se olvida uno de los dos y la fuga sigue viva por la puerta de al lado.
+     * Ver [TOLERANCIA_DE_RELOJ_MILLIS].
+     *
+     * @param desdeMillis `openedAt` de la caja del server, **en el reloj del server**.
+     *   `0` = el server no lo dijo, o sea SIN COTA (ver
+     *   `CashDrawerRepository.ventanaDeLaCaja`, que explica por qué el fallback correcto
+     *   es `0` y jamás `now`).
      */
-    suspend fun sinReproducir(venueId: String, desdeMillis: Long): List<CobroSinReproducir> =
-        deLaColaDeCobros(venueId, desdeMillis) + deLosIntentsDelOutbox(venueId, desdeMillis)
+    suspend fun sinReproducir(venueId: String, desdeMillis: Long): List<CobroSinReproducir> {
+        val desde = desdeMillis + TOLERANCIA_DE_RELOJ_MILLIS
+        return deLaColaDeCobros(venueId, desde) + deLosIntentsDelOutbox(venueId, desde)
+    }
 
     /**
      * `pending_payments`: el cobro que ya tenía orden, o el de mostrador cuyo POST
@@ -179,6 +189,56 @@ class PendingCashSales @Inject constructor(
         }
 
     companion object {
+        /**
+         * 🔴 **CUÁNTO DESFASE DE RELOJ SE TOLERA EN LA VENTANA DE LA CAJA: 5 MINUTOS,
+         * Y HACIA ADELANTE.**
+         *
+         * `createdAt >= openedAt` suena a una comparación de fechas. No lo es: compara
+         * **DOS RELOJES DISTINTOS**. El `openedAt` lo escribe el SERVER; el `createdAt`
+         * de un cobro encolado lo estampa este APARATO
+         * (`System.currentTimeMillis()`). Nadie los sincroniza, así que "¿este cobro es
+         * de ESTA caja?" no se puede contestar con precisión de segundos.
+         *
+         * Las dos direcciones, medidas con \$5,300.00 de verdad en el cajón:
+         *
+         * ```
+         *  APARATO ADELANTADO 5 min → un cobro atorado de 3 min ANTES de abrir queda
+         *      estampado 2 min DESPUÉS, entra en la ventana y protege una copia local
+         *      de una venta que el server YA confirmó → 560000 en pantalla.
+         *      **FALTANTE de $300**: la dirección que hace que acusen a un cajero.
+         *  APARATO ATRASADO 5 min → un cobro legítimo queda estampado antes de la
+         *      apertura, se cae de la ventana y su venta se suelta → 520000.
+         *      **SOBRANTE de $300**: nadie acusa a nadie por dinero que le sobra.
+         * ```
+         *
+         * 🔑 **Por eso el margen va hacia ADELANTE (`openedAt + tolerancia`) y no hacia
+         * atrás.** Hacia adelante ESTRECHA la ventana: el sello que cae dentro de la
+         * banda de duda ya no alcanza para proteger, y el caso ADELANTADO deja de
+         * inventar el faltante (530000, que es lo que hay). Hacia atrás la ENSANCHA:
+         * dejaría entrar todavía MÁS cobros de antes de abrir, o sea que empuja en la
+         * dirección del faltante y ni siquiera saca al caso medido, que ya estaba
+         * dentro. Ante la duda se elige siempre el lado que no acusa a nadie, aunque
+         * cueste un sobrante — el mismo criterio con el que `FAILED` no protege.
+         *
+         * ⚠️ **Lo que esto CUESTA, declarado:** una venta cobrada sin red en los
+         * primeros 5 minutos de la caja, con el reloj perfecto, se queda sin protección
+         * y deja sobrante. Sólo muerde cuando el server confirma OTRA venta en el mismo
+         * payload — si no confirma ninguna, el guard de `tiposABorrar` ya impide barrer.
+         *
+         * ⚠️ **Y lo que NO arregla:** un desfase MAYOR que la tolerancia devuelve el
+         * faltante. Un margen lo bastante ancho para tapar cualquier reloj dejaría
+         * entrar cobros de verdad viejos, que es la fuga que la ventana vino a cerrar.
+         * Cinco minutos cubren un reloj sin NTP; media hora ya es un aparato mal
+         * configurado y eso se arregla en el aparato, no aflojando el arqueo. Anclado
+         * con su número en `CashDrawerRelojDesfasadoTest`.
+         *
+         * 🔴 Se espeja por VALOR EXACTO con iOS (`PendingCashSales.toleranciaDeReloj`,
+         * 5 min). Moverlo —o darle la vuelta al signo— en un repo y no en el otro
+         * devuelve el defecto del 2026-08-16: la misma caja dando dos arqueos distintos
+         * según el aparato.
+         */
+        internal const val TOLERANCIA_DE_RELOJ_MILLIS = 5 * 60_000L
+
         /** Un cobro que sigue vivo en la cola. `FAILED` (cuarentena) queda fuera. */
         private val COLA_VIVA = setOf(PaymentSyncStatus.PENDING.name, PaymentSyncStatus.SYNCING.name)
 

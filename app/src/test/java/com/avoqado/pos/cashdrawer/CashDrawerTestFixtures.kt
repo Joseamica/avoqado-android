@@ -344,6 +344,28 @@ internal fun sesionJson(
     }}
 """.trimIndent()
 
+/**
+ * La MISMA sesión, pero **sin `openedAt`** — un server viejo, un payload recortado por
+ * un proxy, o un campo que se cayó.
+ *
+ * 🔴 Existe para fijar la degradación: un campo que falta puede quitar la cota, nunca
+ * hacer desaparecer dinero. Con `parseTimestamp(null)` devolviendo `now`, esta forma
+ * colapsaba la protección entera — ver `CashDrawerRepository.ventanaDeLaCaja`.
+ */
+internal fun sesionJsonSinApertura(
+    id: String,
+    vararg eventos: String,
+) = """
+    {"success":true,"data":{
+      "id":"$id","venueId":"venue-1","deviceName":"Sunmi D3","status":"OPEN",
+      "openedByStaffId":"staff-1","openedByName":"Ana Ruiz",
+      "startingAmount":5000.00,
+      "closedByStaffId":null,"closedByName":null,"closedAt":null,
+      "actualAmount":null,"overShort":null,"closingNote":null,
+      "events":[${eventos.joinToString(",")}]
+    }}
+""".trimIndent()
+
 internal val aperturaDelServer: String
     get() = eventoJson("srv-ev-open", "OPEN", "5000.00", note = "Caja abierta con \$5000.00", createdAt = haceMinutos(60))
 
