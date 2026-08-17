@@ -2,10 +2,13 @@ package com.avoqado.pos.cashdrawer
 
 import com.avoqado.pos.cashdrawer.data.CashDrawerDao
 import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
+import com.avoqado.pos.cashdrawer.data.CobroSinReproducir
 import com.avoqado.pos.cashdrawer.data.PendingCashSales
 import com.avoqado.pos.cashdrawer.data.model.CashDrawerEventEntity
 import com.avoqado.pos.cashdrawer.data.model.CashDrawerSessionEntity
 import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.core.data.local.database.PaymentSyncStatus
+import com.avoqado.pos.core.data.local.database.PendingPaymentEntity
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
@@ -115,14 +118,14 @@ internal class FakeCashDrawerDao : CashDrawerDao {
         sessionId: String,
         serverOwnedTypes: List<String>,
         confirmedIds: List<String>,
-        pendingOrderIds: List<String>,
+        protectedIds: List<String>,
     ) {
         events.values
             .filter {
                 it.sessionId == sessionId &&
                     it.type in serverOwnedTypes &&
                     it.id !in confirmedIds &&
-                    (it.orderId == null || it.orderId !in pendingOrderIds)
+                    it.id !in protectedIds
             }
             .map { it.id }
             .forEach { events.remove(it) }
@@ -197,11 +200,73 @@ internal fun cashDrawerSecureStorage(): SecureStorage = mockk(relaxed = true) {
  * de un local con red. Los tests que prueban la venta encolada lo dicen explícito.
  */
 internal fun sinCobrosEnCola(): PendingCashSales = mockk {
-    coEvery { unreplayedOrderIds(any()) } returns emptySet()
+    coEvery { sinReproducir(any()) } returns emptyList()
 }
 
-internal fun cobrosEnCola(vararg orderIds: String): PendingCashSales = mockk {
-    coEvery { unreplayedOrderIds(any()) } returns orderIds.toSet()
+/** Un cobro en efectivo que sigue esperando a reproducirse, como lo ve el cajón. */
+internal fun cobroDeOrden(orderId: String, totalCents: Int) =
+    CobroSinReproducir(orderId = orderId, totalCents = totalCents)
+
+/**
+ * El cobro de una venta de MOSTRADOR: se cobró antes de que existiera la orden, así
+ * que no tiene con qué nombrarse más que su monto. Es el caso que el pareo por
+ * `orderId` dejaba fuera.
+ */
+internal fun cobroSinOrden(totalCents: Int) =
+    CobroSinReproducir(orderId = null, totalCents = totalCents)
+
+internal fun cobrosEnCola(vararg cobros: CobroSinReproducir): PendingCashSales = mockk {
+    coEvery { sinReproducir(any()) } returns cobros.toList()
+}
+
+/**
+ * El `PendingCashSales` DE VERDAD, con las dos colas puestas a mano. Lo usan los
+ * tests que prueban **qué cobro protege y cuál no** (efectivo vs tarjeta, vivo vs
+ * cuarentena, propina): esas decisiones viven dentro del componente, así que
+ * mockearlo las saltaría por completo y el test sólo se probaría a sí mismo.
+ */
+internal fun colaDeCobros(
+    cobros: List<PendingPaymentEntity> = emptyList(),
+    intents: List<String> = emptyList(),
+): PendingCashSales = PendingCashSales(
+    intentDao = mockk { coEvery { pendingPayloads(any(), any()) } returns intents },
+    pendingPaymentDao = mockk { coEvery { forVenue(any()) } returns cobros },
+)
+
+/**
+ * Una fila de `pending_payments` con la forma real que le da
+ * `CashPaymentRepository.queueCashPayment`: el importe partido en base y propina, y
+ * el método guardado por NOMBRE (`"CASH"`, o el del cobro declarado a mano).
+ */
+internal fun cobroEncolado(
+    id: String,
+    amountCents: Int,
+    tipCents: Int = 0,
+    method: String = "CASH",
+    orderId: String? = null,
+    syncStatus: String = PaymentSyncStatus.PENDING.name,
+) = PendingPaymentEntity(
+    id = id,
+    venueId = VENUE_ID,
+    staffId = "staff-1",
+    amountCents = amountCents,
+    tipCents = tipCents,
+    method = method,
+    paymentType = if (orderId != null) "ORDER" else "FAST",
+    orderId = orderId,
+    syncStatus = syncStatus,
+)
+
+/** Un payload `PAY_CASH` del outbox, con la forma que arma `PaymentFlowViewModel`. */
+internal fun intentPayCash(
+    localOrderId: String,
+    amountCents: Int,
+    tipCents: Int = 0,
+    method: String? = null,
+) = buildString {
+    append("""{"localOrderId":"$localOrderId","amountCents":$amountCents,"tipCents":$tipCents""")
+    if (method != null) append(""","method":"$method"""")
+    append("}")
 }
 
 internal fun cashDrawerRepo(

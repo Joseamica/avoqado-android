@@ -318,13 +318,27 @@ class CashDrawerRepository @Inject constructor(
         // 🔴 Y aun entonces, una venta cuyo cobro SIGUE EN LA COLA no puede venir
         // confirmada: el server todavía no la conoce. Borrarla ahí le desaparecía al
         // cajero dinero que sí está en el cajón, justo al abrir esta pantalla para
-        // cerrar su turno. Ver [PendingCashSales].
+        // cerrar su turno. Quién se salva lo decide [PendingCashSales.ventasProtegidas]
+        // —por orden si la hay, si no por monto y de la más reciente hacia atrás—
+        // consumiendo cada cobro pendiente UNA sola vez, para que proteger no se
+        // convierta en duplicar.
         if (confirmedIds.isNotEmpty()) {
+            // Las copias locales de venta que el server NO confirmó: las candidatas a
+            // borrarse, y por tanto las únicas que un cobro encolado puede proteger.
+            // Se leen DESPUÉS de insertar lo confirmado, así que una fila adoptada por
+            // llave ya lleva el id del server y queda fuera por sí sola.
+            val confirmados = confirmedIds.toSet()
+            val ventasLocales = dao.getSessionEvents(server.id).filter {
+                it.type == CashDrawerEventType.CASH_SALE.name && it.id !in confirmados
+            }
             dao.deleteUnconfirmedEvents(
                 server.id,
                 SERVER_OWNED_EVENT_TYPES,
                 confirmedIds,
-                pendingCashSales.unreplayedOrderIds(venueId).toList(),
+                PendingCashSales.ventasProtegidas(
+                    ventasLocales = ventasLocales,
+                    cobrosSinReproducir = pendingCashSales.sinReproducir(venueId),
+                ).toList(),
             )
         }
         return server

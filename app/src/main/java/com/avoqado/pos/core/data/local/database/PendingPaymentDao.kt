@@ -21,18 +21,17 @@ interface PendingPaymentDao {
     suspend fun getFailedPayments(): List<PendingPaymentEntity>
 
     /**
-     * Órdenes cuyo cobro todavía no se ha reproducido contra el server. Lo usa el
-     * cajón (`PendingCashSales`) para no borrar de la pantalla una venta que sí está
-     * en el cajón pero que el server aún no puede conocer.
+     * Los cobros encolados de UN local. Lo usa el cajón (`PendingCashSales`) para no
+     * borrar de la pantalla una venta que sí está en el cajón pero que el server aún
+     * no puede conocer.
      *
-     * 🔴 FAILED queda fuera a propósito: un cobro fallido es ambiguo (pudo haber
-     * aterrizado) y ahí se conserva el comportamiento de hoy. Ver `PendingCashSales`.
+     * 🔴 Devuelve la fila ENTERA y no filtra por estado ni por método a propósito:
+     * ésas son decisiones de DINERO y viven en `PendingCashSales`, en Kotlin, donde
+     * los tests las fijan. Un filtro escondido en este `@Query` no lo ejercita ninguna
+     * prueba de la suite unitaria — se podría aflojar y todo seguiría verde.
      */
-    @Query(
-        "SELECT orderId FROM pending_payments WHERE venueId = :venueId " +
-            "AND syncStatus IN ('PENDING', 'SYNCING') AND orderId IS NOT NULL",
-    )
-    suspend fun unsyncedOrderIds(venueId: String): List<String>
+    @Query("SELECT * FROM pending_payments WHERE venueId = :venueId")
+    suspend fun forVenue(venueId: String): List<PendingPaymentEntity>
 
     @Query("UPDATE pending_payments SET syncStatus = :status WHERE id = :id")
     suspend fun updateStatus(id: String, status: String)

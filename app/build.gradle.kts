@@ -201,6 +201,7 @@ dependencies {
     testImplementation(libs.coroutines.test)
     testImplementation(libs.okhttp.mockwebserver)
     testImplementation(libs.turbine)
+    testImplementation(libs.sqlite.jdbc)
 
     androidTestImplementation(libs.junit)
     androidTestImplementation(libs.androidx.test.core)

@@ -25,6 +25,7 @@ mockk = "1.13.13"
 coroutinesTest = "1.9.0"
 okhttpMockWebServer = "4.12.0"
 turbine = "1.1.0"
+sqliteJdbc = "3.41.2.2"
 room = "2.8.4"
 androidxTestCore = "1.6.1"
 androidxTestExtJunit = "1.2.1"
@@ -89,6 +90,9 @@ mockk = { group = "io.mockk", name = "mockk", version.ref = "mockk" }
 coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutinesTest" }
 okhttp-mockwebserver = { group = "com.squareup.okhttp3", name = "mockwebserver", version.ref = "okhttpMockWebServer" }
 turbine = { group = "app.cash.turbine", name = "turbine", version.ref = "turbine" }
+# SQLite de verdad en la JVM: deja que un test unitario EJECUTE el SQL literal de un
+# `@Query` de Room en vez de confiar en una réplica escrita a mano del DAO.
+sqlite-jdbc = { group = "org.xerial", name = "sqlite-jdbc", version.ref = "sqliteJdbc" }
 androidx-test-core = { group = "androidx.test", name = "core", version.ref = "androidxTestCore" }
 androidx-test-ext-junit = { group = "androidx.test.ext", name = "junit", version.ref = "androidxTestExtJunit" }
 androidx-test-runner = { group = "androidx.test", name = "runner", version.ref = "androidxTestRunner" }

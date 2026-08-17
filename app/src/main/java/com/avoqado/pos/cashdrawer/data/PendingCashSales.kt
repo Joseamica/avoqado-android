@@ -1,18 +1,33 @@
 package com.avoqado.pos.cashdrawer.data
 
+import com.avoqado.pos.cashdrawer.data.model.CashDrawerEventEntity
+import com.avoqado.pos.core.data.local.database.PaymentSyncStatus
 import com.avoqado.pos.core.data.local.database.PendingPaymentDao
 import com.avoqado.pos.core.data.local.database.SyncIntentDao
 import com.avoqado.pos.core.data.sync.SyncIntentTypes
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
+ * Un cobro en efectivo que este aparato YA cobró y que sigue esperando a
+ * reproducirse contra el server.
+ *
+ * @param orderId la orden a la que pertenece, si ya existía cuando se cobró. `null`
+ *   en la venta de MOSTRADOR, que se cobra antes de que exista orden alguna.
+ * @param totalCents el importe COMPLETO que entró al cajón, propina incluida — el
+ *   mismo número con el que la fila entró al arqueo (`recordCashSale(total, …)`,
+ *   donde `total = base + propina`). Ver [PendingCashSales].
+ */
+data class CobroSinReproducir(val orderId: String?, val totalCents: Int)
+
+/**
  * Los cobros en efectivo que este aparato YA cobró y que el server TODAVÍA no ha
- * visto, identificados por la orden a la que pertenecen.
+ * visto.
  *
  * 🔴 Para qué existe: `CASH_SALE` es un tipo del que el server es dueño, así que el
  * sync del cajón borra las copias locales que no vengan confirmadas (si no, la misma
@@ -30,13 +45,35 @@ import javax.inject.Singleton
  * Las DOS colas cuentan, porque un cobro sin red cae en una o en la otra:
  *  - **outbox de intents** (`PAY_CASH`) cuando la mesa nació provisional; el
  *    `localOrderId` del payload es el MISMO id con el que la venta entró al cajón.
- *  - **`pending_payments`** cuando la orden ya existía y falló el cobro.
+ *  - **`pending_payments`** cuando la orden ya existía, o cuando fue un cobro de
+ *    mostrador y el POST falló.
  *
  * 🔴 `FAILED` NO cuenta a propósito. Un cobro fallido es ambiguo: puede haber
  * aterrizado en el server ("Order is already paid" es un 400 permanente) o no. Ante
  * la duda se mantiene el comportamiento de hoy —borrar la copia local—, que deja al
  * cajero con un SOBRANTE aparente en vez de con un faltante: nadie acusa a nadie de
  * un dinero que le sobra. Además esos cobros ya son visibles en cuarentena.
+ *
+ * 🔴 **Sólo el EFECTIVO protege.** Un cobro declarado a mano (terminal ajena,
+ * transferencia) también se encola, pero nunca entró al cajón —`recordCashSale` se
+ * corta en seco cuando hay `manualMethod`— así que no puede salvar ninguna fila. Si
+ * lo dejáramos entrar, una tarjeta pendiente de $300 protegería una venta en efectivo
+ * de $300 que el server sí tiene, y esos $300 se contarían dos veces.
+ *
+ * ## Por qué el monto, y no sólo la orden
+ *
+ * Espejo de `avoqado-ios/CashDrawer/Services/PendingCashSales.swift` (commit
+ * `f85f4c6`). El pareo por `orderId` solo dejaba fuera justo al flujo más común de
+ * una tienda en apagón: la venta de MOSTRADOR se cobra antes de que exista orden, así
+ * que su fila del cajón nace con `orderId = null` (los cuatro
+ * `recordCashSale(total, null)` de `PaymentFlowViewModel`, líneas 935, 1219, 1256 y
+ * 1285). Sin nada con qué emparejarse, se borraba aunque su `PAY_CASH` siguiera en el
+ * outbox: 500000 en pantalla donde el cajón tenía 530000.
+ *
+ * ⚠️ **Divergencia deliberada contra iOS, y a favor de Android:** allá TODO se parea
+ * por monto; aquí el `orderId`, cuando existe, gana primero. La orden es un HECHO y el
+ * monto una heurística, así que usar la heurística donde hay identidad sería
+ * degradarse a propósito. El monto es la única salida para la fila que no tiene orden.
  */
 @Singleton
 class PendingCashSales @Inject constructor(
@@ -45,14 +82,117 @@ class PendingCashSales @Inject constructor(
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
-    /** Órdenes cuyo cobro en efectivo sigue esperando a reproducirse. */
-    suspend fun unreplayedOrderIds(venueId: String): Set<String> {
-        val deIntents = intentDao.pendingPayloads(venueId, SyncIntentTypes.PAY_CASH).mapNotNull { payload ->
+    /**
+     * Los cobros EN EFECTIVO que siguen esperando a reproducirse, de las DOS colas.
+     *
+     * Es una LISTA y no un conjunto a propósito: cada cobro pendiente protege UNA
+     * fila del cajón y sólo una. Dos cobros del mismo monto protegen dos filas; uno
+     * solo no puede proteger dos, o el barrido dejaría vivo un duplicado y el cajero
+     * cerraría con un faltante inventado.
+     */
+    suspend fun sinReproducir(venueId: String): List<CobroSinReproducir> =
+        deLaColaDeCobros(venueId) + deLosIntentsDelOutbox(venueId)
+
+    /**
+     * `pending_payments`: el cobro que ya tenía orden, o el de mostrador cuyo POST
+     * falló.
+     *
+     * 🔴 El SQL sólo ACOTA (por local); quien DECIDE es este filtro en Kotlin, que es
+     * donde los tests lo fijan. Si alguien afloja la consulta, el dinero sigue
+     * protegido aquí. Al revés no: un filtro que vive únicamente en un `@Query` no lo
+     * ejercita ninguna prueba de esta suite.
+     */
+    private suspend fun deLaColaDeCobros(venueId: String): List<CobroSinReproducir> =
+        pendingPaymentDao.forVenue(venueId)
+            .filter { it.syncStatus in COLA_VIVA }
+            .filter { it.method == METODO_EFECTIVO }
+            .map {
+                CobroSinReproducir(
+                    orderId = it.orderId?.takeIf(String::isNotBlank),
+                    // El arqueo suma el total CON propina, así que el monto que parea
+                    // tiene que sumarla también o nunca coincidiría con la fila.
+                    totalCents = it.amountCents + it.tipCents,
+                )
+            }
+
+    /**
+     * El `PAY_CASH` del outbox trae el importe partido en `amountCents` y `tipCents`
+     * (ver `PaymentFlowViewModel.recordCashPaymentForOrder`), que sumados son
+     * exactamente lo que entró al cajón.
+     */
+    private suspend fun deLosIntentsDelOutbox(venueId: String): List<CobroSinReproducir> =
+        intentDao.pendingPayloads(venueId, SyncIntentTypes.PAY_CASH).mapNotNull { payload ->
             runCatching {
-                (json.parseToJsonElement(payload) as JsonObject)["localOrderId"]?.jsonPrimitive?.contentOrNull
+                val obj = json.parseToJsonElement(payload) as JsonObject
+                // Un cobro declarado a mano no entra al cajón, así que tampoco puede
+                // proteger una fila (mismo criterio que la otra cola).
+                if (obj["method"] != null) return@runCatching null
+                val total = (obj["amountCents"]?.jsonPrimitive?.intOrNull ?: 0) +
+                    (obj["tipCents"]?.jsonPrimitive?.intOrNull ?: 0)
+                if (total <= 0) return@runCatching null
+                CobroSinReproducir(
+                    orderId = obj["localOrderId"]?.jsonPrimitive?.contentOrNull?.takeIf(String::isNotBlank),
+                    totalCents = total,
+                )
             }.getOrNull()
         }
-        val deCobros = pendingPaymentDao.unsyncedOrderIds(venueId)
-        return (deIntents + deCobros).filter { it.isNotBlank() }.toSet()
+
+    companion object {
+        /** Un cobro que sigue vivo en la cola. `FAILED` (cuarentena) queda fuera. */
+        private val COLA_VIVA = setOf(PaymentSyncStatus.PENDING.name, PaymentSyncStatus.SYNCING.name)
+
+        /** El nombre con el que `CashPaymentRepository` guarda el efectivo. */
+        private const val METODO_EFECTIVO = "CASH"
+
+        /**
+         * 🔴 Las filas del cajón que el barrido NO puede borrar: las que siguen
+         * esperando en una cola.
+         *
+         * @param ventasLocales las copias locales de `CASH_SALE` de esta caja que el
+         *   server NO confirmó (las confirmadas ya se filtraron fuera por quien llama).
+         * @param cobrosSinReproducir lo que devolvió [sinReproducir].
+         *
+         * Dos pasadas, y el orden importa:
+         *
+         *  1. **Identidad.** Un cobro nombrado con la MISMA orden que la fila es un
+         *     hecho, no una inferencia: gana sobre cualquier pareo por monto y CONSUME
+         *     ese cobro, para que no pueda además salvar a otra fila.
+         *  2. **Monto, de la más reciente hacia atrás.** Es lo único que le queda a la
+         *     venta de mostrador. Si dos ventas comparten monto, la que sigue esperando
+         *     en la cola es la última cobrada — la más vieja ya se reprodujo y el server
+         *     ya la tiene.
+         *
+         * Cada cobro se consume al usarse: proteger de más reintroduce el doble conteo
+         * que el barrido vino a evitar. Sin cobros pendientes se comporta como antes de
+         * que este archivo existiera: no protege nada.
+         */
+        fun ventasProtegidas(
+            ventasLocales: List<CashDrawerEventEntity>,
+            cobrosSinReproducir: List<CobroSinReproducir>,
+        ): Set<String> {
+            if (ventasLocales.isEmpty() || cobrosSinReproducir.isEmpty()) return emptySet()
+            val pendientes = cobrosSinReproducir.toMutableList()
+            val protegidas = mutableSetOf<String>()
+            val deLaMasRecienteHaciaAtras = ventasLocales.sortedByDescending { it.createdAt }
+
+            for (venta in deLaMasRecienteHaciaAtras) {
+                val orderId = venta.orderId?.takeIf(String::isNotBlank) ?: continue
+                val i = pendientes.indexOfFirst { it.orderId == orderId }
+                if (i >= 0) {
+                    pendientes.removeAt(i)
+                    protegidas += venta.id
+                }
+            }
+
+            for (venta in deLaMasRecienteHaciaAtras) {
+                if (venta.id in protegidas) continue
+                val i = pendientes.indexOfFirst { it.totalCents == venta.amountCents }
+                if (i >= 0) {
+                    pendientes.removeAt(i)
+                    protegidas += venta.id
+                }
+            }
+            return protegidas
+        }
     }
 }

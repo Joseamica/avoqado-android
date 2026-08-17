@@ -8,6 +8,26 @@ import androidx.room.Query
 import com.avoqado.pos.cashdrawer.data.model.CashDrawerEventEntity
 import com.avoqado.pos.cashdrawer.data.model.CashDrawerSessionEntity
 
+/**
+ * El SQL que borra dinero de la pantalla, sacado a una constante por UNA razón: para
+ * que un test pueda EJECUTARLO.
+ *
+ * 🔴 Las pruebas del cajón corren contra `FakeCashDrawerDao`, una réplica en memoria
+ * escrita a mano. Es rápida y honesta, pero no es este SQL: si alguien afloja el
+ * `WHERE` de aquí y no toca la réplica, la suite entera sigue verde y el cajón empieza
+ * a borrar ventas en producción. `CashDrawerDeleteSqlTest` cierra ese hueco corriendo
+ * esta cadena, tal cual, contra SQLite de verdad.
+ *
+ * `@Query` de Room acepta una constante compilada, así que la anotación y el test leen
+ * exactamente el mismo texto — no una copia que pueda quedarse atrás.
+ */
+internal object CashDrawerSql {
+    const val DELETE_UNCONFIRMED_EVENTS: String =
+        "DELETE FROM cash_drawer_events WHERE sessionId = :sessionId " +
+            "AND type IN (:serverOwnedTypes) AND id NOT IN (:confirmedIds) " +
+            "AND id NOT IN (:protectedIds)"
+}
+
 @Dao
 interface CashDrawerDao {
 
@@ -101,28 +121,30 @@ interface CashDrawerDao {
      * server todavía no conoce (registrado sin red) tiene que sobrevivir, o el
      * cajero cierra con un faltante que sí existe.
      *
-     * 🔴 `pendingOrderIds` son las órdenes cuyo cobro SIGUE EN LA COLA — la señal la
-     * da la cola, no una corazonada sobre la antigüedad de la fila. Una venta cobrada
-     * sin red todavía no puede venir confirmada, así que borrarla le desaparecía al
-     * cajero dinero que sí está en el cajón, justo al abrir la pantalla para cerrar su
-     * turno. Mientras el cobro esté encolado el gemelo del server no existe por
-     * construcción, así que conservar la copia no duplica nada; en cuanto se
-     * reproduce, sale de esta lista y se borra como siempre. Ver `PendingCashSales`.
+     * 🔴 `protectedIds` son las filas cuyo cobro SIGUE EN LA COLA — la señal la da la
+     * cola, no una corazonada sobre la antigüedad de la fila. Una venta cobrada sin red
+     * todavía no puede venir confirmada, así que borrarla le desaparecía al cajero
+     * dinero que sí está en el cajón, justo al abrir la pantalla para cerrar su turno.
+     * Mientras el cobro esté encolado el gemelo del server no existe por construcción,
+     * así que conservar la copia no duplica nada; en cuanto se reproduce, sale de esta
+     * lista y se borra como siempre.
      *
-     * Una fila con `orderId` nulo (la apertura provisional, o una venta de mostrador
-     * cobrada antes de que existiera la orden) no tiene con qué emparejarse y se
-     * comporta como hasta hoy.
+     * 🔴 Llegan ya RESUELTAS a ids, no a órdenes: emparejar aquí por `orderId` dejaba
+     * fuera a la venta de MOSTRADOR, que se cobra antes de que exista la orden y entra
+     * al cajón con `orderId` nulo. Quién queda protegido lo decide
+     * `PendingCashSales.ventasProtegidas`, en Kotlin, que es donde se puede consumir
+     * cada cobro pendiente UNA sola vez — un `IN` de SQL no sabe hacer eso y
+     * protegería a todas las filas que compartan monto.
+     *
+     * Con la lista vacía se comporta como siempre: SQLite acepta `NOT IN ()` y lo
+     * evalúa como verdadero, así que no protege a nadie.
      */
-    @Query(
-        "DELETE FROM cash_drawer_events WHERE sessionId = :sessionId " +
-            "AND type IN (:serverOwnedTypes) AND id NOT IN (:confirmedIds) " +
-            "AND (orderId IS NULL OR orderId NOT IN (:pendingOrderIds))",
-    )
+    @Query(CashDrawerSql.DELETE_UNCONFIRMED_EVENTS)
     suspend fun deleteUnconfirmedEvents(
         sessionId: String,
         serverOwnedTypes: List<String>,
         confirmedIds: List<String>,
-        pendingOrderIds: List<String>,
+        protectedIds: List<String>,
     )
 
     @Query("SELECT COALESCE(SUM(amountCents), 0) FROM cash_drawer_events WHERE sessionId = :sessionId AND type = :type")
