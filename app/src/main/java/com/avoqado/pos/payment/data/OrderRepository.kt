@@ -514,6 +514,12 @@ class OrderRepository @Inject constructor(
          * ADITIVO: el server usa CASH cuando no llega.
          */
         manualMethod: com.avoqado.pos.payment.domain.ManualPaymentMethod? = null,
+        /**
+         * Tipo de pago del catálogo. EXCLUYENTE con `manualMethod`: el server rechaza
+         * `method` + `tenderTypeId` juntos a propósito (ambigüedad de dinero) y resuelve
+         * él la comisión/cajón/forma SAT desde su historial.
+         */
+        tenderType: com.avoqado.pos.payment.domain.TenderTypeOption? = null,
     ): Result<CashPayResult> {
         val venueId = secureStorage.venueId ?: return Result.failure(Exception("No venue"))
         if (staffId.isBlank()) return Result.failure(Exception("No staff"))
@@ -525,8 +531,15 @@ class OrderRepository @Inject constructor(
                 append("\"amount\":$amount,")
                 append("\"tip\":$tip,")
                 append("\"status\":\"COMPLETED\",")
-                append("\"method\":\"${manualMethod?.serverMethod ?: "CASH"}\",")
-                manualMethod?.externalSource?.let { append("\"externalSource\":\"$it\",") }
+                // Con un tipo del catálogo viaja la REFERENCIA {id, revision} y NO
+                // `method`: el server los rechaza juntos y resuelve él la semántica.
+                if (tenderType != null) {
+                    append("\"tenderTypeId\":\"${tenderType.id}\",")
+                    append("\"tenderRevision\":${tenderType.revision},")
+                } else {
+                    append("\"method\":\"${manualMethod?.serverMethod ?: "CASH"}\",")
+                    manualMethod?.externalSource?.let { append("\"externalSource\":\"$it\",") }
+                }
                 append("\"splitType\":\"$splitType\",")
                 append("\"staffId\":\"$staffId\",")
                 append("\"source\":\"AVOQADO_ANDROID\",")
@@ -607,6 +620,12 @@ class OrderRepository @Inject constructor(
          * ADITIVO: el server usa CASH cuando no llega.
          */
         manualMethod: com.avoqado.pos.payment.domain.ManualPaymentMethod? = null,
+        /**
+         * Tipo de pago del catálogo. EXCLUYENTE con `manualMethod`: el server rechaza
+         * `method` + `tenderTypeId` juntos a propósito (ambigüedad de dinero) y resuelve
+         * él la comisión/cajón/forma SAT desde su historial.
+         */
+        tenderType: com.avoqado.pos.payment.domain.TenderTypeOption? = null,
     ): Result<CashPayResult> {
         val venueId = secureStorage.venueId ?: return Result.failure(Exception("No venue"))
         if (staffId.isBlank()) return Result.failure(Exception("No staff"))
@@ -618,8 +637,15 @@ class OrderRepository @Inject constructor(
                 append("\"amount\":$amount,")
                 append("\"tip\":$tip,")
                 append("\"status\":\"COMPLETED\",")
-                append("\"method\":\"${manualMethod?.serverMethod ?: "CASH"}\",")
-                manualMethod?.externalSource?.let { append("\"externalSource\":\"$it\",") }
+                // Con un tipo del catálogo viaja la REFERENCIA {id, revision} y NO
+                // `method`: el server los rechaza juntos y resuelve él la semántica.
+                if (tenderType != null) {
+                    append("\"tenderTypeId\":\"${tenderType.id}\",")
+                    append("\"tenderRevision\":${tenderType.revision},")
+                } else {
+                    append("\"method\":\"${manualMethod?.serverMethod ?: "CASH"}\",")
+                    manualMethod?.externalSource?.let { append("\"externalSource\":\"$it\",") }
+                }
                 append("\"splitType\":\"$splitType\",")
                 append("\"staffId\":\"$staffId\",")
                 append("\"source\":\"AVOQADO_ANDROID\",")

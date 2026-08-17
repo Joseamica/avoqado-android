@@ -373,11 +373,22 @@ class PaymentSyncService @Inject constructor(
                 put("status", "COMPLETED")
                 // El método REAL de la cola, no un "CASH" fijo: reproducir un
                 // cobro con terminal ajena como efectivo descuadra el arqueo.
-                val manual = runCatching {
-                    com.avoqado.pos.payment.domain.ManualPaymentMethod.valueOf(payment.method)
-                }.getOrNull()
-                put("method", manual?.serverMethod ?: "CASH")
-                manual?.externalSource?.let { put("externalSource", it) }
+                // 🔑 Si la venta se cobró con un TIPO DEL CATÁLOGO, viaja la referencia
+                // {id, revision} y NO `method`: el server los rechaza juntos a propósito
+                // (ambigüedad de dinero) y resuelve él la semántica desde su historial.
+                // Sin esto la venta aterrizaba como EFECTIVO, callada.
+                val tenderId = payment.tenderTypeId
+                val tenderRev = payment.tenderRevision
+                if (tenderId != null && tenderRev != null) {
+                    put("tenderTypeId", tenderId)
+                    put("tenderRevision", tenderRev)
+                } else {
+                    val manual = runCatching {
+                        com.avoqado.pos.payment.domain.ManualPaymentMethod.valueOf(payment.method)
+                    }.getOrNull()
+                    put("method", manual?.serverMethod ?: "CASH")
+                    manual?.externalSource?.let { put("externalSource", it) }
+                }
                 put("splitType", "FULLPAYMENT")
                 put("staffId", payment.staffId)
                 put("source", "AVOQADO_ANDROID")

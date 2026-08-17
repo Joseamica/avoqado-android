@@ -72,6 +72,12 @@ class CashPaymentRepository @Inject constructor(
          * que nunca entró al cajón.
          */
         manualMethod: com.avoqado.pos.payment.domain.ManualPaymentMethod? = null,
+        /**
+         * Tipo de pago del catálogo. EXCLUYENTE con `manualMethod`: el server rechaza
+         * `method` + `tenderTypeId` juntos a propósito (ambigüedad de dinero) y resuelve
+         * él la comisión/cajón/forma SAT desde su historial.
+         */
+        tenderType: com.avoqado.pos.payment.domain.TenderTypeOption? = null,
     ): String {
         val localId = idempotencyKey?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString()
         val hasOrderItems = OrderRepository.hasProductItems(orderRequest)
@@ -85,6 +91,11 @@ class CashPaymentRepository @Inject constructor(
             // Se guarda el nombre del método MANUAL (o "CASH"); el sync lo
             // traduce al enum del server al reproducirlo.
             method = manualMethod?.name ?: "CASH",
+            // 🔴 La cola guarda el TIPO del catálogo. Sin esto, una venta cobrada sin
+            // red perdía el tipo al reproducirse y aterrizaba como EFECTIVO, callada,
+            // y la idempotencia impedía repararla.
+            tenderTypeId = tenderType?.id,
+            tenderRevision = tenderType?.revision,
             paymentType = paymentType,
             orderId = orderId,
             orderNumber = null,

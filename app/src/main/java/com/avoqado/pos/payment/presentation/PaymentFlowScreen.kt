@@ -145,7 +145,8 @@ fun PaymentFlowScreen(
                         onMethodSelected = { viewModel.selectPaymentMethod(it) },
                         onCashPresetSelected = { viewModel.confirmCashPreset(it) },
                         onCashCustomSelected = { viewModel.confirmCashCustom(it) },
-                        onManualMethodSelected = { viewModel.confirmManualMethod(it) },
+                        onManualMethodSelected = { viewModel.confirmManualChoice(it) },
+                        tenderTypes = viewModel.tenderTypes,
                         onCancel = onCancel,
                         terminalsUnavailable = terminalAvailability == PaymentFlowViewModel.TerminalAvailability.NONE,
                         // Toque explícito del cajero: si el server dice que no, tiene que verse.
@@ -167,7 +168,8 @@ fun PaymentFlowScreen(
                     onMethodSelected = { viewModel.selectPaymentMethod(it) },
                     onCashPresetSelected = { viewModel.confirmCashPreset(it) },
                     onCashCustomSelected = { viewModel.confirmCashCustom(it) },
-                        onManualMethodSelected = { viewModel.confirmManualMethod(it) },
+                        onManualMethodSelected = { viewModel.confirmManualChoice(it) },
+                        tenderTypes = viewModel.tenderTypes,
                     onCancel = onCancel,
                     terminalsUnavailable = terminalAvailability == PaymentFlowViewModel.TerminalAvailability.NONE,
                     // Toque explícito del cajero: si el server dice que no, tiene que verse.

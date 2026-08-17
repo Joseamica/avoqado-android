@@ -171,4 +171,19 @@ object AvoqadoDatabaseMigrations {
             database.execSQL("ALTER TABLE `pending_reservation_action` ADD COLUMN `lastError` TEXT")
         }
     }
+
+    /**
+     * La cola de pagos conserva el TIPO DE PAGO del catálogo.
+     *
+     * Antes sólo guardaba `method`, así que una venta con "Uber Eats" cobrada sin
+     * red se reproducía como EFECTIVO —callada— y la protección anti-duplicados
+     * impedía corregirla después. Aditiva y nullable: los pagos ya encolados
+     * siguen subiendo igual.
+     */
+    val MIGRATION_8_9 = object : Migration(8, 9) {
+        override fun migrate(database: SupportSQLiteDatabase) {
+            database.execSQL("ALTER TABLE `pending_payments` ADD COLUMN `tenderTypeId` TEXT")
+            database.execSQL("ALTER TABLE `pending_payments` ADD COLUMN `tenderRevision` INTEGER")
+        }
+    }
 }

@@ -68,7 +68,9 @@ fun PaymentMethodSelectionScreen(
     /** Mesas (Square): link "Dividir importe" arriba — null lo oculta (retail). */
     onSplitImporte: (() -> Unit)? = null,
     /** Cobro que NO pasó por Avoqado (terminal ajena, transferencia). */
-    onManualMethodSelected: ((com.avoqado.pos.payment.domain.ManualPaymentMethod) -> Unit)? = null,
+    onManualMethodSelected: ((com.avoqado.pos.payment.domain.ManualPaymentChoice) -> Unit)? = null,
+    /** Tipos de pago del catálogo del negocio, ya cacheados (vacío = sólo los fijos). */
+    tenderTypes: List<com.avoqado.pos.payment.domain.TenderTypeOption> = emptyList(),
 ) {
     val amountCents = paymentContext.totalCents
     val suggestions = remember(amountCents) { calculateCashSuggestions(amountCents) }
@@ -308,6 +310,7 @@ fun PaymentMethodSelectionScreen(
     if (showManualMethodSheet && onManualMethodSelected != null) {
         ManualMethodSheet(
             amountCents = amountCents,
+            tenderTypes = tenderTypes,
             onSelect = { method ->
                 showManualMethodSheet = false
                 onManualMethodSelected(method)
@@ -349,7 +352,8 @@ fun PaymentMethodSelectionScreen(
 @Composable
 private fun ManualMethodSheet(
     amountCents: Int,
-    onSelect: (com.avoqado.pos.payment.domain.ManualPaymentMethod) -> Unit,
+    tenderTypes: List<com.avoqado.pos.payment.domain.TenderTypeOption>,
+    onSelect: (com.avoqado.pos.payment.domain.ManualPaymentChoice) -> Unit,
     onDismiss: () -> Unit,
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -372,12 +376,41 @@ private fun ManualMethodSheet(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.padding(bottom = AvoqadoTheme.spacing.sm),
             )
+            // Los tipos que el negocio dio de alta van PRIMERO: son los que su gente
+            // usa de verdad ("Uber Eats", "Terminal BBVA"). Las 3 opciones genéricas
+            // se quedan abajo para quien no configuró ninguna.
+            tenderTypes
+                .sortedWith(compareBy({ it.posSection != "PRIMARY" }, { it.displayOrder }, { it.name }))
+                .forEach { tender ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable { onSelect(com.avoqado.pos.payment.domain.ManualPaymentChoice.Tender(tender)) }
+                            .padding(AvoqadoTheme.spacing.md),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = tender.name,
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Medium,
+                            )
+                            Text(
+                                text = if (tender.captureTip) "Tipo de pago del negocio" else "Tipo de pago del negocio · sin propina",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+
             com.avoqado.pos.payment.domain.ManualPaymentMethod.entries.forEach { method ->
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(RoundedCornerShape(12.dp))
-                        .clickable { onSelect(method) }
+                        .clickable { onSelect(com.avoqado.pos.payment.domain.ManualPaymentChoice.Fixed(method)) }
                         .padding(AvoqadoTheme.spacing.md),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {

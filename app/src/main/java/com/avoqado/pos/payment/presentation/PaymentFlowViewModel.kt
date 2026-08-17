@@ -68,6 +68,7 @@ class PaymentFlowViewModel @Inject constructor(
     private val syncOutbox: com.avoqado.pos.core.data.sync.SyncOutbox,
     private val orderRepository: OrderRepository,
     private val cashPaymentRepository: CashPaymentRepository,
+    private val tenderTypeRepository: com.avoqado.pos.payment.data.TenderTypeRepository,
     private val terminalPaymentService: TerminalPaymentService,
     private val tpvSettingsRepository: TpvSettingsRepository,
     private val paymentSyncService: PaymentSyncService,
@@ -155,6 +156,10 @@ class PaymentFlowViewModel @Inject constructor(
     private var paymentGeneration = 0
 
     init {
+        // Refresca el catálogo de tipos de pago al entrar al flujo de cobro. Es
+        // cache-first: si falla, conserva la última lista buena — nunca deja al
+        // cajero sin poder registrar la venta que acaba de entregar.
+        viewModelScope.launch { tenderTypeRepository.refresh() }
         // La pantalla del cliente llama a los MISMOS métodos que el cajero
         // (submitRating/submitTip): la calificación y la propina no tienen dos
         // caminos, solo dos superficies de entrada.
@@ -771,14 +776,36 @@ class PaymentFlowViewModel @Inject constructor(
     private var manualMethod: com.avoqado.pos.payment.domain.ManualPaymentMethod? = null
 
     /**
+     * Tipo de pago del catálogo del negocio elegido para ESTE cobro ("Uber Eats").
+     * Se limpia igual que `manualMethod` para que el siguiente cliente no lo herede.
+     */
+    private var selectedTender: com.avoqado.pos.payment.domain.TenderTypeOption? = null
+
+    /**
      * El mesero declara que ya le pagaron por otro medio. No hay teclado ni
      * cambio: el monto es exactamente el total, así que se cobra de una.
      */
     /** Etiqueta del cobro manual para la pantalla de éxito y el recibo. */
-    val manualMethodLabel: String? get() = manualMethod?.label
+    val manualMethodLabel: String? get() = selectedTender?.name ?: manualMethod?.label
 
-    fun confirmManualMethod(method: com.avoqado.pos.payment.domain.ManualPaymentMethod) {
-        manualMethod = method
+    /** Catálogo del negocio para la hoja de "¿cómo pagó el cliente?". */
+    val tenderTypes: List<com.avoqado.pos.payment.domain.TenderTypeOption>
+        get() = tenderTypeRepository.cached()
+
+    fun confirmManualChoice(choice: com.avoqado.pos.payment.domain.ManualPaymentChoice) {
+        when (choice) {
+            is com.avoqado.pos.payment.domain.ManualPaymentChoice.Fixed -> {
+                manualMethod = choice.method
+                selectedTender = null
+            }
+            is com.avoqado.pos.payment.domain.ManualPaymentChoice.Tender -> {
+                manualMethod = null
+                selectedTender = choice.option
+                // El server RECHAZA tip>0 en un tipo sin propina; no le mandamos
+                // una venta que sabemos que va a rebotar.
+                if (!choice.option.captureTip) currentTipCents = 0
+            }
+        }
         selectedMethod = PaymentMethod.CASH
         val total = currentBaseAmount() + currentTipCents
         lastCashTenderedCents = total
@@ -787,6 +814,7 @@ class PaymentFlowViewModel @Inject constructor(
 
     fun confirmCashPreset(tenderedCents: Int) {
         manualMethod = null
+        selectedTender = null
         selectedMethod = PaymentMethod.CASH
         lastCashTenderedCents = tenderedCents
         processCashPayment(tenderedCents)
@@ -795,6 +823,7 @@ class PaymentFlowViewModel @Inject constructor(
     /** Custom cash amount confirmed from bottom sheet keypad */
     fun confirmCashCustom(tenderedCents: Int) {
         manualMethod = null
+        selectedTender = null
         selectedMethod = PaymentMethod.CASH
         lastCashTenderedCents = tenderedCents
         processCashPayment(tenderedCents)
@@ -930,6 +959,7 @@ class PaymentFlowViewModel @Inject constructor(
                                             orderId = null,
                                             orderExternalId = orderExternalId,
                                             manualMethod = manualMethod,
+                                            tenderType = selectedTender,
                                         )
                                         // Record cash sale in drawer (defensive: same fix as B4)
                                         recordCashSale(total, null)
@@ -1042,6 +1072,7 @@ class PaymentFlowViewModel @Inject constructor(
                         splitType = _splitType.value,
                         idempotencyKey = sessionIdempotencyKey(),
                         manualMethod = manualMethod,
+                                            tenderType = selectedTender,
                     )
                     payResult.fold(
                         onSuccess = { result ->
@@ -1083,6 +1114,7 @@ class PaymentFlowViewModel @Inject constructor(
                                     rating = currentRating,
                                     orderId = orderId,
                                     manualMethod = manualMethod,
+                                            tenderType = selectedTender,
                                 )
                                 recordCashSale(total, orderId)
                                 _state.value = PaymentFlowState.Success(
@@ -1214,6 +1246,7 @@ class PaymentFlowViewModel @Inject constructor(
                                             orderId = null,
                                             orderExternalId = orderExternalId,
                                             manualMethod = manualMethod,
+                                            tenderType = selectedTender,
                                         )
                                         // FIX B4: Record cash sale in drawer even on offline queue
                                         recordCashSale(total, null)
@@ -1246,6 +1279,7 @@ class PaymentFlowViewModel @Inject constructor(
                             splitType = _splitType.value,
                             idempotencyKey = sessionIdempotencyKey(),
                             manualMethod = manualMethod,
+                                            tenderType = selectedTender,
                         )
                         fastResult.fold(
                             onSuccess = { fast ->
@@ -1280,6 +1314,7 @@ class PaymentFlowViewModel @Inject constructor(
                                             rating = currentRating,
                                             orderId = null,
                                             manualMethod = manualMethod,
+                                            tenderType = selectedTender,
                                         )
                                     }
                                     recordCashSale(total, null)
@@ -1360,6 +1395,7 @@ class PaymentFlowViewModel @Inject constructor(
             splitType = _splitType.value,
             idempotencyKey = sessionIdempotencyKey(),
             manualMethod = manualMethod,
+                                            tenderType = selectedTender,
         )
         payResult.fold(
             onSuccess = { result ->
@@ -1396,6 +1432,7 @@ class PaymentFlowViewModel @Inject constructor(
                         rating = currentRating,
                         orderId = orderId,
                         manualMethod = manualMethod,
+                                            tenderType = selectedTender,
                     )
                     recordCashSale(total, orderId)
                     _state.value = PaymentFlowState.Success(

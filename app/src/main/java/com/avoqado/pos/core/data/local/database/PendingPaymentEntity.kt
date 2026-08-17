@@ -31,4 +31,15 @@ data class PendingPaymentEntity(
     val lastError: String? = null,
     val createdAt: Long = System.currentTimeMillis(),
     val lastRetryAt: Long? = null,
+    /**
+     * Tipo de pago del catálogo elegido por el cajero ("Uber Eats", "Terminal BBVA").
+     *
+     * 🔴 Sin esto, una venta cobrada SIN RED perdía el tipo al reproducirse y
+     * aterrizaba como EFECTIVO, en silencio — y la idempotencia impedía repararla.
+     * Se guarda la REFERENCIA, nunca la comisión: el server la resuelve, y honra
+     * esta `revision` (la que el cajero vio) aunque el catálogo cambie mientras la
+     * tablet está desconectada.
+     */
+    val tenderTypeId: String? = null,
+    val tenderRevision: Int? = null,
 )
