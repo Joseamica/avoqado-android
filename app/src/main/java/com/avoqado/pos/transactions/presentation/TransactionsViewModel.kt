@@ -60,6 +60,11 @@ class TransactionsViewModel @Inject constructor(
      * candado para que el 403 pueda abrir el teclado.
      */
     val tpvSettingsRepository: com.avoqado.pos.tpvsettings.data.TpvSettingsRepository,
+    /**
+     * Para pedir el PIN de gerente AL TOCAR el botón bloqueado, en vez de
+     * esperar al 403 —que llega cuando el formulario ya está lleno—.
+     */
+    private val managerOverrideCoordinator: com.avoqado.pos.core.data.network.ManagerOverrideCoordinator,
     private val orderRepository: OrderRepository,
     private val printerService: PrinterService,
     private val secureStorage: SecureStorage,
@@ -115,6 +120,43 @@ class TransactionsViewModel @Inject constructor(
     /** Espejo del refundFlowActive de iOS: la vista del detalle reporta aquí su sheet local. */
     fun setRefundFlowActive(active: Boolean) {
         _detailRefundActive.value = active
+    }
+
+    // MARK: - "Emitir reembolso" del detalle: el PIN va ANTES del formulario
+
+    private val _issueRefundSheetVisible = MutableStateFlow(false)
+
+    /** ¿Está abierto el formulario de reembolso del detalle? */
+    val issueRefundSheetVisible: StateFlow<Boolean> = _issueRefundSheetVisible.asStateFlow()
+
+    /**
+     * Tocaron "Emitir reembolso".
+     *
+     * 🔴 Cuando la app YA SABE que la acción está bloqueada —el candado— el PIN
+     * se pide AQUÍ, antes de abrir nada. Antes salía cuando el server rechazaba,
+     * o sea después de llenar importe, motivo y propina: si el encargado no
+     * estaba cerca, todo ese trabajo se perdía.
+     *
+     * Sin candado NO se toca nada: la petición sale como siempre y, si el server
+     * dice que no, `ForbiddenInterceptor` abre el teclado. Esa red de seguridad
+     * cubre todo lo que el cliente NO puede anticipar (permiso movido en el
+     * server, cache vieja, Permission Set), y adelantar el PIN no la reemplaza.
+     */
+    fun onIssueRefundTapped() {
+        if (roleManager.canIssueRefund) {
+            _issueRefundSheetVisible.value = true
+            return
+        }
+        viewModelScope.launch {
+            if (managerOverrideCoordinator.preauthorize(REFUND_PERMISSION)) {
+                _issueRefundSheetVisible.value = true
+            }
+            // Canceló: no se abre nada. El teclado ya le dijo por qué.
+        }
+    }
+
+    fun dismissIssueRefundSheet() {
+        _issueRefundSheetVisible.value = false
     }
 
     /** Guard §4.5 — dinero: con la devolución abierta (lista o detalle) o corriendo, ni el gesto refresca. */
@@ -419,6 +461,16 @@ class TransactionsViewModel @Inject constructor(
             )
             _isSendingReceipt.value = false
         }
+    }
+
+    private companion object {
+        /**
+         * 🔴 Espejado por nombre EXACTO desde
+         * `avoqado-server/src/lib/permissions.ts`. Con el nombre mal escrito, el
+         * server nunca reconoce el permiso y el PIN de un gerente legítimo se
+         * rechaza sin que nadie entienda por qué.
+         */
+        const val REFUND_PERMISSION = "payments:refund"
     }
 }
 

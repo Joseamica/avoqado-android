@@ -142,6 +142,142 @@ class ManagerOverrideCoordinatorTest {
         assertEquals("tok_b", tokenB)
     }
 
+    // MARK: - El PIN pedido POR ADELANTADO (al TOCAR el botón con candado)
+    //
+    // 🔴 Antes el teclado sólo salía cuando el server rechazaba: o sea después
+    // de que el cajero llenó importe, motivo y propina. Si el encargado no
+    // estaba cerca, todo ese trabajo se perdía.
+
+    @Test
+    fun `preauthorize muestra el teclado y devuelve true al autorizar`() {
+        val coordinator = TestCoordinator(repoReturning(OverrideResult.Granted("tok", "Laura")))
+
+        var autorizado: Boolean? = null
+        val listo = CountDownLatch(1)
+        thread {
+            autorizado = runBlocking { coordinator.preauthorize("payments:refund") }
+            listo.countDown()
+        }
+
+        assertEquals("payments:refund", coordinator.esperarTeclado().permission)
+        runBlocking { coordinator.submitPin("venue_1", "1234") }
+
+        assertTrue(listo.await(3, TimeUnit.SECONDS))
+        assertEquals(true, autorizado)
+    }
+
+    /** Si canceló, quien llamó tiene que poder NO abrir el formulario. */
+    @Test
+    fun `preauthorize devuelve false si el usuario cancela`() {
+        val coordinator = TestCoordinator(repoReturning(OverrideResult.Granted("tok", "Laura")))
+
+        var autorizado: Boolean? = null
+        val listo = CountDownLatch(1)
+        thread {
+            autorizado = runBlocking { coordinator.preauthorize("payments:refund") }
+            listo.countDown()
+        }
+
+        coordinator.cancel(coordinator.esperarTeclado().id)
+
+        assertTrue(listo.await(3, TimeUnit.SECONDS))
+        assertEquals(false, autorizado)
+    }
+
+    /**
+     * 🔴 El PIN se pide UNA vez por acción. Sin reusar el token adelantado, el
+     * 403 de la petición real sacaría un SEGUNDO teclado por el mismo reembolso.
+     */
+    @Test
+    fun `el token adelantado lo consume el 403 sin sacar otro teclado`() {
+        val coordinator = TestCoordinator(repoReturning(OverrideResult.Granted("tok_pre", "Laura")))
+
+        val listo = CountDownLatch(1)
+        thread { runBlocking { coordinator.preauthorize("payments:refund") }; listo.countDown() }
+        coordinator.esperarTeclado()
+        runBlocking { coordinator.submitPin("venue_1", "1234") }
+        assertTrue(listo.await(3, TimeUnit.SECONDS))
+
+        // El interceptor pide el token: sale el MISMO, y sin teclado.
+        val token = coordinator.awaitToken("payments:refund")
+
+        assertEquals("tok_pre", token)
+        assertNull("no debió aparecer un segundo teclado", coordinator.prompt.value)
+    }
+
+    /** Y de un solo uso: el segundo 403 vuelve a pedir PIN. */
+    @Test
+    fun `el token adelantado sirve UNA vez`() {
+        val coordinator = TestCoordinator(repoReturning(OverrideResult.Granted("tok_pre", "Laura")))
+
+        val listo = CountDownLatch(1)
+        thread { runBlocking { coordinator.preauthorize("payments:refund") }; listo.countDown() }
+        coordinator.esperarTeclado()
+        runBlocking { coordinator.submitPin("venue_1", "1234") }
+        assertTrue(listo.await(3, TimeUnit.SECONDS))
+
+        assertEquals("tok_pre", coordinator.awaitToken("payments:refund"))
+
+        // El segundo intento ya no tiene token guardado: teclado.
+        val segundo = CountDownLatch(1)
+        thread { coordinator.awaitToken("payments:refund"); segundo.countDown() }
+        assertEquals("payments:refund", coordinator.esperarTeclado().permission)
+        coordinator.cancel()
+        assertTrue(segundo.await(3, TimeUnit.SECONDS))
+    }
+
+    /**
+     * 🔴 Un token de UN permiso no puede saldar el 403 de OTRO. En el server es
+     * de un solo uso y de un solo permiso: reusarlo cruzado sólo lo quemaría y
+     * dejaría la acción real sin autorizar.
+     */
+    @Test
+    fun `el token adelantado no sirve para otro permiso`() {
+        val coordinator = TestCoordinator(repoReturning(OverrideResult.Granted("tok_pre", "Laura")))
+
+        val listo = CountDownLatch(1)
+        thread { runBlocking { coordinator.preauthorize("payments:refund") }; listo.countDown() }
+        coordinator.esperarTeclado()
+        runBlocking { coordinator.submitPin("venue_1", "1234") }
+        assertTrue(listo.await(3, TimeUnit.SECONDS))
+
+        val otro = CountDownLatch(1)
+        thread { coordinator.awaitToken("orders:merge"); otro.countDown() }
+
+        assertEquals("orders:merge", coordinator.esperarTeclado().permission)
+        coordinator.cancel()
+        assertTrue(otro.await(3, TimeUnit.SECONDS))
+    }
+
+    /**
+     * 🔴 El token del server vive 60 s. Mandar uno vencido es PEOR que no mandar
+     * ninguno: la petición saldría CON el header y el guard del interceptor
+     * apagaría el teclado justo cuando hacía falta.
+     */
+    @Test
+    fun `un token adelantado vencido se descarta y el teclado vuelve a salir`() {
+        val coordinator = object : ManagerOverrideCoordinator(
+            repoReturning(OverrideResult.Granted("tok_viejo", "Laura")),
+        ) {
+            override val promptTimeoutMs: Long = 30_000L
+            override val preauthTtlMs: Long = 1L
+        }
+
+        val listo = CountDownLatch(1)
+        thread { runBlocking { coordinator.preauthorize("payments:refund") }; listo.countDown() }
+        coordinator.esperarTeclado()
+        runBlocking { coordinator.submitPin("venue_1", "1234") }
+        assertTrue(listo.await(3, TimeUnit.SECONDS))
+
+        Thread.sleep(20) // se pasa del TTL
+
+        val otro = CountDownLatch(1)
+        thread { coordinator.awaitToken("payments:refund"); otro.countDown() }
+        assertEquals("payments:refund", coordinator.esperarTeclado().permission)
+        coordinator.cancel()
+        assertTrue(otro.await(3, TimeUnit.SECONDS))
+    }
+
     /** Sin teclado vivo, teclear no puede resolverle a nadie. */
     @Test
     fun `enviar sin teclado vivo falla con mensaje, sin tocar la red`() {

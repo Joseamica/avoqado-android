@@ -46,6 +46,18 @@ open class ManagerOverrideCoordinator @Inject constructor(
          * espera no puede quedarse tomado para siempre.
          */
         const val PROMPT_TIMEOUT_MS = 120_000L
+
+        /**
+         * Cuánto vale un token pedido POR ADELANTADO antes de tirarlo.
+         *
+         * 🔴 El del server vive 60 s (`OVERRIDE_TTL_MS`), así que aquí va MENOS:
+         * mandar un token ya vencido es peor que no mandar ninguno — la petición
+         * saldría CON el header, y el guard de `ForbiddenInterceptor` ("si ya
+         * traía token, no vuelvas a pedir") apagaría el teclado justo cuando
+         * hacía falta. Con margen, un token dudoso se descarta y el 403 abre el
+         * teclado como siempre.
+         */
+        const val PREAUTH_TTL_MS = 45_000L
     }
 
     /**
@@ -54,6 +66,12 @@ open class ManagerOverrideCoordinator @Inject constructor(
      * timeout corre en tiempo real, así que no hay scheduler virtual que valga.
      */
     internal open val promptTimeoutMs: Long = PROMPT_TIMEOUT_MS
+
+    /** Vigencia efectiva del token adelantado. `open` por la misma razón. */
+    internal open val preauthTtlMs: Long = PREAUTH_TTL_MS
+
+    /** Reloj MONOTÓNICO: mide tiempo transcurrido, inmune a que el reloj salte. */
+    internal open val nowNanos: () -> Long = System::nanoTime
 
     private val queue = Mutex()
 
@@ -92,18 +110,78 @@ open class ManagerOverrideCoordinator @Inject constructor(
      * "canceló": la acción falla con su mensaje de siempre.
      */
     open fun awaitToken(permission: String): String? = runBlocking {
-        queue.withLock {
-            val deferred = CompletableDeferred<String?>()
-            val id = ++nextId
-            pending = Waiting(id, permission, deferred)
-            _prompt.value = Prompt(id, permission, PermissionLabels.of(permission))
-            try {
-                withTimeoutOrNull(promptTimeoutMs) { deferred.await() }
-            } finally {
-                _prompt.value = null
-                pending = null
-            }
+        // Si la UI ya pidió el PIN al TOCAR el botón, ese token se usa aquí y
+        // nadie vuelve a ver un teclado. Sin esto, adelantar el PIN lo pediría
+        // DOS veces por la misma acción.
+        takePreauthorized(permission) ?: promptForToken(permission)
+    }
+
+    /**
+     * Pide el PIN POR ADELANTADO, desde la UI, ANTES de abrir un formulario.
+     *
+     * 🔴 Existe porque el teclado llegaba DEMASIADO TARDE: sólo aparecía cuando
+     * el server rechazaba, o sea después de que el cajero llenó importe, motivo
+     * y propina. Si el encargado no estaba cerca, todo ese trabajo se perdía.
+     * Cuando la app YA SABE que la acción está bloqueada (el candado), preguntar
+     * primero cuesta un toque y no cuesta un formulario.
+     *
+     * @return true si alguien autorizó; false si canceló, venció o falló.
+     */
+    open suspend fun preauthorize(permission: String): Boolean {
+        // ¿Ya hay uno vivo? Tocar dos veces el mismo botón no puede costar dos
+        // PINes — y el token NO se consume aquí: lo consume la petición real.
+        if (peekPreauthorized(permission) != null) return true
+        val token = promptForToken(permission) ?: return false
+        stashPreauthorized(permission, token)
+        return true
+    }
+
+    /** El teclado de verdad: una espera a la vez, acotada, y limpia al salir. */
+    private suspend fun promptForToken(permission: String): String? = queue.withLock {
+        val deferred = CompletableDeferred<String?>()
+        val id = ++nextId
+        pending = Waiting(id, permission, deferred)
+        _prompt.value = Prompt(id, permission, PermissionLabels.of(permission))
+        try {
+            withTimeoutOrNull(promptTimeoutMs) { deferred.await() }
+        } finally {
+            _prompt.value = null
+            pending = null
         }
+    }
+
+    // MARK: - El token adelantado
+    //
+    // 🔴 Se guarda con el PERMISO al que pertenece y con su edad. Un token de
+    // `payments:refund` NUNCA puede saldar un 403 de otra cosa: en el server es
+    // de un solo uso Y de un solo permiso, así que reusarlo cruzado sólo lograría
+    // quemarlo y dejar la acción real sin autorización.
+
+    private data class Preauthorized(val permission: String, val token: String, val atNanos: Long)
+
+    @Volatile
+    private var preauthorized: Preauthorized? = null
+
+    private fun vigente(entry: Preauthorized?, permission: String): Preauthorized? {
+        if (entry == null || entry.permission != permission) return null
+        val edadMs = (nowNanos() - entry.atNanos) / 1_000_000
+        return if (edadMs < preauthTtlMs) entry else null
+    }
+
+    @Synchronized
+    private fun stashPreauthorized(permission: String, token: String) {
+        preauthorized = Preauthorized(permission, token, nowNanos())
+    }
+
+    @Synchronized
+    private fun peekPreauthorized(permission: String): String? = vigente(preauthorized, permission)?.token
+
+    /** Un solo uso también de este lado: al entregarlo, se borra. */
+    @Synchronized
+    private fun takePreauthorized(permission: String): String? {
+        val vivo = vigente(preauthorized, permission) ?: return null
+        preauthorized = null
+        return vivo.token
     }
 
     /** La UI llama esto al teclear el código. Sólo `Granted` cierra el diálogo. */

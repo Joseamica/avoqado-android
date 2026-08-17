@@ -206,7 +206,11 @@ private fun LoadedDetailView(
 ) {
     // Receipt dialog states
     var showReceiptMethodDialog by remember { mutableStateOf(false) }
-    var showRefundSheet by remember { mutableStateOf(false) }
+
+    // 🔴 Quién abre este formulario vive en el ViewModel, no aquí: con el candado
+    // hay que pedir el PIN ANTES de abrirlo, y esa decisión tiene que poder
+    // probarse. Ver `TransactionsViewModel.onIssueRefundTapped`.
+    val showRefundSheet by viewModel.issueRefundSheetVisible.collectAsState()
 
     // Espejo del refundFlowActive de iOS (guard §4.5): este sheet local del detalle
     // también debe bloquear autoRefresh/manualRefresh mientras está abierto.
@@ -328,7 +332,10 @@ private fun LoadedDetailView(
                             modifier = Modifier.weight(1f),
                             enabled = transaction.remainingRefundable > 0.001,
                             locked = !canRefund,
-                            onClick = { showRefundSheet = true },
+                            // Con candado esto pide el PIN PRIMERO y sólo abre el
+                            // formulario si alguien autoriza. Sin candado, abre
+                            // directo — y el 403 del server sigue siendo la red.
+                            onClick = { viewModel.onIssueRefundTapped() },
                         )
                     }
                 }
@@ -464,9 +471,9 @@ private fun LoadedDetailView(
             maxRefundable = transaction.remainingRefundable,
             refundRepository = viewModel.refundRepository,
             terminalPaymentService = viewModel.terminalPaymentService,
-            onDismiss = { showRefundSheet = false },
+            onDismiss = { viewModel.dismissIssueRefundSheet() },
             onRefunded = {
-                showRefundSheet = false
+                viewModel.dismissIssueRefundSheet()
                 viewModel.invalidateAndRefresh()
                 viewModel.selectTransaction(transaction.id)
             },

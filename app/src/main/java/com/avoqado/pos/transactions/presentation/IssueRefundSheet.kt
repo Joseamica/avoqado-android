@@ -25,6 +25,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.Remove
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
@@ -35,7 +36,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import com.avoqado.pos.designsystem.theme.Warning
 import androidx.compose.material3.TextButton
@@ -54,6 +54,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.avoqado.pos.designsystem.components.AvoqadoPillTextField
 import com.avoqado.pos.designsystem.components.CircleBackButton
 import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
@@ -396,18 +397,30 @@ fun IssueRefundSheet(
                 )
             }
 
+            Text(
+                text = "Motivo del reembolso",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(bottom = spacing.xs),
+            )
             Box {
-                OutlinedTextField(
+                AvoqadoPillTextField(
                     value = reason?.label ?: "",
                     onValueChange = {},
                     readOnly = true,
-                    label = { Text("Motivo del reembolso") },
-                    placeholder = { Text("Selecciona un motivo") },
-                    modifier = Modifier.fillMaxWidth(),
+                    placeholder = "Selecciona un motivo",
+                    trailing = {
+                        Icon(
+                            imageVector = Icons.Filled.KeyboardArrowDown,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    },
                 )
                 Box(
                     modifier = Modifier
-                        .fillMaxSize()
+                        .matchParentSize()
                         .clickable { reasonMenuOpen = true },
                 )
                 DropdownMenu(
@@ -856,14 +869,27 @@ private fun AmountBody(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        OutlinedTextField(
+        // 🔴 Componente de la casa, no `OutlinedTextField` crudo: su etiqueta
+        // flotante "Importe" se montaba sobre el borde y se veía CORTADA, con
+        // dos contornos encimados (medido en la D3, 2026-08-17). Aquí la
+        // etiqueta vive fuera del campo y dentro sólo va el número.
+        Text(
+            text = "Importe",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        AvoqadoPillTextField(
             value = amountStr,
             onValueChange = onAmountChange,
-            label = { Text("Importe") },
-            leadingIcon = { Text("$", style = MaterialTheme.typography.bodyLarge) },
-            modifier = Modifier.fillMaxWidth(),
-            singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+            placeholder = "0.00",
+            keyboardType = KeyboardType.Decimal,
+            leading = {
+                Text(
+                    text = "$",
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            },
         )
         if (paymentTipAmount > 0) {
             Row(

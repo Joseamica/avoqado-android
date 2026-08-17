@@ -12,53 +12,144 @@ class RoleManager @Inject constructor(
         get() = secureStorage.userRole?.uppercase() ?: "VIEWER"
 
     // MARK: - Feature Access
+    //
+    // 🔴 La regla: un gate del cliente ESPEJA un permiso del server por nombre
+    // EXACTO (`hasVenuePermission(..., fallbackRoles = ...)`). Los que siguen
+    // decidiendo por LISTA DE ROLES están marcados abajo con "⚠️ DIVERGE": no es
+    // olvido, es que elegir su permiso es una decisión de producto pendiente.
+    // Ninguno se cambia a ciegas: el que se equivoque esconde trabajo que el
+    // server sí permite, o promete permiso que el server niega.
 
-    /** POS checkout: WAITER, CASHIER, MANAGER, ADMIN, OWNER, SUPERADMIN */
+    /**
+     * POS checkout: WAITER, CASHIER, MANAGER, ADMIN, OWNER, SUPERADMIN
+     *
+     * ⚠️ DIVERGE (decisión de producto pendiente): no hay UN permiso que
+     * signifique "puede usar el POS". `orders:create` lo tiene el WAITER pero NO
+     * el CASHIER (que sólo trae `orders:read|update` + `payments:create`), así
+     * que espejarlo dejaría al cajero sin la pestaña de cobro. Falta decidir cuál
+     * permiso —o qué combinación— gobierna esta pestaña.
+     */
     val canAccessPOS: Boolean
         get() = role in setOf("WAITER", "CASHIER", "MANAGER", "ADMIN", "OWNER", "SUPERADMIN")
 
-    /** Inventory: MANAGER, ADMIN, OWNER, SUPERADMIN */
+    /** Inventario — espejo de `inventory:read` (las rutas `/mobile/venues/:id/inventory`). */
     val canAccessInventory: Boolean
-        get() = role in setOf("MANAGER", "ADMIN", "OWNER", "SUPERADMIN")
+        get() = hasVenuePermission("inventory:read", fallbackRoles = MANAGER_UP)
 
-    /** Transactions: CASHIER, MANAGER, ADMIN, OWNER, SUPERADMIN */
+    /**
+     * Transactions: CASHIER, MANAGER, ADMIN, OWNER, SUPERADMIN
+     *
+     * ⚠️ DIVERGE (E3): el server da `payments:read` también a WAITER y VIEWER, o
+     * sea que el mesero NO ve sus ventas aunque el server se las serviría.
+     * Espejarlo le daría la pestaña de Transacciones —con TODAS las ventas del
+     * negocio, no sólo las suyas—, y eso es una decisión de producto: el permiso
+     * del server no distingue "las mías" de "las de todos".
+     */
     val canAccessTransactions: Boolean
         get() = role in setOf("CASHIER", "MANAGER", "ADMIN", "OWNER", "SUPERADMIN")
 
-    /** Create products: MANAGER, ADMIN, OWNER, SUPERADMIN */
+    /**
+     * Create products: MANAGER, ADMIN, OWNER, SUPERADMIN
+     *
+     * ⚠️ DIVERGE (decisión de producto pendiente): hay DOS permisos candidatos y
+     * significan cosas distintas — `menu:create` (alta de catálogo, MANAGER+) y
+     * `tpv-products:write` (crear al vuelo desde el POS, también MANAGER+ hoy).
+     * Cuál gobierna el mosaico "Crear producto" del cobro es una decisión, no una
+     * traducción.
+     */
     val canCreateProducts: Boolean
         get() = role in setOf("MANAGER", "ADMIN", "OWNER", "SUPERADMIN")
 
-    /** Manage customers (create/edit): MANAGER, ADMIN, OWNER, SUPERADMIN */
+    /**
+     * Manage customers (create/edit): MANAGER, ADMIN, OWNER, SUPERADMIN
+     *
+     * ⚠️ DIVERGE (E4): este gate MEZCLA dos permisos que el server ya separó.
+     * Desde 2026-08-16 WAITER, CASHIER y HOST tienen `customers:create` a
+     * propósito ("sin esto la venta queda anónima"), pero editar/borrar sigue en
+     * MANAGER+. El arreglo correcto es PARTIRLO en `canCreateCustomers`
+     * (`customers:create`) y `canEditCustomers` (`customers:update`) y repartir
+     * los 4 sitios que hoy lo usan — cambio de significado, no mecánico.
+     */
     val canManageCustomers: Boolean
         get() = role in setOf("MANAGER", "ADMIN", "OWNER", "SUPERADMIN")
 
-    /** View customers: WAITER, CASHIER, MANAGER, ADMIN, OWNER, SUPERADMIN */
+    /** Ver clientes — espejo de `customers:read` (`GET /mobile/venues/:id/customers`). */
     val canViewCustomers: Boolean
-        get() = role in setOf("WAITER", "CASHIER", "MANAGER", "ADMIN", "OWNER", "SUPERADMIN")
+        get() = hasVenuePermission("customers:read", fallbackRoles = FLOOR)
 
-    /** Access reports: MANAGER, ADMIN, OWNER, SUPERADMIN */
+    /** Reportes — espejo de `reports:read` (las rutas `/mobile/venues/:id/reports`). */
     val canAccessReports: Boolean
-        get() = role in setOf("MANAGER", "ADMIN", "OWNER", "SUPERADMIN")
+        get() = hasVenuePermission("reports:read", fallbackRoles = MANAGER_UP)
 
-    /** Issue refund (payments:refund): MANAGER, ADMIN, OWNER, SUPERADMIN */
+    /**
+     * Reembolsar — espejo EXACTO de `payments:refund`.
+     *
+     * 🔴 Medido en la D3 el 2026-08-17: esto decidía por una LISTA DE ROLES, así
+     * que a un CAJERO se le pintaba el candado… y el reembolso pasaba sin PIN
+     * (quedó un `Payment` de CASH -50.00). El server SÍ le da `payments:refund`
+     * al CASHIER, o sea que la app prometía una autorización que el server no
+     * exigía. Un gate por rol no es un espejo del permiso: es una SEGUNDA fuente
+     * de verdad, y se desincroniza sola en cuanto el server mueve un permiso o
+     * el negocio usa un Permission Set.
+     */
     val canIssueRefund: Boolean
-        get() = role in setOf("MANAGER", "ADMIN", "OWNER", "SUPERADMIN")
+        get() = hasVenuePermission("payments:refund", fallbackRoles = MANAGER_UP)
 
-    /** Cash-drawer ops (open/close/pay-in-out): CASHIER, MANAGER, ADMIN, OWNER, SUPERADMIN */
+    /**
+     * Cash-drawer ops (open/close/pay-in-out): CASHIER, MANAGER, ADMIN, OWNER, SUPERADMIN
+     *
+     * ⚠️ DIVERGE (E5): el server gobierna el cajón con `payments:create` (abrir,
+     * ingreso, retiro, cerrar) y `payments:read` (ver) — y el WAITER tiene los
+     * dos, o sea que el server SÍ le deja operar el cajón y Android lo esconde.
+     * NO se espeja a ciegas: quién puede abrir y cerrar el cajón es justo la
+     * pregunta abierta de "turno vs caja" (a quién se le cuadra el efectivo), y
+     * es dinero. Decisión del founder.
+     */
     val canManageCashDrawer: Boolean
         get() = role in setOf("CASHIER", "MANAGER", "ADMIN", "OWNER", "SUPERADMIN")
 
-    /** Kitchen display: WAITER, CASHIER, MANAGER, ADMIN, OWNER, SUPERADMIN */
+    /**
+     * Kitchen display: WAITER, CASHIER, MANAGER, ADMIN, OWNER, SUPERADMIN
+     *
+     * ⚠️ DIVERGE, y NO hay permiso que espejar: las 4 rutas de `/mobile/venues/:id/kds`
+     * llevan `authenticateTokenMiddleware + requireVenueMembership` y NINGÚN
+     * `checkPermission`. O sea que el server se lo sirve a cualquier miembro del
+     * venue —incluido KITCHEN, el rol que lleva el nombre de la pantalla, al que
+     * esta lista se lo niega—. Elegir un permiso aquí sería INVENTARLE una regla
+     * al server, no espejarla: o el server empieza a checar uno, o esto es una
+     * decisión de producto declarada. Se deja como está a propósito.
+     */
     val canAccessKDS: Boolean
         get() = role in setOf("WAITER", "CASHIER", "MANAGER", "ADMIN", "OWNER", "SUPERADMIN")
 
     // MARK: - Effective venue permissions
 
     /**
+     * ¿El permiso efectivo está concedido, con respaldo por rol si no se sabe?
+     *
+     * 🔴 Espejo EXACTO de `hasVenuePermission(_:fallbackRoles:)` de
+     * `avoqado-ios/Services/RoleManager.swift`.
+     *
+     * La lista efectiva del venue es la autoridad. Pero puede llegar VACÍA —una
+     * sesión anterior al campo, o un server que no la manda— y ahí no se sabe
+     * nada: negar a ciegas escondería el reembolso hasta al dueño, así que se
+     * cae al comportamiento de siempre (la lista de roles).
+     */
+    fun hasVenuePermission(requiredPermission: String, fallbackRoles: Set<String>): Boolean =
+        if (secureStorage.venuePermissions.isEmpty()) {
+            role in fallbackRoles
+        } else {
+            hasVenuePermission(requiredPermission)
+        }
+
+    /**
      * Permission checks for optional UI affordances must use the effective list
      * returned by the server for this venue, not a local role guess. That keeps
      * custom role permissions and Permission Sets authoritative.
+     *
+     * Sin respaldo: con la lista vacía devuelve `false`. Úsalo sólo donde negar
+     * de más es inofensivo (un mosaico opcional). Para un gate que puede ESCONDER
+     * trabajo, usa la sobrecarga con `fallbackRoles`.
      */
     fun hasVenuePermission(requiredPermission: String): Boolean {
         val (requiredResource, requiredAction) = requiredPermission.split(':', limit = 2)
@@ -79,17 +170,17 @@ class RoleManager @Inject constructor(
     // MARK: - Traslados entre sucursales (CEDIS)
     // Espejo de DEFAULT_PERMISSIONS del server (avoqado-server/src/lib/permissions.ts):
     // MANAGER tiene los 5 permisos inventory-transfers:* explícitos; ADMIN y OWNER
-    // llevan el wildcard inventory-transfers:*. El server es la autoridad — esto
-    // sólo decide qué UI pintar (Android no lee el array de permisos; deuda documentada).
+    // llevan el wildcard inventory-transfers:*. Espejo también de iOS, que ya los
+    // leía por permiso (`canReadInterVenueTransfers` / `canApproveInterVenueTransfers`).
 
-    /** Ver traslados (inventory-transfers:read): MANAGER, ADMIN, OWNER, SUPERADMIN */
+    /** Ver traslados — espejo de `inventory-transfers:read`. */
     val canViewInventoryTransfers: Boolean
-        get() = role in setOf("MANAGER", "ADMIN", "OWNER", "SUPERADMIN")
+        get() = hasVenuePermission("inventory-transfers:read", fallbackRoles = MANAGER_UP)
 
     /** Decidir traslados — aprobar/rechazar/despachar/recibir/cancelar
-     *  (inventory-transfers:approve|dispatch|receive): MANAGER, ADMIN, OWNER, SUPERADMIN */
+     *  — espejo de `inventory-transfers:approve`. */
     val canDecideInventoryTransfers: Boolean
-        get() = role in setOf("MANAGER", "ADMIN", "OWNER", "SUPERADMIN")
+        get() = hasVenuePermission("inventory-transfers:approve", fallbackRoles = MANAGER_UP)
 
     // MARK: - PIN de autorización de gerente
 
@@ -105,6 +196,14 @@ class RoleManager @Inject constructor(
         allowed -> ActionVisibility.ALLOWED
         overrideEnabled -> ActionVisibility.LOCKED
         else -> ActionVisibility.HIDDEN
+    }
+
+    private companion object {
+        /** El respaldo histórico de todo lo administrativo. */
+        val MANAGER_UP = setOf("MANAGER", "ADMIN", "OWNER", "SUPERADMIN")
+
+        /** El respaldo histórico de lo que se usa desde el piso. */
+        val FLOOR = setOf("WAITER", "CASHIER", "MANAGER", "ADMIN", "OWNER", "SUPERADMIN")
     }
 }
 

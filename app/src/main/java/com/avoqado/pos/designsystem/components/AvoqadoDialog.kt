@@ -148,6 +148,18 @@ fun AvoqadoDialog(
 /**
  * Pill-shaped single-line text field for dialogs and forms.
  * Matches the brand standard: 48dp height, rounded background, inline placeholder.
+ *
+ * 🔴 Nunca uses `OutlinedTextField` crudo de Material3 en su lugar. Su etiqueta
+ * flotante se monta sobre el borde y, dentro de una hoja apretada, se ve
+ * CORTADA y con dos contornos encimados — medido en la D3 el 2026-08-17 en el
+ * campo "Importe" del reembolso. Aquí no hay etiqueta flotante a propósito: la
+ * etiqueta va de placeholder dentro de la píldora, o como texto encima.
+ *
+ * @param readOnly el valor no se teclea: lo elige otra cosa (un menú, un
+ *   selector). El campo SÍ se pinta como campo, pero el teclado no sale. Quien
+ *   lo use suele poner encima un `Box` transparente con el `clickable`.
+ * @param leading contenido fijo al inicio — el "$" de un importe, un ícono.
+ * @param trailing contenido fijo al final — el chevron de un desplegable.
  */
 @Composable
 fun AvoqadoPillTextField(
@@ -156,7 +168,10 @@ fun AvoqadoPillTextField(
     placeholder: String,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
+    readOnly: Boolean = false,
     keyboardType: KeyboardType = KeyboardType.Text,
+    leading: (@Composable () -> Unit)? = null,
+    trailing: (@Composable () -> Unit)? = null,
 ) {
     Row(
         modifier = modifier
@@ -169,7 +184,9 @@ fun AvoqadoPillTextField(
             )
             .padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.sm),
         verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
     ) {
+        leading?.invoke()
         Box(
             modifier = Modifier.weight(1f),
             contentAlignment = Alignment.CenterStart,
@@ -186,6 +203,7 @@ fun AvoqadoPillTextField(
                 onValueChange = onValueChange,
                 singleLine = true,
                 enabled = enabled,
+                readOnly = readOnly,
                 textStyle = MaterialTheme.typography.bodyLarge.copy(
                     color = MaterialTheme.colorScheme.onSurface,
                 ),
@@ -194,5 +212,6 @@ fun AvoqadoPillTextField(
                 modifier = Modifier.fillMaxWidth(),
             )
         }
+        trailing?.invoke()
     }
 }
