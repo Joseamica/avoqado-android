@@ -58,6 +58,11 @@ fun PaymentFlowScreen(
     val customerDisplayActive by viewModel.customerDisplayActive.collectAsState()
     val terminalAvailability by viewModel.terminalAvailability.collectAsState()
     val terminals by viewModel.onlineTerminals.collectAsState()
+    // 🔴 Se COLECTA, no se lee del ViewModel a pelo: el refresh del catálogo es
+    // asíncrono, y sin observarlo la hoja de "¿cómo pagó el cliente?" se quedaba
+    // con la lista vacía de cuando se compuso — la primera venta tras abrir la app
+    // no mostraba ningún tipo del negocio.
+    val tenderTypes by viewModel.tenderTypes.collectAsState()
     val paymentContext = viewModel.buildPaymentContext()
     val customersViewModel: CustomersViewModel = hiltViewModel()
     val customerAttachSending by viewModel.customerAttachSending.collectAsState()
@@ -146,7 +151,7 @@ fun PaymentFlowScreen(
                         onCashPresetSelected = { viewModel.confirmCashPreset(it) },
                         onCashCustomSelected = { viewModel.confirmCashCustom(it) },
                         onManualMethodSelected = { viewModel.confirmManualChoice(it) },
-                        tenderTypes = viewModel.tenderTypes,
+                        tenderTypes = tenderTypes,
                         onCancel = onCancel,
                         terminalsUnavailable = terminalAvailability == PaymentFlowViewModel.TerminalAvailability.NONE,
                         // Toque explícito del cajero: si el server dice que no, tiene que verse.
@@ -169,7 +174,7 @@ fun PaymentFlowScreen(
                     onCashPresetSelected = { viewModel.confirmCashPreset(it) },
                     onCashCustomSelected = { viewModel.confirmCashCustom(it) },
                         onManualMethodSelected = { viewModel.confirmManualChoice(it) },
-                        tenderTypes = viewModel.tenderTypes,
+                        tenderTypes = tenderTypes,
                     onCancel = onCancel,
                     terminalsUnavailable = terminalAvailability == PaymentFlowViewModel.TerminalAvailability.NONE,
                     // Toque explícito del cajero: si el server dice que no, tiene que verse.

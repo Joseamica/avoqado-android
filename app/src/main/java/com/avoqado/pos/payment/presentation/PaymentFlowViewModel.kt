@@ -788,9 +788,17 @@ class PaymentFlowViewModel @Inject constructor(
     /** Etiqueta del cobro manual para la pantalla de éxito y el recibo. */
     val manualMethodLabel: String? get() = selectedTender?.name ?: manualMethod?.label
 
-    /** Catálogo del negocio para la hoja de "¿cómo pagó el cliente?". */
-    val tenderTypes: List<com.avoqado.pos.payment.domain.TenderTypeOption>
-        get() = tenderTypeRepository.cached()
+    /**
+     * Catálogo del negocio para la hoja de "¿cómo pagó el cliente?".
+     *
+     * 🔴 Es un StateFlow, NO un getter. Con un getter, Compose no tiene cómo enterarse
+     * de que el refresh terminó: al abrir el cobro la caché estaba vacía, la hoja se
+     * componía sin tipos y la respuesta llegaba a un valor que nadie volvía a leer —
+     * o sea que **la primera venta después de abrir la app nunca veía los tipos del
+     * negocio**. Medido en el D3 (2026-08-17). Si lo vuelves a un getter, vuelve el bug.
+     */
+    val tenderTypes: StateFlow<List<com.avoqado.pos.payment.domain.TenderTypeOption>> =
+        tenderTypeRepository.tenderTypes
 
     fun confirmManualChoice(choice: com.avoqado.pos.payment.domain.ManualPaymentChoice) {
         when (choice) {

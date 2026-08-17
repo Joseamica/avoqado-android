@@ -393,6 +393,13 @@ class PaymentSyncService @Inject constructor(
                 put("staffId", payment.staffId)
                 put("source", "AVOQADO_ANDROID")
                 put("idempotencyKey", payment.id)
+                // 🔴 "Esta venta YA OCURRIÓ y viene de mi cola." Con un tipo del catálogo,
+                // el server honra la revisión que el cajero tenía enfrente al cobrar. Sin
+                // esto, subir la comisión de un tipo el martes RECHAZA para siempre las
+                // ventas del lunes que no habían sincronizado: atoradas en la cola, con un
+                // banner que el cajero no puede quitar. Sólo lo manda ESTA cola, nunca un
+                // cobro en vivo.
+                put("isOfflineReplay", true)
             }.toString()
 
             val request = Request.Builder()
