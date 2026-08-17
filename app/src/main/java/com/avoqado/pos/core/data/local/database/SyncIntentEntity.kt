@@ -78,6 +78,15 @@ interface SyncIntentDao {
     @Query("SELECT COUNT(*) FROM pos_sync_intents WHERE venue_id = :venueId AND status = 'PENDING'")
     suspend fun pendingCount(venueId: String): Int
 
+    /**
+     * Los payloads de un tipo que siguen esperando a reproducirse. Lo usa el cajón
+     * para saber qué ventas en efectivo el server todavía no puede conocer — ver
+     * `PendingCashSales`. Devuelve el JSON crudo: quien pregunta sabe qué campo
+     * necesita, y así no hay que deserializar 14 formas distintas de payload.
+     */
+    @Query("SELECT payload_json FROM pos_sync_intents WHERE venue_id = :venueId AND status = 'PENDING' AND type = :type")
+    suspend fun pendingPayloads(venueId: String, type: String): List<String>
+
     @Query("SELECT COUNT(*) FROM pos_sync_intents WHERE venue_id = :venueId AND status = 'REJECTED'")
     suspend fun rejectedCount(venueId: String): Int
 

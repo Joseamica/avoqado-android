@@ -34,11 +34,28 @@ private const val TAG = "💰 CashDrawerRepo"
 @Serializable
 private data class OpenDrawerRequest(val startingAmount: Double)
 
+/**
+ * 🔴 `localId` es la LLAVE DE IDEMPOTENCIA del movimiento, y es el mismo id con el
+ * que la fila vive en Room. Sin ella, la fila que crea el server nace anónima y
+ * **ninguna** versión futura del cliente puede reconocerla como suya: el eco del sync
+ * entra como fila nueva y el mismo ingreso/retiro se cuenta dos veces, para siempre.
+ * Ése era el agujero — la fusión por llave estaba escrita en el cliente pero la
+ * tubería llegaba seca, porque `payIn`/`payOut` del server creaban el evento sin
+ * `localId` (nadie se lo mandaba).
+ *
+ * El valor NUNCA se regenera: si cambiara entre dos reintentos del mismo movimiento
+ * dejaría de ser una llave y el server insertaría dos filas en vez de deduplicar
+ * contra `@@unique([venueId, localId])`. Es el mismo contrato que ya usa el push de
+ * ventas (`SyncEventDto.localId`) y el outbox de intents.
+ *
+ * Aditivo a propósito: un server viejo que no conozca el campo simplemente lo ignora
+ * y todo se comporta como hoy. Mandar la llave nunca puede impedir registrar dinero.
+ */
 @Serializable
-private data class PayInRequest(val amount: Double, val note: String? = null)
+private data class PayInRequest(val amount: Double, val note: String? = null, val localId: String)
 
 @Serializable
-private data class PayOutRequest(val amount: Double, val note: String? = null)
+private data class PayOutRequest(val amount: Double, val note: String? = null, val localId: String)
 
 @Serializable
 private data class CloseDrawerRequest(val actualAmount: Double, val note: String? = null)
@@ -48,6 +65,7 @@ class CashDrawerRepository @Inject constructor(
     private val dao: CashDrawerDao,
     private val secureStorage: SecureStorage,
     private val client: OkHttpClient,
+    private val pendingCashSales: PendingCashSales,
 ) {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = false }
 
@@ -296,8 +314,18 @@ class CashDrawerRepository @Inject constructor(
         // Un payload SIN eventos no autoriza a borrar nada: sería el mismo error que
         // pisar la config de impresoras con un refresh fallido. Sólo se limpia cuando
         // el server efectivamente dijo qué eventos tiene.
+        //
+        // 🔴 Y aun entonces, una venta cuyo cobro SIGUE EN LA COLA no puede venir
+        // confirmada: el server todavía no la conoce. Borrarla ahí le desaparecía al
+        // cajero dinero que sí está en el cajón, justo al abrir esta pantalla para
+        // cerrar su turno. Ver [PendingCashSales].
         if (confirmedIds.isNotEmpty()) {
-            dao.deleteUnconfirmedEvents(server.id, SERVER_OWNED_EVENT_TYPES, confirmedIds)
+            dao.deleteUnconfirmedEvents(
+                server.id,
+                SERVER_OWNED_EVENT_TYPES,
+                confirmedIds,
+                pendingCashSales.unreplayedOrderIds(venueId).toList(),
+            )
         }
         return server
     }
@@ -464,7 +492,8 @@ class CashDrawerRepository @Inject constructor(
             val dollars = amountCents / 100.0
             val requestBody = json.encodeToString(
                 PayInRequest.serializer(),
-                PayInRequest(amount = dollars, note = note),
+                // La llave es el id con el que la fila YA quedó en Room, no uno nuevo.
+                PayInRequest(amount = dollars, note = note, localId = localEventId),
             ).toRequestBody("application/json".toMediaType())
 
             val request = Request.Builder()
@@ -514,7 +543,8 @@ class CashDrawerRepository @Inject constructor(
             val dollars = amountCents / 100.0
             val requestBody = json.encodeToString(
                 PayOutRequest.serializer(),
-                PayOutRequest(amount = dollars, note = note),
+                // La llave es el id con el que la fila YA quedó en Room, no uno nuevo.
+                PayOutRequest(amount = dollars, note = note, localId = localEventId),
             ).toRequestBody("application/json".toMediaType())
 
             val request = Request.Builder()

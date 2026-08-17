@@ -2,9 +2,11 @@ package com.avoqado.pos.cashdrawer
 
 import com.avoqado.pos.cashdrawer.data.CashDrawerDao
 import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
+import com.avoqado.pos.cashdrawer.data.PendingCashSales
 import com.avoqado.pos.cashdrawer.data.model.CashDrawerEventEntity
 import com.avoqado.pos.cashdrawer.data.model.CashDrawerSessionEntity
 import com.avoqado.pos.core.data.local.SecureStorage
+import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
 import okhttp3.Call
@@ -113,9 +115,15 @@ internal class FakeCashDrawerDao : CashDrawerDao {
         sessionId: String,
         serverOwnedTypes: List<String>,
         confirmedIds: List<String>,
+        pendingOrderIds: List<String>,
     ) {
         events.values
-            .filter { it.sessionId == sessionId && it.type in serverOwnedTypes && it.id !in confirmedIds }
+            .filter {
+                it.sessionId == sessionId &&
+                    it.type in serverOwnedTypes &&
+                    it.id !in confirmedIds &&
+                    (it.orderId == null || it.orderId !in pendingOrderIds)
+            }
             .map { it.id }
             .forEach { events.remove(it) }
     }
@@ -134,17 +142,36 @@ private fun respuesta(code: Int, body: String, url: String) = Response.Builder()
     .body(body.toResponseBody("application/json".toMediaType()))
     .build()
 
+/** Lo que el POS puso EN EL CABLE: el path y el cuerpo tal cual salieron. */
+internal data class LlamadaCapturada(val path: String, val body: String)
+
 /**
  * Devuelve la respuesta cuyo path COINCIDE con el sufijo pedido. Un path sin
  * respuesta configurada revienta con IOException — o sea, "sin red" para esa
  * llamada, que es justo lo que hace falta para probar el modo isla.
+ *
+ * `capturadas` guarda el cuerpo de CADA request **antes** de ejecutarla, así que
+ * también se ve lo que se mandó en una llamada que después se cae. Es la única
+ * forma de probar que la llave de idempotencia viaja: si sólo miráramos el
+ * resultado, un cuerpo sin llave se vería idéntico a uno con llave.
  */
-internal fun cashDrawerClient(vararg rutas: Pair<String, String>): OkHttpClient {
+internal fun cashDrawerClient(
+    vararg rutas: Pair<String, String>,
+    capturadas: MutableList<LlamadaCapturada>? = null,
+): OkHttpClient {
     val porRuta = rutas.toMap()
     return mockk {
         every { newCall(any()) } answers {
             val request = firstArg<Request>()
             val path = request.url.encodedPath
+            capturadas?.add(
+                LlamadaCapturada(
+                    path = path,
+                    body = request.body?.let { cuerpo ->
+                        okio.Buffer().also { cuerpo.writeTo(it) }.readUtf8()
+                    } ?: "",
+                ),
+            )
             val cuerpo = porRuta.entries.firstOrNull { path.endsWith(it.key) }?.value
             val call = mockk<Call>()
             if (cuerpo == null) {
@@ -165,8 +192,28 @@ internal fun cashDrawerSecureStorage(): SecureStorage = mockk(relaxed = true) {
     every { userLastName } returns "Ruiz"
 }
 
-internal fun cashDrawerRepo(dao: CashDrawerDao, client: OkHttpClient) =
-    CashDrawerRepository(dao = dao, secureStorage = cashDrawerSecureStorage(), client = client)
+/**
+ * Por defecto NO hay ningún cobro esperando en la cola — que es el estado normal
+ * de un local con red. Los tests que prueban la venta encolada lo dicen explícito.
+ */
+internal fun sinCobrosEnCola(): PendingCashSales = mockk {
+    coEvery { unreplayedOrderIds(any()) } returns emptySet()
+}
+
+internal fun cobrosEnCola(vararg orderIds: String): PendingCashSales = mockk {
+    coEvery { unreplayedOrderIds(any()) } returns orderIds.toSet()
+}
+
+internal fun cashDrawerRepo(
+    dao: CashDrawerDao,
+    client: OkHttpClient,
+    pendingCashSales: PendingCashSales = sinCobrosEnCola(),
+) = CashDrawerRepository(
+    dao = dao,
+    secureStorage = cashDrawerSecureStorage(),
+    client = client,
+    pendingCashSales = pendingCashSales,
+)
 
 // MARK: - Payloads del server (forma real de `formatSession`/`formatEvent`)
 

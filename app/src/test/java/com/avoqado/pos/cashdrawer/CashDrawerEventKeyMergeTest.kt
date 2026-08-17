@@ -1,6 +1,7 @@
 package com.avoqado.pos.cashdrawer
 
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.contentOrNull
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -13,20 +14,24 @@ import org.junit.Test
  * quedaron DOS agujeros de dinero con la misma raíz: el cliente adivinaba qué evento
  * del server era suyo, porque el server guardaba la llave y no la devolvía.
  *
- * **A. El movimiento heredado se contaba dos veces.** Un `PAY_IN`/`PAY_OUT` que ya
- * estaba en Room antes de actualizar la app no lo alcanza nada: la limpieza por tipo
- * los excluye A PROPÓSITO (un retiro sin red tiene que sobrevivir) y `promoteEvent`
- * sólo corre al ESCRIBIR el evento. Así que el eco del sync entraba como una fila
- * NUEVA y el mismo movimiento contaba dos veces. Medido: un PAY_IN de $100 heredado
- * deja el esperado en **$5,330.00 en vez de $5,230.00 — +$100**, el tamaño exacto del
- * movimiento. Con un PAY_OUT el error va al otro lado: faltante inventado. Era
- * PERMANENTE.
+ * **A. El movimiento cuya respuesta se perdió se contaba dos veces.** Un
+ * `PAY_IN`/`PAY_OUT` que el server SÍ aplicó pero cuya respuesta no llegó (WiFi caído
+ * a media respuesta, server reiniciado) se queda en Room con su id local: la limpieza
+ * por tipo excluye esos dos A PROPÓSITO —un retiro sin red tiene que sobrevivir— y
+ * `promoteEvent` al escribir no llegó a correr porque no hubo respuesta que leer. El
+ * eco del sync entraba entonces como una fila NUEVA y el mismo movimiento contaba dos
+ * veces. Medido: un PAY_IN de $100 deja el esperado en **$5,330.00 en vez de
+ * $5,230.00 — +$100**, el tamaño exacto del movimiento. Con un PAY_OUT el error va al
+ * otro lado: faltante inventado. Era PERMANENTE.
  *
  * La llave ya existía en la base del server (`CashDrawerEvent.localId`, con
- * `@@unique([venueId, localId])`) y desde hoy sale en `formatEvent`. Con ella la
- * fusión es exacta: `localId` que reconozco → es MÍO, mi fila adopta el id del
- * server (UNA fila); `localId` desconocido o nulo → es de otro aparato o lo escribió
- * el server, entra por su id.
+ * `@@unique([venueId, localId])`) y desde hoy sale en `formatEvent`. Pero el server
+ * sólo puede devolver una llave que alguien le haya dado: `payIn`/`payOut` creaban la
+ * fila **sin** `localId` porque el POS nunca lo mandaba. Por eso el contrato tiene DOS
+ * mitades y las dos se prueban aquí — el POS manda la llave al registrar (A0), y el
+ * sync fusiona con ella (A). Con las dos puestas la fusión es exacta: `localId` que
+ * reconozco → es MÍO, mi fila adopta el id del server (UNA fila); `localId`
+ * desconocido o nulo → es de otro aparato o lo escribió el server, entra por su id.
  *
  * **B. La caja de ayer contaminaba la de hoy.** La promoción se llevaba TODOS los
  * eventos de cualquier otra sesión abierta, incluida una de un turno anterior que
@@ -40,15 +45,115 @@ import org.junit.Test
  */
 class CashDrawerEventKeyMergeTest {
 
-    // MARK: - A. El movimiento heredado y su llave
+    // MARK: - A0. La llave tiene que SALIR del POS, o nada de lo demás existe
 
     /**
-     * 🔴 EL NÚMERO QUE VE EL CAJERO. El PAY_IN de $100 vive en Room con un id local
-     * desde antes del upgrade; el server lo devuelve con SU id y la llave que lo
-     * identifica. Si el cliente no la usa, suma los dos y el arqueo dice $5,330.
+     * 🔴 LA TUBERÍA SIN AGUA. La fusión por llave de abajo sólo puede encenderse si
+     * el POS **manda** la llave al registrar el movimiento: `POST /cash-drawer/pay-in`
+     * es lo único que crea un `PAY_IN` en el server, y hasta hoy su cuerpo era
+     * `{amount, note}` a secas. Sin `localId` en ESE cuerpo, la fila del server nace
+     * sin llave y ninguna cantidad de código de fusión puede reconocerla después.
+     *
+     * El valor no se inventa aquí: es el MISMO id con el que la fila quedó en Room.
+     * Si se generara uno nuevo dejaría de ser una llave de idempotencia — dos
+     * reintentos del mismo movimiento producirían dos llaves y el server los
+     * insertaría dos veces.
      */
     @Test
-    fun `un PAY_IN heredado deja de contarse dos veces cuando el server manda su llave`() = runTest {
+    fun `el pay-in manda al server la MISMA llave con la que quedo en Room`() = runTest {
+        val dao = FakeCashDrawerDao()
+        dao.insertSession(sesionLocal("srv-1", openedAt = haceMinutos(60)))
+        val enElCable = mutableListOf<LlamadaCapturada>()
+        // Sin ruta configurada para /pay-in: la llamada SALE y luego se cae, que es
+        // justo el caso donde la llave hace falta (el server aplicó, se perdió la
+        // respuesta). El cuerpo se captura igual.
+        val repo = cashDrawerRepo(dao, cashDrawerClient(capturadas = enElCable))
+
+        repo.addPayIn(PAY_IN_CENTS, "Fondo extra")
+
+        val filaEnRoom = dao.events.values.single { it.type == "PAY_IN" }
+        val cuerpo = enElCable.single { it.path.endsWith("/cash-drawer/pay-in") }.body
+        assertEquals(
+            "el pay-in salió sin `localId`: la fila del server nace sin llave y la fusión nunca podrá reconocerla",
+            filaEnRoom.id,
+            llaveDe(cuerpo),
+        )
+    }
+
+    /** El mismo contrato para el retiro: el que se lleva dinero del cajón. */
+    @Test
+    fun `el pay-out manda al server la MISMA llave con la que quedo en Room`() = runTest {
+        val dao = FakeCashDrawerDao()
+        dao.insertSession(sesionLocal("srv-1", openedAt = haceMinutos(60)))
+        val enElCable = mutableListOf<LlamadaCapturada>()
+        val repo = cashDrawerRepo(dao, cashDrawerClient(capturadas = enElCable))
+
+        repo.addPayOut(8_000, "Compra de hielo")
+
+        val filaEnRoom = dao.events.values.single { it.type == "PAY_OUT" }
+        val cuerpo = enElCable.single { it.path.endsWith("/cash-drawer/pay-out") }.body
+        assertEquals(
+            "el pay-out salió sin `localId`: la fila del server nace sin llave",
+            filaEnRoom.id,
+            llaveDe(cuerpo),
+        )
+    }
+
+    /**
+     * 🔴 EL CICLO COMPLETO, que es lo único que demuestra que las dos mitades encajan:
+     * el POS registra el movimiento y **se pierde la respuesta** (el server SÍ lo
+     * aplicó); la fila local se queda con su id; el siguiente sync trae el gemelo del
+     * server con esa MISMA llave y las dos filas se vuelven una.
+     *
+     * Sin el ciclo entero, cada mitad se ve bien por separado y el dinero igual se
+     * cuenta dos veces: $5,330.00 donde el cajero debe leer $5,230.00.
+     */
+    @Test
+    fun `un pay-in cuya respuesta se perdio se fusiona por su llave y cuenta UNA vez`() = runTest {
+        val dao = FakeCashDrawerDao()
+        val abrioHace = haceMinutos(60)
+        dao.insertSession(sesionLocal("srv-1", openedAt = abrioHace))
+
+        // 1) El POS registra el pay-in; la respuesta nunca llega.
+        val enElCable = mutableListOf<LlamadaCapturada>()
+        cashDrawerRepo(dao, cashDrawerClient(capturadas = enElCable))
+            .addPayIn(PAY_IN_CENTS, "Fondo extra")
+        val llave = llaveDe(enElCable.single { it.path.endsWith("/cash-drawer/pay-in") }.body)
+
+        // 2) El sync trae el gemelo del server, que devuelve ESA llave.
+        val repo = cashDrawerRepo(
+            dao,
+            cashDrawerClient(
+                "/cash-drawer/current" to sesionJson(
+                    "srv-1",
+                    aperturaDelServer,
+                    eventoJson("srv-ev-venta", "CASH_SALE", "280.00"),
+                    eventoJson("srv-ev-reembolso", "PAY_OUT", "150.00", note = "Reembolso: Producto defectuoso"),
+                    eventoJson("srv-ev-payin", "PAY_IN", "100.00", note = "Fondo extra", localId = llave),
+                    openedAt = abrioHace,
+                ),
+            ),
+        )
+        repo.syncFromApi()
+
+        val sesion = repo.getOpenSession()!!
+        assertEquals(
+            "el pay-in se contó dos veces (fondo 5000 + venta 280 − reembolso 150 + pay-in 100)",
+            523_000,
+            repo.computeExpectedAmount(sesion.id, sesion.startingAmountCents),
+        )
+        assertEquals("quedó más de una fila del mismo pay-in", 1, dao.events.values.count { it.type == "PAY_IN" })
+    }
+
+    // MARK: - A. La fusión por llave, vista desde el sync
+
+    /**
+     * 🔴 EL NÚMERO QUE VE EL CAJERO. El PAY_IN de $100 vive en Room con el id local
+     * que el POS ya le mandó al server como llave; el server lo devuelve con SU id y
+     * esa llave. Si el cliente no la usa, suma los dos y el arqueo dice $5,330.
+     */
+    @Test
+    fun `un PAY_IN cuya llave reconoce el server deja de contarse dos veces`() = runTest {
         val dao = FakeCashDrawerDao()
         val abrioHace = haceMinutos(60)
         dao.insertSession(sesionLocal("srv-1", openedAt = abrioHace))
@@ -71,7 +176,7 @@ class CashDrawerEventKeyMergeTest {
 
         val sesion = repo.getOpenSession()!!
         assertEquals(
-            "el pay-in heredado se contó dos veces (fondo 5000 + venta 280 − reembolso 150 + pay-in 100)",
+            "el pay-in se contó dos veces (fondo 5000 + venta 280 − reembolso 150 + pay-in 100)",
             523_000,
             repo.computeExpectedAmount(sesion.id, sesion.startingAmountCents),
         )
@@ -109,19 +214,27 @@ class CashDrawerEventKeyMergeTest {
     }
 
     /**
-     * 🔴 DEGRADACIÓN OBLIGATORIA. Un server viejo no manda `localId`, y entonces el
-     * cliente tiene que comportarse EXACTAMENTE como antes: la llave mejora la
-     * fusión, no es requisito para funcionar.
+     * 🔴 DEGRADACIÓN OBLIGATORIA **y el residuo que hay que decir en voz alta.**
      *
-     * ⚠️ Los $5,330.00 de este test NO son el número correcto — son el número de HOY,
-     * el defecto A todavía vivo. Se fija a propósito: lo que no se puede permitir es
-     * que la ausencia de la llave cambie el comportamiento en la dirección PELIGROSA,
-     * o sea que el cliente borre la fila local que el server aún no reconoce. Un
-     * retiro sin red borrado le inventaría al cajero un faltante que sí existe
-     * físicamente; contar de más se corrige solo en cuanto el server manda la llave.
+     * Un gemelo del server SIN llave llega por dos caminos distintos, y el cliente
+     * tiene que comportarse igual en los dos:
+     *  1. **Server viejo** que todavía no expone `localId` en `formatEvent`.
+     *  2. **Fila heredada:** un `PAY_IN`/`PAY_OUT` escrito por una versión ANTERIOR de
+     *     esta app. Su gemelo del server se creó sin llave y **ninguna versión futura
+     *     puede inventársela**: para esas filas la fusión por llave no puede servir
+     *     nunca. Siguen contando dos veces hasta que se cierre la caja en la que
+     *     viven — el arqueo es por sesión, así que el residuo muere en el siguiente
+     *     corte y no se arrastra al turno que sigue.
+     *
+     * ⚠️ Los $5,330.00 de este test NO son el número correcto — son el número de HOY.
+     * Se fija a propósito: lo que no se puede permitir es que la ausencia de la llave
+     * cambie el comportamiento en la dirección PELIGROSA, o sea que el cliente borre
+     * la fila local que el server aún no reconoce. Un retiro sin red borrado le
+     * inventaría al cajero un faltante que sí existe físicamente; contar de más se
+     * corrige solo en cuanto el movimiento nace ya con llave.
      */
     @Test
-    fun `un server VIEJO sin llave se comporta identico a hoy y no borra la fila local`() = runTest {
+    fun `un gemelo sin llave -server viejo o fila heredada- no borra la fila local`() = runTest {
         val dao = FakeCashDrawerDao()
         val abrioHace = haceMinutos(60)
         dao.insertSession(sesionLocal("srv-1", openedAt = abrioHace))
@@ -255,6 +368,16 @@ class CashDrawerEventKeyMergeTest {
         )
         assertTrue("quedó la fila local además de la del server", !dao.events.containsKey("ayer-ev-retiro-90"))
     }
+
+    /**
+     * La llave tal como viajó en el cuerpo del POST. Se lee del JSON crudo a
+     * propósito: es un CONTRATO de cable, y leerlo con el mismo modelo que lo
+     * serializa no probaría nada.
+     */
+    private fun llaveDe(cuerpo: String): String? =
+        (kotlinx.serialization.json.Json.parseToJsonElement(cuerpo) as kotlinx.serialization.json.JsonObject)["localId"]
+            ?.let { it as? kotlinx.serialization.json.JsonPrimitive }
+            ?.contentOrNull
 
     /**
      * La caja de ayer con TODO su contenido: fondo, una venta y un retiro a mano de

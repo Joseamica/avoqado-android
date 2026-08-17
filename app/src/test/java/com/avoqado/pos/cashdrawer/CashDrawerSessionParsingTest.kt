@@ -23,6 +23,7 @@ class CashDrawerSessionParsingTest {
         dao = mockk(relaxed = true),
         secureStorage = mockk(relaxed = true),
         client = mockk(relaxed = true),
+        pendingCashSales = mockk(relaxed = true),
     )
 
     private fun parse(json: String) =

@@ -100,15 +100,29 @@ interface CashDrawerDao {
      * 🔴 Sólo esos tipos. `PAY_IN`/`PAY_OUT` los escribe el cliente: uno que el
      * server todavía no conoce (registrado sin red) tiene que sobrevivir, o el
      * cajero cierra con un faltante que sí existe.
+     *
+     * 🔴 `pendingOrderIds` son las órdenes cuyo cobro SIGUE EN LA COLA — la señal la
+     * da la cola, no una corazonada sobre la antigüedad de la fila. Una venta cobrada
+     * sin red todavía no puede venir confirmada, así que borrarla le desaparecía al
+     * cajero dinero que sí está en el cajón, justo al abrir la pantalla para cerrar su
+     * turno. Mientras el cobro esté encolado el gemelo del server no existe por
+     * construcción, así que conservar la copia no duplica nada; en cuanto se
+     * reproduce, sale de esta lista y se borra como siempre. Ver `PendingCashSales`.
+     *
+     * Una fila con `orderId` nulo (la apertura provisional, o una venta de mostrador
+     * cobrada antes de que existiera la orden) no tiene con qué emparejarse y se
+     * comporta como hasta hoy.
      */
     @Query(
         "DELETE FROM cash_drawer_events WHERE sessionId = :sessionId " +
-            "AND type IN (:serverOwnedTypes) AND id NOT IN (:confirmedIds)",
+            "AND type IN (:serverOwnedTypes) AND id NOT IN (:confirmedIds) " +
+            "AND (orderId IS NULL OR orderId NOT IN (:pendingOrderIds))",
     )
     suspend fun deleteUnconfirmedEvents(
         sessionId: String,
         serverOwnedTypes: List<String>,
         confirmedIds: List<String>,
+        pendingOrderIds: List<String>,
     )
 
     @Query("SELECT COALESCE(SUM(amountCents), 0) FROM cash_drawer_events WHERE sessionId = :sessionId AND type = :type")

@@ -20,6 +20,20 @@ interface PendingPaymentDao {
     @Query("SELECT * FROM pending_payments WHERE syncStatus = 'FAILED' ORDER BY createdAt DESC")
     suspend fun getFailedPayments(): List<PendingPaymentEntity>
 
+    /**
+     * Órdenes cuyo cobro todavía no se ha reproducido contra el server. Lo usa el
+     * cajón (`PendingCashSales`) para no borrar de la pantalla una venta que sí está
+     * en el cajón pero que el server aún no puede conocer.
+     *
+     * 🔴 FAILED queda fuera a propósito: un cobro fallido es ambiguo (pudo haber
+     * aterrizado) y ahí se conserva el comportamiento de hoy. Ver `PendingCashSales`.
+     */
+    @Query(
+        "SELECT orderId FROM pending_payments WHERE venueId = :venueId " +
+            "AND syncStatus IN ('PENDING', 'SYNCING') AND orderId IS NOT NULL",
+    )
+    suspend fun unsyncedOrderIds(venueId: String): List<String>
+
     @Query("UPDATE pending_payments SET syncStatus = :status WHERE id = :id")
     suspend fun updateStatus(id: String, status: String)
 
