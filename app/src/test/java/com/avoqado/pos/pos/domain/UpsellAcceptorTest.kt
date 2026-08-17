@@ -1,7 +1,10 @@
 package com.avoqado.pos.pos.domain
 
+import com.avoqado.pos.pos.data.DiscountsRepository
 import com.avoqado.pos.pos.data.model.CartItem
 import com.avoqado.pos.pos.data.model.CartItemType
+import com.avoqado.pos.pos.data.model.Discount
+import com.avoqado.pos.pos.data.model.LinkedDiscount
 import com.avoqado.pos.pos.data.model.Product
 import com.avoqado.pos.pos.data.model.ResolvedModifier
 import com.avoqado.pos.pos.data.model.SelectedModifier
@@ -45,7 +48,12 @@ class UpsellAcceptorTest {
             availableQuantity = if (outOfStock) 0 else null,
         )
 
-    private fun card(productId: String, price: Int = 3500, modifiers: List<ResolvedModifier> = emptyList()) =
+    private fun card(
+        productId: String,
+        price: Int = 3500,
+        modifiers: List<ResolvedModifier> = emptyList(),
+        linkedDiscount: LinkedDiscount? = null,
+    ) =
         UpsellCard(
             ruleId = "regla-$productId",
             productId = productId,
@@ -53,8 +61,8 @@ class UpsellAcceptorTest {
             displayPriceCents = price,
             imageUrl = null,
             headline = null,
-            badge = null,
-            linkedDiscountId = null,
+            badge = linkedDiscount?.badge,
+            linkedDiscount = linkedDiscount,
             modifiers = modifiers,
         )
 
@@ -63,10 +71,20 @@ class UpsellAcceptorTest {
      * mueven el flujo, para poder comprobar de dónde lee el acomodador Y por
      * cuál de los dos caminos entró la línea.
      */
-    private fun fakeCart(initial: CartState = CartState()): CartViewModel {
+    private fun fakeCart(
+        initial: CartState = CartState(),
+        descuentosVivos: List<Discount> = emptyList(),
+    ): CartViewModel {
         val flow = MutableStateFlow(initial)
         val vm = mockk<CartViewModel>(relaxed = true)
         every { vm.cartState } returns flow
+
+        // El acomodador consulta el catálogo VIVO de descuentos antes de atar uno
+        // a la línea: mandar un id que el server ya no conoce tumba la venta entera.
+        val repo = mockk<DiscountsRepository>(relaxed = true)
+        every { repo.discounts } returns MutableStateFlow(descuentosVivos)
+        every { vm.discountsRepository } returns repo
+
         val captured = slot<Product>()
         every { vm.addProduct(capture(captured)) } answers {
             val p = captured.captured
@@ -78,32 +96,43 @@ class UpsellAcceptorTest {
                 ),
             )
         }
-        val capturedWithMods = slot<Product>()
-        val capturedModifiers = slot<List<SelectedModifier>>()
+        // Se leen los argumentos REALES de la llamada (`arg<T>(n)`) en vez de
+        // capturarlos en slots: un slot no puede capturar un nulo, y `discount`
+        // es nulo en la mayoría de los casos.
         every {
             vm.addProductWithModifiers(
-                product = capture(capturedWithMods),
+                product = any(),
                 quantity = any(),
-                modifiers = capture(capturedModifiers),
+                modifiers = any(),
                 note = any(),
                 isCortesia = any(),
                 cortesiaReason = any(),
                 priceAdjustment = any(),
-                discountId = any(),
+                discount = any(),
             )
         } answers {
-            val p = capturedWithMods.captured
+            val p = arg<Product>(0)
+            val mods = arg<List<SelectedModifier>>(2)
+            val d = arg<Discount?>(7)
             flow.value = flow.value.copy(
                 items = flow.value.items + CartItem(
                     type = CartItemType.ProductItem(p.id),
                     name = p.name,
                     unitPrice = p.priceInCents,
-                    selectedModifiers = capturedModifiers.captured,
+                    selectedModifiers = mods,
+                    itemDiscountId = d?.id,
+                    itemDiscountType = d?.type,
+                    itemDiscountValue = d?.value,
+                    itemDiscountName = d?.name,
                 ),
             )
         }
         return vm
     }
+
+    /** El descuento tal como sigue vivo en el catálogo del POS. */
+    private fun descuentoVivo(id: String = "d1", type: String = "PERCENTAGE", value: Double = 20.0) =
+        Discount(id = id, name = "Promo", value = value, type = type, scope = "ITEM")
 
     @Test
     fun `🔴 el carrito devuelto YA incluye lo aceptado (no espera recomposición)`() = runBlocking {
@@ -191,7 +220,7 @@ class UpsellAcceptorTest {
                 isCortesia = any(),
                 cortesiaReason = any(),
                 priceAdjustment = any(),
-                discountId = any(),
+                discount = any(),
             )
         }
         // 🔴 Si esto se quedara en addProduct(), la línea entraría SIN el tamaño
@@ -226,5 +255,94 @@ class UpsellAcceptorTest {
         assertEquals(8000, result.cart.subtotalCents) // 35 + 45
         assertEquals(2, result.added.size)
         assertEquals(1, result.unavailable.size)
+    }
+
+    // ── Descuento ligado: la tarjeta y el cobro dicen lo MISMO ────────────────
+
+    @Test
+    fun `🔴 con descuento ligado, el carrito cobra EXACTO lo que prometio la tarjeta`() = runBlocking {
+        val vm = fakeCart(descuentosVivos = listOf(descuentoVivo()))
+        val galleta = product("galleta", price = 35.0)
+        val tarjeta = card("galleta", price = 2800, linkedDiscount = LinkedDiscount("d1", "PERCENTAGE", 20.0, "-20%"))
+
+        val result = CounterUpsellAcceptor(vm).accept(listOf(tarjeta), mapOf("galleta" to galleta))
+
+        // 🔴 El defecto que esto impide: la tarjeta decía $28 y el carrito cobraba
+        // $35 porque el descuento ligado nunca llegaba a la línea.
+        assertEquals(tarjeta.displayPriceCents, result.cart.subtotalCents)
+        assertEquals(2800, result.cart.subtotalCents)
+        assertEquals(1, result.added.size)
+    }
+
+    @Test
+    fun `🔴 con descuento ligado Y modificadores, el carrito cobra EXACTO lo de la tarjeta`() = runBlocking {
+        val vm = fakeCart(descuentosVivos = listOf(descuentoVivo()))
+        val agua = product("prod_agua", price = 35.0)
+        val resueltos = listOf(ResolvedModifier("g_tam", "m_gr", "Grande", 15.0))
+        // ($35 + $15) × 0.8 = $40 — el descuento pega sobre la línea COMPLETA,
+        // igual que el server.
+        val tarjeta = card(
+            "prod_agua",
+            price = 4000,
+            modifiers = resueltos,
+            linkedDiscount = LinkedDiscount("d1", "PERCENTAGE", 20.0, "-20%"),
+        )
+
+        val result = CounterUpsellAcceptor(vm).accept(listOf(tarjeta), mapOf("prod_agua" to agua))
+
+        assertEquals(tarjeta.displayPriceCents, result.cart.subtotalCents)
+        assertEquals(4000, result.cart.subtotalCents)
+    }
+
+    @Test
+    fun `el id del descuento viaja a la linea para que el server lo registre`() = runBlocking {
+        val vm = fakeCart(descuentosVivos = listOf(descuentoVivo()))
+        val galleta = product("galleta", price = 35.0)
+
+        val result = CounterUpsellAcceptor(vm).accept(
+            listOf(card("galleta", price = 2800, linkedDiscount = LinkedDiscount("d1", "PERCENTAGE", 20.0, "-20%"))),
+            mapOf("galleta" to galleta),
+        )
+
+        // Sin el id, el server registraría la orden a precio de lista y el arqueo
+        // no cuadraría contra lo que cobró el POS.
+        assertEquals("d1", result.cart.items.single().itemDiscountId)
+    }
+
+    @Test
+    fun `🔴 si el descuento ya no esta vivo, la tarjeta NO se agrega`() = runBlocking {
+        // El descuento se borró o venció entre que el POS bajó las reglas y el
+        // toque. Mandar ese id tumba la venta ENTERA con 400
+        // (`order.mobile.service.ts` rechaza ids desconocidos a propósito), y
+        // agregarla sin descuento cobraría $35 tras prometer $28. Se reporta como
+        // no disponible: se pierde la sugerencia, nunca la venta.
+        val vm = fakeCart(descuentosVivos = listOf(descuentoVivo(id = "otro")))
+        val galleta = product("galleta", price = 35.0)
+
+        val result = CounterUpsellAcceptor(vm).accept(
+            listOf(card("galleta", price = 2800, linkedDiscount = LinkedDiscount("d1", "PERCENTAGE", 20.0, "-20%"))),
+            mapOf("galleta" to galleta),
+        )
+
+        assertTrue(result.added.isEmpty())
+        assertEquals(1, result.unavailable.size)
+        assertEquals(0, result.cart.subtotalCents)
+    }
+
+    @Test
+    fun `sin catalogo de descuentos todavia, se confia en la regla`() = runBlocking {
+        // Arranque en frío o sin red: el catálogo de descuentos aún no baja. Vacío
+        // significa "no sé", no "ya no existe" — tratarlo como ausencia apagaría
+        // TODAS las promociones del local justo cuando no hay red.
+        val vm = fakeCart(descuentosVivos = emptyList())
+        val galleta = product("galleta", price = 35.0)
+
+        val result = CounterUpsellAcceptor(vm).accept(
+            listOf(card("galleta", price = 2800, linkedDiscount = LinkedDiscount("d1", "PERCENTAGE", 20.0, "-20%"))),
+            mapOf("galleta" to galleta),
+        )
+
+        assertEquals(1, result.added.size)
+        assertEquals(2800, result.cart.subtotalCents)
     }
 }

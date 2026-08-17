@@ -130,7 +130,15 @@ data class UpsellCard(
     val headline: String?,
     /** Ya formateado por el server ("-20%", "-$15"). Null si no hay descuento. */
     val badge: String?,
-    val linkedDiscountId: String?,
+    /**
+     * 🔴 El descuento ligado COMPLETO, no sólo su id.
+     *
+     * Con el id solo, el carrito no puede calcular nada: se cobraba precio de
+     * lista mientras la tarjeta prometía el precio rebajado. La línea necesita
+     * `type` y `value` para congelar el mismo descuento que el server va a
+     * aplicar — ver [CartItem.itemDiscountType].
+     */
+    val linkedDiscount: LinkedDiscount? = null,
     /**
      * Modificadores obligatorios YA resueltos (spec 2026-08-16, B3). Vacío = el
      * producto no pide nada. Es lo que arma la línea del carrito al aceptar —
@@ -144,4 +152,7 @@ data class UpsellCard(
      * sin pasar por `toCard()`.
      */
     val priceWithModifiers: Double get() = displayPriceCents / 100.0
+
+    /** Atajo para los consumidores que sólo necesitan el id. */
+    val linkedDiscountId: String? get() = linkedDiscount?.id
 }

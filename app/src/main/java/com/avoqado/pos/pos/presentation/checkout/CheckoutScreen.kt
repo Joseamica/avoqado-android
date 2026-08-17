@@ -56,7 +56,6 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
-import com.avoqado.pos.customers.data.model.Customer
 import com.avoqado.pos.areatickets.presentation.AreaTicketOperationsViewModel
 import com.avoqado.pos.customers.presentation.CreateCustomerView
 import com.avoqado.pos.customers.presentation.CustomersView
@@ -296,7 +295,14 @@ fun CheckoutScreen(
     var currentNote by remember { mutableStateOf("") }
     var showIPhoneCart by remember { mutableStateOf(false) }
     var selectedCartItem by remember { mutableStateOf<CartItem?>(null) }
-    var selectedCustomer by remember { mutableStateOf<Customer?>(null) }
+    // 🔴 El cliente de la venta vive en el CARRITO, no en un `remember` de aquí:
+    // girar la tablet (o el modo oscuro al anochecer, o un cambio de idioma o de
+    // tamaño de fuente) recrea la Activity, el carrito sobrevive y un `remember`
+    // pelón volvía a null — la orden nacía SIN cliente y se perdían lealtad, CFDI
+    // e historial de esa persona. Tercer caso del mismo patrón en esta pantalla,
+    // después de `chargingAgainstOrderId` y `pendingPackGrant`. Ver
+    // `CartViewModel.selectedCustomer`.
+    val selectedCustomer by cartViewModel.selectedCustomer.collectAsState()
     // Membresías: a credit-pack sale needs a customer; grant captured at charge time.
     var showPackCustomerRequired by remember { mutableStateOf(false) }
     var showPackNoSplitAlert by remember { mutableStateOf(false) }
@@ -354,7 +360,8 @@ fun CheckoutScreen(
                 result
                     .onSuccess {
                         areaTicketOperations.confirmPendingPdfSaved {
-                            cartViewModel.clearCart()
+                            // Fin de venta: el vale quedó emitido y guardado.
+                            cartViewModel.finalizarVenta()
                         }
                     }
                     .onFailure { error ->
@@ -377,11 +384,12 @@ fun CheckoutScreen(
         }
     }
 
-    // Sync customer selection to the CartViewModel so the referral flow can
-    // read it and reset on switch (Plan 5B).
-    LaunchedEffect(selectedCustomer?.id) {
-        cartViewModel.setSelectedCustomer(selectedCustomer?.id)
-    }
+    // 🔴 Aquí vivía el espejo `LaunchedEffect(selectedCustomer?.id) {
+    // setSelectedCustomer(...) }` que copiaba el `remember` de la pantalla hacia
+    // el carrito. Se borró, y no sólo por redundante: al recrearse la Activity el
+    // `remember` nacía en null y este efecto **borraba también la copia buena del
+    // ViewModel** antes de que nadie la leyera. Con dos copias, la frágil ganaba.
+    // Ahora hay una sola, la del carrito, y la pantalla sólo la lee.
 
     val openGeneralCustomerPicker: () -> Unit = {
         customerSelectionContext = CustomerSelectionContext.GENERAL
@@ -393,7 +401,11 @@ fun CheckoutScreen(
     }
     fun confirmPayLaterOrder() {
         if (isSubmittingPayLater) return
-        val customerId = selectedCustomer?.id
+        // Del FLUJO, no de la variable capturada por `collectAsState()`: es el
+        // mismo criterio que `proceedToPayment` con el carrito — en la ruta que
+        // manda un id al server se lee el valor de AHORA, no el de la última
+        // recomposición.
+        val customerId = cartViewModel.selectedCustomer.value?.id
         if (customerId.isNullOrBlank()) {
             openPayLaterCustomerPicker()
             return
@@ -404,8 +416,9 @@ fun CheckoutScreen(
             isSubmittingPayLater = false
             payLaterResult.fold(
                 onSuccess = {
-                    cartViewModel.clearCart()
-                    selectedCustomer = null
+                    // La venta se fue a "pagar después" a nombre de este cliente:
+                    // aquí termina, así que el cliente se suelta con el carrito.
+                    cartViewModel.finalizarVenta()
                     customerSelectionContext = CustomerSelectionContext.GENERAL
                     showPayLaterSuccessToast = true
                 },
@@ -426,7 +439,10 @@ fun CheckoutScreen(
      * lo borraría después — el negocio regala el producto y la orden ni lo registra.
      */
     fun proceedToPayment(cart: CartState = cartViewModel.cartState.value) {
-        cartViewModel.capturePendingPackGrant(selectedCustomer?.id, cart)
+        // 🔴 DINERO. Del FLUJO, no de la variable capturada: quién recibe las
+        // membresías se decide con el cliente de AHORA. Mismo criterio que el
+        // carrito en la firma de esta función.
+        cartViewModel.capturePendingPackGrant(cartViewModel.selectedCustomer.value?.id, cart)
         paymentCartSnapshot = cart.paymentSnapshot()
         // 🔴 DINERO. ¿Esta venta ya tiene una orden abierta de una parte anterior?
         // Se resuelve AQUÍ, en el momento del cobro, contra el carrito real: si el
@@ -483,12 +499,16 @@ fun CheckoutScreen(
     fun runPrimaryAction(closePhoneCart: Boolean = false) {
         if (areaOperationsState.issueWorkspace) {
             areaTicketOperations.issue(cartState) {
-                cartViewModel.clearCart()
+                // Fin de venta: el vale se emitió.
+                cartViewModel.finalizarVenta()
                 if (closePhoneCart) showIPhoneCart = false
             }
             return
         }
-        if (cartViewModel.hasCreditPack && selectedCustomer == null) {
+        // Del flujo, igual que `capturePendingPackGrant` unas líneas abajo: el
+        // guard que exige cliente y la captura que lo usa no pueden leer copias
+        // distintas, o se cobraría un paquete que nadie recibe.
+        if (cartViewModel.hasCreditPack && cartViewModel.selectedCustomer.value == null) {
             showPackCustomerRequired = true
             return
         }
@@ -590,7 +610,7 @@ fun CheckoutScreen(
                                         discountsRepository = cartViewModel.discountsRepository,
                                         onCustomerSearch = openPayLaterCustomerPicker,
                                         reopenPayLaterToken = reopenPayLaterToken,
-                                        selectedPayLaterCustomerName = selectedCustomer?.fullName,
+                                        selectedPayLaterCustomerName = selectedCustomer?.name,
                                         onConfirmPayLater = ::confirmPayLaterOrder,
                                         isConfirmingPayLater = isSubmittingPayLater,
                                         onCreateItem = { showCreateProduct = true },
@@ -702,7 +722,7 @@ fun CheckoutScreen(
                         onAddCustomAmount = { selectedTab = InputTab.KEYPAD },
                         onRemoveItem = quitarLineaDelCarrito,
                         onApplyTaxPercent = { cartViewModel.applyOrderTaxPercent(it) },
-                        customerName = selectedCustomer?.fullName,
+                        customerName = selectedCustomer?.name,
                         customerId = selectedCustomer?.id,
                         onCustomerTap = openGeneralCustomerPicker,
                         staffName = cartState.selectedStaffName,
@@ -811,7 +831,7 @@ fun CheckoutScreen(
                                     discountsRepository = cartViewModel.discountsRepository,
                                     onCustomerSearch = openPayLaterCustomerPicker,
                                     reopenPayLaterToken = reopenPayLaterToken,
-                                    selectedPayLaterCustomerName = selectedCustomer?.fullName,
+                                    selectedPayLaterCustomerName = selectedCustomer?.name,
                                     onConfirmPayLater = ::confirmPayLaterOrder,
                                     isConfirmingPayLater = isSubmittingPayLater,
                                     onCreateItem = { showCreateProduct = true },
@@ -1032,7 +1052,7 @@ fun CheckoutScreen(
                     showSplitPayment = true
                 }
             },
-            customerName = selectedCustomer?.fullName,
+            customerName = selectedCustomer?.name,
             customerId = selectedCustomer?.id,
             onCustomerTap = openGeneralCustomerPicker,
             referralCode = referralCodeState,
@@ -1272,7 +1292,8 @@ fun CheckoutScreen(
                     text = if (areaOperationsState.submitting) "Reimprimiendo…" else "Reimprimir",
                     onClick = {
                         areaTicketOperations.reprintPending {
-                            cartViewModel.clearCart()
+                            // Fin de venta: el vale se reimprimió y queda emitido.
+                            cartViewModel.finalizarVenta()
                         }
                     },
                     enabled = !areaOperationsState.submitting && !areaOperationsState.preparingPdf,
@@ -1308,6 +1329,30 @@ fun CheckoutScreen(
         // otra pantalla lo toque con el cobro abierto, esto lo absorbe en vez de
         // reiniciar el flujo encima del recibo.
         val resumeOrderId = remember(showPaymentFlow) { cartViewModel.chargingAgainstOrderId }
+        // 🔴 DINERO. El cliente del cobro se CONGELA igual que la orden de arriba, y
+        // por una razón que ya costó un P0: `preselectedCustomerId` es LLAVE del
+        // `LaunchedEffect` de `PaymentFlowScreen`. Al cerrarse la venta se suelta al
+        // cliente (`aplicarCobroConfirmado`), el flujo emite, esta pantalla recompone,
+        // la llave pasa de "cust_x" a null y el efecto **se relanza**: `startPaymentFlow`
+        // borra recibo, `paymentId` y `createdOrderId`, y deja al cajero frente a un
+        // cobro armado por el importe completo ENCIMA del recibo — con la orden en
+        // null, tocar un método creaba una SEGUNDA orden. Doble cobro.
+        //
+        // Congelarlo lo cierra de raíz: mientras el cobro está abierto el valor no se
+        // mueve. La llave es `showPaymentFlow`, así que al recrearse la Activity la
+        // composición es nueva y lo RELEE del carrito — conserva intacta la
+        // supervivencia a la rotación, que es el punto de todo este trabajo.
+        //
+        // El encabezado del carrito NO usa esto: sigue leyendo el flujo vivo, así que
+        // vuelve a "Agregar cliente" en cuanto la venta cierra.
+        //
+        // 🔴🔴 NO LO "SIMPLIFIQUES" A LEER EL FLUJO VIVO. Esto NO TIENE TEST — vive en
+        // un Composable y lo único que lo protege es este comentario. Si alguien
+        // cambia esta línea por `selectedCustomer` (el flujo), **nada truena**: la
+        // suite pasa verde, el APK compila, y el bug vuelve entero — recibo
+        // irrecuperable y un cobro cobrable encima de una venta ya pagada. Se descubre
+        // en el mostrador, con un cliente enfrente.
+        val clienteDelCobro = remember(showPaymentFlow) { cartViewModel.selectedCustomer.value }
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -1327,8 +1372,14 @@ fun CheckoutScreen(
                 // El cliente del encabezado del carrito se lleva al cobro: la
                 // orden nace con `customerId` y la pantalla de recibo ya lo
                 // muestra puesto en vez de pedirlo de nuevo.
-                preselectedCustomerId = selectedCustomer?.id,
-                preselectedCustomerName = selectedCustomer?.fullName,
+                //
+                // 🔴 Éste es el id que TERMINA EN LA ORDEN, y sale del valor
+                // CONGELADO de arriba (`clienteDelCobro`), no del flujo vivo:
+                // es llave de un `LaunchedEffect`, así que moverlo a media venta
+                // reinicia el cobro encima del recibo. Ver el comentario de
+                // `clienteDelCobro`.
+                preselectedCustomerId = clienteDelCobro?.id,
+                preselectedCustomerName = clienteDelCobro?.name,
                 onPaymentCommitted = { completion ->
                     // 🔴 DINERO. Quedó saldo ⇒ la venta SIGUE VIVA contra la MISMA
                     // orden, y la parte que falta se cobra ahí. Antes esto se
@@ -1340,19 +1391,18 @@ fun CheckoutScreen(
                     // (`TableSession` en PAYING) y funciona; es el modelo a igualar.
                     val ordenQueSigueViva = completion.orderId
                         ?.takeIf { !isTablePaying && completion.remainingBalanceCents > 0 }
-                    when {
-                        completion.splitType == "BYPRODUCT" && completion.paidItemIds.isNotEmpty() -> {
-                            completion.paidItemIds.forEach { paidItemId ->
-                                cartViewModel.removeItem(paidItemId)
-                            }
-                        }
-                        completion.remainingBalanceCents > 0 -> {
-                            // For amount-based partial splits, carry remaining balance as pending amount.
-                            cartViewModel.clearCart()
-                            cartViewModel.addCustomAmount(
-                                name = "Saldo pendiente",
-                                amountCents = completion.remainingBalanceCents,
-                            )
+                    // 🔴 DINERO. Las tres ramas —y la decisión de si la venta
+                    // terminó, que es la que suelta al cliente— viven en el
+                    // `CartViewModel`: es lógica de negocio, y aquí arriba no había
+                    // forma de probarla. Ver `aplicarCobroConfirmado`.
+                    val cobro = cartViewModel.aplicarCobroConfirmado(
+                        splitType = completion.splitType,
+                        paidItemIds = completion.paidItemIds,
+                        remainingBalanceCents = completion.remainingBalanceCents,
+                    )
+                    when (cobro.rama) {
+                        CartViewModel.RamaCobro.RENGLONES_PAGADOS -> Unit
+                        CartViewModel.RamaCobro.QUEDA_SALDO -> {
                             // TABLE_SERVICE (PAYING): the session's charge target
                             // becomes the remainder so a re-entry never re-seeds
                             // the original (already partially paid) total.
@@ -1360,14 +1410,15 @@ fun CheckoutScreen(
                                 tablesViewModel.updateTableSessionRemaining(completion.remainingBalanceCents)
                             }
                         }
-                        else -> {
+                        CartViewModel.RamaCobro.PAGO_COMPLETO -> {
                             // Full payment — grant any captured membership credits.
                             // Consumir = entregar y limpiar en el mismo acto, para
                             // que un segundo commit no las otorgue por duplicado.
+                            // Va DESPUÉS de tocar el carrito sin problema: el grant
+                            // está congelado en el ViewModel con su propio cliente.
                             cartViewModel.consumePendingPackGrant()?.let {
                                 creditsViewModel.grantPacks(it.packIds, it.customerId)
                             }
-                            cartViewModel.clearCart()
                             // TABLE_SERVICE (PAYING): the table's order was just
                             // fully paid through the normal flow — release it.
                             if (tableSessionActive?.mode == com.avoqado.pos.tables.data.TableSession.Mode.PAYING) {
@@ -1383,7 +1434,53 @@ fun CheckoutScreen(
                     cartViewModel.markPendingSplitOrder(ordenQueSigueViva)
                     // Referral is real now: capture on actual payment success
                     // (a cancelled payment no longer leaves a dangling referral).
-                    checkoutScope.launch { cartViewModel.captureReferralOnPayment(orderId = null) }
+                    //
+                    // 🔴 Se le pasa el referido CONGELADO antes de tocar el carrito.
+                    // Esto corre en un `launch` asíncrono, y para cuando el cuerpo
+                    // corre, cerrar la venta ya borró la validación, el código y el
+                    // staff — la captura salía sin llamar al server y el que refirió
+                    // no recibía su crédito, sin que nadie se enterara.
+                    //
+                    // 🔴 Congelar sólo el `customerId` NO alcanzaba y era un adorno:
+                    // `setSelectedCustomer(null)` llama a `clearReferral()`, que deja
+                    // la validación en `Idle`, y la función salía en su PRIMERA línea
+                    // sin llegar nunca a leer ese id. El problema no era el cliente,
+                    // era la validación. Ver `CartViewModel.ReferralPendiente`.
+                    // 🔴 El `orderId` VA, en las tres ramas — antes iba `null` y eso
+                    // apagaba dos candados del server a la vez:
+                    //
+                    // 1. El índice único parcial de `Referral` está declarado sobre
+                    //    `qualifyingOrderId` ("an Order can qualify at most ONE active
+                    //    Referral"). Con `null` el índice NO aplica y `captureReferral`
+                    //    hace un `create()` pelón. Y sí hay captura doble: el split POR
+                    //    PRODUCTO no pasa por `clearCart()`, así que la validación sigue
+                    //    `Valid` y cada parte vuelve a capturar — 3 productos cobrados
+                    //    uno por uno son 3 intentos por UNA venta.
+                    // 2. Sin `qualifyingOrderId` la fila PENDING **nunca puede pasar a
+                    //    QUALIFIED** por el camino de la orden pagada: quedaría inerte
+                    //    aunque se creara.
+                    //
+                    // En las tres ramas es la orden de ESTA venta; no hay ambigüedad.
+                    //
+                    // ⚠️ OJO — esto NO basta para que el referido funcione hoy, y el
+                    // dato es fácil de celebrar de más: **el server RECHAZA toda captura
+                    // post-cobro con `EXISTING_CUSTOMER`.** Su regla 4 exige que el
+                    // cliente no tenga ninguna orden previa en el venue, y esto corre en
+                    // `onPaymentCommitted`, o sea DESPUÉS de que la orden de esta venta
+                    // ya existe con ese cliente. Es una contradicción preexistente entre
+                    // tres documentos: el KDoc de la función dice "right before the
+                    // payment is sent", el del server dice "before payment", y este
+                    // sitio dispara en el éxito a propósito, para que un cobro cancelado
+                    // no deje un referido colgado. Moverla o relajar la regla es
+                    // decisión de producto y está anotada aparte. Congelar el referido y
+                    // mandar el `orderId` son **prerequisito** de cualquier solución —
+                    // no son la solución.
+                    checkoutScope.launch {
+                        cartViewModel.captureReferralOnPayment(
+                            orderId = completion.orderId,
+                            pendiente = cobro.referralPendiente,
+                        )
+                    }
                     // Upsell: el momento terminó en venta PAGADA. Sólo aquí, en el
                     // éxito real — una impresión sin esto aporta $0 al reporte, y
                     // marcarla antes contaría como venta algo que se canceló.
@@ -1542,7 +1639,7 @@ fun CheckoutScreen(
                     initialName = createCustomerSearchText.takeIf { !it.all { c -> c.isDigit() || c == '+' } },
                     onCustomerCreated = { customer ->
                         val fromPayLater = customerSelectionContext == CustomerSelectionContext.PAY_LATER
-                        selectedCustomer = customer
+                        cartViewModel.setSelectedCustomer(customer.id, customer.fullName)
                         showCreateCustomer = false
                         showCustomersSheet = false
                         if (fromPayLater) {
@@ -1558,7 +1655,7 @@ fun CheckoutScreen(
                     viewModel = customersViewModel,
                     onCustomerSelected = { customer ->
                         val fromPayLater = customerSelectionContext == CustomerSelectionContext.PAY_LATER
-                        selectedCustomer = customer
+                        cartViewModel.setSelectedCustomer(customer.id, customer.fullName)
                         showCustomersSheet = false
                         showCreateCustomer = false
                         if (fromPayLater) {
@@ -1607,7 +1704,10 @@ fun CheckoutScreen(
             onDismiss = { showClearCartConfirm = false },
             actionButton = {
                 PrimaryButton(text = "Vaciar", onClick = {
-                    cartViewModel.clearCart()
+                    // 🔴 Vaciar a mano ES terminar la venta: si sólo se vacía el
+                    // carrito, el cliente se queda en el encabezado y la venta
+                    // siguiente se le atribuye a él.
+                    cartViewModel.finalizarVenta()
                     showClearCartConfirm = false
                 })
             },

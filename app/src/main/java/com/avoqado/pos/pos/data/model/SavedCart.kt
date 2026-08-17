@@ -31,6 +31,13 @@ data class SavedCartItem(
     val cortesiaReason: String? = null,
     val priceAdjustment: Int? = null,
     val itemDiscountId: String? = null,
+    /// El descuento congelado de la línea. Sin él, un carrito guardado con "-20%"
+    /// volvía a precio de lista: se cobraba de más y la orden quedaba rebajada.
+    /// Mismo defecto que tuvieron `packId` y la promoción. Nullable con default
+    /// para que los carritos guardados por versiones viejas sigan abriendo.
+    val itemDiscountType: String? = null,
+    val itemDiscountValue: Double? = null,
+    val itemDiscountName: String? = null,
     /// Credit-pack (membresía) identity — before, a saved pack line restored
     /// as a plain CustomAmount: charged, never granted, gate bypassed.
     val packId: String? = null,

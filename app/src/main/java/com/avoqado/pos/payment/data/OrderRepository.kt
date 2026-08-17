@@ -292,6 +292,79 @@ class OrderRepository @Inject constructor(
             return request.items.any { !it.productId.isNullOrBlank() || it.promotionRef != null }
         }
 
+        /**
+         * El cuerpo EXACTO que viaja en `POST /mobile/venues/:id/fast`.
+         *
+         * 🔴 Vive aquí, y no dentro de [recordFastCashPayment], porque este JSON se
+         * arma A MANO: es el único camino que de verdad se ejecuta, y por tanto el
+         * único que un test puede probar. Agregar un campo a un modelo serializado
+         * (que este endpoint no usa) ya dejó DOS veces un campo fuera del cobro real.
+         *
+         * `customerId` es ADITIVO y opcional: sin cliente el cuerpo queda **byte a
+         * byte igual** al de siempre, que es el 99% de las ventas. En blanco vale
+         * como venta anónima — el server también acepta `null` explícito, pero no
+         * mandarlo es lo que preserva el contrato viejo intacto.
+         */
+        internal fun buildFastPaymentPayload(
+            venueId: String,
+            amount: Int,
+            tip: Int,
+            splitType: String,
+            staffId: String,
+            idempotencyKey: String,
+            manualMethod: com.avoqado.pos.payment.domain.ManualPaymentMethod? = null,
+            tenderType: com.avoqado.pos.payment.domain.TenderTypeOption? = null,
+            customerId: String? = null,
+        ): String = buildString {
+            append("{")
+            append("\"venueId\":\"$venueId\",")
+            append("\"amount\":$amount,")
+            append("\"tip\":$tip,")
+            append("\"status\":\"COMPLETED\",")
+            // Con un tipo del catálogo viaja la REFERENCIA {id, revision} y NO
+            // `method`: el server los rechaza juntos y resuelve él la semántica.
+            if (tenderType != null) {
+                append("\"tenderTypeId\":\"${tenderType.id}\",")
+                append("\"tenderRevision\":${tenderType.revision},")
+            } else {
+                append("\"method\":\"${manualMethod?.serverMethod ?: "CASH"}\",")
+                manualMethod?.externalSource?.let { append("\"externalSource\":\"$it\",") }
+            }
+            append("\"splitType\":\"$splitType\",")
+            append("\"staffId\":\"$staffId\",")
+            append("\"source\":\"AVOQADO_ANDROID\",")
+            append("\"idempotencyKey\":\"$idempotencyKey\"")
+            customerId?.trim()?.takeIf { it.isNotEmpty() }?.let { append(",\"customerId\":\"$it\"") }
+            append("}")
+        }
+
+        /**
+         * Qué pasó con el cliente de esta venta rápida (`data.customerLink` del server).
+         *
+         * Devuelve el texto a PINTAR o null. El cobro fue exitoso en todos los casos:
+         * esto es un AVISO ámbar, nunca un error y nunca un motivo para volver a cobrar.
+         * `LINKED` y `NOT_REQUESTED` son el camino feliz y no avisan nada; el resto
+         * (`NOT_FOUND`, `CONFLICT`, `UNVERIFIED`) traen el texto ya en español.
+         *
+         * Se exige que el `status` NO sea uno de los dos felices además de que haya
+         * texto: si algún día el server añade un status nuevo con warning, se pinta;
+         * si añade un texto en el camino feliz, no molesta al cajero.
+         */
+        fun extractCustomerLinkWarningFromResponse(responseBody: String): String? {
+            return try {
+                val root = idExtractorJson.parseToJsonElement(responseBody).jsonObject
+                val link = root["payment"]?.jsonObject?.get("customerLink")?.jsonObject
+                    ?: root["data"]?.jsonObject?.get("customerLink")?.jsonObject
+                    ?: root["customerLink"]?.jsonObject
+                    ?: return null
+                val status = link["status"]?.jsonPrimitive?.contentOrNull?.uppercase()
+                if (status == "LINKED" || status == "NOT_REQUESTED") return null
+                link["warning"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+            } catch (_: Exception) {
+                null
+            }
+        }
+
         internal fun buildCreateOrderPayload(
             request: CreateOrderRequest,
             staffId: String,
@@ -371,6 +444,24 @@ class OrderRepository @Inject constructor(
                                             ?.trim()
                                             ?.takeIf { it.isNotEmpty() }
                                             ?.let { put("notes", it) }
+                                        // 🔴 El descuento de la línea. MEDIDO EN HARDWARE
+                                        // (D3, 2026-08-17): sin esta llave el POS cobraba
+                                        // $169.00 y el server registraba la orden en $174.00
+                                        // —`discountAmount` en 0 y sin `appliedDiscountId`—,
+                                        // así que la orden quedaba PARTIAL, corta por $5.00,
+                                        // y el arqueo del día no cerraba.
+                                        //
+                                        // `OrderItemRequest.discountId` se llenaba desde
+                                        // `CartItem.itemDiscountId` y se tiraba AQUÍ: este
+                                        // payload se arma a mano y nunca lo escribía. Afecta
+                                        // igual al descuento manual del cajero — es
+                                        // preexistente, no lo introdujo el upsell.
+                                        //
+                                        // Va sólo en líneas sin promoción: una promoción
+                                        // viaja SOLA y su precio lo resuelve el motor.
+                                        item.discountId
+                                            ?.takeIf { it.isNotBlank() }
+                                            ?.let { put("discountId", it) }
                                     }
                                 },
                             )
@@ -520,32 +611,32 @@ class OrderRepository @Inject constructor(
          * él la comisión/cajón/forma SAT desde su historial.
          */
         tenderType: com.avoqado.pos.payment.domain.TenderTypeOption? = null,
+        /**
+         * 🔴 EL CLIENTE DE LA VENTA. El cajero puede elegirlo en el carrito y hasta hoy
+         * el cobro rápido lo TIRABA: la orden `FAST-*` nacía anónima aunque la pantalla
+         * dijera lo contrario — sin historial, sin CFDI y sin atribución.
+         *
+         * ADITIVO y opcional. El server valida contra ESTE negocio y, si el id no sirve,
+         * registra la venta anónima y AVISA (`customerLink`): un cliente inválido jamás
+         * rechaza dinero ya cobrado.
+         */
+        customerId: String? = null,
     ): Result<CashPayResult> {
         val venueId = secureStorage.venueId ?: return Result.failure(Exception("No venue"))
         if (staffId.isBlank()) return Result.failure(Exception("No staff"))
 
         return try {
-            val bodyJson = buildString {
-                append("{")
-                append("\"venueId\":\"$venueId\",")
-                append("\"amount\":$amount,")
-                append("\"tip\":$tip,")
-                append("\"status\":\"COMPLETED\",")
-                // Con un tipo del catálogo viaja la REFERENCIA {id, revision} y NO
-                // `method`: el server los rechaza juntos y resuelve él la semántica.
-                if (tenderType != null) {
-                    append("\"tenderTypeId\":\"${tenderType.id}\",")
-                    append("\"tenderRevision\":${tenderType.revision},")
-                } else {
-                    append("\"method\":\"${manualMethod?.serverMethod ?: "CASH"}\",")
-                    manualMethod?.externalSource?.let { append("\"externalSource\":\"$it\",") }
-                }
-                append("\"splitType\":\"$splitType\",")
-                append("\"staffId\":\"$staffId\",")
-                append("\"source\":\"AVOQADO_ANDROID\",")
-                append("\"idempotencyKey\":\"$idempotencyKey\"")
-                append("}")
-            }
+            val bodyJson = buildFastPaymentPayload(
+                venueId = venueId,
+                amount = amount,
+                tip = tip,
+                splitType = splitType,
+                staffId = staffId,
+                idempotencyKey = idempotencyKey,
+                manualMethod = manualMethod,
+                tenderType = tenderType,
+                customerId = customerId,
+            )
 
             val request = Request.Builder()
                 .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/fast")
@@ -563,8 +654,17 @@ class OrderRepository @Inject constructor(
                 val accessKey = extractReceiptAccessKeyFromResponse(body)
                 val receiptUrl = extractReceiptUrlFromResponse(body)
                 val inventoryWarning = extractInventoryWarningMessageFromResponse(body)
-                Log.d("💵", "Extracted paymentId: $paymentId, receiptAccessKey: $accessKey, receiptUrl: $receiptUrl, inventoryWarning: ${inventoryWarning != null}")
-                Result.success(CashPayResult(paymentId, accessKey, receiptUrl, inventoryWarning))
+                val customerWarning = extractCustomerLinkWarningFromResponse(body)
+                Log.d("💵", "Extracted paymentId: $paymentId, receiptAccessKey: $accessKey, receiptUrl: $receiptUrl, inventoryWarning: ${inventoryWarning != null}, customerWarning: ${customerWarning != null}")
+                Result.success(
+                    CashPayResult(
+                        paymentId = paymentId,
+                        receiptAccessKey = accessKey,
+                        receiptUrl = receiptUrl,
+                        inventoryWarningMessage = inventoryWarning,
+                        customerLinkWarning = customerWarning,
+                    ),
+                )
             } else {
                 Log.e("💵", "❌ Fast cash payment failed ($code): $body")
                 Result.failure(ServerException(code, "Error al registrar pago rápido ($code)"))
@@ -605,6 +705,16 @@ class OrderRepository @Inject constructor(
          * [extractOrderPaymentStatusFromResponse]. null = no vino.
          */
         val orderPaymentStatus: String? = null,
+        /**
+         * Aviso del server sobre EL CLIENTE de esta venta (`customerLink`): el id que
+         * mandó el POS no existe en este negocio, la venta ya tenía otro cliente, o no
+         * se pudo verificar. Español, listo para el toast ámbar.
+         *
+         * 🔴 El cobro SÍ quedó registrado en todos esos casos. Es un aviso, jamás un
+         * error, y jamás un motivo para volver a cobrar: el cliente se reasigna con
+         * `attachCustomerToPayment`. null = vinculado, venta anónima, o server viejo.
+         */
+        val customerLinkWarning: String? = null,
     )
 
     suspend fun recordCashPayment(

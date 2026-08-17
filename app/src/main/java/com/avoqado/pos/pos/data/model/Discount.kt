@@ -41,9 +41,16 @@ data class Discount(
             else -> DiscountScope.ORDER
         }
 
+    /**
+     * 🔴 `FIXED_AMOUNT` es lo que manda el server — su enum sólo tiene
+     * `PERCENTAGE | FIXED_AMOUNT | COMP` (`schema.prisma`). Reconocer sólo
+     * `"FIXED"` hacía que un descuento de **$15 se leyera como 15%**, porque
+     * cualquier otra cosa cae en el `else` porcentual. iOS ya aceptaba las dos
+     * ortografías (`CartModels.swift:551`); Android no, y por eso divergían.
+     */
     val discountType: DiscountType
         get() = when (type.uppercase()) {
-            "FIXED" -> DiscountType.FIXED
+            "FIXED", "FIXED_AMOUNT" -> DiscountType.FIXED
             else -> DiscountType.PERCENTAGE
         }
 
@@ -90,6 +97,40 @@ data class Discount(
     }
 }
 
+/**
+ * El descuento, EN CENTAVOS, que el server le aplicaría a una línea cuyo total
+ * —producto + modificadores, ya multiplicado por la cantidad— es [baseCents].
+ *
+ * 🔴 ESPEJO EXACTO de `calculateDiscountPesos`
+ * (`avoqado-server/src/services/shared/discount.service.ts`), que el server llama
+ * sobre `itemTotal` en `order.mobile.service.ts`. Es la ÚNICA fuente de esta
+ * aritmética en el POS: la usan la línea del carrito ([CartItem.itemDiscountCents])
+ * y la tarjeta de upsell (`UpsellResolver.toCard`), justamente para que no puedan
+ * divergir — que el cliente vea un precio y se le cobre otro es el bug que esto
+ * existe para impedir.
+ *
+ * Dos detalles que costaron dinero:
+ *  - **HALF-UP, no truncado.** El server hace `Math.round(x * 100) / 100`.
+ *    Truncar desviaba un centavo en cada línea con decimales.
+ *  - **El monto fijo es PLANO por línea**, no por unidad: el server aplica
+ *    `roundPesos(value)` una sola vez sobre el total de la línea.
+ *
+ * Un tipo desconocido devuelve 0 — se cobra completo, que es la dirección segura:
+ * nunca inventar un descuento que el server no va a reconocer.
+ */
+fun descuentoDeLineaCents(type: String?, value: Double?, baseCents: Int): Int {
+    val valor = value ?: return 0
+    if (baseCents <= 0) return 0
+    val bruto = when (type?.uppercase()) {
+        "PERCENTAGE" -> Math.round(baseCents * valor / 100.0).toInt()
+        "FIXED", "FIXED_AMOUNT" -> Math.round(valor * 100).toInt()
+        // El server trata COMP como "toda la línea" (100%).
+        "COMP" -> baseCents
+        else -> 0
+    }
+    return bruto.coerceIn(0, baseCents)
+}
+
 @Serializable
 data class DiscountsResponse(
     val success: Boolean = true,
@@ -112,9 +153,10 @@ data class CouponCode(
     val invalidReason: String? = null,
     val estimatedSavings: Double? = null,
 ) {
+    /** Misma razón que en [Discount.discountType]: el server dice `FIXED_AMOUNT`. */
     val discountType: DiscountType
         get() = when (type.uppercase()) {
-            "FIXED" -> DiscountType.FIXED
+            "FIXED", "FIXED_AMOUNT" -> DiscountType.FIXED
             else -> DiscountType.PERCENTAGE
         }
 

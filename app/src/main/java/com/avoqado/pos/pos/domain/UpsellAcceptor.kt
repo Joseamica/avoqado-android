@@ -1,5 +1,7 @@
 package com.avoqado.pos.pos.domain
 
+import com.avoqado.pos.pos.data.model.Discount
+import com.avoqado.pos.pos.data.model.LinkedDiscount
 import com.avoqado.pos.pos.data.model.Product
 import com.avoqado.pos.pos.data.model.ResolvedModifier
 import com.avoqado.pos.pos.data.model.SelectedModifier
@@ -65,6 +67,17 @@ class CounterUpsellAcceptor(
                 unavailable += card
                 return@forEach
             }
+            // 🔴 El descuento ligado también se re-valida. Si murió entre que el POS
+            // bajó las reglas y el toque, hay dos salidas y las dos son malas:
+            // mandar el id tumba la venta ENTERA con 400 (el server rechaza ids que
+            // no conoce, a propósito), y agregarla sin descuento cobra el precio de
+            // lista después de haberle prometido al cliente el rebajado. Se reporta
+            // como no disponible: se pierde la sugerencia, nunca la venta.
+            val descuento = card.linkedDiscount?.let { resolverDescuentoVivo(it, product) }
+            if (card.linkedDiscount != null && descuento == null) {
+                unavailable += card
+                return@forEach
+            }
             // Se agrega con el precio VIVO del producto, no con el de la tarjeta:
             // cobrar un precio viejo porque la pantalla lo dijo es la misma clase de
             // bug que el snapshot congelado.
@@ -74,10 +87,16 @@ class CounterUpsellAcceptor(
             // modificadores. Si se quedara en addProduct(), entraría SIN el tamaño
             // y se cobraría el precio pelón: la tarjeta dijo un precio y se cobra
             // otro.
-            if (card.modifiers.isNotEmpty()) {
+            //
+            // 🔴 Con descuento ligado va por el mismo camino, por la misma razón:
+            // `addProduct` no sabe de descuentos Y fusiona con una línea igual del
+            // carrito — una línea rebajada fusionada con una a precio de lista
+            // cobraría el descuento dos veces o ninguna.
+            if (card.modifiers.isNotEmpty() || descuento != null) {
                 cartViewModel.addProductWithModifiers(
                     product = product,
                     modifiers = card.modifiers.map { it.toSelectedModifier() },
+                    discount = descuento,
                 )
             } else {
                 cartViewModel.addProduct(product)
@@ -92,7 +111,44 @@ class CounterUpsellAcceptor(
             unavailable = unavailable,
         )
     }
+
+    /**
+     * El descuento de la tarjeta, comprobado contra el catálogo VIVO del POS.
+     * Devuelve null si ya no sirve — el llamador convierte eso en "no disponible".
+     *
+     * 🔴 Catálogo VACÍO significa "todavía no sé", no "ya no existe". Arranque en
+     * frío o sin red entran aquí, y tratarlos como ausencia apagaría TODAS las
+     * promociones del local justo cuando no hay red — exactamente el error que ya
+     * costó las comandas offline (`PrintConfigRepository`, ver
+     * `.claude/rules/offline-first-y-hub-lan.md` §4). Se confía en la regla, que
+     * el server ya validó al servirla.
+     */
+    private fun resolverDescuentoVivo(ligado: LinkedDiscount, product: Product): Discount? {
+        val vivos = cartViewModel.discountsRepository.discounts.value
+        if (vivos.isEmpty()) return ligado.toDiscount()
+        val vivo = vivos.firstOrNull { it.id == ligado.id } ?: return null
+        if (!vivo.active) return null
+        // El server rechaza la orden entera si el descuento no aplica al producto
+        // (`validateDiscountScopeForItem`). Mejor perder la tarjeta que la venta.
+        if (!vivo.appliesTo(product.id, product.categoryId)) return null
+        return vivo
+    }
 }
+
+/**
+ * El descuento ligado tal como lo sirvió el server, en la forma que entiende el
+ * carrito. Se usa sólo cuando el POS todavía no tiene catálogo de descuentos.
+ *
+ * `scope = "ITEM"` porque el server únicamente liga descuentos de artículo a una
+ * regla de upsell (`nightly-upsell-rules.job.ts` filtra `scope: 'ITEM'`).
+ */
+private fun LinkedDiscount.toDiscount() = Discount(
+    id = id,
+    name = badge,
+    value = value,
+    type = type,
+    scope = "ITEM",
+)
 
 /**
  * El server ya resolvió nombre y precio — mapa directo, sin tocar el catálogo

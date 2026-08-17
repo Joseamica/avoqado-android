@@ -338,12 +338,36 @@ class CartViewModel @Inject constructor(
     val referralPlanAllowed: Boolean
         get() = planManager.hasFeature("REFERRAL_PROGRAM")
 
+    /** Cliente atado a la venta: el `id` es lo que viaja al server, `name` lo que se pinta. */
+    data class SelectedCustomer(val id: String, val name: String)
+
     /**
-     * Currently selected customer id, mirrored from the CheckoutScreen so
-     * the referral use cases can read it. The screen calls
-     * [setSelectedCustomer] when the cashier picks/clears a customer.
+     * 🔴 El cliente de esta venta. Vive en el ViewModel —y no en un `remember` de
+     * `CheckoutScreen`— **para sobrevivir a que se recree la Activity**, por la
+     * MISMA razón que [chargingAgainstOrderId] y [pendingPackGrant]: girar la
+     * tablet, que Android entre en modo oscuro al anochecer, o un cambio de
+     * idioma/tamaño de fuente recrean `MainActivity` (no declara `configChanges`)
+     * y un `remember` pelón vuelve a null. El carrito sobrevive, el cliente no: la
+     * orden nacía SIN cliente y se perdían lealtad, CFDI e historial de esa
+     * persona. Tercer caso del mismo patrón en esta pantalla.
+     *
+     * Ojo: el bug NO era sólo que la copia frágil se leyera al armar la orden.
+     * La pantalla espejaba su `remember` hacia acá con un `LaunchedEffect`, así que
+     * al recrearse **también borraba esta copia** (`setSelectedCustomer(null)`)
+     * antes de que nadie la leyera. Por eso ya no hay espejo: hay una sola copia,
+     * ésta, y la pantalla la lee con `collectAsState()`.
+     *
+     * Guarda también el NOMBRE porque si no la pantalla diría "Agregar cliente"
+     * mientras la venta sí lleva cliente — igual de confuso que perderlo. Es exacto
+     * lo que hace iOS, que nunca tuvo este bug: `CartViewModel.attachedCustomerId`
+     * + `customerName`, los dos en el carrito.
+     *
+     * 🔴 A diferencia de los otros dos, éste SÍ es un `StateFlow`: la pantalla lo
+     * pinta (encabezado del carrito, créditos del cliente) y tiene que recomponerse
+     * cuando el cajero elige a alguien.
      */
-    private val _selectedCustomerId = MutableStateFlow<String?>(null)
+    private val _selectedCustomer = MutableStateFlow<SelectedCustomer?>(null)
+    val selectedCustomer: StateFlow<SelectedCustomer?> = _selectedCustomer.asStateFlow()
 
     /// True when a class-seed was skipped because the cart already links a
     /// different reservation — the UI shows a message so the class isn't
@@ -351,7 +375,6 @@ class CartViewModel @Inject constructor(
     private val _seedConflict = MutableStateFlow(false)
     val seedConflict: StateFlow<Boolean> = _seedConflict.asStateFlow()
     fun clearSeedConflict() { _seedConflict.value = false }
-    val selectedCustomerId: StateFlow<String?> = _selectedCustomerId.asStateFlow()
 
     private val _referralCode = MutableStateFlow("")
     val referralCode: StateFlow<String> = _referralCode.asStateFlow()
@@ -363,8 +386,11 @@ class CartViewModel @Inject constructor(
         // Clear cart when venue changes (like iOS)
         viewModelScope.launch {
             authRepository.venueSwitched.collect {
+                // 🔴 `finalizarVenta()`, no `clearCart()`: el cliente es de ESTE local.
+                // Dejarlo puesto hacía que la primera orden del local B naciera con un
+                // `customerId` del local A — un id de OTRO tenant dentro de la orden.
                 Log.d("🛒", "Venue switched — clearing cart")
-                clearCart()
+                finalizarVenta()
                 fetchStaff()
             }
         }
@@ -468,6 +494,13 @@ class CartViewModel @Inject constructor(
                         // `clearCart()`: el vínculo con la venta a medio cobrar se
                         // limpia aquí por la misma razón que en `restoreSavedCart`.
                         _pendingSplitOrder.value = null
+                        // 🔴 Y el cliente también: este camino YA se comportaba como
+                        // fin de venta (vacía el carrito y suelta el vínculo), sólo le
+                        // faltaba soltarlo. Pasa cuando dan de baja al mesero
+                        // seleccionado desde el dashboard: el carrito se vacía solo y
+                        // el cliente se quedaba en el encabezado, así que la venta
+                        // siguiente —de otra persona— nacía con su id.
+                        setSelectedCustomer(null)
                     }
                 },
                 onFailure = { error ->
@@ -617,7 +650,13 @@ class CartViewModel @Inject constructor(
         isCortesia: Boolean = false,
         cortesiaReason: String? = null,
         priceAdjustment: Int? = null,
-        discountId: String? = null,
+        /**
+         * 🔴 El descuento COMPLETO, no su id. La línea congela `type` y `value`
+         * para poder cobrar exactamente lo mismo que el server va a registrar;
+         * con sólo el id, el POS cobraba precio de lista y la orden quedaba
+         * rebajada — ver [CartItem.itemDiscountType].
+         */
+        discount: Discount? = null,
     ) {
         // Ver addProduct: agotado avisa, nunca bloquea.
         avisarSiAgotado(product)
@@ -634,7 +673,10 @@ class CartViewModel @Inject constructor(
             isCortesia = isCortesia,
             cortesiaReason = cortesiaReason,
             priceAdjustment = priceAdjustment,
-            itemDiscountId = discountId,
+            itemDiscountId = discount?.id,
+            itemDiscountType = discount?.type,
+            itemDiscountValue = discount?.value,
+            itemDiscountName = discount?.name,
         )
         _cartState.update { it.copy(items = it.items + newItem) }
         Log.d("🛒", "Added product with modifiers: ${product.name} x$quantity (${modifiers.size} mods)")
@@ -966,6 +1008,9 @@ class CartViewModel @Inject constructor(
                     cortesiaReason = item.cortesiaReason,
                     priceAdjustment = item.priceAdjustment,
                     itemDiscountId = item.itemDiscountId,
+                    itemDiscountType = item.itemDiscountType,
+                    itemDiscountValue = item.itemDiscountValue,
+                    itemDiscountName = item.itemDiscountName,
                     promotionInstanceId = item.promotionInstanceId,
                     promotionName = item.promotionName,
                     promotionId = item.promotionId,
@@ -977,10 +1022,13 @@ class CartViewModel @Inject constructor(
             orderNote = state.orderNote,
             orderTaxPercent = state.orderTaxPercent,
             reservationId = state.reservationId,
-            attachedCustomerId = _selectedCustomerId.value,
+            attachedCustomerId = _selectedCustomer.value?.id,
         )
         savedCartsRepository.saveCart(savedCart)
-        clearCart()
+        // El cliente se fue CON el carrito guardado (`attachedCustomerId` arriba), así
+        // que aquí la venta terminó: si no se suelta, se queda en el encabezado y la
+        // venta siguiente nace con él.
+        finalizarVenta()
         Log.d("🛒", "Cart saved as: $cartName")
         return true
     }
@@ -1014,6 +1062,114 @@ class CartViewModel @Inject constructor(
         // El split lo vuelve a marcar DESPUÉS de dejar el saldo en el carrito.
         _pendingSplitOrder.value = null
         Log.d("🛒", "Cart cleared")
+    }
+
+    /**
+     * 🔴 FIN DE VENTA: vacía el carrito **y suelta al cliente**.
+     *
+     * Existe porque `clearCart()` significa dos cosas distintas y mezclarlas cuesta
+     * dinero: en un split de mostrador se llama **a media venta** para sustituir el
+     * carrito por el "Saldo pendiente", y ahí el cliente TIENE que sobrevivir para la
+     * parte 2. Por eso el cliente no se suelta dentro de `clearCart()` — se suelta
+     * aquí, donde la venta de verdad se acaba.
+     *
+     * Es el mismo desdoble que ya se hizo con el vínculo de la orden
+     * ([chargingAgainstOrderId] vs. el vínculo durable): dos ciclos de vida que se
+     * veían iguales.
+     *
+     * **Úsalo en toda salida que termine la venta** — vaciar a mano, guardar el
+     * carrito, cambiar de local, emitir un vale, pagar después. Dejar `clearCart()` a
+     * secas en una de ésas deja al cliente pegado y la venta SIGUIENTE nace con él:
+     * lealtad, CFDI e historial de quien no compró. En el cobro NO se usa: ese camino
+     * pasa por [aplicarCobroConfirmado], que decide si la venta cerró o sigue viva.
+     */
+    fun finalizarVenta() {
+        clearCart()
+        setSelectedCustomer(null)
+    }
+
+    /** En qué quedó la venta tras un cobro confirmado. Espeja 1:1 los tres caminos. */
+    enum class RamaCobro {
+        /** Split por producto: se pagaron renglones sueltos. */
+        RENGLONES_PAGADOS,
+
+        /** Quedó saldo: el carrito pasa a ser "Saldo pendiente". */
+        QUEDA_SALDO,
+
+        /** Pago completo. */
+        PAGO_COMPLETO,
+    }
+
+    data class CobroAplicado(
+        val rama: RamaCobro,
+        /**
+         * 🔴 La venta se ACABÓ: no queda saldo y el carrito quedó vacío. NO es lo
+         * mismo que [RamaCobro.PAGO_COMPLETO]: un split **por producto** que paga
+         * los últimos renglones cierra la venta desde [RamaCobro.RENGLONES_PAGADOS].
+         */
+        val ventaTerminada: Boolean,
+        /**
+         * 🔴 El referido capturable, **congelado antes de tocar el carrito**. Cerrar
+         * la venta borra la validación, el código y el staff, y la captura corre
+         * después en un `launch` asíncrono: sin esta foto se perdía en silencio y el
+         * que refirió nunca recibía su crédito. `null` = no había referido válido.
+         */
+        val referralPendiente: ReferralPendiente?,
+    )
+
+    /**
+     * 🔴 DINERO. Aplica al carrito el resultado de un cobro confirmado y decide si la
+     * venta terminó. Vive aquí —y no en el Composable— porque es una decisión de
+     * negocio: en la pantalla no se podía probar, y por eso el hueco de abajo pasó
+     * desapercibido.
+     *
+     * **La venta terminó ⇔ no queda saldo Y el carrito quedó vacío.** Las dos
+     * condiciones se cubren entre sí: sin la del saldo, quitar los renglones de un
+     * combo podría vaciar el carrito con dinero todavía pendiente; sin la del
+     * carrito, un split por producto que paga TODO se leería como venta viva.
+     *
+     * 🔴 El caso que se escapaba: el `when` evalúa `BYPRODUCT` PRIMERO, así que
+     * cobrar por producto marcando todos los renglones —incluso sin ninguna parte
+     * previa, la venta entera de un tirón— cae en esa rama con saldo 0. Soltar al
+     * cliente sólo en la rama de pago completo dejaba al cliente pegado en **toda**
+     * venta cobrada por producto que vaciara el carrito, y la venta siguiente nacía
+     * con él.
+     */
+    fun aplicarCobroConfirmado(
+        splitType: String?,
+        paidItemIds: Set<String>,
+        remainingBalanceCents: Int,
+    ): CobroAplicado {
+        // 🔴 Se fotografía ANTES de tocar nada: cerrar la venta borra la validación,
+        // el código y el staff, y la captura corre después. Ver [ReferralPendiente].
+        val referralPendiente = snapshotReferralPendiente()
+        val esPorProducto = splitType == "BYPRODUCT" && paidItemIds.isNotEmpty()
+        val rama = when {
+            esPorProducto -> {
+                paidItemIds.forEach { removeItem(it) }
+                RamaCobro.RENGLONES_PAGADOS
+            }
+            remainingBalanceCents > 0 -> {
+                // El cliente sobrevive: `clearCart()` no lo toca, a propósito.
+                clearCart()
+                addCustomAmount(name = "Saldo pendiente", amountCents = remainingBalanceCents)
+                RamaCobro.QUEDA_SALDO
+            }
+            else -> {
+                clearCart()
+                RamaCobro.PAGO_COMPLETO
+            }
+        }
+
+        val ventaTerminada = remainingBalanceCents <= 0 && _cartState.value.isEmpty
+        if (ventaTerminada) {
+            // 🔴 Arrastrar al cliente a la venta siguiente es PEOR que perderlo:
+            // perderlo deja un dato faltante; arrastrarlo atribuye lealtad, CFDI e
+            // historial a quien no compró.
+            setSelectedCustomer(null)
+            Log.d("🛒", "Venta cerrada ($rama) — se suelta el cliente")
+        }
+        return CobroAplicado(rama = rama, ventaTerminada = ventaTerminada, referralPendiente = referralPendiente)
     }
 
     /**
@@ -1153,15 +1309,27 @@ class CartViewModel @Inject constructor(
     private val REFERRAL_DISCOUNT_SOURCE = "REFERRAL_NEW_CUSTOMER"
 
     /**
-     * Mirrors the customer selection from the CheckoutScreen so the referral
-     * use cases have a customer id to validate against. Switching customers
-     * (or clearing the customer) invalidates the cached validation — the
-     * EXISTING_CUSTOMER rule is per-customer, so a stale Valid would be wrong.
+     * El cajero eligió (o quitó) al cliente de esta venta. Es el ÚNICO camino
+     * para moverlo: [selectedCustomer] es la copia buena, no un espejo de la
+     * pantalla.
+     *
+     * Cambiar de cliente —o quitarlo— invalida la validación de referido en
+     * caché: la regla EXISTING_CUSTOMER es por cliente, así que un `Valid` viejo
+     * estaría mintiendo sobre otra persona.
+     *
+     * [customerName] es opcional para el camino que sólo conoce el id (un
+     * carrito guardado, que persiste `attachedCustomerId` y nada más). Sin
+     * nombre se cae a "Cliente" —el mismo texto de reserva que ya usa
+     * `Customer.fullName`— porque un cliente atado NO puede pintarse como
+     * "Agregar cliente": diría que no hay nadie cuando la venta sí lo lleva.
      */
-    fun setSelectedCustomer(customerId: String?) {
-        val previous = _selectedCustomerId.value
-        if (previous == customerId) return
-        _selectedCustomerId.value = customerId
+    fun setSelectedCustomer(customerId: String?, customerName: String? = null) {
+        val previous = _selectedCustomer.value?.id
+        val id = customerId?.trim()?.takeIf { it.isNotEmpty() }
+        val nuevo = id?.let { SelectedCustomer(it, customerName?.trim()?.takeIf { n -> n.isNotEmpty() } ?: "Cliente") }
+        if (_selectedCustomer.value == nuevo) return
+        _selectedCustomer.value = nuevo
+        if (previous == id) return
         if (previous != null) {
             // Customer changed (incl. switch-to-null). Any cached referral
             // state is for the previous customer, drop it.
@@ -1183,7 +1351,7 @@ class CartViewModel @Inject constructor(
 
     /**
      * Validates the cached [referralCode] against the backend for the
-     * cached [selectedCustomerId]. No-ops when either is missing. On
+     * cached [selectedCustomer]. No-ops when either is missing. On
      * [ReferralValidationResult.Valid] applies the discount to the cart; on
      * [ReferralValidationResult.Invalid] or network failure clears any
      * discount that the previous validation may have applied.
@@ -1194,7 +1362,7 @@ class CartViewModel @Inject constructor(
             Log.w("🎁", "validateReferralCode skipped: no venueId")
             return
         }
-        val customerId = _selectedCustomerId.value
+        val customerId = _selectedCustomer.value?.id
         if (customerId.isNullOrBlank()) {
             Log.w("🎁", "validateReferralCode skipped: no customer selected")
             return
@@ -1290,29 +1458,62 @@ class CartViewModel @Inject constructor(
      * caller should NOT block the payment on a false result, since the
      * cashier already saw a Valid banner and the discount was visible.
      */
-    suspend fun captureReferralOnPayment(orderId: String? = null): Boolean {
-        val state = _referralValidation.value
-        if (state !is ReferralCaptureUiState.Valid) return true
+    /**
+     * 🔴 Todo lo que hace falta para capturar el referido, **congelado antes de que
+     * el cobro toque nada**.
+     *
+     * Existe porque cerrar la venta destruye las TRES piezas de la captura, y la
+     * captura corre después, en un `launch` asíncrono:
+     * - `setSelectedCustomer(null)` → `clearReferral()` → la validación cae a `Idle`
+     *   (y `captureReferralOnPayment` salía en su primera línea) y el código a `""`.
+     * - `clearCart()` → borra también el `selectedStaffId`.
+     *
+     * Congelar SÓLO el `customerId` no alcanzaba: la función ya había salido antes
+     * de llegar a leerlo. El id no era el problema — lo era la validación.
+     */
+    data class ReferralPendiente(
+        val code: String,
+        val customerId: String,
+        val staffId: String,
+    )
+
+    /**
+     * Fotografía el referido capturable AHORA, o `null` si no hay uno válido.
+     *
+     * NOTA: el campo del backend es `capturedByStaffVenueId` y espera un id de
+     * StaffVenue. El POS guarda el userId a nivel usuario en SecureStorage y el
+     * staff elegido por el cajero en `cartState.selectedStaffId`. Se sigue el patrón
+     * del TPV (Plan 5A), que manda `secureStorage.getStaffId()` — ver CONCERNS.
+     */
+    private fun snapshotReferralPendiente(): ReferralPendiente? {
+        if (_referralValidation.value !is ReferralCaptureUiState.Valid) return null
+        val code = _referralCode.value.trim().takeIf { it.isNotEmpty() } ?: return null
+        val customerId = _selectedCustomer.value?.id ?: return null
+        val staffId = _cartState.value.selectedStaffId.takeIf { it.isNotBlank() }
+            ?: secureStorage.userId
+            ?: return null
+        return ReferralPendiente(code = code, customerId = customerId, staffId = staffId)
+    }
+
+    suspend fun captureReferralOnPayment(
+        orderId: String? = null,
+        pendiente: ReferralPendiente? = null,
+    ): Boolean {
+        // Nada válido que capturar —ni congelado ni vivo— no es un fallo.
+        if (pendiente == null && _referralValidation.value !is ReferralCaptureUiState.Valid) return true
 
         val venueId = secureStorage.venueId ?: return false
-        val customerId = _selectedCustomerId.value ?: return false
-        // NOTE: The backend field is `capturedByStaffVenueId` — server-side
-        // it's expected to be a StaffVenue id. The Android POS stores the
-        // user-level userId in SecureStorage, and the cashier-selected staff
-        // id (cartState.selectedStaffId) under `selectedStaffIdForCurrentVenue`.
-        // Following the TPV pattern (Plan 5A) which sends `secureStorage
-        // .getStaffId()` here — see CONCERNS in the report.
-        val staffId = cartState.value.selectedStaffId.takeIf { it.isNotBlank() }
-            ?: secureStorage.userId
-            ?: return false
-        val code = _referralCode.value.trim()
-        if (code.isBlank()) return false
+        // 🔴 Se prefiere el snapshot CONGELADO: esto corre en un `launch` asíncrono
+        // y para entonces el estado vivo puede estar ya borrado. Ver
+        // [ReferralPendiente]. Sin snapshot se lee el estado vivo, que es lo
+        // correcto para cualquier otro llamador.
+        val captura = pendiente ?: snapshotReferralPendiente() ?: return false
 
         val result = captureReferralUseCase(
             venueId = venueId,
-            referralCode = code,
-            newCustomerId = customerId,
-            capturedByStaffVenueId = staffId,
+            referralCode = captura.code,
+            newCustomerId = captura.customerId,
+            capturedByStaffVenueId = captura.staffId,
             intendedOrderId = orderId,
         )
 
@@ -1354,6 +1555,9 @@ class CartViewModel @Inject constructor(
                 cortesiaReason = savedItem.cortesiaReason,
                 priceAdjustment = savedItem.priceAdjustment,
                 itemDiscountId = savedItem.itemDiscountId,
+                itemDiscountType = savedItem.itemDiscountType,
+                itemDiscountValue = savedItem.itemDiscountValue,
+                itemDiscountName = savedItem.itemDiscountName,
                 // El combo vuelve como combo: mismo `promotionInstanceId` y las
                 // mismas elecciones, o el carrito restaurado cobraría el 2x1
                 // como dos productos a precio de lista.
@@ -1385,7 +1589,12 @@ class CartViewModel @Inject constructor(
         // solo guard — y sin esto el cajero vería un aviso falso de "venta
         // anterior a medio cobrar" sobre una venta que ya terminó.
         _pendingSplitOrder.value = null
-        _selectedCustomerId.value = savedCart.attachedCustomerId
+        // El carrito guardado persiste el id del cliente, no su nombre: se cae a
+        // "Cliente" (ver [setSelectedCustomer]) para que el encabezado NO diga
+        // "Agregar cliente" sobre una venta que sí lo lleva — y para que ese
+        // cliente llegue al cobro, que antes se perdía por el mismo motivo que el
+        // bug de rotación: la pantalla tenía su propia copia y ésta no la tocaba.
+        setSelectedCustomer(savedCart.attachedCustomerId)
         savedCartsRepository.deleteCart(savedCart.id)
         Log.d("🛒", "Restored saved cart: ${savedCart.name}")
     }

@@ -57,6 +57,24 @@ data class CartItem(
     var cortesiaReason: String? = null,
     var itemDiscountId: String? = null,
     /**
+     * Descuento de ESTA línea, congelado al momento de aplicarlo
+     * (`PERCENTAGE | FIXED_AMOUNT | COMP` + su valor + su nombre para pintarlo).
+     *
+     * 🔴 Se guarda EN la línea, no se busca en un repositorio, por dos razones:
+     * [totalPrice] tiene que seguir siendo puro (lo leen los totales del carrito
+     * en cada recomposición y el cobro sin red), y un carrito guardado debe
+     * cobrar lo mismo mañana aunque el dueño edite el descuento hoy. Es el mismo
+     * patrón que ya usan `promotionName` y `SelectedModifier.priceInCents`.
+     *
+     * Sin el snapshot sólo queda el id, y con un id NO se puede calcular nada:
+     * la línea se cobra completa. Eso es exactamente lo que pasaba antes de
+     * 2026-08-17 —el POS cobraba precio de lista y el server registraba la orden
+     * rebajada— y por eso el id solo nunca vuelve a ser suficiente.
+     */
+    var itemDiscountType: String? = null,
+    var itemDiscountValue: Double? = null,
+    var itemDiscountName: String? = null,
+    /**
      * Venta por peso (báscula): kg con 3 decimales. Cuando está presente, [unitPrice] es el precio
      * POR KG en centavos, [quantity] queda fija en 1 y el total de línea = round(weightKg × unitPrice)
      * (half-up, igual que el server). Una línea con peso JAMÁS se fusiona con otra (D9).
@@ -69,14 +87,33 @@ data class CartItem(
     val effectiveUnitPrice: Int
         get() = priceAdjustment ?: unitPrice
 
-    val totalPrice: Int
+    /**
+     * Lo que vale la línea ANTES del descuento: producto + modificadores, ya por
+     * cantidad. Es el `itemTotal` del server (`order.mobile.service.ts`) y la base
+     * sobre la que pega el descuento.
+     */
+    val lineBeforeDiscountCents: Int
         get() = when {
-            isCortesia -> 0
             // Peso: round HALF-UP al centavo (roundToInt = Math.round, ties hacia arriba) — misma
             // aritmética que el server (price × kg a 2 dec). quantity queda en 1 en líneas pesadas.
             weightKg != null ->
                 (weightKg * effectiveUnitPrice).roundToInt() + selectedModifiers.sumOf { it.priceInCents }
             else -> (effectiveUnitPrice + selectedModifiers.sumOf { it.priceInCents }) * quantity
+        }
+
+    /**
+     * 🔴 El descuento de la línea, calculado con la MISMA función que usa la
+     * tarjeta de upsell ([descuentoDeLineaCents]) y con la misma aritmética que el
+     * server. Pega sobre producto **+ modificadores**: un -20% sobre $35 de agua
+     * con $15 de tamaño son $10, no $7.
+     */
+    val itemDiscountCents: Int
+        get() = descuentoDeLineaCents(itemDiscountType, itemDiscountValue, lineBeforeDiscountCents)
+
+    val totalPrice: Int
+        get() = when {
+            isCortesia -> 0
+            else -> lineBeforeDiscountCents - itemDiscountCents
         }
 
     val modifiersSummary: String?
@@ -99,5 +136,6 @@ data class CartItem(
         get() = selectedModifiers.isNotEmpty() ||
             itemNote != null ||
             priceAdjustment != null ||
-            isCortesia
+            isCortesia ||
+            itemDiscountId != null
 }
