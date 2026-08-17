@@ -52,10 +52,10 @@ class UpsellResolverTest {
         modifierGroups = modifierGroups,
     )
 
-    /** Un grupo de modificadores mínimo — sólo lo que `hasRequiredModifierGroup` necesita. */
-    private fun modifierGroup(required: Boolean) = ProductModifierGroupEntry(
-        groupId = "g_tam",
-        group = ModifierGroupData(id = "g_tam", name = "Tamaño", required = required),
+    /** Un grupo de modificadores mínimo — sólo lo que `requiredModifierGroupIds` necesita. */
+    private fun modifierGroup(required: Boolean, id: String = "g_tam", name: String = "Tamaño") = ProductModifierGroupEntry(
+        groupId = id,
+        group = ModifierGroupData(id = id, name = name, required = required),
     )
 
     /** El producto del founder: "Agua Mineral 1L" con el grupo "Tamaño" obligatorio. */
@@ -63,6 +63,21 @@ class UpsellResolverTest {
         id = "prod_agua",
         price = precio,
         modifierGroups = listOf(modifierGroup(required = true)),
+    )
+
+    /**
+     * DOS obligatorios: "Tamaño" y "Sabor". Existe para probar que "resuelto"
+     * significa CADA obligatorio, no "trae algo" — el caso real es un catálogo
+     * que sincroniza DESPUÉS de las reglas y le agrega un segundo obligatorio a
+     * un producto cuya regla ya estaba cacheada con sólo el primero resuelto.
+     */
+    private fun productoConDosObligatorios(precio: Double = 20.0) = product(
+        id = "prod_agua",
+        price = precio,
+        modifierGroups = listOf(
+            modifierGroup(required = true, id = "g_tam", name = "Tamaño"),
+            modifierGroup(required = true, id = "g_sabor", name = "Sabor"),
+        ),
     )
 
     private fun rule(
@@ -269,6 +284,49 @@ class UpsellResolverTest {
         assertEquals(null, cards[0].badge)
     }
 
+    @Test
+    fun `🔴 el descuento pega sobre producto MAS modificadores, igual que el server`() {
+        // El server descuenta sobre `itemTotal` = producto + modificadores
+        // (`order.mobile.service.ts`). Si la tarjeta descontara sólo el producto y
+        // luego sumara el modificador, diría $43 y el server registraría $40.
+        val cards = resolve(
+            listOf(
+                rule(
+                    suggested = "prod_agua",
+                    suggestedModifiers = listOf(ResolvedModifier("g_tam", "m_gr", "Grande", 15.0)),
+                    linkedDiscount = LinkedDiscount("d1", "PERCENTAGE", 20.0, "-20%"),
+                ),
+            ),
+            listOf(productoConObligatorio(precio = 35.0)),
+        )
+
+        assertEquals("(35 + 15) × 0.8 = 40", 4000, cards.first().displayPriceCents)
+    }
+
+    @Test
+    fun `🔴 el redondeo del descuento es HALF-UP, igual que roundPesos del server`() {
+        // 1611¢ × 20% = 322.2¢ → el server redondea a 322 y cobra 1289. Truncar el
+        // producto (lo que hacía esta función) daba 1288: un centavo de descuadre.
+        val r = rule(linkedDiscount = LinkedDiscount("d1", "PERCENTAGE", 20.0, "-20%"))
+        val cards = resolve(listOf(r), listOf(product("galleta", price = 16.11)))
+
+        assertEquals(1289, cards[0].displayPriceCents)
+    }
+
+    @Test
+    fun `la tarjeta lleva el descuento ligado COMPLETO, no solo su id`() {
+        // El carrito necesita tipo y valor para cobrar lo mismo que se prometió;
+        // con sólo el id no puede calcular nada.
+        val r = rule(linkedDiscount = LinkedDiscount("d1", "PERCENTAGE", 20.0, "-20%"))
+        val cards = resolve(listOf(r), listOf(product("galleta", price = 35.0)))
+
+        val ligado = cards[0].linkedDiscount
+        assertEquals("d1", ligado?.id)
+        assertEquals("PERCENTAGE", ligado?.type)
+        assertEquals(20.0, ligado?.value ?: 0.0, 0.001)
+        assertEquals("d1", cards[0].linkedDiscountId)
+    }
+
     // ── modificadores obligatorios YA resueltos (spec 2026-08-16, B3) ───────────
     //
     // Antes, un producto con un grupo obligatorio se descartaba SIEMPRE (tocarlo
@@ -351,5 +409,46 @@ class UpsellResolverTest {
             )
             assertTrue("el veto, el peso y el stock siguen mandando", cards.isEmpty())
         }
+    }
+
+    // ── "resuelto" = CADA obligatorio cubierto, no "trae algo" (ronda 1 de revisión) ──
+    //
+    // El server garantiza esto en cada GET (un pick por grupo obligatorio, o
+    // degrada a []), pero el POS cachea REGLAS y CATÁLOGO por separado. Si el
+    // catálogo sincroniza DESPUÉS y el producto gana un segundo obligatorio, una
+    // regla vieja que sólo resolvió el primero no puede colarse: la línea entraría
+    // sub-especificada a cocina y, si el grupo sin resolver tiene precio, el local
+    // cobra de menos.
+
+    @Test
+    fun `🟠 dos obligatorios, uno resuelto NO basta — la tarjeta no se muestra`() {
+        val cards = resolve(
+            listOf(
+                rule(
+                    suggested = "prod_agua",
+                    // Sólo "Tamaño" resuelto; "Sabor" quedó sin pick.
+                    suggestedModifiers = listOf(ResolvedModifier("g_tam", "m_gr", "Grande", 15.0)),
+                ),
+            ),
+            listOf(productoConDosObligatorios()),
+        )
+        assertTrue("un obligatorio sin resolver sigue abriendo el formulario", cards.isEmpty())
+    }
+
+    @Test
+    fun `dos obligatorios, los DOS resueltos — la tarjeta sí se muestra`() {
+        val cards = resolve(
+            listOf(
+                rule(
+                    suggested = "prod_agua",
+                    suggestedModifiers = listOf(
+                        ResolvedModifier("g_tam", "m_gr", "Grande", 15.0),
+                        ResolvedModifier("g_sabor", "m_lim", "Limón", 0.0),
+                    ),
+                ),
+            ),
+            listOf(productoConDosObligatorios()),
+        )
+        assertEquals(1, cards.size)
     }
 }

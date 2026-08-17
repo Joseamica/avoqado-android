@@ -39,6 +39,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
@@ -214,8 +215,22 @@ private fun UpsellChip(
                     fontSize = 13.sp,
                     fontWeight = FontWeight.Medium,
                     maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                     color = MaterialTheme.colorScheme.onSurface,
                 )
+                // 🟡 Cuando hay `headline`, ese Text de arriba lo muestra EN VEZ
+                // de `card.name` — y `card.name` es donde vive el modificador
+                // resuelto ("Agua Mineral 1L (Grande)"). Sin esta línea, un
+                // headline escondería POR QUÉ el precio no es el de lista.
+                if (card.modifiers.isNotEmpty()) {
+                    Text(
+                        text = card.modifiers.joinToString(", ") { it.name },
+                        fontSize = 11.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         text = money(card.displayPriceCents),

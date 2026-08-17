@@ -37,7 +37,15 @@ class UpsellRepository @Inject constructor(
     private val client: OkHttpClient,
     private val payloadCache: PayloadCache,
 ) {
-    private val json = Json { ignoreUnknownKeys = true }
+    // 🟡 `coerceInputValues` NO es sólo estilo: sin él, un `null` EXPLÍCITO sobre
+    // una propiedad no-nulable con default (p. ej. si algún día el server manda
+    // `"suggestedModifiers":null` en vez de omitir la llave) hace que
+    // `decodeFromString` LANCE — un default sólo cubre la llave AUSENTE, no un
+    // `null` presente. Con esto, ese `null` se trata igual que la ausencia: cae
+    // al default (`emptyList()`). El `try/catch` de `fetchRules()` ya evita el
+    // crash (cae al cache), pero SIN esto el efecto sería "toda la tabla se
+    // queda vieja" en vez de "esa regla en particular pierde sus modificadores".
+    private val json = Json { ignoreUnknownKeys = true; coerceInputValues = true }
 
     private val _payload = MutableStateFlow(UpsellRulesPayload())
     val payload: StateFlow<UpsellRulesPayload> = _payload.asStateFlow()

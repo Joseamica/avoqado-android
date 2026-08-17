@@ -3,6 +3,7 @@ package com.avoqado.pos.pos.domain
 import com.avoqado.pos.pos.data.model.Product
 import com.avoqado.pos.pos.data.model.UpsellCard
 import com.avoqado.pos.pos.data.model.UpsellRule
+import com.avoqado.pos.pos.data.model.descuentoDeLineaCents
 import java.time.DayOfWeek
 import java.time.LocalDateTime
 import java.time.LocalTime
@@ -16,10 +17,12 @@ import java.time.LocalTime
  * la corrección vive aquí y se prueba entera sin hardware — la misma disciplina que
  * `chooseCustomerDisplayId` y el núcleo del hub LAN.
  *
- * 🔴 Los vectores de prueba de este archivo se comparten con iOS
- * (`upsell-resolver-vectors.json`). Dos implementaciones a mano de la misma lógica
- * divergen en meses; el archivo compartido hace que la divergencia truene en un
- * test, no en un salón con un iPad y una tablet.
+ * 🔴 A diferencia de `UpsellHoldout` (que SÍ comparte vectores JSON con TypeScript
+ * vía `upsell-test-vectors.json` — ver `UpsellVectorParityTest`), ESTE archivo NO
+ * tiene vectores compartidos. iOS espeja esta lógica A MANO, leyendo el código
+ * Kotlin real — no hay un test que haga ruido solo si diverge. Por eso Tarea 6
+ * (el port a iOS) tiene que leer este archivo tal cual está, no de memoria ni de
+ * un resumen: sin vectores, la única red es que alguien lo compare línea por línea.
  */
 
 /** Tope de tarjetas. Más de 3 en una pantalla de señalización no se leen. */
@@ -68,9 +71,16 @@ fun resolveUpsellSuggestions(
             // Es la regla de Square: un artículo con obligatorios SIEMPRE abre su
             // pantalla de detalle.
             //
-            // 🔴 SALVO que la regla ya los haya resuelto (spec 2026-08-16, B3): la
-            // elección viajó desde el dashboard y la tarjeta entra de un toque.
-            product.hasRequiredModifierGroup && rule.suggestedModifiers.isEmpty() -> false
+            // 🔴 SALVO que la regla ya los haya resuelto TODOS (spec 2026-08-16,
+            // B3) — no "trae algo", sino un pick por CADA grupo obligatorio.
+            // El server ya lo garantiza en cada GET (mismo check en
+            // `validateAndResolveModifiers`), pero el POS cachea REGLAS y
+            // CATÁLOGO por separado: si el catálogo sincroniza DESPUÉS y el
+            // producto gana un segundo obligatorio, una regla vieja que sólo
+            // resolvió el primero no puede colarse — la línea entraría
+            // sub-especificada a cocina y, si el grupo sin resolver tiene
+            // precio, el local cobra de menos.
+            !rule.coversAllRequiredGroups(product) -> false
 
             !rule.matchesTrigger(cartProductIds, cartCategoryIds) -> false
 
@@ -103,9 +113,25 @@ private val cardOrder = compareByDescending<UpsellRule> { it.priority }
     .thenByDescending { it.lift ?: 0.0 }
     .thenBy { it.suggestedProductId }
 
-/** ¿Algún grupo de modificadores es obligatorio? */
-private val Product.hasRequiredModifierGroup: Boolean
-    get() = sortedModifierGroups.any { it.required }
+/** Ids de TODOS los grupos obligatorios del producto — lo que la regla tiene que cubrir. */
+private val Product.requiredModifierGroupIds: Set<String>
+    get() = sortedModifierGroups.filter { it.required }.mapTo(mutableSetOf()) { it.id }
+
+/**
+ * ¿La regla resolvió CADA grupo obligatorio del producto? Vacío en ambos lados
+ * (sin obligatorios) es verdad por vacuidad — así esta única llamada reemplaza
+ * el viejo par "¿tiene obligatorios? Y ¿vino algo?" sin perder ningún caso: si
+ * `requiredModifierGroupIds` está vacío, `all {}` es `true` sin evaluar nada.
+ *
+ * Mismo check que hace el server en `validateAndResolveModifiers`
+ * (`avoqado-server/src/services/upsell/upsellModifiers.ts`): un pick POR grupo
+ * obligatorio, no basta con que la regla traiga uno solo si el producto pide
+ * varios.
+ */
+private fun UpsellRule.coversAllRequiredGroups(product: Product): Boolean {
+    val resolvedGroupIds = suggestedModifiers.mapTo(mutableSetOf()) { it.groupId }
+    return product.requiredModifierGroupIds.all { it in resolvedGroupIds }
+}
 
 private fun UpsellRule.matchesTrigger(cartProductIds: Set<String>, cartCategoryIds: Set<String>): Boolean =
     when (triggerType.uppercase()) {
@@ -153,21 +179,21 @@ private fun String.toLocalTimeOrNull(): LocalTime? =
     runCatching { LocalTime.parse(this) }.getOrNull()
 
 private fun UpsellRule.toCard(product: Product): UpsellCard {
-    val base = product.priceInCents
-    val discounted = linkedDiscount?.let { d ->
-        when (d.type.uppercase()) {
-            "PERCENTAGE" -> (base * (100.0 - d.value) / 100.0).toInt().coerceAtLeast(0)
-            // Topado al precio: un "-$15" sobre un producto de $10 no deja la línea
-            // en negativo.
-            "FIXED_AMOUNT" -> (base - (d.value * 100).toInt()).coerceAtLeast(0)
-            else -> base
-        }
-    } ?: base
-
-    // Los modificadores se suman DESPUÉS del descuento — misma aritmética que
-    // `CartItem.totalPrice` ((effectiveUnitPrice + modifiers) * quantity): el
-    // descuento pega en el producto base, nunca en lo que se le agrega encima.
-    val withModifiers = discounted + suggestedModifiers.sumOf { it.priceInCents }
+    // 🔴 El descuento pega sobre la LÍNEA COMPLETA — producto + modificadores —,
+    // no sólo sobre el producto, porque eso es lo que hace el server: descuenta
+    // sobre `itemTotal = precio × cantidad + modificadores × cantidad`
+    // (`order.mobile.service.ts`). Descontar antes de sumar los modificadores daba
+    // $43 en la tarjeta y $40 en la orden con un -20% sobre $35 + $15.
+    //
+    // Misma función que usa la línea del carrito ([CartItem.itemDiscountCents]):
+    // una sola aritmética, imposible que la tarjeta y el cobro digan cosas
+    // distintas.
+    val lineaCompleta = product.priceInCents + suggestedModifiers.sumOf { it.priceInCents }
+    val withModifiers = lineaCompleta - descuentoDeLineaCents(
+        type = linkedDiscount?.type,
+        value = linkedDiscount?.value,
+        baseCents = lineaCompleta,
+    )
 
     // El nombre RESUELTO: si la regla trae obligatorios ya elegidos, la tarjeta
     // tiene que decir CUÁLES — si sólo dijera "Agua Mineral 1L" a $50, nadie
@@ -186,7 +212,7 @@ private fun UpsellRule.toCard(product: Product): UpsellCard {
         imageUrl = product.imageUrl,
         headline = headline,
         badge = linkedDiscount?.badge,
-        linkedDiscountId = linkedDiscount?.id,
+        linkedDiscount = linkedDiscount,
         modifiers = suggestedModifiers,
     )
 }

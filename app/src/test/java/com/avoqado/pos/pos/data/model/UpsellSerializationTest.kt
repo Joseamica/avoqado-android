@@ -21,7 +21,9 @@ import java.io.File
  */
 class UpsellSerializationTest {
 
-    private val json = Json { ignoreUnknownKeys = true }
+    // Mismo config que `UpsellRepository` — probar con un Json distinto al que
+    // corre en producción sería probar otra cosa.
+    private val json = Json { ignoreUnknownKeys = true; coerceInputValues = true }
 
     private fun fixture(name: String) = File("src/test/resources/fixtures/$name").readText()
 
@@ -75,5 +77,19 @@ class UpsellSerializationTest {
         )
         assertEquals("r1", decoded.data.rules[0].id)
         assertEquals(5, decoded.data.holdoutPercent)
+    }
+
+    @Test
+    fun `🟡 un 'null' EXPLÍCITO en suggestedModifiers no truena — cae al default`() {
+        // Un default sólo cubre la llave AUSENTE; un `null` presente sobre una
+        // propiedad no-nulable revienta la decodificación SIN `coerceInputValues`.
+        // El server de hoy nunca manda este `null` (lo fuerza a `[]`), pero el
+        // KDoc de `UpsellRule.suggestedModifiers` lo promete tolerar — este test
+        // respalda esa promesa en vez de dejarla en el aire.
+        val decoded = json.decodeFromString(
+            UpsellRulesResponse.serializer(),
+            """{"success":true,"data":{"rules":[{"id":"r1","suggestedProductId":"p1","suggestedModifiers":null}]}}""",
+        )
+        assertTrue(decoded.data.rules[0].suggestedModifiers.isEmpty())
     }
 }

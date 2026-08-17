@@ -597,7 +597,13 @@ private fun UpsellCardView(
                 }
             }
             Column(verticalArrangement = Arrangement.Center, modifier = Modifier.weight(1f)) {
-                Text(card.name, fontSize = CdBody, fontWeight = FontWeight.Bold, maxLines = 2)
+                Text(
+                    card.name,
+                    fontSize = CdBody,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
                         money(card.displayPriceCents),
