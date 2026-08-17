@@ -882,7 +882,11 @@ fun CheckoutScreen(
                     isCortesia = isCortesia,
                     cortesiaReason = cortesiaReason,
                     priceAdjustment = priceAdj,
-                    discountId = discountId,
+                    // El descuento COMPLETO, no su id: la línea congela tipo y
+                    // valor para cobrar lo mismo que el server va a registrar.
+                    // Antes sólo viajaba el id y el carrito cobraba precio de
+                    // lista mientras la orden quedaba rebajada.
+                    discount = discountId?.let { id -> discounts.firstOrNull { it.id == id } },
                 )
                 selectedProduct = null
             },
@@ -1479,7 +1483,13 @@ fun CheckoutScreen(
         SplitPaymentSheet(
             totalCents = cartState.totalCents,
             items = cartState.items,
-            allowByProduct = cartState.items.none { it.locked },
+            // Con UN SOLO renglón, "Por producto" no reparte nada: seleccionarlo es
+            // cobrar todo (da igual la cantidad — una línea es una sola casilla).
+            // Se oculta, pero dividir SÍ se ofrece: "Partes iguales" y "Monto
+            // personalizado" funcionan con un artículo. Espejo de iOS
+            // (`allowPerProduct`), que exigía >1 renglón para ofrecer dividir
+            // siquiera — corregido el mismo día.
+            allowByProduct = cartState.items.none { it.locked } && cartState.items.size > 1,
             onDismiss = { showSplitPayment = false },
             onConfirm = { splitConfig ->
                 showSplitPayment = false
