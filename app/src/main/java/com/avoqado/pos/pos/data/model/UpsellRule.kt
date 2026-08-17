@@ -20,6 +20,21 @@ data class UpsellRule(
     val triggerProductIds: List<String> = emptyList(),
     val triggerCategoryIds: List<String> = emptyList(),
     val suggestedProductId: String,
+    /**
+     * Opciones de modificadores obligatorios YA resueltas por la regla —
+     * elegidas en el dashboard al crear/editar (spec 2026-08-16, B3).
+     *
+     * 🔴 Vacío tiene DOS significados que este campo NO distingue: el producto
+     * no pide nada, o el server degradó la regla en silencio porque el catálogo
+     * cambió. El resolver local (`UpsellResolver`) trata ambos igual: si el
+     * producto SÍ tiene un grupo obligatorio y esto llega vacío, la tarjeta se
+     * descarta — nunca se asume "vacío = sin obligatorios" a ciegas.
+     *
+     * El server la fuerza a `[]` en sus tres caminos de falla (nunca null), pero
+     * el default sigue siendo defensivo: si algún día llega null, el POS no
+     * debe reventar.
+     */
+    val suggestedModifiers: List<ResolvedModifier> = emptyList(),
     /** Gancho que lee el cliente. Null = se usa el nombre del producto. */
     val headline: String? = null,
     val priority: Int = 0,
@@ -51,6 +66,23 @@ data class LinkedDiscount(
     val value: Double,
     val badge: String,
 )
+
+/**
+ * Una opción de modificador obligatorio YA resuelta por la regla. Nombre y
+ * precio vienen calculados del server (spec 2026-08-16, B3) — NUNCA se
+ * recalculan a mano en el POS.
+ */
+@Serializable
+data class ResolvedModifier(
+    val groupId: String,
+    val modifierId: String,
+    /** Para pintar la tarjeta sin ir al catálogo. */
+    val name: String,
+    /** En PESOS, no centavos — igual que el resto de este DTO y que `Modifier.price`. */
+    val price: Double,
+) {
+    val priceInCents: Int get() = (price * 100).toInt()
+}
 
 /** Las tres perillas por venue. */
 @Serializable
@@ -87,7 +119,11 @@ data class UpsellCard(
     val ruleId: String,
     val productId: String,
     val name: String,
-    /** Precio YA con el descuento ligado aplicado. Debe coincidir con lo que se cobre. */
+    /**
+     * Precio YA con el descuento ligado Y los modificadores obligatorios
+     * resueltos. Debe coincidir EXACTO con lo que se cobre — ver
+     * `CounterUpsellAcceptor`.
+     */
     val displayPriceCents: Int,
     val imageUrl: String?,
     /** Null = se usa `name`. */
@@ -95,4 +131,17 @@ data class UpsellCard(
     /** Ya formateado por el server ("-20%", "-$15"). Null si no hay descuento. */
     val badge: String?,
     val linkedDiscountId: String?,
-)
+    /**
+     * Modificadores obligatorios YA resueltos (spec 2026-08-16, B3). Vacío = el
+     * producto no pide nada. Es lo que arma la línea del carrito al aceptar —
+     * ver `CounterUpsellAcceptor.accept()`.
+     */
+    val modifiers: List<ResolvedModifier> = emptyList(),
+) {
+    /**
+     * `displayPriceCents` en PESOS. COMPUTADO, no guardado — así los dos NUNCA
+     * pueden divergir, ni siquiera si algún día alguien hace `.copy(displayPriceCents = …)`
+     * sin pasar por `toCard()`.
+     */
+    val priceWithModifiers: Double get() = displayPriceCents / 100.0
+}

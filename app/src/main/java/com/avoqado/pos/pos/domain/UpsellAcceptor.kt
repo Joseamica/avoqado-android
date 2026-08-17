@@ -1,6 +1,8 @@
 package com.avoqado.pos.pos.domain
 
 import com.avoqado.pos.pos.data.model.Product
+import com.avoqado.pos.pos.data.model.ResolvedModifier
+import com.avoqado.pos.pos.data.model.SelectedModifier
 import com.avoqado.pos.pos.data.model.UpsellCard
 import com.avoqado.pos.pos.presentation.cart.CartState
 import com.avoqado.pos.pos.presentation.cart.CartViewModel
@@ -66,7 +68,20 @@ class CounterUpsellAcceptor(
             // Se agrega con el precio VIVO del producto, no con el de la tarjeta:
             // cobrar un precio viejo porque la pantalla lo dijo es la misma clase de
             // bug que el snapshot congelado.
-            cartViewModel.addProduct(product)
+            //
+            // 🔴 Con modificadores obligatorios YA resueltos (spec 2026-08-16, B3),
+            // la línea tiene que entrar por el MISMO camino que agregar a mano con
+            // modificadores. Si se quedara en addProduct(), entraría SIN el tamaño
+            // y se cobraría el precio pelón: la tarjeta dijo un precio y se cobra
+            // otro.
+            if (card.modifiers.isNotEmpty()) {
+                cartViewModel.addProductWithModifiers(
+                    product = product,
+                    modifiers = card.modifiers.map { it.toSelectedModifier() },
+                )
+            } else {
+                cartViewModel.addProduct(product)
+            }
             added += card
         }
 
@@ -78,3 +93,20 @@ class CounterUpsellAcceptor(
         )
     }
 }
+
+/**
+ * El server ya resolvió nombre y precio — mapa directo, sin tocar el catálogo
+ * (los ids ya vienen resueltos).
+ *
+ * `groupName` queda vacío: el DTO no lo trae (sólo `groupId`/`modifierId`/`name`/
+ * `price` del MODIFICADOR) y no se usa en cobro, comanda ni recibo — sólo
+ * `modifierName`, vía `CartItem.modifiersSummary`. Sólo se notaría si esta línea
+ * se reabre para editar modificadores a mano.
+ */
+private fun ResolvedModifier.toSelectedModifier() = SelectedModifier(
+    groupId = groupId,
+    groupName = "",
+    modifierId = modifierId,
+    modifierName = name,
+    priceInCents = priceInCents,
+)

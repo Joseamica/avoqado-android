@@ -1,7 +1,10 @@
 package com.avoqado.pos.pos.domain
 
 import com.avoqado.pos.pos.data.model.LinkedDiscount
+import com.avoqado.pos.pos.data.model.ModifierGroupData
 import com.avoqado.pos.pos.data.model.Product
+import com.avoqado.pos.pos.data.model.ProductModifierGroupEntry
+import com.avoqado.pos.pos.data.model.ResolvedModifier
 import com.avoqado.pos.pos.data.model.UpsellRule
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -36,6 +39,7 @@ class UpsellResolverTest {
         soldByWeight: Boolean = false,
         trackInventory: Boolean? = null,
         availableQuantity: Int? = null,
+        modifierGroups: List<ProductModifierGroupEntry> = emptyList(),
     ) = Product(
         id = id,
         name = name,
@@ -45,6 +49,20 @@ class UpsellResolverTest {
         soldByWeight = soldByWeight,
         trackInventory = trackInventory,
         availableQuantity = availableQuantity,
+        modifierGroups = modifierGroups,
+    )
+
+    /** Un grupo de modificadores mínimo — sólo lo que `hasRequiredModifierGroup` necesita. */
+    private fun modifierGroup(required: Boolean) = ProductModifierGroupEntry(
+        groupId = "g_tam",
+        group = ModifierGroupData(id = "g_tam", name = "Tamaño", required = required),
+    )
+
+    /** El producto del founder: "Agua Mineral 1L" con el grupo "Tamaño" obligatorio. */
+    private fun productoConObligatorio(precio: Double = 20.0) = product(
+        id = "prod_agua",
+        price = precio,
+        modifierGroups = listOf(modifierGroup(required = true)),
     )
 
     private fun rule(
@@ -58,6 +76,7 @@ class UpsellResolverTest {
         timeFrom: String? = null,
         timeUntil: String? = null,
         linkedDiscount: LinkedDiscount? = null,
+        suggestedModifiers: List<ResolvedModifier> = emptyList(),
     ) = UpsellRule(
         id = id,
         suggestedProductId = suggested,
@@ -69,6 +88,7 @@ class UpsellResolverTest {
         timeFrom = timeFrom,
         timeUntil = timeUntil,
         linkedDiscount = linkedDiscount,
+        suggestedModifiers = suggestedModifiers,
     )
 
     /** Un lunes cualquiera a mediodía. */
@@ -247,5 +267,89 @@ class UpsellResolverTest {
         val cards = resolve(listOf(rule()), listOf(product("galleta", price = 35.0)))
         assertEquals(3500, cards[0].displayPriceCents)
         assertEquals(null, cards[0].badge)
+    }
+
+    // ── modificadores obligatorios YA resueltos (spec 2026-08-16, B3) ───────────
+    //
+    // Antes, un producto con un grupo obligatorio se descartaba SIEMPRE (tocarlo
+    // abriría un formulario). Ahora, si la regla ya trae la elección resuelta
+    // desde el dashboard, la tarjeta entra de un toque — pero SOLO si de verdad
+    // está resuelta, y SOLO para ese filtro: los otros cuatro siguen mandando.
+
+    @Test
+    fun `un producto con obligatorios SIN resolver se sigue descartando`() {
+        val cards = resolve(
+            listOf(rule(suggested = "prod_agua", suggestedModifiers = emptyList())),
+            listOf(productoConObligatorio()),
+        )
+        assertTrue("sin resolver, la tarjeta abriría un formulario", cards.isEmpty())
+    }
+
+    @Test
+    fun `con los obligatorios RESUELTOS la tarjeta sí se muestra`() {
+        val cards = resolve(
+            listOf(
+                rule(
+                    suggested = "prod_agua",
+                    suggestedModifiers = listOf(ResolvedModifier("g_tam", "m_gr", "Grande", 15.0)),
+                ),
+            ),
+            listOf(productoConObligatorio()),
+        )
+        assertEquals(1, cards.size)
+    }
+
+    @Test
+    fun `el precio de la tarjeta incluye los modificadores`() {
+        val cards = resolve(
+            listOf(
+                rule(
+                    suggested = "prod_agua",
+                    suggestedModifiers = listOf(ResolvedModifier("g_tam", "m_gr", "Grande", 15.0)),
+                ),
+            ),
+            listOf(productoConObligatorio(precio = 35.0)),
+        )
+        // 🔴 Si esto falla, el cliente ve un precio y se le cobra otro.
+        assertEquals(50.0, cards.first().priceWithModifiers, 0.001)
+        assertEquals(5000, cards.first().displayPriceCents)
+    }
+
+    @Test
+    fun `🔴 el nombre de la tarjeta incluye el modificador resuelto`() {
+        // Si sólo dijera "prod_agua" a $50, nadie entiende por qué no es el
+        // precio de lista — el cajero/cliente necesita ver QUÉ se resolvió.
+        val cards = resolve(
+            listOf(
+                rule(
+                    suggested = "prod_agua",
+                    suggestedModifiers = listOf(ResolvedModifier("g_tam", "m_gr", "Grande", 15.0)),
+                ),
+            ),
+            listOf(productoConObligatorio()),
+        )
+        assertTrue(cards.first().name.contains("Grande"))
+    }
+
+    @Test
+    fun `sin modificadores, el nombre de la tarjeta sigue siendo el del producto (no rompe lo de hoy)`() {
+        val cards = resolve(listOf(rule()), listOf(product("galleta", "Galleta de nuez")))
+        assertEquals("Galleta de nuez", cards[0].name)
+    }
+
+    @Test
+    fun `los otros tres filtros NO se relajan aunque haya modificadores resueltos`() {
+        val resueltos = listOf(ResolvedModifier("g_tam", "m_gr", "Grande", 15.0))
+        val vetado = productoConObligatorio().copy(upsellEnabled = false)
+        val porPeso = productoConObligatorio().copy(soldByWeight = true)
+        val sinStock = productoConObligatorio().copy(trackInventory = true, availableQuantity = 0)
+
+        listOf(vetado, porPeso, sinStock).forEach { p ->
+            val cards = resolve(
+                listOf(rule(suggested = "prod_agua", suggestedModifiers = resueltos)),
+                listOf(p),
+            )
+            assertTrue("el veto, el peso y el stock siguen mandando", cards.isEmpty())
+        }
     }
 }

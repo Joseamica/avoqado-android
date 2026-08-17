@@ -64,10 +64,13 @@ fun resolveUpsellSuggestions(
             // Tocarlo abriría la captura de peso. Una tarjeta debe ser UN toque.
             product.soldByWeight -> false
 
-            // Tocarlo abriría el panel de modificadores. Misma razón. Es la regla
-            // de Square, y existe porque una tarjeta que abre un formulario deja de
-            // ser una sugerencia y se vuelve un trámite.
-            product.hasRequiredModifierGroup -> false
+            // Tocarlo abriría el panel de modificadores. Misma razón que el peso.
+            // Es la regla de Square: un artículo con obligatorios SIEMPRE abre su
+            // pantalla de detalle.
+            //
+            // 🔴 SALVO que la regla ya los haya resuelto (spec 2026-08-16, B3): la
+            // elección viajó desde el dashboard y la tarjeta entra de un toque.
+            product.hasRequiredModifierGroup && rule.suggestedModifiers.isEmpty() -> false
 
             !rule.matchesTrigger(cartProductIds, cartCategoryIds) -> false
 
@@ -161,14 +164,29 @@ private fun UpsellRule.toCard(product: Product): UpsellCard {
         }
     } ?: base
 
+    // Los modificadores se suman DESPUÉS del descuento — misma aritmética que
+    // `CartItem.totalPrice` ((effectiveUnitPrice + modifiers) * quantity): el
+    // descuento pega en el producto base, nunca en lo que se le agrega encima.
+    val withModifiers = discounted + suggestedModifiers.sumOf { it.priceInCents }
+
+    // El nombre RESUELTO: si la regla trae obligatorios ya elegidos, la tarjeta
+    // tiene que decir CUÁLES — si sólo dijera "Agua Mineral 1L" a $50, nadie
+    // entiende por qué no es el precio de lista ($35).
+    val resolvedName = if (suggestedModifiers.isEmpty()) {
+        product.name
+    } else {
+        "${product.name} (${suggestedModifiers.joinToString(", ") { it.name }})"
+    }
+
     return UpsellCard(
         ruleId = id,
         productId = product.id,
-        name = product.name,
-        displayPriceCents = discounted,
+        name = resolvedName,
+        displayPriceCents = withModifiers,
         imageUrl = product.imageUrl,
         headline = headline,
         badge = linkedDiscount?.badge,
         linkedDiscountId = linkedDiscount?.id,
+        modifiers = suggestedModifiers,
     )
 }
