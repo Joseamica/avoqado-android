@@ -269,9 +269,12 @@ class UpsellAcceptorTest {
 
         // 🔴 El defecto que esto impide: la tarjeta decía $28 y el carrito cobraba
         // $35 porque el descuento ligado nunca llegaba a la línea.
-        assertEquals(tarjeta.displayPriceCents, result.cart.subtotalCents)
-        assertEquals(2800, result.cart.subtotalCents)
+        assertEquals(tarjeta.displayPriceCents, result.cart.totalCents)
+        assertEquals(2800, result.cart.totalCents)
         assertEquals(1, result.added.size)
+        // Y el desglose lo MUESTRA: precio de lista arriba, descuento en su renglón.
+        assertEquals(3500, result.cart.subtotalCents)
+        assertEquals(700, result.cart.discountCents)
     }
 
     @Test
@@ -290,8 +293,11 @@ class UpsellAcceptorTest {
 
         val result = CounterUpsellAcceptor(vm).accept(listOf(tarjeta), mapOf("prod_agua" to agua))
 
-        assertEquals(tarjeta.displayPriceCents, result.cart.subtotalCents)
-        assertEquals(4000, result.cart.subtotalCents)
+        assertEquals(tarjeta.displayPriceCents, result.cart.totalCents)
+        assertEquals(4000, result.cart.totalCents)
+        // Desglose: ($35 + $15) de lista, menos $10 de descuento.
+        assertEquals(5000, result.cart.subtotalCents)
+        assertEquals(1000, result.cart.discountCents)
     }
 
     @Test
@@ -343,6 +349,6 @@ class UpsellAcceptorTest {
         )
 
         assertEquals(1, result.added.size)
-        assertEquals(2800, result.cart.subtotalCents)
+        assertEquals(2800, result.cart.totalCents)
     }
 }

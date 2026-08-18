@@ -70,15 +70,52 @@ data class CartState(
     val reservationId: String? = null,
 ) {
     val itemCount: Int get() = items.sumOf { it.quantity }
-    val subtotalCents: Int get() = items.sumOf { it.totalPrice }
+
+    /**
+     * 🔴 BRUTO — precio de lista, sin rebajar. El descuento se muestra en su
+     * propio renglón ([discountCents]) para que el cliente LO VEA, en pantalla y
+     * en el ticket impreso (decisión del founder, 2026-08-17).
+     *
+     * También es lo que hace el server: guarda `subtotal` bruto y `discountAmount`
+     * aparte (`order.mobile.service.ts`). Con el subtotal ya rebajado, el papel y
+     * el sistema decían números distintos aunque el total coincidiera, y quien
+     * conciliara tropezaba.
+     *
+     * 🔴 El TOTAL no cambia con esto: es el MISMO dinero, desglosado.
+     */
+    val subtotalCents: Int get() = items.sumOf { it.grossPrice }
+
+    /** Suma de los descuentos por línea (artículo). Se pinta dentro de [discountCents]. */
+    val itemDiscountCents: Int get() = items.sumOf { it.itemDiscountCents }
+
+    /** Lo que de verdad se debe antes de aplicar un descuento de ORDEN. */
+    private val netoTrasDescuentosDeLineaCents: Int get() = (subtotalCents - itemDiscountCents).coerceAtLeast(0)
+
     val taxableSubtotalCents: Int get() = items.filter { it.type is CartItemType.ProductItem }.sumOf { it.totalPrice }
-    val discountCents: Int
-        get() = orderDiscount?.calculateDiscount(subtotalCents) ?: 0
+
+    /**
+     * 🔴 El descuento de ORDEN pega sobre lo que QUEDA tras los de línea, no sobre
+     * el bruto. Sobre el bruto regalaría de más en cada venta que combine los dos,
+     * y además es lo que hace el server: `orderLevelDiscount` se topa contra
+     * `subtotal - itemDiscountTotal`.
+     */
+    val orderDiscountCents: Int
+        get() = orderDiscount?.calculateDiscount(netoTrasDescuentosDeLineaCents) ?: 0
+
+    /** Lo que se pinta como "Descuento": línea + orden, juntos. */
+    val discountCents: Int get() = itemDiscountCents + orderDiscountCents
+
+    /**
+     * Sólo prorratea el descuento de ORDEN: [taxableSubtotalCents] ya viene NETO de
+     * los descuentos por línea, así que meterlos otra vez los contaría dos veces y
+     * bajaría el impuesto de más.
+     */
     val taxableDiscountCents: Int
-        get() = if (subtotalCents <= 0 || discountCents <= 0 || taxableSubtotalCents <= 0) {
+        get() = if (netoTrasDescuentosDeLineaCents <= 0 || orderDiscountCents <= 0 || taxableSubtotalCents <= 0) {
             0
         } else {
-            ((discountCents.toDouble() * taxableSubtotalCents.toDouble()) / subtotalCents.toDouble()).toInt()
+            ((orderDiscountCents.toDouble() * taxableSubtotalCents.toDouble()) / netoTrasDescuentosDeLineaCents.toDouble())
+                .toInt()
                 .coerceAtMost(taxableSubtotalCents)
         }
     val taxableAmountAfterDiscountCents: Int
@@ -1621,7 +1658,10 @@ class CartViewModel @Inject constructor(
         val orderRequest = CreateOrderRequest(
             items = items,
             subtotal = currentCart.subtotalCents,
-            discount = currentCart.discountCents,
+            // SÓLO el de ORDEN — ver la misma nota en `PaymentFlowViewModel.buildOrderRequest`:
+            // el server suma los de línea por su cuenta desde el `discountId` de
+            // cada item, así que mandar el combinado los restaría dos veces.
+            discount = currentCart.orderDiscountCents,
             tip = 0,
             total = currentCart.totalCents,
             paymentMethod = "PAY_LATER",

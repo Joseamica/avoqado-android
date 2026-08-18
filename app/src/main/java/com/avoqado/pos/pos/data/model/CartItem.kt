@@ -102,19 +102,32 @@ data class CartItem(
         }
 
     /**
+     * Lo que aporta la línea al SUBTOTAL del ticket: su precio de lista, sin
+     * rebajar. El descuento se muestra aparte ([itemDiscountCents]) para que el
+     * cliente lo VEA — decisión del founder, 2026-08-17 — y para que el desglose
+     * cuadre contra la orden del server, que guarda `subtotal` bruto y
+     * `discountAmount` por separado.
+     *
+     * Una cortesía aporta 0: ya es gratis, y sumarla al bruto haría que el
+     * desglose dijera que se regaló dos veces lo mismo.
+     */
+    val grossPrice: Int
+        get() = if (isCortesia) 0 else lineBeforeDiscountCents
+
+    /**
      * 🔴 El descuento de la línea, calculado con la MISMA función que usa la
      * tarjeta de upsell ([descuentoDeLineaCents]) y con la misma aritmética que el
      * server. Pega sobre producto **+ modificadores**: un -20% sobre $35 de agua
      * con $15 de tamaño son $10, no $7.
+     *
+     * Cortesía: 0 por la misma razón que [grossPrice].
      */
     val itemDiscountCents: Int
-        get() = descuentoDeLineaCents(itemDiscountType, itemDiscountValue, lineBeforeDiscountCents)
+        get() = if (isCortesia) 0 else descuentoDeLineaCents(itemDiscountType, itemDiscountValue, lineBeforeDiscountCents)
 
+    /** Lo que de verdad se cobra por esta línea: bruto menos su descuento. */
     val totalPrice: Int
-        get() = when {
-            isCortesia -> 0
-            else -> lineBeforeDiscountCents - itemDiscountCents
-        }
+        get() = grossPrice - itemDiscountCents
 
     val modifiersSummary: String?
         get() {

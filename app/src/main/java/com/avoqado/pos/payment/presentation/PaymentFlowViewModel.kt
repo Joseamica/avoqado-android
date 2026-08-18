@@ -487,6 +487,12 @@ class PaymentFlowViewModel @Inject constructor(
                         attachedCustomerId = customerId
                         _attachedCustomerName.value = customerName
                         _customerAttachResult.value = "Cliente agregado: $customerName"
+                        // El aviso ya se resolvió: la venta SÍ tiene cliente ahora. Dejarlo
+                        // puesto es estado que miente — y era la única divergencia con iOS
+                        // en el campo que este cambio introdujo.
+                        (_state.value as? PaymentFlowState.Success)?.let { exito ->
+                            _state.value = exito.copy(customerLinkWarning = null)
+                        }
                     },
                     onFailure = { error ->
                         _customerAttachResult.value = error.message ?: "No se pudo agregar cliente"
@@ -1288,6 +1294,11 @@ class PaymentFlowViewModel @Inject constructor(
                             idempotencyKey = sessionIdempotencyKey(),
                             manualMethod = manualMethod,
                                             tenderType = selectedTender,
+                            // 🔴 EL CLIENTE DE LA VENTA. Es el valor CONGELADO al abrir el
+                            // cobro (`clienteDelCobro` de CheckoutScreen → startPaymentFlow),
+                            // nunca el flujo vivo del carrito. Sin esta línea la venta rápida
+                            // nacía anónima aunque el cajero sí lo hubiera elegido.
+                            customerId = attachedCustomerId,
                         )
                         fastResult.fold(
                             onSuccess = { fast ->
@@ -1295,6 +1306,14 @@ class PaymentFlowViewModel @Inject constructor(
                                 // Recibo → QR en pantalla del cliente y recibo impreso.
                                 fast.receiptAccessKey?.let { lastReceiptAccessKey = it }
                                 fast.receiptUrl?.let { lastReceiptUrl = it }
+                                // 🔴 La pantalla NO puede mentir: si el server no vinculó al
+                                // cliente, el recibo no puede seguir enseñándolo puesto. Se
+                                // suelta para que vuelva a ofrecer "Agregar cliente" — que es
+                                // justo la reasignación, sin volver a cobrar nada.
+                                if (fast.customerLinkWarning != null) {
+                                    attachedCustomerId = null
+                                    _attachedCustomerName.value = null
+                                }
                                 recordCashSale(total, null)
                                 _state.value = PaymentFlowState.Success(
                                     totalAmount = total,
@@ -1303,6 +1322,9 @@ class PaymentFlowViewModel @Inject constructor(
                                     paymentId = fast.paymentId,
                                     receiptAccessKey = fast.receiptAccessKey,
                                     receiptUrl = fast.receiptUrl,
+                                    // El server no pudo vincular al cliente: se AVISA (ámbar)
+                                    // y el cobro queda como está. Jamás se vuelve a cobrar.
+                                    customerLinkWarning = fast.customerLinkWarning,
                                 )
                             },
                             onFailure = { error ->
@@ -1977,7 +1999,11 @@ class PaymentFlowViewModel @Inject constructor(
                 name = name,
                 quantity = quantity,
                 unitPrice = effectiveUnitWithModifiers,
-                totalPrice = totalPrice,
+                // 🔴 BRUTO, sin el descuento de la línea. El descuento se imprime
+                // UNA vez, en su propio renglón junto al subtotal: si además se
+                // rebajara aquí, las líneas sumarían menos que el subtotal y el
+                // ticket que se lleva el cliente no cuadraría consigo mismo.
+                totalPrice = grossPrice,
                 modifiers = selectedModifiers.map { it.modifierName }.ifEmpty { null },
                 note = itemNote,
                 isCortesia = isCortesia,
@@ -2066,7 +2092,13 @@ class PaymentFlowViewModel @Inject constructor(
         return CreateOrderRequest(
             items = items,
             subtotal = cart.subtotalCents,
-            discount = cart.discountCents,
+            // 🔴 SÓLO el descuento de ORDEN, nunca `discountCents` (que ya incluye
+            // los de línea). El server calcula los de línea POR SU CUENTA desde el
+            // `discountId` de cada item y los suma a éste:
+            // `discountDecimal = itemDiscountTotal + orderLevelDiscount`
+            // (`order.mobile.service.ts`). Mandar el combinado los restaría DOS
+            // veces y la orden saldría más barata de lo que se cobró.
+            discount = cart.orderDiscountCents,
             tip = currentTipCents,
             total = cart.totalCents + currentTipCents,
             paymentMethod = selectedMethod?.value ?: "CARD",
