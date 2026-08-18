@@ -360,7 +360,11 @@ class OrderRepository @Inject constructor(
                 val status = link["status"]?.jsonPrimitive?.contentOrNull?.uppercase()
                 if (status == "LINKED" || status == "NOT_REQUESTED") return null
                 link["warning"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
-            } catch (_: Exception) {
+            } catch (e: Exception) {
+                // Tragarse la excepción es correcto —un aviso jamás puede tumbar un cobro
+                // ya registrado— pero callarse NO: si el server cambia la forma de
+                // `customerLink`, el POS deja de avisar y no queda ni rastro de por qué.
+                Log.w("💵", "No se pudo leer customerLink de la respuesta: ${e.message}")
                 null
             }
         }

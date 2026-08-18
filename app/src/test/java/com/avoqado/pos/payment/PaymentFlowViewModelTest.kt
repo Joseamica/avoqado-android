@@ -137,6 +137,7 @@ class PaymentFlowViewModelTest {
         viewModel = PaymentFlowViewModel(
             orderRepository = orderRepository,
             cashPaymentRepository = cashPaymentRepository,
+            tenderTypeRepository = mockk(relaxed = true),
             terminalPaymentService = terminalPaymentService,
             tpvSettingsRepository = tpvSettingsRepository,
             paymentSyncService = paymentSyncService,
@@ -1013,7 +1014,12 @@ class PaymentFlowViewModelTest {
         )
 
         viewModel.startPaymentFlow(cart)
-        viewModel.confirmManualMethod(ManualPaymentMethod.CARD_EXTERNAL)
+        // `confirmManualMethod` se renombró a `confirmManualChoice` (commit ajeno 09b3ef6):
+        // ahora la elección puede ser una de las 3 fijas o un tipo del catálogo. La
+        // intención del test no cambia — sigue siendo "tarjeta de terminal ajena".
+        viewModel.confirmManualChoice(
+            com.avoqado.pos.payment.domain.ManualPaymentChoice.Fixed(ManualPaymentMethod.CARD_EXTERNAL),
+        )
         advanceUntilIdle()
 
         coVerify(exactly = 0) { cashDrawerRepository.addCashSale(any(), any()) }

@@ -145,6 +145,7 @@ class SplitMostradorContinuidadTest {
         viewModel = PaymentFlowViewModel(
             orderRepository = orderRepository,
             cashPaymentRepository = cashPaymentRepository,
+            tenderTypeRepository = mockk(relaxed = true),
             terminalPaymentService = terminalPaymentService,
             tpvSettingsRepository = tpvSettingsRepository,
             paymentSyncService = paymentSyncService,

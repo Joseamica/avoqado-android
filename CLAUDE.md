@@ -79,13 +79,40 @@ Trampas verificadas: **BACK saca de la app** (navega dentro, no con el botón de
 inalámbrico, si el daemon se reinicia se pierde el device — se recupera con `adb mdns services` (da
 el puerto real, **cambia cada vez**) y `adb connect <ip>:<puerto>`; **el 5555 no sirve en Android 11+**.
 
+#### Dónde está Square hoy (verificado 2026-08-15)
+
+No hay que instalarlo ni pedirlo: ya está en el parque. **Elige por `ro.serialno`, nunca por la fila
+de `adb devices`** — hay DOS D3 con seriales distintos y la conexión inalámbrica cambia de puerto.
+
+| Aparato | `ro.serialno` | Square | Sirve para |
+|---|---|---|---|
+| **D3** | `D406D598J0068` | **7.20** | La referencia buena: instalación real, actualizada por Play |
+| D3 | `D40625C1J0824` | — | El otro D3; sin Square |
+| N86 (Nexgo) | por USB | 6.99 | Versión vieja; útil para comparar contra `square-ui-reference` (v6.99sw) |
+| T3 PRO | `T302P3AP40102` | 7.1 | Sideload del 2026-08-14 (sacado del emulador `Medium_Tablet`, que tiene Play Store) |
+
+```bash
+for s in $(adb devices | awk 'NR>1 && $2=="device"{print $1}'); do
+  echo "$s $(adb -s $s shell getprop ro.serialno) $(adb -s $s shell dumpsys package com.squareup | grep -m1 versionName)"
+done
+```
+
+Si algún día falta en un aparato: se saca del emulador `Medium_Tablet` (tiene Play Store y sesión
+iniciada) con `pm path com.squareup` + `adb pull`, y se instala con `install-multiple` — son 4 splits
+(`base`, `arm64_v8a`, `en`, `xhdpi`). **Ojo: el split `en` deja la app en inglés.** Nunca de un
+espejo de APKs.
+
 #### ⚠️ Modo mesas / modo restaurante: NO está en el Android — hace falta el iPad físico
 
 **No lo busques por adb, no está.** El modo mesas y el modo restaurante de Square sólo corren en
 **iPad o en hardware propio de Square** (Register, Terminal, Stand); la app de Android es el Point of
 Sale genérico y no los trae. Si vas a diseñar contra ese modo — plano de mesas, abrir/mover/juntar
-cuentas, cursos, comandas — **tiene que ser en el iPad físico**, recorriéndolo a mano: ahí no hay adb
-ni `uiautomator`, así que la captura es manual (screenshot del propio iPad).
+cuentas, cursos, comandas — **tiene que ser en el iPad**.
+
+🔑 **Pero el iPad NO es solo manual: hay WebDriverAgent.** Se puede conducir por TEXTO en vez de a
+capturas, que es ~10× más barato y además da los textos exactos. Receta y trampas (los `Toggle` de
+SwiftUI sólo ceden a un drag, etc.) en la memoria [[reference_wda_automatizar_ios]]. Recurre al
+screenshot manual sólo si WDA no está levantado.
 
 Por eso `../square-ui-reference/` son capturas **de iPad** y no de Android: se tomaron justamente
 porque ese modo no existe en la app Android. **Empieza por ahí antes de pedir el iPad** — hay ~103

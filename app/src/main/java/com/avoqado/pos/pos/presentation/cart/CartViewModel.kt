@@ -131,6 +131,10 @@ data class CartState(
 
     val subtotalDisplay: String get() = formatCents(subtotalCents)
     val discountDisplay: String get() = formatCents(discountCents)
+    /** Los dos descuentos por separado: se pintan en renglones distintos, con su
+     *  propio nombre, para no atribuirle a uno el monto del otro. */
+    val itemDiscountDisplay: String get() = formatCents(itemDiscountCents)
+    val orderDiscountDisplay: String get() = formatCents(orderDiscountCents)
     val taxDisplay: String get() = formatCents(taxCents)
     val totalDisplay: String get() = formatCents(totalCents)
 }

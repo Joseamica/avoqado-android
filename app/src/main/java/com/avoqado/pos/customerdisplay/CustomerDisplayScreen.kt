@@ -360,7 +360,10 @@ private fun ReceiptBreakdown(
                         overflow = TextOverflow.Ellipsis,
                     )
                     Text(
-                        text = money(item.totalPrice),
+                        // BRUTO: abajo se pinta Subtotal y Descuento por separado,
+                        // así que la línea va a precio de lista o los renglones no
+                        // sumarían el subtotal que ve el cliente.
+                        text = money(item.grossPrice),
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.SemiBold,
                     )

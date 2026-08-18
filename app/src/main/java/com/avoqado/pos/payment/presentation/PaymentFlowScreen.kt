@@ -287,6 +287,25 @@ fun PaymentFlowScreen(
                             )
                         }
                     }
+
+                    // Aviso del CLIENTE de la venta: el server no pudo vincularlo (no existe
+                    // en este negocio, la venta ya tenía otro, o no se pudo verificar). El
+                    // cobro SÍ quedó registrado: ámbar, nunca rojo, y jamás "reintentar" —
+                    // se reasigna con "Agregar cliente" de esta misma pantalla.
+                    //
+                    // Va después del de inventario a propósito: si por algún camino
+                    // coincidieran, el de dinero/stock se ve primero.
+                    var customerWarningShown by rememberSaveable(splashKey) { mutableStateOf(false) }
+                    val inventarioYaAtendido = currentState.inventoryWarningMessage == null || inventoryWarningShown
+                    if (!customerWarningShown && inventarioYaAtendido) {
+                        currentState.customerLinkWarning?.let { aviso ->
+                            AvoqadoWarningToast(
+                                message = "Revisa el cliente",
+                                subtitle = aviso,
+                                onDismiss = { customerWarningShown = true },
+                            )
+                        }
+                    }
                 }
             }
             is PaymentFlowState.Error -> {

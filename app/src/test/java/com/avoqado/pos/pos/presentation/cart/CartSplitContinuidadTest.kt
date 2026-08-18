@@ -25,6 +25,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -458,5 +459,185 @@ class CartSplitContinuidadTest {
         // continuación de la anterior.
         assertEquals("order-parte-1", vm.resolvePendingSplitOrderForCharge())
         assertNull(vm.splitWarning.value)
+    }
+
+    // ── El CLIENTE de la venta ──────────────────────────────────────────────────
+    //
+    // Mismo filo que el id de orden, y por el mismo motivo: `clearCart()` corre A
+    // MEDIA VENTA en un split, así que el cliente NO puede soltarse ahí. Se suelta
+    // cuando la venta de verdad termina — `aplicarCobroConfirmado` (si cerró) o
+    // `finalizarVenta()` (vaciar, guardar, cambio de local, vale, pagar después).
+    //
+    // Perder al cliente deja un dato FALTANTE; arrastrarlo a la venta siguiente deja
+    // uno INCORRECTO: lealtad, CFDI e historial de quien no compró.
+
+    @Test
+    fun `clearCart NO suelta al cliente — es lo que lo mantiene vivo entre partes`() = runTest {
+        val vm = createViewModel()
+        vm.setSelectedCustomer("cust-ana", "Ana")
+        vm.addProduct(refresco)
+
+        vm.clearCart()
+
+        // 🔴 El día que alguien "arregle" esto soltando al cliente dentro de
+        // `clearCart()`, la parte 2 de TODO split de mostrador nace sin cliente.
+        // Este test es el que lo caza.
+        assertEquals("cust-ana", vm.selectedCustomer.value?.id)
+    }
+
+    @Test
+    fun `parte 1 de un split deja saldo y CONSERVA al cliente`() = runTest {
+        val vm = createViewModel()
+        vm.setSelectedCustomer("cust-ana", "Ana")
+        vm.addProduct(refresco)
+
+        val cobro = vm.aplicarCobroConfirmado(
+            splitType = null,
+            paidItemIds = emptySet(),
+            remainingBalanceCents = 5000,
+        )
+
+        assertEquals(CartViewModel.RamaCobro.QUEDA_SALDO, cobro.rama)
+        assertFalse(cobro.ventaTerminada)
+        assertEquals("cust-ana", vm.selectedCustomer.value?.id)
+        assertEquals("Saldo pendiente", vm.cartState.value.items.single().name)
+    }
+
+    @Test
+    fun `parte 2 cierra la venta y suelta al cliente`() = runTest {
+        val vm = createViewModel()
+        vm.setSelectedCustomer("cust-ana", "Ana")
+        vm.addProduct(refresco)
+        vm.aplicarCobroConfirmado(splitType = null, paidItemIds = emptySet(), remainingBalanceCents = 5000)
+
+        val cierre = vm.aplicarCobroConfirmado(
+            splitType = null,
+            paidItemIds = emptySet(),
+            remainingBalanceCents = 0,
+        )
+
+        assertEquals(CartViewModel.RamaCobro.PAGO_COMPLETO, cierre.rama)
+        assertTrue(cierre.ventaTerminada)
+        assertNull(vm.selectedCustomer.value)
+    }
+
+    @Test
+    fun `un carrito que queda vacio CON saldo pendiente NO cierra la venta`() = runTest {
+        val vm = createViewModel()
+        vm.setSelectedCustomer("cust-ana", "Ana")
+        vm.addProduct(refresco)
+        vm.addProduct(refresco.copy(id = "prod-agua", name = "Agua"))
+        val todos = vm.cartState.value.items.map { it.id }.toSet()
+
+        // El otro brazo de la condición: quitar renglones vació el carrito, pero el
+        // server dice que todavía se debe dinero. Es el caso del combo, que borra
+        // varias líneas de golpe. Cerrar aquí soltaría al cliente a media venta.
+        val cobro = vm.aplicarCobroConfirmado(
+            splitType = "BYPRODUCT",
+            paidItemIds = todos,
+            remainingBalanceCents = 2500,
+        )
+
+        assertTrue(vm.cartState.value.isEmpty)
+        assertFalse(cobro.ventaTerminada)
+        assertEquals("cust-ana", vm.selectedCustomer.value?.id)
+    }
+
+    @Test
+    fun `guardar el carrito suelta al cliente — se fue con el carrito guardado`() = runTest {
+        val vm = createViewModel()
+        vm.setSelectedCustomer("cust-ana", "Ana")
+        vm.addProduct(refresco)
+
+        assertTrue(vm.saveCurrentCart("Para llevar"))
+
+        assertTrue(vm.cartState.value.isEmpty)
+        assertNull(vm.selectedCustomer.value)
+    }
+
+    @Test
+    fun `cobro POR PRODUCTO que vacia el carrito cierra la venta y suelta al cliente`() = runTest {
+        val vm = createViewModel()
+        vm.setSelectedCustomer("cust-ana", "Ana")
+        vm.addProduct(refresco)
+        vm.addProduct(refresco.copy(id = "prod-agua", name = "Agua"))
+        val todos = vm.cartState.value.items.map { it.id }.toSet()
+
+        val cobro = vm.aplicarCobroConfirmado(
+            splitType = "BYPRODUCT",
+            paidItemIds = todos,
+            remainingBalanceCents = 0,
+        )
+
+        // 🔴 Cae en la rama de PRODUCTO, no en la de pago completo: el `when` evalúa
+        // BYPRODUCT primero, aunque el saldo sea 0. Soltar al cliente sólo en "pago
+        // completo" dejaba a Ana pegada en CUALQUIER venta cobrada por producto que
+        // vaciara el carrito —incluida la primera y única— y la orden siguiente,
+        // de otro cliente, nacía con el id de Ana.
+        assertEquals(CartViewModel.RamaCobro.RENGLONES_PAGADOS, cobro.rama)
+        assertTrue(cobro.ventaTerminada)
+        assertTrue(vm.cartState.value.isEmpty)
+        assertNull(vm.selectedCustomer.value)
+    }
+
+    @Test
+    fun `cobro por producto que deja renglones NO suelta al cliente`() = runTest {
+        val vm = createViewModel()
+        vm.setSelectedCustomer("cust-ana", "Ana")
+        vm.addProduct(refresco)
+        vm.addProduct(refresco.copy(id = "prod-agua", name = "Agua"))
+        val primero = vm.cartState.value.items.first().id
+
+        val cobro = vm.aplicarCobroConfirmado(
+            splitType = "BYPRODUCT",
+            paidItemIds = setOf(primero),
+            remainingBalanceCents = 3000,
+        )
+
+        assertEquals(CartViewModel.RamaCobro.RENGLONES_PAGADOS, cobro.rama)
+        assertFalse(cobro.ventaTerminada)
+        assertEquals("cust-ana", vm.selectedCustomer.value?.id)
+    }
+
+    @Test
+    fun `finalizarVenta vacia el carrito Y suelta al cliente`() = runTest {
+        val vm = createViewModel()
+        vm.setSelectedCustomer("cust-ana", "Ana")
+        vm.addProduct(refresco)
+
+        vm.finalizarVenta()
+
+        assertTrue(vm.cartState.value.isEmpty)
+        assertNull(vm.selectedCustomer.value)
+    }
+
+    @Test
+    fun `cambiar de local suelta al cliente — su id es de OTRO negocio`() = runTest {
+        val cambiosDeLocal = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
+        every { authRepository.venueSwitched } returns cambiosDeLocal
+        val vm = createViewModel()
+        vm.setSelectedCustomer("cust-ana", "Ana")
+
+        cambiosDeLocal.emit(Unit)
+        advanceUntilIdle()
+
+        // 🔴 Lo más grave de la familia: sin esto la primera orden del local B nace
+        // con un `customerId` del local A — un id de otro tenant dentro de la orden.
+        assertNull(vm.selectedCustomer.value)
+    }
+
+    @Test
+    fun `restaurar un carrito guardado recupera al cliente aunque no sepa su nombre`() = runTest {
+        val vm = createViewModel()
+
+        vm.restoreSavedCart(
+            SavedCart(id = "saved-9", name = "Para llevar", items = emptyList(), attachedCustomerId = "cust-ana"),
+        )
+
+        assertEquals("cust-ana", vm.selectedCustomer.value?.id)
+        // NO "Agregar cliente": el carrito guardado sólo persiste el id, así que el
+        // encabezado cae a "Cliente" en vez de decir que no hay nadie mientras la
+        // venta sí lo lleva.
+        assertEquals("Cliente", vm.selectedCustomer.value?.name)
     }
 }

@@ -78,6 +78,63 @@ class PaymentSyncService @Inject constructor(
             else -> OrderResolution.RetryableFailure("Order recreate server error ($code)")
         }
 
+        /**
+         * El cuerpo EXACTO que la cola reproduce contra el server.
+         *
+         * Vive aquí —y no dentro de `syncPayment`— para que un test pruebe el camino
+         * que de verdad se ejecuta: un campo agregado a otro constructor de cuerpos
+         * (el del cobro en vivo) NO llega jamás a la cola, y el hueco sólo se ve
+         * meses después, en las ventas que el local cobró sin red.
+         *
+         * @param esCobroDeOrden true = va a `/orders/:id/pay`; false = va a `/fast`.
+         */
+        internal fun buildReplayBody(
+            payment: PendingPaymentEntity,
+            venueId: String,
+            esCobroDeOrden: Boolean,
+        ): String = buildJsonObject {
+            put("venueId", venueId)
+            put("amount", payment.amountCents)
+            put("tip", payment.tipCents)
+            put("status", "COMPLETED")
+            // El método REAL de la cola, no un "CASH" fijo: reproducir un
+            // cobro con terminal ajena como efectivo descuadra el arqueo.
+            // 🔑 Si la venta se cobró con un TIPO DEL CATÁLOGO, viaja la referencia
+            // {id, revision} y NO `method`: el server los rechaza juntos a propósito
+            // (ambigüedad de dinero) y resuelve él la semántica desde su historial.
+            // Sin esto la venta aterrizaba como EFECTIVO, callada.
+            val tenderId = payment.tenderTypeId
+            val tenderRev = payment.tenderRevision
+            if (tenderId != null && tenderRev != null) {
+                put("tenderTypeId", tenderId)
+                put("tenderRevision", tenderRev)
+            } else {
+                val manual = runCatching {
+                    com.avoqado.pos.payment.domain.ManualPaymentMethod.valueOf(payment.method)
+                }.getOrNull()
+                put("method", manual?.serverMethod ?: "CASH")
+                manual?.externalSource?.let { put("externalSource", it) }
+            }
+            put("splitType", "FULLPAYMENT")
+            put("staffId", payment.staffId)
+            put("source", "AVOQADO_ANDROID")
+            put("idempotencyKey", payment.id)
+            // 🔴 "Esta venta YA OCURRIÓ y viene de mi cola." Con un tipo del catálogo,
+            // el server honra la revisión que el cajero tenía enfrente al cobrar. Sin
+            // esto, subir la comisión de un tipo el martes RECHAZA para siempre las
+            // ventas del lunes que no habían sincronizado: atoradas en la cola, con un
+            // banner que el cajero no puede quitar. Sólo lo manda ESTA cola, nunca un
+            // cobro en vivo.
+            put("isOfflineReplay", true)
+            // 🔴 EL CLIENTE de la venta rápida. Sólo en `/fast`: el cobro de una ORDEN
+            // ya lleva su cliente desde que la orden se creó (`orderRequestJson`), y
+            // `recordOrderPayment` ni siquiera lee este campo — mandarlo ahí sería
+            // ruido que promete algo que ese endpoint no hace.
+            if (!esCobroDeOrden) {
+                payment.customerId?.takeIf { it.isNotBlank() }?.let { put("customerId", it) }
+            }
+        }.toString()
+
         internal fun extractOrderId(body: String): String? {
             return try {
                 val root = RESPONSE_JSON.parseToJsonElement(body).jsonObject
@@ -355,9 +412,10 @@ class PaymentSyncService @Inject constructor(
                 }
             }
 
+            val esCobroDeOrden = payment.paymentType == "ORDER" && resolvedOrderId != null
             val url: String
 
-            if (payment.paymentType == "ORDER" && resolvedOrderId != null) {
+            if (esCobroDeOrden) {
                 // Order payment: POST /mobile/venues/{venueId}/orders/{orderId}/pay
                 url = "${ApiConstants.BASE_URL}/mobile/venues/$venueId/orders/$resolvedOrderId/pay"
             } else {
@@ -365,42 +423,7 @@ class PaymentSyncService @Inject constructor(
                 url = "${ApiConstants.BASE_URL}/mobile/venues/$venueId/fast"
             }
 
-            // Build payment body
-            val bodyJson = buildJsonObject {
-                put("venueId", venueId)
-                put("amount", payment.amountCents)
-                put("tip", payment.tipCents)
-                put("status", "COMPLETED")
-                // El método REAL de la cola, no un "CASH" fijo: reproducir un
-                // cobro con terminal ajena como efectivo descuadra el arqueo.
-                // 🔑 Si la venta se cobró con un TIPO DEL CATÁLOGO, viaja la referencia
-                // {id, revision} y NO `method`: el server los rechaza juntos a propósito
-                // (ambigüedad de dinero) y resuelve él la semántica desde su historial.
-                // Sin esto la venta aterrizaba como EFECTIVO, callada.
-                val tenderId = payment.tenderTypeId
-                val tenderRev = payment.tenderRevision
-                if (tenderId != null && tenderRev != null) {
-                    put("tenderTypeId", tenderId)
-                    put("tenderRevision", tenderRev)
-                } else {
-                    val manual = runCatching {
-                        com.avoqado.pos.payment.domain.ManualPaymentMethod.valueOf(payment.method)
-                    }.getOrNull()
-                    put("method", manual?.serverMethod ?: "CASH")
-                    manual?.externalSource?.let { put("externalSource", it) }
-                }
-                put("splitType", "FULLPAYMENT")
-                put("staffId", payment.staffId)
-                put("source", "AVOQADO_ANDROID")
-                put("idempotencyKey", payment.id)
-                // 🔴 "Esta venta YA OCURRIÓ y viene de mi cola." Con un tipo del catálogo,
-                // el server honra la revisión que el cajero tenía enfrente al cobrar. Sin
-                // esto, subir la comisión de un tipo el martes RECHAZA para siempre las
-                // ventas del lunes que no habían sincronizado: atoradas en la cola, con un
-                // banner que el cajero no puede quitar. Sólo lo manda ESTA cola, nunca un
-                // cobro en vivo.
-                put("isOfflineReplay", true)
-            }.toString()
+            val bodyJson = buildReplayBody(payment, venueId, esCobroDeOrden)
 
             val request = Request.Builder()
                 .url(url)

@@ -2421,7 +2421,11 @@ class PaymentFlowViewModel @Inject constructor(
                 name = item.name,
                 quantity = item.quantity,
                 unitPrice = item.effectiveUnitPrice + item.selectedModifiers.sumOf { it.priceInCents },
-                lineTotal = item.totalPrice,
+                // BRUTO, igual que en el ticket: esta lista se pinta JUNTO al
+                // desglose (Subtotal / Descuento) en la pantalla de cobro. Con la
+                // línea rebajada, los renglones sumaban menos que el subtotal y
+                // parecía que el descuento se aplicaba dos veces.
+                lineTotal = item.grossPrice,
                 modifiers = modifierNames,
                 note = item.itemNote,
                 isCortesia = item.isCortesia,

@@ -186,4 +186,19 @@ object AvoqadoDatabaseMigrations {
             database.execSQL("ALTER TABLE `pending_payments` ADD COLUMN `tenderRevision` INTEGER")
         }
     }
+
+    /**
+     * La cola de pagos conserva EL CLIENTE de la venta.
+     *
+     * Un cobro rápido ("Otro importe") hecho sin red perdía al cliente al
+     * reproducirse: el `orderRequestJson` que sí lo llevaba sólo existe cuando la
+     * venta tiene productos. La venta aterrizaba anónima —sin historial, sin CFDI y
+     * sin atribución— y nadie se enteraba, porque el ticket ya había salido bien.
+     * Aditiva y nullable: los pagos ya encolados siguen subiendo igual.
+     */
+    val MIGRATION_9_10 = object : Migration(9, 10) {
+        override fun migrate(database: SupportSQLiteDatabase) {
+            database.execSQL("ALTER TABLE `pending_payments` ADD COLUMN `customerId` TEXT")
+        }
+    }
 }

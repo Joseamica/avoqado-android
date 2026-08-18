@@ -478,4 +478,156 @@ class OrderRepositoryTest {
         assertFalse(OrderRepository.isTransient4xx(500, "text/html", "ERR", "<html>"))
         assertFalse(OrderRepository.isTransient4xx(200, "application/json", null, "{}"))
     }
+
+    // MARK: - El CLIENTE en el cobro rápido ("Otro importe")
+    //
+    // 🔴 El cuerpo del cobro rápido se arma A MANO (buildString), no con una data
+    // class serializada. Estos tests corren sobre `buildFastPaymentPayload`, que es
+    // EXACTAMENTE la función que usa `recordFastCashPayment`: agregar el campo por
+    // otro camino (un modelo que nadie serializa aquí) lo dejaría fuera del JSON que
+    // de verdad viaja, y el server volvería a registrar la venta sin cliente.
+
+    @Test
+    fun `el cobro rapido lleva el customerId que eligio el cajero`() {
+        val body = OrderRepository.buildFastPaymentPayload(
+            venueId = "venue-1",
+            amount = 10000,
+            tip = 0,
+            splitType = "FULLPAYMENT",
+            staffId = "user-456",
+            idempotencyKey = "key-1",
+            customerId = "cmcustomer123",
+        )
+
+        assertTrue(body.contains("\"customerId\":\"cmcustomer123\""))
+    }
+
+    @Test
+    fun `sin cliente el cuerpo del cobro rapido queda IDENTICO al de hoy`() {
+        // Regresión: la venta anónima es el 99% de los cobros. Un campo de más —aunque
+        // sea `"customerId":null`— cambia el contrato de TODOS ellos.
+        val body = OrderRepository.buildFastPaymentPayload(
+            venueId = "venue-1",
+            amount = 10000,
+            tip = 0,
+            splitType = "FULLPAYMENT",
+            staffId = "user-456",
+            idempotencyKey = "key-1",
+            customerId = null,
+        )
+
+        assertEquals(
+            """{"venueId":"venue-1","amount":10000,"tip":0,"status":"COMPLETED",""" +
+                """"method":"CASH","splitType":"FULLPAYMENT","staffId":"user-456",""" +
+                """"source":"AVOQADO_ANDROID","idempotencyKey":"key-1"}""",
+            body,
+        )
+        assertFalse(body.contains("customerId"))
+    }
+
+    @Test
+    fun `un customerId en blanco no viaja - vale como venta anonima`() {
+        val body = OrderRepository.buildFastPaymentPayload(
+            venueId = "venue-1",
+            amount = 10000,
+            tip = 0,
+            splitType = "FULLPAYMENT",
+            staffId = "user-456",
+            idempotencyKey = "key-1",
+            customerId = "   ",
+        )
+
+        assertFalse(body.contains("customerId"))
+    }
+
+    @Test
+    fun `el cliente convive con el tipo de pago del catalogo`() {
+        val body = OrderRepository.buildFastPaymentPayload(
+            venueId = "venue-1",
+            amount = 10000,
+            tip = 0,
+            splitType = "FULLPAYMENT",
+            staffId = "user-456",
+            idempotencyKey = "key-1",
+            tenderType = com.avoqado.pos.payment.domain.TenderTypeOption(
+                id = "tender-1",
+                revision = 3,
+                name = "Uber Eats",
+                isSystem = false,
+                baseMethod = "OTHER",
+                captureTip = false,
+                posSection = "MORE",
+                displayOrder = 1,
+            ),
+            customerId = "cmcustomer123",
+        )
+
+        assertTrue(body.contains("\"tenderTypeId\":\"tender-1\""))
+        assertTrue(body.contains("\"customerId\":\"cmcustomer123\""))
+        assertFalse(body.contains("\"method\""))
+    }
+
+    // MARK: - customerLink de la respuesta (aviso, NUNCA error)
+
+    @Test
+    fun `un cliente que no existe en el negocio devuelve el aviso del server`() {
+        val body = """
+            {
+              "success": true,
+              "data": {
+                "id": "cm9fastpaymentid123",
+                "customerLink": {
+                  "status": "NOT_FOUND",
+                  "customerId": null,
+                  "requestedCustomerId": "cmotrovenue999",
+                  "warning": "El cliente seleccionado no existe en este negocio. La venta se registró sin cliente."
+                }
+              }
+            }
+        """.trimIndent()
+
+        assertEquals(
+            "El cliente seleccionado no existe en este negocio. La venta se registró sin cliente.",
+            OrderRepository.extractCustomerLinkWarningFromResponse(body),
+        )
+    }
+
+    @Test
+    fun `CONFLICT y UNVERIFIED tambien se avisan`() {
+        val conflicto = """
+            {"success":true,"data":{"customerLink":{"status":"CONFLICT","customerId":"cmotro","requestedCustomerId":"cmpedido","warning":"La venta ya tenía otro cliente asignado; no se reasignó."}}}
+        """.trimIndent()
+        val sinVerificar = """
+            {"success":true,"data":{"customerLink":{"status":"UNVERIFIED","customerId":null,"requestedCustomerId":"cmpedido","warning":"No se pudo verificar el cliente. La venta se registró sin cliente."}}}
+        """.trimIndent()
+
+        assertEquals(
+            "La venta ya tenía otro cliente asignado; no se reasignó.",
+            OrderRepository.extractCustomerLinkWarningFromResponse(conflicto),
+        )
+        assertEquals(
+            "No se pudo verificar el cliente. La venta se registró sin cliente.",
+            OrderRepository.extractCustomerLinkWarningFromResponse(sinVerificar),
+        )
+    }
+
+    @Test
+    fun `el camino feliz NO pinta nada`() {
+        val vinculado = """
+            {"success":true,"data":{"customerLink":{"status":"LINKED","customerId":"cmcustomer123","requestedCustomerId":"cmcustomer123","warning":null}}}
+        """.trimIndent()
+        val anonima = """
+            {"success":true,"data":{"customerLink":{"status":"NOT_REQUESTED","customerId":null,"requestedCustomerId":null,"warning":null}}}
+        """.trimIndent()
+
+        assertEquals(null, OrderRepository.extractCustomerLinkWarningFromResponse(vinculado))
+        assertEquals(null, OrderRepository.extractCustomerLinkWarningFromResponse(anonima))
+    }
+
+    @Test
+    fun `un server viejo sin customerLink no rompe nada`() {
+        val body = """{"success":true,"data":{"id":"cm9fastpaymentid123"}}"""
+        assertEquals(null, OrderRepository.extractCustomerLinkWarningFromResponse(body))
+        assertEquals(null, OrderRepository.extractCustomerLinkWarningFromResponse("no es json"))
+    }
 }

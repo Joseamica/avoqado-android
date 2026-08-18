@@ -493,4 +493,103 @@ class CartViewModelReferralTest {
         val viewModel = createViewModel()
         assertTrue(viewModel.referralPlanAllowed)
     }
+
+    // MARK: - 🔴 El referido sobrevive al CIERRE de la venta
+    //
+    // Regresión real (2026-08-17): cerrar la venta suelta al cliente, y eso llama a
+    // `clearReferral()`, que deja la validación en `Idle` y el código en "". Como la
+    // captura corre DESPUÉS —en un `launch` asíncrono— salía en su primera línea sin
+    // llamar al server: el que refirió NUNCA recibía su crédito, en silencio.
+    //
+    // El camino por producto era el único que funcionaba antes (esa rama no tocaba ni
+    // al cliente ni a la validación) y fue justo el que se rompió. Por eso el snapshot
+    // se congela ANTES de tocar el carrito, y por eso congelar sólo el `customerId` no
+    // servía de nada: la función ya había salido antes de llegar a leerlo.
+
+    @Test
+    fun `cerrar la venta por producto NO mata la captura del referido`() = runTest {
+        coEvery {
+            validateReferralUseCase(any(), any(), any())
+        } returns Result.success(
+            ValidationResult.Valid(
+                referrerName = "Beto",
+                discountPercent = 10,
+                referrerCustomerId = "cust-beto",
+            ),
+        )
+        coEvery {
+            captureReferralUseCase(any(), any(), any(), any(), any())
+        } returns Result.success("ref-id-123")
+
+        val viewModel = createViewModel()
+        selectCustomer(viewModel, id = "cust-7")
+        viewModel.onReferralCodeChange("BETO-2026")
+        viewModel.validateReferralCode()
+        advanceUntilIdle()
+        assertTrue(viewModel.referralValidation.value is ReferralCaptureUiState.Valid)
+
+        // 🔴 Con renglones REALES: el guard es `splitType == "BYPRODUCT" &&
+        // paidItemIds.isNotEmpty()`, así que un set vacío NO entra por producto — cae
+        // en PAGO_COMPLETO y el test estaría probando otra rama de la que dice.
+        viewModel.addCustomAmount(name = "Refresco", amountCents = 3000)
+        viewModel.addCustomAmount(name = "Agua", amountCents = 2000)
+        val todos = viewModel.cartState.value.items.map { it.id }.toSet()
+
+        // Cobro POR PRODUCTO de todo el carrito: cierra la venta y suelta al cliente.
+        val cobro = viewModel.aplicarCobroConfirmado(
+            splitType = "BYPRODUCT",
+            paidItemIds = todos,
+            remainingBalanceCents = 0,
+        )
+        // Se afirma la RAMA, no sólo el efecto: es lo que garantiza que este test
+        // ejerce el camino del que habla su nombre.
+        assertEquals(CartViewModel.RamaCobro.RENGLONES_PAGADOS, cobro.rama)
+        assertTrue(cobro.ventaTerminada)
+        assertNull(viewModel.selectedCustomer.value)
+        // La validación YA murió con el cierre — que es exactamente por lo que hace
+        // falta el snapshot.
+        assertTrue(viewModel.referralValidation.value !is ReferralCaptureUiState.Valid)
+
+        val ok = viewModel.captureReferralOnPayment(orderId = "order-1", pendiente = cobro.referralPendiente)
+
+        assertTrue(ok)
+        coVerify {
+            captureReferralUseCase(
+                venueId = "venue-1",
+                referralCode = "BETO-2026",
+                newCustomerId = "cust-7",
+                capturedByStaffVenueId = any(),
+                intendedOrderId = "order-1",
+            )
+        }
+    }
+
+    @Test
+    fun `sin el snapshot congelado la captura se pierde — el bug, documentado`() = runTest {
+        coEvery {
+            validateReferralUseCase(any(), any(), any())
+        } returns Result.success(
+            ValidationResult.Valid(
+                referrerName = "Beto",
+                discountPercent = 10,
+                referrerCustomerId = "cust-beto",
+            ),
+        )
+
+        val viewModel = createViewModel()
+        selectCustomer(viewModel, id = "cust-7")
+        viewModel.onReferralCodeChange("BETO-2026")
+        viewModel.validateReferralCode()
+        advanceUntilIdle()
+
+        viewModel.addCustomAmount(name = "Refresco", amountCents = 3000)
+        val todos = viewModel.cartState.value.items.map { it.id }.toSet()
+        viewModel.aplicarCobroConfirmado(splitType = "BYPRODUCT", paidItemIds = todos, remainingBalanceCents = 0)
+
+        // Llamar SIN el snapshot es lo que hacía el código roto: la validación ya no
+        // es Valid, así que sale como no-op y el server nunca se entera.
+        viewModel.captureReferralOnPayment(orderId = "order-1")
+
+        coVerify(exactly = 0) { captureReferralUseCase(any(), any(), any(), any(), any()) }
+    }
 }

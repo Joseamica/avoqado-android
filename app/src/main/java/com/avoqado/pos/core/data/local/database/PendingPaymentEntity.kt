@@ -42,4 +42,17 @@ data class PendingPaymentEntity(
      */
     val tenderTypeId: String? = null,
     val tenderRevision: Int? = null,
+    /**
+     * 🔴 EL CLIENTE DE LA VENTA, elegido por el cajero en el carrito.
+     *
+     * Sin esta columna, un cobro RÁPIDO ("Otro importe") hecho sin red perdía al
+     * cliente: el `orderRequestJson` —que sí lo llevaba— sólo existe cuando la venta
+     * tiene productos, así que la venta rápida se reproducía anónima al reconectar.
+     * Nadie se entera: el ticket ya salió bien y la idempotencia impide repararlo.
+     *
+     * El server valida contra el negocio al reproducir; un id inválido NO rechaza el
+     * cobro encolado (registra anónima y avisa), así que esta columna nunca puede
+     * atorar la cola.
+     */
+    val customerId: String? = null,
 )

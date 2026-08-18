@@ -329,4 +329,51 @@ class CashPaymentRepositoryTest {
 
         assertNotEquals(a, b)
     }
+
+    // MARK: - El CLIENTE sobrevive a la cola offline
+
+    /**
+     * 🔴 Un cobro RÁPIDO sin red no tiene `orderRequestJson` (no hay productos), que
+     * era el ÚNICO lugar donde viajaba el cliente. Sin columna propia, la venta se
+     * reproducía anónima al reconectar y nadie se enteraba: el ticket ya había salido.
+     */
+    @Test
+    fun `un cobro RAPIDO encolado conserva el cliente`() = runTest {
+        val soloImporte = CreateOrderRequest(items = emptyList(), subtotal = 10000, total = 10000, paymentMethod = "CASH")
+
+        repository.queueCashPayment(
+            orderRequest = soloImporte,
+            staffId = "user-456",
+            cashTenderedCents = 10000,
+            changeCents = 0,
+            rating = null,
+            customerId = "cmcustomer123",
+        )
+
+        coVerify {
+            dao.insert(
+                match {
+                    it.paymentType == "FAST" &&
+                        it.orderRequestJson == null &&
+                        it.customerId == "cmcustomer123"
+                },
+            )
+        }
+    }
+
+    @Test
+    fun `sin cliente la fila encolada queda en null, no en cadena vacia`() = runTest {
+        val soloImporte = CreateOrderRequest(items = emptyList(), subtotal = 10000, total = 10000, paymentMethod = "CASH")
+
+        repository.queueCashPayment(
+            orderRequest = soloImporte,
+            staffId = "user-456",
+            cashTenderedCents = 10000,
+            changeCents = 0,
+            rating = null,
+            customerId = "   ",
+        )
+
+        coVerify { dao.insert(match { it.customerId == null }) }
+    }
 }

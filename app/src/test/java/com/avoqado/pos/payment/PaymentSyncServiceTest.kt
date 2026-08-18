@@ -331,6 +331,53 @@ class PaymentSyncServiceTest {
         coVerify(exactly = 1) { dao.retryFailed("pay-original-id") }
     }
 
+    // MARK: - El CLIENTE viaja al reproducir la cola
+    //
+    // Sobre `buildReplayBody`, que es EXACTAMENTE el cuerpo que `syncPayment` manda:
+    // probar otro constructor no probaría nada — el hueco original vivía justo ahí.
+
+    @Test
+    fun `el cobro RAPIDO encolado manda el cliente al reproducirse`() {
+        val body = PaymentSyncService.buildReplayBody(
+            payment("pay-1", "PENDING").copy(customerId = "cmcustomer123"),
+            "venue-123",
+            esCobroDeOrden = false,
+        )
+
+        assertTrue(body.contains("\"customerId\":\"cmcustomer123\""))
+        // Lo que ya funcionaba no se toca.
+        assertTrue(body.contains("\"idempotencyKey\":\"pay-1\""))
+        assertTrue(body.contains("\"isOfflineReplay\":true"))
+    }
+
+    @Test
+    fun `sin cliente el cuerpo del replay no cambia`() {
+        val body = PaymentSyncService.buildReplayBody(
+            payment("pay-1", "PENDING"),
+            "venue-123",
+            esCobroDeOrden = false,
+        )
+
+        assertEquals(false, body.contains("customerId"))
+        assertTrue(body.contains("\"method\":\"CASH\""))
+    }
+
+    /**
+     * El cobro de una ORDEN ya lleva su cliente desde que la orden se creó, y
+     * `recordOrderPayment` ni siquiera lee este campo: mandarlo prometería algo
+     * que ese endpoint no hace.
+     */
+    @Test
+    fun `el cobro de una ORDEN no manda customerId`() {
+        val body = PaymentSyncService.buildReplayBody(
+            payment("pay-1", "PENDING").copy(paymentType = "ORDER", orderId = "order-1", customerId = "cmcustomer123"),
+            "venue-123",
+            esCobroDeOrden = true,
+        )
+
+        assertEquals(false, body.contains("customerId"))
+    }
+
     private fun payment(id: String, status: String) = PendingPaymentEntity(
         id = id,
         venueId = "venue-123",

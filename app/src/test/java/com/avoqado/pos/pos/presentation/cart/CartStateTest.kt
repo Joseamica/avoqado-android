@@ -195,4 +195,29 @@ class CartStateTest {
             state.subtotalCents - state.discountCents + state.taxCents,
         )
     }
+
+    @Test
+    fun `🔴 los dos descuentos se pueden pintar por separado, sin atribuirle uno al otro`() {
+        // El carrito los muestra en renglones distintos. Antes existía UNA sola
+        // fila, con el nombre del descuento de ORDEN y el monto COMBINADO: con los
+        // dos aplicados, el de artículo salía atribuido al equivocado; y sin
+        // descuento de orden no se pintaba nada, así que el de artículo era
+        // invisible aunque sí se cobrara.
+        val state = CartState(
+            items = listOf(
+                CartItem(type = CartItemType.ProductItem("burger"), name = "Hamburguesa", unitPrice = 14900),
+                conDescuento(unitPrice = 2500, value = 20.0),
+            ),
+            orderDiscount = Discount(id = "d-orden", name = "10%", value = 10.0, type = "PERCENTAGE"),
+        )
+
+        assertEquals("sólo el de artículo", 500, state.itemDiscountCents)
+        assertEquals("sólo el de orden", 1690, state.orderDiscountCents)
+        assertEquals("y la suma es lo que se resta", 2190, state.discountCents)
+        assertEquals(
+            "los dos renglones más el total siguen cuadrando",
+            state.totalCents,
+            state.subtotalCents - state.itemDiscountCents - state.orderDiscountCents + state.taxCents,
+        )
+    }
 }

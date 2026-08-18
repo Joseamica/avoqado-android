@@ -331,11 +331,27 @@ fun CartPanelView(
                     }
 
                     // Discount rows (matching iOS: per-discount display)
-                    if (cartState.discountCents > 0 && cartState.orderDiscount != null) {
+                    //
+                    // 🔴 Van SEPARADOS y cada uno con su propio monto. Antes esta
+                    // fila era la única y pintaba `discountCents` —que hoy incluye
+                    // los de línea— bajo el nombre del descuento de ORDEN: con los
+                    // dos aplicados, el de artículo salía atribuido al equivocado. Y
+                    // sin descuento de orden no se pintaba NADA, así que un
+                    // descuento por artículo era invisible en el carrito aunque sí
+                    // se cobrara.
+                    if (cartState.itemDiscountCents > 0) {
+                        SummaryAmountRow(
+                            name = "Descuentos por artículo",
+                            amount = "-${cartState.itemDiscountDisplay}",
+                            useDenseTabletLayout = useDenseTabletLayout,
+                        )
+                    }
+
+                    if (cartState.orderDiscountCents > 0 && cartState.orderDiscount != null) {
                         DiscountItemRow(
                             name = cartState.orderDiscount.name,
                             displayValue = cartState.orderDiscount.displayValue,
-                            amount = "-${cartState.discountDisplay}",
+                            amount = "-${cartState.orderDiscountDisplay}",
                             useDenseTabletLayout = useDenseTabletLayout,
                         )
                     }
@@ -837,7 +853,10 @@ private fun CartItemRow(
         // Price column (matching iOS: strikethrough if cortesia, modifiers price)
         Column(horizontalAlignment = Alignment.End) {
             Text(
-                text = "$${String.format("%.2f", item.totalPrice / 100.0)}",
+                // BRUTO: el descuento de la línea se muestra en su propio renglón
+                // junto al total (ver las filas de descuento arriba), no rebajando
+                // el precio aquí — si no, se vería restado dos veces.
+                text = "$${String.format("%.2f", item.grossPrice / 100.0)}",
                 style = if (useDenseTabletLayout) {
                     MaterialTheme.typography.bodySmall
                 } else {

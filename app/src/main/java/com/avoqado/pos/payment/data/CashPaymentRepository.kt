@@ -96,6 +96,12 @@ class CashPaymentRepository @Inject constructor(
             // y la idempotencia impedía repararla.
             tenderTypeId = tenderType?.id,
             tenderRevision = tenderType?.revision,
+            // 🔴 EL CLIENTE, en COLUMNA propia y no sólo dentro del `orderRequestJson`:
+            // ese JSON sólo existe cuando la venta tiene productos, así que el cobro
+            // RÁPIDO ("Otro importe") perdía al cliente y se reproducía anónimo. Se
+            // guarda en los dos tipos para que el replay no tenga que adivinar dónde
+            // buscarlo.
+            customerId = customerId?.takeIf { it.isNotBlank() },
             paymentType = paymentType,
             orderId = orderId,
             orderNumber = null,

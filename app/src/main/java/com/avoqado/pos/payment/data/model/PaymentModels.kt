@@ -42,6 +42,15 @@ sealed class PaymentFlowState {
          * el toast ámbar. null = sin faltantes.
          */
         val inventoryWarningMessage: String? = null,
+        /**
+         * Aviso del server sobre EL CLIENTE de esta venta (`customerLink`): el id no
+         * existe en este negocio, la venta ya tenía otro, o no se pudo verificar.
+         * Español, listo para el toast ámbar.
+         *
+         * 🔴 El cobro SÍ quedó registrado. Es aviso, no error: nunca se vuelve a
+         * cobrar — el cliente se reasigna desde la misma pantalla de recibo.
+         */
+        val customerLinkWarning: String? = null,
     ) : PaymentFlowState()
     data class Error(val message: String, val source: PaymentErrorSource) : PaymentFlowState()
 
