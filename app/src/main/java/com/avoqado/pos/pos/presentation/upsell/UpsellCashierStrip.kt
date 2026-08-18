@@ -209,7 +209,15 @@ private fun UpsellChip(
                         .background(MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp)),
                 )
             }
-            Column {
+            // Ancho acotado: la fila vive dentro de un horizontalScroll (constraints
+            // infinitas), así que el TextOverflow.Ellipsis de abajo NUNCA disparaba —
+            // el chip se estiraba con el nombre resuelto ("Agua Mineral 1L (Grande,
+            // Sin hielo, Con limón)") en vez de truncar. Espejo EXACTO de
+            // `.frame(maxWidth: 150)` en avoqado-ios (`UpsellCashierStrip.swift:173`).
+            // 150.dp sin token: ni Spacing (tope 32.dp, son gaps) ni Dimensions
+            // (alturas de botón/iconos) tienen un valor para ancho de contenido —
+            // mismo patrón que el resto de los `widthIn(max = ...)` del repo.
+            Column(modifier = Modifier.widthIn(max = 150.dp)) {
                 Text(
                     text = card.headline ?: card.name,
                     fontSize = 13.sp,
