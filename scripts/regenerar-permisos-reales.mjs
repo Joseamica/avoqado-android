@@ -49,6 +49,12 @@ const raw = execFileSync('npx', ['tsx', 'scripts/dump-effective-role-permissions
 })
 const dump = JSON.parse(raw)
 
+// 🔴 La procedencia se ancla al CONTENIDO (`digest`), nunca al commit de git del
+// server: un hash de HEAD marcaría "desactualizado" cada vez que alguien toca
+// cualquier otra cosa de ese repo, y un detector que grita en falso se aprende a
+// ignorar. Con la huella, `--check` sólo se pone rojo si los PERMISOS cambiaron.
+const HUELLA = dump.generatedFrom.digest
+
 const faltantes = ORDEN.filter(r => !dump.roles[r])
 if (faltantes.length) {
   console.error(`✖ El server ya no manda estos roles: ${faltantes.join(', ')}. Actualiza ORDEN en este script.`)
@@ -103,7 +109,7 @@ const kt = `package com.avoqado.pos.core.domain
  * venue con Permission Sets (\`VenueRolePermission\`) manda otra cosa; aquí sale la
  * matriz por default (\`customPermissions = null\`), que es la de la mayoría.
  *
- * Derivado de ${dump.generatedFrom.repo}@${dump.generatedFrom.commit}.
+ * Derivado de ${dump.generatedFrom.repo} · huella ${HUELLA}.
  */
 object PermisosRealesDelServer {
 
@@ -163,7 +169,7 @@ const ktRutas = `package com.avoqado.pos.core.domain
  * nombre de permiso. No salen aquí porque el modal nunca los pide; sus etiquetas
  * existen para el resto de la app, no para ese modal.
  *
- * Derivado de ${dump.generatedFrom.repo}@${dump.generatedFrom.commit}.
+ * Derivado de ${dump.generatedFrom.repo} · huella ${HUELLA}.
  */
 object PermisosDeRutasDelServer {
 
@@ -187,13 +193,13 @@ if (check) {
     console.error('  Corre: node scripts/regenerar-permisos-reales.mjs')
     process.exit(1)
   }
-  console.log(`✓ El fixture cuadra con ${dump.generatedFrom.repo}@${dump.generatedFrom.commit}.`)
+  console.log(`✓ El fixture cuadra con ${dump.generatedFrom.repo} · huella ${HUELLA}.`)
   process.exit(0)
 }
 
 writeFileSync(KT, kt)
 writeFileSync(KT_RUTAS, ktRutas)
 writeFileSync(JSON_SNAPSHOT, snapshot)
-console.log(`✓ Regenerado desde ${dump.generatedFrom.repo}@${dump.generatedFrom.commit}:`)
+console.log(`✓ Regenerado desde ${dump.generatedFrom.repo} · huella ${HUELLA}:`)
 ORDEN.forEach(r => console.log(`    ${r.padEnd(11)} ${String(dump.roles[r].effective.length).padStart(3)} permisos`))
 console.log(`    rutas       ${String(Object.values(dump.routePermissions).flat().filter((v, i, a) => a.indexOf(v) === i).length).padStart(3)} permisos rechazables`)

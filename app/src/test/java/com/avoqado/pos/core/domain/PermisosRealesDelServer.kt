@@ -26,7 +26,7 @@ package com.avoqado.pos.core.domain
  * venue con Permission Sets (`VenueRolePermission`) manda otra cosa; aquí sale la
  * matriz por default (`customPermissions = null`), que es la de la mayoría.
  *
- * Derivado de avoqado-server@ad05bb37.
+ * Derivado de avoqado-server · huella 9385343215071d29.
  */
 object PermisosRealesDelServer {
 

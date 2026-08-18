@@ -1,8 +1,8 @@
 {
   "generatedFrom": {
     "repo": "avoqado-server",
-    "commit": "ad05bb37",
-    "fn": "getEffectiveRolePermissions(role, null)"
+    "fn": "getEffectiveRolePermissions(role, null)",
+    "digest": "9385343215071d29"
   },
   "roles": {
     "SUPERADMIN": {

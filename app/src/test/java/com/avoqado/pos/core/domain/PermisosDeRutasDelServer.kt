@@ -21,7 +21,7 @@ package com.avoqado.pos.core.domain
  * nombre de permiso. No salen aquí porque el modal nunca los pide; sus etiquetas
  * existen para el resto de la app, no para ese modal.
  *
- * Derivado de avoqado-server@ad05bb37.
+ * Derivado de avoqado-server · huella 9385343215071d29.
  */
 object PermisosDeRutasDelServer {
 
