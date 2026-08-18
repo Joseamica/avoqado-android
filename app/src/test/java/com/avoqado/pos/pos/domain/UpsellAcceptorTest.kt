@@ -9,6 +9,7 @@ import com.avoqado.pos.pos.data.model.Product
 import com.avoqado.pos.pos.data.model.ResolvedModifier
 import com.avoqado.pos.pos.data.model.SelectedModifier
 import com.avoqado.pos.pos.data.model.UpsellCard
+import com.avoqado.pos.pos.data.model.UpsellRule
 import com.avoqado.pos.pos.presentation.cart.CartState
 import com.avoqado.pos.pos.presentation.cart.CartViewModel
 import io.mockk.every
@@ -20,6 +21,7 @@ import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.time.LocalDateTime
 
 /**
  * 🔴 EL guardrail de dinero del upsell.
@@ -350,5 +352,44 @@ class UpsellAcceptorTest {
 
         assertEquals(1, result.added.size)
         assertEquals(2800, result.cart.totalCents)
+    }
+
+    // ── El precio de la tarjeta nace del RESOLVER real, no de un número escrito a mano ──
+    //
+    // Los tests de arriba usan `card(...)` con precios puestos a mano (2800, 3500,
+    // 5000...): si `UpsellResolver.toCard()` y `CounterUpsellAcceptor.accept()` se
+    // equivocaran EXACTAMENTE IGUAL, ningún test de esta suite se enteraría. El
+    // spec dice "el precio coincide con el cobrado" — este test ata las dos puntas
+    // de verdad: construye la tarjeta con el RESOLVER real y afirma que el
+    // carrito cobra `priceWithModifiers` de ESA tarjeta, no una constante.
+
+    @Test
+    fun `🔴 el precio de la tarjeta (resolver real) y el cobro del carrito (acceptor real) coinciden EXACTO`() = runBlocking {
+        val vm = fakeCart()
+        val agua = product("prod_agua", price = 35.0)
+        // Modificador con centavos "feos" — el mismo caso de la truncación en
+        // UpsellResolverTest.kt (ResolvedModifier.priceInCents trunca $8.20 a
+        // 819¢). Es justo donde un desajuste entre lo que promete la tarjeta y lo
+        // que cobra el carrito se asomaría, si alguna vez se colara uno.
+        val reglaReal = UpsellRule(
+            id = "r_feo",
+            suggestedProductId = "prod_agua",
+            suggestedModifiers = listOf(ResolvedModifier("g_tam", "m_gr", "Grande", 8.20)),
+        )
+
+        val cards = resolveUpsellSuggestions(
+            rules = listOf(reglaReal),
+            cartProductIds = emptySet(),
+            cartCategoryIds = emptySet(),
+            catalog = mapOf("prod_agua" to agua),
+            nowLocal = LocalDateTime.of(2026, 8, 17, 12, 0),
+        )
+        assertEquals(1, cards.size)
+        val tarjeta = cards[0]
+
+        val result = CounterUpsellAcceptor(vm).accept(listOf(tarjeta), mapOf("prod_agua" to agua))
+
+        // El aserto LEE el valor de la tarjeta — nada de números mágicos.
+        assertEquals(tarjeta.priceWithModifiers, result.cart.items.single().totalPrice / 100.0, 0.001)
     }
 }

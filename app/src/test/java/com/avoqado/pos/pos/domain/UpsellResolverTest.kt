@@ -327,6 +327,35 @@ class UpsellResolverTest {
         assertEquals("d1", cards[0].linkedDiscountId)
     }
 
+    // ── truncación de centavos en ResolvedModifier (defecto conocido, NO SE ARREGLA AQUÍ) ──
+    //
+    // `ResolvedModifier.priceInCents` hace `(price * 100).toInt()`, que en Kotlin
+    // TRUNCA hacia cero en vez de redondear. El server REDONDEA el mismo precio
+    // (`Math.round`), así que con centavos "feos" el POS y el server divergen por
+    // 1¢. Es un defecto de TODA la app —`Product.priceInCents` y
+    // `Modifier.priceInCents` truncan exactamente igual— no sólo del upsell:
+    // arreglarlo sólo aquí descuadraría la tarjeta contra el resto del mismo
+    // carrito. Se reporta aparte (ver
+    // avoqado-android/.superpowers/sdd/2026-08-16-upsell-sugerencias-bloqueadas/test-centavos-report.md).
+    //
+    // 🔴 Este test afirma el comportamiento de HOY (trunca), no el correcto, a
+    // propósito: hasta ahora TODOS los datos de prueba de este archivo eran
+    // redondos ($15.0, $0.0) y el defecto era invisible para la suite. El día que
+    // alguien arregle la truncación en toda la app, este test debe TRONAR — y ese
+    // tronido es el recordatorio de arreglarlo en avoqado-android Y avoqado-ios en
+    // el MISMO cambio (regla de paridad del CLAUDE.md).
+    @Test
+    fun `🔴 ResolvedModifier priceInCents TRUNCA en vez de redondear — el server difiere en centavos feos`() {
+        // El peor caso medido: $8.20 cae DOS centésimas por debajo de lo que
+        // redondea el server (819¢ vs 820¢).
+        assertEquals(819, ResolvedModifier("g", "m", "Feo", 8.20).priceInCents)
+
+        // Resto de la tabla medida — el server redondea distinto en los cuatro casos:
+        assertEquals(434, ResolvedModifier("g", "m", "Feo", 4.35).priceInCents) // server: 435
+        assertEquals(114, ResolvedModifier("g", "m", "Feo", 1.15).priceInCents) // server: 115
+        assertEquals(28, ResolvedModifier("g", "m", "Feo", 0.29).priceInCents) // server: 29
+    }
+
     // ── modificadores obligatorios YA resueltos (spec 2026-08-16, B3) ───────────
     //
     // Antes, un producto con un grupo obligatorio se descartaba SIEMPRE (tocarlo
