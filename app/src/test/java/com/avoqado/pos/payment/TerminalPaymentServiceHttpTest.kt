@@ -13,6 +13,7 @@ import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -213,6 +214,52 @@ class TerminalPaymentServiceHttpTest {
 
         // Ausencia ≠ prueba: entre que el request llega y la fila se escribe hay una ventana.
         assertTrue(result is TerminalPaymentResult.Undetermined)
+    }
+
+    // MARK: - EL CLIENTE de la venta viaja en el cuerpo del relay
+    //
+    // 🔴 El defecto: el cajero elegía "Juan Pérez" en el carrito, cobraba $100 con
+    // TARJETA sin productos, y la orden `FAST-*` nacía anónima. El EFECTIVO sí lo
+    // mandaba (`recordFastCashPayment(..., customerId = attachedCustomerId)`); la
+    // tarjeta, no. Se perdían historial de compra, CFDI y atribución — y nadie se
+    // entera, porque el ticket sale perfecto.
+    //
+    // Se prueba sobre el cuerpo REAL que sale por el socket (MockWebServer), no sobre
+    // un constructor paralelo: es el único que garantiza lo que ve el server.
+
+    private fun cuerpoDelCobro(): String = server.takeRequest().body.readUtf8()
+
+    @Test
+    fun `el relay lleva el cliente congelado de la venta`() = runBlocking {
+        enqueue(200, """{"success":true,"status":"success","paymentId":"pay-1"}""")
+
+        service.sendPaymentToTerminal(terminalId = "t1", amountCents = 25, customerId = "cmcustomer123")
+
+        val cuerpo = cuerpoDelCobro()
+        assertTrue("el cuerpo debe llevar el cliente, y no lo lleva: $cuerpo", cuerpo.contains("\"customerId\":\"cmcustomer123\""))
+    }
+
+    @Test
+    fun `una venta anonima NO manda la llave customerId`() = runBlocking {
+        // Regresión del contrato: la venta anónima es el 99% de los cobros. Mandar
+        // `customerId: null` NO es equivalente a no mandarlo — el cuerpo de siempre se
+        // conserva byte a byte porque la llave sencillamente no aparece.
+        enqueue(200, """{"success":true,"status":"success","paymentId":"pay-1"}""")
+
+        service.sendPaymentToTerminal(terminalId = "t1", amountCents = 25)
+
+        val cuerpo = cuerpoDelCobro()
+        assertFalse("una venta anónima no puede mandar la llave: $cuerpo", cuerpo.contains("customerId"))
+    }
+
+    @Test
+    fun `un cliente en blanco vale como venta anonima`() = runBlocking {
+        enqueue(200, """{"success":true,"status":"success","paymentId":"pay-1"}""")
+
+        service.sendPaymentToTerminal(terminalId = "t1", amountCents = 25, customerId = "   ")
+
+        val cuerpo = cuerpoDelCobro()
+        assertFalse("un id en blanco no es un cliente: $cuerpo", cuerpo.contains("customerId"))
     }
 
     // MARK: - La sonda de terminales corre SOLA

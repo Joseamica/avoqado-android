@@ -188,6 +188,12 @@ class TerminalPaymentService @Inject constructor(
         rating: Int? = null,
         orderId: String? = null,
         processedByStaffId: String? = null,
+        /**
+         * Cliente CONGELADO de la venta (nunca el vivo del carrito). En el cobro rápido
+         * —importe suelto, sin productos— no nace orden, así que éste es el único
+         * camino por el que el cliente puede llegar a la venta `FAST-*`.
+         */
+        customerId: String? = null,
     ): TerminalPaymentResult {
         val venueId = secureStorage.venueId ?: return TerminalPaymentResult.Error("No venue selected")
         val token = secureStorage.accessToken ?: return TerminalPaymentResult.Error("Not authenticated")
@@ -217,6 +223,9 @@ class TerminalPaymentService @Inject constructor(
                     orderId = orderId,
                     processedByStaffId = processedByStaffId,
                     requestId = requestId,
+                    // Un id en blanco NO es un cliente: se descarta aquí para que el cuerpo
+                    // quede idéntico al de una venta anónima.
+                    customerId = customerId?.trim()?.takeIf { it.isNotEmpty() },
                 ),
             ).toRequestBody("application/json".toMediaType())
 
@@ -654,6 +663,15 @@ private data class TerminalPaymentRequest(
     val orderId: String? = null,
     val processedByStaffId: String? = null,
     val requestId: String,
+    /**
+     * 🔴 EL CLIENTE DE LA VENTA, congelado al abrir el cobro.
+     *
+     * Es ADITIVO: el `Json` de este archivo va con `explicitNulls = false`, así que una
+     * venta anónima produce **el mismo cuerpo byte a byte** de siempre — la llave ni
+     * aparece. Sin él, el cobro rápido con tarjeta nacía anónimo aunque el cajero sí
+     * hubiera elegido cliente (el de efectivo sí lo mandaba desde su propio fix).
+     */
+    val customerId: String? = null,
 )
 
 @Serializable

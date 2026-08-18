@@ -1044,6 +1044,13 @@ class PaymentFlowViewModel @Inject constructor(
                     rating = currentRating,
                     orderId = createdOrderId,
                     processedByStaffId = selectedStaffId(),
+                    // 🔴 EL CLIENTE DE LA VENTA. Es el valor CONGELADO al abrir el cobro
+                    // (`clienteDelCobro` de CheckoutScreen → startPaymentFlow), nunca el
+                    // flujo vivo del carrito. En el cobro rápido con tarjeta no hay orden
+                    // (`createdOrderId` va nulo), así que sin esta línea la venta `FAST-*`
+                    // nacía anónima aunque el cajero sí lo hubiera elegido. Espejo exacto
+                    // del camino de EFECTIVO (`recordFastCashPayment`).
+                    customerId = attachedCustomerId,
                 )
                 if (generation != paymentGeneration) {
                     // El cajero canceló mientras el envío seguía en vuelo (hasta 330 s): no se
