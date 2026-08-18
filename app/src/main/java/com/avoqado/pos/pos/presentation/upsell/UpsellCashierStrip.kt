@@ -273,14 +273,11 @@ private fun UpsellRow(
                 // saber NUNCA qué producto era ni de qué tamaño. El gancho es para
                 // convencer; el nombre es para saber qué se está vendiendo. Van los
                 // dos, en ese orden de peso.
-                Text(
-                    text = card.name,
-                    style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.SemiBold,
-                    maxLines = 2,
-                    overflow = TextOverflow.Ellipsis,
-                    color = MaterialTheme.colorScheme.onSurface,
-                )
+                // El GANCHO arriba, como encabezado, y el NOMBRE debajo: el orden
+                // que pidió el founder. El gancho vende, el nombre informa — y va
+                // en semibold porque es el dato que el cajero necesita para saber
+                // qué está agregando. `card.name` ya trae el modificador resuelto
+                // dentro ("Agua Mineral 1L (Grande)").
                 card.headline?.takeIf { it.isNotBlank() && it != card.name }?.let { gancho ->
                     Text(
                         text = gancho,
@@ -290,6 +287,14 @@ private fun UpsellRow(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+                Text(
+                    text = card.name,
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxs))
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
