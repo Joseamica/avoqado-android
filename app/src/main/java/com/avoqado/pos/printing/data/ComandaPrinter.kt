@@ -1,6 +1,7 @@
 package com.avoqado.pos.printing.data
 
 import android.util.Log
+import com.avoqado.pos.printing.data.model.ComboPrintLines
 import com.avoqado.pos.printing.data.model.KitchenItem
 import com.avoqado.pos.printing.data.model.KitchenTicketData
 import com.avoqado.pos.printing.data.model.PrinterConnectionType
@@ -56,6 +57,7 @@ class ComandaPrinter @Inject constructor(
         orderNumber: String,
         orderType: String,
         serverName: String? = null,
+        comboNames: Map<String, String> = emptyMap(),
     ): ResolvedComanda {
         val station = plan.stationId?.let { id -> config.stations.firstOrNull { it.id == id } }
         val printerInfo = station?.printerId?.let { pid -> config.printers.firstOrNull { it.id == pid } }
@@ -65,7 +67,17 @@ class ComandaPrinter @Inject constructor(
         val ticket = KitchenTicketData(
             orderNumber = orderNumber,
             orderType = orderType,
-            items = plan.lines.map { it.toKitchenItem() },
+            // COMBOS — el nombre del combo encabeza a SUS productos, en cada estación
+            // por separado (Fudo). La llave es el NOMBRE porque el motor ya consolidó
+            // líneas de instancias distintas. Sin combos, `comboNames` vacío ⇒ la lista
+            // sale idéntica a la de siempre.
+            items = ComboPrintLines.kitchen(
+                plan.lines.map { line ->
+                    val comboName = line.orderItemIds.firstNotNullOfOrNull { comboNames[it] }
+                    val tag = comboName?.let { ComboPrintLines.Tag(key = it, name = it) }
+                    tag to line.toKitchenItem()
+                },
+            ),
             serverName = serverName,
             stationName = stationLabel,
         )
@@ -110,13 +122,15 @@ class ComandaPrinter @Inject constructor(
         orderNumber: String,
         orderType: String = "En tienda",
         serverName: String? = null,
+        /** COMBOS — `orderItemId` → nombre del combo. Vacío = comanda de siempre. */
+        comboNames: Map<String, String> = emptyMap(),
     ): Result {
         var printed = 0
         var skipped = 0
         var lastError: String? = null
         for (plan in plans) {
             try {
-                val resolved = resolve(plan, config, orderNumber, orderType, serverName)
+                val resolved = resolve(plan, config, orderNumber, orderType, serverName, comboNames)
                 val printer = resolved.savedPrinter ?: printerService.getDefaultPrinter(PrinterRole.KITCHEN)
                 if (printer == null) {
                     Log.w(

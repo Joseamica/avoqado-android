@@ -120,6 +120,10 @@ class ComandaDispatcher @Inject constructor(
             orderNumber = orderNumber,
             orderType = orderType,
             serverName = serverName,
+            // COMBOS — el nombre viaja aparte del motor de ruteo (que es espejo byte a byte
+            // del server y no sabe de promociones) y se vuelve a atar por `orderItemId` ya
+            // ruteado, para que cada estación encabece SUS productos con su combo.
+            comboNames = lines.mapNotNull { line -> line.comboName?.let { line.orderItemId to it } }.toMap(),
         )
     }
 

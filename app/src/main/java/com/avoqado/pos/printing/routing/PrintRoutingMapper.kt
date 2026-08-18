@@ -56,4 +56,12 @@ data class RoutableItem(
     val quantity: Int,
     val modifiers: List<String> = emptyList(),
     val notes: String? = null,
+    /**
+     * COMBOS — nombre del combo al que pertenece la línea, o null si va suelta.
+     * NO entra al motor de ruteo (que es espejo byte a byte del server y no sabe
+     * de promociones): viaja aparte hasta [com.avoqado.pos.printing.data.ComandaPrinter],
+     * que encabeza con él los productos de CADA estación. Un combo cuyos productos
+     * se reparten entre cocina y barra sale encabezado en las dos comandas.
+     */
+    val comboName: String? = null,
 )

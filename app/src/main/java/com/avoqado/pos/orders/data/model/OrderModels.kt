@@ -30,6 +30,45 @@ enum class OrderType(val label: String) {
     PICKUP("Recoger");
 }
 
+/**
+ * Carril del REEMBOLSO — espejo por nombre EXACTO de `RefundState` del server
+ * (`src/services/shared/orderBalance.ts`), que Android e iOS replican igual.
+ *
+ * 🔴 Un reembolso NO reabre el saldo: la cuenta queda `COMPLETED` / `PAID` y su
+ * `total` NO se reescribe (modelo Toast/Square, y el CFDI de Egreso mexicano lo
+ * exige). Por eso una venta devuelta se ve IDÉNTICA a una cobrada si nadie
+ * pinta la marca — y por eso "cobrar el saldo" sobre ella cobraría de más.
+ */
+enum class RefundState {
+    NONE,
+    PARTIAL,
+    FULL,
+    ;
+
+    companion object {
+        /**
+         * Tolerante a propósito: campo ausente (server viejo) o valor que este
+         * cliente no conoce ⇒ [NONE], o sea el comportamiento de hoy. Inventar
+         * una marca a partir de un estado desconocido sería peor que no pintarla.
+         */
+        fun from(raw: String?): RefundState = when (raw?.uppercase()) {
+            "FULL" -> FULL
+            "PARTIAL" -> PARTIAL
+            else -> NONE
+        }
+    }
+}
+
+/**
+ * Texto de la marca, o null cuando no hay nada que marcar. Vive aquí —y no en
+ * la pantalla— para que Android e iOS no puedan divergir en el texto.
+ */
+internal fun refundBadgeLabelFor(state: RefundState, refundedAmount: Double): String? = when (state) {
+    RefundState.FULL -> "Reembolsada"
+    RefundState.PARTIAL -> "Reembolso parcial: $${String.format(Locale.US, "%.2f", refundedAmount)}"
+    RefundState.NONE -> null
+}
+
 // MARK: - Summary Model
 
 @Serializable
@@ -48,6 +87,10 @@ data class OrderSummary(
     val staffName: String? = null,
     val customerName: String? = null,
     val createdAt: String = "",
+    /** ADITIVO (server 2026-08-18). Ausente en servers viejos ⇒ "NONE". */
+    val refundState: String = "NONE",
+    /** Lo devuelto, en PESOS y POSITIVO. 0 cuando no hay reembolsos. */
+    val refundedAmount: Double = 0.0,
 ) {
     @Transient
     val orderStatus: OrderStatus = when (status.uppercase()) {
@@ -73,6 +116,17 @@ data class OrderSummary(
         "PICKUP" -> OrderType.PICKUP
         else -> null
     }
+
+    @Transient
+    val refund: RefundState = RefundState.from(refundState)
+
+    /** "Reembolsada" / "Reembolso parcial: $X", o null si no hay nada que marcar. */
+    @Transient
+    val refundBadgeLabel: String? = refundBadgeLabelFor(refund, refundedAmount)
+
+    /** 🔴 Una cuenta devuelta ya no se cobra: el reembolso no reabre el saldo. */
+    @Transient
+    val allowsCollection: Boolean = refund == RefundState.NONE
 
     @Transient
     val formattedTotal: String = "$%,.2f".format(total)
@@ -105,6 +159,10 @@ data class OrderDetail(
     val specialRequests: String? = null,
     val items: List<OrderDetailItem>? = null,
     val payments: List<OrderPaymentInfo>? = null,
+    /** ADITIVO (server 2026-08-18). Ausente en servers viejos ⇒ "NONE". */
+    val refundState: String = "NONE",
+    /** Lo devuelto, en PESOS y POSITIVO. 0 cuando no hay reembolsos. */
+    val refundedAmount: Double = 0.0,
 ) {
     @Transient
     val orderStatus: OrderStatus = when (status.uppercase()) {
@@ -130,6 +188,17 @@ data class OrderDetail(
         "PICKUP" -> OrderType.PICKUP
         else -> null
     }
+
+    @Transient
+    val refund: RefundState = RefundState.from(refundState)
+
+    /** "Reembolsada" / "Reembolso parcial: $X", o null si no hay nada que marcar. */
+    @Transient
+    val refundBadgeLabel: String? = refundBadgeLabelFor(refund, refundedAmount)
+
+    /** 🔴 Una cuenta devuelta ya no se cobra: el reembolso no reabre el saldo. */
+    @Transient
+    val allowsCollection: Boolean = refund == RefundState.NONE
 
     @Transient
     val formattedTotal: String = "$%,.2f".format(total)

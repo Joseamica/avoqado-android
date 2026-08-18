@@ -34,6 +34,7 @@ import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.domain.printing.ComandaDispatcher
 import com.avoqado.pos.core.domain.printing.NoStationsFallback
 import com.avoqado.pos.printing.data.PrinterService
+import com.avoqado.pos.printing.data.model.ComboPrintLines
 import com.avoqado.pos.printing.data.model.KitchenItem
 import com.avoqado.pos.printing.data.model.ReceiptData
 import com.avoqado.pos.printing.data.model.ReceiptItem
@@ -1971,6 +1972,9 @@ class PaymentFlowViewModel @Inject constructor(
                         quantity = item.quantity,
                         modifiers = item.selectedModifiers.map { it.modifierName },
                         notes = item.itemNote,
+                        // COMBOS — el nombre viaja con la línea para que cada estación
+                        // pueda encabezar SUS productos con el combo al que pertenecen.
+                        comboName = item.promotionInstanceId?.let { item.promotionName ?: "Combo" },
                     )
                 },
                 orderNumber = orderNumber,
@@ -1978,15 +1982,21 @@ class PaymentFlowViewModel @Inject constructor(
                 // Sin estaciones configuradas: EXACTAMENTE lo de antes — un solo ticket de cocina
                 // abanicado a todas las impresoras con rol KITCHEN.
                 noStationsFallback = NoStationsFallback.LegacySingleTicket(
-                    realItems.map { item ->
-                        KitchenItem(
-                            name = item.name,
-                            quantity = item.quantity,
-                            modifiers = item.selectedModifiers.map { it.modifierName }.ifEmpty { null },
-                            note = item.itemNote,
-                            category = item.subtitle,
-                        )
-                    },
+                    // COMBOS — en la comanda la llave es el NOMBRE (ver ComboPrintLines):
+                    // los productos del mismo combo van juntos bajo un encabezado.
+                    ComboPrintLines.kitchen(
+                        realItems.map { item ->
+                            val comboName = item.promotionInstanceId?.let { item.promotionName ?: "Combo" }
+                            val tag = comboName?.let { ComboPrintLines.Tag(key = it, name = it) }
+                            tag to KitchenItem(
+                                name = item.name,
+                                quantity = item.quantity,
+                                modifiers = item.selectedModifiers.map { it.modifierName }.ifEmpty { null },
+                                note = item.itemNote,
+                                category = item.subtitle,
+                            )
+                        },
+                    ),
                 ),
             )
         }
@@ -2019,6 +2029,25 @@ class PaymentFlowViewModel @Inject constructor(
             )
         }
 
+        /**
+         * COMBOS — el nombre del combo como renglón y debajo sus componentes sin
+         * precio (founder 2026-08-18, patrón Fudo/Square/Toast). La llave es la
+         * INSTANCIA: cada combo vendido es su propio renglón con su propio precio.
+         * Sin combos en el carrito devuelve exactamente la lista de siempre.
+         */
+        fun List<com.avoqado.pos.pos.data.model.CartItem>.toReceiptItemsConCombos(): List<ReceiptItem> =
+            ComboPrintLines.receipt(
+                map { item ->
+                    val tag = item.promotionInstanceId?.let { instanceId ->
+                        ComboPrintLines.Tag(
+                            key = instanceId,
+                            name = item.promotionName ?: "Combo",
+                        )
+                    }
+                    tag to item.toReceiptItem()
+                },
+            )
+
         val splitTypeValue = _splitType.value
         val receiptItems = when {
             cart == null || cart.items.isEmpty() -> listOf(
@@ -2031,7 +2060,7 @@ class PaymentFlowViewModel @Inject constructor(
             )
             splitTypeValue == "BYPRODUCT" -> {
                 val selected = cart.items.filter { splitSelectedItemIds.contains(it.id) }
-                (if (selected.isEmpty()) cart.items else selected).map { it.toReceiptItem() }
+                (if (selected.isEmpty()) cart.items else selected).toReceiptItemsConCombos()
             }
             splitTypeValue == "EQUALPARTS" || splitTypeValue == "CUSTOMAMOUNT" -> listOf(
                 ReceiptItem(
@@ -2041,7 +2070,7 @@ class PaymentFlowViewModel @Inject constructor(
                     totalPrice = baseAmount,
                 ),
             )
-            else -> cart.items.map { it.toReceiptItem() }
+            else -> cart.items.toReceiptItemsConCombos()
         }
 
         val isFullPayment = splitTypeValue == "FULLPAYMENT"

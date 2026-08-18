@@ -61,6 +61,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -461,6 +462,12 @@ private fun OrderStatusSection(order: OrderDetail) {
         ) {
             OrderStatusBadge(status = order.orderStatus)
             PaymentStatusBadge(status = order.orderPaymentStatus)
+            // 🔴 La marca del reembolso va JUNTO al estado de pago, no en su lugar:
+            // la cuenta sigue PAGADA (el reembolso no reescribe el total) y ocultar
+            // eso convertiría la pantalla en una mentira distinta.
+            order.refundBadgeLabel?.let { label ->
+                RefundBadge(label = label)
+            }
             order.orderType?.let { type ->
                 OrderTypeBadge(label = type.label)
             }
@@ -887,6 +894,12 @@ private fun OrderRow(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 OrderStatusBadge(status = order.orderStatus)
+                order.refundBadgeLabel?.let { label ->
+                    Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.xs))
+                    // `fill = false`: la etiqueta cede el espacio sobrante en vez de
+                    // empujar el total y la hora fuera de la fila en un teléfono.
+                    RefundBadge(label = label, modifier = Modifier.weight(1f, fill = false))
+                }
                 Spacer(modifier = Modifier.weight(1f))
                 Text(
                     text = order.formattedTotal,
@@ -954,6 +967,36 @@ private fun PaymentStatusBadge(status: PaymentStatus) {
             style = MaterialTheme.typography.labelSmall,
             color = textColor,
             fontWeight = FontWeight.Medium,
+        )
+    }
+}
+
+/**
+ * Reembolso — "Reembolsada" / "Reembolso parcial: $X". Mismo cuerpo que las otras
+ * etiquetas de esta pantalla (píldora `RoundedCornerShape(50)`, `labelSmall`,
+ * tokens del design system) para que se lea como una más y no como un parche;
+ * el color es el semántico `Error`, que es el que la app ya usa para "dinero que
+ * se fue" (cancelado). El texto lo decide el modelo, no la vista, para que
+ * Android e iOS no puedan divergir.
+ */
+@Composable
+private fun RefundBadge(label: String, modifier: Modifier = Modifier) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(50))
+            .background(OrderCancelledBg)
+            .padding(horizontal = 8.dp, vertical = 3.dp),
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall,
+            color = Error,
+            fontWeight = FontWeight.Medium,
+            // En un teléfono "Reembolso parcial: $1,234.56" no cabe junto al total y
+            // la hora. Se recorta la etiqueta —no los importes— porque una fila que
+            // esconde el total en silencio es peor que una etiqueta con "…".
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
     }
 }

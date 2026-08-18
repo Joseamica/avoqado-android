@@ -292,13 +292,24 @@ data class ReceiptItem(
      * verificación visual sea posible aun si el área no escanea el código de entrega.
      */
     val areaSourceLabel: String? = null,
+    /**
+     * COMBOS (founder 2026-08-18, patrón Fudo/Square/Toast) — este renglón ES el
+     * nombre del combo y lleva el precio de TODO el combo; debajo van sus
+     * componentes. Aditivo: false reproduce el ticket de hoy tal cual.
+     */
+    val isComboHeader: Boolean = false,
+    /** COMBOS — producto que pertenece al combo del renglón de arriba. Se imprime
+     *  indentado y SIN precio (su importe ya está en el renglón del combo). */
+    val isComboComponent: Boolean = false,
 ) {
     val formattedPrice: String
-        get() = if (isCortesia) {
-            "CORTESIA"
-        } else {
-            val amount = totalPrice / 100.0
-            String.format(Locale.US, "$%.2f", amount)
+        get() = when {
+            // 🔴 DINERO: el importe del componente vive en el renglón del combo.
+            // Repetirlo aquí haría que las líneas sumaran más que el combo y el
+            // ticket no cuadraría consigo mismo delante del cliente.
+            isComboComponent -> ""
+            isCortesia -> "CORTESIA"
+            else -> String.format(Locale.US, "$%.2f", totalPrice / 100.0)
         }
 }
 
@@ -375,6 +386,16 @@ data class KitchenItem(
     val modifiers: List<String>? = null,
     val note: String? = null,
     val category: String? = null,
+    /**
+     * COMBOS (founder 2026-08-18, patrón Fudo: "en la comanda se imprime el nombre
+     * del combo y, debajo, cada producto asociado") — este renglón ES el nombre del
+     * combo. La cocina no prepara "un combo": prepara los productos de abajo, así
+     * que el encabezado se imprime SIN cantidad. Aditivo: false = comanda de hoy.
+     */
+    val isComboHeader: Boolean = false,
+    /** COMBOS — producto que pertenece al combo del renglón de arriba: se imprime
+     *  indentado y CON su cantidad (que es lo que la cocina necesita). */
+    val isComboComponent: Boolean = false,
 )
 
 // MARK: - Kitchen Priority

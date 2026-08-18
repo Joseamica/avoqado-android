@@ -271,4 +271,51 @@ class ComandaPrinterTest {
         assertEquals(1, printerSlots.size)
         assertEquals("192.168.1.50", printerSlots.first().address)
     }
+
+    // MARK: - Combos en la comanda (founder 2026-08-18, patrón Fudo)
+
+    /**
+     * El caso que de verdad cuesta: un combo cuyos productos se reparten entre
+     * cocina y barra. Cada estación tiene que encabezar SUS productos con el
+     * nombre del combo — si sólo lo llevara una, la otra prepara a ciegas.
+     */
+    @Test
+    fun `resolve headers each station's products with the combo they belong to`() {
+        val comboNames = mapOf("oi_1" to "Combo del día", "oi_2" to "Combo del día")
+
+        val cocina = comandaPrinter.resolve(
+            plan("st_cocina", listOf(tacoLine)),
+            config,
+            orderNumber = "1234",
+            orderType = "En tienda",
+            comboNames = comboNames,
+        )
+        val barra = comandaPrinter.resolve(
+            plan("st_barra", listOf(cervezaLine)),
+            config,
+            orderNumber = "1234",
+            orderType = "En tienda",
+            comboNames = comboNames,
+        )
+
+        assertEquals(listOf("Combo del día", "Taco"), cocina.ticket.items.map { it.name })
+        assertEquals(listOf("Combo del día", "Cerveza"), barra.ticket.items.map { it.name })
+        assertTrue(cocina.ticket.items.first().isComboHeader)
+        assertTrue(cocina.ticket.items.last().isComboComponent)
+        assertEquals(2, cocina.ticket.items.last().quantity) // la cantidad del producto, intacta
+    }
+
+    /** REGRESIÓN: sin combos la comanda sale EXACTAMENTE igual que siempre. */
+    @Test
+    fun `resolve without combo names produces todays comanda untouched`() {
+        val resolved = comandaPrinter.resolve(
+            plan("st_cocina", listOf(tacoLine, cervezaLine)),
+            config,
+            orderNumber = "1234",
+            orderType = "En tienda",
+        )
+
+        assertEquals(listOf("Taco", "Cerveza"), resolved.ticket.items.map { it.name })
+        assertTrue(resolved.ticket.items.none { it.isComboHeader || it.isComboComponent })
+    }
 }

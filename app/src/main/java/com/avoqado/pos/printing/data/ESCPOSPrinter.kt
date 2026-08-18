@@ -557,11 +557,17 @@ class ESCPOSPrinter(
 
         // Items
         for (item in receipt.items) {
+            // COMBOS (Fudo/Square/Toast) — el nombre del combo va en negritas como
+            // renglón con SU precio, y sus productos debajo, indentados y sin precio.
+            // Sin combos ninguna de las dos banderas se prende y el ticket sale
+            // byte a byte como siempre.
+            if (item.isComboHeader) setBold(true)
             printThreeColumns(
-                "${item.quantity}",
-                item.name,
+                if (item.isComboComponent) "" else "${item.quantity}",
+                if (item.isComboComponent) "  ${item.quantity}x ${item.name}" else item.name,
                 item.formattedPrice,
             )
+            if (item.isComboHeader) setBold(false)
             // Venta por peso: peso × precio/kg bajo el nombre (mismo estilo que los modificadores).
             item.weightSummary?.let { printLine("  $it") }
             item.areaSourceLabel?.let { printLine("  $it") }
@@ -704,7 +710,17 @@ class ESCPOSPrinter(
         // Items - Large and clear
         setDoubleHeight(true)
         for (item in ticket.items) {
-            printLine("${item.quantity}x ${item.name}")
+            // COMBOS (Fudo: "en la comanda se imprime el nombre del combo y, debajo,
+            // cada producto asociado") — el encabezado sale SIN cantidad (la cocina no
+            // prepara "un combo") y sus productos indentados CON la suya. Sin combos
+            // ninguna bandera se prende y la comanda sale igual que siempre.
+            printLine(
+                when {
+                    item.isComboHeader -> item.name
+                    item.isComboComponent -> "  ${item.quantity}x ${item.name}"
+                    else -> "${item.quantity}x ${item.name}"
+                },
+            )
             setDoubleHeight(false)
 
             item.modifiers?.forEach { modifier ->
