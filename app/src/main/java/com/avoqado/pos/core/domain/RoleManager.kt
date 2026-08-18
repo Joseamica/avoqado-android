@@ -161,6 +161,31 @@ class RoleManager @Inject constructor(
         get() = hasVenuePermission("payments:refund", fallbackRoles = MANAGER_UP)
 
     /**
+     * Liquidar el cheque de OTRO mesero — espejo EXACTO de `tables:pay-any`.
+     *
+     * 🔴 Es el gate que dejaba al CAJERO sin hacer su trabajo. Con la propiedad de
+     * mesa encendida, la app decidía con `tables:manage-all` (que es EDITAR) y le
+     * negaba también cobrar: tocaba "Pagar" y salía "Mesa de {mesero} — solo
+     * lectura". El server ya no piensa eso: su ruta de cobro
+     * (`POST /mobile/venues/:id/orders/:orderId/pay`) exime la propiedad con
+     * `PAYMENT_OWNERSHIP_OVERRIDES = ['tables:manage-all', 'tables:pay-any']`, y el
+     * CASHIER es justo el único rol que estrena `tables:pay-any`. El cliente era lo
+     * ÚNICO que bloqueaba.
+     *
+     * 🔴 Y significa cobrar, NADA más. `tables:manage-all` habría "arreglado" el
+     * síntoma regalándole editar, descontar, cortesiar, cancelar, mover y fusionar
+     * CUALQUIER mesa — el permiso se elige por SIGNIFICADO, no por la tabla que
+     * produzca. Toast y Square resuelven igual: hay dueño de mesa para EDITAR el
+     * cheque, y la caja lo liquida.
+     *
+     * El respaldo es MANAGER_UP porque es lo que hacía la app cuando la lista
+     * efectiva venía vacía: sólo quien tenía `tables:manage-all` se saltaba el
+     * candado. Con lista, manda la lista.
+     */
+    val canSettleAnyTable: Boolean
+        get() = hasVenuePermission("tables:pay-any", fallbackRoles = MANAGER_UP)
+
+    /**
      * Resolver la CUARENTENA de sincronización: MANAGER, ADMIN, OWNER, SUPERADMIN
      *
      * ⚠️ DIVERGE, y **NO hay permiso que espejar — ni lo habrá mientras estas

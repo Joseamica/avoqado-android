@@ -142,6 +142,7 @@ fun TableOrderScreen(
     // Propiedad de mesa: cheque de otro mesero + switch del venue encendido y
     // sin 'tables:manage-all' → pantalla read-only (el server refuerza con 403).
     val readOnlyCheck by viewModel.readOnlyCheck.collectAsState()
+    val readOnlyForPayment by viewModel.readOnlyForPayment.collectAsState()
     val lockOwnerName by viewModel.lockOwnerName.collectAsState()
 
     val context = LocalContext.current
@@ -238,10 +239,25 @@ fun TableOrderScreen(
     }
     BackHandler { requestExit() }
 
-    /** Read-only por propiedad de mesa: avisa y bloquea la acción. */
+    /** Read-only por propiedad de mesa: avisa y bloquea la acción de EDITAR. */
     fun blockIfReadOnly(): Boolean {
         if (!readOnlyCheck) return false
         viewModel.showMessage("Mesa de ${lockOwnerName ?: "otro mesero"} — solo lectura")
+        return true
+    }
+
+    /**
+     * Lo mismo, pero para COBRAR — y cobrar no es editar.
+     *
+     * 🔴 El server exime la ruta de cobro de la propiedad de mesa con
+     * `tables:pay-any`, que es justo lo que estrena el CAJERO. Mientras "Pagar"
+     * usó [blockIfReadOnly], la caja no podía liquidar ninguna mesa abierta por un
+     * mesero —su trabajo literal— y el gate del cliente era lo ÚNICO que
+     * bloqueaba: el 403 nunca llegaba porque la llamada nunca salía.
+     */
+    fun blockIfCannotPay(): Boolean {
+        if (!readOnlyForPayment) return false
+        viewModel.showMessage("Mesa de ${lockOwnerName ?: "otro mesero"} — pídele que la cobre él")
         return true
     }
 
@@ -260,7 +276,7 @@ fun TableOrderScreen(
     }
 
     fun firePagar() {
-        if (blockIfReadOnly()) return
+        if (blockIfCannotPay()) return
         if (viewModel.preparePagar()) {
             paymentSeedCents = viewModel.tableSession.current()?.totalCents ?: 0
             if (paymentSeedCents <= 0) paymentSeedCents = viewModel.payableTotalCents
@@ -293,7 +309,7 @@ fun TableOrderScreen(
                     onSwitchCheck = { showCheckSwitcher = true },
                 )
                 if (readOnlyCheck) {
-                    ReadOnlyOwnershipBanner(ownerName = lockOwnerName)
+                    ReadOnlyOwnershipBanner(ownerName = lockOwnerName, puedeCobrar = !readOnlyForPayment)
                 }
             }
         }
@@ -1927,7 +1943,7 @@ private fun elapsedSince(iso: String?, nowMs: Long): String? {
 /** Banner "Mesa de {mesero} — solo lectura". Informativo, no bloqueante (naranja
  *  suave, nunca modal): las acciones ya están gateadas y el server refuerza. */
 @Composable
-internal fun ReadOnlyOwnershipBanner(ownerName: String?) {
+internal fun ReadOnlyOwnershipBanner(ownerName: String?, puedeCobrar: Boolean = false) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1943,7 +1959,13 @@ internal fun ReadOnlyOwnershipBanner(ownerName: String?) {
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Text(
-            text = "Mesa de ${ownerName ?: "otro mesero"} — solo lectura",
+            // 🔴 "Solo lectura" a secas MIENTE cuando el cajero sí puede cobrarla:
+            // esconde la única acción que le queda y lo manda a buscar al gerente.
+            text = if (puedeCobrar) {
+                "Mesa de ${ownerName ?: "otro mesero"} — puedes cobrarla, no editarla"
+            } else {
+                "Mesa de ${ownerName ?: "otro mesero"} — solo lectura"
+            },
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

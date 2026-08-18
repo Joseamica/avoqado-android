@@ -35,6 +35,34 @@ class RoleManagerTest {
         every { secureStorage.venuePermissions } returns emptyList()
     }
 
+    // MARK: - `tables:pay-any`: cobrar la mesa de otro NO es editarla
+    //
+    // El detalle está en `tables/CobrarMesaAjenaTest`, que mide el candado
+    // completo. Aquí sólo se fija que el gate lee el permiso y no el rol.
+
+    @Test
+    fun `canSettleAnyTable espeja tables pay-any con la lista real del CAJERO`() {
+        every { secureStorage.userRole } returns "CASHIER"
+        every { secureStorage.venuePermissions } returns PermisosRealesDelServer.CASHIER
+        assertTrue("el server SÍ le deja liquidar cheques ajenos", roleManager.canSettleAnyTable)
+    }
+
+    @Test
+    fun `canSettleAnyTable dice que no al MESERO, que no lo tiene`() {
+        every { secureStorage.userRole } returns "WAITER"
+        every { secureStorage.venuePermissions } returns PermisosRealesDelServer.WAITER
+        assertFalse(roleManager.canSettleAnyTable)
+    }
+
+    @Test
+    fun `canSettleAnyTable (respaldo por rol) cae a MANAGER+`() {
+        // Lista vacía: la rama de respaldo tiene que dejar el comportamiento viejo.
+        every { secureStorage.userRole } returns "CASHIER"
+        assertFalse(roleManager.canSettleAnyTable)
+        every { secureStorage.userRole } returns "MANAGER"
+        assertTrue(roleManager.canSettleAnyTable)
+    }
+
     // MARK: - Role defaults
 
     @Test

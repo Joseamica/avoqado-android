@@ -25,6 +25,8 @@ class TableServiceRepository @Inject constructor(
     private val payloadCache: com.avoqado.pos.core.data.local.PayloadCache,
     private val syncOutbox: com.avoqado.pos.core.data.sync.SyncOutbox,
     private val tableSession: TableSession,
+    /** Sólo para `tables:pay-any`: quién puede liquidar un cheque ajeno. */
+    private val roleManager: com.avoqado.pos.core.domain.RoleManager,
 ) {
     // MARK: - Offline fallback (Corte B2)
 
@@ -95,9 +97,30 @@ class TableServiceRepository @Inject constructor(
         val enforced: Boolean = false,
         val staffId: String? = null,
         val canManageAll: Boolean = true,
+        /**
+         * `tables:pay-any` — puedo LIQUIDAR el cheque de otro sin poder editarlo.
+         *
+         * No viene del payload del server (el blob `viewer` sólo trae
+         * `canManageAllTables`): sale de la lista efectiva de permisos del login,
+         * vía `RoleManager.canSettleAnyTable`. Por eso tampoco se cachea en disco
+         * junto al plano — se recalcula, que es gratis y siempre está fresco.
+         */
+        val canPayAny: Boolean = false,
     ) {
         /** ¿Esta cuenta es intocable para mí? (la regla la refuerza el server; esto pinta la UI) */
         fun isLockedForMe(ownerId: String?): Boolean = enforced && !canManageAll && ownerId != null && ownerId != staffId
+
+        /**
+         * ¿No puedo ni COBRARLA?
+         *
+         * 🔴 Editar y cobrar dejaron de ser la misma pregunta. El server exime la
+         * ruta de cobro de la propiedad de mesa con `tables:pay-any`
+         * (`PAYMENT_OWNERSHIP_OVERRIDES`), así que el cajero liquida cualquier
+         * cheque sin ganar el derecho a tocarlo. Mientras esto colgó de
+         * `isLockedForMe`, la app le negaba el cobro que el server ya le concedía
+         * — y el gate del cliente era lo único que bloqueaba.
+         */
+        fun isLockedForPayment(ownerId: String?): Boolean = isLockedForMe(ownerId) && !canPayAny
     }
 
     private val _ownership = MutableStateFlow(TableOwnership())
@@ -112,6 +135,7 @@ class TableServiceRepository @Inject constructor(
                 enforced = response.settings?.enforceTableOwnership == true,
                 staffId = response.viewer?.staffId,
                 canManageAll = response.viewer?.canManageAllTables ?: true,
+                canPayAny = roleManager.canSettleAnyTable,
             )
             // Espejo en disco (Corte A): plano + regla de propiedad sobreviven
             // un reinicio sin red.
@@ -157,7 +181,7 @@ class TableServiceRepository @Inject constructor(
             val blob = cacheJson.decodeFromString(TablesCacheBlob.serializer(), cached.json)
             if (blob.tables.isNotEmpty() && _tables.value.isEmpty()) {
                 _tables.value = blob.tables
-                _ownership.value = TableOwnership(blob.enforced, blob.staffId, blob.canManageAll)
+                _ownership.value = TableOwnership(blob.enforced, blob.staffId, blob.canManageAll, roleManager.canSettleAnyTable)
                 Log.d(TAG, "🗂️ Plano hidratado del cache: ${blob.tables.size} mesas (hace ${cached.ageMinutes} min)")
             }
         }.onFailure { Log.e(TAG, "❌ Cache de mesas corrupto: ${it.message}") }

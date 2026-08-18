@@ -99,6 +99,20 @@ class TableOrderViewModel @Inject constructor(
             ownership.isLockedForMe(check?.waiter?.id)
         }.stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, false)
 
+    /**
+     * ¿Ni siquiera puedo COBRARLA?
+     *
+     * 🔴 Distinto de [readOnlyCheck] a propósito: el server exime la ruta de cobro
+     * de la propiedad de mesa con `tables:pay-any`, así que el CAJERO liquida el
+     * cheque de un mesero sin poder editarlo. Mientras "Pagar" colgó de
+     * [readOnlyCheck], la app le negaba su trabajo literal y el gate del cliente
+     * era lo ÚNICO que bloqueaba (el server ya decía que sí).
+     */
+    val readOnlyForPayment: StateFlow<Boolean> =
+        combine(_check, repository.ownership) { check, ownership ->
+            ownership.isLockedForPayment(check?.waiter?.id)
+        }.stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, false)
+
     /** Nombre del dueño para el banner "Mesa de {mesero} — solo lectura". */
     val lockOwnerName: StateFlow<String?> =
         combine(_check, repository.ownership) { check, ownership ->
