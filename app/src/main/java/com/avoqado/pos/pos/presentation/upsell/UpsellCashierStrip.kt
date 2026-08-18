@@ -238,9 +238,12 @@ private fun UpsellRow(
     Card(
         modifier = modifier.clickable(onClick = onTap),
         shape = RoundedCornerShape(AvoqadoTheme.spacing.md),
-        border = if (isSelected) BorderStroke(2.dp, Accent) else null,
+        border = if (isSelected) BorderStroke(2.dp, MaterialTheme.colorScheme.onSurface) else null,
         colors = CardDefaults.cardColors(
-            containerColor = if (isSelected) Accent.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surface,
+            // Sin tinte de color: seleccionado se dice con el borde y con el
+            // círculo relleno, no pintando la tarjeta. Un tinte aquí competiría
+            // con el gris de la hoja y se vería sucio.
+            containerColor = MaterialTheme.colorScheme.surface,
         ),
     ) {
         Row(
@@ -261,23 +264,28 @@ private fun UpsellRow(
             }
 
             Column(modifier = Modifier.weight(1f)) {
+                // 🔴 El NOMBRE DEL PRODUCTO manda, y `card.name` ya trae el
+                // modificador resuelto dentro ("Agua Mineral 1L (Grande)"), así que
+                // no hace falta una línea aparte para los modificadores.
+                //
+                // Antes esto era `card.headline ?: card.name`: el gancho REEMPLAZABA
+                // al nombre, y el cajero veía "¿Le agregamos un agua bien fría?" sin
+                // saber NUNCA qué producto era ni de qué tamaño. El gancho es para
+                // convencer; el nombre es para saber qué se está vendiendo. Van los
+                // dos, en ese orden de peso.
                 Text(
-                    text = card.headline ?: card.name,
+                    text = card.name,
                     style = MaterialTheme.typography.bodyLarge,
-                    fontWeight = FontWeight.Medium,
+                    fontWeight = FontWeight.SemiBold,
                     maxLines = 2,
                     overflow = TextOverflow.Ellipsis,
                     color = MaterialTheme.colorScheme.onSurface,
                 )
-                // 🟡 Cuando hay `headline`, el Text de arriba lo muestra EN VEZ de
-                // `card.name` — y `card.name` es donde vive el modificador resuelto
-                // ("Agua Mineral 1L (Grande)"). Sin esta línea, un headline escondería
-                // POR QUÉ el precio no es el de lista.
-                if (card.modifiers.isNotEmpty()) {
+                card.headline?.takeIf { it.isNotBlank() && it != card.name }?.let { gancho ->
                     Text(
-                        text = card.modifiers.joinToString(", ") { it.name },
+                        text = gancho,
                         style = MaterialTheme.typography.bodyMedium,
-                        maxLines = 1,
+                        maxLines = 2,
                         overflow = TextOverflow.Ellipsis,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -309,7 +317,7 @@ private fun UpsellRow(
                 modifier = Modifier
                     .size(AvoqadoTheme.adaptive.circularIconButtonSize)
                     .clip(CircleShape)
-                    .background(if (isSelected) Accent else MaterialTheme.colorScheme.surfaceVariant)
+                    .background(if (isSelected) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.surfaceVariant)
                     .clickable(onClick = onTap),
                 contentAlignment = Alignment.Center,
             ) {
@@ -318,7 +326,7 @@ private fun UpsellRow(
                         text = "1",
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.Bold,
-                        color = Color.Black,
+                        color = MaterialTheme.colorScheme.surface,
                     )
                 } else {
                     Icon(
