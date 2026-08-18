@@ -19,6 +19,25 @@ class RoleManager @Inject constructor(
     // olvido, es que elegir su permiso es una decisión de producto pendiente.
     // Ninguno se cambia a ciegas: el que se equivoque esconde trabajo que el
     // server sí permite, o promete permiso que el server niega.
+    //
+    // 🔴 Y ANTES DE ESPEJAR UNO NUEVO, DOS INVENTARIOS. Espejar no cambia un
+    // valor: cambia la REGLA, y su radio es el conjunto de sus consumidores.
+    //
+    //   1. TODOS los consumidores del gate, buscados por FIRMA del símbolo
+    //      (`grep -rn '\bcanX\b'`), no por substring. Un gate reusado por una
+    //      pantalla ajena convierte un arreglo en una concesión silenciosa:
+    //      `canIssueRefund` gobernaba también las 4 acciones de la CUARENTENA
+    //      (ver `canResolveQuarantine`), y espejarlo se las regaló al cajero.
+    //   2. La tabla rol × antes/después calculada con la lista EFECTIVA que el
+    //      server manda de verdad — `getEffectiveRolePermissions()` EXPANDE
+    //      dependencias implícitas antes de mandarla. `orders:update` arrastra
+    //      `inventory:read`, así que espejar inventario le encendía una pestaña
+    //      entera de la barra a COCINA, MESERO y CAJERO. El fixture de los tests
+    //      vive en `PermisosRealesDelServer` justo para que esa tabla no se
+    //      adivine.
+    //
+    // Cualquier celda que cambie y que gobierne NAVEGACIÓN o una acción
+    // DESTRUCTIVA se declara como decisión de producto y no se toca de paso.
 
     /**
      * POS checkout: WAITER, CASHIER, MANAGER, ADMIN, OWNER, SUPERADMIN
@@ -32,9 +51,36 @@ class RoleManager @Inject constructor(
     val canAccessPOS: Boolean
         get() = role in setOf("WAITER", "CASHIER", "MANAGER", "ADMIN", "OWNER", "SUPERADMIN")
 
-    /** Inventario — espejo de `inventory:read` (las rutas `/mobile/venues/:id/inventory`). */
+    /**
+     * Inventario: MANAGER, ADMIN, OWNER, SUPERADMIN
+     *
+     * ⚠️ DIVERGE (decisión de producto NO tomada) — y ojo, esto SÍ se espejó de
+     * `inventory:read` el 2026-08-17 y se revirtió el mismo día, porque encendía
+     * una pestaña entera de la barra para tres roles sin que nadie lo decidiera.
+     *
+     * El permiso existe y el server SÍ se los da, pero por DEPENDENCIA
+     * IMPLÍCITA, no porque alguien se los concediera: `orders:create` y
+     * `orders:update` arrastran `inventory:read`
+     * (`avoqado-server/src/lib/permissions.ts`), para que el POS pueda
+     * CONSULTAR existencias mientras se toma una orden. La tabla real, medida
+     * contra `getEffectiveRolePermissions()`:
+     *
+     * ```
+     *                        VIEWER  HOST  KITCHEN  WAITER  CASHIER  MANAGER+
+     * lista de roles (hoy)     no     no     no       no      no       sí
+     * `inventory:read` real    no     no     SÍ       SÍ      SÍ       sí
+     * ```
+     *
+     * Este gate gobierna TRES cosas —la pestaña INVENTARIO de la barra
+     * (`MainTabsPolicy`), las dos rutas `MainTab.INVENTORY` del `NavGraph`, y la
+     * única puerta a Traslados entre sucursales, que vive dentro de
+     * `InventoryScreen`—, así que espejarlo le abre el módulo de inventario
+     * completo a la cocina y al piso. Puede que sea lo correcto; es una decisión
+     * del founder, no la traducción mecánica de un permiso. Fijado en
+     * `navigation/InventarioTabPermisoTest`.
+     */
     val canAccessInventory: Boolean
-        get() = hasVenuePermission("inventory:read", fallbackRoles = MANAGER_UP)
+        get() = role in MANAGER_UP
 
     /**
      * Transactions: CASHIER, MANAGER, ADMIN, OWNER, SUPERADMIN
@@ -73,11 +119,25 @@ class RoleManager @Inject constructor(
     val canManageCustomers: Boolean
         get() = role in setOf("MANAGER", "ADMIN", "OWNER", "SUPERADMIN")
 
-    /** Ver clientes — espejo de `customers:read` (`GET /mobile/venues/:id/customers`). */
+    /**
+     * Ver clientes — espejo de `customers:read` (`GET /mobile/venues/:id/customers`).
+     *
+     * Cambia de tabla y se queda a propósito: el server le da `customers:read`
+     * también a VIEWER y a HOST, que el respaldo `FLOOR` les negaba, y NO se lo
+     * da a KITCHEN. **No cambia nada visible: este gate no tiene un solo
+     * consumidor en la app** (la pantalla de Clientes cuelga del menú "Más" sin
+     * gate). Queda espejado para que el día que se use ya diga la verdad.
+     */
     val canViewCustomers: Boolean
         get() = hasVenuePermission("customers:read", fallbackRoles = FLOOR)
 
-    /** Reportes — espejo de `reports:read` (las rutas `/mobile/venues/:id/reports`). */
+    /**
+     * Reportes — espejo de `reports:read` (las rutas `/mobile/venues/:id/reports`).
+     *
+     * Espejo SIN cambio de tabla: `reports:read` lo tienen exactamente
+     * MANAGER, ADMIN, OWNER y SUPERADMIN, los mismos del respaldo. Gobierna una
+     * fila del menú "Más" ("Informes"), no navegación.
+     */
     val canAccessReports: Boolean
         get() = hasVenuePermission("reports:read", fallbackRoles = MANAGER_UP)
 
@@ -91,9 +151,48 @@ class RoleManager @Inject constructor(
      * exigía. Un gate por rol no es un espejo del permiso: es una SEGUNDA fuente
      * de verdad, y se desincroniza sola en cuanto el server mueve un permiso o
      * el negocio usa un Permission Set.
+     *
+     * 🔴 Este gate significa REEMBOLSAR y nada más. La pantalla de cuarentena
+     * colgaba de él por reuso y se llevó de regalo al cajero: ya tiene el suyo
+     * (`canResolveQuarantine`). No le vuelvas a colgar nada que no sea devolver
+     * dinero al cliente.
      */
     val canIssueRefund: Boolean
         get() = hasVenuePermission("payments:refund", fallbackRoles = MANAGER_UP)
+
+    /**
+     * Resolver la CUARENTENA de sincronización: MANAGER, ADMIN, OWNER, SUPERADMIN
+     *
+     * ⚠️ DIVERGE, y **NO hay permiso que espejar — ni lo habrá mientras estas
+     * acciones no toquen el server**. Las cuatro que gobierna —descartar una
+     * operación rechazada, reintentar un cobro fallido, descartarlo, y descartar
+     * una acción de reserva— terminan en un DELETE de la base LOCAL
+     * (`SyncOutbox.dismissRejected` → `dao.dismiss`,
+     * `PaymentSyncService.dismissFailedPayment` → `dao.deleteFailed`,
+     * `ReservationRepository.dismissQuarantined` → `pendingDao.delete`). No hay
+     * endpoint, así que no hay `checkPermission` que las juzgue.
+     *
+     * 🔴 CONSECUENCIA QUE HAY QUE TENER PRESENTE: **este gate del cliente es el
+     * ÚNICO gate que existe.** En el resto de la app equivocarse cuesta una UI
+     * inconsistente y el server corrige con un 403; aquí no hay red abajo. Por
+     * eso se queda por ROL, que es lo conservador, y por eso no se espeja "el
+     * permiso más parecido": ninguno significa esto. `payments:refund` es
+     * devolver dinero (era el bug), `accounting:reconcile` es la conciliación
+     * bancaria del módulo contable, `shifts:close` es cerrar un turno. Elegir
+     * cualquiera sería INVENTARLE una regla al server, no espejarla.
+     *
+     * 📌 LO QUE EL SERVER DEBERÍA TENER, declarado para cuando se decida:
+     * `pos-sync:resolve` — "descartar/reintentar operaciones en cuarentena de un
+     * dispositivo" (namespace `pos-sync`, el del `PosSyncIntent` y del MCP
+     * `pos_sync_status`). El día que exista, este gate se espeja de él con
+     * `fallbackRoles = MANAGER_UP` y este comentario se borra.
+     *
+     * Paridad: iOS lo tiene igual de rol (`QuarantineView.swift` →
+     * `canIssueRefund`, que allá sigue siendo lista de roles MANAGER+), así que
+     * esto RESTAURA la paridad en vez de romperla.
+     */
+    val canResolveQuarantine: Boolean
+        get() = role in MANAGER_UP
 
     /**
      * Cash-drawer ops (open/close/pay-in-out): CASHIER, MANAGER, ADMIN, OWNER, SUPERADMIN
@@ -172,6 +271,11 @@ class RoleManager @Inject constructor(
     // MANAGER tiene los 5 permisos inventory-transfers:* explícitos; ADMIN y OWNER
     // llevan el wildcard inventory-transfers:*. Espejo también de iOS, que ya los
     // leía por permiso (`canReadInterVenueTransfers` / `canApproveInterVenueTransfers`).
+    //
+    // Espejo SIN cambio de tabla: los dos permisos los tienen exactamente
+    // MANAGER+, los mismos del respaldo. Y no gobiernan navegación: la única
+    // puerta a esta pantalla es `canAccessInventory`, porque
+    // `InterVenueTransfersView` vive dentro de `InventoryScreen`.
 
     /** Ver traslados — espejo de `inventory-transfers:read`. */
     val canViewInventoryTransfers: Boolean

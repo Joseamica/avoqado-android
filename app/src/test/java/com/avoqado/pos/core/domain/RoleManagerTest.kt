@@ -14,11 +14,24 @@ class RoleManagerTest {
     private val secureStorage = mockk<SecureStorage>()
     private val roleManager = RoleManager(secureStorage)
 
+    /**
+     * 🔴 LA CACHE VACÍA ES LA RUTA DE RESPALDO, NO LA DE PRODUCCIÓN.
+     *
+     * Con la lista efectiva vacía —una sesión anterior al campo, o un server que
+     * no la manda— los gates espejados caen al respaldo por rol. Es una rama
+     * real y hay que probarla, pero **no es lo que hace el aparato el 99% del
+     * tiempo**: en producción el login llena `venuePermissions` con la salida de
+     * `getEffectiveRolePermissions()`.
+     *
+     * Por eso todo test que arranque desde aquí lleva "(respaldo por rol)" en el
+     * nombre y tiene su GEMELO midiendo con `PermisosRealesDelServer`. Un test
+     * que alimenta un estado que producción no produce confirma la premisa falsa
+     * en vez de refutarla — fue exactamente lo que pasó con inventario: dos
+     * tests en verde afirmando que el cajero y el mesero no lo veían mientras el
+     * aparato se los abría.
+     */
     @Before
     fun cachePermisosVacia() {
-        // Por defecto la cache de permisos está vacía, que es justo cuando los
-        // gates caen al respaldo por rol. Así los tests de ROL de abajo siguen
-        // midiendo exactamente lo que medían.
         every { secureStorage.venuePermissions } returns emptyList()
     }
 
@@ -69,7 +82,7 @@ class RoleManagerTest {
     }
 
     @Test
-    fun `VIEWER cannot view customers`() {
+    fun `VIEWER cannot view customers (respaldo por rol)`() {
         every { secureStorage.userRole } returns "VIEWER"
         assertFalse(roleManager.canViewCustomers)
     }
@@ -129,7 +142,7 @@ class RoleManagerTest {
     }
 
     @Test
-    fun `WAITER can view customers`() {
+    fun `WAITER can view customers (respaldo por rol)`() {
         every { secureStorage.userRole } returns "WAITER"
         assertTrue(roleManager.canViewCustomers)
     }
@@ -192,7 +205,7 @@ class RoleManagerTest {
     }
 
     @Test
-    fun `CASHIER can view customers`() {
+    fun `CASHIER can view customers (respaldo por rol)`() {
         every { secureStorage.userRole } returns "CASHIER"
         assertTrue(roleManager.canViewCustomers)
     }
@@ -230,7 +243,7 @@ class RoleManagerTest {
     }
 
     @Test
-    fun `MANAGER can view customers`() {
+    fun `MANAGER can view customers (respaldo por rol)`() {
         every { secureStorage.userRole } returns "MANAGER"
         assertTrue(roleManager.canViewCustomers)
     }
@@ -238,7 +251,7 @@ class RoleManagerTest {
     // MARK: - ADMIN, OWNER, SUPERADMIN: full access (spot checks)
 
     @Test
-    fun `ADMIN has full access`() {
+    fun `ADMIN has full access (respaldo por rol)`() {
         every { secureStorage.userRole } returns "ADMIN"
         assertTrue(roleManager.canAccessPOS)
         assertTrue(roleManager.canAccessInventory)
@@ -249,7 +262,7 @@ class RoleManagerTest {
     }
 
     @Test
-    fun `OWNER has full access`() {
+    fun `OWNER has full access (respaldo por rol)`() {
         every { secureStorage.userRole } returns "OWNER"
         assertTrue(roleManager.canAccessPOS)
         assertTrue(roleManager.canAccessInventory)
@@ -260,7 +273,7 @@ class RoleManagerTest {
     }
 
     @Test
-    fun `SUPERADMIN has full access`() {
+    fun `SUPERADMIN has full access (respaldo por rol)`() {
         every { secureStorage.userRole } returns "SUPERADMIN"
         assertTrue(roleManager.canAccessPOS)
         assertTrue(roleManager.canAccessInventory)
@@ -268,6 +281,74 @@ class RoleManagerTest {
         assertTrue(roleManager.canCreateProducts)
         assertTrue(roleManager.canManageCustomers)
         assertTrue(roleManager.canViewCustomers)
+    }
+
+    // MARK: - Los GEMELOS: los mismos gates con la lista que el server manda
+    //
+    // 🔴 Todo lo de arriba corre con la cache VACÍA (respaldo por rol). Aquí se
+    // mide con `PermisosRealesDelServer`, que es la salida literal de
+    // `getEffectiveRolePermissions()` — el mismo payload que el login guarda en
+    // `SecureStorage.venuePermissions`. Donde el respaldo y el permiso NO
+    // coinciden, manda esta tabla: es lo que hace el aparato.
+
+    @Test
+    fun `ver clientes con la lista REAL del server, rol por rol`() {
+        // El server le da `customers:read` a VIEWER y HOST, que el respaldo por
+        // rol (FLOOR) les niega. No cambia nada visible —`canViewCustomers` no
+        // tiene ni un consumidor en la app— pero el test no puede afirmar lo
+        // contrario de lo que devuelve el aparato.
+        every { secureStorage.userRole } returns "VIEWER"
+        every { secureStorage.venuePermissions } returns PermisosRealesDelServer.VIEWER
+        assertTrue("el server SÍ le da customers:read al VIEWER", roleManager.canViewCustomers)
+
+        every { secureStorage.userRole } returns "HOST"
+        every { secureStorage.venuePermissions } returns PermisosRealesDelServer.HOST
+        assertTrue("y al HOST también", roleManager.canViewCustomers)
+
+        every { secureStorage.userRole } returns "KITCHEN"
+        every { secureStorage.venuePermissions } returns PermisosRealesDelServer.KITCHEN
+        assertFalse("la cocina es la única del piso que NO lo trae", roleManager.canViewCustomers)
+
+        every { secureStorage.userRole } returns "WAITER"
+        every { secureStorage.venuePermissions } returns PermisosRealesDelServer.WAITER
+        assertTrue(roleManager.canViewCustomers)
+
+        every { secureStorage.userRole } returns "CASHIER"
+        every { secureStorage.venuePermissions } returns PermisosRealesDelServer.CASHIER
+        assertTrue(roleManager.canViewCustomers)
+
+        every { secureStorage.userRole } returns "SUPERADMIN"
+        every { secureStorage.venuePermissions } returns PermisosRealesDelServer.SUPERADMIN
+        assertTrue("el comodín `*:*` concede todo", roleManager.canViewCustomers)
+    }
+
+    /**
+     * 🔴 El gemelo que faltaba y que dejó pasar el defecto: con la lista REAL,
+     * `orders:update` arrastra `inventory:read` y el cajero, el mesero y la
+     * cocina lo reciben. La pestaña de Inventario NO puede encenderse por ahí —
+     * a quién se le abre el módulo es decisión de producto, no la traducción de
+     * un permiso que el POS usa para consultar existencias al tomar una orden.
+     * El detalle, con la barra de navegación completa, en
+     * `navigation/InventarioTabPermisoTest`.
+     */
+    @Test
+    fun `inventario NO se enciende con la lista REAL del piso`() {
+        every { secureStorage.userRole } returns "CASHIER"
+        every { secureStorage.venuePermissions } returns PermisosRealesDelServer.CASHIER
+        assertTrue("premisa: el server sí manda inventory:read", PermisosRealesDelServer.CASHIER.contains("inventory:read"))
+        assertFalse(roleManager.canAccessInventory)
+
+        every { secureStorage.userRole } returns "WAITER"
+        every { secureStorage.venuePermissions } returns PermisosRealesDelServer.WAITER
+        assertFalse(roleManager.canAccessInventory)
+
+        every { secureStorage.userRole } returns "KITCHEN"
+        every { secureStorage.venuePermissions } returns PermisosRealesDelServer.KITCHEN
+        assertFalse(roleManager.canAccessInventory)
+
+        every { secureStorage.userRole } returns "MANAGER"
+        every { secureStorage.venuePermissions } returns PermisosRealesDelServer.CASHIER
+        assertTrue("y el gerente lo sigue viendo", roleManager.canAccessInventory)
     }
 
     // MARK: - Candado del PIN de autorización de gerente
@@ -295,7 +376,7 @@ class RoleManagerTest {
     }
 
     @Test
-    fun `el reembolso sigue permitido para MANAGER y prohibido para WAITER`() {
+    fun `el reembolso sigue permitido para MANAGER y prohibido para WAITER (respaldo por rol)`() {
         every { secureStorage.userRole } returns "MANAGER"
         assertTrue(roleManager.canIssueRefund)
         every { secureStorage.userRole } returns "WAITER"
@@ -311,31 +392,20 @@ class RoleManagerTest {
     // decidía por una lista de roles. Un gate por ROL no es un espejo del
     // permiso: es una segunda fuente de verdad que se desincroniza sola.
 
-    /** Los permisos REALES del CASHIER (DEFAULT_PERMISSIONS del server). */
-    private val permisosDeCajero = listOf(
-        "home:read",
-        "menu:read",
-        "orders:read",
-        "orders:update",
-        "payments:read",
-        "payments:create",
-        "payments:refund",
-        "customers:read",
-        "customers:create",
-    )
+    /**
+     * 🔴 La lista EFECTIVA completa, no una selección a mano.
+     *
+     * Antes estas dos eran listas de 9 entradas escritas a mano y tituladas "los
+     * permisos REALES": omitían las que el server AGREGA al expandir
+     * dependencias, entre ellas `inventory:read`. Con ese fixture, el gate de
+     * inventario daba en el test lo contrario de lo que da en el aparato. Un
+     * fixture recortado a mano no prueba el sistema: prueba la idea que quien lo
+     * escribió tenía del sistema.
+     */
+    private val permisosDeCajero = PermisosRealesDelServer.CASHIER
 
     /** Los permisos REALES del WAITER: NO trae `payments:refund`. */
-    private val permisosDeMesero = listOf(
-        "home:read",
-        "menu:read",
-        "orders:read",
-        "orders:create",
-        "orders:update",
-        "payments:read",
-        "payments:create",
-        "customers:read",
-        "customers:create",
-    )
+    private val permisosDeMesero = PermisosRealesDelServer.WAITER
 
     @Test
     fun `el CAJERO puede reembolsar porque el server le da payments refund`() {
@@ -440,15 +510,26 @@ class RoleManagerTest {
 
     // MARK: - Los hermanos que también se espejan por permiso
 
+    /**
+     * 🔴 Inventario NO se espeja — y este test existe para que no vuelva a
+     * espejarse de paso.
+     *
+     * Se espejó de `inventory:read` el 2026-08-17 y se revirtió el mismo día:
+     * ese permiso viaja por DEPENDENCIA IMPLÍCITA (`orders:update` lo arrastra),
+     * así que espejarlo encendía la pestaña INVENTARIO de la barra —más dos
+     * rutas del NavGraph y la única puerta a Traslados— para COCINA, MESERO y
+     * CAJERO. Es una decisión de producto, no una traducción.
+     */
     @Test
-    fun `inventario se espeja de inventory read`() {
+    fun `inventario NO se espeja de inventory read, decide el rol`() {
         every { secureStorage.userRole } returns "CASHIER"
 
         every { secureStorage.venuePermissions } returns listOf("inventory:read")
-        assertTrue(roleManager.canAccessInventory)
+        assertFalse("conceder el permiso no puede abrirle el módulo al cajero", roleManager.canAccessInventory)
 
+        every { secureStorage.userRole } returns "MANAGER"
         every { secureStorage.venuePermissions } returns listOf("menu:read")
-        assertFalse(roleManager.canAccessInventory)
+        assertTrue("y quitárselo no puede cerrárselo al gerente", roleManager.canAccessInventory)
     }
 
     @Test

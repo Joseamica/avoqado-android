@@ -71,9 +71,20 @@ class QuarantineViewModel @Inject constructor(
 
     val rejectedCount: StateFlow<Int> = syncOutbox.rejectedCount
 
-    /** Resolver/descartar conciliaciones altera caja: gerente o superior. */
+    /**
+     * Resolver/descartar conciliaciones altera caja: gerente o superior.
+     *
+     * 🔴 Tiene gate PROPIO, no el del reembolso. Las 4 acciones de aquí borran
+     * de la base LOCAL y no tienen endpoint detrás, así que **este gate del
+     * cliente es el único que existe**: no hay 403 del server que corrija un
+     * error. Colgarlo de `canIssueRefund` funcionó mientras ése era una lista de
+     * roles; al espejarlo de `payments:refund` (arreglo correcto para el
+     * reembolso, medido en la D3) el CAJERO se llevó de regalo el poder de
+     * borrar para siempre del aparato el registro de un cobro que no cuadró.
+     * Ver `RoleManager.canResolveQuarantine`.
+     */
     val canResolve: Boolean
-        get() = roleManager.canIssueRefund
+        get() = roleManager.canResolveQuarantine
 
     fun load() {
         val venueId = secureStorage.venueId ?: return
