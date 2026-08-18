@@ -87,9 +87,12 @@ class InventarioTabPermisoTest {
 
     @Test
     fun `el GERENTE ve la pestana de Inventario`() {
-        // El MANAGER del server trae `inventory:read` explícito; aquí basta el rol.
-        conRolReal("MANAGER", PermisosRealesDelServer.CASHIER)
+        // Antes esta línea alimentaba la lista del CAJERO diciéndole "MANAGER": el
+        // fixture no tenía MANAGER porque estaba escrito a mano. Ahora se genera y
+        // los 9 roles existen, así que el test mide lo que dice su nombre.
+        conRolReal("MANAGER", PermisosRealesDelServer.MANAGER)
 
+        assertTrue("premisa: el MANAGER trae inventory:read explícito", PermisosRealesDelServer.MANAGER.contains("inventory:read"))
         assertTrue(barra().contains(MainTab.INVENTORY))
     }
 

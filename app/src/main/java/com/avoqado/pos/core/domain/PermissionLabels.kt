@@ -64,6 +64,12 @@ object PermissionLabels {
         "orders:create" to "abrir una cuenta",
         "orders:update" to "modificar la cuenta",
         "orders:cancel" to "cancelar la cuenta",
+        // 🔴 NO es lo mismo que `orders:cancel`, y la diferencia es el mostrador.
+        // El POS crea la orden ANTES de cobrar, así que si el cliente se arrepiente
+        // o truena la terminal, alguien tiene que poder deshacerla. Con `orders:cancel`
+        // (MANAGER+) el cajero quedaba atrapado en la pantalla de error y la orden
+        // abierta ensuciaba el corte. El acotado sólo suelta cuentas SIN pagos.
+        "orders:cancel-unpaid" to "cancelar una cuenta sin cobrar",
         "orders:comp" to "dar una cortesía",
         "orders:void" to "anular artículos",
         "orders:merge" to "fusionar cuentas",
@@ -75,6 +81,9 @@ object PermissionLabels {
         "tables:read" to "ver las mesas",
         "tables:update" to "cambiar el estado de una mesa",
         "tables:manage-all" to "modificar mesas de otro mesero",
+        // Liquidar el cheque de otro SIN ganar el derecho a editarlo. Es lo que hace
+        // el cajero todo el día cuando el venue tiene propiedad de mesa encendida.
+        "tables:pay-any" to "cobrar la mesa de otro mesero",
         "tpv-tables:assign" to "asignar una mesa",
         "tpv-tables:write" to "crear o mover mesas",
         "tpv-tables:delete" to "borrar una mesa",
@@ -134,6 +143,15 @@ object PermissionLabels {
         "upsells:update" to "aprobar o descartar sugerencias de venta",
         "upsells:delete" to "borrar sugerencias de venta",
 
+        // MARK: - Presupuestos
+        //
+        // Un solo permiso gobierna las CUATRO rutas: crear, listar, cambiar estatus y
+        // convertir en cuenta. Convertir NO pide `orders:create` a propósito (server
+        // 7dd264ce): la autoridad ya se gastó al escribir renglones y precios, y
+        // convertir sólo copia lo que el cliente aceptó. Sin esta etiqueta, la
+        // recepcionista veía «estimates:create» en el modal.
+        "estimates:create" to "hacer un presupuesto",
+
         // MARK: - Reservaciones
         "reservations:read" to "ver las reservaciones",
         "reservations:create" to "agendar una reservación",
@@ -145,6 +163,10 @@ object PermissionLabels {
         "creditPacks:create" to "crear un paquete de crédito",
         "creditPacks:update" to "editar un paquete de crédito",
         "creditPacks:delete" to "borrar un paquete de crédito",
+        // Estos dos los encontró el fixture derivado de las rutas, no una lista a
+        // mano: `/mobile` los rechaza desde hace tiempo y nunca tuvieron etiqueta.
+        "creditPacks:sell" to "vender un paquete de crédito",
+        "creditPacks:redeem" to "canjear un crédito del cliente",
 
         // MARK: - Descuentos y cupones
         "discounts:read" to "ver los descuentos",

@@ -50,71 +50,25 @@ class PermissionLabelsTest {
 
     // MARK: - Cobertura: todo permiso que una ruta de mobile/tpv puede rechazar
     //
-    // Sacado de los `checkPermission(...)` de mobile.routes.ts, tpv.routes.ts y
-    // pos-sync.routes.ts del server (2026-08-16). Si el server agrega un
-    // `checkPermission` nuevo a una ruta que la app llama, este test NO se entera
-    // solo — pero al menos deja escrito cuál era el contrato el día que se hizo.
-
-    private val permisosQueLasRutasDeMobileRechazan = listOf(
-        "area-tickets:cancel",
-        "area-tickets:checkout",
-        "area-tickets:confirm-external",
-        "area-tickets:deliver",
-        "area-tickets:issue",
-        "cash-out:view_own",
-        "cash-out:withdraw",
-        "creditPacks:create",
-        "creditPacks:read",
-        "creditPacks:update",
-        "customers:create",
-        "customers:read",
-        "discounts:apply",
-        "home:read",
-        "inventory:adjust",
-        "inventory:create",
-        "inventory:read",
-        "inventory:update",
-        "loyalty:read",
-        "menu:create",
-        "menu:delete",
-        "menu:read",
-        "menu:update",
-        "orders:cancel",
-        "orders:comp",
-        "orders:create",
-        "orders:merge",
-        "orders:read",
-        "orders:update",
-        "orders:void",
-        "payments:create",
-        "payments:read",
-        "payments:refund",
-        "referral:override-existing-customer",
-        "referral:read",
-        "reports:read",
-        "scale:use",
-        "serialized-inventory:create",
-        "serialized-inventory:sell",
-        "shifts:close",
-        "shifts:create",
-        "shifts:read",
-        "tables:read",
-        "teams:read",
-        "tpv-floor-elements:delete",
-        "tpv-floor-elements:write",
-        "tpv-reports:read",
-        "tpv-sim-custody:accept",
-        "tpv-sim-custody:reject",
-        "tpv-tables:delete",
-        "tpv-tables:write",
-        "tpv-time-entries:read",
-        "tpv:read",
-        "upsells:read",
-    )
+    // 🔴 Antes esto era una lista escrita a mano con un comentario que ya admitía
+    // el hueco: "si el server agrega un checkPermission nuevo, este test NO se
+    // entera solo". No se enteró. El server estrenó `estimates:create` y
+    // `orders:cancel-unpaid`, el modal volvió a enseñar el código pelón —el
+    // síntoma exacto que el founder reportó en vivo— y la suite siguió verde. Al
+    // derivar la lista de los `checkPermission(...)` reales aparecieron CINCO
+    // huecos, no los tres que veníamos contando: `creditPacks:sell` y
+    // `creditPacks:redeem` llevaban tiempo rechazando sin traducción.
+    //
+    // Ahora la lista la genera `scripts/regenerar-permisos-reales.mjs`. Un
+    // comentario que documenta un punto ciego no lo cierra: lo vuelve tolerado.
 
     @Test
     fun `ningun permiso que el POS puede toparse se queda sin etiqueta`() {
-        val sinEtiqueta = permisosQueLasRutasDeMobileRechazan.filter { PermissionLabels.labelOrNull(it) == null }
+        val rechazables = PermisosDeRutasDelServer.TODOS
+        // Sin esto, un fixture vacío pasaría el test sin comprobar nada.
+        assertTrue("El fixture de rutas llegó vacío o truncado: ${rechazables.size}", rechazables.size >= 60)
+
+        val sinEtiqueta = rechazables.filter { PermissionLabels.labelOrNull(it) == null }
         assertTrue(
             "Estos permisos los rechaza una ruta que la app llama y saldrían sin explicar: $sinEtiqueta",
             sinEtiqueta.isEmpty(),
@@ -133,10 +87,12 @@ class PermissionLabelsTest {
             ),
             "orders" to listOf(
                 "orders:read", "orders:create", "orders:update",
-                "orders:cancel", "orders:comp", "orders:void", "orders:merge",
+                "orders:cancel", "orders:cancel-unpaid", "orders:comp", "orders:void", "orders:merge",
             ),
-            "tables" to listOf("tables:read", "tables:update", "tables:manage-all"),
+            "tables" to listOf("tables:read", "tables:update", "tables:manage-all", "tables:pay-any"),
             "shifts" to listOf("shifts:read", "shifts:create", "shifts:update", "shifts:delete", "shifts:close"),
+            "tpv-shifts" to listOf("tpv-shifts:create", "tpv-shifts:close"),
+            "estimates" to listOf("estimates:create"),
             "customers" to listOf(
                 "customers:read", "customers:create", "customers:update",
                 "customers:delete", "customers:settle-balance",
@@ -147,8 +103,8 @@ class PermissionLabelsTest {
                 "reservations:update", "reservations:cancel",
             ),
             "creditPacks" to listOf(
-                "creditPacks:read", "creditPacks:create",
-                "creditPacks:update", "creditPacks:delete",
+                "creditPacks:read", "creditPacks:create", "creditPacks:update",
+                "creditPacks:delete", "creditPacks:sell", "creditPacks:redeem",
             ),
             "discounts" to listOf(
                 "discounts:read", "discounts:create", "discounts:update",
@@ -166,6 +122,24 @@ class PermissionLabelsTest {
         )
         val huecos = porRecurso.values.flatten().filter { PermissionLabels.labelOrNull(it) == null }
         assertTrue("Faltan etiquetas para: $huecos", huecos.isEmpty())
+    }
+
+    // MARK: - Los 5 nombres que el server estrenó (2026-08-17/18)
+
+    @Test
+    fun `los 5 permisos nuevos del server dicen la accion, no el codigo`() {
+        // Sin estas, el modal decía «tpv-shifts:create» — el founder lo reportó en
+        // vivo ("no explica la causa real"). Van en minúscula porque se insertan
+        // dentro de una frase ya hecha: "…que te active «abrir un turno»".
+        assertEquals("hacer un presupuesto", PermissionLabels.of("estimates:create"))
+        assertEquals("abrir un turno", PermissionLabels.of("tpv-shifts:create"))
+        assertEquals("cerrar el turno", PermissionLabels.of("tpv-shifts:close"))
+        assertEquals("cancelar una cuenta sin cobrar", PermissionLabels.of("orders:cancel-unpaid"))
+        assertEquals("cobrar la mesa de otro mesero", PermissionLabels.of("tables:pay-any"))
+
+        // Y no se confunden con los que ya existían y significan otra cosa.
+        assertEquals("cancelar la cuenta", PermissionLabels.of("orders:cancel"))
+        assertEquals("modificar mesas de otro mesero", PermissionLabels.of("tables:manage-all"))
     }
 
     @Test
