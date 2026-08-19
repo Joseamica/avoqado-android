@@ -38,8 +38,9 @@ class MainActivity : FragmentActivity() {
      *  ventana de la segunda pantalla se filtra. */
     @Inject lateinit var customerDisplay: CustomerDisplayManager
 
-    /** Modo kiosco: sin él el navbar del sistema se asoma al pasar el mouse. */
-    @Inject lateinit var kiosk: com.avoqado.pos.settings.domain.KioskManager
+    /** Esconder las barras de Android: sin esto el navbar del sistema se asoma
+     *  al pasar el mouse. No es el autoservicio — ver [ScreenPinningManager]. */
+    @Inject lateinit var screenPinning: com.avoqado.pos.settings.domain.ScreenPinningManager
 
     /** Impresora integrada de los POS Sunmi: se liga al arrancar para que la
      *  primera impresión no tenga que esperar el bind (asíncrono). En equipos
@@ -58,8 +59,8 @@ class MainActivity : FragmentActivity() {
     override fun onResume() {
         super.onResume()
         // Reengancha tras un reinicio del equipo o del proceso: si el negocio
-        // dejó el kiosco encendido, debe seguir encendido al volver.
-        kiosk.applyOnResume(this)
+        // dejó las barras escondidas, deben seguir escondidas al volver.
+        screenPinning.applyOnResume(this)
         // Volver al frente es el otro momento en que el escenario pudo haber
         // cambiado por debajo (alguien desenchufó y volvió a enchufar la
         // pantalla, o el cliente se fue a HOME desde su letrero). resync()

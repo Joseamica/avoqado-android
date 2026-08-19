@@ -37,7 +37,7 @@ class MoreMenuViewModel @Inject constructor(
     val posModeManager: PosModeManager,
     val addonsManager: AddonsManager,
     val activeCartState: ActiveCartState,
-    val kioskManager: com.avoqado.pos.settings.domain.KioskManager,
+    val screenPinningManager: com.avoqado.pos.settings.domain.ScreenPinningManager,
     val customerDisplayPrefs: com.avoqado.pos.customerdisplay.CustomerDisplayPrefs,
     val customerDisplayState: com.avoqado.pos.customerdisplay.CustomerDisplayState,
     val displayModePrefs: com.avoqado.pos.customerdisplay.DisplayModePrefs,

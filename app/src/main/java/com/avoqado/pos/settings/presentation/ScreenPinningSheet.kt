@@ -23,23 +23,31 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import com.avoqado.pos.core.util.findActivity
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
-import com.avoqado.pos.settings.domain.KioskManager
+import com.avoqado.pos.settings.domain.ScreenPinningManager
 
 /**
- * Modo kiosco + la salida explícita.
+ * Esconder las barras de Android + la salida explícita.
  *
  * El navbar del sistema se asoma solo al acercar el mouse a la orilla, y desde
- * ahí el personal puede irse a Chrome o a los ajustes del equipo. El kiosco lo
- * elimina; el botón de salir sustituye a ese navbar con algo controlado y
- * visible, en vez de dejar al cajero adivinando el gesto del sistema.
+ * ahí el personal puede irse a Chrome o a los ajustes del equipo. Fijar la
+ * pantalla lo elimina; el botón de salir sustituye a ese navbar con algo
+ * controlado y visible, en vez de dejar al cajero adivinando el gesto del
+ * sistema.
+ *
+ * 🔴 Esto NO es el "modo kiosco" de autoservicio (que el cliente se atienda
+ * solo, sin personal). Ese es otro eje y todavía no existe; el campo
+ * `TpvSettings.kioskModeEnabled` que llega del servidor le pertenece a ÉL, no
+ * a esta pantalla. Son cosas distintas: aquí se decide si se puede salir de la
+ * app; allá, quién la opera. Un mostrador con personal también puede querer
+ * esconder las barras.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun KioskSheet(
-    kiosk: KioskManager,
+fun ScreenPinningSheet(
+    screenPinning: ScreenPinningManager,
     onDismiss: () -> Unit,
 ) {
-    val enabled by kiosk.enabled.collectAsState()
+    val enabled by screenPinning.enabled.collectAsState()
     val activity = LocalContext.current.findActivity()
 
     ModalBottomSheet(
@@ -53,7 +61,7 @@ fun KioskSheet(
                 .padding(AvoqadoTheme.spacing.lg),
         ) {
             Text(
-                text = "Modo kiosco",
+                text = "Esconder barras de Android",
                 style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.Bold,
             )
@@ -86,14 +94,14 @@ fun KioskSheet(
                 }
                 Switch(
                     checked = enabled,
-                    onCheckedChange = { value -> activity?.let { kiosk.setEnabled(it, value) } },
+                    onCheckedChange = { value -> activity?.let { screenPinning.setEnabled(it, value) } },
                 )
             }
 
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xl))
 
             Button(
-                onClick = { activity?.let { kiosk.exitToLauncher(it) } },
+                onClick = { activity?.let { screenPinning.exitToLauncher(it) } },
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text("Salir de la app")

@@ -104,7 +104,7 @@ import com.avoqado.pos.reservations.domain.VenueMode
 import com.avoqado.pos.settings.presentation.ChangeModeSheet
 import com.avoqado.pos.settings.presentation.posModeIcon
 import com.avoqado.pos.settings.presentation.CustomerDisplaySheet
-import com.avoqado.pos.settings.presentation.KioskSheet
+import com.avoqado.pos.settings.presentation.ScreenPinningSheet
 import com.avoqado.pos.settings.presentation.CustomizeMenuSheet
 import com.avoqado.pos.settings.presentation.SetupWizardScreen
 import com.avoqado.pos.settings.presentation.SupportScreen
@@ -146,8 +146,8 @@ fun MoreMenuScreen(
     var showKDS by remember { mutableStateOf(false) }
     var showCustomerDisplay by remember { mutableStateOf(false) }
     var showAreaTicketDelivery by remember { mutableStateOf(false) }
-    var showKiosk by remember { mutableStateOf(false) }
-    val kioskEnabled by viewModel.kioskManager.enabled.collectAsState()
+    var showScreenPinning by remember { mutableStateOf(false) }
+    val screenPinned by viewModel.screenPinningManager.enabled.collectAsState()
     val customerDisplayDetected by viewModel.customerDisplayState.isPresenting.collectAsState()
     val closeAllOverlays = {
         showVenueSwitcher = false
@@ -170,7 +170,7 @@ fun MoreMenuScreen(
         showAreaTicketDelivery = false
         showKDS = false
         showCustomerDisplay = false
-        showKiosk = false
+        showScreenPinning = false
     }
 
     LaunchedEffect(moreTabReselectionTick) {
@@ -602,9 +602,9 @@ fun MoreMenuScreen(
             ),
             MenuEntry(
                 icon = Icons.Outlined.Lock,
-                label = "Modo kiosco",
-                subtitle = if (kioskEnabled) "Activado - la app está fijada" else "Salir de la app",
-                onClick = { showKiosk = true },
+                label = "Esconder barras de Android",
+                subtitle = if (screenPinned) "Activado - no se puede salir de la app" else "Salir de la app",
+                onClick = { showScreenPinning = true },
             ),
             MenuEntry(
                 icon = Icons.Outlined.Monitor,
@@ -952,11 +952,11 @@ fun MoreMenuScreen(
         )
     }
 
-    // Kiosk Sheet (fijar la app + salida explícita)
-    if (showKiosk) {
-        KioskSheet(
-            kiosk = viewModel.kioskManager,
-            onDismiss = { showKiosk = false },
+    // Esconder barras de Android (fijar la app + salida explícita)
+    if (showScreenPinning) {
+        ScreenPinningSheet(
+            screenPinning = viewModel.screenPinningManager,
+            onDismiss = { showScreenPinning = false },
         )
     }
 

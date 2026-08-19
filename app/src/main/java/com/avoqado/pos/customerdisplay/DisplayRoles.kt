@@ -206,7 +206,7 @@ internal data class RemountVerdict(
  *    no. El lazo `dismiss → onStop → remontar` es imposible por construcción, no
  *    por temporización.
  * 2. **Tope por ráfaga.** Si algo ajeno tumba la ventana una y otra vez —el modo
- *    kiosco bloquea lanzar esta Activity (es tarea nueva, y lock-task lo rechaza
+ *    el fijado de pantalla bloquea lanzar esta Activity (es tarea nueva, y lock-task lo rechaza
  *    devolviendo un código, sin excepción que atrapar), un overlay que gana
  *    siempre— se corta a los [MAX_CUSTOMER_REMOUNTS] intentos seguidos.
  *

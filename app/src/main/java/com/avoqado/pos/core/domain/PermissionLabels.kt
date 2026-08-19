@@ -44,7 +44,10 @@ object PermissionLabels {
         "tpv-settings:read" to "ver los ajustes de esta terminal",
         "tpv-settings:update" to "cambiar los ajustes de esta terminal",
         "tpv-devices:manage" to "conectar dispositivos de cobro",
-        "tpv-kiosk:enable" to "prender el modo kiosco",
+        // El permiso conserva su nombre `tpv-kiosk:enable`: se espeja por nombre EXACTO
+        // en server/dashboard/tpv y renombrarlo dejaría overrides guardados sin efecto.
+        // Sólo cambia la etiqueta que ve el humano.
+        "tpv-kiosk:enable" to "esconder las barras de Android",
         "tpv-factory-reset:execute" to "restablecer la terminal de fábrica",
 
         // MARK: - Cobros

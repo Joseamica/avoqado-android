@@ -559,7 +559,7 @@ class CustomerDisplayManager @Inject constructor(
      * de paso cancela cualquier remonte ya agendado—, así que el `onStop` que ese
      * cierre provoca llega aquí con el deseo en `null` y no repone nada. El corte
      * es estructural, no una carrera ganada por poco. El tope de la ráfaga cubre
-     * lo otro: que algo ajeno —el modo kiosco rechazando el lanzamiento (es tarea
+     * lo otro: que algo ajeno —el fijado de pantalla rechazando el lanzamiento (es tarea
      * nueva; lock-task lo bloquea devolviendo un código, sin excepción), un
      * overlay que gana siempre— tumbe la ventana una y otra vez. Ver
      * [decideCustomerRemount].
@@ -586,7 +586,7 @@ class CustomerDisplayManager @Inject constructor(
                 tag,
                 "La pantalla del cliente se cayó $MAX_CUSTOMER_REMOUNTS veces seguidas en el display $displayId y no se sostiene: " +
                     "se deja de reponer hasta que aguante o cambie el escenario. " +
-                    "Sospechosos: modo kiosco (lock-task bloquea abrir esta Activity, que es tarea nueva) u otra app tapando la pantalla.",
+                    "Sospechosos: las barras escondidas (lock-task bloquea abrir esta Activity, que es tarea nueva) u otra app tapando la pantalla.",
             )
             return
         }
@@ -780,7 +780,7 @@ class CustomerDisplayManager @Inject constructor(
      * que apagarse CON ella. Si sobrevive, se combina con el
      * `touchCapable=true` optimista de [showCustomerActivity] y
      * `customerCapturesInput` se prende ANTES de que exista ventana real: un
-     * lanzamiento aceptado que aterriza en otra pantalla, o que el modo kiosco
+     * lanzamiento aceptado que aterriza en otra pantalla, o que el fijado de pantalla
      * bloquea, mandaría propina/upsell a una pantalla que nadie ve, con el
      * cajero esperando un toque que nunca llega. El autocierre de
      * `CustomerDisplayActivity` NO puede corregir esto — nunca prendió lo que
