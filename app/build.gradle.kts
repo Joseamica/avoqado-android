@@ -202,6 +202,10 @@ dependencies {
     testImplementation(libs.okhttp.mockwebserver)
     testImplementation(libs.turbine)
     testImplementation(libs.sqlite.jdbc)
+    // `org.json` del SDK es un stub en los tests JVM (`unitTests.isReturnDefaultValues`): devuelve
+    // valores por default en vez de parsear. Sin la implementación real, un test de parseo pasaría
+    // con el código roto — que es exactamente lo que no queremos de un test.
+    testImplementation("org.json:json:20231013")
 
     androidTestImplementation(libs.junit)
     androidTestImplementation(libs.androidx.test.core)

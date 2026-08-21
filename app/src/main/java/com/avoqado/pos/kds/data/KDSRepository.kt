@@ -230,18 +230,11 @@ class KDSRepository @Inject constructor(
 
     private fun parseItem(json: JSONObject): KDSOrderItem? {
         return try {
-            val modifiersArray = json.optJSONArray("modifiers")
-            val modifiers = if (modifiersArray != null) {
-                (0 until modifiersArray.length()).map { modifiersArray.getString(it) }
-            } else {
-                emptyList()
-            }
-
             KDSOrderItem(
                 id = json.getString("id"),
                 productName = json.getString("productName"),
                 quantity = json.getInt("quantity"),
-                modifiers = modifiers,
+                modifiers = parseKdsModifiers(json.optJSONArray("modifiers")),
                 notes = json.optString("notes", "").takeIf { it.isNotEmpty() && it != "null" },
             )
         } catch (e: Exception) {
@@ -263,6 +256,35 @@ class KDSRepository @Inject constructor(
             } catch (_: Exception) {
                 System.currentTimeMillis()
             }
+        }
+    }
+}
+
+/**
+ * 🔴 Los modificadores llegan como lista de TEXTOS. Esta función además tolera la forma de
+ * objeto (`{"name":…,"quantity":…}`) porque las comandas de marketplace se guardaron así
+ * hasta el 2026-08-20, y `getString()` sobre un objeto de JSON devuelve su JSON CRUDO — que
+ * es literalmente lo que la cocina vio en pantalla en una Sunmi D3 con un pedido de Uber.
+ *
+ * El server ya normaliza al escribir (`toKdsModifierLabels`), así que esto es la red de
+ * abajo: un aparato sigue leyendo filas viejas, y de todos modos el cliente nunca debe
+ * pintar JSON crudo a un cocinero. Espejo exacto de iOS `parseModifiers`.
+ */
+internal fun parseKdsModifiers(array: JSONArray?): List<String> {
+    if (array == null) return emptyList()
+    return (0 until array.length()).mapNotNull { index ->
+        when (val raw = array.opt(index)) {
+            null, JSONObject.NULL -> null
+            is JSONObject -> {
+                val name = raw.optString("name").trim()
+                if (name.isEmpty()) {
+                    null
+                } else {
+                    val quantity = raw.optInt("quantity", 1)
+                    if (quantity > 1) "${quantity}x $name" else name
+                }
+            }
+            else -> raw.toString().trim().takeIf { it.isNotEmpty() }
         }
     }
 }
