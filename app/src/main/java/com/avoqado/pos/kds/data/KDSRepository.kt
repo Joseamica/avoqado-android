@@ -214,6 +214,8 @@ class KDSRepository @Inject constructor(
 
             KDSOrder(
                 id = id,
+                orderId = json.optString("orderId", "").takeIf { it.isNotEmpty() && it != "null" },
+                needsAcceptance = json.optBoolean("needsAcceptance", false),
                 orderNumber = orderNumber,
                 orderType = displayType,
                 items = items,
@@ -258,6 +260,67 @@ class KDSRepository @Inject constructor(
             }
         }
     }
+
+    // MARK: - Responder a un pedido de delivery
+
+    /**
+     * "Sí lo preparo." Sólo hace falta en canales configurados en MANUAL, donde el sistema
+     * NO acepta solo y el plazo del proveedor (~11.5 min en Uber) está corriendo.
+     */
+    suspend fun acceptDeliveryOrder(orderId: String): Result<Unit> =
+        responderDelivery(orderId, "accept", null)
+
+    /**
+     * "No puedo prepararlo." El SERVIDOR decide si eso significa rechazar (antes de aceptar)
+     * o cancelar (después): la cocina sólo dice que no puede, no tiene por qué conocer el
+     * protocolo del proveedor para avisar que se acabó la carne.
+     */
+    suspend fun denyDeliveryOrder(orderId: String, reason: String = "OUT_OF_ITEMS"): Result<Unit> =
+        responderDelivery(orderId, "deny", reason)
+
+    private suspend fun responderDelivery(orderId: String, accion: String, reason: String?): Result<Unit> {
+        val venueId = secureStorage.venueId
+            ?: return Result.failure(Exception("No venue selected"))
+        val token = secureStorage.accessToken
+            ?: return Result.failure(Exception("Not authenticated"))
+
+        return try {
+            val cuerpo = JSONObject().apply { reason?.let { put("reason", it) } }
+            val request = Request.Builder()
+                .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/orders/$orderId/delivery/$accion")
+                .header("Authorization", "Bearer $token")
+                .post(cuerpo.toString().toRequestBody("application/json".toMediaType()))
+                .build()
+
+            // Mismo patrón que el resto del archivo: se saca el valor DENTRO del
+            // `withContext` y se decide fuera. Envolver el `use { }` entero rompe la
+            // inferencia de tipos de Kotlin.
+            val (code, body) = withContext(Dispatchers.IO) {
+                client.newCall(request).execute().use { response ->
+                    response.code to response.body?.string().orEmpty()
+                }
+            }
+
+            if (code in 200..299) {
+                Log.d(TAG, "Delivery $accion OK: $orderId")
+                Result.success(Unit)
+            } else {
+                // El servidor manda un mensaje pensado para leerse EN LA COCINA — por
+                // ejemplo, que el plazo ya venció y no sirve reintentar. Se propaga tal cual
+                // en vez de inventar uno genérico que invite a picarle otra vez a un pedido
+                // que ya no existe.
+                val msg = runCatching { JSONObject(body).optString("error") }
+                    .getOrNull()
+                    ?.takeIf { it.isNotBlank() }
+                    ?: "No se pudo avisarle a la app de delivery ($code)"
+                Log.e(TAG, "Delivery $accion falló: $code - $body")
+                Result.failure(Exception(msg))
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "responderDelivery($accion) falló", e)
+            Result.failure(e)
+        }
+    }
 }
 
 /**
@@ -287,6 +350,7 @@ internal fun parseKdsModifiers(array: JSONArray?): List<String> {
             else -> raw.toString().trim().takeIf { it.isNotEmpty() }
         }
     }
+
 }
 
 // MARK: - Request model

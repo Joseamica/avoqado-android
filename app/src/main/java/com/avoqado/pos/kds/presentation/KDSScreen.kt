@@ -25,6 +25,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -58,6 +59,7 @@ fun KDSScreen(
     val settings by viewModel.settings.collectAsState()
     val activeCount by viewModel.activeOrderCount.collectAsState()
     val avgTime by viewModel.averageTimeSeconds.collectAsState()
+    val errorMessage by viewModel.errorMessage.collectAsState()
 
     var showSettings by remember { mutableStateOf(false) }
 
@@ -84,6 +86,32 @@ fun KDSScreen(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.surfaceVariant),
     ) {
+        // 🔴 Una barra FIJA arriba, no un aviso que se va solo. Esta pantalla vive colgada en
+        // una cocina y nadie la está mirando en el segundo exacto en que algo falla: un
+        // mensaje que desaparece a los tres segundos es un mensaje que nadie leyó. Y lo que
+        // dice importa de verdad — por ejemplo, que el plazo del pedido venció y no sirve
+        // reintentar. Se queda hasta que alguien lo cierra.
+        errorMessage?.let { mensaje ->
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.errorContainer)
+                    .padding(horizontal = AvoqadoTheme.spacing.md, vertical = AvoqadoTheme.spacing.sm),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Text(
+                    text = mensaje,
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onErrorContainer,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = { viewModel.clearError() }) {
+                    Text("Entendido", color = MaterialTheme.colorScheme.onErrorContainer)
+                }
+            }
+        }
+
         // MARK: - Top Bar
         KDSTopBar(
             clockText = clockText,
@@ -135,6 +163,8 @@ fun KDSScreen(
                         elapsedText = elapsedText,
                         isLargeFont = settings.largeFontEnabled,
                         onAdvanceStatus = { viewModel.advanceStatus(order.id) },
+                        onAcceptDelivery = { viewModel.acceptDeliveryOrder(order.id) },
+                        onDenyDelivery = { viewModel.denyDeliveryOrder(order.id) },
                     )
                 }
             }

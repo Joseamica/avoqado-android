@@ -4,8 +4,21 @@ package com.avoqado.pos.kds.domain
 
 data class KDSOrder(
     val id: String,
+    /**
+     * El id de la ORDEN de venta, distinto del id de esta comanda. Es el que se necesita
+     * para aceptar o rechazar el pedido en la app de delivery.
+     */
+    val orderId: String? = null,
     val orderNumber: String,
     val orderType: String,
+    /**
+     * ¿Falta que alguien acepte este pedido en la app de delivery?
+     *
+     * Sólo pasa en canales configurados en MANUAL: la venta entra pendiente porque NADIE le
+     * ha dicho que sí al proveedor, y el plazo (~11.5 min en Uber) ya está corriendo. Si
+     * nadie lo acepta, el proveedor lo cancela y el cliente se queda sin comida.
+     */
+    val needsAcceptance: Boolean = false,
     val items: List<KDSOrderItem>,
     val createdAt: Long,
     var status: KDSOrderStatus,

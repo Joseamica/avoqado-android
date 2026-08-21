@@ -46,6 +46,21 @@ class KDSViewModel @Inject constructor(
 
     private val _orders = MutableStateFlow<List<KDSOrder>>(emptyList())
 
+    /**
+     * Un mensaje que la cocina TIENE que leer, no un log.
+     *
+     * 🔴 Existe porque los errores de responder a un pedido de delivery no son técnicos:
+     * "el plazo venció y ya no sirve reintentar" es información operativa, y el servidor la
+     * manda escrita para leerse aquí. Tragársela dejaría al cocinero picándole a un botón
+     * que ya no puede hacer nada.
+     */
+    private val _errorMessage = MutableStateFlow<String?>(null)
+    val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
+
+    fun clearError() {
+        _errorMessage.value = null
+    }
+
     private val _filter = MutableStateFlow(KDSFilter.ALL)
     val filter: StateFlow<KDSFilter> = _filter.asStateFlow()
 
@@ -240,6 +255,49 @@ class KDSViewModel @Inject constructor(
         }
 
         Log.d(TAG, "Estado avanzado para pedido: $orderId")
+    }
+
+    /**
+     * "Sí lo preparo." Sólo aparece en canales configurados en MANUAL, donde el sistema NO
+     * acepta solo y el plazo del proveedor (~11.5 min en Uber) ya está corriendo.
+     *
+     * 🔴 NO se pinta como aceptado antes de que el proveedor conteste. Con el estado del
+     * pedido no aplica el optimismo que sí usa `advanceStatus`: ahí un error sólo desordena
+     * un tablero, aquí haría creer a la cocina que el pedido está confirmado y que puede
+     * ponerse a cocinar. Si el plazo venció, ese platillo ya no lo va a recoger nadie.
+     */
+    fun acceptDeliveryOrder(kdsId: String) {
+        val order = _orders.value.find { it.id == kdsId } ?: return
+        val orderId = order.orderId ?: return
+
+        viewModelScope.launch {
+            kdsRepository.acceptDeliveryOrder(orderId)
+                .onSuccess {
+                    // Se relee del servidor en vez de asumir: es el server quien sabe si el
+                    // proveedor de verdad lo tomó.
+                    fetchOrders()
+                }
+                .onFailure { e ->
+                    // El mensaje viene del servidor y está escrito para leerse en la cocina
+                    // (por ejemplo: el plazo venció y no sirve reintentar).
+                    _errorMessage.value = e.message ?: "No se pudo aceptar el pedido"
+                }
+        }
+    }
+
+    /**
+     * "No puedo prepararlo." El SERVIDOR decide si eso significa rechazar o cancelar según
+     * si el pedido ya se había aceptado — la cocina sólo dice que no puede.
+     */
+    fun denyDeliveryOrder(kdsId: String, reason: String = "OUT_OF_ITEMS") {
+        val order = _orders.value.find { it.id == kdsId } ?: return
+        val orderId = order.orderId ?: return
+
+        viewModelScope.launch {
+            kdsRepository.denyDeliveryOrder(orderId, reason)
+                .onSuccess { fetchOrders() }
+                .onFailure { e -> _errorMessage.value = e.message ?: "No se pudo rechazar el pedido" }
+        }
     }
 
     fun bumpOrder(orderId: String) {

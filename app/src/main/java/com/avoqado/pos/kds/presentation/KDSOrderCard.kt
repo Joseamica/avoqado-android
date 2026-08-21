@@ -18,6 +18,7 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -48,6 +49,9 @@ fun KDSOrderCard(
     isLargeFont: Boolean,
     onAdvanceStatus: () -> Unit,
     modifier: Modifier = Modifier,
+    /** Sólo se usan cuando `order.needsAcceptance` — ver el bloque de acciones abajo. */
+    onAcceptDelivery: () -> Unit = {},
+    onDenyDelivery: () -> Unit = {},
 ) {
     val isLate = (System.currentTimeMillis() - order.createdAt) > LATE_THRESHOLD_MS
             && order.status != KDSOrderStatus.READY
@@ -129,6 +133,48 @@ fun KDSOrderCard(
                 }
 
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+
+                // 🔴 Pedido de delivery que NADIE ha aceptado todavía (canal en modo MANUAL).
+                // El proveedor da ~11.5 minutos y después lo cancela solo: el cliente se queda
+                // sin comida y el rechazo cuenta contra la tasa que Uber exige para no
+                // suspender la integración. Por eso esto REEMPLAZA al botón de preparar —
+                // ponerse a cocinar antes de aceptar es cocinar algo que quizá ya se canceló.
+                if (order.needsAcceptance) {
+                    Text(
+                        text = "Falta aceptarlo en la app de delivery",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
+                        color = LateRedBorder,
+                        modifier = Modifier.padding(bottom = AvoqadoTheme.spacing.xs),
+                    )
+                    Row(
+                        horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        // "No puedo" va PRIMERO y en tamaño completo, no escondido: cuando se
+                        // acabó un ingrediente hay que poder decirlo rápido, y esconderlo
+                        // empuja a aceptar un pedido que no se va a poder entregar.
+                        OutlinedButton(
+                            onClick = onDenyDelivery,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(56.dp),
+                            shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.md),
+                        ) {
+                            Text("No puedo", style = MaterialTheme.typography.titleMedium)
+                        }
+                        Button(
+                            onClick = onAcceptDelivery,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(56.dp),
+                            shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.md),
+                        ) {
+                            Text("Aceptar", style = MaterialTheme.typography.titleMedium)
+                        }
+                    }
+                    return@Column
+                }
 
                 // Action button
                 val (buttonText, buttonColor) = when (order.status) {
