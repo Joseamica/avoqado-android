@@ -7,7 +7,11 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.kds.data.KDSRepository
 import com.avoqado.pos.core.domain.printing.ComandaDispatcher
+import com.avoqado.pos.printing.data.ComandaPrinter
+import com.avoqado.pos.printing.routing.ConsolidatedLine
+import com.avoqado.pos.printing.routing.PrintConfigRepository
 import com.avoqado.pos.printing.routing.RoutableItem
+import com.avoqado.pos.printing.routing.TicketPlan
 import com.avoqado.pos.core.data.sync.SyncOutbox
 import javax.inject.Provider
 import com.avoqado.pos.kds.domain.CanalReparto
@@ -48,6 +52,10 @@ class KDSViewModel @Inject constructor(
     // guard de configuración jamás va delante de la impresión. Una segunda implementación
     // aquí acabaría imprimiendo distinto que el resto del local.
     private val comandaDispatcher: ComandaDispatcher,
+    // Para el ticket de EMPAQUE, que no pasa por el ruteo: es un plan armado a mano con el
+    // pedido completo.
+    private val comandaPrinter: ComandaPrinter,
+    private val printConfigRepository: PrintConfigRepository,
     // El deviceId del outbox, NO uno nuevo: la regla de offline-first lo dice explícito —
     // si cambia al reiniciar, el mismo aparato se ve como dos y el árbitro deja de servir.
     private val syncOutbox: Provider<SyncOutbox>,
@@ -372,9 +380,51 @@ class KDSViewModel @Inject constructor(
                 )
             }.isSuccess
 
+            // El ticket de EMPAQUE: el pedido completo en UNA hoja, para quien mete todo en
+            // la bolsa y se la da al repartidor. No es una comanda —esas dicen qué cocinar y
+            // cada estación ve sólo su parte—: es la lista de verificación de la bolsa. En
+            // una mesa el mesero lleva los platos y ve al cliente; aquí, si falta una salsa
+            // el cliente se entera en su casa, y eso acaba en reembolso.
+            //
+            // Sólo si el negocio marcó una estación de empaque. Si no marcó ninguna, no sale
+            // nada extra: no le cambiamos el papeleo a quien no lo pidió.
+            if (ok) imprimirTicketDeEmpaque(pedido, lineas)
+
             kdsRepository.marcarImpresion(pedido.id, deviceId, if (ok) "confirm-print" else "release-print")
             if (!ok) Log.e(TAG, "No se pudo imprimir la comanda ${pedido.orderNumber}; soltada para que otro aparato lo intente")
         }
+    }
+
+    private suspend fun imprimirTicketDeEmpaque(pedido: KDSOrder, lineas: List<RoutableItem>) {
+        val config = printConfigRepository.getCurrentConfig()
+        val estacion = config.packingStationId ?: return
+
+        // UN solo plan con TODOS los renglones, dirigido a la estación de empaque. Se arma
+        // aquí en vez de rutear, justamente porque el punto es que NO se reparta.
+        val plan = TicketPlan(
+            stationId = estacion,
+            unrouted = false,
+            lines = lineas.map { l ->
+                ConsolidatedLine(
+                    productName = l.productName,
+                    quantity = l.quantity,
+                    modifiers = l.modifiers,
+                    notes = l.notes,
+                    orderItemIds = listOf(l.orderItemId),
+                )
+            },
+        )
+
+        runCatching {
+            comandaPrinter.printComandas(
+                plans = listOf(plan),
+                config = config,
+                orderNumber = pedido.orderNumber,
+                // Lo que se lee ARRIBA del papel. Tiene que gritar que es para empacar, no
+                // otra comanda de cocina.
+                orderType = "EMPAQUE · Delivery",
+            )
+        }.onFailure { Log.e(TAG, "No se pudo imprimir el ticket de empaque de ${pedido.orderNumber}: ${it.message}") }
     }
 
     private suspend fun fetchCanalesReparto() {

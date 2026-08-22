@@ -16,6 +16,14 @@ data class PrintConfig(
     val printers: List<PrinterInfo> = emptyList(),
     val stations: List<StationInfo> = emptyList(),
     val defaultStationId: String? = null,
+    /**
+     * La estación donde se EMPACA, o `null` si el negocio no marcó ninguna.
+     *
+     * Recibe un ticket con el pedido COMPLETO —no una comanda más— para quien arma la bolsa
+     * de reparto. `null` significa que no sale ticket extra: el default es no cambiarle nada
+     * a quien no lo pidió.
+     */
+    val packingStationId: String? = null,
     /** Categories that have an explicit station set. */
     val categoryRouting: List<CategoryRoute> = emptyList(),
     /** Products that have an explicit override set. */
