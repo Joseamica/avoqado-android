@@ -217,6 +217,7 @@ class KDSRepository @Inject constructor(
                 id = id,
                 orderId = json.optString("orderId", "").takeIf { it.isNotEmpty() && it != "null" },
                 needsAcceptance = json.optBoolean("needsAcceptance", false),
+                needsPrint = json.optBoolean("needsPrint", false),
                 orderNumber = orderNumber,
                 orderType = displayType,
                 items = items,
@@ -239,6 +240,8 @@ class KDSRepository @Inject constructor(
                 quantity = json.getInt("quantity"),
                 modifiers = parseKdsModifiers(json.optJSONArray("modifiers")),
                 notes = json.optString("notes", "").takeIf { it.isNotEmpty() && it != "null" },
+                productId = json.optString("productId", "").takeIf { it.isNotEmpty() && it != "null" },
+                categoryId = json.optString("categoryId", "").takeIf { it.isNotEmpty() && it != "null" },
             )
         } catch (e: Exception) {
             Log.e(TAG, "Parse item error: ${e.message}")
@@ -371,6 +374,53 @@ class KDSRepository @Inject constructor(
             Log.e(TAG, "fetchDeliveryChannels falló", e)
             Result.failure(e)
         }
+    }
+
+    /**
+     * "Yo imprimo esta comanda." Devuelve `true` sólo si este aparato ganó la carrera.
+     *
+     * Perder es el resultado NORMAL para todas las tablets menos una, así que no es un error:
+     * el servidor responde 200 con `claimed:false` y aquí se traduce a `false`, no a una
+     * excepción que pintaría una falla cada vez que otra tablet fue más rápida.
+     */
+    /** El venue actual, para que el despachador de comandas baje su configuración de ruteo. */
+    fun venueIdActual(): String? = secureStorage.venueId
+
+    suspend fun reclamarImpresion(kdsId: String, deviceId: String): Boolean {
+        val venueId = secureStorage.venueId ?: return false
+        val token = secureStorage.accessToken ?: return false
+        return try {
+            val request = Request.Builder()
+                .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/kds/orders/$kdsId/claim-print")
+                .header("Authorization", "Bearer $token")
+                .post(JSONObject().put("deviceId", deviceId).toString().toRequestBody("application/json".toMediaType()))
+                .build()
+            val (code, body) = withContext(Dispatchers.IO) {
+                client.newCall(request).execute().use { response ->
+                    response.code to response.body?.string().orEmpty()
+                }
+            }
+            code in 200..299 && runCatching { JSONObject(body).optBoolean("claimed") }.getOrDefault(false)
+        } catch (e: Exception) {
+            // Sin red no se reclama nada. NO se imprime a ciegas: dos tablets offline
+            // sacarían el mismo papel y nadie se enteraría.
+            Log.d(TAG, "reclamarImpresion falló: ${e.message}")
+            false
+        }
+    }
+
+    /** "Ya salió el papel" / "no pude". Ambas son best-effort: no pueden tumbar la cocina. */
+    suspend fun marcarImpresion(kdsId: String, deviceId: String, accion: String) {
+        val venueId = secureStorage.venueId ?: return
+        val token = secureStorage.accessToken ?: return
+        runCatching {
+            val request = Request.Builder()
+                .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/kds/orders/$kdsId/$accion")
+                .header("Authorization", "Bearer $token")
+                .post(JSONObject().put("deviceId", deviceId).toString().toRequestBody("application/json".toMediaType()))
+                .build()
+            withContext(Dispatchers.IO) { client.newCall(request).execute().use { it.close() } }
+        }.onFailure { Log.d(TAG, "marcarImpresion($accion) falló: ${it.message}") }
     }
 
     private suspend fun ejecutarCanal(request: Request, accion: String): Result<Unit> {

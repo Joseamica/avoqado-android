@@ -19,6 +19,14 @@ data class KDSOrder(
      * nadie lo acepta, el proveedor lo cancela y el cliente se queda sin comida.
      */
     val needsAcceptance: Boolean = false,
+    /**
+     * ¿Falta que un aparato reclame e imprima esta comanda?
+     *
+     * Sólo llega en `true` para pedidos de marketplace: los que manda un mesero desde una
+     * tablet ya se imprimen en ese mismo gesto. Aquí no hay gesto humano — el pedido aparece
+     * en todas las pantallas a la vez y alguien tiene que reclamar el trabajo.
+     */
+    val needsPrint: Boolean = false,
     val items: List<KDSOrderItem>,
     val createdAt: Long,
     var status: KDSOrderStatus,
@@ -32,6 +40,9 @@ data class KDSOrderItem(
     val quantity: Int,
     val modifiers: List<String> = emptyList(),
     val notes: String? = null,
+    /** Para RUTEAR el renglón a su estación. `null` = no supimos de qué producto es. */
+    val productId: String? = null,
+    val categoryId: String? = null,
 )
 
 enum class KDSOrderStatus(val label: String) {

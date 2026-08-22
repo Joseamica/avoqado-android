@@ -6,6 +6,10 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.kds.data.KDSRepository
+import com.avoqado.pos.core.domain.printing.ComandaDispatcher
+import com.avoqado.pos.printing.routing.RoutableItem
+import com.avoqado.pos.core.data.sync.SyncOutbox
+import javax.inject.Provider
 import com.avoqado.pos.kds.domain.CanalReparto
 import com.avoqado.pos.kds.domain.KDSFilter
 import com.avoqado.pos.kds.domain.KDSOrder
@@ -40,6 +44,13 @@ data class KDSSettings(
 class KDSViewModel @Inject constructor(
     private val orderBus: KDSOrderBus,
     private val kdsRepository: KDSRepository,
+    // El MISMO despachador que usan mesas y vales: ruteo, fallbacks y la regla de que un
+    // guard de configuración jamás va delante de la impresión. Una segunda implementación
+    // aquí acabaría imprimiendo distinto que el resto del local.
+    private val comandaDispatcher: ComandaDispatcher,
+    // El deviceId del outbox, NO uno nuevo: la regla de offline-first lo dice explícito —
+    // si cambia al reiniciar, el mismo aparato se ve como dos y el árbitro deja de servir.
+    private val syncOutbox: Provider<SyncOutbox>,
     @ApplicationContext private val appContext: Context,
 ) : ViewModel() {
 
@@ -154,6 +165,9 @@ class KDSViewModel @Inject constructor(
                 previousOrderIds = newIds
                 hasLoadedFromAPI = true
                 _orders.value = apiOrders
+                // Después de publicar, no antes: la pantalla se actualiza aunque la impresora
+                // esté tardando. La cocina ve el pedido primero, el papel sale enseguida.
+                viewModelScope.launch { imprimirComandasPendientes(apiOrders) }
             },
             onFailure = { error ->
                 Log.d(TAG, "API fetch failed (keeping current data): ${error.message}")
@@ -313,6 +327,53 @@ class KDSViewModel @Inject constructor(
             kdsRepository.denyDeliveryOrder(orderId, reason)
                 .onSuccess { fetchOrders() }
                 .onFailure { e -> _errorMessage.value = e.message ?: "No se pudo rechazar el pedido" }
+        }
+    }
+
+    /**
+     * Saca en papel las comandas que llegaron SOLAS y que nadie ha impreso.
+     *
+     * 🔴 Primero se RECLAMA en el servidor y sólo el ganador imprime. Un pedido de
+     * marketplace aparece a la vez en todas las pantallas de cocina: sin árbitro, las tres
+     * tablets del local sacan el mismo papel tres veces.
+     *
+     * Si la impresión falla se SUELTA en el acto, para que otro aparato lo intente sin
+     * esperar a que caduque la reclamación. Una tablet sin papel no puede dejar a la cocina
+     * sin enterarse del pedido.
+     */
+    private suspend fun imprimirComandasPendientes(pedidos: List<KDSOrder>) {
+        val pendientes = pedidos.filter { it.needsPrint }
+        if (pendientes.isEmpty()) return
+
+        val deviceId = runCatching { syncOutbox.get().deviceId }.getOrNull() ?: return
+        val venueId = kdsRepository.venueIdActual()
+
+        for (pedido in pendientes) {
+            if (!kdsRepository.reclamarImpresion(pedido.id, deviceId)) continue
+
+            val lineas = pedido.items.map { item ->
+                RoutableItem(
+                    orderItemId = item.id,
+                    productId = item.productId,
+                    categoryId = item.categoryId,
+                    productName = item.productName,
+                    quantity = item.quantity,
+                    modifiers = item.modifiers,
+                    notes = item.notes,
+                )
+            }
+
+            val ok = runCatching {
+                comandaDispatcher.dispatch(
+                    venueId = venueId,
+                    lines = lineas,
+                    orderNumber = pedido.orderNumber,
+                    orderType = "Delivery",
+                )
+            }.isSuccess
+
+            kdsRepository.marcarImpresion(pedido.id, deviceId, if (ok) "confirm-print" else "release-print")
+            if (!ok) Log.e(TAG, "No se pudo imprimir la comanda ${pedido.orderNumber}; soltada para que otro aparato lo intente")
         }
     }
 
