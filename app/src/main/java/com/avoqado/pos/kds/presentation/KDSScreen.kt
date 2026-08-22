@@ -20,11 +20,13 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -44,6 +46,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.avoqado.pos.designsystem.components.CircleBackButton
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
+import com.avoqado.pos.kds.domain.CanalReparto
 import com.avoqado.pos.kds.domain.KDSFilter
 import kotlinx.coroutines.delay
 
@@ -60,8 +63,11 @@ fun KDSScreen(
     val activeCount by viewModel.activeOrderCount.collectAsState()
     val avgTime by viewModel.averageTimeSeconds.collectAsState()
     val errorMessage by viewModel.errorMessage.collectAsState()
+    val canalesReparto by viewModel.canalesReparto.collectAsState()
 
     var showSettings by remember { mutableStateOf(false) }
+    // Qué canal está eligiendo duración. `null` = el diálogo está cerrado.
+    var pausando by remember { mutableStateOf<CanalReparto?>(null) }
 
     // Tick every second for elapsed timers
     var tick by remember { mutableLongStateOf(System.currentTimeMillis()) }
@@ -123,6 +129,20 @@ fun KDSScreen(
             onDismiss = onDismiss,
         )
 
+        // MARK: - "Me saturé" — el freno del reparto
+        // Sólo se dibuja si el venue REALMENTE vende por reparto y este puesto tiene el
+        // permiso: si la lista viene vacía —sin canales, sin plan, o sin permiso— no hay
+        // control. Mostrarle a un cocinero un botón que le va a dar error es peor que no
+        // mostrarle nada.
+        canalesReparto.forEach { canal ->
+            BarraReparto(
+                canal = canal,
+                ahora = tick,
+                onPausar = { pausando = canal },
+                onReanudar = { viewModel.reanudarReparto(canal.id) },
+            )
+        }
+
         // MARK: - Order Grid
         if (orders.isEmpty()) {
             Box(
@@ -169,6 +189,41 @@ fun KDSScreen(
                 }
             }
         }
+    }
+
+    // MARK: - ¿Cuánto frenar?
+    pausando?.let { canal ->
+        val cerrar = { pausando = null }
+        AlertDialog(
+            onDismissRequest = cerrar,
+            title = { Text("Frenar el reparto") },
+            text = {
+                Column {
+                    Text(
+                        text = "Dejarás de recibir pedidos de reparto. Se reanuda solo cuando pase el tiempo.",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+                    DURACIONES_PAUSA.forEach { (minutos, etiqueta) ->
+                        // Botones de ancho completo: esto se toca con las manos ocupadas y
+                        // muchas veces con guantes. Un menú desplegable aquí no se acierta.
+                        OutlinedButton(
+                            onClick = {
+                                viewModel.pausarReparto(canal.id, minutos)
+                                cerrar()
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = AvoqadoTheme.spacing.xs),
+                        ) {
+                            Text(etiqueta, style = MaterialTheme.typography.titleMedium)
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = { TextButton(onClick = cerrar) { Text("Cancelar") } },
+        )
     }
 
     // MARK: - Settings Sheet
@@ -331,3 +386,65 @@ internal fun formatElapsedTime(millis: Long): String {
         else -> "${s / 86_400} d"
     }
 }
+
+/**
+ * El estado del reparto y su freno, en una línea sobre el tablero.
+ *
+ * Tres estados y NINGUNO se ve igual, a propósito:
+ *  · Recibiendo   → botón para frenar.
+ *  · Pausado con reloj (lo pidió alguien del piso) → cuenta regresiva + reanudar.
+ *  · Pausado SIN reloj (lo pidió el dueño desde el dashboard) → se ve, se explica, y NO
+ *    trae botón. Desde el piso no se reabre lo que el dueño cerró — y una cuenta regresiva
+ *    que no corre sería peor que nada, porque prometería una reactivación que no va a pasar.
+ */
+@Composable
+private fun BarraReparto(
+    canal: CanalReparto,
+    ahora: Long,
+    onPausar: () -> Unit,
+    onReanudar: () -> Unit,
+) {
+    val restante = canal.pausadoHasta?.let { hasta ->
+        runCatching { java.time.Instant.parse(hasta).toEpochMilli() - ahora }.getOrNull()
+    }
+
+    val (fondo, texto) = when {
+        !canal.pausado -> MaterialTheme.colorScheme.surface to "Reparto recibiendo pedidos"
+        restante != null && restante > 0 -> {
+            val minutos = (restante / 60_000).toInt()
+            val segundos = ((restante / 1000) % 60).toInt()
+            MaterialTheme.colorScheme.tertiaryContainer to
+                "Reparto en pausa · se reanuda en %d:%02d".format(minutos, segundos)
+        }
+        else -> MaterialTheme.colorScheme.errorContainer to "Reparto pausado por el administrador"
+    }
+
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(fondo)
+            .padding(horizontal = AvoqadoTheme.spacing.md, vertical = AvoqadoTheme.spacing.sm),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween,
+    ) {
+        Text(text = texto, style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))
+
+        when {
+            !canal.pausado -> OutlinedButton(onClick = onPausar) { Text("Me saturé") }
+            restante != null && restante > 0 -> TextButton(onClick = onReanudar) { Text("Ya estamos al día") }
+            // Pausa del dueño: sin botón, a propósito.
+            else -> Unit
+        }
+    }
+}
+
+/**
+ * Cuánto frenar. Son las MISMAS cuatro opciones que acepta el servidor
+ * (`SNOOZE_MINUTOS_VALIDOS`), espejadas por valor exacto: una quinta aquí daría un 400 que
+ * el cocinero no puede interpretar.
+ *
+ * No hay "indefinido" a propósito. El modo de fallo de este patrón está documentado —en la
+ * comunidad de Square, "pause stuck"—: alguien pausa a media cena, se le olvida, y el
+ * negocio amanece apagado. Toda pausa desde el piso caduca sola.
+ */
+private val DURACIONES_PAUSA = listOf(20 to "20 minutos", 40 to "40 minutos", 60 to "1 hora", 120 to "2 horas")

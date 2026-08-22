@@ -6,6 +6,7 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.kds.data.KDSRepository
+import com.avoqado.pos.kds.domain.CanalReparto
 import com.avoqado.pos.kds.domain.KDSFilter
 import com.avoqado.pos.kds.domain.KDSOrder
 import com.avoqado.pos.kds.domain.KDSOrderBus
@@ -60,6 +61,17 @@ class KDSViewModel @Inject constructor(
     fun clearError() {
         _errorMessage.value = null
     }
+
+    /**
+     * Los canales de reparto, para el control de "me saturé".
+     *
+     * Lista VACÍA cuando el venue no vende por reparto, no tiene el plan, o este puesto no
+     * tiene el permiso: en los tres casos el control simplemente no se dibuja. Es el mismo
+     * criterio del resto del tablero — no mostrarle a un cocinero un botón que le va a dar
+     * error.
+     */
+    private val _canalesReparto = MutableStateFlow<List<CanalReparto>>(emptyList())
+    val canalesReparto: StateFlow<List<CanalReparto>> = _canalesReparto.asStateFlow()
 
     private val _filter = MutableStateFlow(KDSFilter.ALL)
     val filter: StateFlow<KDSFilter> = _filter.asStateFlow()
@@ -117,10 +129,14 @@ class KDSViewModel @Inject constructor(
         viewModelScope.launch {
             // Initial fetch
             fetchOrders()
+            fetchCanalesReparto()
             // Poll every 10 seconds
             while (isActive) {
                 delay(10_000)
                 fetchOrders()
+                // Va en el MISMO ciclo: así la cuenta regresiva de la pausa se apaga sola
+                // cuando el servidor reactiva el canal, sin que nadie tenga que refrescar.
+                fetchCanalesReparto()
             }
         }
     }
@@ -297,6 +313,38 @@ class KDSViewModel @Inject constructor(
             kdsRepository.denyDeliveryOrder(orderId, reason)
                 .onSuccess { fetchOrders() }
                 .onFailure { e -> _errorMessage.value = e.message ?: "No se pudo rechazar el pedido" }
+        }
+    }
+
+    private suspend fun fetchCanalesReparto() {
+        kdsRepository.fetchDeliveryChannels()
+            .onSuccess { _canalesReparto.value = it }
+            // Un fallo aquí NO se le grita a la cocina: el control desaparece y el tablero
+            // sigue funcionando. Perder el botón de pausa no puede tapar los pedidos.
+            .onFailure { Log.d(TAG, "No se pudieron leer los canales de reparto: ${it.message}") }
+    }
+
+    /**
+     * "Me saturé": frena los pedidos de reparto un rato.
+     *
+     * Sin optimismo, por la misma razón que aceptar un pedido: pintar "pausado" antes de que
+     * el marketplace lo confirme haría creer a la cocina que ya no van a entrar pedidos
+     * mientras siguen entrando. Se relee del servidor, que es quien sabe.
+     */
+    fun pausarReparto(linkId: String, minutos: Int) {
+        viewModelScope.launch {
+            kdsRepository.snoozeDelivery(linkId, minutos)
+                .onSuccess { fetchCanalesReparto() }
+                .onFailure { e -> _errorMessage.value = e.message ?: "No se pudo pausar el reparto" }
+        }
+    }
+
+    /** "Ya nos pusimos al día." */
+    fun reanudarReparto(linkId: String) {
+        viewModelScope.launch {
+            kdsRepository.reanudarDelivery(linkId)
+                .onSuccess { fetchCanalesReparto() }
+                .onFailure { e -> _errorMessage.value = e.message ?: "No se pudo reanudar el reparto" }
         }
     }
 

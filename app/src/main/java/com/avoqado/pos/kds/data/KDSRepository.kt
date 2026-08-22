@@ -3,6 +3,7 @@ package com.avoqado.pos.kds.data
 import android.util.Log
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ApiConstants
+import com.avoqado.pos.kds.domain.CanalReparto
 import com.avoqado.pos.kds.domain.KDSOrder
 import com.avoqado.pos.kds.domain.KDSOrderItem
 import com.avoqado.pos.kds.domain.KDSOrderStatus
@@ -277,6 +278,120 @@ class KDSRepository @Inject constructor(
      */
     suspend fun denyDeliveryOrder(orderId: String, reason: String = "OUT_OF_ITEMS"): Result<Unit> =
         responderDelivery(orderId, "deny", reason)
+
+    /**
+     * "Me saturé": frena los pedidos de reparto durante `minutos`.
+     *
+     * 🔴 NO se encola offline, a propósito. Pausar sólo cuenta si el marketplace se entera,
+     * y eso necesita red — igual que el cobro con tarjeta. Un intent encolado le diría al
+     * cocinero "listo, ya no entran pedidos" mientras siguen entrando: es la clase de
+     * mentira que la regla de offline-first prohíbe explícitamente ("jamás pintes un éxito
+     * encolado como algo que ya ocurrió"). Sin red, el error se ve tal cual.
+     */
+    suspend fun snoozeDelivery(linkId: String, minutos: Int): Result<Unit> {
+        val venueId = secureStorage.venueId ?: return Result.failure(Exception("No venue selected"))
+        val token = secureStorage.accessToken ?: return Result.failure(Exception("Not authenticated"))
+
+        return try {
+            val cuerpo = JSONObject().apply { put("minutos", minutos) }
+            val request = Request.Builder()
+                .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/delivery/channels/$linkId/snooze")
+                .header("Authorization", "Bearer $token")
+                .post(cuerpo.toString().toRequestBody("application/json".toMediaType()))
+                .build()
+            ejecutarCanal(request, "snooze")
+        } catch (e: Exception) {
+            Log.e(TAG, "snoozeDelivery falló", e)
+            Result.failure(e)
+        }
+    }
+
+    /** "Ya nos pusimos al día." Sólo cancela una pausa CON reloj; la del dashboard no. */
+    suspend fun reanudarDelivery(linkId: String): Result<Unit> {
+        val venueId = secureStorage.venueId ?: return Result.failure(Exception("No venue selected"))
+        val token = secureStorage.accessToken ?: return Result.failure(Exception("Not authenticated"))
+
+        return try {
+            val request = Request.Builder()
+                .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/delivery/channels/$linkId/snooze")
+                .header("Authorization", "Bearer $token")
+                .delete()
+                .build()
+            ejecutarCanal(request, "reanudar")
+        } catch (e: Exception) {
+            Log.e(TAG, "reanudarDelivery falló", e)
+            Result.failure(e)
+        }
+    }
+
+    /** Los canales de reparto del venue, con su estado y hasta cuándo dura la pausa. */
+    suspend fun fetchDeliveryChannels(): Result<List<CanalReparto>> {
+        val venueId = secureStorage.venueId ?: return Result.failure(Exception("No venue selected"))
+        val token = secureStorage.accessToken ?: return Result.failure(Exception("Not authenticated"))
+
+        return try {
+            val request = Request.Builder()
+                .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/delivery/channels")
+                .header("Authorization", "Bearer $token")
+                .get()
+                .build()
+
+            // Forma EXPLÍCITA (`response ->`), no `it`: la corta rompe la inferencia de
+            // tipos de Kotlin dentro de `use { }`. Es la misma trampa que ya documentaba
+            // `responderDelivery` unas líneas abajo.
+            val (code, body) = withContext(Dispatchers.IO) {
+                client.newCall(request).execute().use { response ->
+                    response.code to response.body?.string().orEmpty()
+                }
+            }
+
+            if (code !in 200..299) {
+                // 403 = este puesto no tiene el permiso, o el venue no tiene el plan. No es
+                // un error que valga la pena gritarle a la cocina: simplemente no hay control.
+                Log.d(TAG, "fetchDeliveryChannels: $code")
+                return Result.success(emptyList())
+            }
+
+            val arreglo = JSONObject(body).optJSONArray("channels")
+            val canales = (0 until (arreglo?.length() ?: 0)).mapNotNull { i ->
+                arreglo?.optJSONObject(i)?.let { o ->
+                    CanalReparto(
+                        id = o.optString("id"),
+                        proveedor = o.optString("provider"),
+                        pausado = o.optString("status") == "PAUSED",
+                        // `null` con pausado=true es la pausa INDEFINIDA del dashboard: se
+                        // pinta como pausado pero SIN cuenta regresiva, porque no se va a
+                        // reactivar sola y un reloj que no corre es una mentira.
+                        pausadoHasta = o.optString("snoozedUntil").takeIf { it.isNotBlank() && it != "null" },
+                    )
+                }
+            }
+            Result.success(canales)
+        } catch (e: Exception) {
+            Log.e(TAG, "fetchDeliveryChannels falló", e)
+            Result.failure(e)
+        }
+    }
+
+    private suspend fun ejecutarCanal(request: Request, accion: String): Result<Unit> {
+        val (code, body) = withContext(Dispatchers.IO) {
+            client.newCall(request).execute().use { response ->
+                response.code to response.body?.string().orEmpty()
+            }
+        }
+        return if (code in 200..299) {
+            Log.d(TAG, "Canal $accion OK")
+            Result.success(Unit)
+        } else {
+            // El servidor explica QUÉ pasa —por ejemplo, que esa pausa la puso el dueño y
+            // no se puede deshacer desde aquí—. Se propaga tal cual.
+            val msg = runCatching { JSONObject(body).optString("message").ifBlank { JSONObject(body).optString("error") } }
+                .getOrNull()?.takeIf { it.isNotBlank() }
+                ?: "No se pudo $accion el reparto ($code)"
+            Log.e(TAG, "Canal $accion falló: $code - $body")
+            Result.failure(Exception(msg))
+        }
+    }
 
     private suspend fun responderDelivery(orderId: String, accion: String, reason: String?): Result<Unit> {
         val venueId = secureStorage.venueId
