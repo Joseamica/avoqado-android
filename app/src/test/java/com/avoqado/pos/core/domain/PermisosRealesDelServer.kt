@@ -26,7 +26,7 @@ package com.avoqado.pos.core.domain
  * venue con Permission Sets (`VenueRolePermission`) manda otra cosa; aquí sale la
  * matriz por default (`customPermissions = null`), que es la de la mayoría.
  *
- * Derivado de avoqado-server · huella 9385343215071d29.
+ * Derivado de avoqado-server · huella ca56589bf2ca722e.
  */
 object PermisosRealesDelServer {
 
@@ -74,12 +74,13 @@ object PermisosRealesDelServer {
         "teams:read",
     )
 
-    /** KITCHEN — 12 permisos efectivos (8 declarados + 4 implícitos: analytics:read, inventory:read, payments:read, products:read). */
+    /** KITCHEN — 13 permisos efectivos (9 declarados + 4 implícitos: analytics:read, inventory:read, payments:read, products:read). */
     val KITCHEN = listOf(
         "analytics:read",
         "area-tickets:deliver",
         "area-tickets:issue",
         "calendar:connect_self",
+        "delivery-channels:snooze",
         "home:read",
         "inventory:read",
         "menu:read",
@@ -90,7 +91,7 @@ object PermisosRealesDelServer {
         "scale:use",
     )
 
-    /** WAITER — 49 permisos efectivos (42 declarados + 7 implícitos: analytics:read, estimates:create, inventory:read, products:read, shifts:close, shifts:create, tpv-time-entries:read). */
+    /** WAITER — 50 permisos efectivos (43 declarados + 7 implícitos: analytics:read, estimates:create, inventory:read, products:read, shifts:close, shifts:create, tpv-time-entries:read). */
     val WAITER = listOf(
         "analytics:read",
         "area-tickets:deliver",
@@ -106,6 +107,7 @@ object PermisosRealesDelServer {
         "creditPacks:sell",
         "customers:create",
         "customers:read",
+        "delivery-channels:snooze",
         "discounts:apply",
         "discounts:read",
         "estimates:create",
@@ -143,7 +145,7 @@ object PermisosRealesDelServer {
         "upsells:read",
     )
 
-    /** CASHIER — 47 permisos efectivos (39 declarados + 8 implícitos: analytics:read, inventory:read, orders:create, products:read, shifts:close, shifts:create, tables:update, tpv-time-entries:read). */
+    /** CASHIER — 48 permisos efectivos (40 declarados + 8 implícitos: analytics:read, inventory:read, orders:create, products:read, shifts:close, shifts:create, tables:update, tpv-time-entries:read). */
     val CASHIER = listOf(
         "analytics:read",
         "area-tickets:checkout",
@@ -156,6 +158,7 @@ object PermisosRealesDelServer {
         "creditPacks:sell",
         "customers:create",
         "customers:read",
+        "delivery-channels:snooze",
         "discounts:apply",
         "discounts:read",
         "estimates:create",
@@ -194,7 +197,7 @@ object PermisosRealesDelServer {
         "upsells:read",
     )
 
-    /** MANAGER — 137 permisos efectivos (122 declarados + 15 implícitos: customers:read, discounts:apply, discounts:read, estimates:create, features:update, orders:cancel-unpaid, orders:comp, orders:void, products:read, tables:pay-any, tpv-reports:read, tpv-settings:read, tpv-settings:update, tpv-shifts:close, tpv-shifts:create). */
+    /** MANAGER — 141 permisos efectivos (127 declarados + 14 implícitos: discounts:apply, discounts:read, estimates:create, features:update, orders:cancel-unpaid, orders:comp, orders:void, products:read, tables:pay-any, tpv-reports:read, tpv-settings:read, tpv-settings:update, tpv-shifts:close, tpv-shifts:create). */
     val MANAGER = listOf(
         "accounting:read",
         "analytics:export",
@@ -218,9 +221,13 @@ object PermisosRealesDelServer {
         "coupons:*",
         "creditPacks:*",
         "customer-groups:*",
-        "customers:*",
+        "customers:create",
+        "customers:delete",
         "customers:read",
+        "customers:settle-balance",
+        "customers:update",
         "delivery-channels:read",
+        "delivery-channels:snooze",
         "discounts:*",
         "discounts:apply",
         "discounts:read",
@@ -335,7 +342,7 @@ object PermisosRealesDelServer {
         "upsells:*",
     )
 
-    /** ADMIN — 127 permisos efectivos (102 declarados + 25 implícitos: analytics:read, customers:read, discounts:apply, discounts:read, features:read, features:update, inventory:read, menu:read, orders:comp, orders:read, orders:update, orders:void, payments:read, products:read, serialized-inventory:create, settings:read, shifts:close, shifts:create, shifts:read, tables:read, tables:update, teams:read, tpv:read, venues:manage, venues:read). */
+    /** ADMIN — 129 permisos efectivos (103 declarados + 26 implícitos: analytics:read, customers:read, delivery-channels:snooze, discounts:apply, discounts:read, features:read, features:update, inventory:read, menu:read, orders:comp, orders:read, orders:update, orders:void, payments:read, products:read, serialized-inventory:create, settings:read, shifts:close, shifts:create, shifts:read, tables:read, tables:update, teams:read, tpv:read, venues:manage, venues:read). */
     val ADMIN = listOf(
         "accounting:manage",
         "accounting:read",
@@ -375,6 +382,7 @@ object PermisosRealesDelServer {
         "delivery-channels:manage",
         "delivery-channels:read",
         "delivery-channels:request",
+        "delivery-channels:snooze",
         "discounts:*",
         "discounts:apply",
         "discounts:read",
@@ -426,6 +434,7 @@ object PermisosRealesDelServer {
         "shifts:create",
         "shifts:read",
         "sim-custody:reassign",
+        "sim-custody:reassign-supervisor",
         "tables:*",
         "tables:read",
         "tables:update",
@@ -466,7 +475,7 @@ object PermisosRealesDelServer {
         "venues:read",
     )
 
-    /** OWNER — 139 permisos efectivos (114 declarados + 25 implícitos: analytics:read, commissions:read, customers:read, discounts:apply, discounts:read, features:read, features:update, inventory:read, menu:read, orders:comp, orders:read, orders:update, orders:void, payments:read, products:read, settings:read, shifts:close, shifts:create, shifts:read, tables:read, tables:update, teams:read, tpv:read, venues:manage, venues:read). */
+    /** OWNER — 141 permisos efectivos (115 declarados + 26 implícitos: analytics:read, commissions:read, customers:read, delivery-channels:snooze, discounts:apply, discounts:read, features:read, features:update, inventory:read, menu:read, orders:comp, orders:read, orders:update, orders:void, payments:read, products:read, settings:read, shifts:close, shifts:create, shifts:read, tables:read, tables:update, teams:read, tpv:read, venues:manage, venues:read). */
     val OWNER = listOf(
         "accounting:manage",
         "accounting:read",
@@ -502,6 +511,7 @@ object PermisosRealesDelServer {
         "delivery-channels:manage",
         "delivery-channels:read",
         "delivery-channels:request",
+        "delivery-channels:snooze",
         "discounts:*",
         "discounts:apply",
         "discounts:read",
@@ -564,6 +574,7 @@ object PermisosRealesDelServer {
         "sim-custody:collect-from-promoter",
         "sim-custody:collect-from-supervisor",
         "sim-custody:reassign",
+        "sim-custody:reassign-supervisor",
         "sim-custody:view-all-supervisors",
         "tables:*",
         "tables:read",
@@ -670,7 +681,6 @@ object PermisosRealesDelServer {
             "tpv-time-entries:read",
         ),
         "MANAGER" to listOf(
-            "customers:read",
             "discounts:apply",
             "discounts:read",
             "estimates:create",
@@ -689,6 +699,7 @@ object PermisosRealesDelServer {
         "ADMIN" to listOf(
             "analytics:read",
             "customers:read",
+            "delivery-channels:snooze",
             "discounts:apply",
             "discounts:read",
             "features:read",
@@ -717,6 +728,7 @@ object PermisosRealesDelServer {
             "analytics:read",
             "commissions:read",
             "customers:read",
+            "delivery-channels:snooze",
             "discounts:apply",
             "discounts:read",
             "features:read",
