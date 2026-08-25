@@ -41,6 +41,7 @@ class MoreMenuViewModel @Inject constructor(
     val customerDisplayPrefs: com.avoqado.pos.customerdisplay.CustomerDisplayPrefs,
     val customerDisplayState: com.avoqado.pos.customerdisplay.CustomerDisplayState,
     val displayModePrefs: com.avoqado.pos.customerdisplay.DisplayModePrefs,
+    val kioskPrefs: com.avoqado.pos.kiosk.domain.KioskPrefs,
     val cashierDisplayGuard: com.avoqado.pos.customerdisplay.CashierDisplayGuard,
     val venueSwitchState: com.avoqado.pos.settings.domain.VenueSwitchState,
     private val paymentSyncService: PaymentSyncService,
@@ -114,6 +115,13 @@ class MoreMenuViewModel @Inject constructor(
      */
     val reservationsEnabled: Boolean
         get() = secureStorage.reservationsEnabled && planManager.hasFeature("RESERVATIONS")
+
+    /**
+     * Fase 8 — "Mi clase ahora". Permiso estrecho: quien da la clase ve SU clase, no la
+     * agenda del negocio. Se pide por nombre exacto, igual que el servidor lo llama.
+     */
+    val canSeeMyClass: Boolean
+        get() = reservationsEnabled && roleManager.hasVenuePermission("class-sessions:read-assigned")
 
     /** True → show the Pro tier badge on the "Activar reservas" entry (visible teaser). */
     val reservationsRequireUpgrade: Boolean

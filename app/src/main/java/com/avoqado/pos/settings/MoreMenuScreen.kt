@@ -43,6 +43,7 @@ import androidx.compose.material.icons.outlined.Checklist
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.GridView
+import androidx.compose.material.icons.outlined.Groups
 import androidx.compose.material.icons.outlined.HourglassEmpty
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.KeyboardArrowDown
@@ -116,6 +117,7 @@ fun MoreMenuScreen(
     moreTabReselectionTick: Int = 0,
     onActivateReservations: () -> Unit = {},
     onOpenWaitlist: () -> Unit = {},
+    onOpenMyClass: () -> Unit = {},
     onTabsShouldRefresh: () -> Unit = {},
     viewModel: MoreMenuViewModel = hiltViewModel(),
 ) {
@@ -505,6 +507,17 @@ fun MoreMenuScreen(
                         onClick = onOpenWaitlist,
                     ),
                 )
+                // Fase 8 — sólo para quien de verdad da clases. Un instructor sin este
+                // permiso no ve la entrada; con él ve SU clase y nada más.
+                if (viewModel.canSeeMyClass) {
+                    add(
+                        MenuEntry(
+                            icon = Icons.Outlined.Groups,
+                            label = "Mi clase ahora",
+                            onClick = onOpenMyClass,
+                        ),
+                    )
+                }
             } else {
                 // Visible teaser: the entry stays discoverable with a tier badge
                 // when the plan lacks RESERVATIONS; tapping opens the Pro upsell.
@@ -967,6 +980,7 @@ fun MoreMenuScreen(
             prefs = viewModel.customerDisplayPrefs,
             displayState = viewModel.customerDisplayState,
             displayModePrefs = viewModel.displayModePrefs,
+            kioskPrefs = viewModel.kioskPrefs,
             ventaEnCurso = carritoConItems > 0,
             onInvertedChange = { nuevo ->
                 viewModel.cashierDisplayGuard.resetAttempts()

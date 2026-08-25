@@ -388,6 +388,7 @@ private fun MainScaffold(
                         moreTabReselectionTick = moreTabReselectionTick,
                         onActivateReservations = { navController.navigate("activate-reservations") },
                         onOpenWaitlist = { navController.navigate("waitlist") },
+                        onOpenMyClass = { navController.navigate("my-class-now") },
                         onTabsShouldRefresh = onTabsShouldRefresh,
                     )
                 }
@@ -415,6 +416,11 @@ private fun MainScaffold(
                     com.avoqado.pos.reservations.presentation.calendar.CalendarSettingsSheet(
                         onClose = { navController.popBackStack() },
                         viewModel = hiltViewModel(parentEntry),
+                    )
+                }
+                composable("my-class-now") {
+                    com.avoqado.pos.reservations.presentation.coach.MyClassNowScreen(
+                        onBack = { navController.popBackStack() },
                     )
                 }
                 composable("activate-reservations") {
@@ -678,6 +684,7 @@ private fun MainScaffold(
                         moreTabReselectionTick = moreTabReselectionTick,
                         onActivateReservations = { navController.navigate("activate-reservations") },
                         onOpenWaitlist = { navController.navigate("waitlist") },
+                        onOpenMyClass = { navController.navigate("my-class-now") },
                         onTabsShouldRefresh = onTabsShouldRefresh,
                     )
                 }
@@ -705,6 +712,11 @@ private fun MainScaffold(
                     com.avoqado.pos.reservations.presentation.calendar.CalendarSettingsSheet(
                         onClose = { navController.popBackStack() },
                         viewModel = hiltViewModel(parentEntry),
+                    )
+                }
+                composable("my-class-now") {
+                    com.avoqado.pos.reservations.presentation.coach.MyClassNowScreen(
+                        onBack = { navController.popBackStack() },
                     )
                 }
                 composable("activate-reservations") {
