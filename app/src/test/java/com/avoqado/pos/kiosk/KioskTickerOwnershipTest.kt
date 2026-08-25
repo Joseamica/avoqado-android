@@ -3,9 +3,12 @@ package com.avoqado.pos.kiosk
 import com.avoqado.pos.designsystem.components.Countries
 import com.avoqado.pos.kiosk.domain.KioskContent
 import com.avoqado.pos.kiosk.domain.KioskPack
+import com.avoqado.pos.kiosk.domain.KioskPerson
 import com.avoqado.pos.kiosk.domain.KioskSession
+import com.avoqado.pos.kiosk.domain.sortRoster
 import com.avoqado.pos.kiosk.domain.tickerOwnsScreen
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -63,5 +66,34 @@ class KioskTickerOwnershipTest {
     @Test
     fun `un aviso de problema NO se lo quita el reloj`() {
         assertFalse(tickerOwnsScreen(KioskContent.Trouble("Sin conexión")))
+    }
+
+    // ── El orden de la lista ────────────────────────────────────────────────────
+    //
+    // 🔴 También salió en la D3: Ana tocó su nombre y SALTÓ al final de la lista, porque
+    // el orden venía del servidor y confirmar la mueve. La siguiente persona ya venía
+    // estirando el dedo a donde su nombre estaba hace un segundo.
+
+    private fun p(nombre: String, llego: Boolean = false) =
+        KioskPerson(reservationId = nombre, displayName = nombre, checkedIn = llego)
+
+    @Test
+    fun `la lista va en orden alfabetico`() {
+        val orden = sortRoster(listOf(p("Sofía R."), p("Ana G."), p("Regina O."), p("Paulina V.")))
+        assertEquals(listOf("Ana G.", "Paulina V.", "Regina O.", "Sofía R."), orden.map { it.displayName })
+    }
+
+    @Test
+    fun `confirmar una llegada NO mueve a nadie de sitio`() {
+        val antes = sortRoster(listOf(p("Sofía R."), p("Ana G."), p("Regina O.")))
+        // La misma gente, pero Ana ya confirmó: el orden tiene que ser idéntico.
+        val despues = sortRoster(listOf(p("Sofía R."), p("Ana G.", llego = true), p("Regina O.")))
+        assertEquals(antes.map { it.displayName }, despues.map { it.displayName })
+    }
+
+    @Test
+    fun `los acentos y la enye no mandan a nadie al final`() {
+        val orden = sortRoster(listOf(p("Ñuño P."), p("Zoe A."), p("Nadia B."), p("Ángela C.")))
+        assertEquals(listOf("Ángela C.", "Nadia B.", "Ñuño P.", "Zoe A."), orden.map { it.displayName })
     }
 }

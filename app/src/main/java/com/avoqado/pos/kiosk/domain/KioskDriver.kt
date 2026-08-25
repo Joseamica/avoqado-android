@@ -166,7 +166,17 @@ class KioskDriver @Inject constructor(
                     activo.first().classSession?.assignedStaff?.firstName
                         ?: activo.first().assignedStaff?.firstName
                     )?.let { "con $it" },
-                people = activo.map(::toPerson),
+                // 🔴 ORDEN ALFABÉTICO, y es una decisión de seguridad, no de estética.
+                //
+                // El servidor devuelve las reservas en su propio orden, y confirmar una
+                // llegada la MUEVE de sitio. En la D3 se vio: Ana tocó su nombre y saltó
+                // al final de la lista. En un kiosco eso es peligroso — la siguiente
+                // persona ya estaba estirando el dedo hacia donde SU nombre estaba hace
+                // un segundo, y termina confirmando la llegada de alguien más.
+                //
+                // Alfabético es el único orden que no se mueve cuando alguien confirma, y
+                // es como uno busca su propio nombre en una lista.
+                people = sortRoster(activo.map(::toPerson)),
             ),
         )
     }
@@ -313,7 +323,12 @@ class KioskDriver @Inject constructor(
                     if (list.isEmpty()) {
                         // Sin paquetes configurados no se enseña una pantalla vacía: se
                         // dice qué pasa. Una pantalla muda en la entrada es un bug visible.
-                        kiosk.show(KioskContent.Trouble("Este negocio todavía no tiene paquetes a la venta."))
+                        kiosk.show(
+                            KioskContent.Trouble(
+                                title = "Por ahora no hay paquetes",
+                                message = "Pregunta en el mostrador por las opciones.",
+                            ),
+                        )
                     } else {
                         kiosk.show(
                             KioskContent.Offer(

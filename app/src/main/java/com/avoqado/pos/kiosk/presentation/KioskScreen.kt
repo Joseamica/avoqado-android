@@ -317,7 +317,7 @@ private fun PersonRow(
 private fun Trouble(content: KioskContent.Trouble, onRestart: () -> Unit) {
     Screen {
         Spacer(Modifier.weight(1f))
-        Big("Algo salió mal")
+        Big(content.title)
         Spacer(Modifier.height(AvoqadoTheme.spacing.md))
         Sub(content.message)
         Spacer(Modifier.weight(1f))

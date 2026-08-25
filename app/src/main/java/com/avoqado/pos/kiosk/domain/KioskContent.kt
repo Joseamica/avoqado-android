@@ -157,7 +157,18 @@ sealed interface KioskContent {
      * queda parado sin saber si sirvió, y nadie del negocio se entera. Siempre
      * hay salida a mano ([onRestart]).
      */
-    data class Trouble(val message: String) : KioskContent
+    data class Trouble(
+        val message: String,
+        /**
+         * 🔴 El título por defecto ALARMA, y no todo lo que cae aquí es una falla.
+         *
+         * "Este negocio todavía no tiene paquetes a la venta" es un estado NORMAL de
+         * configuración, y anunciarlo como "Algo salió mal" le dice al cliente que algo
+         * se rompió cuando no se rompió nada — y al negocio le esconde que lo único que
+         * falta es dar de alta sus paquetes. Se vio en la D3, de frente a la pantalla.
+         */
+        val title: String = "Algo salió mal",
+    ) : KioskContent
 }
 
 /** Una clase o cita de hoy, ya resuelta por el servidor. Aquí no se calcula nada. */
@@ -216,3 +227,21 @@ data class KioskPerson(
  */
 fun tickerOwnsScreen(content: KioskContent): Boolean =
     content is KioskContent.Welcome || content is KioskContent.Roster
+
+/**
+ * El orden en que se pintan los nombres de la clase.
+ *
+ * 🔴 Alfabético, y es una decisión de SEGURIDAD, no de estética. El servidor devuelve las
+ * reservas en su propio orden y confirmar una llegada MUEVE a esa persona de sitio. En la
+ * D3 se vio: Ana tocó su nombre y saltó al final de la lista. En un kiosco eso es
+ * peligroso — la siguiente persona ya venía estirando el dedo hacia donde SU nombre estaba
+ * hace un segundo, y termina confirmando la llegada de alguien más.
+ *
+ * Alfabético es el único orden que NO se mueve cuando alguien confirma, y además es como
+ * uno busca su propio nombre en una lista.
+ */
+fun sortRoster(people: List<KioskPerson>): List<KioskPerson> {
+    // Con acentos y ñ: "Ñuño" va tras "Nadia", no al final del abecedario.
+    val nombre = java.text.Collator.getInstance(java.util.Locale("es", "MX"))
+    return people.sortedWith(compareBy(nombre) { it.displayName })
+}
