@@ -4,6 +4,8 @@ import android.os.Bundle
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -33,6 +35,17 @@ import javax.inject.Inject
 class CustomerDisplayActivity : ComponentActivity() {
 
     @Inject lateinit var state: CustomerDisplayState
+
+    /**
+     * 🔴 El kiosco también vive aquí, no sólo en el `Presentation`.
+     *
+     * Esta ventana es la cara del cliente cuando el mostrador está INVERTIDO. Antes sólo
+     * sabía pintar el espejo, así que invertir con el check-in prendido dejaba al cliente
+     * mirando la pantalla de bienvenida de siempre y al cajero preguntándose si la app se
+     * había roto. La bifurcación tiene que ser la MISMA en los dos caminos: cuál ventana
+     * usa Android es un detalle de plataforma, no una diferencia de producto.
+     */
+    @Inject lateinit var kioskState: com.avoqado.pos.kiosk.domain.KioskState
 
     // Para preguntarle al manager, en cada onStart(), si SIGUE queriendo una
     // ventana de cliente aquí (ver CustomerDisplayManager.desiredCustomerDisplayId).
@@ -69,6 +82,18 @@ class CustomerDisplayActivity : ComponentActivity() {
         setContent {
             // Siempre en claro: es un letrero público, no sigue el tema del cajero.
             AvoqadoTheme(darkTheme = false) {
+                // 🔴 LA MISMA bifurcación que `CustomerDisplayPresentation`. Si algún día
+                // cambia una, cambia la otra en el mismo trabajo: son la misma pantalla
+                // para el cliente, y sólo difieren en qué tipo de ventana usa Android.
+                val kioskOn by kioskState.enabled.collectAsState()
+                if (kioskOn) {
+                    val venueName by state.venueName.collectAsState()
+                    com.avoqado.pos.kiosk.presentation.KioskScreen(
+                        state = kioskState,
+                        venueName = venueName,
+                    )
+                    return@AvoqadoTheme
+                }
                 CustomerDisplayScreen(
                     state = state,
                     onRating = { state.onRatingPicked?.invoke(it) },
