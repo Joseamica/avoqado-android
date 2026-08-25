@@ -126,6 +126,21 @@ class KioskDriver @Inject constructor(
         // que se cierra justo cuando ibas a picar tu nombre.
         if (System.currentTimeMillis() - lastTouchAt < INTERACTION_HOLD_MS) return
 
+        // 🔴 Y el reloj manda sobre la LISTA, no sobre alguien a media operación.
+        //
+        // El guardia de arriba sólo cuenta segundos desde el último toque, así que a los
+        // 25 s borraba el teclado de "¿No apareces?" con la persona todavía enfrente
+        // tecleando su teléfono — y de paso habría borrado un QR de pago a medio escanear.
+        // `KioskState` ya lo decía en su propio código ("Identify no caduca sola: alguien
+        // tecleando despacio no merece que se le borre el número"); este tick lo violaba.
+        //
+        // Sólo el reposo y la lista son del reloj. Todo lo demás es de quien está ahí, y
+        // se cierra con su propio temporizador o con el botón de salir.
+        //
+        // Se vio en la D3, no en el compilador ni en las pruebas: aguantaba exactamente
+        // 25 segundos y se iba.
+        if (!tickerOwnsScreen(kiosk.content.value)) return
+
         // La tolerancia la manda el admin; si el servidor no la dice, se cae al
         // mismo default que él usa. Nunca se adivina un número distinto.
         reservations.reservationSettings().getOrNull()

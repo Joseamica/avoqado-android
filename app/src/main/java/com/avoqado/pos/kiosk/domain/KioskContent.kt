@@ -202,3 +202,17 @@ data class KioskPerson(
      */
     val spotLabel: String? = null,
 )
+
+/**
+ * ¿Esta pantalla es del RELOJ o de la persona que está enfrente?
+ *
+ * El kiosco tiene dos dueños. El reloj manda en el reposo y en la lista de la clase: las
+ * abre y las cierra solo, sin que nadie toque nada. Todo lo demás —teclear el teléfono,
+ * elegir un paquete, mirar el QR de pago— es de quien está ahí parado, y sólo termina con
+ * su propio temporizador o porque se sale.
+ *
+ * 🔴 Existe porque el tick de refresco borraba el teclado a los 25 segundos con la persona
+ * todavía tecleando. Se vio en la D3, no en el compilador ni en las pruebas.
+ */
+fun tickerOwnsScreen(content: KioskContent): Boolean =
+    content is KioskContent.Welcome || content is KioskContent.Roster

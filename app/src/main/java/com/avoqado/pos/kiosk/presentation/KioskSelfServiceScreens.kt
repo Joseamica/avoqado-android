@@ -57,9 +57,11 @@ internal fun Identify(
     onSearch: () -> Unit,
     onBack: () -> Unit,
 ) {
-    Screen {
+    // Con scroll: en la cara del cliente de la D3 (800 px) el teclado no cabe entero, y sin
+    // esto su última fila —el 0, el borrar y "Buscar"— quedaba cortada fuera de la pantalla.
+    Screen(scrollable = true) {
         Big("Tu teléfono")
-        Spacer(Modifier.height(AvoqadoTheme.spacing.lg))
+        Spacer(Modifier.height(AvoqadoTheme.spacing.md))
 
         Text(
             text = formatNational(content.national),
@@ -79,9 +81,11 @@ internal fun Identify(
             else -> Sub("Con el número que usaste al reservar.")
         }
 
+        Spacer(Modifier.height(AvoqadoTheme.spacing.md))
+        NumericPad(onKey = onDigit, onDelete = onDelete, compact = true)
+        // Espaciador FIJO, no `weight`: dentro de un Column con scroll la altura deja de
+        // estar acotada y `weight` no vale.
         Spacer(Modifier.height(AvoqadoTheme.spacing.lg))
-        NumericPad(onKey = onDigit, onDelete = onDelete)
-        Spacer(Modifier.weight(1f))
 
         if (content.searching) {
             CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
@@ -180,7 +184,10 @@ internal fun CheckedIn(content: KioskContent.CheckedIn) {
         Spacer(Modifier.height(AvoqadoTheme.spacing.xl))
         Big("Listo, ${content.customerName}")
         Spacer(Modifier.height(AvoqadoTheme.spacing.md))
-        Sub("${content.session.title} · ${content.session.timeLabel}")
+        // El separador sólo si hay las dos partes: por el respaldo del teléfono la hora
+        // llega vacía (el servidor devuelve la clase, no su etiqueta formateada) y quedaba
+        // un "·" colgando al final. Se vio en la D3, de frente al cliente.
+        Sub(listOf(content.session.title, content.session.timeLabel).filter { it.isNotBlank() }.joinToString(" · "))
         Spacer(Modifier.weight(1f))
     }
 }

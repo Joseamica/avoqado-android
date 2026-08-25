@@ -1,10 +1,13 @@
 package com.avoqado.pos.kiosk.presentation
 
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -194,6 +197,9 @@ private fun Roster(
         LazyColumn(
             modifier = Modifier.weight(1f).fillMaxWidth(),
             verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
+            // 🔴 Aire abajo: sin esto el ÚLTIMO nombre queda medio tapado por el pie y
+            // parece que la lista se acaba ahí. Se vio en la D3 con cuatro personas.
+            contentPadding = PaddingValues(bottom = AvoqadoTheme.spacing.md),
         ) {
             items(content.people, key = { it.reservationId }) { p ->
                 PersonRow(
@@ -323,11 +329,27 @@ private fun Trouble(content: KioskContent.Trouble, onRestart: () -> Unit) {
 // MARK: - Piezas compartidas
 
 @Composable
-internal fun Screen(body: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit) {
+internal fun Screen(
+    scrollable: Boolean = false,
+    body: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit,
+) {
+    // 🔴 `scrollable` existe por la cara del cliente de la D3: 800 px de alto. El teclado
+    // del teléfono NO cabía y su última fila —el 0, el borrar y el botón "Buscar"— quedaba
+    // CORTADA fuera de la pantalla, sin aviso. Nadie podía teclear un número con cero ni
+    // buscar: el respaldo entero era inservible en el aparato real.
+    //
+    // Se vio mirando la pantalla, no compilando: una Column que se pasa de alto no falla,
+    // sólo recorta en silencio. En una pantalla de autoservicio eso es una función muerta.
+    //
+    // 🔴 Ojo: dentro de un Column con scroll, `Modifier.weight()` no vale (la altura deja
+    // de estar acotada). Las pantallas que scrollean usan espaciadores fijos.
+    val base = Modifier
+        .fillMaxSize()
+        .then(if (scrollable) Modifier.verticalScroll(rememberScrollState()) else Modifier)
+        .padding(AvoqadoTheme.spacing.xl)
+
     Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(AvoqadoTheme.spacing.xl),
+        modifier = base,
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Top,
         content = body,

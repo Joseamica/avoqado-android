@@ -1249,18 +1249,22 @@ private fun CountryPicker(onPick: (Country) -> Unit, onClose: () -> Unit) {
 }
 
 @Composable
-private fun NumericPad(onKey: (String) -> Unit, onDelete: () -> Unit) {
+internal fun NumericPad(onKey: (String) -> Unit, onDelete: () -> Unit, compact: Boolean = false) {
+    // `compact` existe por la cara del cliente de la Sunmi D3: 800 px de alto. Con teclas
+    // de 96 dp el teclado NO cabía y su última fila —el 0, el borrar y el botón de abajo—
+    // quedaba fuera de la pantalla. Con 72 dp entra completo, que es lo que hace usable el
+    // respaldo de "no aparezco en la lista" en el aparato real.
     val rows = listOf(listOf("1", "2", "3"), listOf("4", "5", "6"), listOf("7", "8", "9"))
     Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
         rows.forEach { row ->
             Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
-                row.forEach { k -> Key(k, Modifier.weight(1f)) { onKey(k) } }
+                row.forEach { k -> Key(k, Modifier.weight(1f), small = compact) { onKey(k) } }
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
             Spacer(Modifier.weight(1f))
-            Key("0", Modifier.weight(1f)) { onKey("0") }
-            Key("⌫", Modifier.weight(1f), onClick = onDelete)
+            Key("0", Modifier.weight(1f), small = compact) { onKey("0") }
+            Key("⌫", Modifier.weight(1f), small = compact, onClick = onDelete)
         }
     }
 }
@@ -1285,7 +1289,7 @@ private fun EmailPad(onKey: (String) -> Unit, onDelete: () -> Unit) {
 }
 
 @Composable
-private fun Key(label: String, modifier: Modifier, small: Boolean = false, onClick: () -> Unit) {
+internal fun Key(label: String, modifier: Modifier, small: Boolean = false, onClick: () -> Unit) {
     Box(
         modifier = modifier
             .height(if (small) 72.dp else 96.dp)
