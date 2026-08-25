@@ -79,10 +79,14 @@ class KioskDriver @Inject constructor(
         kiosk.onDelete = { touched(); editDigits { it.dropLast(1) } }
         kiosk.onSearch = { touched(); identify() }
 
-        // La compra entra en la rebanada siguiente. Un callback nulo hace que la pantalla
-        // NI PINTE su botón: un botón muerto de cara al cliente es peor que no tenerlo.
-        kiosk.onSeePacks = null
-        kiosk.onBuy = null
+        // Compra: el cliente elige un paquete de precio de CATÁLOGO y lo paga en SU
+        // teléfono escaneando un QR. Sin PIN de empleado, por decisión del founder — un
+        // kiosco que pide PIN en cada compra no es un kiosco. Lo que hace segura la
+        // operación no es el PIN: es que el kiosco nunca elige cuánto cobrar ni a quién,
+        // y que la tarjeta nunca toca este aparato.
+        kiosk.onSeePacks = { touched(); showPacks() }
+        kiosk.onPackToggled = { id -> touched(); togglePack(id) }
+        kiosk.onBuy = { touched(); buy() }
 
         scope.launch {
             kiosk.enabled.collect { on -> if (on) start() else stop() }
@@ -279,6 +283,60 @@ class KioskDriver @Inject constructor(
                             failed = err !is com.avoqado.pos.kiosk.data.KioskCheckInApi.NotFound,
                         ),
                     )
+                },
+            )
+        }
+    }
+
+    // MARK: - Comprar un paquete
+
+    private fun showPacks() {
+        work?.cancel()
+        work = scope.launch {
+            kioskCheckIn.packs().fold(
+                onSuccess = { list ->
+                    if (list.isEmpty()) {
+                        // Sin paquetes configurados no se enseña una pantalla vacía: se
+                        // dice qué pasa. Una pantalla muda en la entrada es un bug visible.
+                        kiosk.show(KioskContent.Trouble("Este negocio todavía no tiene paquetes a la venta."))
+                    } else {
+                        kiosk.show(
+                            KioskContent.Offer(
+                                customerName = "",
+                                packs = list.map { KioskPack(it.id, it.name, it.priceCents, it.detail) },
+                            ),
+                        )
+                    }
+                },
+                onFailure = { kiosk.show(KioskContent.Trouble("No pudimos cargar los paquetes. Pide ayuda en el mostrador.")) },
+            )
+        }
+    }
+
+    /** Marcar NO cobra: el mismo criterio que el upsell del mostrador. */
+    private fun togglePack(id: String) {
+        val current = kiosk.content.value as? KioskContent.Offer ?: return
+        kiosk.show(current.copy(selectedId = if (current.selectedId == id) null else id))
+    }
+
+    private fun buy() {
+        val current = kiosk.content.value as? KioskContent.Offer ?: return
+        val pack = current.selected ?: return
+
+        work?.cancel()
+        // Se entra a la pantalla de pago SIN enlace todavía: pinta su espera en vez de
+        // dejar el botón hundido sin que pase nada visible.
+        kiosk.show(KioskContent.Paying(customerName = current.customerName, pack = pack, payUrl = null))
+
+        work = scope.launch {
+            kioskCheckIn.packCheckoutUrl(pack.id).fold(
+                onSuccess = { url ->
+                    val base = kiosk.content.value as? KioskContent.Paying ?: return@fold
+                    kiosk.show(base.copy(payUrl = url))
+                },
+                onFailure = {
+                    val base = kiosk.content.value as? KioskContent.Paying ?: return@fold
+                    kiosk.show(base.copy(failed = true))
                 },
             )
         }
