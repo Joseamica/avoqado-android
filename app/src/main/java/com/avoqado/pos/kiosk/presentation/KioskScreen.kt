@@ -96,6 +96,7 @@ fun KioskScreen(
 
             is KioskContent.Roster -> Roster(
                 content = c,
+                venueName = venueName,
                 onTap = { state.onCheckIn?.invoke(it) },
                 onIdentify = state.onStart?.let { cb -> { cb() } },
                 onSeePacks = state.onSeePacks?.let { cb -> { cb() } },
@@ -175,6 +176,7 @@ private fun Welcome(venueName: String?) {
 @Composable
 private fun Roster(
     content: KioskContent.Roster,
+    venueName: String?,
     onTap: (KioskPerson) -> Unit,
     onIdentify: (() -> Unit)? = null,
     onSeePacks: (() -> Unit)? = null,
@@ -182,45 +184,50 @@ private fun Roster(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.md),
+            .padding(horizontal = AvoqadoTheme.spacing.xl, vertical = AvoqadoTheme.spacing.lg),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         // Encabezado y pie FIJOS; sólo la lista se desliza.
-        Spacer(Modifier.height(AvoqadoTheme.spacing.sm))
+        // El negocio primero, en versalitas: el mismo tono que la pantalla de reposo, para
+        // que quien pasa de una a otra sienta que es el mismo lugar y no otra app.
+        Spacer(Modifier.height(AvoqadoTheme.spacing.md))
         Text(
-            text = content.timeLabel,
-            fontSize = KSmall,
-            fontWeight = FontWeight.Medium,
-            letterSpacing = 4.sp,
+            text = listOfNotNull(venueName?.uppercase(), content.timeLabel).joinToString("  ·  "),
+            fontSize = 15.sp,
+            fontWeight = FontWeight.SemiBold,
+            letterSpacing = 3.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
         )
-        Spacer(Modifier.height(AvoqadoTheme.spacing.sm))
+        Spacer(Modifier.height(AvoqadoTheme.spacing.md))
         Text(
             text = content.classTitle,
-            fontSize = 38.sp,
+            fontSize = 40.sp,
             fontWeight = FontWeight.Bold,
-            letterSpacing = (-0.5).sp,
+            letterSpacing = (-0.8).sp,
+            lineHeight = 44.sp,
             color = MaterialTheme.colorScheme.onSurface,
             textAlign = TextAlign.Center,
         )
-        content.staffLabel?.let {
-            Spacer(Modifier.height(AvoqadoTheme.spacing.xxs))
+
+        // Coach y cómo va llenándose el salón, en una sola línea tranquila. El conteo le
+        // sirve a quien llega ("ya casi empieza") y a quien da la clase de un vistazo.
+        val llegados = content.people.count { it.checkedIn }
+        val subtitulo = listOfNotNull(
+            content.staffLabel,
+            if (content.people.isNotEmpty()) "$llegados de ${content.people.size} ya llegaron" else null,
+        ).joinToString("  ·  ")
+        if (subtitulo.isNotBlank()) {
+            Spacer(Modifier.height(AvoqadoTheme.spacing.xs))
             Text(
-                text = it,
+                text = subtitulo,
                 fontSize = KBody,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
             )
         }
 
-        Spacer(Modifier.height(AvoqadoTheme.spacing.lg))
-        Text(
-            text = "Toca tu nombre",
-            fontSize = KSmall,
-            fontWeight = FontWeight.Medium,
-            letterSpacing = 1.sp,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(Modifier.height(AvoqadoTheme.spacing.md))
+        Spacer(Modifier.height(AvoqadoTheme.spacing.xl))
 
         // 🔴 DOS COLUMNAS en apaisado, una sola en vertical.
         //
@@ -236,8 +243,10 @@ private fun Roster(
             val columnas = if (maxWidth > maxHeight) 2 else 1
             LazyVerticalGrid(
                 columns = GridCells.Fixed(columnas),
-                verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
-                horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
+                // Centrada: antes la lista se pegaba arriba y dejaba un hueco muerto
+                // abajo que hacía ver la pantalla a medio terminar.
+                verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md, Alignment.CenterVertically),
+                horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
                 // Aire abajo: sin esto el ÚLTIMO nombre queda medio tapado por el pie y
                 // parece que la lista se acaba ahí. Se vio en la D3.
                 contentPadding = PaddingValues(bottom = AvoqadoTheme.spacing.sm),
@@ -421,8 +430,10 @@ private fun PersonRow(
             // resalta: lo que queda por hacer es lo que tiene que saltar a la
             // vista. Nada de `primaryContainer`, que este tema no define y
             // saldría con el tinte morado de Material3.
+            // Quien ya confirmó se APAGA y quien falta resalta: lo que queda por hacer
+            // es lo que tiene que saltar a la vista en una pantalla que se mira de paso.
             .background(
-                if (person.checkedIn) MaterialTheme.colorScheme.surfaceContainerLow
+                if (person.checkedIn) MaterialTheme.colorScheme.surfaceContainerLowest
                 else MaterialTheme.colorScheme.surfaceContainerHigh,
             )
             // Ya confirmada: deja de ser tocable. Volver a tocarla no haría nada
@@ -430,13 +441,16 @@ private fun PersonRow(
             .clickable(enabled = !person.checkedIn && !busy, onClick = onTap)
             // md y no lg: el alto de la fila es lo que decide cuántos nombres caben, y
             // 12 dp arriba y abajo siguen dejando un blanco de sobra para el dedo.
-            .padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.md),
+            .padding(horizontal = AvoqadoTheme.spacing.xl, vertical = AvoqadoTheme.spacing.lg),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 text = person.displayName,
-                fontSize = KAction,
+                fontSize = 28.sp,
                 fontWeight = FontWeight.Bold,
+                letterSpacing = (-0.3).sp,
+                color = if (person.checkedIn) MaterialTheme.colorScheme.onSurfaceVariant
+                        else MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.weight(1f),
             )
             when {

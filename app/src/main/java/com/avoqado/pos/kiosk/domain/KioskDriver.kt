@@ -66,7 +66,21 @@ class KioskDriver @Inject constructor(
     /** Se enchufa una vez al arrancar la app. Idempotente. */
     fun attach() {
         kiosk.onCheckIn = { touched(); checkIn(it) }
-        kiosk.onRestart = { touched(); refreshNow() }
+        // 🔴 Salir es INMEDIATO y no depende de la red.
+        //
+        // Antes esto sólo pedía un refresco, y el refresco puede tardar o fallar
+        // (`reservasEnVentana` devuelve null sin red y se sale sin tocar la pantalla). El
+        // botón "Cancelar" del teclado quedaba muerto y la persona atrapada tecleando —
+        // el founder se topó con eso en la D3.
+        //
+        // Un botón de salida que depende de una llamada de red no es un botón de salida.
+        // Primero se suelta la pantalla (y con ella los datos de quien estaba ahí), y ya
+        // después se pide la lista al día.
+        kiosk.onRestart = {
+            touched()
+            kiosk.restart()
+            refreshNow()
+        }
 
         // Respaldo "no aparezco en la lista": teclear el teléfono. Se identifica por
         // CONTACTO, como el resto del mercado (WellnessLiving pide "Client ID, Email, or
@@ -113,18 +127,35 @@ class KioskDriver @Inject constructor(
         kiosk.keepAlive()
     }
 
+    /**
+     * Volver a la lista AHORA porque alguien lo pidió — el botón "Cancelar" del teclado,
+     * o "Empezar de nuevo" tras un problema.
+     *
+     * 🔴 Va con `force`. Los dos guardias de [refresh] existen para que el RELOJ no le
+     * quite la pantalla a nadie, y ambos bloqueaban esto: el de inactividad porque
+     * `touched()` corre justo antes, y el de propiedad porque la pantalla del teclado no
+     * es del reloj. Resultado: el botón Cancelar no hacía nada y la persona quedaba
+     * atrapada en el teclado. Lo pidió el founder tocándolo en la D3.
+     *
+     * Un guardia que también frena a quien pide salir no está protegiendo a nadie.
+     */
     private fun refreshNow() {
         work?.cancel()
-        scope.launch { refresh() }
+        scope.launch { refresh(force = true) }
     }
 
     // MARK: - El reloj decide
 
-    private suspend fun refresh() {
+    /**
+     * @param force lo pidió una PERSONA (botón Cancelar / Empezar de nuevo), no el reloj.
+     * Los dos guardias de abajo protegen contra el reloj; a quien pide salir hay que
+     * dejarlo salir.
+     */
+    private suspend fun refresh(force: Boolean = false) {
         // 🔴 Nunca le quites la pantalla a alguien que está tocando. Es lo que
         // pidió el founder tal cual, y es lo que separa un kiosco usable de uno
         // que se cierra justo cuando ibas a picar tu nombre.
-        if (System.currentTimeMillis() - lastTouchAt < INTERACTION_HOLD_MS) return
+        if (!force && System.currentTimeMillis() - lastTouchAt < INTERACTION_HOLD_MS) return
 
         // 🔴 Y el reloj manda sobre la LISTA, no sobre alguien a media operación.
         //
@@ -139,7 +170,7 @@ class KioskDriver @Inject constructor(
         //
         // Se vio en la D3, no en el compilador ni en las pruebas: aguantaba exactamente
         // 25 segundos y se iba.
-        if (!tickerOwnsScreen(kiosk.content.value)) return
+        if (!force && !tickerOwnsScreen(kiosk.content.value)) return
 
         // La tolerancia la manda el admin; si el servidor no la dice, se cae al
         // mismo default que él usa. Nunca se adivina un número distinto.
