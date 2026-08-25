@@ -181,31 +181,50 @@ private fun Roster(
     onIdentify: (() -> Unit)? = null,
     onSeePacks: (() -> Unit)? = null,
 ) {
+    // 🔴 LOS TAMAÑOS SE ADAPTAN A LA PANTALLA QUE TOCÓ.
+    //
+    // El kiosco corre en DOS pantallas muy distintas de la misma Sunmi D3:
+    //   · la cara del cliente en modo normal → 962 × 601 dp
+    //   · la pantalla grande en modo invertido → 1280 × 720 dp
+    //
+    // Con tamaños fijos calibrados en la grande, en la chica la clase de ocho se CORTABA
+    // a la mitad: entraban seis y el tercer renglón quedaba partido. El founder lo vio
+    // así. Un número mágico sólo mueve el problema de pantalla; lo que hay que mirar es
+    // el alto disponible.
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val apretado = maxHeight < 640.dp
+
+        val tamTitulo = if (apretado) 30.sp else 40.sp
+        val tamNombre = if (apretado) 22.sp else 28.sp
+        val tamSub = if (apretado) 18.sp else KBody
+        val margen = if (apretado) AvoqadoTheme.spacing.lg else AvoqadoTheme.spacing.xl
+        val aire = if (apretado) AvoqadoTheme.spacing.sm else AvoqadoTheme.spacing.xl
+        val altoFila = if (apretado) AvoqadoTheme.spacing.md else AvoqadoTheme.spacing.lg
+
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(horizontal = AvoqadoTheme.spacing.xl, vertical = AvoqadoTheme.spacing.lg),
+            .padding(horizontal = margen, vertical = AvoqadoTheme.spacing.sm),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         // Encabezado y pie FIJOS; sólo la lista se desliza.
         // El negocio primero, en versalitas: el mismo tono que la pantalla de reposo, para
         // que quien pasa de una a otra sienta que es el mismo lugar y no otra app.
-        Spacer(Modifier.height(AvoqadoTheme.spacing.md))
         Text(
             text = listOfNotNull(venueName?.uppercase(), content.timeLabel).joinToString("  ·  "),
-            fontSize = 15.sp,
+            fontSize = if (apretado) 13.sp else 15.sp,
             fontWeight = FontWeight.SemiBold,
             letterSpacing = 3.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
         )
-        Spacer(Modifier.height(AvoqadoTheme.spacing.md))
+        Spacer(Modifier.height(AvoqadoTheme.spacing.xs))
         Text(
             text = content.classTitle,
-            fontSize = 40.sp,
+            fontSize = tamTitulo,
             fontWeight = FontWeight.Bold,
             letterSpacing = (-0.8).sp,
-            lineHeight = 44.sp,
+            lineHeight = tamTitulo * 1.1f,
             color = MaterialTheme.colorScheme.onSurface,
             textAlign = TextAlign.Center,
         )
@@ -221,13 +240,13 @@ private fun Roster(
             Spacer(Modifier.height(AvoqadoTheme.spacing.xs))
             Text(
                 text = subtitulo,
-                fontSize = KBody,
+                fontSize = tamSub,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
             )
         }
 
-        Spacer(Modifier.height(AvoqadoTheme.spacing.xl))
+        Spacer(Modifier.height(aire))
 
         // 🔴 DOS COLUMNAS en apaisado, una sola en vertical.
         //
@@ -245,8 +264,8 @@ private fun Roster(
                 columns = GridCells.Fixed(columnas),
                 // Centrada: antes la lista se pegaba arriba y dejaba un hueco muerto
                 // abajo que hacía ver la pantalla a medio terminar.
-                verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md, Alignment.CenterVertically),
-                horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
+                verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm, Alignment.CenterVertically),
+                horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
                 // Aire abajo: sin esto el ÚLTIMO nombre queda medio tapado por el pie y
                 // parece que la lista se acaba ahí. Se vio en la D3.
                 contentPadding = PaddingValues(bottom = AvoqadoTheme.spacing.sm),
@@ -256,6 +275,8 @@ private fun Roster(
                         person = p,
                         busy = content.busyId == p.reservationId,
                         expanded = content.justConfirmedId == p.reservationId,
+                        nameSize = tamNombre,
+                        rowPadding = altoFila,
                         onTap = { onTap(p) },
                     )
                 }
@@ -294,6 +315,7 @@ private fun Roster(
             }
             if (onSeePacks != null) FooterAction("Comprar paquete", onClick = onSeePacks)
         }
+    }
     }
 }
 
@@ -347,7 +369,7 @@ private fun Confirmation(content: KioskContent.Roster) {
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(24.dp))
                 .background(MaterialTheme.colorScheme.surfaceContainerLow)
-                .padding(horizontal = AvoqadoTheme.spacing.xl, vertical = AvoqadoTheme.spacing.lg),
+                .padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.md),
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Box(
@@ -420,6 +442,8 @@ private fun PersonRow(
     person: KioskPerson,
     busy: Boolean,
     expanded: Boolean,
+    nameSize: androidx.compose.ui.unit.TextUnit,
+    rowPadding: androidx.compose.ui.unit.Dp,
     onTap: () -> Unit,
 ) {
     Column(
@@ -441,12 +465,12 @@ private fun PersonRow(
             .clickable(enabled = !person.checkedIn && !busy, onClick = onTap)
             // md y no lg: el alto de la fila es lo que decide cuántos nombres caben, y
             // 12 dp arriba y abajo siguen dejando un blanco de sobra para el dedo.
-            .padding(horizontal = AvoqadoTheme.spacing.xl, vertical = AvoqadoTheme.spacing.lg),
+            .padding(horizontal = AvoqadoTheme.spacing.lg, vertical = rowPadding),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 text = person.displayName,
-                fontSize = 28.sp,
+                fontSize = nameSize,
                 fontWeight = FontWeight.Bold,
                 letterSpacing = (-0.3).sp,
                 color = if (person.checkedIn) MaterialTheme.colorScheme.onSurfaceVariant
