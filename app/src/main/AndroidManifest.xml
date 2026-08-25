@@ -11,6 +11,7 @@
         <package android:name="woyou.aidlservice.jiuiv5" />
     </queries>
 
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
@@ -101,5 +102,23 @@
             android:excludeFromRecents="true"
             android:resizeableActivity="true"
             android:theme="@style/Theme.Avoqado" />
+    
+        <!--
+          El kiosco vuelve solo tras un corte de luz. Va detrás del interruptor del kiosco
+          (SharedPreferences "avoqado_kiosk"): en un POS de mostrador arrancar solo se
+          metería encima de lo que el negocio esté haciendo; en un kiosco de entrada no hay
+          nadie a quien pedírselo.
+        -->
+        <receiver
+            android:name=".kiosk.system.KioskBootReceiver"
+            android:enabled="true"
+            android:exported="true"
+            android:directBootAware="true">
+            <intent-filter android:priority="1000">
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.LOCKED_BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+
     </application>
 </manifest>
