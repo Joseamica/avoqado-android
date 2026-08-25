@@ -68,6 +68,28 @@ class MainActivity : FragmentActivity() {
         // en su sitio — en modo normal no mueve nada. Ver
         // CustomerDisplayManager.resync.
         customerDisplay.resync()
+
+        // 🔴 Repintado forzado cuando la caja NO está en la pantalla principal.
+        //
+        // Con las pantallas invertidas, la caja se muda a la pantalla del cliente y ahí
+        // aterriza con la ventana creada, visible y del tamaño correcto —pero SIN pintar.
+        // Se ve un rectángulo NEGRO, y sigue negro hasta que alguien la toca: el primer
+        // evento de entrada dispara la invalidación que el cambio de pantalla no disparó.
+        // Medido en la Sunmi D3, mirando `dumpsys window`: `mHasSurface=true`,
+        // `isReadyForDisplay()=true`, `mViewVisibility=0` y aun así negro. El negro es el
+        // fondo del compositor debajo de una ventana TRANSLUCENT que no dibujó.
+        //
+        // Un mostrador que arranca en negro y sólo revive si alguien adivina que hay que
+        // tocarlo no es aceptable, así que se pide el repintado a mano.
+        //
+        // Sólo fuera de la pantalla principal: en modo normal esto no pasa y no hay por
+        // qué pagar un relayout de más en cada vuelta al frente.
+        if (window?.decorView?.display?.displayId != android.view.Display.DEFAULT_DISPLAY) {
+            window?.decorView?.post {
+                window?.decorView?.requestLayout()
+                window?.decorView?.invalidate()
+            }
+        }
     }
 
     override fun onStop() {
