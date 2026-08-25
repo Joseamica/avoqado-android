@@ -160,6 +160,8 @@ object PermissionLabels {
         "reservations:create" to "agendar una reservación",
         "reservations:update" to "modificar una reservación",
         "reservations:cancel" to "cancelar una reservación",
+        // Fase 8 del kiosco — estrecho a propósito: SU clase, no la agenda del negocio.
+        "class-sessions:read-assigned" to "ver la clase que estás dando",
 
         // MARK: - Paquetes de crédito (clases, prepagos)
         "creditPacks:read" to "ver los paquetes de crédito",
