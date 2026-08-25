@@ -223,7 +223,6 @@ private fun Roster(
                         person = p,
                         busy = content.busyId == p.reservationId,
                         expanded = content.justConfirmedId == p.reservationId,
-                        staffLabel = content.staffLabel,
                         onTap = { onTap(p) },
                     )
                 }
@@ -273,7 +272,6 @@ private fun PersonRow(
     person: KioskPerson,
     busy: Boolean,
     expanded: Boolean,
-    staffLabel: String?,
     onTap: () -> Unit,
 ) {
     Column(
@@ -305,26 +303,24 @@ private fun PersonRow(
             when {
                 busy -> CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
                 person.checkedIn -> Text(
-                    text = "✓ llegaste",
+                    // 🔴 EN LA MISMA LÍNEA, y la altura del renglón NUNCA cambia.
+                    //
+                    // Antes esto se abría en una segunda línea unos segundos. En la D3 se
+                    // vio lo que eso provoca: al confirmar Ñuño, su renglón creció y
+                    // EMPUJÓ ~50 px hacia abajo a todos los de su fila. La persona de al
+                    // lado —que en un kiosco está usando la pantalla AL MISMO TIEMPO— ya
+                    // venía bajando el dedo hacia su nombre y cayó en el hueco.
+                    //
+                    // Es el mismo peligro que el reordenamiento, por otra puerta: la lista
+                    // no puede moverse bajo el dedo de nadie. Que quepa en un renglón es
+                    // lo que lo garantiza, no un cuidado al escribir la animación.
+                    //
+                    // El instructor NO se repite aquí: ya está en el encabezado, arriba.
+                    text = person.spotLabel?.takeIf { expanded }?.let { "✓ $it" } ?: "✓ llegaste",
                     fontSize = KBody,
                     fontWeight = FontWeight.SemiBold,
                     color = Success,
-                )
-            }
-        }
-
-        // Se abre unos segundos justo después de confirmar, con lo que la
-        // persona necesita para caminar a su lugar. Sólo se pinta lo que EXISTE:
-        // sin acomodo configurado no hay lugar, y no se inventa uno.
-        if (expanded) {
-            val detalle = listOfNotNull(person.spotLabel, staffLabel)
-            if (detalle.isNotEmpty()) {
-                Spacer(Modifier.height(AvoqadoTheme.spacing.sm))
-                Text(
-                    text = detalle.joinToString(" · "),
-                    fontSize = KBody,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
                 )
             }
         }
