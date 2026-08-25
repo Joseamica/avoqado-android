@@ -80,6 +80,9 @@ data class ProductLite(
     val name: String,
     val durationMinutes: Int? = null,
     val price: String? = null,
+
+    /** Acomodo del salón. Traduce un id de `spotIds` a algo legible. */
+    val layoutConfig: LayoutConfig? = null,
 )
 
 /**
@@ -99,6 +102,13 @@ data class ReservationServiceLite(
 @Serializable
 data class ClassSessionLite(
     val id: String,
+    /**
+     * 🔴 En una clase el instructor vive AQUÍ, no en la reserva: medido en la
+     * base, 44 de 44 sesiones lo traen y 0 de 9 reservas de clase. Quien quiera
+     * decir "con Sofía" tiene que mirar este campo primero.
+     */
+    val assignedStaff: StaffLite? = null,
+    val product: ProductLite? = null,
     val productId: String? = null,
     val productName: String? = null,
     val capacity: Int,
@@ -114,3 +124,57 @@ data class StaffLite(
 ) {
     val displayName: String get() = listOfNotNull(firstName, lastName).joinToString(" ").ifBlank { id }
 }
+
+/**
+ * El acomodo del salón de una clase: tapetes, reformers, bicis.
+ *
+ * Espejo exacto de lo que escribe `ClassLayoutEditor.tsx` del dashboard y de lo
+ * que lee el `SeatPicker` del widget de reservas. Los tres tienen que coincidir
+ * por nombre; si allá cambia, aquí también, en el mismo trabajo.
+ */
+@Serializable
+data class LayoutConfig(
+    /** circle · bike · mat · reformer · bed · chair · generic */
+    val iconType: String? = null,
+    val rows: Int = 0,
+    val cols: Int = 0,
+    val showInstructor: Boolean = false,
+    val spots: List<LayoutSpot> = emptyList(),
+) {
+    /** "3" -> "3". Devuelve null si ese lugar ya no existe en el acomodo. */
+    fun labelFor(spotId: String): String? =
+        spots.firstOrNull { it.id == spotId }?.label
+
+    /**
+     * "3" -> "Tapete 3" · "Bici 5" · "Cama 2", según lo que el negocio configuró.
+     *
+     * 🔴 Antes todo salía como "Lugar 3", incluso en un estudio de yoga con tapetes o en
+     * uno de ciclismo con bicis. El acomodo YA sabe de qué es —`iconType` lo guarda desde
+     * que se arma en el dashboard— y no usarlo hacía que el kiosco hablara en un idioma
+     * que no es el del negocio. Quien llega a su clase de spinning busca su BICI, no su
+     * "lugar".
+     *
+     * Un tipo que no conocemos cae en "Lugar", que es cierto para cualquier acomodo.
+     */
+    fun spotLabelFor(spotId: String): String? {
+        val numero = labelFor(spotId) ?: return null
+        val sustantivo = when (iconType) {
+            "mat" -> "Tapete"
+            "bike" -> "Bici"
+            "bed" -> "Cama"
+            "reformer" -> "Reformer"
+            "chair" -> "Silla"
+            else -> "Lugar"
+        }
+        return "$sustantivo $numero"
+    }
+}
+
+@Serializable
+data class LayoutSpot(
+    val id: String,
+    val row: Int = 0,
+    val col: Int = 0,
+    val label: String = "",
+    val enabled: Boolean = true,
+)

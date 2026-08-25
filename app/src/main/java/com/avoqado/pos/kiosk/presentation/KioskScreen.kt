@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.ui.graphics.Color
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -26,6 +27,11 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import kotlinx.coroutines.delay
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -180,22 +186,40 @@ private fun Roster(
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         // Encabezado y pie FIJOS; sólo la lista se desliza.
+        Spacer(Modifier.height(AvoqadoTheme.spacing.sm))
         Text(
             text = content.timeLabel,
             fontSize = KSmall,
             fontWeight = FontWeight.Medium,
-            letterSpacing = 3.sp,
+            letterSpacing = 4.sp,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        Spacer(Modifier.height(AvoqadoTheme.spacing.xs))
-        Big(content.classTitle)
+        Spacer(Modifier.height(AvoqadoTheme.spacing.sm))
+        Text(
+            text = content.classTitle,
+            fontSize = 38.sp,
+            fontWeight = FontWeight.Bold,
+            letterSpacing = (-0.5).sp,
+            color = MaterialTheme.colorScheme.onSurface,
+            textAlign = TextAlign.Center,
+        )
         content.staffLabel?.let {
             Spacer(Modifier.height(AvoqadoTheme.spacing.xxs))
-            Sub(it)
+            Text(
+                text = it,
+                fontSize = KBody,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
 
-        Spacer(Modifier.height(AvoqadoTheme.spacing.sm))
-        Sub("Toca tu nombre para confirmar que llegaste.")
+        Spacer(Modifier.height(AvoqadoTheme.spacing.lg))
+        Text(
+            text = "Toca tu nombre",
+            fontSize = KSmall,
+            fontWeight = FontWeight.Medium,
+            letterSpacing = 1.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
         Spacer(Modifier.height(AvoqadoTheme.spacing.md))
 
         // 🔴 DOS COLUMNAS en apaisado, una sola en vertical.
@@ -234,6 +258,18 @@ private fun Roster(
             Note("No se pudo confirmar. Avisa en el mostrador.")
         }
 
+        // 🔴 ZONA DE CONFIRMACIÓN, de alto FIJO y DEBAJO de la lista.
+        //
+        // El founder pidió que al hacer check-in salga la confirmación con su lugar y su
+        // coach. No puede ser a pantalla completa: taparía la lista y dejaría esperando a
+        // la persona de atrás — que es exactamente lo que prohíbe la nota de arriba, y el
+        // kiosco existe para que dos personas lo usen a la vez.
+        //
+        // Alto FIJO —no `animateContentSize`— porque si esta zona creciera empujaría la
+        // lista y el toque de quien viene atrás caería en el hueco. Ese defecto ya se vio
+        // en la D3 y no se vuelve a introducir por una animación bonita.
+        Confirmation(content = content)
+
         Spacer(Modifier.height(AvoqadoTheme.spacing.sm))
         // Las dos salidas cuando la lista no alcanza. Se pintan SÓLO si su callback
         // existe: una opción que no hace nada es peor que no ofrecerla.
@@ -251,6 +287,109 @@ private fun Roster(
         }
     }
 }
+
+/**
+ * El momento del check-in: quién eres, dónde te toca y con quién.
+ *
+ * 🔴 Vive DEBAJO de la lista y con alto FIJO, no encima. Una confirmación a pantalla
+ * completa se ve mejor en una captura y es peor en el mostrador: taparía los demás
+ * nombres y dejaría esperando a la persona de atrás justo cuando el kiosco existe para
+ * que dos usen la pantalla a la vez.
+ *
+ * Vacía reserva su espacio en silencio. Así, cuando aparece, **nada de arriba se mueve** —
+ * el toque de quien viene atrás cae donde estaba mirando.
+ */
+@Composable
+private fun Confirmation(content: KioskContent.Roster) {
+    // 🔴 La tarjeta ENGANCHA a la persona y la sostiene ella misma.
+    //
+    // Antes leía `justConfirmedId` directo del contenido, y esa bandera la puede borrar
+    // cualquier reconstrucción de la lista: el tick de refresco, una recarga, un cambio de
+    // clase. En la D3 se midió instrumentando la pantalla — la tarjeta aparecía y
+    // desaparecía en la misma respiración, antes de que nadie alcanzara a leerla.
+    //
+    // Con el enganche, el ciclo de refresco puede hacer lo que quiera: quien acaba de
+    // confirmar tiene sus segundos completos para leer su lugar y con quién le toca.
+    var enganchada by remember { mutableStateOf<KioskPerson?>(null) }
+    LaunchedEffect(content.justConfirmedId) {
+        val quien = content.people.firstOrNull { it.reservationId == content.justConfirmedId }
+        if (quien != null) {
+            enganchada = quien
+            delay(CONFIRMATION_MS)
+            enganchada = null
+        }
+    }
+
+    val person = enganchada
+    val staffLabel = content.staffLabel
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(CONFIRMATION_HEIGHT),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (person == null) return@Box
+
+        // Sólo lo que EXISTE. Sin acomodo configurado no hay lugar, y no se inventa uno.
+        val detalle = listOfNotNull(person.spotLabel, staffLabel)
+
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(24.dp))
+                .background(MaterialTheme.colorScheme.surfaceContainerLow)
+                .padding(horizontal = AvoqadoTheme.spacing.xl, vertical = AvoqadoTheme.spacing.lg),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                modifier = Modifier
+                    .size(56.dp)
+                    .clip(RoundedCornerShape(50))
+                    .background(Success),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text("✓", fontSize = 32.sp, fontWeight = FontWeight.Bold, color = Color.White)
+            }
+
+            Spacer(Modifier.width(AvoqadoTheme.spacing.lg))
+
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = person.displayName,
+                    fontSize = 34.sp,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = (-0.5).sp,
+                    color = MaterialTheme.colorScheme.onSurface,
+                    maxLines = 1,
+                )
+                if (detalle.isNotEmpty()) {
+                    Spacer(Modifier.height(AvoqadoTheme.spacing.xxs))
+                    Text(
+                        text = detalle.joinToString(" · "),
+                        fontSize = KBody,
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                    )
+                }
+            }
+
+            Text(
+                text = "Puedes pasar",
+                fontSize = KSmall,
+                fontWeight = FontWeight.SemiBold,
+                letterSpacing = 0.5.sp,
+                color = Success,
+            )
+        }
+    }
+}
+
+/** Lo que mide la zona de confirmación, ocupada o no. Fijo: que nada se mueva. */
+private val CONFIRMATION_HEIGHT = 108.dp
+
+/** Cuánto se sostiene la confirmación. Lo bastante para leer el lugar sin frenar la fila. */
+private const val CONFIRMATION_MS = 8_000L
 
 /** Acción discreta del pie: el kiosco es para llegar, comprar es lo secundario. */
 @Composable
@@ -316,9 +455,13 @@ private fun PersonRow(
                     // lo que lo garantiza, no un cuidado al escribir la animación.
                     //
                     // El instructor NO se repite aquí: ya está en el encabezado, arriba.
-                    text = person.spotLabel?.takeIf { expanded }?.let { "✓ $it" } ?: "✓ llegaste",
-                    fontSize = KBody,
-                    fontWeight = FontWeight.SemiBold,
+                    // "Check-in", no "llegaste": es el término que el sector usa y además
+                    // NO tiene género — "llegaste" obligaba a inventar concordancia con
+                    // nombres que pueden ser de cualquier persona.
+                    text = "✓ Check-in",
+                    fontSize = KSmall,
+                    fontWeight = FontWeight.Bold,
+                    letterSpacing = 0.5.sp,
                     color = Success,
                     maxLines = 1,
                 )

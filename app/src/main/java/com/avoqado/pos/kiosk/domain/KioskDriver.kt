@@ -156,8 +156,21 @@ class KioskDriver @Inject constructor(
             return
         }
 
+        // 🔴 La confirmación es de la PERSONA, no del ciclo de refresco.
+        //
+        // Sin esto, el tick que llega justo después de un check-in reconstruye la lista
+        // desde cero y borra `justConfirmedId` — la tarjeta con su lugar y su coach
+        // parpadeaba y se iba antes de que nadie alcanzara a leerla. Se vio en la D3
+        // instrumentando la pantalla: aparecía y desaparecía en la misma respiración.
+        //
+        // `busyId` viaja igual: si se perdiera, el renglón dejaría de mostrar su espera a
+        // media petición y parecería que el toque no hizo nada.
+        val previo = kiosk.content.value as? KioskContent.Roster
+
         kiosk.show(
             KioskContent.Roster(
+                justConfirmedId = previo?.justConfirmedId,
+                busyId = previo?.busyId,
                 classTitle = titulo(activo.first()),
                 timeLabel = dates.formatTime(activo.first().startsAt),
                 // 🔴 En una clase el instructor vive en la SESIÓN, no en la
@@ -440,9 +453,9 @@ class KioskDriver @Inject constructor(
             // El acomodo del salón vive en el producto; la reserva sólo guarda
             // el id del lugar. Sin acomodo configurado esto queda en null y la
             // pantalla simplemente no lo enseña.
+            // El acomodo dice si son tapetes, bicis o camas: se usa SU palabra, no "Lugar".
             spotLabel = r.spotIds.firstOrNull()
-                ?.let { r.product?.layoutConfig?.labelFor(it) }
-                ?.let { "Lugar $it" },
+                ?.let { r.product?.layoutConfig?.spotLabelFor(it) },
         )
     }
 
