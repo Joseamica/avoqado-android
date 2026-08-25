@@ -6,6 +6,10 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -47,9 +51,13 @@ import com.avoqado.pos.kiosk.domain.KioskState
 // que usa el espejo del mostrador (CustomerDisplayScreen) — mismo hardware,
 // misma distancia, misma letra.
 
-private val KTitle = 40.sp
-private val KBody = 26.sp
-private val KAction = 30.sp
+// 🔴 Calibrados contra la cara del cliente de la Sunmi D3: 1280×800 con densidad 213 dpi.
+// Antes venían de un mockup a pantalla completa y en el aparato se veían inflados —
+// "muy grande, no se ve estético" (founder, viéndolo en la D3). El tamaño de un kiosco
+// se decide EN el kiosco.
+private val KTitle = 30.sp
+private val KBody = 22.sp
+private val KAction = 26.sp
 private val KDigits = 46.sp
 private val KSmall = 20.sp
 
@@ -168,7 +176,7 @@ private fun Roster(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(AvoqadoTheme.spacing.xl),
+            .padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.md),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         // Encabezado y pie FIJOS; sólo la lista se desliza.
@@ -186,29 +194,39 @@ private fun Roster(
             Sub(it)
         }
 
-        Spacer(Modifier.height(AvoqadoTheme.spacing.md))
+        Spacer(Modifier.height(AvoqadoTheme.spacing.sm))
         Sub("Toca tu nombre para confirmar que llegaste.")
         Spacer(Modifier.height(AvoqadoTheme.spacing.md))
 
-        // 🔴 LazyColumn y no un Column suelto: en la cara del cliente (800×1280)
-        // caben CUATRO nombres. Una clase de ocho dejaba a la mitad del grupo
-        // fuera de la pantalla, sin manera de bajar — se vio en el emulador,
-        // no en el compilador.
-        LazyColumn(
-            modifier = Modifier.weight(1f).fillMaxWidth(),
-            verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
-            // 🔴 Aire abajo: sin esto el ÚLTIMO nombre queda medio tapado por el pie y
-            // parece que la lista se acaba ahí. Se vio en la D3 con cuatro personas.
-            contentPadding = PaddingValues(bottom = AvoqadoTheme.spacing.md),
-        ) {
-            items(content.people, key = { it.reservationId }) { p ->
-                PersonRow(
-                    person = p,
-                    busy = content.busyId == p.reservationId,
-                    expanded = content.justConfirmedId == p.reservationId,
-                    staffLabel = content.staffLabel,
-                    onTap = { onTap(p) },
-                )
+        // 🔴 DOS COLUMNAS en apaisado, una sola en vertical.
+        //
+        // La cara del cliente de la D3 es 1280×800 acostada. En una sola columna caben
+        // CUATRO nombres y una clase de yoga es de ocho: media clase quedaba abajo,
+        // fuera de la vista, y había que adivinar que la lista se desliza.
+        //
+        // Dos columnas entran los ocho de un vistazo SIN achicar el botón — que es lo
+        // que no se puede sacrificar en un kiosco, porque aquí toca gente de pie, de
+        // paso y a veces con las manos ocupadas. Sigue siendo Lazy: una clase de
+        // veinte se desliza igual.
+        BoxWithConstraints(modifier = Modifier.weight(1f).fillMaxWidth()) {
+            val columnas = if (maxWidth > maxHeight) 2 else 1
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(columnas),
+                verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
+                horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
+                // Aire abajo: sin esto el ÚLTIMO nombre queda medio tapado por el pie y
+                // parece que la lista se acaba ahí. Se vio en la D3.
+                contentPadding = PaddingValues(bottom = AvoqadoTheme.spacing.sm),
+            ) {
+                items(content.people, key = { it.reservationId }) { p ->
+                    PersonRow(
+                        person = p,
+                        busy = content.busyId == p.reservationId,
+                        expanded = content.justConfirmedId == p.reservationId,
+                        staffLabel = content.staffLabel,
+                        onTap = { onTap(p) },
+                    )
+                }
             }
         }
 
@@ -273,7 +291,9 @@ private fun PersonRow(
             // Ya confirmada: deja de ser tocable. Volver a tocarla no haría nada
             // y sólo hace dudar de si sirvió la primera vez.
             .clickable(enabled = !person.checkedIn && !busy, onClick = onTap)
-            .padding(AvoqadoTheme.spacing.lg),
+            // md y no lg: el alto de la fila es lo que decide cuántos nombres caben, y
+            // 12 dp arriba y abajo siguen dejando un blanco de sobra para el dedo.
+            .padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.md),
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
