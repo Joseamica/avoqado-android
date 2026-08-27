@@ -376,6 +376,18 @@ class OrderRepository @Inject constructor(
             source: String = "AVOQADO_ANDROID",
             orderType: String = "TAKEOUT",
             externalId: String? = null,
+            /**
+             * Premio de cartilla a aplicar EN LA CREACIÓN.
+             *
+             * 🔴 Va aquí y no en una segunda llamada porque el POS cobra el total que
+             * devuelve ESTA respuesta (`adoptarTotalDelServer`). Con dos llamadas
+             * quedaría una ventana con la cuenta al total completo, y si el cobro entra
+             * ahí el cliente paga de más.
+             *
+             * ADITIVO: sin premio el cuerpo queda byte a byte igual al de siempre, que
+             * es el 99% de las ventas.
+             */
+            stampRewardId: String? = null,
         ): String {
             return buildJsonObject {
                 put(
@@ -481,6 +493,7 @@ class OrderRepository @Inject constructor(
                 put("total", request.total)
                 if (request.discount > 0) put("discount", request.discount)
                 customerId?.takeIf { it.isNotBlank() }?.let { put("customerId", it) }
+                stampRewardId?.takeIf { it.isNotBlank() }?.let { put("stampRewardId", it) }
                 request.splitType?.let { put("splitType", it) }
                 request.note?.trim()?.takeIf { it.isNotEmpty() }?.let { put("note", it) }
                 request.reservationId?.takeIf { it.isNotBlank() }?.let { put("reservationId", it) }
@@ -504,6 +517,7 @@ class OrderRepository @Inject constructor(
         customerId: String? = null,
         orderType: String = "TAKEOUT",
         externalId: String = java.util.UUID.randomUUID().toString(),
+        stampRewardId: String? = null,
     ): Result<CreateOrderResponse> {
         val venueId = secureStorage.venueId ?: return Result.failure(Exception("No venue selected"))
         val token = secureStorage.accessToken ?: return Result.failure(Exception("Not authenticated"))
@@ -522,6 +536,7 @@ class OrderRepository @Inject constructor(
                 customerId = customerId,
                 orderType = orderType,
                 externalId = externalId,
+                stampRewardId = stampRewardId,
             )
             val body = payload.toRequestBody("application/json".toMediaType())
 

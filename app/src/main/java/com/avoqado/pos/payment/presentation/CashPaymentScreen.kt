@@ -34,6 +34,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.avoqado.pos.core.util.formatMoney
+
 import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Success
@@ -68,7 +70,7 @@ fun CashPaymentScreen(
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
 
         Text(
-            text = "Total: $${String.format("%.2f", totalCents / 100.0)}",
+            text = "Total: ${formatMoney(totalCents / 100.0)}",
             style = MaterialTheme.typography.titleLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -106,7 +108,7 @@ fun CashPaymentScreen(
         if (isValid && changeCents > 0) {
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xl))
             Text(
-                text = "Cambio: $${String.format("%.2f", changeCents / 100.0)}",
+                text = "Cambio: ${formatMoney(changeCents / 100.0)}",
                 style = MaterialTheme.typography.headlineMedium,
                 color = Success,
             )
@@ -199,7 +201,7 @@ private fun calculateCashPresets(totalCents: Int): List<CashPreset> {
     presets.add(
         CashPreset(
             amountCents = totalCents,
-            label = "$${String.format("%.2f", totalPesos)}",
+            label = formatMoney(totalPesos),
             isExact = true,
         ),
     )
@@ -217,7 +219,7 @@ private fun calculateCashPresets(totalCents: Int): List<CashPreset> {
                 presets.add(
                     CashPreset(
                         amountCents = roundedUp,
-                        label = "$${String.format("%.2f", roundedUp / 100.0)}",
+                        label = formatMoney(roundedUp / 100.0),
                     ),
                 )
             }

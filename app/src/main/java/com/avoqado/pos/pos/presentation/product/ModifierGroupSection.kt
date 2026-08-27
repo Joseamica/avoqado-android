@@ -15,6 +15,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import com.avoqado.pos.core.util.formatMoney
+
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.pos.data.model.ProductModifierGroup
 import com.avoqado.pos.pos.data.model.SelectedModifier
@@ -104,7 +106,7 @@ fun ModifierGroupSection(
 
                 if (modifier.price > 0) {
                     Text(
-                        text = "+$${String.format("%.2f", modifier.price)}",
+                        text = "+${formatMoney(modifier.price)}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

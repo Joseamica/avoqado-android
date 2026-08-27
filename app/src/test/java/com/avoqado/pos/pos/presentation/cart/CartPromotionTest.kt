@@ -104,6 +104,7 @@ class CartPromotionTest {
         tableSession = com.avoqado.pos.tables.data.TableSession(),
         customerDisplay = com.avoqado.pos.customerdisplay.CustomerDisplayState(),
         areaTicketRepository = areaTicketRepository,
+        walletScanRepository = mockk(relaxed = true),
     )
 
     // MARK: - Fixtures

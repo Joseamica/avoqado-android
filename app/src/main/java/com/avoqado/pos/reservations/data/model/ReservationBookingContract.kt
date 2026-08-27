@@ -24,6 +24,13 @@ data class ReservationSettingsContract(
 @Serializable
 data class ReservationSchedulingContract(
     val capacityMode: String? = null,
+    /**
+     * Minutos de tolerancia tras la hora de inicio. Lo configura el admin en
+     * Ajustes de Reservaciones y es lo que cierra la ventana de check-in del
+     * kiosco (`startsAt + noShowGraceMin`). Opcional para no romper binarios
+     * viejos: sin él se cae al mismo default que usa el servidor.
+     */
+    val noShowGraceMin: Int? = null,
 )
 
 @Serializable

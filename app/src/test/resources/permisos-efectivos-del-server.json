@@ -2,7 +2,7 @@
   "generatedFrom": {
     "repo": "avoqado-server",
     "fn": "getEffectiveRolePermissions(role, null)",
-    "digest": "7854471bf40af374"
+    "digest": "ca56589bf2ca722e"
   },
   "roles": {
     "SUPERADMIN": {
@@ -96,6 +96,7 @@
         "sim-custody:collect-from-promoter",
         "sim-custody:collect-from-supervisor",
         "sim-custody:reassign",
+        "sim-custody:reassign-supervisor",
         "sim-custody:view-all-supervisors",
         "tables:*",
         "teams:*",
@@ -232,6 +233,7 @@
         "sim-custody:collect-from-promoter",
         "sim-custody:collect-from-supervisor",
         "sim-custody:reassign",
+        "sim-custody:reassign-supervisor",
         "sim-custody:view-all-supervisors",
         "tables:*",
         "tables:read",
@@ -377,6 +379,7 @@
         "settlements:*",
         "shifts:*",
         "sim-custody:reassign",
+        "sim-custody:reassign-supervisor",
         "tables:*",
         "teams:*",
         "tender-types:*",
@@ -501,6 +504,7 @@
         "shifts:create",
         "shifts:read",
         "sim-custody:reassign",
+        "sim-custody:reassign-supervisor",
         "tables:*",
         "tables:read",
         "tables:update",
@@ -593,7 +597,11 @@
         "coupons:*",
         "creditPacks:*",
         "customer-groups:*",
-        "customers:*",
+        "customers:create",
+        "customers:delete",
+        "customers:read",
+        "customers:settle-balance",
+        "customers:update",
         "delivery-channels:read",
         "delivery-channels:snooze",
         "discounts:*",
@@ -718,8 +726,11 @@
         "coupons:*",
         "creditPacks:*",
         "customer-groups:*",
-        "customers:*",
+        "customers:create",
+        "customers:delete",
         "customers:read",
+        "customers:settle-balance",
+        "customers:update",
         "delivery-channels:read",
         "delivery-channels:snooze",
         "discounts:*",
@@ -836,7 +847,6 @@
         "upsells:*"
       ],
       "implicit": [
-        "customers:read",
         "discounts:apply",
         "discounts:read",
         "estimates:create",

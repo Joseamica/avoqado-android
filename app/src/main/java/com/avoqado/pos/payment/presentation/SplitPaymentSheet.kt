@@ -48,6 +48,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
+import com.avoqado.pos.core.util.formatMoney
+
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.pos.data.model.CartItem
 
@@ -282,7 +284,7 @@ private fun ByProductContent(
                         modifier = Modifier.weight(1f),
                     )
                     Text(
-                        text = "$${String.format("%.2f", item.totalPrice / 100.0)}",
+                        text = formatMoney(item.totalPrice / 100.0),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurface,
                     )
@@ -351,7 +353,7 @@ private fun EqualPartsContent(
 
         // Total display
         Text(
-            text = "Total: $${String.format("%.2f", totalCents / 100.0)}",
+            text = "Total: ${formatMoney(totalCents / 100.0)}",
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -420,7 +422,7 @@ private fun EqualPartsContent(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Text(
-            text = "$${String.format("%.2f", perPersonCents / 100.0)}",
+            text = formatMoney(perPersonCents / 100.0),
             style = MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onSurface,
@@ -483,7 +485,7 @@ private fun CustomAmountContent(
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
 
         Text(
-            text = "Total de la cuenta: $${String.format("%.2f", totalCents / 100.0)}",
+            text = "Total de la cuenta: ${formatMoney(totalCents / 100.0)}",
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -541,7 +543,7 @@ private fun CustomAmountContent(
                 .height(48.dp),
         ) {
             Text(
-                text = "Cobrar $${String.format("%.2f", amountCents / 100.0)}",
+                text = "Cobrar ${formatMoney(amountCents / 100.0)}",
                 style = MaterialTheme.typography.bodyLarge,
                 fontWeight = FontWeight.SemiBold,
             )

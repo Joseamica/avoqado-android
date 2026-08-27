@@ -64,6 +64,8 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
+import com.avoqado.pos.core.util.formatMoney
+
 import com.avoqado.pos.designsystem.components.AvoqadoDialog
 import com.avoqado.pos.designsystem.components.AvoqadoPillTextField
 import com.avoqado.pos.designsystem.components.PrimaryButton
@@ -856,7 +858,7 @@ private fun CartItemRow(
                 // BRUTO: el descuento de la línea se muestra en su propio renglón
                 // junto al total (ver las filas de descuento arriba), no rebajando
                 // el precio aquí — si no, se vería restado dos veces.
-                text = "$${String.format("%.2f", item.grossPrice / 100.0)}",
+                text = formatMoney(item.grossPrice / 100.0),
                 style = if (useDenseTabletLayout) {
                     MaterialTheme.typography.bodySmall
                 } else {
@@ -869,7 +871,7 @@ private fun CartItemRow(
             // Modifiers price breakdown (matching iOS: "+$X.XX")
             if (item.modifiersPrice > 0) {
                 Text(
-                    text = "+$${String.format("%.2f", item.modifiersPrice / 100.0)}",
+                    text = "+${formatMoney(item.modifiersPrice / 100.0)}",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

@@ -1,4 +1,5 @@
 package com.avoqado.pos.reservations.data.model
+import com.avoqado.pos.core.util.formatMoney
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -51,7 +52,7 @@ data class ClassSessionProduct(
         get() {
             val primitive = price?.jsonPrimitive ?: return null
             val value = primitive.doubleOrNull ?: primitive.content.toDoubleOrNull() ?: return null
-            return "$${String.format("%.2f", value)}"
+            return formatMoney(value)
         }
 }
 

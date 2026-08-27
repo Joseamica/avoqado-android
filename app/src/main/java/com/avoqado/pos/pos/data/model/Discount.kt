@@ -1,4 +1,5 @@
 package com.avoqado.pos.pos.data.model
+import com.avoqado.pos.core.util.formatMoney
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -57,7 +58,7 @@ data class Discount(
     val displayValue: String
         get() = when (discountType) {
             DiscountType.PERCENTAGE -> "${value.toInt()}%"
-            DiscountType.FIXED -> "$${String.format("%.2f", value)}"
+            DiscountType.FIXED -> formatMoney(value)
         }
 
     /**
@@ -163,7 +164,7 @@ data class CouponCode(
     val displayValue: String
         get() = when (discountType) {
             DiscountType.PERCENTAGE -> "${value.toInt()}%"
-            DiscountType.FIXED -> "$${String.format("%.2f", value)}"
+            DiscountType.FIXED -> formatMoney(value)
         }
 
     /** Convert to Discount for applying to cart. */

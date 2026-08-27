@@ -2,6 +2,8 @@ package com.avoqado.pos.transactions.data.model
 
 import com.avoqado.pos.core.util.VenueDateTimeFormatter
 import com.avoqado.pos.core.util.VenueTimeZone
+import com.avoqado.pos.core.util.formatMoney
+
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import java.time.LocalDate
@@ -64,10 +66,10 @@ data class Transaction(
     /** Total = amount + tip (in dollars) */
     val totalAmount: Double get() = amount + tipAmount
 
-    val totalDisplay: String get() = "$${String.format("%.2f", totalAmount)}"
-    val remainingRefundableDisplay: String get() = "$${String.format("%.2f", remainingRefundable)}"
-    val formattedAmount: String get() = "$${String.format("%.2f", amount)}"
-    val formattedTip: String get() = "$${String.format("%.2f", tipAmount)}"
+    val totalDisplay: String get() = formatMoney(totalAmount)
+    val remainingRefundableDisplay: String get() = formatMoney(remainingRefundable)
+    val formattedAmount: String get() = formatMoney(amount)
+    val formattedTip: String get() = formatMoney(tipAmount)
 
     /** Smart description: "Visa ****1234", "Efectivo", "Tarjeta", etc. */
     val methodDescription: String
@@ -131,7 +133,7 @@ data class TransactionItem(
     val modifiers: List<TransactionItemModifier> = emptyList(),
 ) {
     val name: String get() = productName
-    val formattedTotal: String get() = "$${String.format("%.2f", amount)}"
+    val formattedTotal: String get() = formatMoney(amount)
     /** True when every unit on this line has been refunded. */
     val fullyRefunded: Boolean get() = refundedQty >= quantity && quantity > 0
     /** True when some — but not all — units have been refunded. */
@@ -146,7 +148,7 @@ data class TransactionRefund(
     val createdAt: String? = null,
     val status: String = "COMPLETED",
 ) {
-    val formattedAmount: String get() = "-$${String.format("%.2f", amount)}"
+    val formattedAmount: String get() = "-${formatMoney(amount)}"
 
     val reasonDisplay: String
         get() = when (reason) {

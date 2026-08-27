@@ -25,6 +25,20 @@ interface ApiService {
     @POST("mobile/auth/refresh")
     suspend fun refreshToken(@Body request: RefreshRequest): RefreshResponse
 
+    // MARK: - Tarjeta digital del cliente
+
+    /**
+     * Resuelve el QR de la tarjeta de un cliente escaneada en la caja.
+     *
+     * 🔴 POST y no GET a propósito: el código del QR es un secreto, y en una URL
+     * quedaría escrito en los registros del servidor y del proxy.
+     */
+    @POST("tpv/venues/{venueId}/wallet/scan")
+    suspend fun scanWalletPass(
+        @Path("venueId") venueId: String,
+        @Body request: com.avoqado.pos.loyalty.data.WalletScanRequest,
+    ): com.avoqado.pos.loyalty.data.WalletScanResponse
+
     // MARK: - Products
 
     @GET("dashboard/venues/{venueId}/products")

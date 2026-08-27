@@ -937,6 +937,12 @@ class PaymentFlowViewModel @Inject constructor(
                             customerId = attachedCustomerId,
                             orderType = cart.orderType,
                             externalId = orderExternalId,
+                            // 🔴 El premio viaja EN LA CREACIÓN. El total que devuelva
+                            // esta llamada es el que se cobra (`adoptarTotalDelServer`),
+                            // así que el descuento tiene que existir antes de que
+                            // vuelva. Con una segunda llamada quedaría una ventana con
+                            // la cuenta al total completo.
+                            stampRewardId = cart.pendingStampRewardId,
                         )
 
                         orderResult.fold(

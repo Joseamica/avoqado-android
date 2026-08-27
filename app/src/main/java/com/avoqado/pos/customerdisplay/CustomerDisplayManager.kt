@@ -119,6 +119,7 @@ internal fun shouldRebuildInheritedPresentation(
 class CustomerDisplayManager @Inject constructor(
     @ApplicationContext private val appContext: Context,
     private val state: CustomerDisplayState,
+    private val kioskState: com.avoqado.pos.kiosk.domain.KioskState,
     private val secureStorage: com.avoqado.pos.core.data.local.SecureStorage,
     // Se inyecta para FORZAR su construcción: es quien carga el ajuste guardado
     // dentro del state. Sin esto el ajuste solo se aplicaría si alguien abre
@@ -270,6 +271,12 @@ class CustomerDisplayManager @Inject constructor(
      */
     fun resync() {
         val activity = hostActivity ?: return
+        // 🔴 La marca se refresca AQUÍ y no sólo en attach(): al cambiar de
+        // sucursal la caja NO se recrea, así que el letrero del cliente se
+        // quedaba con el nombre del negocio anterior de cara al público.
+        // Encontrado el 2026-08-24 probando el kiosco en el emulador: decía
+        // "Avoqado Empty" con la sucursal ya cambiada a "Avoqado Wellness".
+        state.setVenueBranding(secureStorage.venueDisplayName, secureStorage.venueLogo)
         cashierGuard.enforce(activity)
         refresh()
     }
@@ -645,7 +652,7 @@ class CustomerDisplayManager @Inject constructor(
         if (presentation?.display?.displayId == target.displayId && presentation?.isShowing == true) return
         dismissPresentation()
         runCatching {
-            CustomerDisplayPresentation(activity, target, state).also {
+            CustomerDisplayPresentation(activity, target, state, kioskState).also {
                 it.show()
                 presentation = it
                 isActive = true

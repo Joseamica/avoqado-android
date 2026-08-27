@@ -57,6 +57,8 @@ import com.avoqado.pos.designsystem.components.AvoqadoBrandLoader
 import com.avoqado.pos.pos.data.model.Product
 import com.avoqado.pos.pos.data.model.ProductCategory
 import com.avoqado.pos.pos.presentation.cart.CartViewModel
+import com.avoqado.pos.pos.presentation.checkout.CheckoutLayoutPrefs
+import com.avoqado.pos.pos.presentation.checkout.TileSize
 
 /**
  * Product grid with categories-first navigation matching iOS.
@@ -71,6 +73,11 @@ fun ProductGridView(
     /** Menús por horario: cuando viene, la cuadrícula solo muestra las categorías
      *  (y sus productos) del menú activo. Null = catálogo completo, como siempre. */
     menuCategoryIds: Set<String>? = null,
+    /** Qué tan densa se ve la cuadrícula EN ESTE APARATO. El default lee la
+     *  preferencia local, así que las pantallas que no la manejan (mesas) la
+     *  respetan sin tener que enterarse. El mostrador la pasa explícita para
+     *  que el cambio se vea sin salir de la pantalla. */
+    tileSize: TileSize = CheckoutLayoutPrefs.tileSize(androidx.compose.ui.platform.LocalContext.current),
 ) {
     // Agotado AVISA, nunca bloquea (Square-parity 2026-08-12): el tap agrega
     // siempre — el registro puede estar desfasado y el producto sí existir en
@@ -152,6 +159,7 @@ fun ProductGridView(
                         onProductTap = tapOrInfo,
                         packs = if (onPackTap != null) packs else emptyList(),
                         onPackTap = onPackTap,
+                        tileSize = tileSize,
                     )
                 }
             }
@@ -180,6 +188,7 @@ fun ProductGridView(
                     ProductsGrid(
                         products = categoryProducts,
                         onProductTap = tapOrInfo,
+                        tileSize = tileSize,
                     )
                 }
             }
@@ -251,9 +260,13 @@ private fun CategoriesGrid(
     onProductTap: (Product) -> Unit,
     packs: List<com.avoqado.pos.articles.data.model.CreditPack> = emptyList(),
     onPackTap: ((com.avoqado.pos.articles.data.model.CreditPack) -> Unit)? = null,
+    tileSize: TileSize,
 ) {
     LazyVerticalGrid(
-        columns = GridCells.Fixed(3),
+        // Adaptive y no Fixed(3): el mismo código corre en un panel de 640 dp y
+        // en un teléfono de 400. Con Fixed(3) el teléfono heredaba las columnas
+        // de la tablet y los tiles salían enormes en los dos.
+        columns = GridCells.Adaptive(tileSize.minTileWidthDp.dp),
         contentPadding = PaddingValues(AvoqadoTheme.spacing.lg),
         horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
         verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
@@ -263,6 +276,7 @@ private fun CategoriesGrid(
             CategoryTile(
                 category = category,
                 onClick = { onCategoryTap(category) },
+                tileSize = tileSize,
             )
         }
 
@@ -271,13 +285,14 @@ private fun CategoriesGrid(
             ProductTile(
                 product = product,
                 onClick = { onProductTap(product) },
+                tileSize = tileSize,
             )
         }
 
         // Prepaid credit packs (membresías) — sellable straight from the grid
         if (onPackTap != null) {
             items(packs, key = { "pack_${it.id}" }) { pack ->
-                CreditPackTile(pack = pack, onClick = { onPackTap(pack) })
+                CreditPackTile(pack = pack, onClick = { onPackTap(pack) }, tileSize = tileSize)
             }
         }
     }
@@ -289,9 +304,10 @@ private fun CategoriesGrid(
 private fun ProductsGrid(
     products: List<Product>,
     onProductTap: (Product) -> Unit,
+    tileSize: TileSize,
 ) {
     LazyVerticalGrid(
-        columns = GridCells.Fixed(3),
+        columns = GridCells.Adaptive(tileSize.minTileWidthDp.dp),
         contentPadding = PaddingValues(AvoqadoTheme.spacing.lg),
         horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
         verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
@@ -300,6 +316,7 @@ private fun ProductsGrid(
             ProductTile(
                 product = product,
                 onClick = { onProductTap(product) },
+                tileSize = tileSize,
             )
         }
     }
@@ -311,30 +328,33 @@ private fun ProductsGrid(
 private fun CreditPackTile(
     pack: com.avoqado.pos.articles.data.model.CreditPack,
     onClick: () -> Unit,
+    tileSize: TileSize,
 ) {
     val bg = MaterialTheme.colorScheme.primary
     val fg = MaterialTheme.colorScheme.onPrimary
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .aspectRatio(1f)
+            .aspectRatio(tileSize.categoryAspect)
             .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
             .background(bg)
             .clickable(onClick = onClick),
     ) {
-        Icon(
-            imageVector = Icons.Default.Star,
-            contentDescription = null,
-            modifier = Modifier
-                .padding(AvoqadoTheme.spacing.md)
-                .size(24.dp)
-                .align(Alignment.TopStart),
-            tint = fg.copy(alpha = 0.9f),
-        )
+        if (tileSize.mostrarIcono) {
+            Icon(
+                imageVector = Icons.Default.Star,
+                contentDescription = null,
+                modifier = Modifier
+                    .padding(tileSize.paddingDp.dp)
+                    .size(tileSize.iconoDp.dp)
+                    .align(Alignment.TopStart),
+                tint = fg.copy(alpha = 0.9f),
+            )
+        }
         Column(
             modifier = Modifier
-                .align(Alignment.BottomStart)
-                .padding(AvoqadoTheme.spacing.md),
+                .align(if (tileSize.mostrarIcono) Alignment.BottomStart else Alignment.CenterStart)
+                .padding(tileSize.paddingDp.dp),
         ) {
             Text(
                 text = pack.name,
@@ -359,6 +379,7 @@ private fun CreditPackTile(
 private fun CategoryTile(
     category: ProductCategory,
     onClick: () -> Unit,
+    tileSize: TileSize,
 ) {
     val hasCustomColor = !category.color.isNullOrEmpty()
     val bgColor = if (hasCustomColor) {
@@ -371,23 +392,25 @@ private fun CategoryTile(
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .aspectRatio(1f)
+            .aspectRatio(tileSize.categoryAspect)
             .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
             .background(bgColor)
             .clickable(onClick = onClick),
     ) {
-        // Grid icon top-left
-        Icon(
-            imageVector = Icons.Default.GridView,
-            contentDescription = null,
-            modifier = Modifier
-                .padding(AvoqadoTheme.spacing.md)
-                .size(24.dp)
-                .align(Alignment.TopStart),
-            tint = contentColor.copy(alpha = 0.8f),
-        )
+        // Grid icon top-left. En compacto no cabe junto al nombre: gana el
+        // nombre, que es lo que el cajero lee para decidir.
+        if (tileSize.mostrarIcono) {
+            Icon(
+                imageVector = Icons.Default.GridView,
+                contentDescription = null,
+                modifier = Modifier
+                    .padding(tileSize.paddingDp.dp)
+                    .size(tileSize.iconoDp.dp)
+                    .align(Alignment.TopStart),
+                tint = contentColor.copy(alpha = 0.8f),
+            )
+        }
 
-        // Category name bottom-left
         Text(
             text = category.name,
             style = MaterialTheme.typography.labelLarge,
@@ -395,8 +418,8 @@ private fun CategoryTile(
             maxLines = 2,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier
-                .align(Alignment.BottomStart)
-                .padding(AvoqadoTheme.spacing.md),
+                .align(if (tileSize.mostrarIcono) Alignment.BottomStart else Alignment.CenterStart)
+                .padding(tileSize.paddingDp.dp),
         )
     }
 }
@@ -407,6 +430,7 @@ private fun CategoryTile(
 private fun ProductTile(
     product: Product,
     onClick: () -> Unit,
+    tileSize: TileSize,
 ) {
     val bgColor = product.color?.let { parseHexColor(it) }
         ?: MaterialTheme.colorScheme.surfaceVariant
@@ -429,7 +453,7 @@ private fun ProductTile(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .aspectRatio(1.2f)
+                    .aspectRatio(tileSize.productImageAspect)
                     .background(bgColor)
                     .clip(RoundedCornerShape(
                         topStart = AvoqadoTheme.cornerRadius.md,

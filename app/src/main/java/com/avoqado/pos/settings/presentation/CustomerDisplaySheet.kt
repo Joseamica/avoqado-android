@@ -50,6 +50,7 @@ fun CustomerDisplaySheet(
     prefs: CustomerDisplayPrefs,
     displayState: CustomerDisplayState,
     displayModePrefs: DisplayModePrefs,
+    kioskPrefs: com.avoqado.pos.kiosk.domain.KioskPrefs,
     ventaEnCurso: Boolean,
     onInvertedChange: (Boolean) -> Unit,
     onDismiss: () -> Unit,
@@ -59,6 +60,7 @@ fun CustomerDisplaySheet(
     val invertible by displayState.invertible.collectAsState()
     val invertUnsupported by displayState.invertUnsupported.collectAsState()
     val inverted by displayModePrefs.inverted.collectAsState()
+    val kioskOn by kioskPrefs.enabled.collectAsState()
     var confirmando by remember { mutableStateOf(false) }
 
     ModalBottomSheet(
@@ -127,6 +129,39 @@ fun CustomerDisplaySheet(
                     checked = captureEnabled,
                     enabled = detected,
                     onCheckedChange = { prefs.setCustomerCaptureEnabled(it) },
+                )
+            }
+
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween,
+            ) {
+                Column(
+                    modifier = Modifier
+                        .weight(1f)
+                        .padding(end = AvoqadoTheme.spacing.md),
+                ) {
+                    Text(
+                        text = "Kiosco de check-in",
+                        style = MaterialTheme.typography.bodyLarge,
+                    )
+                    Text(
+                        text = "La pantalla del cliente muestra sola quién viene a la clase " +
+                            "que está por empezar, y cada quien toca su nombre. Se abre 20 " +
+                            "minutos antes y se cierra pasada la tolerancia que pusiste en " +
+                            "Ajustes de Reservaciones. Necesita que el cliente alcance a " +
+                            "tocar la segunda pantalla.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = kioskOn,
+                    enabled = detected,
+                    onCheckedChange = { kioskPrefs.setEnabled(it) },
                 )
             }
 

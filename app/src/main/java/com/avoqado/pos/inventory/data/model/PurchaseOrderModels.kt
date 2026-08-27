@@ -1,4 +1,5 @@
 package com.avoqado.pos.inventory.data.model
+import com.avoqado.pos.core.util.formatMoney
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -85,7 +86,7 @@ data class PurchaseOrderItem(
         get() = receivedQuantity >= orderedQuantity
 
     val displayCost: String
-        get() = unitCost?.let { "$${String.format("%.2f", it)}" } ?: "—"
+        get() = unitCost?.let { formatMoney(it) } ?: "—"
 }
 
 @Serializable

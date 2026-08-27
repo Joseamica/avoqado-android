@@ -26,6 +26,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import com.avoqado.pos.core.util.formatMoney
+
 import com.avoqado.pos.designsystem.components.CircleBackButton
 import androidx.compose.material.icons.filled.CardGiftcard
 import androidx.compose.material.icons.filled.CheckCircle
@@ -961,7 +963,7 @@ private fun CouponsSubView(
 
                     coupon.estimatedSavings?.let { savings ->
                         Text(
-                            text = "Ahorro estimado: $${String.format("%.2f", savings)}",
+                            text = "Ahorro estimado: ${formatMoney(savings)}",
                             style = MaterialTheme.typography.bodySmall,
                             color = Success,
                         )
@@ -1094,7 +1096,7 @@ private fun VoidItemRow(
             }
         }
         Text(
-            text = "$${String.format("%.2f", item.totalPrice / 100.0)}",
+            text = formatMoney(item.totalPrice / 100.0),
             style = MaterialTheme.typography.bodyMedium,
             color = if (isSelected) ActionRed else MaterialTheme.colorScheme.onSurface,
         )

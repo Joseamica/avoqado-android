@@ -1,5 +1,26 @@
 # AGENTS.md - Avoqado Android
 
+## 🔴 Verificación pesada: por `avq-verify`, nunca a mano
+
+**Van SIEMPRE por el script, sin importar cuánto tarden:** `./gradlew` (cualquier tarea que
+compile), `xcodebuild`, `tsc` / `npm run build`, y cualquier corrida de jest/vitest de más de un
+archivo. **Van a pelo:** lint, formato, UN archivo de test, y lo que no reserve memoria en serio.
+
+Esto NO contradice "un compile de un solo proyecto se corre siempre, aunque la máquina esté
+saturada": aquello decide **si** verificas (siempre sí), esto decide **cómo** lo lanzas —
+haciendo fila en vez de encimarte. Se lanza desde el root del workspace:
+
+```bash
+cd /Users/amieva/Documents/Programming/Avoqado
+./scripts/avq-verify.sh avoqado-android <comando>
+```
+
+Hace fila: un trabajo pesado a la vez en esta Mac, que corre con ~20 sesiones de IA encima y vive
+con el swap al límite. En ESTE repo el remoto no aplica (el Alienware no tiene Java ni Xcode): el script hace la **fila local**, que es justo lo que evita dos builds de Gradle/Xcode al mismo tiempo.
+
+Detalle completo: `Avoqado/CLAUDE.md`, sección "Verificación repartida".
+
+
 This file provides guidance to Codex when working with this repository.
 
 ## 🔴 Antes de construir: tier + activación (dos decisiones, no una)
@@ -292,6 +313,14 @@ Uses `Modifier.width(IntrinsicSize.Max)` on each tab Column to constrain width t
 - **State**: Use `StateFlow` + `collectAsState()` in Composables
 - **Navigation**: Compose Navigation with `NavHost`
 - **Async**: `viewModelScope.launch` for coroutines
+- 🔴 **Emoji en nombres de test: NO.** En logs, KDoc y comentarios sí (arriba ya se usan a
+  propósito). Pero un `fun \`🔴 el carrito cobra exacto\`()` hace que Kotlin bautice sus clases
+  anónimas con ese nombre — genera el ARCHIVO `…Test$🔴 el carrito cobra exacto$1.class`, y el
+  packer de la caché de build no puede leerlo: `transformDebugUnitTestClassesWithAsm` revienta con
+  «Could not get file mode for …», un fallo que NO es de tu código. Acentos y em-dash (—) sí
+  funcionan; sólo los emoji rompen. La convención para marcar criticidad en el nombre es
+  **`P1` / `P2` / `P3`** (antes `🔴` / `🟠` / `🟡`). Lo vigila `:app:checkNoEmojiInTestNames`, que
+  corre solo antes de cualquier tarea de test.
 
 ## iOS Reference
 

@@ -104,7 +104,7 @@ class CartStateTest {
     )
 
     @Test
-    fun `🔴 el subtotal es BRUTO y el descuento de linea sale aparte`() {
+    fun `P1 el subtotal es BRUTO y el descuento de linea sale aparte`() {
         val state = CartState(
             items = listOf(
                 CartItem(type = CartItemType.ProductItem("burger"), name = "Hamburguesa", unitPrice = 14900),
@@ -131,7 +131,7 @@ class CartStateTest {
     }
 
     @Test
-    fun `🔴 el descuento de ORDEN se aplica sobre lo que queda, no sobre el bruto`() {
+    fun `P1 el descuento de ORDEN se aplica sobre lo que queda, no sobre el bruto`() {
         // Si el 10% de orden pegara sobre el bruto (17400) daría 1740; tiene que
         // pegar sobre lo que de verdad se debe tras el descuento de línea (16900)
         // = 1690. Es el comportamiento de siempre; cambiar la base aquí habría
@@ -150,7 +150,7 @@ class CartStateTest {
     }
 
     @Test
-    fun `🔴 una cortesia no inventa descuento ni infla el subtotal`() {
+    fun `P1 una cortesia no inventa descuento ni infla el subtotal`() {
         // Ya es gratis: no puede aportar al bruto ni contar como descuento, o el
         // desglose diría que se regalaron dos veces los mismos $25.
         val cortesia = conDescuento(unitPrice = 2500, value = 20.0).apply { isCortesia = true }
@@ -177,7 +177,7 @@ class CartStateTest {
     }
 
     @Test
-    fun `🔴 el ticket cuadra consigo mismo - lineas, subtotal, descuento y total`() {
+    fun `P1 el ticket cuadra consigo mismo - lineas, subtotal, descuento y total`() {
         // Lo que se imprime en papel. Si esto falla, el cliente se lleva un ticket
         // cuyos renglones no suman lo que dice abajo.
         val state = CartState(
@@ -197,7 +197,7 @@ class CartStateTest {
     }
 
     @Test
-    fun `🔴 los dos descuentos se pueden pintar por separado, sin atribuirle uno al otro`() {
+    fun `P1 los dos descuentos se pueden pintar por separado, sin atribuirle uno al otro`() {
         // El carrito los muestra en renglones distintos. Antes existía UNA sola
         // fila, con el nombre del descuento de ORDEN y el monto COMBINADO: con los
         // dos aplicados, el de artículo salía atribuido al equivocado; y sin

@@ -80,7 +80,7 @@ class UpsellSerializationTest {
     }
 
     @Test
-    fun `🟡 un 'null' EXPLÍCITO en suggestedModifiers no truena — cae al default`() {
+    fun `P3 un 'null' EXPLÍCITO en suggestedModifiers no truena — cae al default`() {
         // Un default sólo cubre la llave AUSENTE; un `null` presente sobre una
         // propiedad no-nulable revienta la decodificación SIN `coerceInputValues`.
         // El server de hoy nunca manda este `null` (lo fuerza a `[]`), pero el

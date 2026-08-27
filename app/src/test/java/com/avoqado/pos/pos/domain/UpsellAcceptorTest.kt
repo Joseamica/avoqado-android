@@ -137,7 +137,7 @@ class UpsellAcceptorTest {
         Discount(id = id, name = "Promo", value = value, type = type, scope = "ITEM")
 
     @Test
-    fun `🔴 el carrito devuelto YA incluye lo aceptado (no espera recomposición)`() = runBlocking {
+    fun `P1 el carrito devuelto YA incluye lo aceptado (no espera recomposición)`() = runBlocking {
         val cafe = CartItem(type = CartItemType.ProductItem("cafe"), name = "Café", unitPrice = 5000)
         val vm = fakeCart(CartState(items = listOf(cafe)))
         val galleta = product("galleta", price = 35.0)
@@ -185,7 +185,7 @@ class UpsellAcceptorTest {
     }
 
     @Test
-    fun `🔴 se cobra el precio VIVO del producto, no el que decía la tarjeta`() = runBlocking {
+    fun `P1 se cobra el precio VIVO del producto, no el que decía la tarjeta`() = runBlocking {
         val vm = fakeCart()
         // La tarjeta se pintó con $35, pero el producto ya cuesta $50.
         val subioDePrecio = product("galleta", price = 50.0)
@@ -199,7 +199,7 @@ class UpsellAcceptorTest {
     }
 
     @Test
-    fun `🔴 con modificadores resueltos, la línea entra por addProductWithModifiers y el total coincide con la tarjeta`() = runBlocking {
+    fun `P1 con modificadores resueltos, la línea entra por addProductWithModifiers y el total coincide con la tarjeta`() = runBlocking {
         val vm = fakeCart()
         val agua = product("prod_agua", price = 35.0)
         // La misma selección que ya trae la tarjeta ($35 + $15 = $50 = 5000¢).
@@ -262,7 +262,7 @@ class UpsellAcceptorTest {
     // ── Descuento ligado: la tarjeta y el cobro dicen lo MISMO ────────────────
 
     @Test
-    fun `🔴 con descuento ligado, el carrito cobra EXACTO lo que prometio la tarjeta`() = runBlocking {
+    fun `P1 con descuento ligado, el carrito cobra EXACTO lo que prometio la tarjeta`() = runBlocking {
         val vm = fakeCart(descuentosVivos = listOf(descuentoVivo()))
         val galleta = product("galleta", price = 35.0)
         val tarjeta = card("galleta", price = 2800, linkedDiscount = LinkedDiscount("d1", "PERCENTAGE", 20.0, "-20%"))
@@ -280,7 +280,7 @@ class UpsellAcceptorTest {
     }
 
     @Test
-    fun `🔴 con descuento ligado Y modificadores, el carrito cobra EXACTO lo de la tarjeta`() = runBlocking {
+    fun `P1 con descuento ligado Y modificadores, el carrito cobra EXACTO lo de la tarjeta`() = runBlocking {
         val vm = fakeCart(descuentosVivos = listOf(descuentoVivo()))
         val agua = product("prod_agua", price = 35.0)
         val resueltos = listOf(ResolvedModifier("g_tam", "m_gr", "Grande", 15.0))
@@ -318,7 +318,7 @@ class UpsellAcceptorTest {
     }
 
     @Test
-    fun `🔴 si el descuento ya no esta vivo, la tarjeta NO se agrega`() = runBlocking {
+    fun `P1 si el descuento ya no esta vivo, la tarjeta NO se agrega`() = runBlocking {
         // El descuento se borró o venció entre que el POS bajó las reglas y el
         // toque. Mandar ese id tumba la venta ENTERA con 400
         // (`order.mobile.service.ts` rechaza ids desconocidos a propósito), y
@@ -364,7 +364,7 @@ class UpsellAcceptorTest {
     // carrito cobra `priceWithModifiers` de ESA tarjeta, no una constante.
 
     @Test
-    fun `🔴 el precio de la tarjeta (resolver real) y el cobro del carrito (acceptor real) coinciden EXACTO`() = runBlocking {
+    fun `P1 el precio de la tarjeta (resolver real) y el cobro del carrito (acceptor real) coinciden EXACTO`() = runBlocking {
         val vm = fakeCart()
         val agua = product("prod_agua", price = 35.0)
         // Modificador con centavos "feos" — el mismo caso de la truncación en

@@ -129,7 +129,7 @@ class UpsellResolverTest {
     // ── las exclusiones ───────────────────────────────────────────────────────
 
     @Test
-    fun `🔴 el veto del dueño gana aunque la regla esté activa`() {
+    fun `P1 el veto del dueño gana aunque la regla esté activa`() {
         val cards = resolve(listOf(rule()), listOf(product("galleta", upsellEnabled = false)))
         assertTrue(cards.isEmpty())
     }
@@ -205,7 +205,7 @@ class UpsellResolverTest {
     }
 
     @Test
-    fun `🔴 dos capas que sugieren el MISMO producto dan UNA tarjeta, no dos`() {
+    fun `P1 dos capas que sugieren el MISMO producto dan UNA tarjeta, no dos`() {
         val rules = listOf(
             rule(id = "de-datos", suggested = "galleta", priority = 0),
             rule(id = "del-dueño", suggested = "galleta", priority = 5),
@@ -238,7 +238,7 @@ class UpsellResolverTest {
     }
 
     @Test
-    fun `🔴 una ventana que cruza medianoche sigue viva de madrugada`() {
+    fun `P1 una ventana que cruza medianoche sigue viva de madrugada`() {
         // Viernes 22:00 a 02:00. daysOfWeek = [5] = viernes.
         val nocturna = rule(daysOfWeek = listOf(5), timeFrom = "22:00", timeUntil = "02:00")
 
@@ -285,7 +285,7 @@ class UpsellResolverTest {
     }
 
     @Test
-    fun `🔴 el descuento pega sobre producto MAS modificadores, igual que el server`() {
+    fun `P1 el descuento pega sobre producto MAS modificadores, igual que el server`() {
         // El server descuenta sobre `itemTotal` = producto + modificadores
         // (`order.mobile.service.ts`). Si la tarjeta descontara sólo el producto y
         // luego sumara el modificador, diría $43 y el server registraría $40.
@@ -304,7 +304,7 @@ class UpsellResolverTest {
     }
 
     @Test
-    fun `🔴 el redondeo del descuento es HALF-UP, igual que roundPesos del server`() {
+    fun `P1 el redondeo del descuento es HALF-UP, igual que roundPesos del server`() {
         // 1611¢ × 20% = 322.2¢ → el server redondea a 322 y cobra 1289. Truncar el
         // producto (lo que hacía esta función) daba 1288: un centavo de descuadre.
         val r = rule(linkedDiscount = LinkedDiscount("d1", "PERCENTAGE", 20.0, "-20%"))
@@ -345,7 +345,7 @@ class UpsellResolverTest {
     // tronido es el recordatorio de arreglarlo en avoqado-android Y avoqado-ios en
     // el MISMO cambio (regla de paridad del CLAUDE.md).
     @Test
-    fun `🔴 ResolvedModifier priceInCents TRUNCA en vez de redondear — el server difiere en centavos feos`() {
+    fun `P1 ResolvedModifier priceInCents TRUNCA en vez de redondear — el server difiere en centavos feos`() {
         // El peor caso medido: $8.20 cae DOS centésimas por debajo de lo que
         // redondea el server (819¢ vs 820¢).
         assertEquals(819, ResolvedModifier("g", "m", "Feo", 8.20).priceInCents)
@@ -403,7 +403,7 @@ class UpsellResolverTest {
     }
 
     @Test
-    fun `🔴 el nombre de la tarjeta incluye el modificador resuelto`() {
+    fun `P1 el nombre de la tarjeta incluye el modificador resuelto`() {
         // Si sólo dijera "prod_agua" a $50, nadie entiende por qué no es el
         // precio de lista — el cajero/cliente necesita ver QUÉ se resolvió.
         val cards = resolve(
@@ -450,7 +450,7 @@ class UpsellResolverTest {
     // cobra de menos.
 
     @Test
-    fun `🟠 dos obligatorios, uno resuelto NO basta — la tarjeta no se muestra`() {
+    fun `P2 dos obligatorios, uno resuelto NO basta — la tarjeta no se muestra`() {
         val cards = resolve(
             listOf(
                 rule(

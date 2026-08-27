@@ -29,6 +29,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import com.avoqado.pos.core.util.formatMoney
+
 import com.avoqado.pos.designsystem.components.CircleBackButton
 import androidx.compose.material.icons.automirrored.filled.NoteAdd
 import androidx.compose.material.icons.filled.AttachMoney
@@ -175,7 +177,7 @@ private fun ProductDetailContent(
     val displayPrice = if (isCortesia) {
         "$0.00"
     } else {
-        "$${String.format("%.2f", unitTotal * quantity / 100.0)}"
+        formatMoney(unitTotal * quantity / 100.0)
     }
 
     // Validate: can add to cart? (required modifier groups must be satisfied)
@@ -486,7 +488,7 @@ private fun MainDetailView(
                 icon = Icons.Filled.AttachMoney,
                 title = "Ajuste de precio",
                 subtitle = priceAdjustment?.let {
-                    "$${String.format("%.2f", it / 100.0)}"
+                    formatMoney(it / 100.0)
                 },
                 onClick = { onNavigate(DetailSubView.PRICE_ADJUST) },
             )
@@ -968,7 +970,7 @@ private fun PriceAdjustSubView(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Text(
-                text = "$${String.format("%.2f", originalPriceCents / 100.0)}",
+                text = formatMoney(originalPriceCents / 100.0),
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textDecoration = TextDecoration.LineThrough,
@@ -978,7 +980,7 @@ private fun PriceAdjustSubView(
 
             // New price display
             Text(
-                text = "$${String.format("%.2f", priceCents / 100.0)}",
+                text = formatMoney(priceCents / 100.0),
                 style = MaterialTheme.typography.headlineLarge.copy(
                     fontWeight = FontWeight.Bold,
                     fontSize = 40.sp,

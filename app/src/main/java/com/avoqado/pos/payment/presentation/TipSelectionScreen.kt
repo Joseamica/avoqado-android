@@ -38,6 +38,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
+import com.avoqado.pos.core.util.formatMoney
+
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Success
 
@@ -170,7 +172,7 @@ fun TipSelectionSheet(
                                 color = if (isSelected) Color.White else MaterialTheme.colorScheme.onSurface,
                             )
                             Text(
-                                text = "$${String.format("%.2f", tipAmount / 100.0)}",
+                                text = formatMoney(tipAmount / 100.0),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = if (isSelected) Color.White.copy(alpha = 0.8f)
                                 else MaterialTheme.colorScheme.onSurfaceVariant,

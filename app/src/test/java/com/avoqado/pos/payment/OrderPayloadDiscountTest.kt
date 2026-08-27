@@ -64,7 +64,7 @@ class OrderPayloadDiscountTest {
     // ── 1. Lo nuevo ───────────────────────────────────────────────────────────
 
     @Test
-    fun `🔴 una linea con descuento manda discountId al server`() {
+    fun `P1 una linea con descuento manda discountId al server`() {
         val item = primerItem(payload(producto(discountId = "disc-1")))
 
         assertEquals(
@@ -102,7 +102,7 @@ class OrderPayloadDiscountTest {
     }
 
     @Test
-    fun `🔴 una linea de promocion NUNCA manda discountId`() {
+    fun `P1 una linea de promocion NUNCA manda discountId`() {
         // Una promoción viaja SOLA: el server rechaza con 400 cualquier item que
         // traiga `promotionRef` junto con datos de producto, y su precio lo
         // resuelve el motor de promociones.

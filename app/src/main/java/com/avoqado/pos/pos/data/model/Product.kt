@@ -1,4 +1,5 @@
 package com.avoqado.pos.pos.data.model
+import com.avoqado.pos.core.util.formatMoney
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -77,7 +78,7 @@ data class Product(
         get() = trackInventory == true && (availableQuantity ?: 1) <= 0
 
     val displayPrice: String
-        get() = "$${String.format("%.2f", priceValue)}" + if (soldByWeight) "/kg" else ""
+        get() = formatMoney(priceValue) + if (soldByWeight) "/kg" else ""
 
     val hasModifiers: Boolean
         get() = !modifierGroups.isNullOrEmpty() &&

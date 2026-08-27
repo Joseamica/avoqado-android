@@ -52,8 +52,8 @@ android {
         applicationId = "com.avoqado.pos"
         minSdk = 26
         targetSdk = 36
-        versionCode = 29
-        versionName = "2.15.0"
+        versionCode = 30
+        versionName = "2.16.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -212,3 +212,61 @@ dependencies {
     androidTestImplementation(libs.androidx.test.ext.junit)
     androidTestImplementation(libs.androidx.test.runner)
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Guardia: un emoji en el NOMBRE de un test rompe la caché de build de Gradle
+// ─────────────────────────────────────────────────────────────────────────────
+// Kotlin bautiza las clases anónimas de un test con el nombre del test, así que
+// `fun \`🔴 el carrito cobra exacto\`() { ... }` genera un ARCHIVO llamado
+// `…Test$🔴 el carrito cobra exacto$1.class`. El packer de la caché no puede hacer
+// stat de ese archivo en este filesystem y `transformDebugUnitTestClassesWithAsm`
+// revienta con «Could not get file mode for …» — un fallo que NO es del código, que
+// no trae mensaje útil, y que ya costó una investigación completa (2026-08-20).
+//
+// Verificado ese mismo día: acentos y em-dash (—) SÍ funcionan; conviven 116 .class
+// con ellos. Sólo los emoji rompen. En el KDoc o comentario de arriba el emoji es
+// inofensivo: sólo el nombre entre backticks genera nombre de archivo.
+val checkNoEmojiInTestNames by tasks.registering {
+    group = "verification"
+    description = "Falla si un nombre de test entre backticks trae emoji (rompe la caché de Gradle)"
+
+    val testSources = fileTree("src/test") { include("**/*.kt") }
+    val marker = layout.buildDirectory.file("tmp/checkNoEmojiInTestNames.ok")
+    val root = projectDir
+    inputs.files(testSources)
+    outputs.file(marker)
+
+    doLast {
+        val funName = Regex("""fun\s+`([^`]*)`""")
+        // Rangos por CODE POINT, no por char: el regex de Java trabaja por code point, así que
+        // un par suplente (\uD83D\uDD34) NUNCA casa escrito como dos elementos de clase —
+        // verificado con la sonda del 2026-08-20, que se escapaba en silencio.
+        // \x{10000}+ = todo el plano astral (🔴 🟠 🟡 🟢 …); el resto, pictográficos del BMP
+        // (✅ ❌ ⚠ ⚪) y el selector de variación. Acentos, em-dash, flechas y «» quedan fuera.
+        val emoji = Regex("""[\x{10000}-\x{10FFFF}\x{2600}-\x{27BF}\x{2B00}-\x{2BFF}\x{FE0F}]""")
+        val offenders = mutableListOf<String>()
+        testSources.files.sorted().forEach { file ->
+            file.readLines().forEachIndexed { idx, line ->
+                val name = funName.find(line)?.groupValues?.get(1) ?: return@forEachIndexed
+                if (emoji.containsMatchIn(name)) {
+                    offenders += "${file.relativeTo(root)}:${idx + 1}  $name"
+                }
+            }
+        }
+        if (offenders.isNotEmpty()) {
+            throw GradleException(buildString {
+                appendLine("Emoji en nombres de test — rompen la caché de build de Gradle:")
+                offenders.forEach { appendLine("    $it") }
+                appendLine()
+                appendLine("Kotlin nombra las clases anónimas con el nombre del test, y el packer de la caché")
+                appendLine("no puede leer un archivo con emoji: transformDebugUnitTestClassesWithAsm falla con")
+                appendLine("«Could not get file mode for …», sin decir que la causa es el nombre.")
+                appendLine("Quita el emoji del nombre (la convención aquí es P1/P2/P3);")
+                appendLine("en el KDoc o comentario de arriba sí puede quedarse.")
+            })
+        }
+        marker.get().asFile.apply { parentFile.mkdirs(); writeText("ok\n") }
+    }
+}
+
+tasks.withType<Test>().configureEach { dependsOn(checkNoEmojiInTestNames) }

@@ -56,7 +56,7 @@ class PrintConfigRepositoryTest {
     }
 
     @Test
-    fun `🔴 un refresh fallido NO borra la config buena — si no, deja de imprimir a media comida`() = runTest {
+    fun `P1 un refresh fallido NO borra la config buena — si no, deja de imprimir a media comida`() = runTest {
         coEvery { apiService.getPrintConfig("venue-1") } returns PrintConfigResponse(success = true, data = configConEstacion())
         repository.refresh("venue-1")
         assertEquals(1, repository.getCurrentConfig().stations.size)

@@ -124,7 +124,7 @@ class UpsellViewModelTest {
     }
 
     @Test
-    fun `🔴 el veto del dueño sobre el producto gana`() {
+    fun `P1 el veto del dueño sobre el producto gana`() {
         val vm = viewModel(catalog = listOf(product("galleta", upsellEnabled = false)))
         assertNull(vm.offer(cart("cafe"), UpsellContext.COUNTER))
     }
@@ -143,7 +143,7 @@ class UpsellViewModelTest {
     }
 
     @Test
-    fun `🔴 un fallo interno NO abre momento — el cobro sigue`() {
+    fun `P1 un fallo interno NO abre momento — el cobro sigue`() {
         val vm = viewModel()
         // El catálogo revienta al leerse: el peor caso realista.
         every { products.products } throws IllegalStateException("catálogo roto")
@@ -155,7 +155,7 @@ class UpsellViewModelTest {
     // ── grupo de control ──────────────────────────────────────────────────────
 
     @Test
-    fun `🔴 el grupo de control NO ve tarjetas pero SÍ se registra`() {
+    fun `P1 el grupo de control NO ve tarjetas pero SÍ se registra`() {
         val vm = viewModel(holdoutPercent = 100) // todos al control
 
         assertNull(vm.offer(cart("cafe"), UpsellContext.COUNTER))
@@ -196,7 +196,7 @@ class UpsellViewModelTest {
     // ── cierre del momento ────────────────────────────────────────────────────
 
     @Test
-    fun `🔴 al cerrar se sueltan los callbacks de la pantalla del cliente`() {
+    fun `P1 al cerrar se sueltan los callbacks de la pantalla del cliente`() {
         // El CustomerDisplayState REAL: lo que interesa aquí es su estado, no que
         // se haya llamado un método.
         val realDisplay = CustomerDisplayState()
@@ -230,7 +230,7 @@ class UpsellViewModelTest {
     }
 
     @Test
-    fun `🔴 los montos viajan en PESOS, no en centavos`() {
+    fun `P1 los montos viajan en PESOS, no en centavos`() {
         val vm = viewModel()
         val moment = vm.offer(cart("cafe"), UpsellContext.COUNTER)!!
         vm.toggle(moment.cards[0].ruleId)

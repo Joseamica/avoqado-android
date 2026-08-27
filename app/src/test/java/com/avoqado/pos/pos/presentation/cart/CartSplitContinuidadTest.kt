@@ -89,6 +89,7 @@ class CartSplitContinuidadTest {
         tableSession = com.avoqado.pos.tables.data.TableSession(),
         customerDisplay = com.avoqado.pos.customerdisplay.CustomerDisplayState(),
         areaTicketRepository = mockk(relaxed = true),
+        walletScanRepository = mockk(relaxed = true),
     )
 
     /** Deja el carrito como queda la parte 2 de un split por importe. */

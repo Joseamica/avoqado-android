@@ -45,6 +45,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.avoqado.pos.core.util.formatMoney
+
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Success
 import com.avoqado.pos.payment.data.model.PaymentContext
@@ -121,7 +123,7 @@ fun PaymentMethodSelectionScreen(
         Spacer(modifier = Modifier.weight(1f))
 
         Text(
-            text = "$${String.format("%.2f", amountCents / 100.0)}",
+            text = formatMoney(amountCents / 100.0),
             fontSize = 56.sp,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onSurface,
@@ -491,7 +493,7 @@ private fun CustomCashSheet(
 
             // Amount display
             Text(
-                text = "$${String.format("%.2f", inputCents / 100.0)}",
+                text = formatMoney(inputCents / 100.0),
                 fontSize = 36.sp,
                 fontWeight = FontWeight.Bold,
                 color = if (inputCents == 0) MaterialTheme.colorScheme.outlineVariant
@@ -504,14 +506,14 @@ private fun CustomCashSheet(
             // Minimum / Change hint
             if (isValid && changeCents > 0) {
                 Text(
-                    text = "Cambio: $${String.format("%.2f", changeCents / 100.0)}",
+                    text = "Cambio: ${formatMoney(changeCents / 100.0)}",
                     style = MaterialTheme.typography.bodyMedium,
                     color = Success,
                     modifier = Modifier.align(Alignment.CenterHorizontally),
                 )
             } else {
                 Text(
-                    text = "Mínimo $${String.format("%.2f", totalCents / 100.0)}",
+                    text = "Mínimo ${formatMoney(totalCents / 100.0)}",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.align(Alignment.CenterHorizontally),
@@ -870,7 +872,7 @@ private fun PaymentItemCard(item: PaymentItem) {
 }
 
 private fun formatAmount(cents: Int): String {
-    return "$${String.format("%.2f", cents / 100.0)}"
+    return formatMoney(cents / 100.0)
 }
 
 private fun formatSignedAmount(cents: Int): String {
@@ -920,6 +922,6 @@ private fun formatCompactAmount(cents: Int): String {
     return if (cents % 100 == 0) {
         "$${(cents / 100)}"
     } else {
-        "$${String.format("%.2f", pesos)}"
+        formatMoney(pesos)
     }
 }

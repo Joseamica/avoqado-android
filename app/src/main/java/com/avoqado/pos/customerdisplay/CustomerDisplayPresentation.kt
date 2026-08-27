@@ -17,6 +17,8 @@ import androidx.savedstate.SavedStateRegistry
 import androidx.savedstate.SavedStateRegistryController
 import androidx.savedstate.SavedStateRegistryOwner
 import androidx.savedstate.setViewTreeSavedStateRegistryOwner
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 
 /**
@@ -31,6 +33,7 @@ class CustomerDisplayPresentation(
     context: Context,
     display: Display,
     private val state: CustomerDisplayState,
+    private val kioskState: com.avoqado.pos.kiosk.domain.KioskState,
 ) : Presentation(context, display), LifecycleOwner, ViewModelStoreOwner, SavedStateRegistryOwner {
 
     private val lifecycleRegistry = LifecycleRegistry(this)
@@ -66,6 +69,18 @@ class CustomerDisplayPresentation(
                 // La pantalla del cliente SIEMPRE en claro: es un letrero de
                 // cara al público, no sigue el tema del cajero.
                 AvoqadoTheme(darkTheme = false) {
+                    // 🔴 LA bifurcación. Es lo único que separa al kiosco del
+                    // espejo, y por eso el kiosco no puede romper el mostrador:
+                    // apagado, esta rama ni se toca y todo sigue como siempre.
+                    val kioskOn by kioskState.enabled.collectAsState()
+                    if (kioskOn) {
+                        val venueName by state.venueName.collectAsState()
+                        com.avoqado.pos.kiosk.presentation.KioskScreen(
+                            state = kioskState,
+                            venueName = venueName,
+                        )
+                        return@AvoqadoTheme
+                    }
                     CustomerDisplayScreen(
                         state = state,
                         onRating = { state.onRatingPicked?.invoke(it) },

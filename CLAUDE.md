@@ -1,5 +1,24 @@
 # CLAUDE.md - Avoqado Android
 
+## 🔴 Los builds pesados van por `avq-verify` (hacen fila)
+
+Esta Mac corre con ~20 sesiones de IA encima y el swap al límite; **dos daemons de Kotlin a `-Xmx6g`
+la tumban**. Cualquier `./gradlew` que compile (y `xcodebuild`) se lanza así, para que sólo haya uno
+a la vez:
+
+```bash
+cd /Users/amieva/Documents/Programming/Avoqado
+./scripts/avq-verify.sh avoqado-android ./gradlew assembleDebug
+```
+
+Esto **no** cambia la regla de "un compile de un solo proyecto se corre siempre, aunque la máquina
+esté saturada": eso decide **si** compilas (siempre sí), esto decide **cómo** — esperando turno en
+vez de encimarte. Van a pelo: lint, formato, un test suelto, `--version`.
+
+En ESTE repo el trabajo NO se manda al Alienware (no tiene Java ni Xcode): el script sólo hace la
+fila local, que es justo lo que hace falta aquí. Detalle: `Avoqado/CLAUDE.md` → "Verificación repartida".
+
+
 This file provides guidance to Claude Code when working with this repository.
 
 > **Reglas de entorno** — sesiones de IA en paralelo, y cuándo verificar según la carga de la
@@ -371,6 +390,14 @@ Uses `Modifier.width(IntrinsicSize.Max)` on each tab Column to constrain width t
 - **State**: Use `StateFlow` + `collectAsState()` in Composables
 - **Navigation**: Compose Navigation with `NavHost`
 - **Async**: `viewModelScope.launch` for coroutines
+- 🔴 **Emoji en nombres de test: NO.** En logs, KDoc y comentarios sí (arriba ya se usan a
+  propósito). Pero un `fun \`🔴 el carrito cobra exacto\`()` hace que Kotlin bautice sus clases
+  anónimas con ese nombre — genera el ARCHIVO `…Test$🔴 el carrito cobra exacto$1.class`, y el
+  packer de la caché de build no puede leerlo: `transformDebugUnitTestClassesWithAsm` revienta con
+  «Could not get file mode for …», un fallo que NO es de tu código. Acentos y em-dash (—) sí
+  funcionan; sólo los emoji rompen. La convención para marcar criticidad en el nombre es
+  **`P1` / `P2` / `P3`** (antes `🔴` / `🟠` / `🟡`). Lo vigila `:app:checkNoEmojiInTestNames`, que
+  corre solo antes de cualquier tarea de test.
 
 ## iOS Reference (conditional)
 

@@ -21,6 +21,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import com.avoqado.pos.core.util.formatMoney
+
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.estimates.data.model.Estimate
 import com.avoqado.pos.estimates.data.model.EstimateStatus
@@ -129,9 +131,9 @@ fun EstimateDetailView(
         // Totals section
         DetailSectionCard(title = "Totales") {
             Column(modifier = Modifier.padding(AvoqadoTheme.spacing.lg)) {
-                TotalRow("Subtotal", "$${String.format("%.2f", estimate.subtotal)}")
+                TotalRow("Subtotal", formatMoney(estimate.subtotal))
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
-                TotalRow("Impuestos", "$${String.format("%.2f", estimate.taxAmount)}")
+                TotalRow("Impuestos", formatMoney(estimate.taxAmount))
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))

@@ -48,6 +48,8 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import com.avoqado.pos.R
+import com.avoqado.pos.core.util.formatMoney
+
 import com.avoqado.pos.designsystem.components.AvoqadoDialog
 import com.avoqado.pos.designsystem.components.AvoqadoBrandLoader
 import com.avoqado.pos.designsystem.components.AvoqadoErrorToast
@@ -201,7 +203,7 @@ fun PaymentResultScreen(
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xl))
 
             Text(
-                text = "$${String.format("%.2f", totalCents / 100.0)}",
+                text = formatMoney(totalCents / 100.0),
                 style = MaterialTheme.typography.displayMedium,
                 fontWeight = FontWeight.SemiBold,
             )
@@ -215,7 +217,7 @@ fun PaymentResultScreen(
             if (method == PaymentMethod.CASH && methodLabel == null && changeCents > 0) {
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
                 Text(
-                    text = "Cambio: $${String.format("%.2f", changeCents / 100.0)}",
+                    text = "Cambio: ${formatMoney(changeCents / 100.0)}",
                     style = MaterialTheme.typography.titleLarge,
                     color = Success,
                 )

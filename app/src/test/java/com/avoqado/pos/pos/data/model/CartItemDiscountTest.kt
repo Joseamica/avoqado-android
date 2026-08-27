@@ -62,7 +62,7 @@ class CartItemDiscountTest {
     // ── 1. Lo nuevo: el descuento por línea SÍ baja lo que se cobra ────────────
 
     @Test
-    fun `🔴 un porcentaje baja el total de la linea`() {
+    fun `P1 un porcentaje baja el total de la linea`() {
         val item = linea(unitPrice = 3500, discountType = "PERCENTAGE", discountValue = 20.0)
 
         assertEquals("700¢ de descuento sobre 3500¢", 700, item.itemDiscountCents)
@@ -70,7 +70,7 @@ class CartItemDiscountTest {
     }
 
     @Test
-    fun `🔴 el descuento pega sobre producto MAS modificadores, igual que el server`() {
+    fun `P1 el descuento pega sobre producto MAS modificadores, igual que el server`() {
         // $35 de producto + $15 del tamaño = $50 de línea. Un -20% sobre la línea
         // son $10, no $7: si el descuento pegara sólo en el producto daríamos $43
         // aquí y el server registraría $40.
@@ -94,7 +94,7 @@ class CartItemDiscountTest {
     }
 
     @Test
-    fun `🔴 FIXED y FIXED_AMOUNT significan lo mismo`() {
+    fun `P1 FIXED y FIXED_AMOUNT significan lo mismo`() {
         // El server SÓLO dice `FIXED_AMOUNT`. Android sólo reconocía `FIXED`, así
         // que un descuento de $15 se leía como 15% — iOS ya aceptaba las dos
         // (CartModels.swift:551) y Android no.
@@ -106,7 +106,7 @@ class CartItemDiscountTest {
     }
 
     @Test
-    fun `🔴 el descuento JAMAS deja la linea en negativo`() {
+    fun `P1 el descuento JAMAS deja la linea en negativo`() {
         // Un "-$50" sobre un producto de $35 se topa en la línea, no la invierte.
         val item = linea(unitPrice = 3500, discountType = "FIXED_AMOUNT", discountValue = 50.0)
 
@@ -123,7 +123,7 @@ class CartItemDiscountTest {
     }
 
     @Test
-    fun `🔴 un monto fijo es PLANO por linea, no por unidad`() {
+    fun `P1 un monto fijo es PLANO por linea, no por unidad`() {
         // El server hace `roundPesos(value)` una sola vez sobre el total de la
         // línea. Multiplicarlo por la cantidad regalaría $30 de más aquí.
         val item = linea(unitPrice = 3500, quantity = 3, discountType = "FIXED_AMOUNT", discountValue = 15.0)
@@ -133,7 +133,7 @@ class CartItemDiscountTest {
     }
 
     @Test
-    fun `🔴 el redondeo es HALF-UP, igual que roundPesos del server`() {
+    fun `P1 el redondeo es HALF-UP, igual que roundPesos del server`() {
         // 1611¢ × 20% = 322.2¢. El server redondea a 322 y cobra 1289.
         // Truncar el PRODUCTO (lo que hacía `toCard`) daba 1288: un centavo de
         // descuadre por venta.

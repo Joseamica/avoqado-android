@@ -26,6 +26,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.avoqado.pos.core.util.formatMoney
+
 import com.avoqado.pos.designsystem.components.BackButton
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 
@@ -61,7 +63,7 @@ fun PaymentConfirmScreen(
             verticalArrangement = Arrangement.Center,
         ) {
             Text(
-                text = "$${String.format("%.2f", totalCents / 100.0)}",
+                text = formatMoney(totalCents / 100.0),
                 fontSize = 56.sp,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onSurface,
@@ -112,7 +114,7 @@ fun PaymentConfirmScreen(
             ) {
                 Text("Total", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
                 Text(
-                    "$${String.format("%.2f", totalCents / 100.0)}",
+                    formatMoney(totalCents / 100.0),
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold,
                 )
@@ -169,7 +171,7 @@ private fun DetailRow(label: String, cents: Int) {
     ) {
         Text(label, style = MaterialTheme.typography.bodyLarge)
         Text(
-            "$${String.format("%.2f", cents / 100.0)}",
+            formatMoney(cents / 100.0),
             style = MaterialTheme.typography.bodyLarge,
         )
     }

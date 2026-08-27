@@ -9,6 +9,8 @@ import com.avoqado.pos.areatickets.data.moneyToCents
 import com.avoqado.pos.auth.data.AuthRepository
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.domain.PlanManager
+import com.avoqado.pos.core.util.formatMoney
+
 import com.avoqado.pos.payment.data.OrderRepository
 import com.avoqado.pos.payment.data.model.CreateOrderRequest
 import com.avoqado.pos.pos.data.ActiveCartState
@@ -51,12 +53,30 @@ sealed interface ScannedBarcodeResult {
     data class ProductFound(val product: Product) : ScannedBarcodeResult
     data class WeightedProductFound(val product: Product, val weightKg: Double) : ScannedBarcodeResult
     data class AreaTicketsAdded(val ticketCount: Int) : ScannedBarcodeResult
+    /**
+     * El código escaneado era la tarjeta digital de un cliente, no mercancía.
+     *
+     * 🔴 Va como un caso MÁS de este mismo `sealed interface` y no como una pantalla
+     * aparte: así el cajero apunta con el mismo botón de siempre y el sistema decide
+     * qué leyó. Obligarlo a elegir antes "voy a escanear una tarjeta" es fricción en
+     * el momento de más prisa del mostrador.
+     */
+    data class CustomerCardFound(val card: com.avoqado.pos.loyalty.data.WalletScanResponse) : ScannedBarcodeResult
     data class Unknown(val code: String) : ScannedBarcodeResult
     data class Error(val message: String) : ScannedBarcodeResult
 }
 
 data class CartState(
     val items: List<CartItem> = emptyList(),
+    /**
+     * Premio de cartilla que el cajero marcó tras escanear la tarjeta del cliente.
+     *
+     * 🔴 Viaja DENTRO del carrito y no como parámetro de navegación a propósito: así
+     * llega solo hasta la creación de la orden, que es donde el servidor lo aplica. Y
+     * se limpia con el carrito, así que no puede arrastrarse a la venta siguiente —
+     * que sería regalar un premio dos veces.
+     */
+    val pendingStampRewardId: String? = null,
     val orderDiscount: Discount? = null,
     val orderNote: String? = null,
     val orderTaxPercent: Int? = null,
@@ -140,7 +160,7 @@ data class CartState(
 }
 
 private fun formatCents(cents: Int): String {
-    return "$${String.format("%.2f", cents / 100.0)}"
+    return formatMoney(cents / 100.0)
 }
 
 @HiltViewModel
@@ -160,6 +180,7 @@ class CartViewModel @Inject constructor(
     private val tableSession: com.avoqado.pos.tables.data.TableSession,
     private val customerDisplay: com.avoqado.pos.customerdisplay.CustomerDisplayState,
     private val areaTicketRepository: AreaTicketRepository,
+    private val walletScanRepository: com.avoqado.pos.loyalty.data.WalletScanRepository,
 ) : ViewModel() {
 
     private val _cartState = MutableStateFlow(defaultCartState())
@@ -1286,6 +1307,14 @@ class CartViewModel @Inject constructor(
                     }
                 }
             }
+            // 🔴 Último intento antes de rendirse: puede ser la tarjeta digital de un
+            // cliente. Se filtra por FORMA primero (`pareceTarjetaDeCliente`) para no
+            // hacer un viaje al servidor por cada producto mal dado de alta — en una
+            // caja con fila esa latencia se nota.
+            if (com.avoqado.pos.loyalty.data.pareceTarjetaDeCliente(code)) {
+                walletScanRepository.escanear(code)?.let { return ScannedBarcodeResult.CustomerCardFound(it) }
+            }
+
             return ScannedBarcodeResult.Unknown(code)
         }
 
@@ -1364,6 +1393,16 @@ class CartViewModel @Inject constructor(
      * `Customer.fullName`— porque un cliente atado NO puede pintarse como
      * "Agregar cliente": diría que no hay nadie cuando la venta sí lo lleva.
      */
+    /**
+     * Marca (o quita) el premio que se aplicará al cobrar.
+     *
+     * El descuento NO se aplica aquí: la orden todavía no existe. El servidor lo
+     * canjea al crearla, y por eso el total que el aparato cobra ya viene descontado.
+     */
+    fun setPendingStampReward(rewardId: String?) {
+        _cartState.update { it.copy(pendingStampRewardId = rewardId?.takeIf { id -> id.isNotBlank() }) }
+    }
+
     fun setSelectedCustomer(customerId: String?, customerName: String? = null) {
         val previous = _selectedCustomer.value?.id
         val id = customerId?.trim()?.takeIf { it.isNotEmpty() }

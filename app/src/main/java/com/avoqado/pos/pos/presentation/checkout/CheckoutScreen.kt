@@ -57,6 +57,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.avoqado.pos.areatickets.presentation.AreaTicketOperationsViewModel
+import com.avoqado.pos.core.util.formatMoney
+
 import com.avoqado.pos.customers.presentation.CreateCustomerView
 import com.avoqado.pos.customers.presentation.CustomersView
 import com.avoqado.pos.customers.presentation.CustomersViewModel
@@ -279,7 +281,22 @@ fun CheckoutScreen(
     var selectedProduct by remember { mutableStateOf<Product?>(null) }
     // Venta por peso (báscula): producto por peso pendiente de capturar peso.
     var weightProduct by remember { mutableStateOf<Product?>(null) }
-    var selectedTab by remember { mutableStateOf(InputTab.KEYPAD) }
+    // Cómo se ve el mostrador en ESTE aparato: densidad de la cuadrícula y orden
+    // de las pestañas. Es estado y no una lectura suelta porque la pestaña
+    // "Configurar" lo cambia sin salir de la pantalla — el cajero tiene que ver
+    // el efecto al instante, no al reabrir la app.
+    val layoutCtx = androidx.compose.ui.platform.LocalContext.current
+    var tamanoTiles by remember { mutableStateOf(CheckoutLayoutPrefs.tileSize(layoutCtx)) }
+    var ordenGuardado by remember { mutableStateOf(CheckoutLayoutPrefs.ordenGuardado(layoutCtx)) }
+    val recargarLayout: () -> Unit = {
+        tamanoTiles = CheckoutLayoutPrefs.tileSize(layoutCtx)
+        ordenGuardado = CheckoutLayoutPrefs.ordenGuardado(layoutCtx)
+    }
+    // Abre en la PRIMERA pestaña del orden del aparato, no en el teclado a fuerza:
+    // un local que vende por producto no arranca tecleando importes.
+    var selectedTab by remember {
+        mutableStateOf(ordenarPestanas(ordenGuardado, InputTab.entries).first())
+    }
     var showSearch by remember { mutableStateOf(false) }
     var amountCents by remember { mutableIntStateOf(0) }
     // `rememberSaveable`: con `remember` a secas, cambiar de pestaña desmontaba el flujo de
@@ -323,6 +340,8 @@ fun CheckoutScreen(
     var unknownBarcode by remember { mutableStateOf<String?>(null) }
     var barcodeError by remember { mutableStateOf<String?>(null) }
     var areaTicketAddedCount by remember { mutableStateOf<Int?>(null) }
+    // La tarjeta digital que el cajero acaba de escanear, si escaneó una.
+    var scannedCustomerCard by remember { mutableStateOf<com.avoqado.pos.loyalty.data.WalletScanResponse?>(null) }
     var showSplitPayment by remember { mutableStateOf(false) }
     // "Dividir la cuenta" from the table panel: auto-open the split sheet once
     // on arrival (flag consumed so re-compositions don't re-open it).
@@ -535,12 +554,12 @@ fun CheckoutScreen(
             // hay que decidir si cabe una tercera columna. Además `maxWidth` ya viene
             // sin lo que se come la barra de navegación lateral.
             val modoPanelPromos = resolverModoPanel(ajustePanelPromos, maxWidth.value.toInt())
-            val pestanasTablet = pestanasVisibles(modoPanelPromos)
+            val pestanasTablet = ordenarPestanas(ordenGuardado, pestanasVisibles(modoPanelPromos))
             // La pestaña de promociones puede desaparecer al girar la tablet o al
-            // cambiar el ajuste. Si el cajero estaba parado en ella se le devuelve al
-            // teclado, en vez de dejarlo mirando una pestaña que ya no existe.
+            // cambiar el ajuste. Si el cajero estaba parado en ella se le devuelve a la
+            // primera de su orden, en vez de dejarlo mirando una pestaña que ya no existe.
             LaunchedEffect(pestanasTablet) {
-                if (selectedTab !in pestanasTablet) selectedTab = InputTab.KEYPAD
+                if (selectedTab !in pestanasTablet) selectedTab = pestanasTablet.first()
             }
             Row(modifier = Modifier.fillMaxSize()) {
                 // Left panel - Input area
@@ -636,6 +655,7 @@ fun CheckoutScreen(
                                         } else {
                                             null
                                         },
+                                        tileSize = tamanoTiles,
                                     )
                                 }
                                 InputTab.PROMOS -> {
@@ -651,6 +671,8 @@ fun CheckoutScreen(
                                 InputTab.MOSAIC -> {
                                     MosaicConfigView(
                                         cartViewModel = cartViewModel,
+                                        pestanasVisiblesHoy = pestanasTablet,
+                                        onLayoutChanged = recargarLayout,
                                     )
                                 }
                             }
@@ -766,9 +788,12 @@ fun CheckoutScreen(
             // HIDDEN, para que un valor inesperado no la haga desaparecer en
             // silencio en el único layout que no tiene tercera columna.
             val modoPanelPromos = resolverModoPanel(ajustePanelPromos, maxWidth.value.toInt())
-            val pestanasTelefono = pestanasVisibles(modoPanelPromos, siempreComoPestana = true)
+            val pestanasTelefono = ordenarPestanas(
+                ordenGuardado,
+                pestanasVisibles(modoPanelPromos, siempreComoPestana = true),
+            )
             LaunchedEffect(pestanasTelefono) {
-                if (selectedTab !in pestanasTelefono) selectedTab = InputTab.KEYPAD
+                if (selectedTab !in pestanasTelefono) selectedTab = pestanasTelefono.first()
             }
             Column(modifier = Modifier.fillMaxSize()) {
                 if (showSearch) {
@@ -853,6 +878,7 @@ fun CheckoutScreen(
                                         )
                                     },
                                     onPackTap = { cartViewModel.addCreditPack(it) },
+                                    tileSize = tamanoTiles,
                                 )
                             }
                             InputTab.PROMOS -> {
@@ -868,6 +894,8 @@ fun CheckoutScreen(
                             InputTab.MOSAIC -> {
                                 MosaicConfigView(
                                     cartViewModel = cartViewModel,
+                                    pestanasVisiblesHoy = pestanasTelefono,
+                                    onLayoutChanged = recargarLayout,
                                 )
                             }
                         }
@@ -1108,6 +1136,21 @@ fun CheckoutScreen(
                                 cartViewModel.addProductByWeight(result.product, result.weightKg)
                             is ScannedBarcodeResult.AreaTicketsAdded ->
                                 areaTicketAddedCount = result.ticketCount
+                            is ScannedBarcodeResult.CustomerCardFound -> {
+                                // 🔴 Escanear la tarjeta LIGA la venta al cliente, y eso es lo
+                                // que hace que el sello suba solo al cobrar. Sin esta línea el
+                                // cajero vería el nombre pero la compra no contaría para su
+                                // cartilla, que es justo lo que el cliente vino a buscar.
+                                val c = result.card.customer
+                                if (c != null) {
+                                    val nombre = listOfNotNull(c.firstName, c.lastName)
+                                        .filter { it.isNotBlank() }
+                                        .joinToString(" ")
+                                        .ifBlank { null }
+                                    cartViewModel.setSelectedCustomer(c.id, nombre)
+                                }
+                                scannedCustomerCard = result.card
+                            }
                             is ScannedBarcodeResult.Unknown ->
                                 unknownBarcode = result.code
                             is ScannedBarcodeResult.Error ->
@@ -1156,6 +1199,60 @@ fun CheckoutScreen(
     }
 
     // Unknown barcode confirmation dialog
+    // La tarjeta digital de un cliente, recién escaneada.
+    //
+    // 🔴 Se usa el MISMO `AvoqadoDialog` que los otros avisos del escáner, a propósito:
+    // un componente propio para esto haría que el cajero tenga que aprender otra cosa
+    // en el momento de más prisa del mostrador.
+    scannedCustomerCard?.let { tarjeta ->
+        val cliente = tarjeta.customer
+        val nombre = listOfNotNull(cliente?.firstName, cliente?.lastName)
+            .filter { it.isNotBlank() }
+            .joinToString(" ")
+            .ifBlank { "Cliente identificado" }
+
+        val premio = tarjeta.rewardsToClaim.firstOrNull()
+        val avance = "${tarjeta.stampsEarned} de ${tarjeta.stampsRequired} sellos"
+        val detalle = if (premio != null) {
+            // El premio se dice PRIMERO: es lo único que el cajero tiene que accionar,
+            // y si va después del avance se lo salta.
+            "🎁 Tiene un premio por cobrar: ${premio.rewardLabel}\n\n$avance · esta compra le suma otro"
+        } else {
+            "$avance · esta compra le suma otro"
+        }
+
+        AvoqadoDialog(
+            title = nombre,
+            description = detalle,
+            onDismiss = { scannedCustomerCard = null },
+            actionButton = {
+                // 🔴 Con premio, el botón principal es APLICARLO. El cajero tiene al
+                // cliente enfrente y una fila detrás: si la acción que importa está
+                // escondida detrás de un "Listo", no ocurre.
+                //
+                // No se descuenta nada aquí: la orden todavía no existe. Se marca, y el
+                // servidor lo aplica al crearla — por eso el total que se cobra ya
+                // viene descontado.
+                if (premio != null) {
+                    PrimaryButton(
+                        text = "Aplicar ${premio.rewardLabel}",
+                        onClick = {
+                            cartViewModel.setPendingStampReward(premio.id)
+                            scannedCustomerCard = null
+                        },
+                        fullWidth = true,
+                    )
+                } else {
+                    PrimaryButton(
+                        text = "Listo",
+                        onClick = { scannedCustomerCard = null },
+                        fullWidth = true,
+                    )
+                }
+            },
+        ) {}
+    }
+
     unknownBarcode?.let { scannedCode ->
         AvoqadoDialog(
             title = "Producto no encontrado",
@@ -1999,7 +2096,7 @@ private fun CartItemDetailContent(
         ) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "$${String.format("%.2f", item.totalPrice / 100.0)}",
+                    text = formatMoney(item.totalPrice / 100.0),
                     style = MaterialTheme.typography.headlineMedium,
                     fontWeight = FontWeight.Bold,
                     color = if (item.isCortesia) Color(0xFF34C759)
