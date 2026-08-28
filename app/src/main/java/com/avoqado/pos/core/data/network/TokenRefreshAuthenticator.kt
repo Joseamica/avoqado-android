@@ -67,6 +67,23 @@ class TokenRefreshAuthenticator @Inject constructor(
     private sealed class RefreshOutcome {
         data class Success(val accessToken: String, val refreshToken: String) : RefreshOutcome()
         object NetworkFailure : RefreshOutcome()
+
+        /**
+         * El servidor SÍ contestó, pero con algo que no afirma que el
+         * refresh token murió (500/502/503/429, o un 200 con cuerpo
+         * inválido). Se comporta EXACTAMENTE como `NetworkFailure`: nunca
+         * cierra sesión. Encontrado en revisión (Crítico): un deploy normal
+         * del backend —que aquí tarda minutos— responde 502/503 mientras
+         * está arriba; sin este caso, cualquier POS con el access vencido
+         * en ese instante perdía la sesión completa por un tropiezo
+         * temporal del servidor, exactamente lo que estas dos tareas
+         * existen para evitar.
+         */
+        data class TransientServerFailure(val httpCode: Int) : RefreshOutcome()
+
+        /** El servidor respondió 401/403: dijo explícitamente que el refresh
+         *  token ya no sirve. El ÚNICO caso (junto con no tener refresh
+         *  token guardado) que cierra sesión. */
         data class Rejected(val httpCode: Int) : RefreshOutcome()
     }
 
@@ -149,10 +166,19 @@ class TokenRefreshAuthenticator @Inject constructor(
                 Log.e("🔐", "Token refresh failed: sin red - la sesion sigue viva")
                 null
             }
+            is RefreshOutcome.TransientServerFailure -> {
+                // El servidor contestó (no fue un fallo de red), pero con
+                // algo que tampoco afirma que la sesión murió — se trata
+                // IGUAL que NetworkFailure: nunca cierra sesión.
+                Log.e("🔐", "Token refresh failed: error transitorio del servidor (${outcome.httpCode}) - la sesion sigue viva")
+                null
+            }
             is RefreshOutcome.Rejected -> {
-                // El servidor respondió y dijo que el refresh token ya no
-                // sirve (vencido de verdad, o reutilización detectada y la
-                // familia entera fue revocada). Eso SÍ es logout real.
+                // El servidor respondió 401/403: dijo explícitamente que el
+                // refresh token ya no sirve (vencido de verdad, o
+                // reutilización detectada y la familia entera fue
+                // revocada), o no había refresh token guardado. Eso SÍ es
+                // logout real.
                 Log.e("🔐", "Token refresh rejected by server (${outcome.httpCode}) - logging out")
                 secureStorage.clearSession()
                 null
@@ -193,10 +219,17 @@ class TokenRefreshAuthenticator @Inject constructor(
                         // ninguna que afirme que el refresh token es
                         // inválido. Nunca cerramos sesión por algo que el
                         // servidor no dijo.
-                        RefreshOutcome.NetworkFailure
+                        RefreshOutcome.TransientServerFailure(httpResponse.code)
                     }
-                } else {
+                } else if (httpResponse.code == 401 || httpResponse.code == 403) {
+                    // SÓLO 401/403 es el servidor afirmando que el refresh
+                    // token murió. Cualquier otro código (500/502/503/429…)
+                    // es el servidor tropezando, no negando la sesión —
+                    // clasificarlo aquí desloguearía a cualquier POS con el
+                    // access vencido durante un deploy normal del backend.
                     RefreshOutcome.Rejected(httpResponse.code)
+                } else {
+                    RefreshOutcome.TransientServerFailure(httpResponse.code)
                 }
             }
         } catch (e: IOException) {

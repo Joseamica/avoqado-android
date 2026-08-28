@@ -103,6 +103,49 @@ class AccessVencidoSinRedTest {
     }
 
     @Test
+    fun `un 503 del servidor al refrescar NO cierra la sesion (error transitorio)`() {
+        // CRÍTICO encontrado en revisión: un 502/503 durante un deploy del
+        // backend (que en este proyecto tarda minutos) NO es el servidor
+        // afirmando que el refresh token murió — es el servidor tropezando.
+        // Antes, `refreshTokens()` metía CUALQUIER respuesta no-2xx en
+        // `Rejected`, y `applyOutcome` desloguéaba ante cualquier `Rejected`
+        // sin mirar el código: un despliegue normal dejaba cualquier POS con
+        // el access vencido en ese instante con la caja inservible.
+        server.enqueue(
+            MockResponse().setResponseCode(503).setBody("""{"message":"service unavailable"}"""),
+        )
+
+        val retry = authenticator.authenticate(null, original401())
+
+        assertNull("un 503 no produce reintento", retry)
+        verify(exactly = 0) { secureStorage.clearSession() }
+    }
+
+    @Test
+    fun `un 500 del servidor al refrescar NO cierra la sesion (error transitorio)`() {
+        server.enqueue(
+            MockResponse().setResponseCode(500).setBody("""{"message":"internal error"}"""),
+        )
+
+        val retry = authenticator.authenticate(null, original401())
+
+        assertNull(retry)
+        verify(exactly = 0) { secureStorage.clearSession() }
+    }
+
+    @Test
+    fun `un 429 del servidor al refrescar NO cierra la sesion (limite de peticiones)`() {
+        server.enqueue(
+            MockResponse().setResponseCode(429).setBody("""{"message":"too many requests"}"""),
+        )
+
+        val retry = authenticator.authenticate(null, original401())
+
+        assertNull(retry)
+        verify(exactly = 0) { secureStorage.clearSession() }
+    }
+
+    @Test
     fun `un refresco exitoso reintenta la peticion original con el token nuevo`() {
         server.enqueue(
             MockResponse().setResponseCode(200)
