@@ -2,7 +2,6 @@ package com.avoqado.pos.core.data.network
 
 import android.util.Log
 import com.avoqado.pos.core.data.local.SecureStorage
-import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import okhttp3.Authenticator
@@ -12,6 +11,8 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.Route
+import java.io.IOException
+import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 
 class TokenRefreshAuthenticator @Inject constructor(
@@ -25,6 +26,50 @@ class TokenRefreshAuthenticator @Inject constructor(
     @Volatile
     private var isRefreshing = false
 
+    /**
+     * Lo que dejó el ÚLTIMO refresco que corrió. Quien esperaba (Task 14) lo
+     * REUSA en vez de disparar el suyo — el servidor rota el refresh token,
+     * así que un segundo refresco consumiría un grant ya usado y se leería
+     * como reutilización (revoca la sesión entera, cajero fuera a media
+     * venta). Marcado `@Volatile` para que la escritura del líder sea visible
+     * al seguidor apenas sale de `wait()`, sin depender de en qué instante
+     * exacto se toma `refreshLock`.
+     */
+    @Volatile
+    private var lastRefreshOutcome: RefreshOutcome? = null
+
+    /**
+     * Cliente y base URL PROPIOS del refresco, deliberadamente separados del
+     * OkHttpClient que arma NetworkModule — ese cliente necesita a este
+     * Authenticator como su propio `.authenticator(...)`, así que usarlo aquí
+     * sería un ciclo de dependencias (mismo patrón que
+     * ManagerOverrideCoordinator; ver el comentario en NetworkModule.kt).
+     * Producción usa los valores por defecto; las pruebas los sustituyen por
+     * un MockWebServer — `internal var`, no parámetro del constructor, para
+     * no obligar a Hilt/Dagger a resolver un `OkHttpClient`/`String` sueltos
+     * que no tienen binding en el grafo.
+     */
+    internal var refreshHttpClient: OkHttpClient = OkHttpClient.Builder()
+        .connectTimeout(10, TimeUnit.SECONDS)
+        .readTimeout(10, TimeUnit.SECONDS)
+        .writeTimeout(10, TimeUnit.SECONDS)
+        .build()
+
+    internal var refreshBaseUrl: String = ApiConstants.BASE_URL
+
+    /**
+     * Resultado de UN intento de refresco. Nunca colapsa un fallo de RED y un
+     * rechazo de NEGOCIO en el mismo `null`: esa mezcla era justo lo que
+     * convertía cualquier apagón de wifi en un logout (Task 13,
+     * offline-first-y-hub-lan.md §2.3: "un fallo de RED se convierte en
+     * intent; un rechazo de NEGOCIO se propaga tal cual").
+     */
+    private sealed class RefreshOutcome {
+        data class Success(val accessToken: String, val refreshToken: String) : RefreshOutcome()
+        object NetworkFailure : RefreshOutcome()
+        data class Rejected(val httpCode: Int) : RefreshOutcome()
+    }
+
     override fun authenticate(route: Route?, response: Response): Request? {
         val requestPath = response.request.url.encodedPath
 
@@ -34,19 +79,22 @@ class TokenRefreshAuthenticator @Inject constructor(
             return null
         }
 
-        // Avoid infinite refresh loops
         if (response.request.header("X-Retry-After-Refresh") != null) {
+            // Esta petición YA se reintentó una vez con el token que un
+            // refresco EXITOSO dejó vigente (ver `buildRetry`: el header sólo
+            // se agrega tras un `RefreshOutcome.Success`), y aun así volvió
+            // 401. Un fallo de RED nunca produce un reintento, así que esta
+            // rama sólo se alcanza con una respuesta HTTP real del servidor:
+            // es rechazo de negocio de verdad.
             Log.e("🔐", "Token refresh failed - logging out")
             secureStorage.clearSession()
             return null
         }
 
-        // Concurrent 401s no longer get dropped: if a refresh is already
-        // running, wait for it and retry with the token it stored (before,
-        // every concurrent request but one surfaced a spurious 401).
         synchronized(refreshLock) {
             if (isRefreshing) {
-                // Another thread is refreshing — block until it finishes.
+                // Otro hilo ya está refrescando (Task 14): esperar su
+                // resultado y REUSARLO en vez de refrescar también.
                 while (isRefreshing) {
                     try {
                         (refreshLock as Object).wait(10_000)
@@ -55,43 +103,25 @@ class TokenRefreshAuthenticator @Inject constructor(
                         return null
                     }
                 }
-                val freshToken = secureStorage.accessToken ?: return null
-                // Only retry if the refresh actually produced a usable token.
-                return if (secureStorage.isLoggedIn) {
-                    response.request.newBuilder()
-                        .header("Authorization", "Bearer $freshToken")
-                        .header("X-Retry-After-Refresh", "true")
-                        .build()
-                } else {
-                    null
-                }
+                // El líder ya notificó (o el wait venció, caso extremo): si
+                // dejó éxito, reintentamos con SU token nuevo. Si dejó fallo
+                // de red o rechazo, no reintentamos — nada nuevo que probar.
+                return buildRetry(response, lastRefreshOutcome)
             }
             isRefreshing = true
         }
 
         try {
-            val refreshToken = secureStorage.refreshToken ?: run {
-                secureStorage.clearSession()
-                return null
-            }
-
-            val refreshResult = runBlocking { refreshTokens(refreshToken) }
-
-            return if (refreshResult != null) {
-                secureStorage.updateTokens(
-                    accessToken = refreshResult.accessToken,
-                    refreshToken = refreshResult.refreshToken,
-                )
-                Log.d("🔐", "Token refreshed successfully")
-                response.request.newBuilder()
-                    .header("Authorization", "Bearer ${refreshResult.accessToken}")
-                    .header("X-Retry-After-Refresh", "true")
-                    .build()
+            val refreshToken = secureStorage.refreshToken
+            val outcome = if (refreshToken == null) {
+                // Sin refresh token no hay nada que intentar: no es un fallo
+                // de red, es una sesión que ya no existe localmente.
+                RefreshOutcome.Rejected(httpCode = 0)
             } else {
-                Log.e("🔐", "Token refresh returned null - logging out")
-                secureStorage.clearSession()
-                null
+                refreshTokens(refreshToken)
             }
+            lastRefreshOutcome = outcome
+            return applyOutcome(response, outcome)
         } finally {
             synchronized(refreshLock) {
                 isRefreshing = false
@@ -100,31 +130,85 @@ class TokenRefreshAuthenticator @Inject constructor(
         }
     }
 
-    private fun refreshTokens(refreshToken: String): TokenRefreshResponse? {
+    private fun applyOutcome(response: Response, outcome: RefreshOutcome): Request? {
+        return when (outcome) {
+            is RefreshOutcome.Success -> {
+                secureStorage.updateTokens(
+                    accessToken = outcome.accessToken,
+                    refreshToken = outcome.refreshToken,
+                )
+                Log.d("🔐", "Token refreshed successfully")
+                buildRetry(response, outcome)
+            }
+            RefreshOutcome.NetworkFailure -> {
+                // offline-first-y-hub-lan.md §2.3: un fallo de RED se
+                // convierte en "sigue vivo", nunca en logout. La sesión, el
+                // outbox y la pantalla se quedan como están; esta petición
+                // sola falla (el 401 original se propaga al llamador, que ya
+                // sabe encolarla) y se reintenta cuando vuelva la red.
+                Log.e("🔐", "Token refresh failed: sin red - la sesion sigue viva")
+                null
+            }
+            is RefreshOutcome.Rejected -> {
+                // El servidor respondió y dijo que el refresh token ya no
+                // sirve (vencido de verdad, o reutilización detectada y la
+                // familia entera fue revocada). Eso SÍ es logout real.
+                Log.e("🔐", "Token refresh rejected by server (${outcome.httpCode}) - logging out")
+                secureStorage.clearSession()
+                null
+            }
+        }
+    }
+
+    private fun buildRetry(response: Response, outcome: RefreshOutcome?): Request? {
+        val success = outcome as? RefreshOutcome.Success ?: return null
+        return response.request.newBuilder()
+            .header("Authorization", "Bearer ${success.accessToken}")
+            .header("X-Retry-After-Refresh", "true")
+            .build()
+    }
+
+    private fun refreshTokens(refreshToken: String): RefreshOutcome {
         return try {
-            val client = OkHttpClient()
             val body = json.encodeToString(
                 TokenRefreshRequest.serializer(),
                 TokenRefreshRequest(refreshToken),
             ).toRequestBody("application/json".toMediaType())
 
             val request = Request.Builder()
-                .url("${ApiConstants.BASE_URL}/mobile/auth/refresh")
+                .url("$refreshBaseUrl/mobile/auth/refresh")
                 .header("ngrok-skip-browser-warning", "true")
                 .post(body)
                 .build()
 
-            val response = client.newCall(request).execute()
-            if (response.isSuccessful) {
-                response.body?.string()?.let {
-                    json.decodeFromString<TokenRefreshResponse>(it)
+            refreshHttpClient.newCall(request).execute().use { httpResponse ->
+                if (httpResponse.isSuccessful) {
+                    val tokens = httpResponse.body?.string()?.let {
+                        json.decodeFromString<TokenRefreshResponse>(it)
+                    }
+                    if (tokens != null) {
+                        RefreshOutcome.Success(tokens.accessToken, tokens.refreshToken)
+                    } else {
+                        // 200 sin cuerpo utilizable: SÍ hubo respuesta, pero
+                        // ninguna que afirme que el refresh token es
+                        // inválido. Nunca cerramos sesión por algo que el
+                        // servidor no dijo.
+                        RefreshOutcome.NetworkFailure
+                    }
+                } else {
+                    RefreshOutcome.Rejected(httpResponse.code)
                 }
-            } else {
-                null
             }
+        } catch (e: IOException) {
+            // Sin conexión, DNS, timeout, host inalcanzable: la definición
+            // exacta de "fallo de RED" de offline-first-y-hub-lan.md §2.3.
+            Log.e("🔐", "Token refresh network error: ${e.message}")
+            RefreshOutcome.NetworkFailure
         } catch (e: Exception) {
-            Log.e("🔐", "Token refresh error: ${e.message}")
-            null
+            // JSON corrupto u otro tropiezo que tampoco es el servidor
+            // afirmando que la sesión murió.
+            Log.e("🔐", "Token refresh unexpected error: ${e.message}")
+            RefreshOutcome.NetworkFailure
         }
     }
 }
