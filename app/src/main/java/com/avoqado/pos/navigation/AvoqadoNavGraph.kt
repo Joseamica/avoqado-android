@@ -76,6 +76,7 @@ import com.avoqado.pos.core.domain.RoleManager
 import com.avoqado.pos.core.util.VenueDateTimeFormatter
 import com.avoqado.pos.designsystem.components.ConnectivityBanner
 import com.avoqado.pos.designsystem.components.AvoqadoBrandLoader
+import com.avoqado.pos.announcements.presentation.AnnouncementGate
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.inventory.presentation.InventoryScreen
 import com.avoqado.pos.notifications.presentation.NotificationsScreen
@@ -144,6 +145,12 @@ fun AvoqadoNavGraph(
                 onLoginSuccess = { appState.onLoginSuccess() },
             )
         }
+
+        // Anuncio de plataforma que Avoqado marcó para interrumpir. Vive aquí, arriba del
+        // NavHost, para que salga una sola vez al entrar y no en cada pantalla. Si no hay
+        // nada que mostrar, o si la consulta falla, no pinta nada: un anuncio jamás puede
+        // estorbar para cobrar.
+        AnnouncementGate()
 
         // Loader global del cambio de contexto — vive ARRIBA del NavHost para
         // sobrevivir al rebuild que el propio cambio detona.

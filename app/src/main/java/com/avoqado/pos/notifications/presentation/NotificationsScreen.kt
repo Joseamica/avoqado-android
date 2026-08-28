@@ -40,6 +40,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -52,6 +53,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.avoqado.pos.navigation.MainTab
 import com.avoqado.pos.designsystem.components.AvoqadoBrandLoader
+import com.avoqado.pos.announcements.presentation.AnnouncementDialog
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.notifications.data.model.AppNotification
 import com.avoqado.pos.notifications.data.model.NotificationCategory
@@ -74,6 +76,9 @@ fun NotificationsScreen(
     val notifications by viewModel.notifications.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     var selectedTabIndex by remember { mutableIntStateOf(0) }
+    // El anuncio de plataforma abierto. Se reconoce por `entityType`, no por una ruta:
+    // el aviso llega sin destino propio y su detalle vive DENTRO de la app.
+    var anuncioAbierto by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(Unit) { viewModel.refresh() }
 
@@ -88,6 +93,10 @@ fun NotificationsScreen(
     }
 
     val unreadCount = notifications.count { !it.isRead }
+
+    anuncioAbierto?.let { id ->
+        AnnouncementDialog(announcementId = id, onCerrar = { anuncioAbierto = null })
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
         // Header with "Marcar todo como leido" button
@@ -204,7 +213,13 @@ fun NotificationsScreen(
                                 if (!notification.isRead) {
                                     viewModel.markAsRead(notification.id)
                                 }
-                                destinoDe(notification.actionUrl)?.let(onOpenTab)
+                                if (notification.entityType == "PlatformAnnouncement" &&
+                                    notification.entityId != null
+                                ) {
+                                    anuncioAbierto = notification.entityId
+                                } else {
+                                    destinoDe(notification.actionUrl)?.let(onOpenTab)
+                                }
                             },
                         )
                     }
