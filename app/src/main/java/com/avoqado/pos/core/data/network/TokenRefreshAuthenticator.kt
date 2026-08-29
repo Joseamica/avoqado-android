@@ -90,9 +90,19 @@ class TokenRefreshAuthenticator @Inject constructor(
     override fun authenticate(route: Route?, response: Response): Request? {
         val requestPath = response.request.url.encodedPath
 
-        // Time clock PIN endpoints can legitimately return 401 ("PIN inválido").
-        // Do not refresh/retry token for those responses.
-        if (requestPath.contains("/mobile/venues/") && requestPath.contains("/time-clock/")) {
+        // Los endpoints que validan un PIN devuelven 401 cuando el PIN está mal — y eso NO
+        // significa que la sesión del aparato haya muerto. Refrescar y reintentar aquí es peor
+        // que inútil: al fallar la segunda vez, el autenticador concluye que el refresh token ya
+        // no sirve y CIERRA LA SESIÓN.
+        //
+        // 🔴 Medido en la Samsung el 2026-08-29: al teclear un PIN en «Cambiar usuario», la app
+        // se fue a la pantalla de login. Servidor: `switch-user 401 → refresh 200 → switch-user
+        // 401` y fuera. Alguien que se equivoca de PIN perdía su sesión — justo en el mostrador.
+        // El reloj checador ya había chocado con esto y por eso su ruta estaba exenta; faltaba
+        // la de cambiar de usuario.
+        if (requestPath.contains("/mobile/venues/") &&
+            (requestPath.contains("/time-clock/") || requestPath.contains("/auth/switch-user"))
+        ) {
             return null
         }
 

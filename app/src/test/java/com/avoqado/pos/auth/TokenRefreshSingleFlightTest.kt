@@ -66,6 +66,40 @@ class TokenRefreshSingleFlightTest {
             .build()
     }
 
+    private fun respuesta401De(path: String): Response {
+        val request = Request.Builder()
+            .url(server.url(path))
+            .header("Authorization", "Bearer access-vigente")
+            .build()
+        return Response.Builder()
+            .request(request)
+            .protocol(Protocol.HTTP_1_1)
+            .code(401)
+            .message("Unauthorized")
+            .build()
+    }
+
+    @Test
+    fun `P1 un 401 de cambiar usuario NO refresca ni cierra sesion — es un PIN mal tecleado`() {
+        // Medido en la Samsung el 2026-08-29: al teclear el PIN en «Cambiar usuario», la app se
+        // fue a la pantalla de LOGIN. El servidor mostró `switch-user 401 → refresh 200 →
+        // switch-user 401` y fuera: el autenticador leyó el segundo 401 como "el refresh token ya
+        // no sirve" y cerró la sesión. Alguien que se equivoca de PIN perdía su sesión, en el
+        // mostrador. El reloj checador ya estaba exento por lo mismo; faltaba esta ruta.
+        val resultado = authenticator.authenticate(null, respuesta401De("/mobile/venues/v1/auth/switch-user"))
+
+        assertNull("un 401 de PIN no se reintenta con token nuevo", resultado)
+        assertEquals("y NO debe dispararse ningún refresco", 0, server.requestCount)
+    }
+
+    @Test
+    fun `P1 el reloj checador sigue exento — la regresion que este arreglo no puede romper`() {
+        val resultado = authenticator.authenticate(null, respuesta401De("/mobile/venues/v1/time-clock/identify"))
+
+        assertNull(resultado)
+        assertEquals(0, server.requestCount)
+    }
+
     @Test
     fun `dos peticiones con 401 simultaneo disparan UN solo refresco`() {
         // La respuesta se retrasa a propósito: mantiene al líder ocupado en
