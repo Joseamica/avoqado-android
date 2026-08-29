@@ -258,6 +258,8 @@ fun MoreMenuScreen(
             email = viewModel.userEmail,
             roleLabel = roleLabel,
             dense = denseMenu,
+            onSwitchUser = { showSwitchUser = true },
+            onLogout = onLogout,
         )
 
         Spacer(modifier = Modifier.height(if (denseMenu) AvoqadoTheme.spacing.xs else AvoqadoTheme.spacing.sm))
@@ -636,39 +638,10 @@ fun MoreMenuScreen(
 
         Spacer(modifier = Modifier.height(sectionGap))
 
-        // Cambiar de usuario — va pegado a "Cerrar sesión" a propósito: son la misma pregunta
-        // ("¿quién opera este aparato?"), sólo que una cuesta un PIN y la otra la contraseña.
-        // 🔴 NO sustituye a cerrar sesión: el founder pidió explícitamente conservar las dos.
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable { showSwitchUser = true }
-                .padding(vertical = AvoqadoTheme.spacing.lg),
-            horizontalArrangement = Arrangement.Center,
-        ) {
-            Text(
-                text = "Cambiar usuario",
-                style = MaterialTheme.typography.bodyMedium,
-                textDecoration = TextDecoration.Underline,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-        }
-
-        // Logout (matching iOS: underlined text, no icon, not red)
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable(onClick = onLogout)
-                .padding(vertical = AvoqadoTheme.spacing.lg),
-            horizontalArrangement = Arrangement.Center,
-        ) {
-            Text(
-                text = "Cerrar sesión $venueName",
-                style = MaterialTheme.typography.bodyMedium,
-                textDecoration = TextDecoration.Underline,
-                color = MaterialTheme.colorScheme.onSurface,
-            )
-        }
+        // Cambiar usuario y Cerrar sesión SUBIERON a la tarjeta de identidad (decisión del
+        // founder, 2026-08-29): estaban al final de una lista de treinta ajustes, y son
+        // justamente las acciones sobre la identidad que esa tarjeta muestra. Aquí abajo ya no
+        // queda nada de sesión — sólo la versión.
 
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
 
@@ -1121,6 +1094,8 @@ private fun IdentityCard(
     email: String?,
     roleLabel: String?,
     dense: Boolean,
+    onSwitchUser: () -> Unit = {},
+    onLogout: () -> Unit = {},
 ) {
     val padding = if (dense) AvoqadoTheme.spacing.md else AvoqadoTheme.spacing.lg
     // Mismo tamaño de chip que HeaderCard, vía tokens: las tres tarjetas del
@@ -1208,6 +1183,55 @@ private fun IdentityCard(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+
+            // Las dos acciones de "¿quién opera este aparato?" viven AQUÍ, junto a la identidad
+            // que cambian, y no al final de una lista de treinta ajustes por la que hay que
+            // hacer scroll (decisión del founder, 2026-08-29). «Cambiar usuario» va en color
+            // porque es la de todos los días; «Cerrar sesión» queda al lado, sin peso visual,
+            // porque es la excepcional — y no desaparece: el founder pidió conservar las dos.
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .background(MaterialTheme.colorScheme.primary)
+                        .clickable(onClick = onSwitchUser)
+                        .padding(
+                            horizontal = AvoqadoTheme.spacing.md,
+                            vertical = AvoqadoTheme.spacing.sm,
+                        ),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "Cambiar usuario",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onPrimary,
+                        maxLines = 1,
+                    )
+                }
+
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                        .clickable(onClick = onLogout)
+                        .padding(
+                            horizontal = AvoqadoTheme.spacing.md,
+                            vertical = AvoqadoTheme.spacing.sm,
+                        ),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        text = "Cerrar sesión",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
                     )
                 }
             }
