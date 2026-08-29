@@ -163,6 +163,14 @@ class AuthRepository @Inject constructor(
                 venuePermissions = venue.permissions,
             )
 
+            // 🔴 `venuesList` TAMBIÉN se reemplaza. Se descubrió en el simulador de iPad, donde la
+            // tarjeta de identidad saca el rol de esta lista y no de `saveLogin`: con sólo
+            // `saveLogin`, el nombre cambiaba a la persona nueva y la píldora seguía diciendo
+            // «Propietario». Un rol que miente sobre lo que alguien puede hacer es peor que no
+            // mostrarlo. Se arregla en las DOS apps aunque el síntoma se viera en una: la lista
+            // la leen varias pantallas y el dato quedaba viejo igual.
+            secureStorage.venuesList = listOf(venue.toStoredVenue())
+
             // 🔴 La venta se atribuye a quien acaba de entrar. Sin esto, entra Ana y las ventas
             // siguen saliendo a nombre del anterior. El cajero puede cambiarlo enseguida desde
             // Cobrar, sin PIN — eso no se toca.
