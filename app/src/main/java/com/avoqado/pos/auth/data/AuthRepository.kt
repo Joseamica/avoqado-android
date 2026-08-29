@@ -5,6 +5,7 @@ import com.avoqado.pos.auth.data.model.AuthError
 import com.avoqado.pos.auth.data.model.LoginRequest
 import com.avoqado.pos.auth.data.model.LoginResult
 import com.avoqado.pos.auth.data.model.RefreshRequest
+import com.avoqado.pos.auth.data.model.SwitchUserRequest
 import com.avoqado.pos.auth.data.model.VenueData
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.local.StoredVenue
@@ -110,6 +111,80 @@ class AuthRepository @Inject constructor(
         } catch (e: Exception) {
             Log.e("🔐", "❌ Login exception: ${e.message}")
             LoginResult.Error("Error de conexión. Verifica tu internet.")
+        }
+    }
+
+    /**
+     * Cambiar de usuario con PIN, sin cerrar sesión.
+     *
+     * Lo pidió el founder así (2026-08-29): «en lugar de que tenga que cerrar sesión y poner su
+     * mail y contraseña otra vez… que salga el pinpad», y **«es como un logout login pero con
+     * pin»**. Esa frase es el contrato: el servidor devuelve la MISMA forma que el login
+     * (`LoginResponse`), así que aquí se guarda con el MISMO `saveLogin` — un segundo camino de
+     * guardado es justo donde se quedaría un permiso viejo sin que nadie se entere.
+     *
+     * 🔴 Lo que NO se toca: el selector «Vendiendo: X» de la pantalla de cobro sigue siendo libre
+     * y sin PIN (decisión del founder). Cambiar de vendedor es un gesto de mostrador; cambiar de
+     * usuario es tomar posesión del aparato.
+     *
+     * 🔴 Sin red no se cambia de usuario, y se dice. No se guarda ningún verificador de PIN en el
+     * aparato: cuatro dígitos se rompen probando diez mil veces.
+     */
+    suspend fun switchUser(pin: String): SwitchUserResult {
+        val venueId = secureStorage.venueId
+        if (venueId.isNullOrBlank()) {
+            Log.e("🔐", "switchUser sin venue local")
+            return SwitchUserResult.Error("Vuelve a iniciar sesión para continuar.")
+        }
+
+        return try {
+            val response = apiService.switchUser(venueId, SwitchUserRequest(pin))
+            val user = response.user
+            val venue = user?.venues?.firstOrNull()
+
+            if (!response.success || response.accessToken == null || user == null || venue == null) {
+                return SwitchUserResult.Error(response.message ?: "No se pudo cambiar de usuario.")
+            }
+
+            // Reemplaza la sesión ENTERA: rol y permisos incluidos. Es lo que hace que el menú, los
+            // botones y lo que se ve se repinten para quien acaba de entrar.
+            secureStorage.saveLogin(
+                userId = user.id,
+                email = user.email,
+                firstName = user.firstName,
+                lastName = user.lastName,
+                venueId = venue.id,
+                venueName = venue.name,
+                venueSlug = venue.slug,
+                role = venue.role,
+                accessToken = response.accessToken,
+                refreshToken = response.refreshToken ?: "",
+                venueTimezone = venue.timezone,
+                venuePermissions = venue.permissions,
+            )
+
+            // 🔴 La venta se atribuye a quien acaba de entrar. Sin esto, entra Ana y las ventas
+            // siguen saliendo a nombre del anterior. El cajero puede cambiarlo enseguida desde
+            // Cobrar, sin PIN — eso no se toca.
+            secureStorage.saveSelectedStaffForCurrentVenue(
+                staffId = user.id,
+                staffName = listOfNotNull(user.firstName, user.lastName).joinToString(" ").ifBlank { user.email },
+            )
+
+            Log.d("🔐", "✅ Cambio de usuario: ${user.email} (${venue.role})")
+            SwitchUserResult.Success(userId = user.id, firstName = user.firstName, role = venue.role)
+        } catch (e: retrofit2.HttpException) {
+            // 401 es el rechazo esperado del PIN; el resto se nombra sin adornos.
+            val message = when (e.code()) {
+                401 -> "PIN incorrecto"
+                429 -> "Demasiados intentos. Espera unos minutos o inicia sesión con tu contraseña."
+                else -> "Error del servidor (${e.code()})"
+            }
+            Log.e("🔐", "❌ switchUser HTTP ${e.code()}")
+            SwitchUserResult.Error(message)
+        } catch (e: Exception) {
+            Log.e("🔐", "❌ switchUser: ${e.message}")
+            SwitchUserResult.Error("Sin conexión. Para cambiar de usuario necesitas internet.")
         }
     }
 
@@ -232,3 +307,9 @@ private fun VenueData.toStoredVenue() = StoredVenue(
     permissions = permissions,
     organizationId = organizationId,
 )
+
+/** Resultado de cambiar de usuario con PIN. */
+sealed class SwitchUserResult {
+    data class Success(val userId: String, val firstName: String?, val role: String?) : SwitchUserResult()
+    data class Error(val message: String) : SwitchUserResult()
+}

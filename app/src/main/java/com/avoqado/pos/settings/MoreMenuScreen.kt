@@ -109,6 +109,7 @@ import com.avoqado.pos.settings.presentation.ScreenPinningSheet
 import com.avoqado.pos.settings.presentation.CustomizeMenuSheet
 import com.avoqado.pos.settings.presentation.SetupWizardScreen
 import com.avoqado.pos.settings.presentation.SupportScreen
+import com.avoqado.pos.designsystem.components.SwitchUserSheet
 import com.avoqado.pos.timeclock.presentation.TimeClockSheet
 
 @Composable
@@ -133,6 +134,7 @@ fun MoreMenuScreen(
     var showPrinter by remember { mutableStateOf(false) }
     var showPermissions by remember { mutableStateOf(false) }
     var showPinSettings by remember { mutableStateOf(false) }
+    var showSwitchUser by remember { mutableStateOf(false) }
     var showArticles by remember { mutableStateOf(false) }
     var showCustomers by remember { mutableStateOf(false) }
     var showReports by remember { mutableStateOf(false) }
@@ -634,6 +636,24 @@ fun MoreMenuScreen(
 
         Spacer(modifier = Modifier.height(sectionGap))
 
+        // Cambiar de usuario — va pegado a "Cerrar sesión" a propósito: son la misma pregunta
+        // ("¿quién opera este aparato?"), sólo que una cuesta un PIN y la otra la contraseña.
+        // 🔴 NO sustituye a cerrar sesión: el founder pidió explícitamente conservar las dos.
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable { showSwitchUser = true }
+                .padding(vertical = AvoqadoTheme.spacing.lg),
+            horizontalArrangement = Arrangement.Center,
+        ) {
+            Text(
+                text = "Cambiar usuario",
+                style = MaterialTheme.typography.bodyMedium,
+                textDecoration = TextDecoration.Underline,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+        }
+
         // Logout (matching iOS: underlined text, no icon, not red)
         Row(
             modifier = Modifier
@@ -953,6 +973,24 @@ fun MoreMenuScreen(
             title = "Permisos",
             message = "La gestión de permisos estará disponible próximamente.",
             onDismiss = { showPermissions = false },
+        )
+    }
+
+    // Cambiar de usuario con PIN
+    if (showSwitchUser) {
+        SwitchUserSheet(
+            onSubmit = { pin -> viewModel.switchUser(pin) },
+            onSuccess = { result ->
+                showSwitchUser = false
+                // Reiniciar la navegación es lo que hace que la UI se repinte con los permisos de
+                // quien entró: el menú, los botones y lo que se ve dependen del rol, y quedarse en
+                // la pantalla actual dejaría lo del anterior a la vista.
+                // El MISMO callback que usa el cambio de sucursal: hace que las pestañas
+                // visibles se recomputen contra el rol nuevo. No hace falta uno propio — el
+                // problema es idéntico (cambió el rol, la UI tiene que repintarse).
+                onTabsShouldRefresh()
+            },
+            onDismiss = { showSwitchUser = false },
         )
     }
 

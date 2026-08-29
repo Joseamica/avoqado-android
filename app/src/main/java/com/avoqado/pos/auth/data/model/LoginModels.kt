@@ -68,3 +68,9 @@ sealed class LoginResult {
 }
 
 // AuthError is defined in AuthError.kt
+
+/** Cambiar de usuario con PIN. El PIN viaja UNA vez y NUNCA se guarda en el aparato. */
+@Serializable
+data class SwitchUserRequest(
+    val pin: String,
+)

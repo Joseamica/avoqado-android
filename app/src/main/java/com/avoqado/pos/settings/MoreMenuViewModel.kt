@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.addons.domain.AddonsManager
 import com.avoqado.pos.auth.data.AuthRepository
+import com.avoqado.pos.auth.data.SwitchUserResult
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.local.StoredVenue
 import com.avoqado.pos.core.data.local.roleDisplayName
@@ -177,4 +178,42 @@ class MoreMenuViewModel @Inject constructor(
     fun clearSessionGuard() {
         _sessionGuardMessage.value = null
     }
+    /**
+     * Cambiar de usuario con PIN, sin cerrar sesión.
+     *
+     * Devuelve el resultado tal cual para que la hoja pinte el error INLINE: alguien que teclea
+     * mal su PIN no merece una pantalla de error — va a volver a teclear.
+     *
+     * 🔴 Con trabajo offline pendiente NO se cambia, y se reusa la MISMA guarda que el cambio de
+     * establecimiento (`blockingWorkCount`), no una nueva: el servidor rechaza una venta cuyo
+     * autor no coincide con la sesión (`ACTOR_MISMATCH`), así que relevar con cosas en la cola las
+     * dejaría trabadas y sin dueño. Es el mismo riesgo, y ya estaba resuelto aquí al lado.
+     */
+    suspend fun switchUser(pin: String): SwitchUserResult {
+        val currentVenueId = secureStorage.venueId
+        val blocking = paymentSyncService.blockingWorkCount() +
+            (currentVenueId?.let { syncOutbox.blockingWorkCount(it) } ?: 0) +
+            secureStorage.areaTicketRecoveryCount(currentVenueId)
+        if (blocking > 0) {
+            return SwitchUserResult.Error(
+                if (blocking == 1) {
+                    "Hay 1 operación sin enviar. Espera a que se sincronice antes de cambiar de usuario."
+                } else {
+                    "Hay $blocking operaciones sin enviar. Espera a que se sincronicen antes de cambiar de usuario."
+                },
+            )
+        }
+
+        val result = authRepository.switchUser(pin)
+        if (result is SwitchUserResult.Success) {
+            // Lo mismo que hace `switchVenue`: sin recargar estos dos, la app seguiría pintando el
+            // modo y los complementos con los que entró la persona anterior.
+            _venueRole.value = result.role ?: _venueRole.value
+            posModeManager.reloadForCurrentVenue()
+            addonsManager.reloadForCurrentVenue()
+            Log.d("🔐", "✅ Cambio de usuario completo: ${result.firstName} (${result.role})")
+        }
+        return result
+    }
+
 }

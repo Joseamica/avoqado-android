@@ -25,6 +25,20 @@ interface ApiService {
     @POST("mobile/auth/refresh")
     suspend fun refreshToken(@Body request: RefreshRequest): RefreshResponse
 
+    /**
+     * Cambiar de usuario con PIN, sin cerrar sesión (Más → Cambiar usuario).
+     *
+     * 🔑 Devuelve `LoginResponse` a propósito: el servidor responde con LA MISMA forma que el
+     * login («es como un logout login pero con pin»), así que aquí no hace falta un DTO nuevo ni
+     * un segundo camino de guardado — y son justamente esos segundos caminos los que se quedan
+     * con los permisos viejos.
+     */
+    @POST("mobile/venues/{venueId}/auth/switch-user")
+    suspend fun switchUser(
+        @Path("venueId") venueId: String,
+        @Body request: com.avoqado.pos.auth.data.model.SwitchUserRequest,
+    ): LoginResponse
+
     // MARK: - Tarjeta digital del cliente
 
     /**
