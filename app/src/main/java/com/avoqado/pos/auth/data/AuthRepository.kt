@@ -186,6 +186,17 @@ class AuthRepository @Inject constructor(
             val message = when (e.code()) {
                 401 -> "PIN incorrecto"
                 429 -> "Demasiados intentos. Espera unos minutos o inicia sesión con tu contraseña."
+                // 🔴 [Auditoría 2026-08-30] Un 403 aquí NO es un PIN equivocado: es el servidor
+                // diciendo por qué ESTA sesión no puede relevar (el negocio está suspendido, o la
+                // sesión nació sin aparato y hay que volver a entrar con contraseña). Ese texto ya
+                // viene escrito para el usuario, así que se muestra tal cual en vez de taparlo con
+                // "Error del servidor (403)", que no le dice a nadie qué hacer.
+                //
+                // Se lee el CAMPO `message` del JSON, nunca buscando palabras dentro del cuerpo:
+                // el `parseForbiddenError` de este mismo archivo hace substring matching y es el
+                // antipatrón que ya costó un botón fantasma en la PAX. Un cuerpo ilegible cae al
+                // texto por defecto, nunca a una interpretación inventada.
+                403 -> mensajeDelServidor(e) ?: "No puedes cambiar de usuario en este aparato."
                 else -> "Error del servidor (${e.code()})"
             }
             Log.e("🔐", "❌ switchUser HTTP ${e.code()}")
@@ -286,6 +297,21 @@ class AuthRepository @Inject constructor(
     }
 
     fun isLoggedIn(): Boolean = secureStorage.isLoggedIn
+
+    /**
+     * El campo `message` del cuerpo de error, o null si no se puede leer.
+     *
+     * Lee la LLAVE, no el texto: comparar palabras dentro del cuerpo (como hace
+     * `parseForbiddenError` aquí abajo) rompe en cuanto alguien reescribe una frase en el
+     * servidor, y falla en silencio — el usuario ve el mensaje genérico y nadie se entera.
+     */
+    private fun mensajeDelServidor(e: retrofit2.HttpException): String? = try {
+        val body = e.response()?.errorBody()?.string()
+        if (body.isNullOrBlank()) null
+        else org.json.JSONObject(body).optString("message").takeIf { it.isNotBlank() }
+    } catch (_: Exception) {
+        null
+    }
 
     private fun parseForbiddenError(e: retrofit2.HttpException): String {
         return try {
