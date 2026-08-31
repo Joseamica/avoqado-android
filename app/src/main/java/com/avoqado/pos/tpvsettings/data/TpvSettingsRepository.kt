@@ -4,8 +4,13 @@ import android.util.Log
 import com.avoqado.pos.core.data.local.PreferencesDataStore
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ApiConstants
+import com.avoqado.pos.core.data.sync.SyncOutbox
+import com.avoqado.pos.customerdisplay.CanonicalDeviceIdProvider
 import com.avoqado.pos.customerdisplay.DisplayModeAction
+import com.avoqado.pos.customerdisplay.DisplayModeAuthorityGate
 import com.avoqado.pos.customerdisplay.DisplayModePrefs
+import com.avoqado.pos.customerdisplay.DisplayModeRequestJournal
+import com.avoqado.pos.customerdisplay.DisplayModeRequestStore
 import com.avoqado.pos.customerdisplay.reconcileDisplayMode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -21,6 +26,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import javax.inject.Inject
+import javax.inject.Provider
 import javax.inject.Singleton
 
 /**
@@ -107,12 +113,34 @@ data class TerminalNavigationSettings(
 }
 
 @Singleton
-class TpvSettingsRepository @Inject constructor(
+class TpvSettingsRepository internal constructor(
     private val secureStorage: SecureStorage,
     private val client: OkHttpClient,
     private val preferencesDataStore: PreferencesDataStore,
     private val displayModePrefs: DisplayModePrefs,
+    private val displayModeJournal: DisplayModeRequestJournal,
+    private val deviceIdProvider: CanonicalDeviceIdProvider,
+    private val displayModeAuthorityGate: DisplayModeAuthorityGate,
 ) {
+    @Inject
+    constructor(
+        secureStorage: SecureStorage,
+        client: OkHttpClient,
+        preferencesDataStore: PreferencesDataStore,
+        displayModePrefs: DisplayModePrefs,
+        displayModeJournal: DisplayModeRequestStore,
+        syncOutboxProvider: Provider<SyncOutbox>,
+        displayModeAuthorityGate: DisplayModeAuthorityGate,
+    ) : this(
+        secureStorage = secureStorage,
+        client = client,
+        preferencesDataStore = preferencesDataStore,
+        displayModePrefs = displayModePrefs,
+        displayModeJournal = displayModeJournal,
+        deviceIdProvider = CanonicalDeviceIdProvider { syncOutboxProvider.get().deviceId },
+        displayModeAuthorityGate = displayModeAuthorityGate,
+    )
+
     // `coerceInputValues`: un server NUEVO con un modo de panel que esta versión
     // de la app todavía no conoce cae al default del campo en vez de reventar el
     // parseo COMPLETO de settings. Fail-open: un valor desconocido no puede
@@ -196,23 +224,32 @@ class TpvSettingsRepository @Inject constructor(
             _terminalNavigation.value = terminalNavigation
             persistTerminalNavigation(venueId, terminalNavigation)
 
-            // Modo de pantallas: el local manda mientras haya un cambio sin
-            // confirmar; si no, se adopta el del server. Solo en el camino
-            // exitoso — un refresh fallido no puede mover la caja de pantalla.
-            when (
-                val action = reconcileDisplayMode(
-                    local = displayModePrefs.inverted.value,
-                    dirty = displayModePrefs.dirty.value,
-                    server = result.data?.deviceTerminal?.customerDisplayInverted,
-                )
-            ) {
-                is DisplayModeAction.Adopt -> displayModePrefs.adoptFromServer(action.value)
-                is DisplayModeAction.Push -> pushDisplayMode(
-                    venueId = venueId,
-                    terminalId = terminalNavigation.terminalId,
-                    value = action.value,
-                )
-                DisplayModeAction.Keep -> Unit
+            // Un journal legible O ilegible es una barrera: el settings legacy
+            // no adopta ni empuja mientras la intención tipada puede estar
+            // cruzando journal → preferencia → mudanza física → ACK.
+            displayModeAuthorityGate.withAuthority {
+                val hasRemoteDisplayBarrier = runCatching {
+                    displayModeJournal.hasInFlight(venueId, deviceIdProvider.currentDeviceId())
+                }.getOrDefault(true)
+                if (!hasRemoteDisplayBarrier) {
+                    val generation = displayModePrefs.generation.value
+                    when (
+                        val action = reconcileDisplayMode(
+                            local = displayModePrefs.inverted.value,
+                            dirty = displayModePrefs.dirty.value,
+                            server = result.data?.deviceTerminal?.customerDisplayInverted,
+                        )
+                    ) {
+                        is DisplayModeAction.Adopt -> displayModePrefs.adoptFromServer(action.value)
+                        is DisplayModeAction.Push -> pushDisplayMode(
+                            venueId = venueId,
+                            terminalId = terminalNavigation.terminalId,
+                            value = action.value,
+                            generation = generation,
+                        )
+                        DisplayModeAction.Keep -> Unit
+                    }
+                }
             }
 
             // Plan gating (Phase ①): persist the OPTIONAL plan block. Absent
@@ -265,7 +302,12 @@ class TpvSettingsRepository @Inject constructor(
      * Empuja el modo de pantallas de ESTE equipo. Si falla no pasa nada malo:
      * la bandera `dirty` sigue puesta y se reintenta en el próximo refresh.
      */
-    private suspend fun pushDisplayMode(venueId: String, terminalId: String?, value: Boolean) {
+    private suspend fun pushDisplayMode(
+        venueId: String,
+        terminalId: String?,
+        value: Boolean,
+        generation: Long,
+    ) {
         val id = terminalId ?: return
         val token = secureStorage.accessToken ?: return
         runCatching {
@@ -285,8 +327,7 @@ class TpvSettingsRepository @Inject constructor(
                 // llegara, `markSynced()` aquí bajaría `dirty` sin que el
                 // valor NUEVO haya llegado al server — y el siguiente refresh
                 // lo revertiría.
-                if (displayModePrefs.inverted.value == value) {
-                    displayModePrefs.markSynced()
+                if (displayModePrefs.markSynced(generation, value)) {
                     Log.d("📦", "✅ Modo de pantallas sincronizado ($value)")
                 } else {
                     Log.d(

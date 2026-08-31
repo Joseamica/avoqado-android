@@ -202,6 +202,14 @@ class SecureStorage @Inject constructor(
      * Server resolves these per-venue from role + custom overrides; client mirrors them
      * to gate UI affordances. See server lib/permissions.ts DEFAULT_PERMISSIONS.
      */
+    /**
+     * Cola DURABLE del cajón, POR VENUE (JSON): cierres, ingresos y retiros que el server todavía no
+     * confirmó. Se guarda ANTES de intentar la red (Codex, 2ª auditoría): si el proceso muere entre
+     * cerrar en local y encolar, el cierre no se pierde. Ver `CashDrawerRepository.reproducirPendientes`.
+     */
+    fun pendingDrawerOpsJson(venueId: String): String? = prefs.getString("pendingDrawerOps.$venueId", null)
+    fun setPendingDrawerOpsJson(venueId: String, value: String?) = prefs.edit().putString("pendingDrawerOps.$venueId", value).apply()
+
     var venuePermissions: List<String>
         get() {
             val raw = prefs.getString(KEY_VENUE_PERMISSIONS, null) ?: return emptyList()

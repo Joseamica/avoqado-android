@@ -18,6 +18,21 @@ vez de encimarte. Van a pelo: lint, formato, un test suelto, `--version`.
 En ESTE repo el trabajo NO se manda al Alienware (no tiene Java ni Xcode): el script sólo hace la
 fila local, que es justo lo que hace falta aquí. Detalle: `Avoqado/CLAUDE.md` → "Verificación repartida".
 
+🔴 **Excepción medida (2026-08-31): `assembleRelease` / `bundleRelease` NO pueden ir por
+avq-verify** — el snapshot excluye `avoqado-release.keystore` (secreto fuera de git, como los
+`.env`) y `validateSigningRelease` muere con "Keystore file … not found". El release firmado se
+corre DIRECTO en el árbol real, acotado:
+
+```bash
+JAVA_HOME=$(/usr/libexec/java_home -v 17) nice -n 19 ./gradlew assembleRelease bundleRelease \
+  -Dkotlin.daemon.jvmargs=-Xmx4096m --max-workers=2
+```
+
+Sin el `-Dkotlin.daemon.jvmargs` el daemon de Kotlin arranca con su default de **2 GB**
+(`gradle.properties` solo sube el heap del daemon de GRADLE, no el de Kotlin) y
+`compileReleaseKotlin` muere por memoria al final — costó un build de 32 minutos. Con el heap en
+4 GB y 2 workers: 4 minutos.
+
 
 This file provides guidance to Claude Code when working with this repository.
 

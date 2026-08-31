@@ -16,6 +16,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import kotlin.math.roundToInt
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -84,7 +85,7 @@ fun OpenDrawerSheet(
             Button(
                 onClick = {
                     val amount = amountText.toDoubleOrNull() ?: 0.0
-                    val cents = (amount * 100).toInt()
+                    val cents = (amount * 100).roundToInt() // Codex 3ª: toInt() truncaba centavos al abrir
                     onConfirm(cents)
                 },
                 enabled = amountText.isNotBlank() && (amountText.toDoubleOrNull() ?: 0.0) >= 0,

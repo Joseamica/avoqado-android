@@ -66,7 +66,7 @@ class CorteTicketBuilderTest {
 
     private fun papel(
         session: CashDrawerSessionEntity = cerrada,
-        tenders: List<CashDrawerRepository.TenderRow> = this.tenders,
+        tenders: List<CashDrawerRepository.TenderRow>? = this.tenders,
         isPartial: Boolean = false,
         events: List<CashDrawerEventEntity> = eventos,
     ): String = String(
@@ -166,12 +166,31 @@ class CorteTicketBuilderTest {
      */
     @Test
     fun `sin desglose del server el ticket lo dice en vez de inventar ceros`() {
-        val t = papel(tenders = emptyList())
+        // `null` = NO SE PUDO consultar. Distinto de una lista vacía (ver el test de abajo).
+        val t = papel(tenders = null)
         assertFalse("no debe afirmar que no hubo tarjeta", t.contains("Tarjeta de crédito"))
-        assertTrue("avisa por qué falta", t.contains("Sin conexión"))
-        assertTrue("y que aparecerá luego", t.contains("recuperar la conexión"))
+        assertTrue("avisa por qué falta", t.contains("No se pudo consultar"))
+        assertTrue("y que aparecerá luego", t.contains("volver a imprimirlo con conexión"))
         assertTrue("el efectivo sí es confiable", t.contains("Efectivo"))
         assertTrue("y el resumen se etiqueta como parcial", t.contains("(EFECTIVO)"))
+    }
+
+    /**
+     * 🔴 El ticket NO puede decir "sin conexión" cuando SÍ la había.
+     *
+     * Antes una lista vacía significaba las dos cosas —"no se pudo preguntar" y "el servidor
+     * contestó que no hubo cobros"— y el papel imprimía el aviso de desconexión sobre un corte
+     * perfectamente consultado. El ticket se queda en el cajón como comprobante: un aviso falso
+     * ahí es peor que en pantalla, porque nadie puede volver a comprobarlo después.
+     */
+    @Test
+    fun `si el server contesta que no hubo cobros el ticket no habla de conexion`() {
+        val t = papel(tenders = emptyList())
+        assertTrue("dice lo que de verdad pasó", t.contains("No hubo cobros en este corte"))
+        assertFalse("y NO culpa a la conexión", t.contains("No se pudo consultar"))
+        assertFalse("ni al desconectarse", t.contains("Sin conexión"))
+        // El servidor SÍ contestó, así que el resumen es total, no sólo del efectivo.
+        assertFalse("el resumen no es parcial", t.contains("(EFECTIVO)"))
     }
 
     // MARK: - Higiene del ticket
@@ -397,7 +416,7 @@ class CorteTicketBuilderTest {
     /** Sin desglose TODO es efectivo (el encabezado ya lo dice): sin repetirlo. */
     @Test
     fun `sin desglose las etiquetas se quedan cortas`() {
-        val t = papel(tenders = emptyList())
+        val t = papel(tenders = null)
 
         assertTrue(t.contains("RESUMEN DE VENTAS (EFECTIVO)"))
         assertFalse("no hay que repetir 'en efectivo' en cada fila", t.contains("Transacciones en efectivo"))

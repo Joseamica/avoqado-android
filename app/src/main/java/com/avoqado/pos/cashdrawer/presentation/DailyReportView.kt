@@ -48,7 +48,8 @@ fun DailyReportView(
     venueName: String = "Avoqado",
     // Payment-method breakdown from the server (card + cash + other) for the
     // session window. Empty = not loaded / offline → falls back to cash-only.
-    tenderBreakdown: List<com.avoqado.pos.cashdrawer.data.CashDrawerRepository.TenderRow> = emptyList(),
+    /** `null` = no se pudo consultar el desglose; lista vacía = el corte no tuvo cobros. */
+    tenderBreakdown: List<com.avoqado.pos.cashdrawer.data.CashDrawerRepository.TenderRow>? = null,
     /**
      * Corte PARCIAL: la caja sigue abierta y el dinero aún no se ha contado.
      *
@@ -58,6 +59,8 @@ fun DailyReportView(
      * parcial y omite conteo y diferencia.
      */
     isPartial: Boolean = false,
+    /** Conteo ciego: en el corte PARCIAL el esperado sólo se enseña a quien tiene permiso. Tras cerrar, siempre. */
+    showExpected: Boolean = true,
     isPrinting: Boolean = false,
     onPrint: () -> Unit = {},
     /**
@@ -103,19 +106,21 @@ fun DailyReportView(
 
     // Payment-method breakdown: prefer the server tender data (all methods),
     // fall back to local cash-only when it hasn't loaded (offline).
-    val cardCents = tenderBreakdown
+    val cardCents = tenderBreakdown.orEmpty()
         .filter { it.method == "CREDIT_CARD" || it.method == "DEBIT_CARD" }
         .sumOf { it.totalCents }
-    val breakdownCashCents = tenderBreakdown.firstOrNull { it.method == "CASH" }?.totalCents
-    val otherCents = tenderBreakdown
+    val breakdownCashCents = tenderBreakdown.orEmpty().firstOrNull { it.method == "CASH" }?.totalCents
+    val otherCents = tenderBreakdown.orEmpty()
         .filter { it.method != "CASH" && it.method != "CREDIT_CARD" && it.method != "DEBIT_CARD" }
         .sumOf { it.totalCents }
     val displayCashCents = breakdownCashCents ?: cashSalesCents
-    val hasServerBreakdown = tenderBreakdown.isNotEmpty()
+    // 🔴 «hay dato del server» NO es «la lista trae filas»: una lista vacía con 200 significa que no
+    // hubo cobros, y decir «sin conexión» ahí es mentir (lo vio el founder, 28-ago).
+    val hasServerBreakdown = tenderBreakdown != null
 
     val transactionCount = events.count { it.type == CashDrawerEventType.CASH_SALE.name }
     // Total sales = all tenders when the server breakdown is available.
-    val totalSalesCents = if (hasServerBreakdown) tenderBreakdown.sumOf { it.totalCents } else cashSalesCents
+    val totalSalesCents = if (hasServerBreakdown) tenderBreakdown.orEmpty().sumOf { it.totalCents } else cashSalesCents
     val avgTicketCents = if (transactionCount > 0) totalSalesCents / transactionCount else 0
 
     // Resta TODOS los egresos, reembolsos incluidos: ese dinero salió del cajón.
@@ -193,10 +198,12 @@ fun DailyReportView(
             // Sin el desglose del server sólo se conoce el efectivo, así que la
             // etiqueta lo dice: llamarle "Ventas totales" a una cifra que excluye
             // tarjeta le hace creer al dueño que vendió menos de lo que vendió.
-            ReportRow(
-                label = if (hasServerBreakdown) "Ventas totales" else "Ventas en efectivo",
-                value = formatCurrency(totalSalesCents),
-            )
+            if (showExpected || !isPartial) {
+                ReportRow(
+                    label = if (hasServerBreakdown) "Ventas totales" else "Ventas en efectivo",
+                    value = formatCurrency(totalSalesCents),
+                )
+            }
             ReportRow(label = "No. de transacciones", value = "$transactionCount")
             ReportRow(label = "Ticket promedio", value = formatCurrency(avgTicketCents))
 
@@ -206,13 +213,23 @@ fun DailyReportView(
             ReportSectionTitle(text = "Desglose por método de pago")
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
 
-            if (hasServerBreakdown) {
+            if (hasServerBreakdown && tenderBreakdown.orEmpty().isEmpty()) {
+                // El server contestó y NO hubo cobros: eso es un dato, no una falla. Sin botón de
+                // reintentar — no hay nada que reintentar.
+                ReportRow(label = "Efectivo", value = formatCurrency(displayCashCents))
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+                Text(
+                    text = "No hubo cobros en este corte.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else if (hasServerBreakdown) {
                 // Un renglón por método REAL. Antes se colapsaba todo en tres cubetas
                 // (Efectivo / Tarjeta / Otros), así que el dueño no podía distinguir
                 // débito de crédito, ni ver por separado una transferencia o un cobro
                 // con terminal ajena — y el server siempre mandó ese detalle. Para
                 // cuadrar con el banco esa distinción es justo la que importa.
-                tenderBreakdown
+                tenderBreakdown.orEmpty()
                     .sortedByDescending { it.totalCents }
                     .forEach { tender ->
                         ReportRow(
@@ -228,9 +245,9 @@ fun DailyReportView(
                 // El efectivo de arriba sí es confiable — sale del cajón, no del server.
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
                 Text(
-                    text = "Sin conexión: sólo se muestra el efectivo, que es lo que hay " +
-                        "en el cajón. Los cobros con tarjeta y otros medios aparecerán en " +
-                        "el corte al recuperar la conexión.",
+                    text = "No se pudo consultar el desglose por método de pago. Se muestra sólo " +
+                        "el efectivo, que es lo que hay en el cajón; los cobros con tarjeta y otros " +
+                        "medios aparecerán cuando se pueda consultar.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -257,7 +274,7 @@ fun DailyReportView(
             // La propina no es dinero del negocio: se le entrega al mesero. Iba
             // sumada dentro de cada método sin distinguirse, así que el corte
             // enseñaba el efectivo sin avisar cuánto de ahí hay que sacar.
-            val propinas = tenderBreakdown.filter { it.tipsCents != 0 }
+            val propinas = tenderBreakdown.orEmpty().filter { it.tipsCents != 0 }
             if (propinas.isNotEmpty()) {
                 ReportSectionTitle(text = "Propinas")
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
@@ -277,7 +294,7 @@ fun DailyReportView(
                         // seguir en el cajón para que cuadre — el efectivo esperado del server
                         // ya la incluye. Por eso NO se pide registrar un egreso.
                         text = "De estas, ${formatCurrency(propinaEfectivo)} están en el cajón y le " +
-                            "tocan al personal. Repártelas al cerrar el turno.",
+                            "tocan al personal. Repártelas al cerrar la caja.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -329,20 +346,31 @@ fun DailyReportView(
                         color = MaterialTheme.colorScheme.outlineVariant,
                         modifier = Modifier.padding(vertical = AvoqadoTheme.spacing.sm),
                     )
-                    ReportRow(
-                        label = "Ventas en efectivo",
-                        value = "+${formatCurrency(cashSalesCents)}",
-                        valueColor = Success,
-                    )
+                    if (showExpected || !isPartial) {
+                        ReportRow(
+                            label = "Ventas en efectivo",
+                            value = "+${formatCurrency(cashSalesCents)}",
+                            valueColor = Success,
+                        )
+                    }
                     HorizontalDivider(
                         color = MaterialTheme.colorScheme.outlineVariant,
                         modifier = Modifier.padding(vertical = AvoqadoTheme.spacing.sm),
                     )
-                    ReportRow(
-                        label = "Efectivo esperado",
-                        value = formatCurrency(expectedCents),
-                        isBold = true,
-                    )
+                    if (showExpected || !isPartial) {
+                        ReportRow(
+                            label = "Efectivo esperado",
+                            value = formatCurrency(expectedCents),
+                            isBold = true,
+                        )
+                    } else {
+                        Text(
+                            text = "Conteo ciego: el efectivo esperado se revela al cerrar la caja.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(vertical = AvoqadoTheme.spacing.sm),
+                        )
+                    }
                     HorizontalDivider(
                         color = MaterialTheme.colorScheme.outlineVariant,
                         modifier = Modifier.padding(vertical = AvoqadoTheme.spacing.sm),

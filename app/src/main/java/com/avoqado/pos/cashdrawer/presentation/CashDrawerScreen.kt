@@ -1,5 +1,8 @@
 package com.avoqado.pos.cashdrawer.presentation
 
+import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -255,7 +258,7 @@ private fun TabletCashDrawerLayout(
                 // Se AVISA en vez de bloquear: el esperado puede ir corto si hay
                 // ventas en efectivo sin sincronizar, y un guard duro dejaría al
                 // cajero sin poder registrar un egreso legítimo.
-                if (amountCents > expectedAmountCents) {
+                if (viewModel.puedeVerEsperado && amountCents > expectedAmountCents) { // sin permiso no hay aviso: sería un oráculo del esperado (Codex 3ª)
                     pendingPayOut = amountCents to note
                 } else {
                     viewModel.addPayOut(amountCents, note)
@@ -269,9 +272,12 @@ private fun TabletCashDrawerLayout(
     pendingPayOut?.let { (amountCents, note) ->
         AvoqadoDialog(
             title = "Más de lo que hay en caja",
-            description = "En caja hay ${formatCurrency(expectedAmountCents)} y vas a sacar " +
-                "${formatCurrency(amountCents)}. La caja quedaría en " +
-                "${formatCurrency(expectedAmountCents - amountCents)}.\n\n" +
+            description = (if (viewModel.puedeVerEsperado)
+                "En caja hay ${formatCurrency(expectedAmountCents)} y vas a sacar " +
+                    "${formatCurrency(amountCents)}. La caja quedaría en " +
+                    "${formatCurrency(expectedAmountCents - amountCents)}.\n\n"
+            else
+                "Vas a sacar ${formatCurrency(amountCents)}, más de lo que debería haber en caja.\n\n") +
                 "Si es un error de captura, corrígelo. Si el efectivo real no coincide " +
                 "con lo que muestra la caja, revisa los movimientos antes de continuar.",
             onDismiss = { pendingPayOut = null },
@@ -519,7 +525,7 @@ private fun PhoneCashDrawerLayout(
             onConfirm = { amountCents, note ->
                 // Mismo aviso que en el layout de tablet: sacar más de lo que hay
                 // deja la caja en negativo, y casi siempre es un cero de más.
-                if (amountCents > expectedAmountCents) {
+                if (viewModel.puedeVerEsperado && amountCents > expectedAmountCents) { // sin permiso no hay aviso: sería un oráculo del esperado (Codex 3ª)
                     pendingPayOut = amountCents to note
                 } else {
                     viewModel.addPayOut(amountCents, note)
@@ -533,9 +539,12 @@ private fun PhoneCashDrawerLayout(
     pendingPayOut?.let { (amountCents, note) ->
         AvoqadoDialog(
             title = "Más de lo que hay en caja",
-            description = "En caja hay ${formatCurrency(expectedAmountCents)} y vas a sacar " +
-                "${formatCurrency(amountCents)}. La caja quedaría en " +
-                "${formatCurrency(expectedAmountCents - amountCents)}.\n\n" +
+            description = (if (viewModel.puedeVerEsperado)
+                "En caja hay ${formatCurrency(expectedAmountCents)} y vas a sacar " +
+                    "${formatCurrency(amountCents)}. La caja quedaría en " +
+                    "${formatCurrency(expectedAmountCents - amountCents)}.\n\n"
+            else
+                "Vas a sacar ${formatCurrency(amountCents)}, más de lo que debería haber en caja.\n\n") +
                 "Si es un error de captura, corrígelo. Si el efectivo real no coincide " +
                 "con lo que muestra la caja, revisa los movimientos antes de continuar.",
             onDismiss = { pendingPayOut = null },
@@ -692,6 +701,7 @@ private fun CurrentDrawerContent(
     val events by viewModel.events.collectAsState()
     val expectedCents by viewModel.expectedAmountCents.collectAsState()
     val isPrintingCorte by viewModel.isPrintingCorte.collectAsState()
+    val rechazadas by viewModel.rechazadas.collectAsState()
     // Corte PARCIAL en pantalla. Antes el botón sólo mandaba a imprimir: sin
     // impresora configurada —o con ella caída— no había forma de ver cómo iba la
     // caja a media jornada, que es justo para lo que sirve.
@@ -709,6 +719,7 @@ private fun CurrentDrawerContent(
             venueName = viewModel.venueName,
             tenderBreakdown = partialTenders,
             isPartial = true,
+            showExpected = viewModel.puedeVerEsperado,
             isPrinting = isPrintingCorte,
             onRetryBreakdown = {
                 viewModel.loadTenderBreakdown(partialSession.openedAt, System.currentTimeMillis())
@@ -717,6 +728,21 @@ private fun CurrentDrawerContent(
             onDismiss = { showPartialReport = false },
         )
         return
+    }
+
+    // 🔴 EN COLUMNA, no sueltos. El padre de esta pantalla es un `Box`, así que dos composables
+    // hermanos se DIBUJAN ENCIMA uno del otro: el aviso salía tapando el encabezado "Caja abierta"
+    // y su propio texto quedaba ilegible. Sólo se ve corriéndolo en el aparato — el compilador y
+    // las pruebas dan por bueno un layout que se pisa a sí mismo.
+    Column(modifier = Modifier.fillMaxSize()) {
+    // 🔴 Antes que nada: si hay dinero que el servidor RECHAZÓ, se dice. Va arriba de todo y
+    // no se puede ignorar sin tocarlo — es la diferencia entre un faltante explicado y uno que
+    // nadie sabe de dónde salió.
+    if (rechazadas.isNotEmpty()) {
+        AvisoDeMovimientosRechazados(
+            rechazadas = rechazadas,
+            onDescartar = { viewModel.descartarRechazada(it) },
+        )
     }
 
     if (session == null) {
@@ -736,7 +762,9 @@ private fun CurrentDrawerContent(
             onCloseDrawer = onCloseDrawer,
             isPrintingCorte = isPrintingCorte,
             onPrintPartial = { showPartialReport = true },
+            showExpected = viewModel.puedeVerEsperado,
         )
+    }
     }
 }
 
@@ -804,6 +832,7 @@ private fun OpenDrawerContent(
     onCloseDrawer: () -> Unit,
     isPrintingCorte: Boolean = false,
     onPrintPartial: () -> Unit = {},
+    showExpected: Boolean = true,
 ) {
     Column(
         modifier = Modifier
@@ -811,18 +840,34 @@ private fun OpenDrawerContent(
             .verticalScroll(rememberScrollState())
             .padding(AvoqadoTheme.spacing.lg),
     ) {
-        // Expected amount header
-        Text(
-            text = "Efectivo esperado",
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Text(
-            text = formatCurrency(expectedCents),
-            style = MaterialTheme.typography.displayMedium,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onSurface,
-        )
+        // Expected amount header — sólo para quien tiene el permiso de back-office de turnos.
+        // Conteo CIEGO (P1 Codex 27-ago): un cajero que ve el esperado todo el día no cuenta a ciegas.
+        // Apagado se VE y se EXPLICA, nunca desaparece en silencio.
+        if (showExpected) {
+            Text(
+                text = "Efectivo esperado",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                text = formatCurrency(expectedCents),
+                style = MaterialTheme.typography.displayMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+        } else {
+            Text(
+                text = "Caja abierta",
+                style = MaterialTheme.typography.displayMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+                text = "Conteo ciego: el efectivo esperado se revela al cerrar la caja.",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
 
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
 
@@ -853,11 +898,14 @@ private fun OpenDrawerContent(
                 amountCents = session.startingAmountCents,
                 modifier = Modifier.weight(1f),
             )
-            SummaryCard(
-                label = "Ventas",
-                amountCents = cashSalesCents,
-                modifier = Modifier.weight(1f),
-            )
+            // Conteo ciego: con las ventas a la vista se reconstruye el esperado (fondo + ventas + ingresos − egresos).
+            if (showExpected) {
+                SummaryCard(
+                    label = "Ventas",
+                    amountCents = cashSalesCents,
+                    modifier = Modifier.weight(1f),
+                )
+            }
             SummaryCard(
                 label = "Ingresos",
                 amountCents = payInsCents,
@@ -1286,4 +1334,74 @@ private fun PrintCorteResultDialog(viewModel: CashDrawerViewModel) {
             content = {},
         )
     }
+}
+
+
+/**
+ * 🔴 El aviso que evita un faltante inexplicable.
+ *
+ * Un ingreso o retiro que el servidor rechazó de plano (monto inválido, caja de otro negocio,
+ * permiso revocado) YA ocurrió en el cajón físico: el dinero se movió. Descartarlo en silencio
+ * —que es lo que se hacía— dejaba al cajero cerrando con una diferencia que no podía explicar,
+ * y al dueño con un arqueo que no cuadra sin causa visible.
+ *
+ * Dice CUÁNTO, de QUÉ tipo, y POR QUÉ lo rechazó el servidor. El botón no "arregla" nada: sólo
+ * reconoce que ya se vio, porque corregirlo es un movimiento nuevo que alguien tiene que hacer
+ * a conciencia.
+ */
+@Composable
+private fun AvisoDeMovimientosRechazados(
+    rechazadas: List<CashDrawerRepository.OperacionRechazada>,
+    onDescartar: (CashDrawerRepository.OperacionRechazada) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(AvoqadoTheme.spacing.lg)
+            .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.lg))
+            .background(MaterialTheme.colorScheme.errorContainer)
+            .padding(AvoqadoTheme.spacing.lg),
+        verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
+    ) {
+        Text(
+            text = if (rechazadas.size == 1) "Un movimiento no se registró" else "${rechazadas.size} movimientos no se registraron",
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.onErrorContainer,
+        )
+        Text(
+            text = "El dinero ya se movió en el cajón, pero el servidor no lo aceptó. Anótalo antes de cerrar la caja.",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onErrorContainer,
+        )
+        rechazadas.forEach { op ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "${etiquetaDeOperacion(op.kind)} · ${formatCurrency(op.amountCents)}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                    )
+                    Text(
+                        text = op.motivo,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onErrorContainer,
+                    )
+                }
+                TextButton(onClick = { onDescartar(op) }) {
+                    Text(text = "Ya lo vi", color = MaterialTheme.colorScheme.onErrorContainer)
+                }
+            }
+        }
+    }
+}
+
+private fun etiquetaDeOperacion(kind: String): String = when (kind) {
+    "PAY_IN" -> "Ingreso"
+    "PAY_OUT" -> "Retiro"
+    "CLOSE" -> "Cierre de caja"
+    else -> kind
 }

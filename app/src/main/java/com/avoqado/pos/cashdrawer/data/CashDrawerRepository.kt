@@ -11,6 +11,8 @@ import com.avoqado.pos.core.data.network.ApiConstants
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
+import kotlin.math.roundToInt
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.double
@@ -32,7 +34,7 @@ private const val TAG = "💰 CashDrawerRepo"
 // MARK: - API Request/Response Models
 
 @Serializable
-private data class OpenDrawerRequest(val startingAmount: Double)
+private data class OpenDrawerRequest(val startingAmount: Double, val deviceName: String? = null)
 
 /**
  * 🔴 `localId` es la LLAVE DE IDEMPOTENCIA del movimiento, y es el mismo id con el
@@ -52,13 +54,69 @@ private data class OpenDrawerRequest(val startingAmount: Double)
  * y todo se comporta como hoy. Mandar la llave nunca puede impedir registrar dinero.
  */
 @Serializable
-private data class PayInRequest(val amount: Double, val note: String? = null, val localId: String)
+private data class PayInRequest(val amount: Double, val note: String? = null, val localId: String, val sessionId: String? = null)
 
 @Serializable
-private data class PayOutRequest(val amount: Double, val note: String? = null, val localId: String)
+private data class PayOutRequest(val amount: Double, val note: String? = null, val localId: String, val sessionId: String? = null)
 
 @Serializable
-private data class CloseDrawerRequest(val actualAmount: Double, val note: String? = null)
+private data class CloseDrawerRequest(val actualAmount: Double, val note: String? = null, val sessionId: String? = null)
+
+/** Qué hacer con una operación de la cola, según lo que contestó el servidor. */
+internal enum class DestinoDeLaOperacion { CONFIRMADA, REINTENTAR, RECHAZADA }
+
+/**
+ * 🔴 Función PURA a propósito: es la única forma de probar un 429 o un 503 sin un servidor
+ * que los produzca. Antes esta decisión vivía dentro de la llamada de red y nadie la ejercitaba.
+ *
+ * Tres desenlaces, no dos. Un booleano "¿se quita de la cola?" mezclaría el caso en que el
+ * servidor YA TIENE la operación con el caso en que la rechazó — y el segundo es dinero que
+ * hay que enseñarle al cajero, no basura que se tira.
+ *
+ * `code = 0` significa que la llamada ni siquiera salió (sin red).
+ */
+/**
+ * 🔴 Los ÚNICOS 4xx que significan "esto nunca va a funcionar".
+ *
+ * La lista es EXPLÍCITA, no un rango. Un rango `400..499` arrastra códigos que son transitorios
+ * —el **401** de un token vencido, sobre todo: tras reautenticarse el movimiento sí habría
+ * entrado— y descartarlos borra dinero para siempre (Codex, 4ª auditoría). Ante un 4xx que no
+ * conocemos se REINTENTA: quedarse atorado es ruidoso y se puede arreglar; perder un retiro es
+ * silencioso y no.
+ */
+private val RECHAZOS_DEFINITIVOS = setOf(400, 403, 409, 422)
+
+internal fun clasificarRespuestaDelServer(kind: String, code: Int): DestinoDeLaOperacion = when {
+    code in 200..299 -> DestinoDeLaOperacion.CONFIRMADA
+    // El 404 dice lo contrario según la operación: para un CIERRE es "ya estaba cerrada"
+    // (nada que reintentar); para un movimiento es "aún no conozco esa caja" — su apertura
+    // no ha llegado —, y descartarlo borraría un retiro real.
+    code == 404 -> if (kind == "CLOSE") DestinoDeLaOperacion.CONFIRMADA else DestinoDeLaOperacion.REINTENTAR
+    code in RECHAZOS_DEFINITIVOS -> DestinoDeLaOperacion.RECHAZADA
+    // Todo lo demás se reintenta: sin red (0), 5xx, 408 y 429 ("vas muy rápido" / "se agotó el
+    // tiempo"), 401 (token vencido) y cualquier 4xx que no esté en la lista de arriba.
+    else -> DestinoDeLaOperacion.REINTENTAR
+}
+
+/**
+ * Un movimiento del cajón que este aparato YA hizo en local y que el server aún no confirmó.
+ * `kind` = CLOSE | PAY_IN | PAY_OUT. `localId` es la llave idempotente del evento (PAY_*).
+ */
+@Serializable
+internal data class PendingDrawerOp(
+    val kind: String,
+    val sessionId: String,
+    val amountCents: Int,
+    val note: String? = null,
+    val localId: String? = null,
+    val at: Long,
+    /**
+     * 🔴 Un rechazo definitivo NO borra la operación: la marca. Sigue siendo dinero que el
+     * servidor no tiene, y el cajero tiene que enterarse antes de cerrar su caja. Nulo = viva.
+     */
+    val rechazadaEn: Long? = null,
+    val motivoDelRechazo: String? = null,
+)
 
 @Singleton
 class CashDrawerRepository @Inject constructor(
@@ -120,8 +178,17 @@ class CashDrawerRepository @Inject constructor(
      * The drawer only tracks CASH physically, so card/other totals come from the
      * server's payment records. Returns empty on any failure (corte still renders).
      */
-    suspend fun getTenderBreakdown(fromMillis: Long, toMillis: Long): List<TenderRow> {
-        if (venueId.isEmpty()) return emptyList()
+    /**
+     * Desglose por método de pago de la ventana del corte.
+     *
+     * 🔴 `null` = NO SE PUDO consultar (sin red, 4xx/5xx, cuerpo ilegible). Una lista VACÍA es un dato
+     * legítimo y distinto: el server contestó 200 y **no hubo cobros** en esa ventana. Antes las tres
+     * cosas devolvían `emptyList()` y la pantalla las leía todas como "sin conexión" — el founder vio
+     * "Sin conexión" y un botón de Reintentar teniendo internet, en un corte que simplemente no tuvo
+     * ventas (28-ago). La UI no puede mentir sobre por qué falta un dato.
+     */
+    suspend fun getTenderBreakdown(fromMillis: Long, toMillis: Long): List<TenderRow>? {
+        if (venueId.isEmpty()) return null
         return try {
             val from = java.time.Instant.ofEpochMilli(fromMillis).toString()
             val to = java.time.Instant.ofEpochMilli(toMillis).toString()
@@ -133,13 +200,20 @@ class CashDrawerRepository @Inject constructor(
             }
             if (code !in 200..299 || body.isEmpty()) {
                 Log.e(TAG, "❌ tender-breakdown failed: $code")
-                return emptyList()
+                return null
             }
             val root = json.decodeFromString<JsonObject>(body)
-            val arr = root["data"]?.jsonObject?.get("tenderBreakdown")?.jsonArray ?: return emptyList()
-            arr.mapNotNull { el ->
+            val arr = root["data"]?.jsonObject?.get("tenderBreakdown")?.jsonArray ?: return null
+// 🔴 Un renglón que no se entiende invalida el DESGLOSE ENTERO, no se salta.
+            //
+            // Saltárselo (`mapNotNull`) tenía dos formas de mentir, las dos silenciosas: si fallan
+            // TODOS, la lista sale vacía y la pantalla la lee como "no hubo cobros" —quitando
+            // incluso el botón de reintentar—; y si falla sólo alguno, el corte subestima las
+            // ventas sin decirlo. Un corte de caja incompleto que se ve completo es peor que uno
+            // que admite no haber podido consultarse (Codex, 4ª auditoría).
+            val filas = arr.map { el ->
                 val obj = el.jsonObject
-                val method = obj["method"]?.jsonPrimitive?.contentOrNull ?: return@mapNotNull null
+                val method = obj["method"]?.jsonPrimitive?.contentOrNull ?: return@map null
                 val dollars = obj["total"]?.jsonPrimitive?.doubleOrNull ?: 0.0
                 val tips = obj["tips"]?.jsonPrimitive?.doubleOrNull ?: 0.0
                 TenderRow(
@@ -148,9 +222,14 @@ class CashDrawerRepository @Inject constructor(
                     tipsCents = (tips * 100).toInt(),
                 )
             }
+            if (filas.any { it == null }) {
+                Log.e(TAG, "❌ tender-breakdown con ${filas.count { it == null }} renglón(es) ilegibles: se reporta como NO consultado")
+                return null
+            }
+            filas.filterNotNull()
         } catch (e: Exception) {
             Log.e(TAG, "❌ tender-breakdown error: ${e.message}")
-            emptyList()
+            null
         }
     }
 
@@ -189,6 +268,7 @@ class CashDrawerRepository @Inject constructor(
     suspend fun syncFromApi() {
         if (venueId.isEmpty()) return
         try {
+            reproducirCierresPendientes()
             syncCurrentSession()
             syncHistory()
         } catch (e: Exception) {
@@ -280,7 +360,22 @@ class CashDrawerRepository @Inject constructor(
         sessionObj: JsonObject,
         fallbackEvents: kotlinx.serialization.json.JsonArray? = null,
     ): CashDrawerSessionEntity {
-        val server = parseSessionFromApi(sessionObj)
+        val parsed = parseSessionFromApi(sessionObj)
+        // 🔴 Si este aparato ya cerró ESA caja sin red, el server todavía la ve OPEN. Adoptarla
+        // como abierta borraría el conteo del cajero (pasó en la Samsung, 27-ago). Se conserva
+        // CERRADA con el conteo local; el cierre pendiente se reproduce en el siguiente sync.
+        val cierrePendiente = pendientes().firstOrNull { it.kind == "CLOSE" && it.sessionId == parsed.id }
+        val server = if (parsed.status == CashDrawerStatus.OPEN.name && cierrePendiente != null) {
+            Log.w(TAG, "⏸️ El server aún ve OPEN la caja ${parsed.id}, pero aquí ya se cerró: se conserva el cierre local")
+            parsed.copy(
+                status = CashDrawerStatus.CLOSED.name,
+                closedAt = cierrePendiente.at,
+                actualAmountCents = cierrePendiente.amountCents,
+                closingNote = cierrePendiente.note,
+                closedByStaffId = staffId,
+                closedByName = staffName,
+            )
+        } else parsed
         dao.insertSession(server)
 
         if (server.status == CashDrawerStatus.OPEN.name && venueId.isNotEmpty()) {
@@ -289,10 +384,25 @@ class CashDrawerRepository @Inject constructor(
                 .forEach { provisional ->
                     Log.d(TAG, "⬆️ Promoviendo caja provisional ${provisional.id} → ${server.id}")
                     dao.repointEventsFrom(provisional.id, server.id, server.openedAt)
-                    if (dao.getSessionEvents(provisional.id).isEmpty()) {
+                    val sobrantes = dao.getSessionEvents(provisional.id)
+                    // 🔴 Caja FANTASMA (vista dos veces en la Samsung, 27-ago): el OPEN local nace unos ms
+                    // ANTES del openedAt del server, queda fuera de la ventana y la provisional se
+                    // "conservaba" OPEN para siempre — tras cerrar la caja real, getOpenSession la
+                    // devolvía y la pantalla enseñaba una caja abierta con $0 de movimientos. Si sólo
+                    // le queda su apertura, se va entera; si le queda dinero real de antes, se conserva
+                    // pero CERRADA: una provisional promovida nunca es una caja abierta.
+                    if (sobrantes.all { it.type == CashDrawerEventType.OPEN.name }) {
+                        sobrantes.forEach { dao.deleteEvent(it.id) }
                         dao.deleteSession(provisional.id)
                     } else {
-                        Log.d(TAG, "🗄️ Caja ${provisional.id} conservada: tiene movimientos anteriores a esta caja")
+                        dao.updateSession(
+                            provisional.copy(
+                                status = CashDrawerStatus.CLOSED.name,
+                                closedAt = server.openedAt,
+                                closingNote = "Fusionada con la caja del server ${server.id}",
+                            ),
+                        )
+                        Log.d(TAG, "🗄️ Caja ${provisional.id} conservada CERRADA: tiene movimientos anteriores a esta caja")
                     }
                 }
         }
@@ -469,11 +579,13 @@ class CashDrawerRepository @Inject constructor(
     }
 
     private suspend fun fireApiOpen(startingAmountCents: Int): CashDrawerSessionEntity? {
+        // Un cierre sin confirmar deja la caja OPEN en el server: sin esto, abrir la siguiente daría 409.
+        reproducirCierresPendientes()
         try {
             val dollars = startingAmountCents / 100.0
             val requestBody = json.encodeToString(
                 OpenDrawerRequest.serializer(),
-                OpenDrawerRequest(startingAmount = dollars),
+                OpenDrawerRequest(startingAmount = dollars, deviceName = deviceName),
             ).toRequestBody("application/json".toMediaType())
 
             val request = Request.Builder()
@@ -518,16 +630,20 @@ class CashDrawerRepository @Inject constructor(
         Log.d(TAG, "✅ Pay-in recorded locally: $amountCents")
 
         // La fila local nace provisional y adopta el id del server si éste confirma.
-        return fireApiPayIn(amountCents, note, event.id) ?: event
+        val op = PendingDrawerOp("PAY_IN", session.id, amountCents, note, event.id, System.currentTimeMillis())
+        encolar(op)
+        val confirmado = fireApiPayIn(amountCents, note, event.id, session.id)
+        if (confirmado != null) quitar(op)
+        return confirmado ?: event
     }
 
-    private suspend fun fireApiPayIn(amountCents: Int, note: String?, localEventId: String): CashDrawerEventEntity? {
+    private suspend fun fireApiPayIn(amountCents: Int, note: String?, localEventId: String, sessionId: String): CashDrawerEventEntity? {
         try {
             val dollars = amountCents / 100.0
             val requestBody = json.encodeToString(
                 PayInRequest.serializer(),
                 // La llave es el id con el que la fila YA quedó en Room, no uno nuevo.
-                PayInRequest(amount = dollars, note = note, localId = localEventId),
+                PayInRequest(amount = dollars, note = note, localId = localEventId, sessionId = sessionId),
             ).toRequestBody("application/json".toMediaType())
 
             val request = Request.Builder()
@@ -569,16 +685,20 @@ class CashDrawerRepository @Inject constructor(
         Log.d(TAG, "✅ Pay-out recorded locally: $amountCents")
 
         // La fila local nace provisional y adopta el id del server si éste confirma.
-        return fireApiPayOut(amountCents, note, event.id) ?: event
+        val op = PendingDrawerOp("PAY_OUT", session.id, amountCents, note, event.id, System.currentTimeMillis())
+        encolar(op)
+        val confirmado = fireApiPayOut(amountCents, note, event.id, session.id)
+        if (confirmado != null) quitar(op)
+        return confirmado ?: event
     }
 
-    private suspend fun fireApiPayOut(amountCents: Int, note: String?, localEventId: String): CashDrawerEventEntity? {
+    private suspend fun fireApiPayOut(amountCents: Int, note: String?, localEventId: String, sessionId: String): CashDrawerEventEntity? {
         try {
             val dollars = amountCents / 100.0
             val requestBody = json.encodeToString(
                 PayOutRequest.serializer(),
                 // La llave es el id con el que la fila YA quedó en Room, no uno nuevo.
-                PayOutRequest(amount = dollars, note = note, localId = localEventId),
+                PayOutRequest(amount = dollars, note = note, localId = localEventId, sessionId = sessionId),
             ).toRequestBody("application/json".toMediaType())
 
             val request = Request.Builder()
@@ -719,18 +839,188 @@ class CashDrawerRepository @Inject constructor(
 
         Log.d(TAG, "✅ Session closed locally: ${session.id}, actual: $actualAmountCents, over/short: $overShort")
 
-        // Fire API call in background
-        fireApiClose(actualAmountCents, note)
+        // 🔴 P1 (Codex + full-testing 27-ago): el cierre NO se pierde si no hay red. Si el POST
+        // falla, queda encolado y se reproduce en cada sync y antes de abrir otra caja. El server
+        // conserva la caja OPEN mientras tanto — y por eso el sync NO la vuelve a adoptar (ver
+        // adoptServerSession): el conteo del cajero manda hasta que el server lo acepte.
+        // Se encola ANTES de tocar la red (Codex, 2ª auditoría): si el proceso muere a medio POST, el
+        // cierre sigue en la cola. Al confirmar, se quita.
+        val op = PendingDrawerOp("CLOSE", session.id, actualAmountCents, note, null, System.currentTimeMillis())
+        encolar(op)
+        // Pasa por la cola: primero los ingresos/retiros pendientes de esta caja, y sólo entonces el cierre.
+        reproducirPendientes()
 
         return updated
     }
 
-    private suspend fun fireApiClose(actualAmountCents: Int, note: String?) {
-        try {
+    // MARK: - Cola durable del cajón (cierres, ingresos y retiros sin confirmar)
+
+    /**
+     * 🔴 La cola se lee entera, se modifica y se reescribe entera. Sin exclusión mutua, dos de
+     * esas secuencias entrelazadas se pisan: el replay confirma A y guarda `[]` con la foto vieja,
+     * justo después de que el cajero encoló un retiro B — y B desaparece de la cola aunque siga
+     * en Room, así que NUNCA llega al servidor (Codex, 4ª auditoría). Es dinero que se evapora
+     * entre dos escrituras.
+     *
+     * `synchronized` y no un `Mutex` de corrutinas porque `encolar`/`quitar` se llaman también
+     * desde código NO suspendido (la venta en efectivo, el egreso), y un candado que sólo cubre
+     * la mitad de los escritores no es un candado.
+     */
+    private val candadoDeLaCola = Any()
+
+    private fun pendientes(): MutableList<PendingDrawerOp> = try {
+        secureStorage.pendingDrawerOpsJson(venueId)
+            ?.let { json.decodeFromString(ListSerializer(PendingDrawerOp.serializer()), it) }
+            ?.toMutableList() ?: mutableListOf()
+    } catch (e: Exception) {
+        Log.e(TAG, "❌ Cola del cajón ilegible: ${e.message}")
+        mutableListOf()
+    }
+
+    private fun guardarPendientes(lista: List<PendingDrawerOp>) {
+        secureStorage.setPendingDrawerOpsJson(venueId, if (lista.isEmpty()) null else json.encodeToString(ListSerializer(PendingDrawerOp.serializer()), lista))
+    }
+
+    private fun encolar(op: PendingDrawerOp) = synchronized(candadoDeLaCola) {
+        val lista = pendientes().filter { !mismaOperacion(it, op) } + op
+        guardarPendientes(lista)
+    }
+
+    private fun quitar(op: PendingDrawerOp) = synchronized(candadoDeLaCola) {
+        guardarPendientes(pendientes().filter { !mismaOperacion(it, op) })
+    }
+
+    /**
+     * 🔴 La identidad de una operación incluye su `localId`. Dos retiros de $50 de la MISMA caja
+     * son operaciones distintas: sin el localId, quitar uno quitaba los dos (Codex, 4ª auditoría).
+     * Un CLOSE no lleva localId, y ahí la caja basta — sólo puede haber un cierre por caja.
+     */
+    private fun mismaOperacion(a: PendingDrawerOp, b: PendingDrawerOp) =
+        a.kind == b.kind && a.sessionId == b.sessionId && a.localId == b.localId
+
+    /**
+     * 🔴 Lo que el cajero TIENE que ver antes de cerrar: movimientos que el servidor rechazó
+     * de plano. Existe dinero en el cajón físico que el servidor nunca va a conocer, y sin
+     * este aviso el arqueo saldría con un faltante que nadie sabe explicar.
+     */
+    data class OperacionRechazada(
+        val kind: String,
+        val sessionId: String,
+        val amountCents: Int,
+        val motivo: String,
+        /** Identidad ÚNICA de la fila. Dos retiros de $50 de la misma caja no son el mismo aviso. */
+        val localKey: String,
+    )
+
+    fun operacionesRechazadas(sessionId: String? = null): List<OperacionRechazada> =
+        pendientes().filter { it.rechazadaEn != null && (sessionId == null || it.sessionId == sessionId) }
+            .map { OperacionRechazada(it.kind, it.sessionId, it.amountCents, it.motivoDelRechazo ?: "El servidor no la aceptó.", llaveDe(it)) }
+
+    private fun llaveDe(op: PendingDrawerOp) = "${op.kind}|${op.sessionId}|${op.localId ?: ""}"
+
+    /** El cajero ya lo vio y decidió qué hacer: se saca de la cola. */
+    fun descartarRechazada(localKey: String) = synchronized(candadoDeLaCola) {
+        guardarPendientes(pendientes().filter { it.rechazadaEn == null || llaveDe(it) != localKey })
+    }
+
+    private fun marcarRechazada(op: PendingDrawerOp, motivo: String) = synchronized(candadoDeLaCola) {
+        val lista = pendientes().map {
+            if (mismaOperacion(it, op)) it.copy(rechazadaEn = System.currentTimeMillis(), motivoDelRechazo = motivo) else it
+        }
+        guardarPendientes(lista)
+    }
+
+    /** El mensaje del servidor si lo trae; si no, uno que el cajero pueda leer. */
+    private fun mensajeDeRechazo(code: Int, cuerpo: String): String = try {
+        json.parseToJsonElement(cuerpo).jsonObject["message"]?.jsonPrimitive?.contentOrNull
+            ?.takeIf { it.isNotBlank() && it != "null" } ?: "El servidor lo rechazó (error $code)."
+    } catch (_: Exception) { "El servidor lo rechazó (error $code)." }
+
+    /** Visible para test: ¿hay un cierre de ESTA caja esperando al server? */
+    fun tieneCierrePendiente(sessionId: String): Boolean = pendientes().any { it.kind == "CLOSE" && it.sessionId == sessionId }
+
+    /**
+     * Reproduce contra el server, EN ORDEN, lo que se quedó sin confirmar: primero ingresos y retiros
+     * (con su llave idempotente) y al final el cierre — si el cierre fuera antes, el server firmaría
+     * un faltante falso por el retiro que nunca recibió (Codex, 2ª auditoría). Corre al entrar a
+     * Caja, en cada sync y antes de abrir otra caja.
+     */
+    suspend fun reproducirPendientes() {
+        val todas = pendientes()
+        // Las ya rechazadas NO se reintentan: se quedan guardadas sólo para poder avisar.
+        val lista = todas.filter { it.rechazadaEn == null }
+            .sortedWith(compareBy({ if (it.kind == "CLOSE") 1 else 0 }, { it.at }))
+        if (lista.isEmpty()) return
+        var confirmados = 0
+        // 🔴 CLOSE es una BARRERA (Codex 3ª auditoría): si un ingreso/retiro de ESA caja no se confirmó (red,
+        // 5xx), el cierre NO se manda — el server firmaría un faltante falso por el movimiento que no recibió.
+        //
+        // 🔴 Un movimiento RECHAZADO también bloquea: el servidor nunca lo va a tener, así que cerrar
+        // encima firmaría ese mismo faltante falso, sólo que para siempre. El cierre espera a que
+        // alguien resuelva el rechazo.
+        //
+        // 🔴 La barrera se SIEMBRA con los rechazos de corridas ANTERIORES, no sólo con los de
+        // ésta. Filtrarlos de `lista` (para no reintentarlos) los sacaba también del bucle, así
+        // que en la SEGUNDA pasada —tras reabrir la app, o al volver a entrar a Caja— el cierre
+        // ya no encontraba quién lo bloqueara y se mandaba con el retiro faltando: el servidor
+        // firmaba el faltante falso, sólo que un rato después y sin nadie mirando.
+        val cajasBloqueadas = todas.filter { it.rechazadaEn != null && it.kind != "CLOSE" }
+            .map { it.sessionId }.toMutableSet()
+        for (op in lista) {
+            if (op.kind == "CLOSE" && op.sessionId in cajasBloqueadas) { Log.w(TAG, "⏸️ Cierre de ${op.sessionId} en espera: hay movimientos sin confirmar"); continue }
+            val destino = when (op.kind) {
+                "CLOSE" -> fireApiClose(op.sessionId, op.amountCents, op.note).also { if (it == DestinoDeLaOperacion.RECHAZADA) marcarRechazada(op, "El servidor no aceptó el cierre de esta caja.") }
+                else -> reproducirMovimiento(op)
+            }
+            when (destino) {
+                DestinoDeLaOperacion.CONFIRMADA -> { quitar(op); confirmados++ }
+                DestinoDeLaOperacion.REINTENTAR -> if (op.kind != "CLOSE") cajasBloqueadas += op.sessionId
+                DestinoDeLaOperacion.RECHAZADA -> if (op.kind != "CLOSE") cajasBloqueadas += op.sessionId
+            }
+        }
+        if (confirmados > 0) Log.d(TAG, "✅ $confirmados movimiento(s) del cajón confirmados por el server")
+    }
+
+    /** Alias histórico (sync/VM). */
+    suspend fun reproducirCierresPendientes() = reproducirPendientes()
+
+    /** Qué pasó con el movimiento según el servidor. Ver [clasificarRespuestaDelServer]. */
+    private suspend fun reproducirMovimiento(op: PendingDrawerOp): DestinoDeLaOperacion {
+        val localId = op.localId ?: return DestinoDeLaOperacion.CONFIRMADA
+        return try {
+            val dollars = op.amountCents / 100.0
+            val (path, body) = if (op.kind == "PAY_IN") {
+                "pay-in" to json.encodeToString(PayInRequest.serializer(), PayInRequest(amount = dollars, note = op.note, localId = localId, sessionId = op.sessionId))
+            } else {
+                "pay-out" to json.encodeToString(PayOutRequest.serializer(), PayOutRequest(amount = dollars, note = op.note, localId = localId, sessionId = op.sessionId))
+            }
+            val request = Request.Builder().url("$baseUrl/$path").post(body.toRequestBody("application/json".toMediaType())).build()
+            val (code, resp) = withContext(Dispatchers.IO) {
+                val response = client.newCall(request).execute()
+                response.code to (response.body?.string() ?: "")
+            }
+            when (clasificarRespuestaDelServer(op.kind, code)) {
+                DestinoDeLaOperacion.CONFIRMADA -> { promoteEvent(localId, parseEventId(resp)); Log.d(TAG, "✅ ${op.kind} reproducido ($localId)"); DestinoDeLaOperacion.CONFIRMADA }
+                DestinoDeLaOperacion.REINTENTAR -> { Log.w(TAG, "🔁 ${op.kind} de la caja ${op.sessionId} sin confirmar ($code); sigue en cola — $resp"); DestinoDeLaOperacion.REINTENTAR }
+                DestinoDeLaOperacion.RECHAZADA -> { Log.e(TAG, "🛑 ${op.kind} RECHAZADO por el server ($code): se marca para avisarle al cajero — $resp"); marcarRechazada(op, mensajeDeRechazo(code, resp)); DestinoDeLaOperacion.RECHAZADA }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ ${op.kind} sin red: ${e.message}")
+            DestinoDeLaOperacion.REINTENTAR
+        }
+    }
+
+    /**
+     * `true` = el server tiene la caja cerrada (2xx, o 404 "no hay caja abierta": ya estaba
+     * cerrada, no hay nada que reintentar). `false` = no se pudo confirmar: sin red, 5xx, o 409
+     * porque otra terminal la está cerrando en este instante.
+     */
+    private suspend fun fireApiClose(sessionId: String, actualAmountCents: Int, note: String?): DestinoDeLaOperacion {
+        return try {
             val dollars = actualAmountCents / 100.0
             val requestBody = json.encodeToString(
                 CloseDrawerRequest.serializer(),
-                CloseDrawerRequest(actualAmount = dollars, note = note),
+                CloseDrawerRequest(actualAmount = dollars, note = note, sessionId = sessionId),
             ).toRequestBody("application/json".toMediaType())
 
             val request = Request.Builder()
@@ -743,13 +1033,16 @@ class CashDrawerRepository @Inject constructor(
                 response.code to (response.body?.string() ?: "")
             }
 
-            if (code in 200..299) {
-                Log.d(TAG, "✅ API close session success")
-            } else {
-                Log.e(TAG, "❌ API close session failed: $code - $body")
+            clasificarRespuestaDelServer("CLOSE", code).also {
+                when (it) {
+                    DestinoDeLaOperacion.CONFIRMADA -> Log.d(TAG, "✅ Cierre aceptado por el server ($sessionId, $code)")
+                    DestinoDeLaOperacion.REINTENTAR -> Log.w(TAG, "🔁 Cierre sin confirmar ($code); sigue en cola — $body")
+                    DestinoDeLaOperacion.RECHAZADA -> Log.e(TAG, "🛑 Cierre RECHAZADO por el server ($code) — $body")
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ API close session error: ${e.message}")
+            DestinoDeLaOperacion.REINTENTAR
         }
     }
 
@@ -796,12 +1089,12 @@ class CashDrawerRepository @Inject constructor(
             openedByStaffId = obj["openedByStaffId"]?.jsonPrimitive?.contentOrNull ?: "",
             openedByName = obj["openedByName"]?.jsonPrimitive?.contentOrNull ?: "",
             openedAt = parseTimestamp(obj["openedAt"]?.jsonPrimitive?.contentOrNull),
-            startingAmountCents = (startingDollars * 100).toInt(),
+            startingAmountCents = (startingDollars * 100).roundToInt(),
             closedByStaffId = obj["closedByStaffId"]?.jsonPrimitive?.contentOrNull,
             closedByName = obj["closedByName"]?.jsonPrimitive?.contentOrNull,
             closedAt = obj["closedAt"]?.jsonPrimitive?.contentOrNull?.let { parseTimestamp(it) },
-            actualAmountCents = actualDollars?.let { (it * 100).toInt() },
-            overShortCents = overShortDollars?.let { (it * 100).toInt() },
+            actualAmountCents = actualDollars?.let { (it * 100).roundToInt() },
+            overShortCents = overShortDollars?.let { (it * 100).roundToInt() },
             closingNote = obj["closingNote"]?.jsonPrimitive?.contentOrNull,
             status = status,
         )
@@ -815,7 +1108,7 @@ class CashDrawerRepository @Inject constructor(
             sessionId = sessionId,
             venueId = venueId,
             type = obj["type"]?.jsonPrimitive?.contentOrNull ?: "",
-            amountCents = (amountDollars * 100).toInt(),
+            amountCents = (amountDollars * 100).roundToInt(),
             note = obj["note"]?.jsonPrimitive?.contentOrNull,
             staffId = obj["staffId"]?.jsonPrimitive?.contentOrNull ?: "",
             staffName = obj["staffName"]?.jsonPrimitive?.contentOrNull ?: "",

@@ -1,8 +1,10 @@
 package com.avoqado.pos
 
 import android.app.Application
+import androidx.lifecycle.ProcessLifecycleOwner
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.util.VenueTimeZone
+import com.avoqado.pos.customerdisplay.DeviceCapabilitySyncCoordinator
 import com.avoqado.pos.reservations.data.ReservationActionsRetrier
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.launch
@@ -18,11 +20,15 @@ class AvoqadoApp : Application() {
     @Inject lateinit var kioskDriver: com.avoqado.pos.kiosk.domain.KioskDriver
     @Inject lateinit var kioskPrefs: com.avoqado.pos.kiosk.domain.KioskPrefs
     @Inject lateinit var kioskState: com.avoqado.pos.kiosk.domain.KioskState
+    @Inject lateinit var deviceCapabilitySyncCoordinator: DeviceCapabilitySyncCoordinator
 
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     override fun onCreate() {
         super.onCreate()
+        // Lifecycle del PROCESO, una sola vez. MainActivity puede reiniciarse o
+        // mudarse de display y no debe multiplicar el scheduler.
+        ProcessLifecycleOwner.get().lifecycle.addObserver(deviceCapabilitySyncCoordinator)
         // Hydrate the global venue timezone holder so DTO-level formatters
         // (TransactionModel.timeDisplay etc.) work from the very first compose.
         VenueTimeZone.set(secureStorage.venueTimezone)

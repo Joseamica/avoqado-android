@@ -3,6 +3,11 @@ package com.avoqado.pos.tpvsettings.data
 import com.avoqado.pos.core.data.local.PreferencesDataStore
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.customerdisplay.DisplayModePrefs
+import com.avoqado.pos.customerdisplay.DisplayModeAuthorityGate
+import com.avoqado.pos.customerdisplay.CanonicalDeviceIdProvider
+import com.avoqado.pos.customerdisplay.DisplayModeJournalState
+import com.avoqado.pos.customerdisplay.DisplayModeRequestJournal
+import com.avoqado.pos.customerdisplay.JournalEntry
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
@@ -33,6 +38,9 @@ class TpvSettingsRepositoryOfflineCacheTest {
             client = clientReturning(areaOperationsResponse()),
             preferencesDataStore = preferences,
             displayModePrefs = fakeDisplayModePrefs(),
+            displayModeJournal = emptyJournal(),
+            deviceIdProvider = CanonicalDeviceIdProvider { "device-test" },
+            displayModeAuthorityGate = DisplayModeAuthorityGate(),
         )
         onlineRepository.refreshSettingsForVenue(VENUE_ID)
 
@@ -44,6 +52,9 @@ class TpvSettingsRepositoryOfflineCacheTest {
             client = clientThrowing(IOException("offline")),
             preferencesDataStore = preferences,
             displayModePrefs = fakeDisplayModePrefs(),
+            displayModeJournal = emptyJournal(),
+            deviceIdProvider = CanonicalDeviceIdProvider { "device-test" },
+            displayModeAuthorityGate = DisplayModeAuthorityGate(),
         )
         coldOfflineRepository.refreshSettingsForVenue(VENUE_ID)
 
@@ -64,6 +75,9 @@ class TpvSettingsRepositoryOfflineCacheTest {
             client = clientReturning(areaOperationsResponse()),
             preferencesDataStore = preferences,
             displayModePrefs = fakeDisplayModePrefs(),
+            displayModeJournal = emptyJournal(),
+            deviceIdProvider = CanonicalDeviceIdProvider { "device-test" },
+            displayModeAuthorityGate = DisplayModeAuthorityGate(),
         ).refreshSettingsForVenue(VENUE_ID)
 
         val otherVenueRepository = TpvSettingsRepository(
@@ -71,6 +85,9 @@ class TpvSettingsRepositoryOfflineCacheTest {
             client = clientThrowing(IOException("offline")),
             preferencesDataStore = preferences,
             displayModePrefs = fakeDisplayModePrefs(),
+            displayModeJournal = emptyJournal(),
+            deviceIdProvider = CanonicalDeviceIdProvider { "device-test" },
+            displayModeAuthorityGate = DisplayModeAuthorityGate(),
         )
         otherVenueRepository.refreshSettingsForVenue("venue-b")
 
@@ -89,6 +106,9 @@ class TpvSettingsRepositoryOfflineCacheTest {
             client = clientReturning(areaOperationsResponse()),
             preferencesDataStore = preferences,
             displayModePrefs = fakeDisplayModePrefs(),
+            displayModeJournal = emptyJournal(),
+            deviceIdProvider = CanonicalDeviceIdProvider { "device-test" },
+            displayModeAuthorityGate = DisplayModeAuthorityGate(),
         ).refreshSettingsForVenue(VENUE_ID)
 
         val deniedRepository = TpvSettingsRepository(
@@ -96,6 +116,9 @@ class TpvSettingsRepositoryOfflineCacheTest {
             client = clientReturning(body = "{\"error\":\"Forbidden\"}", statusCode = 403),
             preferencesDataStore = preferences,
             displayModePrefs = fakeDisplayModePrefs(),
+            displayModeJournal = emptyJournal(),
+            deviceIdProvider = CanonicalDeviceIdProvider { "device-test" },
+            displayModeAuthorityGate = DisplayModeAuthorityGate(),
         )
         deniedRepository.refreshSettingsForVenue(VENUE_ID)
 
@@ -106,6 +129,9 @@ class TpvSettingsRepositoryOfflineCacheTest {
             client = clientThrowing(IOException("offline")),
             preferencesDataStore = preferences,
             displayModePrefs = fakeDisplayModePrefs(),
+            displayModeJournal = emptyJournal(),
+            deviceIdProvider = CanonicalDeviceIdProvider { "device-test" },
+            displayModeAuthorityGate = DisplayModeAuthorityGate(),
         )
         coldAfterDenial.refreshSettingsForVenue(VENUE_ID)
         assertEquals(TerminalNavigationSettings.DEFAULT, coldAfterDenial.terminalNavigation.value)
@@ -135,6 +161,13 @@ class TpvSettingsRepositoryOfflineCacheTest {
     private fun fakeDisplayModePrefs(): DisplayModePrefs = mockk<DisplayModePrefs>(relaxed = true) {
         every { inverted } returns MutableStateFlow(false)
         every { dirty } returns MutableStateFlow(false)
+        every { generation } returns MutableStateFlow(0L)
+    }
+
+    private fun emptyJournal(): DisplayModeRequestJournal = object : DisplayModeRequestJournal {
+        override fun readState(venueId: String, deviceId: String) = DisplayModeJournalState.Empty
+        override fun save(entry: JournalEntry) = Unit
+        override fun clear(venueId: String, deviceId: String, requestId: String) = Unit
     }
 
     private fun clientReturning(body: String, statusCode: Int = 200): OkHttpClient {

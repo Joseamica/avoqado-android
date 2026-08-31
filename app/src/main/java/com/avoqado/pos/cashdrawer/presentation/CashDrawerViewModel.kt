@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import com.avoqado.pos.core.domain.RoleManager
 import javax.inject.Inject
 import com.avoqado.pos.cashdrawer.data.CorteTicketBuilder
 
@@ -29,7 +30,18 @@ enum class CashDrawerSection(val label: String) {
 class CashDrawerViewModel @Inject constructor(
     private val repository: CashDrawerRepository,
     private val printerService: PrinterService,
+    private val roleManager: RoleManager,
 ) : ViewModel() {
+
+    /**
+     * Conteo CIEGO de verdad (P1 Codex 27-ago): esconder el esperado sólo en la hoja de cierre no
+     * servía si la cabecera lo enseñaba todo el día. Toast lo resuelve por PERMISO ("Cash Drawers
+     * (Blind)" vs "Full"); aquí se espeja el permiso PROPIO del server `cash-drawer:view-expected`
+     * (MANAGER+ de fábrica). 🔴 No puede ser `shifts:close`: el alias con `tpv-shifts:close` se lo
+     * regala a cajeros y meseros (Codex, 2ª auditoría). Quien no lo tiene cuenta a ciegas.
+     */
+    val puedeVerEsperado: Boolean
+        get() = roleManager.hasVenuePermission(PERMISO_VER_ESPERADO, ROLES_VER_ESPERADO)
 
     // MARK: - State
 
@@ -53,8 +65,18 @@ class CashDrawerViewModel @Inject constructor(
 
     // Tender breakdown for the corte (card + cash + other), keyed nowhere —
     // refetched per report shown. Empty until loaded / on failure.
-    private val _tenderBreakdown = MutableStateFlow<List<CashDrawerRepository.TenderRow>>(emptyList())
-    val tenderBreakdown: StateFlow<List<CashDrawerRepository.TenderRow>> = _tenderBreakdown.asStateFlow()
+    /** `null` = no se pudo consultar el desglose; lista vacía = el corte no tuvo cobros. */
+    /**
+     * 🔴 Movimientos que el servidor RECHAZÓ de plano. Antes se descartaban con un `Log.w` y
+     * nadie se enteraba: el cajero cerraba su caja creyendo que su retiro había llegado, y el
+     * arqueo salía con un faltante que no se podía explicar. Un fallo silencioso en dinero es
+     * peor que uno ruidoso.
+     */
+    private val _rechazadas = MutableStateFlow<List<CashDrawerRepository.OperacionRechazada>>(emptyList())
+    val rechazadas: StateFlow<List<CashDrawerRepository.OperacionRechazada>> = _rechazadas.asStateFlow()
+
+    private val _tenderBreakdown = MutableStateFlow<List<CashDrawerRepository.TenderRow>?>(null)
+    val tenderBreakdown: StateFlow<List<CashDrawerRepository.TenderRow>?> = _tenderBreakdown.asStateFlow()
 
     /** Fetch the payment-method breakdown for a session's window (corte de caja). */
     fun loadTenderBreakdown(fromMillis: Long, toMillis: Long) {
@@ -105,12 +127,24 @@ class CashDrawerViewModel @Inject constructor(
         }
     }
 
+    /** El cajero ya vio el aviso y decidió qué hacer con ese dinero: se saca de la cola. */
+    fun descartarRechazada(op: CashDrawerRepository.OperacionRechazada) {
+        viewModelScope.launch {
+            runCatching { repository.descartarRechazada(op.localKey) }
+            _rechazadas.value = runCatching { repository.operacionesRechazadas() }.getOrDefault(emptyList())
+        }
+    }
+
     // MARK: - Load Data
 
     fun loadCurrentSession() {
         viewModelScope.launch {
             _isLoading.value = true
             try {
+                // Un cierre que se quedó sin red se reintenta cada vez que se entra a Caja, no sólo al
+                // crear el ViewModel (que sobrevive entre visitas): visto en la Samsung, 27-ago.
+                runCatching { repository.reproducirCierresPendientes() }
+                _rechazadas.value = runCatching { repository.operacionesRechazadas() }.getOrDefault(emptyList())
                 val session = repository.getOpenSession()
                 _currentSession.value = session
                 if (session != null) {
@@ -286,7 +320,7 @@ class CashDrawerViewModel @Inject constructor(
     fun printCorte(
         session: CashDrawerSessionEntity,
         events: List<CashDrawerEventEntity>,
-        tenders: List<CashDrawerRepository.TenderRow>,
+        tenders: List<CashDrawerRepository.TenderRow>?,
         venueName: String,
         // Corte PARCIAL: se saca con la caja todavía abierta para revisar el turno a
         // media jornada. No cierra nada, no cuenta el dinero y no arroja diferencia
@@ -311,6 +345,7 @@ class CashDrawerViewModel @Inject constructor(
                     venueName = venueName,
                     paperWidth = printer.paperWidth,
                     isPartial = isPartial,
+                    showExpected = !isPartial || puedeVerEsperado, // conteo ciego también en el ticket del corte parcial
                     // La integrada de Sunmi necesita el cambio a un solo byte o el
                     // papel sale en blanco. Mismo criterio que `escposFor`.
                     switchToSingleByteFirst =
@@ -345,9 +380,10 @@ class CashDrawerViewModel @Inject constructor(
         events: List<CashDrawerEventEntity>,
     ) {
         viewModelScope.launch {
+            // `null` si no se pudo consultar — NUNCA `emptyList()`, que significa "no hubo cobros".
             val tenders = runCatching {
                 repository.getTenderBreakdown(session.openedAt, System.currentTimeMillis())
-            }.getOrDefault(emptyList())
+            }.getOrNull()
             _tenderBreakdown.value = tenders
             printCorte(
                 session = session,
@@ -361,3 +397,7 @@ class CashDrawerViewModel @Inject constructor(
 
 
 }
+
+/** Espejo EXACTO del permiso del server que gobierna el back-office de turnos. */
+const val PERMISO_VER_ESPERADO = "cash-drawer:view-expected"
+val ROLES_VER_ESPERADO = setOf("MANAGER", "ADMIN", "OWNER", "SUPERADMIN")

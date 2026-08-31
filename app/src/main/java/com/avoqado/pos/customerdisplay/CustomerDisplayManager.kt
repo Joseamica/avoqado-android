@@ -19,8 +19,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -115,6 +117,66 @@ internal fun shouldRebuildInheritedPresentation(
     hasPresentation: Boolean,
 ): Boolean = hasPresentation && previousHost !== newHost
 
+/** El mismo resultado de roles alimenta UI local y sincronización remota. */
+internal fun DisplayRoles.toDisplayCapabilitySnapshot(): DisplayCapabilitySnapshot =
+    DisplayCapabilitySnapshot(
+        present = customerDisplayId != null,
+        invertible = invertible,
+    )
+
+/** Nunca se monta contenido del cliente encima de la Activity vigente de caja. */
+internal fun canMountCustomerWindow(customerDisplayId: Int?, cashierDisplayId: Int): Boolean =
+    customerDisplayId != null && customerDisplayId != cashierDisplayId
+
+/** Observación física simétrica; ninguna preferencia participa en la respuesta. */
+internal fun observePhysicalDisplayMode(
+    defaultDisplayId: Int,
+    normalCustomerDisplayId: Int?,
+    cashierDisplayId: Int,
+    presentationDisplayId: Int?,
+    presentationShowing: Boolean,
+    defaultCustomerActivityStarted: Boolean,
+): Boolean? {
+    val customerDisplayId = normalCustomerDisplayId ?: return null
+    val presentationReady = presentationShowing && presentationDisplayId == customerDisplayId
+    return when (cashierDisplayId) {
+        defaultDisplayId -> {
+            if (presentationReady && !defaultCustomerActivityStarted) false else null
+        }
+
+        customerDisplayId -> {
+            if (defaultCustomerActivityStarted && !presentationReady) true else null
+        }
+
+        else -> null
+    }
+}
+
+/** Fallback físico para un rechazo: sólo ubicación de caja, nunca preferencias. */
+internal fun observeCashierPhysicalMode(
+    defaultDisplayId: Int,
+    normalCustomerDisplayId: Int?,
+    cashierDisplayId: Int,
+): Boolean? = when (cashierDisplayId) {
+    defaultDisplayId -> false
+    normalCustomerDisplayId -> true
+    else -> null
+}
+
+sealed interface PhysicalDisplayModeResult {
+    data class Confirmed(val inverted: Boolean) : PhysicalDisplayModeResult
+    data class Rejected(
+        val resultCode: DisplayModeAckResultCode,
+        val confirmedInverted: Boolean,
+    ) : PhysicalDisplayModeResult
+    data object Pending : PhysicalDisplayModeResult
+}
+
+internal interface DisplayModePhysicalApplier {
+    suspend fun applyAndConfirm(desiredInverted: Boolean): PhysicalDisplayModeResult
+    suspend fun observeConfirmedMode(): Boolean?
+}
+
 @Singleton
 class CustomerDisplayManager @Inject constructor(
     @ApplicationContext private val appContext: Context,
@@ -133,7 +195,7 @@ class CustomerDisplayManager @Inject constructor(
     // caja. El manager es el único que sabe QUÉ ventana de cliente hay montada,
     // así que el reenvío vive aquí. Ver handleCustomerPanelTouch.
     private val touchBridge: CustomerTouchBridge,
-) {
+) : DisplayModePhysicalApplier {
     private val tag = "🖥️CustomerDisplay"
 
     private val handler = Handler(Looper.getMainLooper())
@@ -143,6 +205,12 @@ class CustomerDisplayManager @Inject constructor(
     // colecta el interruptor, no este scope.
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private var invertedObserverJob: Job? = null
+
+    /** Exact remote relocation already requested but not physically confirmed yet. */
+    private var remoteRelocationInFlight: Boolean? = null
+
+    /** Lifecycle-confirmed; finish() alone is asynchronous and cannot clear it. */
+    private var customerActivityStartedOnDefault = false
 
     private var displayManager: DisplayManager? = null
     private var presentation: CustomerDisplayPresentation? = null
@@ -281,6 +349,117 @@ class CustomerDisplayManager @Inject constructor(
         refresh()
     }
 
+    /**
+     * Remote and local changes share the exact relocation mechanics. APPLIED is
+     * returned only after both the cashier Activity and customer window are
+     * observed on their requested displays; asynchronous relocation remains
+     * pending and the durable journal will retry observation on the next tick.
+     */
+    override suspend fun applyAndConfirm(desiredInverted: Boolean): PhysicalDisplayModeResult {
+        val start = withContext(Dispatchers.Main.immediate) {
+            val activity = hostActivity ?: return@withContext PhysicalDisplayModeResult.Pending
+            refresh()
+            observeConfirmedModeOnMain()?.let { observed ->
+                if (observed == desiredInverted) {
+                    remoteRelocationInFlight = null
+                    return@withContext PhysicalDisplayModeResult.Confirmed(observed)
+                }
+            }
+            val capability = state.capabilities.value
+            if (capability?.present != true || !capability.invertible) {
+                remoteRelocationInFlight = null
+                val confirmed = observeConfirmedModeOnMain()
+                    ?: observeCashierPhysicalModeOnMain()
+                    ?: return@withContext PhysicalDisplayModeResult.Pending
+                return@withContext PhysicalDisplayModeResult.Rejected(
+                    resultCode = DisplayModeAckResultCode.DISPLAY_NOT_INVERTIBLE,
+                    confirmedInverted = confirmed,
+                )
+            }
+            // Same two calls used by the local settings switch.
+            // Reset only once for an in-flight exact value. Subsequent ticks
+            // still enforce/refresh idempotently, but cannot launch a second
+            // Activity relocation while the first one is asynchronous.
+            if (remoteRelocationInFlight != desiredInverted) {
+                remoteRelocationInFlight = desiredInverted
+                cashierGuard.resetAttempts()
+            }
+            cashierGuard.enforce(activity)
+            refresh()
+            null
+        }
+        if (start != null) return start
+
+        repeat(PHYSICAL_CONFIRMATION_ATTEMPTS) {
+            delay(PHYSICAL_CONFIRMATION_POLL_MS)
+            val observed = observeConfirmedMode()
+            if (observed == desiredInverted) {
+                withContext(Dispatchers.Main.immediate) { remoteRelocationInFlight = null }
+                return PhysicalDisplayModeResult.Confirmed(observed)
+            }
+            if (state.invertUnsupported.value) {
+                withContext(Dispatchers.Main.immediate) { remoteRelocationInFlight = null }
+                val physical = observed ?: withContext(Dispatchers.Main.immediate) {
+                    observeCashierPhysicalModeOnMain()
+                } ?: return PhysicalDisplayModeResult.Pending
+                return PhysicalDisplayModeResult.Rejected(
+                    resultCode = DisplayModeAckResultCode.APPLY_FAILED,
+                    confirmedInverted = physical,
+                )
+            }
+        }
+        return PhysicalDisplayModeResult.Pending
+    }
+
+    override suspend fun observeConfirmedMode(): Boolean? =
+        withContext(Dispatchers.Main.immediate) { observeConfirmedModeOnMain() }
+
+    /** Must run on main: Activity/window/display state is not thread-safe. */
+    private fun observeConfirmedModeOnMain(): Boolean? {
+        val activity = hostActivity ?: return null
+        val dm = displayManager ?: return null
+        val displays = dm.getDisplays(DisplayManager.DISPLAY_CATEGORY_PRESENTATION).toList()
+        val normalRoles = resolveDisplayRoles(
+            defaultDisplayId = Display.DEFAULT_DISPLAY,
+            candidates = displays.map { CandidateDisplay(it.displayId, displayOwnerPackage(it)) },
+            remoteCaptureHints = REMOTE_CAPTURE_HINTS,
+            inverted = false,
+        )
+        if (!normalRoles.invertible) {
+            return observeCashierPhysicalMode(
+                defaultDisplayId = Display.DEFAULT_DISPLAY,
+                normalCustomerDisplayId = normalRoles.customerDisplayId,
+                cashierDisplayId = activity.currentDisplayId(),
+            )
+        }
+        return observePhysicalDisplayMode(
+            defaultDisplayId = Display.DEFAULT_DISPLAY,
+            normalCustomerDisplayId = normalRoles.customerDisplayId,
+            cashierDisplayId = activity.currentDisplayId(),
+            presentationDisplayId = presentation?.display?.displayId,
+            presentationShowing = presentation?.isShowing == true,
+            defaultCustomerActivityStarted = customerActivityStartedOnDefault,
+        )
+    }
+
+    /** Must run on main; derives only from the cashier Activity's actual display. */
+    private fun observeCashierPhysicalModeOnMain(): Boolean? {
+        val activity = hostActivity ?: return null
+        val dm = displayManager ?: return null
+        val displays = dm.getDisplays(DisplayManager.DISPLAY_CATEGORY_PRESENTATION).toList()
+        val normalRoles = resolveDisplayRoles(
+            defaultDisplayId = Display.DEFAULT_DISPLAY,
+            candidates = displays.map { CandidateDisplay(it.displayId, displayOwnerPackage(it)) },
+            remoteCaptureHints = REMOTE_CAPTURE_HINTS,
+            inverted = false,
+        )
+        return observeCashierPhysicalMode(
+            defaultDisplayId = Display.DEFAULT_DISPLAY,
+            normalCustomerDisplayId = normalRoles.customerDisplayId,
+            cashierDisplayId = activity.currentDisplayId(),
+        )
+    }
+
     /** Llamar desde MainActivity.onStart. */
     fun attach(activity: Activity) {
         // La marca en reposo es del NEGOCIO (logo si hay, si no el nombre).
@@ -405,13 +584,22 @@ class CustomerDisplayManager @Inject constructor(
             remoteCaptureHints = REMOTE_CAPTURE_HINTS,
             inverted = displayModePrefs.inverted.value,
         )
-        state.setInvertible(roles.invertible)
+        state.updateCapabilities(roles.toDisplayCapabilitySnapshot())
 
         val customerId = roles.customerDisplayId
         if (customerId == null) {
             if (presentation != null || CustomerDisplayActivity.isShowingOn(Display.DEFAULT_DISPLAY)) {
                 Log.i(tag, "Segunda pantalla desconectada")
             }
+            dismiss()
+            return
+        }
+
+        if (!canMountCustomerWindow(customerId, activity.currentDisplayId())) {
+            Log.i(
+                tag,
+                "La caja todavía ocupa el display $customerId: no se monta ninguna ventana de cliente encima",
+            )
             dismiss()
             return
         }
@@ -428,14 +616,6 @@ class CustomerDisplayManager @Inject constructor(
             // dominio es "degradar, nunca bloquear": la pantalla del cliente es
             // decoración, cobrar es el negocio — se queda sin letrero, nunca sin
             // caja usable.
-            if (activity.currentDisplayId() == customerId) {
-                Log.i(
-                    tag,
-                    "Modo invertido pero la caja sigue en la pantalla principal: no se monta el letrero del cliente para no taparla",
-                )
-                dismiss()
-                return
-            }
             // Modo invertido: el cliente va en la pantalla principal, y ahí
             // TYPE_PRESENTATION está prohibido → Activity.
             dismissPresentation()
@@ -540,6 +720,7 @@ class CustomerDisplayManager @Inject constructor(
      * sitio.
      */
     internal fun onCustomerDisplayPresented() {
+        customerActivityStartedOnDefault = true
         if (!pendingCashierRefront) return
         pendingCashierRefront = false
         handler.removeCallbacks(refrontCashierRunnable)
@@ -577,6 +758,7 @@ class CustomerDisplayManager @Inject constructor(
      * plazo — el remonte la encuentra ya montada y no hace nada.
      */
     internal fun onCustomerDisplayStopped(displayId: Int) {
+        if (displayId == Display.DEFAULT_DISPLAY) customerActivityStartedOnDefault = false
         val now = SystemClock.uptimeMillis()
         val verdict = decideCustomerRemount(
             desiredDisplayId = desiredCustomerDisplayId,
@@ -838,6 +1020,8 @@ class CustomerDisplayManager @Inject constructor(
     }
 
     private companion object {
+        const val PHYSICAL_CONFIRMATION_ATTEMPTS = 30
+        const val PHYSICAL_CONFIRMATION_POLL_MS = 100L
         /**
          * Margen para que la ventana del cliente termine de aterrizar antes de
          * pedir el frente para la caja. No es un número mágico con garantía: es

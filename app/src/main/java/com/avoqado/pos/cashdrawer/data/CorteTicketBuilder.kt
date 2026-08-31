@@ -35,10 +35,13 @@ object CorteTicketBuilder {
     fun build(
         session: CashDrawerSessionEntity,
         events: List<CashDrawerEventEntity>,
-        tenders: List<CashDrawerRepository.TenderRow>,
+        /** `null` = no se pudo consultar; vacía = no hubo cobros. */
+        tenders: List<CashDrawerRepository.TenderRow>?,
         venueName: String,
         paperWidth: com.avoqado.pos.printing.data.model.PaperWidth,
         isPartial: Boolean,
+        /** Conteo ciego: en el corte PARCIAL el esperado sólo se imprime a quien tiene permiso. */
+        showExpected: Boolean = true,
         /**
          * 🔴 La impresora INTEGRADA de Sunmi arranca en multibyte (GB18030) y se
          * come los bytes Latin-1 que le mandamos: el papel sale EN BLANCO y ni
@@ -82,8 +85,8 @@ object CorteTicketBuilder {
         val expected = session.startingAmountCents + cashSales + payIns - payOutsTodos
         val actual = session.actualAmountCents ?: 0
         val diff = actual - expected
-        val hasServerBreakdown = tenders.isNotEmpty()
-        val totalSales = if (hasServerBreakdown) tenders.sumOf { it.totalCents } else cashSales
+        val hasServerBreakdown = tenders != null
+        val totalSales = if (tenders != null) tenders.sumOf { it.totalCents } else cashSales
         val txCount = events.count { it.type == CashDrawerEventType.CASH_SALE.name }
 
         val p = ESCPOSPrinter(paperWidth, switchToSingleByteFirst)
@@ -119,7 +122,7 @@ object CorteTicketBuilder {
         p.setBold(true)
         p.printLine(if (hasServerBreakdown) "RESUMEN DE VENTAS" else "RESUMEN DE VENTAS (EFECTIVO)")
         p.setBold(false)
-        p.printTwoColumns(if (hasServerBreakdown) "Ventas totales" else "Ventas en efectivo", money(totalSales))
+        if (showExpected || !isPartial) p.printTwoColumns(if (hasServerBreakdown) "Ventas totales" else "Ventas en efectivo", money(totalSales))
         // 🔴 `txCount` cuenta SOLO las ventas en efectivo del cajón (es lo único
         // que el cajón conoce), pero `totalSales` incluye tarjeta y otros cuando
         // el server manda el desglose. Sin decirlo, las tres filas se leen como
@@ -138,15 +141,21 @@ object CorteTicketBuilder {
         p.setBold(true)
         p.printLine("DESGLOSE POR MÉTODO DE PAGO")
         p.setBold(false)
-        if (hasServerBreakdown) {
-            tenders.sortedByDescending { it.totalCents }.forEach {
+// 🔴 Tres casos, no dos. El servidor contestando "no hubo cobros" NO es lo mismo que no
+        // haber podido preguntar, y el ticket impreso queda en el cajón como comprobante: decir
+        // "sin conexión" cuando sí la había vuelve el papel una prueba falsa de lo que pasó.
+        if (hasServerBreakdown && tenders.orEmpty().isEmpty()) {
+            p.printTwoColumns("Efectivo", money(cashSales))
+            p.printLine("No hubo cobros en este corte.")
+        } else if (hasServerBreakdown) {
+            tenders.orEmpty().sortedByDescending { it.totalCents }.forEach {
                 p.printTwoColumns(tenderLabel(it.method), money(it.totalCents))
             }
         } else {
             p.printTwoColumns("Efectivo", money(cashSales))
-            p.printLine("Sin conexión: sólo se muestra el efectivo.")
+            p.printLine("No se pudo consultar el desglose.")
             p.printLine("Tarjeta y otros medios aparecerán al")
-            p.printLine("recuperar la conexión.")
+            p.printLine("volver a imprimirlo con conexión.")
         }
         p.printDivider()
 
@@ -157,7 +166,7 @@ object CorteTicketBuilder {
         // el corte enseñaba "Efectivo $5,158" sin decir que $552 de ahí eran
         // propinas que hay que sacar del cajón. El total de cada método sigue
         // incluyéndolas —es lo que hay físicamente— pero ahora se ve cuánto es.
-        val tips = tenders.filter { it.tipsCents != 0 }
+        val tips = tenders.orEmpty().filter { it.tipsCents != 0 }
         if (tips.isNotEmpty()) {
             p.setBold(true)
             p.printLine("PROPINAS")
@@ -186,7 +195,7 @@ object CorteTicketBuilder {
         p.printLine("MOVIMIENTOS DE EFECTIVO")
         p.setBold(false)
         p.printTwoColumns("Monto inicial", money(session.startingAmountCents))
-        p.printTwoColumns("Ventas en efectivo", "+" + money(cashSales))
+        if (showExpected || !isPartial) p.printTwoColumns("Ventas en efectivo", "+" + money(cashSales))
         p.printTwoColumns("Ingresos", "+" + money(payIns))
         p.printTwoColumns("Egresos", "-" + money(payOuts))
         if (reembolsos > 0) {
@@ -194,7 +203,7 @@ object CorteTicketBuilder {
         }
         p.printDivider()
         p.setBold(true)
-        p.printTwoColumns("Efectivo esperado", money(expected))
+        if (showExpected || !isPartial) p.printTwoColumns("Efectivo esperado", money(expected)) else p.printLine("Efectivo esperado: se revela al cerrar")
         if (isPartial) {
             // NADA de "Conteo real" ni de diferencia: el dinero no se ha contado.
             // Imprimir "Faltante $1,058.00" aquí sería inventar un descuadre.

@@ -16,6 +16,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import kotlin.math.roundToInt
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -103,7 +104,7 @@ fun PayInOutSheet(
             Button(
                 onClick = {
                     val amount = amountText.toDoubleOrNull() ?: 0.0
-                    val cents = (amount * 100).toInt()
+                    val cents = (amount * 100).roundToInt() // P2 Codex: toInt() truncaba centavos
                     val note = noteText.ifBlank { null }
                     onConfirm(cents, note)
                 },

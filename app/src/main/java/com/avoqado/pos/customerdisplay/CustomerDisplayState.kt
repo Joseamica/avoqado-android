@@ -199,8 +199,22 @@ class CustomerDisplayState @Inject constructor() {
     private val _invertible = MutableStateFlow(false)
     val invertible: StateFlow<Boolean> = _invertible.asStateFlow()
 
-    fun setInvertible(value: Boolean) {
-        _invertible.value = value
+    /**
+     * Hechos físicos observados por el manager en ESTE proceso.
+     *
+     * `null` no significa "sin pantalla": significa que todavía no se ha
+     * enumerado hardware. Conservar ese tercer estado evita anunciar
+     * `false/false` durante el arranque y degradar por error un equipo capaz.
+     */
+    private val _capabilities = MutableStateFlow<DisplayCapabilitySnapshot?>(null)
+    val capabilities: StateFlow<DisplayCapabilitySnapshot?> = _capabilities.asStateFlow()
+
+    /** Actualiza el snapshot remoto y la API histórica desde una sola observación. */
+    fun updateCapabilities(snapshot: DisplayCapabilitySnapshot) {
+        _invertible.value = snapshot.invertible
+        // Se publica al coordinator al final: al despertar, la API histórica
+        // ya refleja exactamente la misma observación.
+        _capabilities.value = snapshot
     }
 
     /**

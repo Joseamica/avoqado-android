@@ -18,6 +18,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import kotlin.math.roundToInt
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -30,7 +31,6 @@ import androidx.compose.ui.unit.dp
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Error
 import com.avoqado.pos.designsystem.theme.Success
-import kotlin.math.abs
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -44,8 +44,8 @@ fun CloseDrawerSheet(
     var noteText by remember { mutableStateOf("") }
     var closed by remember { mutableStateOf(false) }
 
-    val actualCents = ((amountText.toDoubleOrNull() ?: 0.0) * 100).toInt()
-    val differenceCents = actualCents - expectedAmountCents
+    // P2 Codex: `toInt()` TRUNCA — $128.14 → 12813.999… → $128.13 y un centavo de faltante inventado. iOS redondea.
+    val actualCents = ((amountText.toDoubleOrNull() ?: 0.0) * 100).roundToInt()
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -69,32 +69,20 @@ fun CloseDrawerSheet(
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
 
             Text(
-                text = "Cuenta el efectivo real en caja e ingresa el monto.",
+                text = "Cuenta todo el efectivo de la caja e ingresa el monto. La diferencia se muestra al confirmar.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
 
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
 
-            // Expected amount display
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                Text(
-                    text = "Monto esperado:",
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
-                Text(
-                    text = formatCurrency(expectedAmountCents),
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface,
-                )
-            }
-
+            // 🔴 CONTEO CIEGO (fase 5 de la unificación de caja). Antes el sheet enseñaba el
+            // "Monto esperado" ANTES de contar y el sobrante/faltante EN VIVO mientras se tecleaba:
+            // el cajero podía "contar hacia el sistema" y ajustar la cifra hasta cuadrar. Un
+            // faltante es evidencia con peso laboral (LFT 107/110), así que el esperado y la
+            // diferencia se enseñan DESPUÉS de confirmar, en el reporte de cierre — igual que el
+            // cierre ciego de Toast. El dato sigue viajando (`expectedAmountCents`) porque el
+            // reporte lo necesita; sólo deja de mostrarse aquí.
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
 
             OutlinedTextField(
@@ -111,22 +99,6 @@ fun CloseDrawerSheet(
                 shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.lg),
             )
 
-            // Over/short indicator
-            if (amountText.isNotBlank() && amountText.toDoubleOrNull() != null) {
-                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
-                val (label, color) = when {
-                    differenceCents > 0 -> "Sobrante: +${formatCurrency(differenceCents)}" to Success
-                    differenceCents < 0 -> "Faltante: -${formatCurrency(abs(differenceCents))}" to Error
-                    else -> "Cuadre exacto" to Success
-                }
-                Text(
-                    text = label,
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = color,
-                )
-            }
-
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
 
             OutlinedTextField(
@@ -142,11 +114,14 @@ fun CloseDrawerSheet(
 
             Button(
                 onClick = {
+                    // Doble toque (visto en /full-testing 27-ago): mandaba DOS cierres; el server
+                    // salvaba con su CAS, pero el botón debe apagarse tras el primero.
+                    closed = true
                     val note = noteText.ifBlank { null }
                     onConfirm(actualCents, note)
                     onClosed?.invoke(actualCents)
                 },
-                enabled = amountText.isNotBlank() && amountText.toDoubleOrNull() != null,
+                enabled = !closed && amountText.isNotBlank() && amountText.toDoubleOrNull() != null,
                 shape = RoundedCornerShape(50),
                 colors = ButtonDefaults.buttonColors(
                     containerColor = Error,

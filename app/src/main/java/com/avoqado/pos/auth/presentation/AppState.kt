@@ -44,6 +44,20 @@ class AppState @Inject constructor(
     connectivityMonitor: ConnectivityMonitor,
 ) : ViewModel() {
 
+    /**
+     * Member injection keeps the existing pure-JVM constructor callers usable;
+     * Hilt supplies the process singleton in production.
+     */
+    @Inject
+    lateinit var deviceCapabilitySyncCoordinator:
+        com.avoqado.pos.customerdisplay.DeviceCapabilitySyncCoordinator
+
+    private fun notifyDeviceSessionChanged() {
+        if (::deviceCapabilitySyncCoordinator.isInitialized) {
+            deviceCapabilitySyncCoordinator.onSessionChanged()
+        }
+    }
+
     /** Offline-first Corte B: replay del outbox de comandas + reconciliación. */
     private fun startOfflineOutbox() {
         secureStorage.venueId?.let { venueId ->
@@ -73,6 +87,7 @@ class AppState @Inject constructor(
         viewModelScope.launch {
             secureStorage.sessionInvalidated.collect {
                 _isLoggedIn.value = false
+                notifyDeviceSessionChanged()
             }
         }
     }
@@ -221,10 +236,12 @@ class AppState @Inject constructor(
         // el nuevo contexto; start() reinicia cuando cambia el venue activo.
         startOfflineOutbox()
         _roleVersion.value += 1
+        notifyDeviceSessionChanged()
     }
 
     fun onLoginSuccess() {
         _isLoggedIn.value = true
+        notifyDeviceSessionChanged()
         paymentSyncService.start()
         startOfflineOutbox()
         refreshTabs()
@@ -252,6 +269,7 @@ class AppState @Inject constructor(
             syncOutbox.stop()
             secureStorage.clearSession()
             _isLoggedIn.value = false
+            notifyDeviceSessionChanged()
         }
     }
 
