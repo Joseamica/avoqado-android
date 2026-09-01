@@ -248,43 +248,83 @@ private fun VenueIdleBranding(venueName: String?, logoUrl: String?) {
     )
     val name = venueName?.takeIf { it.isNotBlank() } ?: "Avoqado"
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .padding(AvoqadoTheme.spacing.xxl)
-            .graphicsLayer {
-                alpha = enter.value
-                val s = (0.96f + 0.04f * enter.value) * breathe
-                scaleX = s; scaleY = s
-            },
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
-    ) {
-        // 🔴 La marca del NEGOCIO, no la nuestra. El cliente está en la taquería,
-        // no en Avoqado. Logo Y nombre juntos: el logo manda, el nombre lo ancla.
-        var logoFailed by remember(logoUrl) { mutableStateOf(false) }
-        if (!logoUrl.isNullOrBlank() && !logoFailed) {
-            coil.compose.AsyncImage(
-                model = logoUrl,
-                contentDescription = name,
-                modifier = Modifier.fillMaxWidth(0.5f).heightIn(max = 360.dp),
-                contentScale = androidx.compose.ui.layout.ContentScale.Fit,
-                onError = { logoFailed = true },
+    Box(modifier = Modifier.fillMaxSize()) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(AvoqadoTheme.spacing.xxl)
+                .graphicsLayer {
+                    alpha = enter.value
+                    val s = (0.96f + 0.04f * enter.value) * breathe
+                    scaleX = s; scaleY = s
+                },
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center,
+        ) {
+            // 🔴 La marca del NEGOCIO, no la nuestra. El cliente está en la taquería,
+            // no en Avoqado. Logo Y nombre juntos: el logo manda, el nombre lo ancla.
+            var logoFailed by remember(logoUrl) { mutableStateOf(false) }
+            if (!logoUrl.isNullOrBlank() && !logoFailed) {
+                coil.compose.AsyncImage(
+                    model = logoUrl,
+                    contentDescription = name,
+                    modifier = Modifier.fillMaxWidth(0.5f).heightIn(max = 360.dp),
+                    contentScale = androidx.compose.ui.layout.ContentScale.Fit,
+                    onError = { logoFailed = true },
+                )
+                Spacer(Modifier.height(AvoqadoTheme.spacing.xl))
+            }
+            Text(
+                text = name,
+                fontSize = CdTitle,
+                lineHeight = CdTitle * 1.2f,
+                fontWeight = FontWeight.Bold,
+                textAlign = TextAlign.Center,
+                color = MaterialTheme.colorScheme.onBackground,
             )
-            Spacer(Modifier.height(AvoqadoTheme.spacing.xl))
+            Spacer(Modifier.height(AvoqadoTheme.spacing.md))
+            Text(
+                text = "Bienvenido",
+                fontSize = CdBody,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
-        Text(
-            text = name,
-            fontSize = CdTitle,
-            lineHeight = CdTitle * 1.2f,
-            fontWeight = FontWeight.Bold,
-            textAlign = TextAlign.Center,
-            color = MaterialTheme.colorScheme.onBackground,
+        // Fuera de la Column a propósito: el pie no debe "respirar" con el
+        // letrero ni empujar su centrado — es firma, no contenido.
+        PoweredByAvoqado(
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = AvoqadoTheme.spacing.lg),
         )
-        Spacer(Modifier.height(AvoqadoTheme.spacing.md))
+    }
+}
+
+/**
+ * "Powered by Avoqado", muy chico y hasta abajo (founder, 2026-09-01). Sólo en
+ * el reposo con marca del negocio: la pantalla sin sesión ya habla entera por
+ * Avoqado y ahí el pie sobraría.
+ */
+@Composable
+private fun PoweredByAvoqado(modifier: Modifier = Modifier) {
+    Row(
+        modifier = modifier,
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.xs),
+    ) {
         Text(
-            text = "Bienvenido",
-            fontSize = CdBody,
+            text = "Powered by",
+            fontSize = 15.sp,
+            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f),
+        )
+        Image(
+            painter = painterResource(id = com.avoqado.pos.R.drawable.avoqado_logo_mark),
+            contentDescription = null,
+            modifier = Modifier.size(18.dp),
+        )
+        Text(
+            text = "Avoqado",
+            fontSize = 15.sp,
+            fontWeight = FontWeight.SemiBold,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
