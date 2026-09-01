@@ -17,6 +17,7 @@ import com.avoqado.pos.pos.data.ActiveCartState
 import com.avoqado.pos.pos.data.ClassCheckoutSeed
 import com.avoqado.pos.pos.data.DiscountsRepository
 import com.avoqado.pos.pos.data.ProductsRepository
+import com.avoqado.pos.pos.data.soloVendedores
 import com.avoqado.pos.pos.data.SavedCartsRepository
 import com.avoqado.pos.pos.data.StaffMember
 import com.avoqado.pos.pos.data.StaffRepository
@@ -543,7 +544,12 @@ class CartViewModel @Inject constructor(
             _isStaffLoading.value = true
             _staffError.value = null
             staffRepository.getActiveStaff().fold(
-                onSuccess = { staff ->
+                onSuccess = { todos ->
+                    // Vendedor = roles con la perilla "aparece como vendedor"
+                    // prendida (default todos; el venue apaga p.ej. "Investor"
+                    // desde el editor de roles). Las pantallas de reservas
+                    // siguen usando la lista completa.
+                    val staff = todos.soloVendedores()
                     _staffOptions.value = staff
                     val selectedId = _cartState.value.selectedStaffId
                     val selected = staff.firstOrNull { it.id == selectedId }

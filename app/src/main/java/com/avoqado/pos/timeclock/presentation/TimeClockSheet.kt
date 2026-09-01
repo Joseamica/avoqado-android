@@ -322,11 +322,11 @@ fun TimeClockSheet(
                         }
                     }
 
-                    // Role display
+                    // Role display — traducido, nunca el enum crudo ("WAITER").
                     staff.role?.let { role ->
                         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxs))
                         Text(
-                            text = role,
+                            text = com.avoqado.pos.core.util.RoleDisplay.label(null, role) ?: role,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

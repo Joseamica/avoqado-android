@@ -127,7 +127,7 @@ private fun StaffRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
-            staff.role?.let { role ->
+            staff.roleLabel?.let { role ->
                 Text(
                     text = role,
                     style = MaterialTheme.typography.bodySmall,
