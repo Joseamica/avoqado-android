@@ -60,7 +60,8 @@ object RasterImages {
         return if (inkThreshold != null) {
             MonoRaster.threshold(w, h, luminance, inkThreshold)
         } else {
-            MonoRaster.dither(w, h, luminance)
+            // El fondo del logo se imprime como papel, sea 255 o un gris claro.
+            MonoRaster.dither(w, h, luminance, whitePoint = MonoRaster.autoWhitePoint(w, h, luminance))
         }
     }
 

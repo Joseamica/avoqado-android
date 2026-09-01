@@ -7,6 +7,7 @@ import com.avoqado.pos.printing.data.model.ReceiptData
 import com.avoqado.pos.printing.data.model.ReceiptItem
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -136,6 +137,82 @@ class ReceiptTicketBrandingTest {
     fun `el dithering conserva negro puro y blanco puro`() {
         val raster = MonoRaster.dither(8, 1, intArrayOf(0, 0, 0, 0, 255, 255, 255, 255))
         assertEquals(0xF0.toByte(), raster.bits[0])
+    }
+
+    /**
+     * Defecto encontrado IMPRIMIENDO el ticket (2026-09-01): el logo del
+     * negocio salía con un marco gris sucio — 3.9 % de puntos negros en el
+     * borde. Casi todos los logos son JPG y su fondo "blanco" es 248-254 con
+     * ruido; el difusor de error lo convertía en trama.
+     */
+    @Test
+    fun `un fondo casi blanco de JPG no se convierte en trama`() {
+        // Ruido típico de compresión alrededor del blanco.
+        val fondoJpg = intArrayOf(250, 253, 247, 255, 249, 252, 246, 251)
+
+        val raster = MonoRaster.dither(8, 1, fondoJpg.copyOf())
+
+        assertEquals("el fondo debe salir 100% blanco", 0x00.toByte(), raster.bits[0])
+    }
+
+    @Test
+    fun `el blanqueo no se come el arte del logo`() {
+        // Un gris medio (128) SÍ es arte y debe seguir tramándose.
+        val conArte = intArrayOf(250, 128, 250, 128, 250, 128, 250, 128)
+
+        val raster = MonoRaster.dither(8, 1, conArte.copyOf())
+
+        assertNotEquals("los grises reales siguen imprimiéndose", 0x00.toByte(), raster.bits[0])
+    }
+
+    // MARK: - El fondo del logo es el papel (autoWhitePoint)
+
+    /** Un logo 24x24 con fondo uniforme [bg] y un cuadro negro de 8x8 al centro. */
+    private fun logoSobreFondo(bg: Int, ruido: Int = 0): IntArray = IntArray(24 * 24) { i ->
+        val x = i % 24; val y = i / 24
+        if (x in 8..15 && y in 8..15) 0 else (bg + (if (ruido > 0) (i * 7) % (ruido + 1) else 0)).coerceAtMost(255)
+    }
+
+    /**
+     * El caso REAL medido en el aparato: fondo gris claro uniforme (230-239),
+     * que un umbral fijo en 245 no alcanza. El borde tiene que salir blanco.
+     */
+    @Test
+    fun `un fondo gris claro uniforme se imprime como papel`() {
+        val lum = logoSobreFondo(bg = 230, ruido = 9)
+
+        val wp = MonoRaster.autoWhitePoint(24, 24, lum)
+        val raster = MonoRaster.dither(24, 24, lum.copyOf(), whitePoint = wp)
+
+        // Ni un punto negro en el marco exterior de 4 px.
+        var negrosEnBorde = 0
+        for (y in 0 until 24) for (x in 0 until 24) {
+            if (x < 4 || x >= 20 || y < 4 || y >= 20) {
+                if ((raster.bits[y * raster.widthBytes + (x shr 3)].toInt() and (0x80 shr (x and 7))) != 0) negrosEnBorde++
+            }
+        }
+        assertEquals("el fondo gris debe salir 100% blanco", 0, negrosEnBorde)
+        // Y el arte sigue ahí: el cuadro del centro es negro.
+        assertTrue((raster.bits[12 * raster.widthBytes + 1].toInt() and 0x08) != 0)
+    }
+
+    @Test
+    fun `con fondo blanco de verdad no cambia nada`() {
+        assertEquals(MonoRaster.DEFAULT_WHITE_POINT, MonoRaster.autoWhitePoint(24, 24, logoSobreFondo(bg = 255)))
+    }
+
+    @Test
+    fun `un logo sobre fondo OSCURO no se toca`() {
+        // Fondo negro con arte: blanquear aquí borraría el logo entero.
+        assertEquals(MonoRaster.DEFAULT_WHITE_POINT, MonoRaster.autoWhitePoint(24, 24, logoSobreFondo(bg = 30)))
+    }
+
+    @Test
+    fun `si el arte toca el borde no se adivina el fondo`() {
+        // Fondo claro pero con una franja negra en la orilla izquierda (logo a sangre).
+        val lum = logoSobreFondo(bg = 235)
+        for (y in 0 until 24) lum[y * 24] = 0
+        assertEquals(MonoRaster.DEFAULT_WHITE_POINT, MonoRaster.autoWhitePoint(24, 24, lum))
     }
 
     /** Busca `GS v 0 m xL xH yL yH` con las dimensiones dadas. */

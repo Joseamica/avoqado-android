@@ -78,17 +78,38 @@ data class ReceiptInfo(
     val rfc: String? = null,
     val lugarExpedicion: String? = null,
 ) {
-    /** "Nápoles 47, Cuauhtémoc, Ciudad de México, CP 06600" — una línea; la impresora la parte sola. */
+    /**
+     * "Nápoles 47, Cuauhtémoc, Ciudad de México, CP 06600" — una línea; la
+     * impresora la parte sola.
+     *
+     * 🔴 NO repite lo que la dirección ya dice. Medido en papel el 2026-09-01:
+     * el `address` de un venue real ya venía completo —"Monte Himalaya 408,
+     * Lomas de Chapultepec, Miguel Hidalgo, 11000 Ciudad de México, CDMX,
+     * México"— y pegarle ciudad, estado y CP encima producía
+     * "…México, Ciudad de México, Ciudad de México, CP 11000": tres renglones
+     * de rollo desperdiciados diciendo lo mismo. Se compara sin acentos ni
+     * mayúsculas porque el mismo dato viene escrito distinto en cada campo.
+     */
     val addressLine: String?
         get() {
-            val parts = listOfNotNull(
-                address?.takeIf { it.isNotBlank() },
-                city?.takeIf { it.isNotBlank() },
-                state?.takeIf { it.isNotBlank() },
-                zipCode?.takeIf { it.isNotBlank() }?.let { "CP $it" },
-            )
-            return parts.takeIf { it.isNotEmpty() }?.joinToString(", ")
+            val partes = mutableListOf<String>()
+            fun agregar(valor: String?) {
+                val v = valor?.trim()?.takeIf { it.isNotEmpty() } ?: return
+                val yaEsta = partes.any { normalizar(it).contains(normalizar(v)) }
+                if (!yaEsta) partes += v
+            }
+            agregar(address)
+            agregar(city)
+            agregar(state)
+            zipCode?.trim()?.takeIf { it.isNotEmpty() }?.let { cp ->
+                if (partes.none { it.contains(cp) }) partes += "CP $cp"
+            }
+            return partes.takeIf { it.isNotEmpty() }?.joinToString(", ")
         }
+
+    private fun normalizar(s: String): String =
+        java.text.Normalizer.normalize(s.lowercase(), java.text.Normalizer.Form.NFD)
+            .replace(Regex("\\p{Mn}+"), "")
 }
 
 @Serializable

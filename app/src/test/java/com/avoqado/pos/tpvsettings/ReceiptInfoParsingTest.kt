@@ -61,4 +61,33 @@ class ReceiptInfoParsingTest {
         assertEquals("Nápoles 47", ReceiptInfo(address = "Nápoles 47", city = "  ").addressLine)
         assertNull(ReceiptInfo().addressLine)
     }
+
+    /**
+     * Defecto encontrado IMPRIMIENDO el ticket (2026-09-01): el `address` de un
+     * venue real ya trae ciudad, estado y país, y pegárselos otra vez llenaba
+     * tres renglones de rollo repitiendo lo mismo.
+     */
+    @Test
+    fun `addressLine NO repite lo que la direccion ya dice`() {
+        val real = ReceiptInfo(
+            address = "Monte Himalaya 408, Lomas de Chapultepec, Miguel Hidalgo, 11000 Ciudad de México, CDMX, México",
+            city = "Ciudad de México",
+            state = "Ciudad de México",
+            zipCode = "11000",
+        )
+        // Ciudad, estado y CP ya están dentro del `address`: no se repiten.
+        assertEquals(real.address, real.addressLine)
+    }
+
+    @Test
+    fun `addressLine compara sin acentos ni mayusculas`() {
+        val info = ReceiptInfo(address = "Calle 1, CIUDAD DE MEXICO", city = "Ciudad de México")
+        assertEquals("Calle 1, CIUDAD DE MEXICO", info.addressLine)
+    }
+
+    @Test
+    fun `addressLine SI agrega lo que falta`() {
+        val info = ReceiptInfo(address = "Nápoles 47", city = "Cuauhtémoc", zipCode = "06600")
+        assertEquals("Nápoles 47, Cuauhtémoc, CP 06600", info.addressLine)
+    }
 }
