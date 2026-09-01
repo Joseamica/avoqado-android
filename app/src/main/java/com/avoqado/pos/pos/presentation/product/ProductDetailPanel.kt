@@ -65,6 +65,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -1074,11 +1075,27 @@ private fun DiscountsSubView(
                     .padding(AvoqadoTheme.spacing.xl),
                 contentAlignment = Alignment.Center,
             ) {
-                Text(
-                    text = "No hay descuentos disponibles para este artículo",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+                // 🔴 El vacío GUÍA, no es un callejón sin salida (founder,
+                // 2026-09-01): esta lista es sólo de descuentos por artículo o
+                // categoría, y un venue que únicamente tiene descuentos de
+                // "orden completa" la veía vacía y concluía que sus descuentos
+                // no servían. Se dice dónde SÍ se aplican.
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Text(
+                        text = "Este artículo no tiene descuentos propios",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                    )
+                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+                    Text(
+                        text = "Los descuentos de toda la cuenta se aplican en el carrito, " +
+                            "con «Agregar descuento».",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        textAlign = TextAlign.Center,
+                    )
+                }
             }
         } else {
             Column(

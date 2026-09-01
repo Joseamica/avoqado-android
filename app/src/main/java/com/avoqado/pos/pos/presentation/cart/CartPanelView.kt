@@ -86,6 +86,16 @@ fun CartPanelView(
     onAddCustomAmount: () -> Unit = {},
     onRemoveItem: (String) -> Unit = {},
     onApplyTaxPercent: (Int?) -> Unit = {},
+    /**
+     * Abre los descuentos de la CUENTA COMPLETA desde el carrito — el
+     * equivalente del "Review sale → Add discount" de Square (founder,
+     * 2026-09-01: los descuentos de orden sólo se alcanzaban por la pestaña
+     * Shortcuts y nadie los encontraba).
+     *
+     * 🔴 SIN default, por la misma lección que `onSplitBill`: con `= {}` el
+     * carrito de teléfono no lo pasaría y el renglón se dibujaría muerto.
+     */
+    onDiscountTap: () -> Unit,
     customerName: String? = null,
     customerId: String? = null,
     onCustomerTap: () -> Unit = {},
@@ -309,6 +319,28 @@ fun CartPanelView(
                                 )
                             }
                         }
+
+                        // "Agregar descuento" link — descuentos de la CUENTA
+                        // completa, junto al de impuesto porque es la misma
+                        // familia de acciones sobre el total (patrón de Square:
+                        // el descuento de venta se aplica desde el resumen, no
+                        // desde un artículo).
+                        Text(
+                            text = cartState.orderDiscount?.let { "Descuento (${it.name})" }
+                                ?: "Agregar descuento",
+                            style = if (useDenseTabletLayout) {
+                                MaterialTheme.typography.bodySmall
+                            } else {
+                                MaterialTheme.typography.bodyMedium
+                            },
+                            color = MaterialTheme.colorScheme.onSurface,
+                            modifier = Modifier
+                                .clickable { onDiscountTap() }
+                                .padding(
+                                    horizontal = sectionInnerPadding,
+                                    vertical = sectionInnerPadding,
+                                ),
+                        )
 
                         // "Agregar impuesto" link
                         Text(

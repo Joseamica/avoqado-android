@@ -324,6 +324,10 @@ fun CheckoutScreen(
     var showPackCustomerRequired by remember { mutableStateOf(false) }
     var showPackNoSplitAlert by remember { mutableStateOf(false) }
     var showClearCartConfirm by remember { mutableStateOf(false) }
+    // Descuento de la CUENTA COMPLETA, abierto desde el carrito (founder,
+    // 2026-09-01). El estado vive aquí y no en el carrito porque las dos
+    // variantes —panel de tablet y hoja de teléfono— disparan la misma hoja.
+    var showOrderDiscountSheet by remember { mutableStateOf(false) }
     // 🔴 DINERO. Las membresías capturadas viven en el CARRITO, no en un `remember`
     // de aquí: girar la tablet recrea la Activity, `showPaymentFlow` revive
     // (`rememberSaveable`) y un `remember` pelón volvía a null — se cobraban los
@@ -744,6 +748,7 @@ fun CheckoutScreen(
                         onAddCustomAmount = { selectedTab = InputTab.KEYPAD },
                         onRemoveItem = quitarLineaDelCarrito,
                         onApplyTaxPercent = { cartViewModel.applyOrderTaxPercent(it) },
+                        onDiscountTap = { showOrderDiscountSheet = true },
                         customerName = selectedCustomer?.name,
                         customerId = selectedCustomer?.id,
                         onCustomerTap = openGeneralCustomerPicker,
@@ -1062,6 +1067,13 @@ fun CheckoutScreen(
             },
             onRemoveItem = quitarLineaDelCarrito,
             onApplyTaxPercent = { cartViewModel.applyOrderTaxPercent(it) },
+            onDiscountTap = {
+                // Mismo patrón que dividir cuenta: el carrito de teléfono ocupa
+                // la pantalla completa, así que se cierra ANTES o la hoja del
+                // descuento queda detrás y el renglón parece no hacer nada.
+                showIPhoneCart = false
+                showOrderDiscountSheet = true
+            },
             staffName = cartState.selectedStaffName,
             onStaffTap = {
                 cartViewModel.fetchStaff()
@@ -1110,6 +1122,14 @@ fun CheckoutScreen(
                 cartViewModel.selectStaff(staff.id, staff.fullName)
             },
             onDismiss = { showStaffSelector = false },
+        )
+    }
+
+    if (showOrderDiscountSheet) {
+        com.avoqado.pos.pos.presentation.cart.OrderDiscountSheet(
+            cartViewModel = cartViewModel,
+            discountsRepository = cartViewModel.discountsRepository,
+            onDismiss = { showOrderDiscountSheet = false },
         )
     }
 
@@ -1914,6 +1934,8 @@ private fun IPhoneCartSheet(
     onAddCustomAmount: () -> Unit,
     onRemoveItem: (String) -> Unit,
     onApplyTaxPercent: (Int?) -> Unit,
+    /** Descuento de la cuenta completa. 🔴 SIN default, misma lección que `onSplitPayment`. */
+    onDiscountTap: () -> Unit,
     staffName: String,
     onStaffTap: () -> Unit,
     /**
@@ -1991,6 +2013,7 @@ private fun IPhoneCartSheet(
                 onAddCustomAmount = onAddCustomAmount,
                 onRemoveItem = onRemoveItem,
                 onApplyTaxPercent = onApplyTaxPercent,
+                onDiscountTap = onDiscountTap,
                 customerName = customerName,
                 customerId = customerId,
                 onCustomerTap = onCustomerTap,

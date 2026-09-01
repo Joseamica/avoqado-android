@@ -576,14 +576,32 @@ private fun DiscountsSubView(
     discountsRepository: DiscountsRepository,
     onBack: () -> Unit,
 ) {
+    Column(modifier = Modifier.fillMaxSize()) {
+        BreadcrumbHeader(title = "Descuentos", onBack = onBack)
+        OrderDiscountsContent(cartViewModel = cartViewModel, discountsRepository = discountsRepository)
+    }
+}
+
+/**
+ * Descuentos de la CUENTA COMPLETA: aplicar, quitar y el manual.
+ *
+ * 🔴 Vive UNA sola vez y tiene DOS entradas (founder, 2026-09-01): el atajo
+ * "Descuentos" de Shortcuts y el "Agregar descuento" del carrito. Duplicar la
+ * lista sería la trampa de siempre — dos copias que se separan y una acaba sin
+ * el descuento manual o sin el botón de quitar.
+ */
+@Composable
+internal fun OrderDiscountsContent(
+    cartViewModel: CartViewModel,
+    discountsRepository: DiscountsRepository,
+    modifier: Modifier = Modifier,
+) {
     val discounts by discountsRepository.discounts.collectAsState()
     val cartState by cartViewModel.cartState.collectAsState()
     val orderDiscounts = discounts.filter { it.discountScope == com.avoqado.pos.pos.data.model.DiscountScope.ORDER }
     var showManualDiscount by remember { mutableStateOf(false) }
 
-    Column(modifier = Modifier.fillMaxSize()) {
-        BreadcrumbHeader(title = "Descuentos", onBack = onBack)
-
+    Column(modifier = modifier.fillMaxSize()) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
