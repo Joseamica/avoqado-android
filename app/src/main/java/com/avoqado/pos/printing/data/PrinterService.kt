@@ -157,6 +157,7 @@ internal fun selectDefaultPrinter(
 class PrinterService @Inject constructor(
     @ApplicationContext private val context: Context,
     private val innerPrinter: SunmiInnerPrinter,
+    private val receiptBranding: ReceiptBranding,
 ) {
     // MARK: - State
 
@@ -407,7 +408,10 @@ class PrinterService @Inject constructor(
 
     suspend fun printReceipt(receipt: ReceiptData, printer: SavedPrinter) {
         val escpos = escposFor(printer)
-        val data = escpos.generateReceipt(receipt)
+        // Identidad del negocio (logo + encabezado fiscal) y firma Avoqado se
+        // resuelven AQUÍ — el embudo por el que pasan TODOS los recibos (mesas,
+        // cobro rápido, transacciones y auto-print) — no en cada ViewModel.
+        val data = escpos.generateReceipt(receiptBranding.decorate(receipt, printer.paperWidth))
         sendData(data, printer)
     }
 
@@ -959,6 +963,29 @@ class PrinterService @Inject constructor(
 
     fun getDefaultPrinter(role: PrinterRole): SavedPrinter? =
         getPrinters(role).firstOrNull()
+
+    /**
+     * La impresora integrada de ESTE aparato como destino de RUTEO — es a lo que resuelve
+     * una estación cuyo printer del dashboard es `POS_INTERNAL` (la comanda sale en el
+     * aparato que cobró). Devuelve null si el equipo no trae cabezal físico (T3, tablets
+     * genéricas): ahí la estación cae al respaldo KITCHEN de [ComandaPrinter.printComandas].
+     *
+     * NO es el respaldo plug-and-play de recibos de [selectDefaultPrinter] ("sin inventar
+     * rutas de cocina"): aquí la ruta la configuró el NEGOCIO explícitamente en el
+     * dashboard, por eso la integrada sí puede cargar comandas.
+     */
+    suspend fun internalPrinterForRouting(): SavedPrinter? {
+        val available = innerPrinter.ensureBound() && innerPrinter.hasPhysicalPrinter
+        if (!available) return null
+        return SavedPrinter(
+            id = "internal",
+            name = "Impresora integrada",
+            connectionType = PrinterConnectionType.INTERNAL.value,
+            address = "internal",
+            roles = listOf(PrinterRole.KITCHEN.value),
+            paperWidthMm = innerPrinter.paperWidthMm,
+        )
+    }
 
     /**
      * Respaldo de hardware para acciones explícitas de recibo/vale. No altera
