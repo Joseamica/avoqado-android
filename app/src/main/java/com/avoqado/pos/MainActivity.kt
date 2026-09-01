@@ -2,6 +2,7 @@ package com.avoqado.pos
 
 import android.animation.ValueAnimator
 import android.os.Bundle
+import android.view.KeyEvent
 import android.view.MotionEvent
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -49,6 +50,9 @@ class MainActivity : FragmentActivity() {
 
     /** Deja la caja en la pantalla que le toca cuando el mostrador está invertido. */
     @Inject lateinit var cashierGuard: com.avoqado.pos.customerdisplay.CashierDisplayGuard
+
+    /** Lector de pistola (USB/Bluetooth): ante Android es un teclado. Ver [com.avoqado.pos.pos.data.LectorHid]. */
+    @Inject lateinit var lectorHid: com.avoqado.pos.pos.data.LectorHidBus
 
     override fun onStart() {
         super.onStart()
@@ -125,6 +129,18 @@ class MainActivity : FragmentActivity() {
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
         if (customerDisplay.handleCustomerPanelTouch(ev)) return true
         return super.dispatchTouchEvent(ev)
+    }
+
+    /**
+     * 🔴 Puente de teclado, hermano del táctil de arriba. Un lector de pistola escribe el
+     * código tecla por tecla y cierra con Enter, y ésta es la única puerta por la que pasan
+     * TODAS las teclas antes de llegar a un campo. Si el bus reconoce una ráfaga de lector,
+     * la tecla se corta aquí para que no ensucie lo que el cajero tenía con foco; si no,
+     * sigue su camino normal. Sin lector conectado nunca toma nada.
+     */
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (lectorHid.procesar(event)) return true
+        return super.dispatchKeyEvent(event)
     }
 
     @OptIn(ExperimentalMaterial3WindowSizeClassApi::class)

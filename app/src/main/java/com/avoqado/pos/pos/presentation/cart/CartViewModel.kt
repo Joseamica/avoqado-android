@@ -182,10 +182,24 @@ class CartViewModel @Inject constructor(
     private val customerDisplay: com.avoqado.pos.customerdisplay.CustomerDisplayState,
     private val areaTicketRepository: AreaTicketRepository,
     private val walletScanRepository: com.avoqado.pos.loyalty.data.WalletScanRepository,
+    /**
+     * Lector de pistola (USB/Bluetooth). Lleva default para que las pruebas que construyen
+     * este ViewModel a mano no tengan que conocerlo: Hilt inyecta siempre el singleton real
+     * (el que alimenta `MainActivity`), y la app nunca usa el default.
+     */
+    private val lectorHidBus: com.avoqado.pos.pos.data.LectorHidBus = com.avoqado.pos.pos.data.LectorHidBus(),
 ) : ViewModel() {
 
     private val _cartState = MutableStateFlow(defaultCartState())
     val cartState: StateFlow<CartState> = _cartState.asStateFlow()
+
+    /**
+     * Códigos que llegan del lector de pistola. La pantalla los mete por el MISMO camino
+     * que un escaneo de cámara ([resolveScannedBarcode]): producto, vale, báscula o la
+     * tarjeta del cliente — el lector sirve para todo lo que la cámara ya leía.
+     */
+    val codigosEscaneados: kotlinx.coroutines.flow.SharedFlow<String>
+        get() = lectorHidBus.codigos
 
     private val _staffOptions = MutableStateFlow<List<StaffMember>>(emptyList())
     val staffOptions: StateFlow<List<StaffMember>> = _staffOptions.asStateFlow()

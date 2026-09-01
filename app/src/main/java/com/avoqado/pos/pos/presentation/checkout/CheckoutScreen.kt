@@ -1133,6 +1133,53 @@ fun CheckoutScreen(
         )
     }
 
+    // 🔴 UN solo manejador para la cámara y para el lector de pistola: el `when` sobre
+    // `ScannedBarcodeResult` vive aquí una vez. Duplicarlo por canal de entrada es
+    // exactamente el defecto que tuvo el servidor con los sellos (tarjeta sí, efectivo no).
+    val manejarCodigo: (String) -> Unit = { barcode ->
+        showBarcodeScanner = false
+        checkoutScope.launch {
+            when (val result = cartViewModel.resolveScannedBarcode(barcode)) {
+                is ScannedBarcodeResult.ProductFound ->
+                    handleProductTap(
+                        result.product,
+                        cartViewModel,
+                        { selectedProduct = it },
+                        { weightProduct = it },
+                    )
+                is ScannedBarcodeResult.WeightedProductFound ->
+                    cartViewModel.addProductByWeight(result.product, result.weightKg)
+                is ScannedBarcodeResult.AreaTicketsAdded ->
+                    areaTicketAddedCount = result.ticketCount
+                is ScannedBarcodeResult.CustomerCardFound -> {
+                    // 🔴 Escanear la tarjeta LIGA la venta al cliente, y eso es lo
+                    // que hace que el sello suba solo al cobrar. Sin esta línea el
+                    // cajero vería el nombre pero la compra no contaría para su
+                    // cartilla, que es justo lo que el cliente vino a buscar.
+                    val c = result.card.customer
+                    if (c != null) {
+                        val nombre = listOfNotNull(c.firstName, c.lastName)
+                            .filter { it.isNotBlank() }
+                            .joinToString(" ")
+                            .ifBlank { null }
+                        cartViewModel.setSelectedCustomer(c.id, nombre)
+                    }
+                    scannedCustomerCard = result.card
+                }
+                is ScannedBarcodeResult.Unknown ->
+                    unknownBarcode = result.code
+                is ScannedBarcodeResult.Error ->
+                    barcodeError = result.message
+            }
+        }
+    }
+
+    // Lector de pistola (USB/Bluetooth): teclea el código y cierra con Enter. Llega por
+    // `LectorHidBus` desde la Activity y entra por el MISMO camino que la cámara.
+    LaunchedEffect(Unit) {
+        cartViewModel.codigosEscaneados.collect { manejarCodigo(it) }
+    }
+
     // Barcode scanner overlay
     if (showBarcodeScanner) {
         Box(
@@ -1141,43 +1188,7 @@ fun CheckoutScreen(
                 .background(Color.Black),
         ) {
             BarcodeScannerView(
-                onBarcodeScanned = { barcode ->
-                    showBarcodeScanner = false
-                    checkoutScope.launch {
-                        when (val result = cartViewModel.resolveScannedBarcode(barcode)) {
-                            is ScannedBarcodeResult.ProductFound ->
-                                handleProductTap(
-                                    result.product,
-                                    cartViewModel,
-                                    { selectedProduct = it },
-                                    { weightProduct = it },
-                                )
-                            is ScannedBarcodeResult.WeightedProductFound ->
-                                cartViewModel.addProductByWeight(result.product, result.weightKg)
-                            is ScannedBarcodeResult.AreaTicketsAdded ->
-                                areaTicketAddedCount = result.ticketCount
-                            is ScannedBarcodeResult.CustomerCardFound -> {
-                                // 🔴 Escanear la tarjeta LIGA la venta al cliente, y eso es lo
-                                // que hace que el sello suba solo al cobrar. Sin esta línea el
-                                // cajero vería el nombre pero la compra no contaría para su
-                                // cartilla, que es justo lo que el cliente vino a buscar.
-                                val c = result.card.customer
-                                if (c != null) {
-                                    val nombre = listOfNotNull(c.firstName, c.lastName)
-                                        .filter { it.isNotBlank() }
-                                        .joinToString(" ")
-                                        .ifBlank { null }
-                                    cartViewModel.setSelectedCustomer(c.id, nombre)
-                                }
-                                scannedCustomerCard = result.card
-                            }
-                            is ScannedBarcodeResult.Unknown ->
-                                unknownBarcode = result.code
-                            is ScannedBarcodeResult.Error ->
-                                barcodeError = result.message
-                        }
-                    }
-                },
+                onBarcodeScanned = manejarCodigo,
                 onDismiss = { showBarcodeScanner = false },
             )
         }
