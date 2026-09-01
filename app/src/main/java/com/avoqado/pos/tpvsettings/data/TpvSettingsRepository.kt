@@ -18,6 +18,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -57,6 +58,38 @@ data class PromotionsPanelSettings(
     val panelCashier: PanelMode = PanelMode.TAB,
     val panelCustomer: PanelMode = PanelMode.SIDE_PANEL,
 )
+
+/**
+ * Encabezado del ticket impreso (logo + identidad fiscal, estilo SoftRestaurant).
+ * Espejo del bloque `receiptInfo` del payload de settings (founder, 2026-09-01).
+ * Todo opcional: server viejo (campo ausente) o venue sin emisor fiscal ⇒ el
+ * ticket sale como siempre.
+ */
+@Serializable
+data class ReceiptInfo(
+    val name: String? = null,
+    val logoUrl: String? = null,
+    val phone: String? = null,
+    val address: String? = null,
+    val city: String? = null,
+    val state: String? = null,
+    val zipCode: String? = null,
+    val legalName: String? = null,
+    val rfc: String? = null,
+    val lugarExpedicion: String? = null,
+) {
+    /** "Nápoles 47, Cuauhtémoc, Ciudad de México, CP 06600" — una línea; la impresora la parte sola. */
+    val addressLine: String?
+        get() {
+            val parts = listOfNotNull(
+                address?.takeIf { it.isNotBlank() },
+                city?.takeIf { it.isNotBlank() },
+                state?.takeIf { it.isNotBlank() },
+                zipCode?.takeIf { it.isNotBlank() }?.let { "CP $it" },
+            )
+            return parts.takeIf { it.isNotEmpty() }?.joinToString(", ")
+        }
+}
 
 @Serializable
 data class TpvSettings(
@@ -121,6 +154,7 @@ class TpvSettingsRepository internal constructor(
     private val displayModeJournal: DisplayModeRequestJournal,
     private val deviceIdProvider: CanonicalDeviceIdProvider,
     private val displayModeAuthorityGate: DisplayModeAuthorityGate,
+    private val receiptLogoCache: com.avoqado.pos.printing.data.ReceiptLogoCache? = null,
 ) {
     @Inject
     constructor(
@@ -131,6 +165,7 @@ class TpvSettingsRepository internal constructor(
         displayModeJournal: DisplayModeRequestStore,
         syncOutboxProvider: Provider<SyncOutbox>,
         displayModeAuthorityGate: DisplayModeAuthorityGate,
+        receiptLogoCache: com.avoqado.pos.printing.data.ReceiptLogoCache,
     ) : this(
         secureStorage = secureStorage,
         client = client,
@@ -139,6 +174,7 @@ class TpvSettingsRepository internal constructor(
         displayModeJournal = displayModeJournal,
         deviceIdProvider = CanonicalDeviceIdProvider { syncOutboxProvider.get().deviceId },
         displayModeAuthorityGate = displayModeAuthorityGate,
+        receiptLogoCache = receiptLogoCache,
     )
 
     // `coerceInputValues`: un server NUEVO con un modo de panel que esta versión
@@ -158,6 +194,17 @@ class TpvSettingsRepository internal constructor(
 
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
+
+    private val _receiptInfo = MutableStateFlow<ReceiptInfo?>(null)
+
+    /** Encabezado del ticket impreso (cache-first: sobrevive arranques sin red). */
+    val receiptInfo: StateFlow<ReceiptInfo?> = _receiptInfo.asStateFlow()
+
+    // Para la descarga del logo en segundo plano: no puede alargar el refresh
+    // de settings (que la selección de venue espera) ni tumbar nada si falla.
+    private val logoScope = kotlinx.coroutines.CoroutineScope(
+        kotlinx.coroutines.SupervisorJob() + Dispatchers.IO,
+    )
 
     private val _managerPinOverrideEnabled = MutableStateFlow(secureStorage.managerPinOverrideEnabled)
 
@@ -191,6 +238,9 @@ class TpvSettingsRepository internal constructor(
             loadedVenueId = venueId
             _settings.value = applyIncludeTaxOverride(TpvSettings.DEFAULT, localIncludeTaxOverride)
             _terminalNavigation.value = TerminalNavigationSettings.DEFAULT
+            // El encabezado del ticket es POR VENUE: al cambiar de sucursal no
+            // puede quedarse el RFC de la anterior mientras llega el nuevo.
+            _receiptInfo.value = null
             hydrateLastKnownSettings(venueId, localIncludeTaxOverride)
         }
 
@@ -266,6 +316,17 @@ class TpvSettingsRepository internal constructor(
             val overrideEnabled = result.data?.managerPinOverrideEnabled ?: false
             _managerPinOverrideEnabled.value = overrideEnabled
             secureStorage.managerPinOverrideEnabled = overrideEnabled
+
+            // Encabezado del ticket impreso. SÓLO en el camino exitoso, igual que
+            // el plan: un bache de red no borra la identidad fiscal ya conocida.
+            // Campo ausente (server viejo) ⇒ se conserva lo hidratado del cache.
+            result.data?.receiptInfo?.let { info ->
+                _receiptInfo.value = info
+                persistReceiptInfo(venueId, info)
+                // El logo se baja aparte y en segundo plano: la selección de
+                // venue no espera una imagen, y un fallo aquí no toca nada.
+                receiptLogoCache?.let { cache -> logoScope.launch { cache.refresh(venueId, info.logoUrl) } }
+            }
 
             // Panel de promociones: es de VENUE, así que aplica HAYA o NO una
             // terminal activa — por eso se resuelve fuera del `if` de abajo.
@@ -356,6 +417,7 @@ class TpvSettingsRepository internal constructor(
         // El switch es por venue: al soltar el cache no puede quedarse encendido
         // el de la sucursal anterior.
         _managerPinOverrideEnabled.value = false
+        _receiptInfo.value = null
     }
 
     private suspend fun hydrateLastKnownSettings(
@@ -379,6 +441,21 @@ class TpvSettingsRepository internal constructor(
                 }
                 .onFailure { Log.w("📦", "Cache de terminal inválido: ${it.message}") }
         }
+
+        preferencesDataStore.getString(receiptInfoKey(venueId)).first()?.let { cached ->
+            runCatching { json.decodeFromString<ReceiptInfo>(cached) }
+                .onSuccess { _receiptInfo.value = it }
+                .onFailure { Log.w("📦", "Cache de encabezado de ticket inválido: ${it.message}") }
+        }
+    }
+
+    private suspend fun persistReceiptInfo(venueId: String, info: ReceiptInfo) {
+        runCatching {
+            preferencesDataStore.setString(
+                receiptInfoKey(venueId),
+                json.encodeToString(ReceiptInfo.serializer(), info),
+            )
+        }.onFailure { Log.w("📦", "No se pudo guardar cache del encabezado de ticket: ${it.message}") }
     }
 
     private suspend fun persistTpvSettings(venueId: String, settings: TpvSettings) {
@@ -406,6 +483,7 @@ class TpvSettingsRepository internal constructor(
         runCatching {
             preferencesDataStore.removeString(tpvSettingsKey(venueId))
             preferencesDataStore.removeString(terminalNavigationKey(venueId))
+            preferencesDataStore.removeString(receiptInfoKey(venueId))
         }.onFailure { Log.w("📦", "No se pudo invalidar el cache de terminal: ${it.message}") }
     }
 
@@ -426,10 +504,13 @@ class TpvSettingsRepository internal constructor(
     private fun terminalNavigationKey(venueId: String): String =
         "${KEY_TERMINAL_NAVIGATION_PREFIX}_$venueId"
 
+    private fun receiptInfoKey(venueId: String): String = "${KEY_RECEIPT_INFO_PREFIX}_$venueId"
+
     companion object {
         private const val KEY_INCLUDE_TAX_IN_TIP_BASE_PREFIX = "include_tax_in_tip_base"
         private const val KEY_TPV_SETTINGS_PREFIX = "tpv_settings"
         private const val KEY_TERMINAL_NAVIGATION_PREFIX = "terminal_navigation"
+        private const val KEY_RECEIPT_INFO_PREFIX = "receipt_info"
         private const val GLOBAL_VENUE_KEY = "global"
     }
 }
@@ -458,6 +539,11 @@ internal data class VenueSettingsData(
      * ausente) se comporta exactamente como hoy.
      */
     val managerPinOverrideEnabled: Boolean = false,
+    /**
+     * Encabezado del ticket impreso. Ausente (server viejo) ⇒ null ⇒ el ticket
+     * sale sin encabezado fiscal, como hoy.
+     */
+    val receiptInfo: ReceiptInfo? = null,
 )
 
 @Serializable

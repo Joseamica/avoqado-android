@@ -2,6 +2,7 @@ package com.avoqado.pos.printing.data
 
 import com.avoqado.pos.printing.data.model.AreaTicketData
 import com.avoqado.pos.printing.data.model.KitchenTicketData
+import com.avoqado.pos.printing.data.model.MonoRaster
 import com.avoqado.pos.printing.data.model.PaperWidth
 import com.avoqado.pos.printing.data.model.ReceiptData
 import java.io.ByteArrayOutputStream
@@ -378,6 +379,29 @@ class ESCPOSPrinter(
         appendCommand(byteArrayOf(0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x51, 0x30))
     }
 
+    /**
+     * Imprime una imagen monocroma con `GS v 0` (ráster). Es el único camino
+     * para un LOGO: ESC/POS no tiene "imagen nativa" como sí tiene QR y barras.
+     *
+     * Devuelve `false` **sin escribir un solo byte** cuando la imagen no cabe
+     * en el papel — mismo contrato que [printBarcode]: qué firmware recorta y
+     * cuál descarta la trama entera varía por fabricante, y un logo mocho o un
+     * ticket comido es peor que caer al texto. El que llama imprime el nombre
+     * en texto de todos modos, así que el ticket nunca se queda sin identidad.
+     */
+    fun printRaster(raster: MonoRaster): Boolean {
+        if (raster.widthDots > paperWidth.dots) return false
+        appendCommand(
+            byteArrayOf(
+                0x1D, 0x76, 0x30, 0x00,
+                (raster.widthBytes and 0xFF).toByte(), ((raster.widthBytes shr 8) and 0xFF).toByte(),
+                (raster.heightDots and 0xFF).toByte(), ((raster.heightDots shr 8) and 0xFF).toByte(),
+            ),
+        )
+        appendCommand(raster.bits)
+        return true
+    }
+
     // MARK: - Códigos de barras 1D (vale de área)
 
     /**
@@ -530,11 +554,21 @@ class ESCPOSPrinter(
     fun generateReceipt(receipt: ReceiptData): ByteArray {
         reset()
 
-        // Header
+        // Header — logo del negocio + identidad fiscal, como el recibo de
+        // SoftRestaurant (founder, 2026-09-01). El nombre en TEXTO se imprime
+        // SIEMPRE, haya o no logo: si el ráster no cabe o no hay imagen
+        // cacheada, el ticket no se queda sin identidad. Cada línea fiscal es
+        // opcional — un venue sin emisor imprime el ticket de siempre.
         setAlignment(TextAlignment.CENTER)
+        receipt.venueLogoRaster?.let { if (printRaster(it)) printLine() }
         printTitle(receipt.venueName)
 
+        receipt.venueLegalName?.let { printLine(it) }
+        receipt.venueRfc?.let { printLine("RFC: $it") }
         receipt.venueAddress?.let { printLine(it) }
+        // Lugar de expedición: en el CFDI ES el código postal fiscal — se
+        // imprime el CP, no una segunda dirección.
+        receipt.venueLugarExpedicion?.let { printLine("Lugar de expedición: CP $it") }
         receipt.venuePhone?.let { printLine("Tel: $it") }
 
         printLine()
@@ -660,6 +694,13 @@ class ESCPOSPrinter(
         printLine()
 
         receipt.transactionId?.let { printLine("ID: $it") }
+
+        // La firma de la plataforma (founder, 2026-09-01): el isotipo chico y
+        // "Powered by Avoqado" al final. El texto sale AUNQUE el ráster falte o
+        // no quepa — la firma no depende de que la imagen cargue.
+        printLine()
+        receipt.poweredByAvoqadoRaster?.let { if (printRaster(it)) printLine() }
+        printLine("Powered by Avoqado")
 
         cut()
 

@@ -254,6 +254,19 @@ data class ReceiptData(
      * Sólo existe en ventas materializadas desde vales; los recibos normales quedan iguales.
      */
     val areaDeliveryCode: String? = null,
+    // Encabezado fiscal estilo SoftRestaurant (founder, 2026-09-01). Todos
+    // opcionales: un venue sin emisor fiscal imprime el ticket de siempre.
+    // Los llena ReceiptBranding en PrinterService — los ViewModels no los tocan.
+    /** Razón social del emisor fiscal ("TESTARUDO CAFE S.A.P.I. DE C.V."). */
+    val venueLegalName: String? = null,
+    /** RFC del emisor fiscal. */
+    val venueRfc: String? = null,
+    /** CP fiscal (lugar de expedición del CFDI). Se imprime "Lugar de expedición: CP X". */
+    val venueLugarExpedicion: String? = null,
+    /** Logo del negocio ya rasterizado para el ancho del papel. Null ⇒ solo texto. */
+    val venueLogoRaster: MonoRaster? = null,
+    /** Isotipo de Avoqado para el pie "Powered by Avoqado". Null ⇒ solo el texto. */
+    val poweredByAvoqadoRaster: MonoRaster? = null,
 ) {
     val isCashPayment: Boolean
         get() = paymentMethod == "Efectivo"
