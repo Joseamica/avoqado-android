@@ -14,9 +14,23 @@ import okhttp3.Route
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 import javax.inject.Inject
+import javax.inject.Singleton
 
+/**
+ * 🔴 `@Singleton` NO es decorativo: el single-flight de abajo se apoya en que exista UNA
+ * sola instancia con UN solo `refreshLock`. Hoy sobrevivía de casualidad —sólo lo inyecta
+ * el provider `@Singleton` del OkHttpClient—, así que una segunda inyección habría creado
+ * otro candado y roto el single-flight sin un solo error.
+ */
+@Singleton
 class TokenRefreshAuthenticator @Inject constructor(
     private val secureStorage: SecureStorage,
+    /**
+     * Candado que abarca TAMBIÉN el refresco de `AuthRepository` (Retrofit). El
+     * `refreshLock` de aquí abajo sólo ve a los hilos que entran por un 401; el incidente
+     * del 2026-09-02 lo produjo el otro camino. Ver `RefrescoExclusivo`.
+     */
+    private val refrescoExclusivo: RefrescoExclusivo,
 ) : Authenticator {
 
     private val json = Json { ignoreUnknownKeys = true }
@@ -106,6 +120,17 @@ class TokenRefreshAuthenticator @Inject constructor(
             return null
         }
 
+        // 🔴 El PROPIO refresco viaja sin Authorization (`AuthInterceptor` lo excluye), así
+        // que su 401 nunca puede significar «el access venció»: significa que el refresh
+        // token no sirve. Sin esta exención, un 401 del refresco que hace `AuthRepository`
+        // por Retrofit hace que OkHttp invoque a este autenticador, que manda OTRO refresco
+        // con el token recién rotado — y eso sí es reutilización de verdad: el servidor
+        // revoca la familia y la sesión entera. Misma familia que las dos exenciones de
+        // arriba: un 401 que no habla del access token no se responde refrescando.
+        if (requestPath.endsWith("/auth/refresh")) {
+            return null
+        }
+
         if (response.request.header("X-Retry-After-Refresh") != null) {
             // Esta petición YA se reintentó una vez con el token que un
             // refresco EXITOSO dejó vigente (ver `buildRetry`: el header sólo
@@ -139,13 +164,20 @@ class TokenRefreshAuthenticator @Inject constructor(
         }
 
         try {
-            val refreshToken = secureStorage.refreshToken
-            val outcome = if (refreshToken == null) {
-                // Sin refresh token no hay nada que intentar: no es un fallo
-                // de red, es una sesión que ya no existe localmente.
-                RefreshOutcome.Rejected(httpCode = 0)
-            } else {
-                refreshTokens(refreshToken)
+            // Todo esto va DENTRO del candado compartido: mientras corre, el refresco de
+            // `AuthRepository` espera su turno en vez de solaparse. Y el refresh token se
+            // LEE aquí adentro, no antes de pedir el turno: si el otro camino acabara de
+            // rotarlo mientras esperábamos, el de fuera ya está consumido y mandarlo sería
+            // justo el doble refresco que este candado existe para evitar.
+            val outcome = refrescoExclusivo.enExclusiva {
+                val refreshToken = secureStorage.refreshToken
+                if (refreshToken == null) {
+                    // Sin refresh token no hay nada que intentar: no es un fallo
+                    // de red, es una sesión que ya no existe localmente.
+                    RefreshOutcome.Rejected(httpCode = 0)
+                } else {
+                    refreshTokens(refreshToken)
+                }
             }
             lastRefreshOutcome = outcome
             return applyOutcome(response, outcome)

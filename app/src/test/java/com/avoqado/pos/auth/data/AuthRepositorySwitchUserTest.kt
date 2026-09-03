@@ -6,6 +6,7 @@ import com.avoqado.pos.auth.data.model.UserData
 import com.avoqado.pos.auth.data.model.VenueData
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ApiService
+import com.avoqado.pos.core.data.network.RefrescoExclusivo
 import com.avoqado.pos.inventory.data.InventoryRepository
 import com.avoqado.pos.notifications.data.NotificationsRepository
 import com.avoqado.pos.pos.data.DiscountsRepository
@@ -45,6 +46,7 @@ class AuthRepositorySwitchUserTest {
         inventoryRepository = mockk<InventoryRepository>(relaxed = true),
         transactionRepository = mockk<TransactionRepository>(relaxed = true),
         notificationsRepository = mockk<NotificationsRepository>(relaxed = true),
+        refrescoExclusivo = RefrescoExclusivo(),
     )
 
     private fun respuestaDeGerente() = LoginResponse(

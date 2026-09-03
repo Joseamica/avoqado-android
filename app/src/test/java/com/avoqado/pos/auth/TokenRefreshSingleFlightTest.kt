@@ -1,6 +1,7 @@
 package com.avoqado.pos.auth
 
 import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.core.data.network.RefrescoExclusivo
 import com.avoqado.pos.core.data.network.TokenRefreshAuthenticator
 import io.mockk.every
 import io.mockk.mockk
@@ -44,7 +45,7 @@ class TokenRefreshSingleFlightTest {
         server.start()
         secureStorage = mockk(relaxed = true)
         every { secureStorage.refreshToken } returns "refresh-viejo"
-        authenticator = TokenRefreshAuthenticator(secureStorage)
+        authenticator = TokenRefreshAuthenticator(secureStorage, RefrescoExclusivo())
         authenticator.refreshBaseUrl = server.url("/").toString().removeSuffix("/")
     }
 

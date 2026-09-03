@@ -4,6 +4,7 @@ import com.avoqado.pos.auth.data.model.RefreshRequest
 import com.avoqado.pos.auth.data.model.RefreshResponse
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ApiService
+import com.avoqado.pos.core.data.network.RefrescoExclusivo
 import com.avoqado.pos.inventory.data.InventoryRepository
 import com.avoqado.pos.notifications.data.NotificationsRepository
 import com.avoqado.pos.pos.data.DiscountsRepository
@@ -36,6 +37,7 @@ class AuthRepositoryVenueBindingTest {
         inventoryRepository = mockk<InventoryRepository>(relaxed = true),
         transactionRepository = mockk<TransactionRepository>(relaxed = true),
         notificationsRepository = mockk<NotificationsRepository>(relaxed = true),
+        refrescoExclusivo = RefrescoExclusivo(),
     )
 
     @Test

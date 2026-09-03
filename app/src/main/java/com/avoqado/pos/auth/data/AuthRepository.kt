@@ -10,6 +10,7 @@ import com.avoqado.pos.auth.data.model.VenueData
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.local.StoredVenue
 import com.avoqado.pos.core.data.network.ApiService
+import com.avoqado.pos.core.data.network.RefrescoExclusivo
 import com.avoqado.pos.inventory.data.InventoryRepository
 import com.avoqado.pos.notifications.data.NotificationsRepository
 import com.avoqado.pos.pos.data.DiscountsRepository
@@ -18,9 +19,12 @@ import com.avoqado.pos.pos.data.PromotionsRepository
 import com.avoqado.pos.pos.data.SavedCartsRepository
 import com.avoqado.pos.transactions.data.TransactionRepository
 import com.avoqado.pos.tpvsettings.data.TpvSettingsRepository
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -36,6 +40,13 @@ class AuthRepository @Inject constructor(
     private val inventoryRepository: InventoryRepository,
     private val transactionRepository: TransactionRepository,
     private val notificationsRepository: NotificationsRepository,
+    /**
+     * 🔴 El MISMO candado que usa `TokenRefreshAuthenticator`. Los dos refrescos de la app
+     * salían por caminos distintos sin verse: el 2026-09-02 se solaparon en una Sunmi D3 y
+     * el segundo, al presentar un refresh token que el servidor acababa de rotar, tumbó la
+     * sesión del cajero. Ver `RefrescoExclusivo`.
+     */
+    private val refrescoExclusivo: RefrescoExclusivo,
 ) {
     // Event emitted when venue changes — CartViewModel observes this to clear the cart
     private val _venueSwitched = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
@@ -207,10 +218,27 @@ class AuthRepository @Inject constructor(
         }
     }
 
+    /**
+     * Corre el refresco bajo el candado compartido, sin bloquear el hilo principal.
+     *
+     * `withContext(Dispatchers.IO)`: `RefrescoExclusivo` usa un `ReentrantLock` —el único
+     * candado que pueden tomar los dos mundos, el hilo de OkHttp del autenticador y esta
+     * corrutina— y esperarlo bloquea el hilo que lo pide. En IO eso es lo esperado; en Main
+     * congelaría la pantalla mientras el otro refresco termina.
+     */
+    private suspend fun <T> enExclusiva(bloque: suspend () -> T): T =
+        withContext(Dispatchers.IO) {
+            // runBlocking DENTRO del candado a propósito: un ReentrantLock pertenece al HILO
+            // que lo tomó, así que si el bloque suspendiera y se reanudara en otro hilo, el
+            // unlock reventaría con IllegalMonitorStateException. Así todo —tomar, ejecutar,
+            // soltar— ocurre en el mismo hilo de IO.
+            refrescoExclusivo.enExclusiva { runBlocking { bloque() } }
+        }
+
     suspend fun refreshTokensForBiometric(refreshToken: String): Pair<String, String> {
         Log.d("🔐", "refreshTokensForBiometric - refreshing...")
 
-        val response = apiService.refreshToken(RefreshRequest(refreshToken))
+        val response = enExclusiva { apiService.refreshToken(RefreshRequest(refreshToken)) }
         secureStorage.updateTokens(
             accessToken = response.accessToken,
             refreshToken = response.refreshToken,
@@ -235,7 +263,13 @@ class AuthRepository @Inject constructor(
         val refresh = secureStorage.refreshToken?.takeIf { it.isNotBlank() } ?: return false
 
         return try {
-            val tokens = apiService.refreshToken(RefreshRequest(refresh, venueId = venueId))
+            // 🔴 El refresh token se relee DENTRO del candado: si el autenticador acaba de
+            // rotarlo mientras esperábamos turno, el de fuera ya está consumido y mandarlo
+            // sería exactamente el doble refresco que este candado existe para evitar.
+            val tokens = enExclusiva {
+                val vigente = secureStorage.refreshToken?.takeIf { it.isNotBlank() } ?: refresh
+                apiService.refreshToken(RefreshRequest(vigente, venueId = venueId))
+            }
             secureStorage.updateTokens(tokens.accessToken, tokens.refreshToken)
             Log.d("🔄", "✅ Token ligado al venue actual")
             true
