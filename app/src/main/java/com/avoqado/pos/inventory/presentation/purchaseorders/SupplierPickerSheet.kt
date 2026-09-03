@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -62,6 +63,9 @@ fun SupplierPickerSheet(
         com.avoqado.pos.designsystem.components.ImmersiveWindow()
         Column(
             modifier = Modifier
+                // El teclado no tapa esta hoja: Material3 le fija ADJUST_NOTHING
+                // a su ventana, asi que el ajuste va en el contenido.
+                .imePadding()
                 .fillMaxWidth()
                 .fillMaxHeight(0.85f)
                 .padding(AvoqadoTheme.spacing.lg),

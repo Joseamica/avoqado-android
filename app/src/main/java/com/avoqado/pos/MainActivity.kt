@@ -11,6 +11,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.material3.windowsizeclass.ExperimentalMaterial3WindowSizeClassApi
 import androidx.compose.material3.windowsizeclass.calculateWindowSizeClass
 import androidx.compose.runtime.LaunchedEffect
@@ -168,7 +169,30 @@ class MainActivity : FragmentActivity() {
             }
 
             AvoqadoTheme(windowSizeClass = windowSizeClass) {
-                Box(modifier = Modifier.fillMaxSize()) {
+                // 🔴 `imePadding` GLOBAL de la ventana principal. La app corre
+                // edge-to-edge, y con eso el `adjustResize` del manifiesto deja
+                // de encoger la ventana: sin esto, el teclado tapa lo que haya
+                // abajo y NINGUNA pantalla se entera. Costó un defecto real —
+                // el boton "Guardar nota" del articulo quedaba enterrado bajo
+                // el teclado en la Sunmi D3, asi que se escribia la nota y no
+                // habia forma de guardarla.
+                //
+                // Va aqui y no pantalla por pantalla para que la que se
+                // escriba mañana nazca arreglada. No cambia NADA sin teclado
+                // abierto: el inset vale 0 y el padding es 0.
+                //
+                // Consume el inset (InsetsPaddingModifier es ModifierLocalProvider),
+                // asi que un `imePadding()` interno —login, checador— aplica 0 y
+                // no se suma dos veces.
+                //
+                // ⚠️ NO cubre las hojas ni los dialogos: cada uno abre su PROPIA
+                // ventana. Las hojas se arreglan en `ImmersiveWindow`; los
+                // dialogos ya suben solos (Compose les pone ADJUST_RESIZE).
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .imePadding(),
+                ) {
                     AvoqadoNavGraph(windowSizeClass = windowSizeClass)
 
                     AnimatedVisibility(

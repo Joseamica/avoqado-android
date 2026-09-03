@@ -279,6 +279,33 @@ class OrderRepository @Inject constructor(
             }
         }
 
+        private fun extractStrictNonNegativeCents(responseBody: String, field: String): Int? {
+            return try {
+                val root = idExtractorJson.parseToJsonElement(responseBody).jsonObject
+                val value = root["payment"]?.jsonObject?.get(field)?.jsonPrimitive
+                    ?: root["data"]?.jsonObject?.get(field)?.jsonPrimitive
+                    ?: root[field]?.jsonPrimitive
+                if (value == null || value.isString) return null
+                value.doubleOrNull
+                    ?.takeIf { it.isFinite() && it >= 0.0 }
+                    ?.let { Math.round(it).coerceAtMost(Int.MAX_VALUE.toLong()).toInt() }
+            } catch (_: Exception) {
+                null
+            }
+        }
+
+        /** Importe base que el server persistió en Payment.amount (centavos). */
+        fun extractRecordedAmountCentsFromResponse(responseBody: String): Int? =
+            extractStrictNonNegativeCents(responseBody, "amount")
+
+        /** Propina que el server persistió en Payment.tipAmount (centavos). */
+        fun extractRecordedTipCentsFromResponse(responseBody: String): Int? =
+            extractStrictNonNegativeCents(responseBody, "tipAmount")
+
+        /** Cambio recalculado por el server después de releer la orden (centavos). */
+        fun extractChangeCentsFromResponse(responseBody: String): Int? =
+            extractStrictNonNegativeCents(responseBody, "changeCents")
+
         /**
          * ¿Esta venta tiene que crear una ORDEN (y no un cobro suelto "fast")?
          *
@@ -734,6 +761,12 @@ class OrderRepository @Inject constructor(
          * `attachCustomerToPayment`. null = vinculado, venta anónima, o server viejo.
          */
         val customerLinkWarning: String? = null,
+        /** Importe base que el server realmente registró, en centavos. */
+        val recordedAmountCents: Int? = null,
+        /** Propina que el server realmente registró, en centavos. */
+        val recordedTipCents: Int? = null,
+        /** Cambio que el server determinó tras releer la orden, en centavos. */
+        val authoritativeChangeCents: Int? = null,
     )
 
     suspend fun recordCashPayment(
@@ -800,9 +833,22 @@ class OrderRepository @Inject constructor(
                 val inventoryWarning = extractInventoryWarningMessageFromResponse(body)
                 val remainingBalance = extractRemainingBalanceCentsFromResponse(body)
                 val orderPaymentStatus = extractOrderPaymentStatusFromResponse(body)
-                Log.d("💵", "   paymentId: $paymentId, receiptAccessKey: $accessKey, receiptUrl: $receiptUrl, inventoryWarning: ${inventoryWarning != null}, remainingBalance: $remainingBalance, orderPaymentStatus: $orderPaymentStatus")
+                val recordedAmount = extractRecordedAmountCentsFromResponse(body)
+                val recordedTip = extractRecordedTipCentsFromResponse(body)
+                val authoritativeChange = extractChangeCentsFromResponse(body)
+                Log.d("💵", "   paymentId: $paymentId, receiptAccessKey: $accessKey, receiptUrl: $receiptUrl, inventoryWarning: ${inventoryWarning != null}, remainingBalance: $remainingBalance, orderPaymentStatus: $orderPaymentStatus, recordedAmount: $recordedAmount, recordedTip: $recordedTip, change: $authoritativeChange")
                 Result.success(
-                    CashPayResult(paymentId, accessKey, receiptUrl, inventoryWarning, remainingBalance, orderPaymentStatus),
+                    CashPayResult(
+                        paymentId = paymentId,
+                        receiptAccessKey = accessKey,
+                        receiptUrl = receiptUrl,
+                        inventoryWarningMessage = inventoryWarning,
+                        remainingBalanceCents = remainingBalance,
+                        orderPaymentStatus = orderPaymentStatus,
+                        recordedAmountCents = recordedAmount,
+                        recordedTipCents = recordedTip,
+                        authoritativeChangeCents = authoritativeChange,
+                    ),
                 )
             } else {
                 Log.e("💵", "❌ Cash payment failed ($code): $body")

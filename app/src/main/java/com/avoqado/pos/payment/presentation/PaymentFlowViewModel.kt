@@ -429,6 +429,19 @@ class PaymentFlowViewModel @Inject constructor(
 
     fun clearCancelFailure() { _cancelFailure.value = null }
 
+    /**
+     * La comanda automática post-cobro NO salió (o salió a medias) en alguna estación.
+     *
+     * 🔴 El cobro nunca se frena por una impresora — pero callar el fallo deja al barista
+     * sin enterarse del pedido: Testarudo (2026-08-31) cobró cafés durante días sin que
+     * saliera la comanda de barra y el único rastro era una línea de logcat. El aviso
+     * nombra la estación para que el cajero sepa QUÉ impresora revisar.
+     */
+    private val _comandaWarning = MutableStateFlow<String?>(null)
+    val comandaWarning: StateFlow<String?> = _comandaWarning.asStateFlow()
+
+    fun clearComandaWarning() { _comandaWarning.value = null }
+
     private val _canPrintOnTerminal = MutableStateFlow(false)
     val canPrintOnTerminal: StateFlow<Boolean> = _canPrintOnTerminal.asStateFlow()
 
@@ -622,6 +635,9 @@ class PaymentFlowViewModel @Inject constructor(
     ) {
         cartState = cart
         completionConsumed = false
+        // El aviso de comanda es de la venta ANTERIOR: arrastrarlo culparía a una
+        // impresora que en esta venta puede estar perfectamente bien.
+        _comandaWarning.value = null
         splitBaseAmountOverride = resolveSplitBaseAmount(cart)
         // El total autoritativo es de la venta ANTERIOR: arrastrarlo cobraría
         // esta venta al precio de la pasada.
@@ -1446,21 +1462,42 @@ class PaymentFlowViewModel @Inject constructor(
                 lastPaymentId = result.paymentId
                 // 🔴 El saldo que queda lo dice el server. Ver `buildCompletion`.
                 adoptarSaldoDelServer(result.remainingBalanceCents, result.orderPaymentStatus)
+                // Una segunda caja pudo mover la orden mientras cobrábamos. En
+                // ese caso el server recorta SÓLO efectivo de cajón al saldo
+                // fresco y devuelve el importe/cambio que de verdad registró.
+                // Pantalla, ticket y arqueo deben contar ese resultado; los
+                // campos opcionales conservan el fallback para servers viejos.
+                val authoritativeOutcome = result.recordedAmountCents?.let { recordedAmount ->
+                    result.recordedTipCents?.let { recordedTip ->
+                        val recordedTotal = recordedAmount.toLong() + recordedTip.toLong()
+                        recordedTotal
+                            .takeIf { recordedAmount >= 0 && recordedTip >= 0 && it <= Int.MAX_VALUE.toLong() }
+                            ?.let { safeTotal ->
+                                safeTotal.toInt() to (result.authoritativeChangeCents ?: changeCents)
+                            }
+                    }
+                }
+                // Un payload imposible no puede desbordar Int y convertir una
+                // venta positiva en un movimiento negativo. Igual que iOS,
+                // ante cualquier inconsistencia conservamos TODO el resultado
+                // local (total y cambio), no una mezcla de ambas fuentes.
+                val authoritativeTotal = authoritativeOutcome?.first ?: total
+                val finalChange = authoritativeOutcome?.second ?: changeCents
                 // Recibo → QR en pantalla del cliente y recibo impreso.
                 result.receiptAccessKey?.let { lastReceiptAccessKey = it }
                 result.receiptUrl?.let { lastReceiptUrl = it }
                 finishAreaTicketPayment()
-                recordCashSale(total, orderId)
+                recordCashSale(authoritativeTotal, orderId)
                 _state.value = PaymentFlowState.Success(
-                    totalAmount = total,
+                    totalAmount = authoritativeTotal,
                     method = PaymentMethod.CASH,
-                    changeAmount = changeCents,
+                    changeAmount = finalChange,
                     paymentId = result.paymentId,
                     receiptAccessKey = result.receiptAccessKey,
                     receiptUrl = result.receiptUrl,
                     inventoryWarningMessage = result.inventoryWarningMessage,
                 )
-                createKDSOrderAndPrint(PaymentMethod.CASH, changeCents)
+                createKDSOrderAndPrint(PaymentMethod.CASH, finalChange)
             },
             onFailure = { error ->
                 val isQueueable = OrderRepository.isQueueableError(error) ||
@@ -1967,7 +2004,7 @@ class PaymentFlowViewModel @Inject constructor(
             // área (§5.6). Mover el mecanismo no cambió ni una llamada de este camino: mismos
             // argumentos, mismo orden, mismo ticket legado (con su `category`) — lo fijan
             // PaymentFlowViewModelTest y ComandaDispatcherTest.
-            comandaDispatcher.dispatch(
+            val comandaResult = comandaDispatcher.dispatch(
                 venueId = secureStorage.venueId,
                 lines = realItems.map { item ->
                     RoutableItem(
@@ -2005,6 +2042,14 @@ class PaymentFlowViewModel @Inject constructor(
                     ),
                 ),
             )
+
+            // Una comanda que no salió se DICE, con la estación por nombre. El cobro ya
+            // terminó — esto es informativo y jamás lo frena.
+            val sinComanda = comandaResult?.stationsSinComanda.orEmpty()
+            if (sinComanda.isNotEmpty()) {
+                _comandaWarning.value =
+                    "No salió la comanda de: ${sinComanda.joinToString(", ")}. Revisa la impresora de esa estación."
+            }
         }
     }
 

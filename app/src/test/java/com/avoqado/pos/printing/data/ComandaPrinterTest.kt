@@ -51,15 +51,33 @@ class ComandaPrinterTest {
         connectionType = "USB_SPOOLER",
         address = "usb-spooler-1",
     )
+
+    // POS_INTERNAL: la integrada del PROPIO aparato — sin dirección a propósito.
+    // El server la registra con paperWidthMm 80 (su default); el ancho real lo pone el hardware.
+    private val posInternalPrinterInfo = PrinterInfo(
+        id = "pr_pos",
+        name = "Integrada del punto",
+        connectionType = "POS_INTERNAL",
+        address = null,
+    )
     private val cocinaStation = StationInfo(id = "st_cocina", name = "Cocina", printerId = "pr_cocina", copies = 1)
     private val barraStation = StationInfo(id = "st_barra", name = "Barra", printerId = "pr_barra", copies = 2)
     private val orphanStation = StationInfo(id = "st_orphan", name = "Postres", printerId = null)
     private val bluetoothStation = StationInfo(id = "st_bt", name = "Bluetooth Station", printerId = "pr_bt", copies = 1)
     private val usbSpoolerStation = StationInfo(id = "st_usb", name = "USB Station", printerId = "pr_usb", copies = 1)
+    private val posInternalStation = StationInfo(id = "st_pos", name = "Barra integrada", printerId = "pr_pos", copies = 1)
 
     private val config = PrintConfig(
-        printers = listOf(cocinaPrinterInfo, barraPrinterInfo, bluetoothPrinterInfo, usbSpoolerPrinterInfo),
-        stations = listOf(cocinaStation, barraStation, orphanStation, bluetoothStation, usbSpoolerStation),
+        printers = listOf(cocinaPrinterInfo, barraPrinterInfo, bluetoothPrinterInfo, usbSpoolerPrinterInfo, posInternalPrinterInfo),
+        stations = listOf(cocinaStation, barraStation, orphanStation, bluetoothStation, usbSpoolerStation, posInternalStation),
+    )
+
+    private val integradaDelAparato = SavedPrinter(
+        id = "internal",
+        name = "Impresora integrada",
+        connectionType = PrinterConnectionType.INTERNAL.value,
+        address = "internal",
+        paperWidthMm = 58,
     )
 
     private fun plan(stationId: String?, lines: List<ConsolidatedLine>) =
@@ -270,6 +288,111 @@ class ComandaPrinterTest {
 
         assertEquals(1, printerSlots.size)
         assertEquals("192.168.1.50", printerSlots.first().address)
+    }
+
+    // MARK: - POS_INTERNAL — la comanda sale en el aparato que cobró
+    // Caso real (Testarudo, 2026-08-31): la estación Barra apuntaba a una impresora
+    // NETWORK con la IP del propio Sunmi y las comandas de barra morían en silencio.
+
+    @Test
+    fun `resolve maps a POS_INTERNAL station printer to this device's integrated printer`() {
+        val resolved = comandaPrinter.resolve(
+            plan("st_pos", listOf(cervezaLine)),
+            config,
+            orderNumber = "1234",
+            orderType = "En tienda",
+            internalPrinter = integradaDelAparato,
+        )
+
+        assertEquals(PrinterConnectionType.INTERNAL, resolved.savedPrinter?.connectionTypeEnum)
+        // El ancho lo manda el HARDWARE (58), no el default del server (80): ESC/POS de
+        // 80 columnas en un cabezal de 58 sale con las líneas cortadas.
+        assertEquals(58, resolved.savedPrinter?.paperWidthMm)
+        assertTrue(resolved.savedPrinter?.hasRole(PrinterRole.KITCHEN) == true)
+        assertEquals("Barra integrada", resolved.stationLabel)
+        assertEquals("Barra integrada", resolved.ticket.stationName)
+    }
+
+    @Test
+    fun `resolve returns null for POS_INTERNAL when this device has no integrated printer`() {
+        // internalPrinter = null (default): una T3 sin cabezal, o un aparato ajeno.
+        val resolved = comandaPrinter.resolve(
+            plan("st_pos", listOf(cervezaLine)),
+            config,
+            orderNumber = "1234",
+            orderType = "En tienda",
+        )
+
+        assertNull(resolved.savedPrinter)
+        // La estación se conoce: conserva su nombre para que el fallback lo imprima en el ticket.
+        assertEquals("Barra integrada", resolved.stationLabel)
+    }
+
+    @Test
+    fun `printComandas prints a POS_INTERNAL station on the device's integrated printer`() = runTest {
+        coEvery { printerService.internalPrinterForRouting() } returns integradaDelAparato
+        val printerSlots = mutableListOf<SavedPrinter>()
+        coEvery { printerService.printKitchenTicket(any(), capture(printerSlots)) } returns Unit
+
+        comandaPrinter.printComandas(listOf(plan("st_pos", listOf(cervezaLine))), config, orderNumber = "9999")
+
+        assertEquals(1, printerSlots.size)
+        assertEquals(PrinterConnectionType.INTERNAL, printerSlots.first().connectionTypeEnum)
+    }
+
+    @Test
+    fun `printComandas falls back a POS_INTERNAL station to the default KITCHEN printer on a device with no head`() = runTest {
+        coEvery { printerService.internalPrinterForRouting() } returns null
+        val fallback = SavedPrinter(
+            id = "default-kitchen",
+            name = "Default Kitchen",
+            connectionType = "wifi",
+            address = "10.0.0.5",
+            port = 9100,
+        )
+        every { printerService.getDefaultPrinter(PrinterRole.KITCHEN) } returns fallback
+
+        comandaPrinter.printComandas(listOf(plan("st_pos", listOf(cervezaLine))), config, orderNumber = "9999")
+
+        coVerify(exactly = 1) { printerService.printKitchenTicket(any(), fallback) }
+    }
+
+    /**
+     * El Result NOMBRA las estaciones cuya comanda no salió — sin nombres, el aviso al
+     * cajero sólo podría decir "algo falló" y nadie sabría qué impresora revisar.
+     */
+    @Test
+    fun `Result nombra las estaciones cuya comanda no salio, separando fallo de salto`() = runTest {
+        every { printerService.getDefaultPrinter(PrinterRole.KITCHEN) } returns null
+        coEvery { printerService.printKitchenTicket(any(), match { it.address == "192.168.1.50" }) } throws
+            RuntimeException("printer offline")
+
+        val result = comandaPrinter.printComandas(
+            listOf(
+                plan("st_cocina", listOf(tacoLine)), // la impresora truena → failed
+                plan("st_usb", listOf(cervezaLine)), // transporte no servible, sin default → skipped
+            ),
+            config,
+            orderNumber = "9999",
+        )
+
+        assertEquals(listOf("Cocina"), result.failedStations)
+        assertEquals(listOf("USB Station"), result.skippedStations)
+        assertEquals(0, result.printed)
+    }
+
+    /** La consulta a la integrada es PEREZOSA: un venue sin impresora POS_INTERNAL no paga el bind. */
+    @Test
+    fun `printComandas does not query the integrated printer when no POS_INTERNAL printer exists in the config`() = runTest {
+        val configSinPosInternal = PrintConfig(
+            printers = listOf(cocinaPrinterInfo),
+            stations = listOf(cocinaStation),
+        )
+        coEvery { printerService.printKitchenTicket(any(), any()) } returns Unit
+
+        comandaPrinter.printComandas(listOf(plan("st_cocina", listOf(tacoLine))), configSinPosInternal, orderNumber = "9999")
+
+        coVerify(exactly = 0) { printerService.internalPrinterForRouting() }
     }
 
     // MARK: - Combos en la comanda (founder 2026-08-18, patrón Fudo)

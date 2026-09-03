@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -127,6 +128,9 @@ fun PrinterSettingsSheet(
         com.avoqado.pos.designsystem.components.ImmersiveWindow()
         Column(
             modifier = Modifier
+                // El teclado no tapa esta hoja: Material3 le fija ADJUST_NOTHING
+                // a su ventana, asi que el ajuste va en el contenido.
+                .imePadding()
                 .fillMaxWidth()
                 .padding(AvoqadoTheme.spacing.lg),
         ) {

@@ -129,6 +129,8 @@ fun TimeClockSheet(
             modifier = Modifier
                 .fillMaxWidth()
                 .navigationBarsPadding()
+                // El teclado no tapa esta hoja: Material3 le fija ADJUST_NOTHING
+                // a su ventana, asi que el ajuste va en el contenido.
                 .imePadding()
                 .verticalScroll(rememberScrollState())
                 .padding(

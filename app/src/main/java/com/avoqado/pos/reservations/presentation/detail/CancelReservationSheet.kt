@@ -3,6 +3,7 @@ package com.avoqado.pos.reservations.presentation.detail
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
@@ -44,6 +45,9 @@ fun CancelReservationSheet(
         com.avoqado.pos.designsystem.components.ImmersiveWindow()
         Column(
             modifier = Modifier
+                // El teclado no tapa esta hoja: Material3 le fija ADJUST_NOTHING
+                // a su ventana, asi que el ajuste va en el contenido.
+                .imePadding()
                 .fillMaxWidth()
                 .padding(20.dp),
         ) {

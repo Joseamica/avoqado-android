@@ -11,14 +11,15 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -57,6 +58,7 @@ import androidx.compose.ui.unit.dp
 import com.avoqado.pos.designsystem.components.AvoqadoPillTextField
 import com.avoqado.pos.designsystem.components.CircleBackButton
 import com.avoqado.pos.designsystem.components.PrimaryButton
+import com.avoqado.pos.core.util.formatMoney
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.transactions.data.AssociatedRefundItem
 import com.avoqado.pos.transactions.data.RefundApiException
@@ -226,6 +228,9 @@ fun IssueRefundSheet(
             modifier = Modifier
                 .fillMaxWidth()
                 .widthIn(max = 640.dp)
+                // El teclado no tapa esta hoja: Material3 le fija ADJUST_NOTHING
+                // a su ventana, asi que el ajuste va en el contenido.
+                .imePadding()
                 .heightIn(max = 720.dp)
                 .padding(horizontal = spacing.xl),
         ) {
@@ -246,6 +251,41 @@ fun IssueRefundSheet(
                 Spacer(modifier = Modifier.size(36.dp))
             }
 
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = spacing.md),
+                horizontalArrangement = Arrangement.spacedBy(spacing.sm),
+            ) {
+                TabPill(
+                    label = "Reembolsar artículos",
+                    active = tab == RefundTab.ITEMS,
+                    modifier = Modifier.weight(1f),
+                    enabled = transaction.items.isNotEmpty(),
+                    onClick = { tab = RefundTab.ITEMS },
+                )
+                TabPill(
+                    label = "Reembolsos por importe",
+                    active = tab == RefundTab.AMOUNT,
+                    modifier = Modifier.weight(1f),
+                    onClick = { tab = RefundTab.AMOUNT },
+                )
+            }
+
+            // === BANDA DESPLAZABLE ===
+            //
+            // 🔴 `verticalScroll` NO es cosmético. Sin él, lo que no cabía se
+            // recortaba en silencio: en una tablet el selector de motivo quedaba
+            // dibujado fuera de la pantalla y, como `canSubmit` exige motivo, el
+            // botón "Reembolsar" jamás se encendía. La devolución era imposible y
+            // nada en pantalla lo explicaba.
+            Column(
+                modifier = Modifier
+                    .weight(1f, fill = true)
+                    .fillMaxWidth()
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(spacing.md),
+            ) {
             // 🔴 Un cobro con TARJETA no se devuelve desde aquí.
             //
             // La devolución a la tarjeta la hace la TERMINAL, con su propia
@@ -270,8 +310,8 @@ fun IssueRefundSheet(
                         fontWeight = FontWeight.SemiBold,
                     )
                     Text(
-                        text = "La devolución a la tarjeta se hace en la terminal. Puedes abrirla " +
-                            "ahí desde aquí, y sólo falta que alguien la confirme con la tarjeta.",
+                        text = "La devolución a la tarjeta se hace en la terminal. Ábrela desde " +
+                            "aquí; sólo falta que alguien la confirme con la tarjeta.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -318,43 +358,14 @@ fun IssueRefundSheet(
                     // dejar que el cajero crea que ya quedó.
                     Spacer(modifier = Modifier.height(spacing.sm))
                     Text(
-                        text = "Si le entregas efectivo de la caja, regístralo tú como retiro " +
-                            "en Caja: el sistema no lo descuenta solo, porque el cobro no fue " +
-                            "en efectivo.",
+                        text = "Si le entregas efectivo de la caja, regístralo como retiro en " +
+                            "Caja: el sistema no lo descuenta solo.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
 
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(bottom = spacing.md),
-                horizontalArrangement = Arrangement.spacedBy(spacing.sm),
-            ) {
-                TabPill(
-                    label = "Reembolsar artículos",
-                    active = tab == RefundTab.ITEMS,
-                    modifier = Modifier.weight(1f),
-                    enabled = transaction.items.isNotEmpty(),
-                    onClick = { tab = RefundTab.ITEMS },
-                )
-                TabPill(
-                    label = "Reembolsos por importe",
-                    active = tab == RefundTab.AMOUNT,
-                    modifier = Modifier.weight(1f),
-                    onClick = { tab = RefundTab.AMOUNT },
-                )
-            }
-
-            // === SCROLLABLE MIDDLE — takes remaining vertical space ===
-            Column(
-                modifier = Modifier
-                    .weight(1f, fill = true)
-                    .fillMaxWidth(),
-                verticalArrangement = Arrangement.spacedBy(spacing.md),
-            ) {
             when (tab) {
                 RefundTab.ITEMS -> ItemsBody(
                     transaction = transaction,
@@ -396,52 +407,10 @@ fun IssueRefundSheet(
                     onIncludeTipChange = { includeTip = it },
                 )
             }
-
-            Text(
-                text = "Motivo del reembolso",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.padding(bottom = spacing.xs),
-            )
-            Box {
-                AvoqadoPillTextField(
-                    value = reason?.label ?: "",
-                    onValueChange = {},
-                    readOnly = true,
-                    placeholder = "Selecciona un motivo",
-                    trailing = {
-                        Icon(
-                            imageVector = Icons.Filled.KeyboardArrowDown,
-                            contentDescription = null,
-                            modifier = Modifier.size(18.dp),
-                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    },
-                )
-                Box(
-                    modifier = Modifier
-                        .matchParentSize()
-                        .clickable { reasonMenuOpen = true },
-                )
-                DropdownMenu(
-                    expanded = reasonMenuOpen,
-                    onDismissRequest = { reasonMenuOpen = false },
-                ) {
-                    REASONS.forEach { option ->
-                        DropdownMenuItem(
-                            text = { Text(option.label) },
-                            onClick = {
-                                reason = option
-                                reasonMenuOpen = false
-                            },
-                        )
-                    }
-                }
             }
-            }
-            // === END SCROLLABLE MIDDLE ===
+            // === FIN DE LA BANDA DESPLAZABLE ===
 
-            // === FIXED FOOTER — always visible ===
+            // === PIE FIJO — siempre visible ===
             if (errorMsg != null) {
                 Text(
                     text = errorMsg!!,
@@ -457,30 +426,126 @@ fun IssueRefundSheet(
                     .padding(top = spacing.md)
                     .clip(RoundedCornerShape(corners.lg))
                     .background(MaterialTheme.colorScheme.surfaceContainerLow)
-                    .padding(spacing.lg),
+                    .padding(spacing.md),
                 verticalArrangement = Arrangement.spacedBy(spacing.xs),
             ) {
                 Text(
-                    text = "Importe a reembolsar",
+                    text = "Motivo del reembolso",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Text(
-                    text = "$${"%.2f".format(amountToRefund)}",
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.SemiBold,
+                Box {
+                    AvoqadoPillTextField(
+                        // El campo se pinta sobre `surface`, igual que la hoja:
+                        // dentro de este panel más oscuro se distingue solo, y el
+                        // borde lo remata para que se lea como algo que se toca.
+                        modifier = Modifier.border(
+                            width = 1.dp,
+                            color = MaterialTheme.colorScheme.outlineVariant,
+                            shape = RoundedCornerShape(50),
+                        ),
+                        value = reason?.label ?: "",
+                        onValueChange = {},
+                        readOnly = true,
+                        placeholder = "Selecciona un motivo",
+                        trailing = {
+                            Icon(
+                                imageVector = Icons.Filled.KeyboardArrowDown,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        },
+                    )
+                    Box(
+                        modifier = Modifier
+                            .matchParentSize()
+                            .clickable(enabled = !submitting) { reasonMenuOpen = true },
+                    )
+                    DropdownMenu(
+                        expanded = reasonMenuOpen,
+                        onDismissRequest = { reasonMenuOpen = false },
+                    ) {
+                        REASONS.forEach { option ->
+                            DropdownMenuItem(
+                                text = { Text(option.label) },
+                                onClick = {
+                                    reason = option
+                                    reasonMenuOpen = false
+                                },
+                            )
+                        }
+                    }
+                }
+
+                HorizontalDivider(
+                    modifier = Modifier.padding(vertical = spacing.xs),
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f),
                 )
+
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Importe a reembolsar",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Text(
+                            text = formatMoney(amountToRefund),
+                            style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
+                    Text(
+                        text = "Disponible ${transaction.remainingRefundableDisplay}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+
+            // 🔴 Un botón apagado sin explicación se lee como una pantalla rota:
+            // fue justo lo que pasó cuando el motivo quedaba fuera de cuadro.
+            // Aquí se dice qué falta, en el orden en que hay que resolverlo.
+            val faltaParaReembolsar = when {
+                submitting -> null
+                amountToRefund <= 0.0 -> if (tab == RefundTab.ITEMS) {
+                    "Selecciona al menos un artículo."
+                } else {
+                    "Escribe el importe a reembolsar."
+                }
+                amountToRefund > maxRefundable + 0.001 ->
+                    "El importe supera lo disponible (${transaction.remainingRefundableDisplay})."
+                reason == null -> "Elige el motivo del reembolso."
+                else -> null
+            }
+            faltaParaReembolsar?.let { falta ->
                 Text(
-                    text = "Disponible: ${transaction.remainingRefundableDisplay}",
-                    style = MaterialTheme.typography.bodySmall,
+                    text = falta,
+                    style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = spacing.xs),
+                )
+            }
+
+            // 🔴 El aviso completo del cobro con tarjeta ahora se desplaza, así
+            // que puede quedar fuera de vista justo cuando se toca el botón. Este
+            // renglón repite lo único que no se puede malentender: esto NO le
+            // devuelve el dinero a la tarjeta.
+            if (!transaction.method.equals("CASH", ignoreCase = true)) {
+                Text(
+                    text = "Esto no devuelve el dinero a la tarjeta: eso se hace en la terminal.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.padding(top = spacing.xxs),
                 )
             }
 
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(top = spacing.md, bottom = spacing.lg),
+                    .padding(top = spacing.sm, bottom = spacing.md),
                 horizontalArrangement = Arrangement.spacedBy(spacing.sm),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
@@ -598,20 +663,20 @@ private fun ItemsBody(
                 fontWeight = FontWeight.SemiBold,
             )
             Text(
-                text = "Máximo reembolsable: $${"%.2f".format(maxRefundable)}",
+                text = "Máximo reembolsable: ${formatMoney(maxRefundable)}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
 
-        LazyColumn(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(max = 280.dp)
+                .clip(RoundedCornerShape(corners.md))
                 .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(corners.md)),
         ) {
-            items(transaction.items, key = { it.id ?: it.productName }) { item ->
-                val id = item.id ?: return@items
+            transaction.items.forEachIndexed { index, item ->
+                val id = item.id ?: return@forEachIndexed
                 // Fully-refunded lines are shown as "Reembolsado" and can't be
                 // selected again. Partially-refunded lines allow the stepper to
                 // go up to `remainingQty`, not the original `quantity`.
@@ -718,14 +783,18 @@ private fun ItemsBody(
                     }
                     val displayAmount = if (fullyRefunded) item.refundedAmount.takeIf { it > 0 } ?: item.amount else effectiveAmount
                     Text(
-                        text = "$${"%.2f".format(displayAmount)}",
+                        text = formatMoney(displayAmount),
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.Medium,
                         color = if (fullyRefunded) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.onSurface,
                         textDecoration = if (fullyRefunded) androidx.compose.ui.text.style.TextDecoration.LineThrough else null,
                     )
                 }
-                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                // Sin separador tras el último: pegado al borde del recuadro se
+                // veía como una raya suelta.
+                if (index < transaction.items.lastIndex) {
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+                }
             }
         }
 
@@ -782,7 +851,7 @@ private fun ItemsBody(
         }
 
         Text(
-            text = "Selección actual: $${"%.2f".format(selectedAmount)}",
+            text = "Selección actual: ${formatMoney(selectedAmount)}",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -865,7 +934,7 @@ private fun AmountBody(
             fontWeight = FontWeight.SemiBold,
         )
         Text(
-            text = "Máximo reembolsable: $${"%.2f".format(maxRefundable)}",
+            text = "Máximo reembolsable: ${formatMoney(maxRefundable)}",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -923,7 +992,7 @@ private fun AmountBody(
                     )
                 }
                 Text(
-                    text = "$${"%.2f".format(paymentTipAmount)}",
+                    text = formatMoney(paymentTipAmount),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

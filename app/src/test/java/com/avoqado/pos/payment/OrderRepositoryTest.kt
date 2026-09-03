@@ -269,6 +269,30 @@ class OrderRepositoryTest {
     }
 
     @Test
+    fun `la respuesta de cobro expone importe registrado y cambio autoritativos`() {
+        val body = """
+            {"success":true,"payment":{
+              "amount":3500,
+              "tipAmount":500,
+              "changeCents":1000
+            }}
+        """.trimIndent()
+
+        assertEquals(3500, OrderRepository.extractRecordedAmountCentsFromResponse(body))
+        assertEquals(500, OrderRepository.extractRecordedTipCentsFromResponse(body))
+        assertEquals(1000, OrderRepository.extractChangeCentsFromResponse(body))
+    }
+
+    @Test
+    fun `campos monetarios autoritativos rechazan strings y negativos`() {
+        val body = """{"success":true,"payment":{"amount":"3500","tipAmount":-1,"changeCents":-20}}"""
+
+        assertEquals(null, OrderRepository.extractRecordedAmountCentsFromResponse(body))
+        assertEquals(null, OrderRepository.extractRecordedTipCentsFromResponse(body))
+        assertEquals(null, OrderRepository.extractChangeCentsFromResponse(body))
+    }
+
+    @Test
     fun `extractPaymentIdFromResponse returns null when payment id is missing`() {
         val body = """
             {

@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -179,6 +180,9 @@ fun CreateClassSessionScreen(
             sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         ) {
             com.avoqado.pos.designsystem.components.ImmersiveWindow()
+            // El teclado no tapa esta hoja: Material3 le fija ADJUST_NOTHING
+            // a su ventana, asi que el ajuste va en el contenido.
+            Column(modifier = Modifier.imePadding()) {
             SheetHeader(sheet.title)
             when (sheet) {
                 ClassCreateSheet.PRODUCT -> ProductPickerSection(
@@ -190,6 +194,7 @@ fun CreateClassSessionScreen(
                 ClassCreateSheet.CAPACITY -> CapacitySection(viewModel)
                 ClassCreateSheet.STAFF -> StaffSection(viewModel)
                 ClassCreateSheet.RECURRENCE -> RecurrenceSection(viewModel)
+            }
             }
         }
     }

@@ -206,6 +206,46 @@ class ComandaDispatcherTest {
         coVerify(exactly = 0) { printerService.autoPrintKitchenTicket(any()) }
     }
 
+    // MARK: - El resultado del ruteo REGRESA al caller (aviso de comanda que no salió)
+    // Testarudo (2026-08-31): la comanda de barra murió en silencio durante días porque el
+    // camino automático tiraba el Result. El cobro jamás se frena — pero el cajero se entera.
+
+    @Test
+    fun `dispatch devuelve el resultado del ruteo para que el caller pueda avisar`() = runTest {
+        every { printConfigRepository.getCurrentConfig() } returns conEstaciones
+        coEvery { comandaPrinter.printComandas(any(), any(), any(), any(), any()) } returns
+            ComandaPrinter.Result(
+                attempted = 2,
+                printed = 1,
+                skippedNoPrinter = 1,
+                lastError = null,
+                skippedStations = listOf("Barra"),
+            )
+
+        val resultado = dispatcher.dispatch(
+            venueId = "venue-1",
+            lines = listOf(taco),
+            orderNumber = "1234",
+            orderType = "En tienda",
+        )
+
+        assertEquals(1, resultado?.printed)
+        assertEquals(listOf("Barra"), resultado?.skippedStations)
+    }
+
+    @Test
+    fun `el camino legado devuelve null — su abanico es fire-and-forget y no sabe reportar`() = runTest {
+        val resultado = dispatcher.dispatch(
+            venueId = "venue-1",
+            lines = listOf(taco),
+            orderNumber = "1234",
+            orderType = "En tienda",
+            noStationsFallback = ticketLegado,
+        )
+
+        assertNull(resultado)
+    }
+
     // MARK: - Vale de área (PRE-PAGO) — §5.6
 
     @Test

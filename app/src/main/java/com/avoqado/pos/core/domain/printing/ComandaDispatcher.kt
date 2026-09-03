@@ -82,6 +82,12 @@ class ComandaDispatcher @Inject constructor(
      *
      * Nunca lanza hacia afuera de lo que ya lanzaba: `refresh` falla en silencio por contrato y
      * `printComandas` envuelve cada estación por separado.
+     *
+     * @return el [ComandaPrinter.Result] del ruteo, para que el caller pueda AVISAR de una
+     *   comanda que no salió (Testarudo cobró días sin comanda de barra porque este resultado
+     *   se tiraba). `null` cuando no hubo ruteo que reportar: sin renglones, o el camino
+     *   legado ([NoStationsFallback.LegacySingleTicket]), cuyo abanico es fire-and-forget.
+     *   El aviso es del caller — imprimir jamás frena un cobro.
      */
     suspend fun dispatch(
         venueId: String?,
@@ -90,11 +96,11 @@ class ComandaDispatcher @Inject constructor(
         orderType: String,
         serverName: String? = null,
         noStationsFallback: NoStationsFallback = NoStationsFallback.RouteAnyway,
-    ) {
+    ): ComandaPrinter.Result? {
         // Sin renglones no hay nada que imprimir — y nos ahorramos hasta el refresh, igual que el
         // mostrador, que salía antes de tocar la red. No es un guard de configuración: es que
         // literalmente no hay qué mandar a cocina.
-        if (lines.isEmpty()) return
+        if (lines.isEmpty()) return null
 
         // El refresh nunca lanza (falla abierto y conserva la config vigente), así que una red lenta
         // o caída sólo significa "imprime con lo último que sabías" — jamás "no imprimas".
@@ -110,11 +116,11 @@ class ComandaDispatcher @Inject constructor(
                     items = legacy.items,
                 ),
             )
-            return
+            return null
         }
 
         val plans = PrintRoutingMapper.buildComandas(lines, config)
-        comandaPrinter.printComandas(
+        return comandaPrinter.printComandas(
             plans = plans,
             config = config,
             orderNumber = orderNumber,

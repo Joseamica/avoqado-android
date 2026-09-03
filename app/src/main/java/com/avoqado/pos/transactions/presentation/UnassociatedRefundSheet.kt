@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -120,6 +121,9 @@ private fun UnassociatedRefundContent(
     Column(
         modifier = Modifier
             .fillMaxWidth()
+            // El teclado no tapa esta hoja: Material3 le fija ADJUST_NOTHING
+            // a su ventana, asi que el ajuste va en el contenido.
+            .imePadding()
             .padding(horizontal = AvoqadoTheme.spacing.xl),
     ) {
         // Header

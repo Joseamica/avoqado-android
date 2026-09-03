@@ -681,8 +681,11 @@ private fun SubViewHeader(
 // MARK: - Note Sub-View
 
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+// `internal` (no `private`) porque el panel de detalle del articulo DEL CARRITO
+// (CheckoutScreen.CartItemDetailContent) reusa esta misma sub-vista: la nota se
+// escribe igual antes y despues de agregar al carrito, como en iOS.
 @Composable
-private fun NoteSubView(
+internal fun NoteSubView(
     currentNote: String,
     onSave: (String) -> Unit,
     onClear: () -> Unit,
@@ -695,6 +698,10 @@ private fun NoteSubView(
         "Para llevar", "Sin cebolla", "Extra picante",
     )
 
+    // El teclado NO tapa el boton "Guardar nota" (defecto medido en la Sunmi D3)
+    // gracias al ajuste GLOBAL: `MainActivity` para la ventana principal y
+    // `ImmersiveWindow` para las hojas. Aqui no se repite a proposito — si se
+    // pusiera otra vez, se sumaria dos veces dentro de una hoja.
     Column(modifier = Modifier.fillMaxSize()) {
         SubViewHeader(
             title = "Nota del artículo",

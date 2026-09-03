@@ -33,6 +33,18 @@ import androidx.core.view.WindowInsetsControllerCompat
  * frames en los dos casos. Se descartó para no arriesgar el teclado de las
  * hojas con campos de texto.
  *
+ * 🔴 **El teclado NO se arregla desde aquí — se intentó y ROMPE la hoja.**
+ * El problema existe: `ModalBottomSheetDialogWrapper` (Material3 1.3.1) le fija
+ * a SU ventana `setSoftInputMode(48)` = `ADJUST_NOTHING` en API 30+, así que el
+ * sistema no mueve nada y el teclado tapa la hoja entera. Pero el arreglo NO
+ * puede ser tocar la ventana: se probó aplicarle al `android.R.id.content` un
+ * padding inferior del alto del teclado y, medido en un OrderPAD 3, la hoja de
+ * "Abrir caja" **se salió de la pantalla por arriba** — el sheet se ancla al
+ * borde inferior del contenedor, así que encogerlo lo descoloca entero.
+ *
+ * El arreglo va en el CONTENIDO de cada hoja: `Modifier.imePadding()` en su
+ * columna raíz. La ventana principal sí se arregla de una vez, en `MainActivity`.
+ *
  * Llamar en el PRIMER composable del contenido de la hoja.
  */
 @Composable

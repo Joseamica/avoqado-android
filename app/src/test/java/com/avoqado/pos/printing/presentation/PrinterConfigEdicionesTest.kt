@@ -2,6 +2,7 @@ package com.avoqado.pos.printing.presentation
 
 import com.avoqado.pos.printing.data.model.PaperWidth
 import com.avoqado.pos.printing.data.model.PrinterConnectionType
+import com.avoqado.pos.printing.data.model.PrinterRole
 import com.avoqado.pos.printing.data.model.SavedPrinter
 import org.junit.Assert.assertEquals
 import org.junit.Test
@@ -149,6 +150,25 @@ class PrinterConfigEdicionesTest {
         val integradaMalConfigurada = base().copy(id = "p1", connectionType = "internal", paperWidthMm = 58, leftMarginChars = 9)
 
         assertEquals(null, margenHeredado(listOf(integradaMalConfigurada), "p2", 58, PrinterConnectionType.WIFI))
+    }
+
+    // MARK: - Roles que la hoja OFRECE
+
+    @Test
+    fun `el selector no ofrece el rol Bar cuando la impresora no lo tiene`() {
+        // "Bar" no hace nada en el ruteo (ninguna ruta lo consulta): ofrecerlo hace creer
+        // que la comanda de barra saldrá ahí — el engaño exacto que sufrió Testarudo
+        // (2026-08-31). Para rutear a la barra se usa una ESTACIÓN del dashboard.
+        val ofrecidos = rolesConfigurables(emptySet())
+
+        assertEquals(listOf(PrinterRole.RECEIPT, PrinterRole.KITCHEN, PrinterRole.LABEL), ofrecidos)
+    }
+
+    @Test
+    fun `el rol Bar sigue visible SOLO para poder quitarlo si ya estaba asignado`() {
+        val ofrecidos = rolesConfigurables(setOf("bar"))
+
+        assertEquals(listOf(PrinterRole.RECEIPT, PrinterRole.KITCHEN, PrinterRole.BAR, PrinterRole.LABEL), ofrecidos)
     }
 
     @Test

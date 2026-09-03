@@ -58,6 +58,16 @@ import com.avoqado.pos.printing.data.model.PrinterStatus
 import com.avoqado.pos.printing.data.model.SavedPrinter
 import kotlinx.coroutines.launch
 
+/**
+ * Roles que la hoja OFRECE. "Bar" NO se ofrece: ningún camino de ruteo lo consulta hoy,
+ * así que palomearlo hace creer que la comanda de barra saldrá en esta impresora — el
+ * engaño exacto que sufrió Testarudo (2026-08-31). Para mandar la comanda de barra a una
+ * impresora se usa una ESTACIÓN en el dashboard (Impresoras y estaciones), no este rol.
+ * Sólo se muestra si la impresora YA lo trae asignado, para poder quitárselo.
+ */
+internal fun rolesConfigurables(rolesActuales: Set<String>): List<PrinterRole> =
+    PrinterRole.entries.filter { it != PrinterRole.BAR || rolesActuales.contains(it.value) }
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PrinterConfigSheet(
@@ -190,7 +200,7 @@ fun PrinterConfigSheet(
             )
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
 
-            PrinterRole.entries.forEach { role ->
+            rolesConfigurables(selectedRoles).forEach { role ->
                 val isSelected = selectedRoles.contains(role.value)
                 Row(
                     modifier = Modifier

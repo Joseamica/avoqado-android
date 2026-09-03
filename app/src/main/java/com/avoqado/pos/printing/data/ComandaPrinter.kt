@@ -17,6 +17,9 @@ import javax.inject.Singleton
 private const val TAG = "ComandaPrinter"
 private const val DEFAULT_PRINT_PORT = 9100
 
+/** Valor del enum del server para "la impresora integrada del propio POS". */
+private const val POS_INTERNAL_TYPE = "POS_INTERNAL"
+
 /** Station label used on the ticket header for the unrouted safety-net bucket
  *  and whenever a routed plan's station can't be resolved from the config. */
 const val UNROUTED_STATION_LABEL = "SIN ESTACIÓN"
@@ -50,6 +53,11 @@ class ComandaPrinter @Inject constructor(
      * A routed station with no printer configured yet keeps ITS name on the ticket (so staff
      * see "Cocina" even while it prints on the fallback) but still signals savedPrinter = null
      * so the caller uses the default KITCHEN printer as a safety net.
+     *
+     * @param internalPrinter la impresora integrada de ESTE aparato (o null si no trae
+     *   cabezal): es a lo que resuelve una estación con impresora `POS_INTERNAL`. Va por
+     *   parámetro para que [resolve] siga siendo PURA — el I/O de averiguarla vive en
+     *   [PrinterService.internalPrinterForRouting] y lo hace [printComandas].
      */
     fun resolve(
         plan: TicketPlan,
@@ -58,10 +66,11 @@ class ComandaPrinter @Inject constructor(
         orderType: String,
         serverName: String? = null,
         comboNames: Map<String, String> = emptyMap(),
+        internalPrinter: SavedPrinter? = null,
     ): ResolvedComanda {
         val station = plan.stationId?.let { id -> config.stations.firstOrNull { it.id == id } }
         val printerInfo = station?.printerId?.let { pid -> config.printers.firstOrNull { it.id == pid } }
-        val savedPrinter = printerInfo?.toKitchenSavedPrinter()
+        val savedPrinter = printerInfo?.toKitchenSavedPrinter(internalPrinter)
         val stationLabel = station?.name ?: UNROUTED_STATION_LABEL
 
         val ticket = KitchenTicketData(
@@ -111,9 +120,19 @@ class ComandaPrinter @Inject constructor(
         /** Sin impresora resuelta NI default de cocina: no se intentó siquiera. */
         val skippedNoPrinter: Int,
         val lastError: String?,
+        /** Estaciones cuya impresora TRONÓ (offline, timeout, sin papel…). */
+        val failedStations: List<String> = emptyList(),
+        /** Estaciones que se SALTARON (sin impresora resoluble ni default de cocina). */
+        val skippedStations: List<String> = emptyList(),
     ) {
         val nothingPrinted: Boolean get() = printed == 0
         val partial: Boolean get() = printed in 1 until attempted
+
+        /**
+         * Las estaciones que se quedaron SIN su comanda, con nombre — es lo que el aviso
+         * al cajero necesita decir ("revisa la impresora de Barra"), no un conteo anónimo.
+         */
+        val stationsSinComanda: List<String> get() = (failedStations + skippedStations).distinct()
     }
 
     suspend fun printComandas(
@@ -125,12 +144,25 @@ class ComandaPrinter @Inject constructor(
         /** COMBOS — `orderItemId` → nombre del combo. Vacío = comanda de siempre. */
         comboNames: Map<String, String> = emptyMap(),
     ): Result {
+        // PEREZOSO a propósito: sólo se le pregunta al hardware por la integrada cuando la
+        // config trae alguna impresora POS_INTERNAL — el resto de los venues no paga el bind.
+        val internalPrinter = if (config.printers.any { it.connectionType.trim().uppercase() == POS_INTERNAL_TYPE }) {
+            printerService.internalPrinterForRouting()
+        } else {
+            null
+        }
+
         var printed = 0
-        var skipped = 0
         var lastError: String? = null
+        val failedStations = mutableListOf<String>()
+        val skippedStations = mutableListOf<String>()
         for (plan in plans) {
+            // La etiqueta se conoce ANTES de intentar imprimir, para que un fallo también
+            // sepa decir de QUÉ estación era la comanda que no salió.
+            var stationLabel = UNROUTED_STATION_LABEL
             try {
-                val resolved = resolve(plan, config, orderNumber, orderType, serverName, comboNames)
+                val resolved = resolve(plan, config, orderNumber, orderType, serverName, comboNames, internalPrinter)
+                stationLabel = resolved.stationLabel
                 val printer = resolved.savedPrinter ?: printerService.getDefaultPrinter(PrinterRole.KITCHEN)
                 if (printer == null) {
                     Log.w(
@@ -138,7 +170,7 @@ class ComandaPrinter @Inject constructor(
                         "⚠️ No printer resolved for station='${resolved.stationLabel}' and no default " +
                             "KITCHEN printer configured — comanda skipped",
                     )
-                    skipped++
+                    skippedStations += stationLabel
                     continue
                 }
                 repeat(resolved.copies) { printerService.printKitchenTicket(resolved.ticket, printer) }
@@ -146,10 +178,18 @@ class ComandaPrinter @Inject constructor(
                 Log.d(TAG, "✅ Printed comanda for station='${resolved.stationLabel}' on ${printer.displayAddress}")
             } catch (e: Exception) {
                 lastError = e.message
+                failedStations += stationLabel
                 Log.e(TAG, "❌ Comanda print failed for station='${plan.stationId}': ${e.message}", e)
             }
         }
-        return Result(attempted = plans.size, printed = printed, skippedNoPrinter = skipped, lastError = lastError)
+        return Result(
+            attempted = plans.size,
+            printed = printed,
+            skippedNoPrinter = skippedStations.size,
+            lastError = lastError,
+            failedStations = failedStations,
+            skippedStations = skippedStations,
+        )
     }
 
     private fun ConsolidatedLine.toKitchenItem(): KitchenItem = KitchenItem(
@@ -161,9 +201,14 @@ class ComandaPrinter @Inject constructor(
 
     /**
      * Maps the server's Prisma `PrinterConnectionType` enum string
-     * (`NETWORK` | `BLUETOOTH` | `USB_SPOOLER` | `TERMINAL_INTERNAL`) to the Android print
-     * target. Case-insensitive to be robust to whatever casing the server sends.
+     * (`NETWORK` | `BLUETOOTH` | `POS_INTERNAL` | `USB_SPOOLER` | `TERMINAL_INTERNAL`) to the
+     * Android print target. Case-insensitive to be robust to whatever casing the server sends.
      *
+     * - `POS_INTERNAL` → la impresora integrada de ESTE aparato ([internalPrinter]): la
+     *   comanda sale donde se cobró, sin IP de por medio. En un equipo sin cabezal (T3)
+     *   [internalPrinter] es null y la estación cae al respaldo KITCHEN del caller. Se
+     *   conservan id/nombre del server (para logs y estado) y el ANCHO DEL HARDWARE — el
+     *   server registra 80 mm por default y un ESC/POS de 80 en un cabezal de 58 corta líneas.
      * - `NETWORK` → WIFI, parsing `address` as "host:port" (default port 9100 when
      *   absent/unparsable) — unchanged from the original WiFi-only behavior.
      * - `BLUETOOTH` → BLUETOOTH, `address` = the MAC **verbatim**. A MAC contains `:`
@@ -173,7 +218,17 @@ class ComandaPrinter @Inject constructor(
      *   client can't service those transports; the caller logs and skips that station rather
      *   than falling back to a wrong transport.
      */
-    private fun PrinterInfo.toKitchenSavedPrinter(): SavedPrinter? {
+    private fun PrinterInfo.toKitchenSavedPrinter(internalPrinter: SavedPrinter?): SavedPrinter? {
+        // POS_INTERNAL va ANTES del chequeo de dirección: la integrada no lleva dirección
+        // a propósito (registrarle una IP fue justo el bug que originó este tipo).
+        if (connectionType.trim().uppercase() == POS_INTERNAL_TYPE) {
+            return internalPrinter?.copy(
+                id = id,
+                name = name,
+                roles = listOf(PrinterRole.KITCHEN.value),
+            )
+        }
+
         val raw = address?.trim()
         if (raw.isNullOrEmpty()) return null
 

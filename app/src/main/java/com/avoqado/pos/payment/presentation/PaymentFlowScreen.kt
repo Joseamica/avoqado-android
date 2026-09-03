@@ -351,6 +351,18 @@ fun PaymentFlowScreen(
         )
     }
 
+    // La comanda automática no salió en alguna estación. El cobro YA quedó registrado —
+    // ámbar, nunca rojo (misma regla que el aviso de inventario). Callarlo deja al
+    // barista sin enterarse del pedido: es el bug de Testarudo (2026-08-31).
+    val comandaWarning by viewModel.comandaWarning.collectAsState()
+    comandaWarning?.let { aviso ->
+        AvoqadoWarningToast(
+            message = "No salió la comanda",
+            subtitle = aviso,
+            onDismiss = { viewModel.clearComandaWarning() },
+        )
+    }
+
     if (showCustomersSheet) {
         Box(
             modifier = androidx.compose.ui.Modifier

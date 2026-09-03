@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -273,7 +274,9 @@ private fun AddAttendeeSheet(
         }
     }
 
-    Column(Modifier.fillMaxWidth().padding(bottom = AvoqadoTheme.spacing.xxl)) {
+    // El teclado no tapa esta hoja: Material3 le fija ADJUST_NOTHING
+    // a su ventana, asi que el ajuste va en el contenido.
+    Column(Modifier.fillMaxWidth().imePadding().padding(bottom = AvoqadoTheme.spacing.xxl)) {
         Text(
             "Agregar asistente",
             style = MaterialTheme.typography.titleLarge,

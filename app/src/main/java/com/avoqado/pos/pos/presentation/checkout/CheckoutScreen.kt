@@ -81,6 +81,7 @@ import com.avoqado.pos.pos.presentation.cart.CartViewModel
 import com.avoqado.pos.pos.presentation.cart.ScannedBarcodeResult
 import com.avoqado.pos.pos.presentation.cart.StaffSelectorSheet
 import com.avoqado.pos.pos.presentation.product.CreateProductView
+import com.avoqado.pos.pos.presentation.product.NoteSubView
 import com.avoqado.pos.pos.presentation.product.ProductDetailPanel
 import com.avoqado.pos.pos.presentation.product.ProductGridView
 import com.avoqado.pos.pos.presentation.product.WeightCapturePanel
@@ -2120,6 +2121,26 @@ private fun CartItemDetailContent(
     onDelete: () -> Unit,
     onDismiss: () -> Unit,
 ) {
+    // Se reinicia al cambiar de articulo: sin la llave, tocar otra linea del
+    // carrito con la nota abierta editaria la nota del articulo equivocado.
+    var showNote by remember(item.id) { mutableStateOf(false) }
+
+    if (showNote) {
+        NoteSubView(
+            currentNote = item.itemNote ?: "",
+            onSave = { nueva ->
+                onUpdateNote(nueva.ifBlank { null })
+                showNote = false
+            },
+            onClear = {
+                onUpdateNote(null)
+                showNote = false
+            },
+            onBack = { showNote = false },
+        )
+        return
+    }
+
     Column(modifier = Modifier.fillMaxSize()) {
         // Header
         Row(
@@ -2245,10 +2266,7 @@ private fun CartItemDetailContent(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable {
-                    val newNote = if (item.itemNote.isNullOrEmpty()) "" else null
-                    onUpdateNote(newNote)
-                }
+                .clickable { showNote = true }
                 .padding(horizontal = AvoqadoTheme.spacing.xl, vertical = AvoqadoTheme.spacing.lg),
             verticalAlignment = Alignment.CenterVertically,
         ) {

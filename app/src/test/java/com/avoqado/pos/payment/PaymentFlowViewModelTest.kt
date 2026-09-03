@@ -759,6 +759,77 @@ class PaymentFlowViewModelTest {
         assertEquals(listOf("Taco"), plansSlot.captured.single().lines.map { it.productName })
     }
 
+    /**
+     * 🔴 El cobro NUNCA se frena por una impresora — pero callar el fallo deja al barista
+     * sin enterarse del pedido. Testarudo (2026-08-31) cobró cafés durante días sin que
+     * saliera la comanda de barra y nadie vio un solo error: el camino automático tiraba
+     * el Result del ruteo.
+     */
+    @Test
+    fun `cuando la comanda de una estacion no sale, el cajero recibe el aviso con la estacion`() = runTest {
+        coEvery {
+            orderRepository.createOrder(any(), any(), any(), any(), any())
+        } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-aviso")))
+        coEvery {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any())
+        } returns Result.success(OrderRepository.CashPayResult(paymentId = "payment-aviso", receiptAccessKey = null))
+
+        val station = StationInfo(id = "st_barra", name = "Barra", printerId = "pr_1", active = true)
+        val config = PrintConfig(stations = listOf(station), defaultStationId = "st_barra")
+        every { printConfigRepository.getCurrentConfig() } returns config
+        coEvery { comandaPrinter.printComandas(any(), config, any(), any(), any()) } returns
+            ComandaPrinter.Result(
+                attempted = 1,
+                printed = 0,
+                skippedNoPrinter = 0,
+                lastError = "printer offline",
+                failedStations = listOf("Barra"),
+            )
+
+        val cart = CartState(
+            items = listOf(
+                CartItem(id = "line-1", type = CartItemType.ProductItem("prod-1"), name = "Chai", unitPrice = 1000),
+            ),
+        )
+
+        viewModel.startPaymentFlow(cart)
+        viewModel.confirmCashCustom(1000)
+        advanceUntilIdle()
+
+        // El cobro salió bien — el aviso es informativo, jamás bloquea el dinero.
+        assertTrue(viewModel.state.value is PaymentFlowState.Success)
+        val aviso = viewModel.comandaWarning.value
+        assertTrue("el aviso debe nombrar la estación: $aviso", aviso?.contains("Barra") == true)
+    }
+
+    @Test
+    fun `cuando todas las comandas salen no hay aviso`() = runTest {
+        coEvery {
+            orderRepository.createOrder(any(), any(), any(), any(), any())
+        } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-ok")))
+        coEvery {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any())
+        } returns Result.success(OrderRepository.CashPayResult(paymentId = "payment-ok", receiptAccessKey = null))
+
+        val station = StationInfo(id = "st_cocina", name = "Cocina", printerId = "pr_1", active = true)
+        val config = PrintConfig(stations = listOf(station), defaultStationId = "st_cocina")
+        every { printConfigRepository.getCurrentConfig() } returns config
+        coEvery { comandaPrinter.printComandas(any(), config, any(), any(), any()) } returns
+            ComandaPrinter.Result(attempted = 1, printed = 1, skippedNoPrinter = 0, lastError = null)
+
+        val cart = CartState(
+            items = listOf(
+                CartItem(id = "line-1", type = CartItemType.ProductItem("prod-1"), name = "Taco", unitPrice = 1000),
+            ),
+        )
+
+        viewModel.startPaymentFlow(cart)
+        viewModel.confirmCashCustom(1000)
+        advanceUntilIdle()
+
+        assertTrue(viewModel.comandaWarning.value == null)
+    }
+
     @Test
     fun `buildCompletion for split by product returns remaining balance and paid item ids`() {
         val paidItem = CartItem(
@@ -1048,6 +1119,85 @@ class PaymentFlowViewModelTest {
         advanceUntilIdle()
 
         coVerify(exactly = 1) { cashDrawerRepository.addCashSale(800, any()) }
+    }
+
+    @Test
+    fun `una carrera de cobro usa importe y cambio autoritativos del server`() = runTest {
+        coEvery {
+            orderRepository.createOrder(any(), any(), any(), any(), any())
+        } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-race")))
+        coEvery {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any())
+        } returns Result.success(
+            OrderRepository.CashPayResult(
+                paymentId = "payment-race",
+                receiptAccessKey = null,
+                recordedAmountCents = 350,
+                recordedTipCents = 50,
+                authoritativeChangeCents = 100,
+                remainingBalanceCents = 0,
+                orderPaymentStatus = "PAID",
+            ),
+        )
+
+        val cart = CartState(
+            items = listOf(
+                CartItem(
+                    id = "line-race",
+                    type = CartItemType.ProductItem("prod-race"),
+                    name = "Venta con carrera",
+                    unitPrice = 500,
+                ),
+            ),
+        )
+
+        viewModel.startPaymentFlow(cart)
+        viewModel.confirmCashPreset(tenderedCents = 500)
+        advanceUntilIdle()
+
+        val success = viewModel.state.value as PaymentFlowState.Success
+        assertEquals(100, success.changeAmount)
+        assertEquals(400, success.totalAmount)
+        coVerify(exactly = 1) { cashDrawerRepository.addCashSale(400, "order-race") }
+    }
+
+    @Test
+    fun `un resultado autoritativo desbordado conserva el total local seguro`() = runTest {
+        coEvery {
+            orderRepository.createOrder(any(), any(), any(), any(), any())
+        } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-overflow")))
+        coEvery {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any())
+        } returns Result.success(
+            OrderRepository.CashPayResult(
+                paymentId = "payment-overflow",
+                receiptAccessKey = null,
+                recordedAmountCents = Int.MAX_VALUE,
+                recordedTipCents = Int.MAX_VALUE,
+                authoritativeChangeCents = 0,
+                remainingBalanceCents = 0,
+                orderPaymentStatus = "PAID",
+            ),
+        )
+
+        val cart = CartState(
+            items = listOf(
+                CartItem(
+                    id = "line-overflow",
+                    type = CartItemType.ProductItem("prod-overflow"),
+                    name = "Venta segura",
+                    unitPrice = 500,
+                ),
+            ),
+        )
+
+        viewModel.startPaymentFlow(cart)
+        viewModel.confirmCashPreset(tenderedCents = 500)
+        advanceUntilIdle()
+
+        val success = viewModel.state.value as PaymentFlowState.Success
+        assertEquals(500, success.totalAmount)
+        coVerify(exactly = 1) { cashDrawerRepository.addCashSale(500, "order-overflow") }
     }
 
     /**
