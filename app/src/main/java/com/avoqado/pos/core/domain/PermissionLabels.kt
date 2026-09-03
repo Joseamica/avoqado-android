@@ -234,6 +234,13 @@ object PermissionLabels {
         "scale:use" to "usar la báscula",
         "scale:configure" to "configurar la báscula",
 
+        // MARK: - Canales de reparto (Uber Eats, DiDi, Rappi)
+        // Sólo `snooze` aparece aquí porque es el único de este recurso que una ruta
+        // que la app llama puede rechazar: desde el POS se PAUSA la recepción de
+        // pedidos, el canal se administra desde el dashboard. Lo encontró el fixture
+        // derivado de los checkPermission() reales, no una lista escrita a mano.
+        "delivery-channels:snooze" to "pausar un canal de reparto",
+
         // MARK: - Cuenta, equipo y ajustes
         "home:read" to "entrar a la pantalla de inicio",
         "teams:read" to "ver al equipo",
