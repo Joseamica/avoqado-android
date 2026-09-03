@@ -26,7 +26,7 @@ package com.avoqado.pos.core.domain
  * venue con Permission Sets (`VenueRolePermission`) manda otra cosa; aquí sale la
  * matriz por default (`customPermissions = null`), que es la de la mayoría.
  *
- * Derivado de avoqado-server · huella ca56589bf2ca722e.
+ * Derivado de avoqado-server · huella c974e359e6e4cd7b.
  */
 object PermisosRealesDelServer {
 
@@ -51,10 +51,11 @@ object PermisosRealesDelServer {
         "upsells:read",
     )
 
-    /** HOST — 19 permisos efectivos (16 declarados + 3 implícitos: analytics:read, payments:read, products:read). */
+    /** HOST — 20 permisos efectivos (17 declarados + 3 implícitos: analytics:read, payments:read, products:read). */
     val HOST = listOf(
         "analytics:read",
         "calendar:connect_self",
+        "class-sessions:read-assigned",
         "customers:create",
         "customers:read",
         "estimates:create",
@@ -91,7 +92,7 @@ object PermisosRealesDelServer {
         "scale:use",
     )
 
-    /** WAITER — 50 permisos efectivos (43 declarados + 7 implícitos: analytics:read, estimates:create, inventory:read, products:read, shifts:close, shifts:create, tpv-time-entries:read). */
+    /** WAITER — 50 permisos efectivos (44 declarados + 6 implícitos: analytics:read, estimates:create, inventory:read, products:read, shifts:close, shifts:create). */
     val WAITER = listOf(
         "analytics:read",
         "area-tickets:deliver",
@@ -99,6 +100,7 @@ object PermisosRealesDelServer {
         "calendar:connect_self",
         "cash-out:view_own",
         "cash-out:withdraw",
+        "class-sessions:read-assigned",
         "commissions:view_own",
         "coupons:read",
         "coupons:redeem",
@@ -139,13 +141,12 @@ object PermisosRealesDelServer {
         "tpv-sim-custody:accept",
         "tpv-sim-custody:reject",
         "tpv-tables:assign",
-        "tpv-time-entries:read",
         "tpv-time-entries:write",
         "tpv:read",
         "upsells:read",
     )
 
-    /** CASHIER — 48 permisos efectivos (40 declarados + 8 implícitos: analytics:read, inventory:read, orders:create, products:read, shifts:close, shifts:create, tables:update, tpv-time-entries:read). */
+    /** CASHIER — 47 permisos efectivos (40 declarados + 7 implícitos: analytics:read, inventory:read, orders:create, products:read, shifts:close, shifts:create, tables:update). */
     val CASHIER = listOf(
         "analytics:read",
         "area-tickets:checkout",
@@ -192,12 +193,11 @@ object PermisosRealesDelServer {
         "tpv-sim-custody:accept",
         "tpv-sim-custody:reject",
         "tpv-tables:assign",
-        "tpv-time-entries:read",
         "tpv-time-entries:write",
         "upsells:read",
     )
 
-    /** MANAGER — 141 permisos efectivos (127 declarados + 14 implícitos: discounts:apply, discounts:read, estimates:create, features:update, orders:cancel-unpaid, orders:comp, orders:void, products:read, tables:pay-any, tpv-reports:read, tpv-settings:read, tpv-settings:update, tpv-shifts:close, tpv-shifts:create). */
+    /** MANAGER — 144 permisos efectivos (130 declarados + 14 implícitos: discounts:apply, discounts:read, estimates:create, features:update, orders:cancel-unpaid, orders:comp, orders:void, products:read, tables:pay-any, tpv-reports:read, tpv-settings:read, tpv-settings:update, tpv-shifts:close, tpv-shifts:create). */
     val MANAGER = listOf(
         "accounting:read",
         "analytics:export",
@@ -208,14 +208,18 @@ object PermisosRealesDelServer {
         "area-tickets:confirm-external",
         "area-tickets:deliver",
         "area-tickets:issue",
+        "attendance:manage",
+        "attendance:read",
         "calendar:connect_self",
         "calendar:view_status",
+        "cash-drawer:view-expected",
         "cash-out:read",
         "cash-out:report",
         "catalog-venue:read",
         "catalog-venue:request-override",
         "cfdi:issue",
         "cfdi:view",
+        "class-sessions:read-assigned",
         "commissions:read",
         "commissions:view_own",
         "coupons:*",
@@ -290,7 +294,6 @@ object PermisosRealesDelServer {
         "settlements:simulate",
         "shifts:close",
         "shifts:create",
-        "shifts:delete",
         "shifts:read",
         "shifts:update",
         "sim-custody:assign-to-promoter",
@@ -342,7 +345,7 @@ object PermisosRealesDelServer {
         "upsells:*",
     )
 
-    /** ADMIN — 129 permisos efectivos (103 declarados + 26 implícitos: analytics:read, customers:read, delivery-channels:snooze, discounts:apply, discounts:read, features:read, features:update, inventory:read, menu:read, orders:comp, orders:read, orders:update, orders:void, payments:read, products:read, serialized-inventory:create, settings:read, shifts:close, shifts:create, shifts:read, tables:read, tables:update, teams:read, tpv:read, venues:manage, venues:read). */
+    /** ADMIN — 135 permisos efectivos (109 declarados + 26 implícitos: analytics:read, customers:read, delivery-channels:snooze, discounts:apply, discounts:read, features:read, features:update, inventory:read, menu:read, orders:comp, orders:read, orders:update, orders:void, payments:read, products:read, serialized-inventory:create, settings:read, shifts:close, shifts:create, shifts:read, tables:read, tables:update, teams:read, tpv:read, venues:manage, venues:read). */
     val ADMIN = listOf(
         "accounting:manage",
         "accounting:read",
@@ -350,6 +353,8 @@ object PermisosRealesDelServer {
         "analytics:*",
         "analytics:read",
         "area-tickets:*",
+        "attendance:manage",
+        "attendance:read",
         "billing:history:read",
         "billing:payment-methods:manage",
         "billing:payment-methods:read",
@@ -360,6 +365,7 @@ object PermisosRealesDelServer {
         "calendar:disconnect_staff",
         "calendar:manage_venue",
         "calendar:view_status",
+        "cash-drawer:view-expected",
         "cash-out:manage",
         "cash-out:read",
         "cash-out:report",
@@ -368,6 +374,7 @@ object PermisosRealesDelServer {
         "cfdi:configure",
         "cfdi:issue",
         "cfdi:view",
+        "class-sessions:read-assigned",
         "commissions:approve",
         "commissions:create",
         "commissions:delete",
@@ -435,6 +442,8 @@ object PermisosRealesDelServer {
         "shifts:read",
         "sim-custody:reassign",
         "sim-custody:reassign-supervisor",
+        "staff-documents:read",
+        "staff-documents:write",
         "tables:*",
         "tables:read",
         "tables:update",
@@ -475,7 +484,7 @@ object PermisosRealesDelServer {
         "venues:read",
     )
 
-    /** OWNER — 141 permisos efectivos (115 declarados + 26 implícitos: analytics:read, commissions:read, customers:read, delivery-channels:snooze, discounts:apply, discounts:read, features:read, features:update, inventory:read, menu:read, orders:comp, orders:read, orders:update, orders:void, payments:read, products:read, settings:read, shifts:close, shifts:create, shifts:read, tables:read, tables:update, teams:read, tpv:read, venues:manage, venues:read). */
+    /** OWNER — 147 permisos efectivos (121 declarados + 26 implícitos: analytics:read, commissions:read, customers:read, delivery-channels:snooze, discounts:apply, discounts:read, features:read, features:update, inventory:read, menu:read, orders:comp, orders:read, orders:update, orders:void, payments:read, products:read, settings:read, shifts:close, shifts:create, shifts:read, tables:read, tables:update, teams:read, tpv:read, venues:manage, venues:read). */
     val OWNER = listOf(
         "accounting:manage",
         "accounting:read",
@@ -484,7 +493,9 @@ object PermisosRealesDelServer {
         "analytics:*",
         "analytics:read",
         "area-tickets:*",
+        "attendance:manage",
         "attendance:org-manage",
+        "attendance:read",
         "billing:history:read",
         "billing:payment-methods:manage",
         "billing:payment-methods:read",
@@ -495,12 +506,14 @@ object PermisosRealesDelServer {
         "calendar:disconnect_staff",
         "calendar:manage_venue",
         "calendar:view_status",
+        "cash-drawer:view-expected",
         "cash-out:*",
         "catalog-venue:read",
         "catalog-venue:request-override",
         "cfdi:configure",
         "cfdi:issue",
         "cfdi:view",
+        "class-sessions:read-assigned",
         "commissions:*",
         "commissions:read",
         "coupons:*",
@@ -576,6 +589,8 @@ object PermisosRealesDelServer {
         "sim-custody:reassign",
         "sim-custody:reassign-supervisor",
         "sim-custody:view-all-supervisors",
+        "staff-documents:read",
+        "staff-documents:write",
         "tables:*",
         "tables:read",
         "tables:update",
@@ -620,7 +635,7 @@ object PermisosRealesDelServer {
         "venues:read",
     )
 
-    /** SUPERADMIN — 1 permisos efectivos (4 declarados). */
+    /** SUPERADMIN — 1 permisos efectivos (5 declarados). */
     val SUPERADMIN = listOf(
         "*:*",
     )
@@ -668,7 +683,6 @@ object PermisosRealesDelServer {
             "products:read",
             "shifts:close",
             "shifts:create",
-            "tpv-time-entries:read",
         ),
         "CASHIER" to listOf(
             "analytics:read",
@@ -678,7 +692,6 @@ object PermisosRealesDelServer {
             "shifts:close",
             "shifts:create",
             "tables:update",
-            "tpv-time-entries:read",
         ),
         "MANAGER" to listOf(
             "discounts:apply",
