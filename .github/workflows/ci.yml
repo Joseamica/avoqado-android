@@ -1,0 +1,111 @@
+name: CI
+
+# Capa A del CI/CD: comprobar. NO firma, NO publica, NO usa un solo secreto.
+# Existe para que compilar y correr los tests deje de pelearse por la RAM de la Mac
+# del founder (que carga ~20 sesiones a la vez). Misma idea que scripts/avq-verify.sh,
+# pero en una máquina ajena y gratis.
+#
+# La publicación firmada vive en release.yml y se dispara con un TAG, nunca con un push.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# Un push encima de otro cancela el anterior: no tiene caso verificar un commit
+# que ya quedó atrás.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verificar:
+    name: Tests + compilación
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # 🔴 El runner tiene 7 GB en total, y `gradle.properties` del repo pide 6 GB
+      # SÓLO para el daemon de Gradle; encima, el daemon de KOTLIN arranca aparte
+      # con su default de 2 GB. Esa es justo la combinación que aquí, en local, mató
+      # `compileReleaseKotlin` tras 32 minutos (documentado en CLAUDE.md).
+      #
+      # 🔑 Se acota desde GRADLE_USER_HOME, no editando el archivo del repo: ese
+      # gradle.properties GANA sobre el del proyecto, así que la máquina del founder
+      # conserva sus 6 GB y el runner usa lo que le cabe.
+      - name: Acotar memoria al tamaño del runner
+        run: |
+          mkdir -p ~/.gradle
+          cat >> ~/.gradle/gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx3g -XX:MaxMetaspaceSize=768m -Dfile.encoding=UTF-8
+          kotlin.daemon.jvmargs=-Xmx2g
+          org.gradle.workers.max=2
+          org.gradle.daemon=false
+          org.gradle.parallel=false
+          EOF
+
+      # compileSdk = 36. Si la imagen del runner no lo trae, esto lo instala y
+      # acepta las licencias; si ya lo trae, no cuesta nada.
+      - name: SDK de Android
+        uses: android-actions/setup-android@v3
+        with:
+          packages: 'platforms;android-36 build-tools;36.0.0'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          # Sólo main escribe en la caché; ramas y PRs la leen. Así un PR no puede
+          # envenenar la caché de todos.
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+
+      # Guarda propia del repo: un emoji en el nombre de un test rompe la caché de
+      # Gradle con un error que no menciona el emoji (costó una investigación entera
+      # el 2026-08-20). Va primero porque tarda segundos y falla claro.
+      - name: Sin emoji en nombres de test
+        run: ./gradlew checkNoEmojiInTestNames
+
+      - name: Tests unitarios
+        run: ./gradlew testDebugUnitTest
+
+      - name: Compilar APK de depuración
+        run: ./gradlew assembleDebug
+
+      # 🔴 El `exit 0` de Gradle no dice QUÉ corrió. Si el reporte no tiene ni un
+      # test, el verde es falso — misma trampa que el `exit=0` con salida vacía que
+      # el CLAUDE.md del workspace ya documenta para jest.
+      - name: Comprobar que SÍ corrieron tests
+        run: |
+          total=$(find app/build/test-results/testDebugUnitTest -name '*.xml' 2>/dev/null \
+            | xargs grep -ho 'tests="[0-9]*"' 2>/dev/null \
+            | tr -dc '0-9\n' | paste -sd+ - | bc)
+          echo "Tests ejecutados: ${total:-0}"
+          if [ "${total:-0}" -lt 1 ]; then
+            echo "::error::Gradle salió en 0 pero NO corrió un solo test. Verde falso."
+            exit 1
+          fi
+
+      - name: Reporte de tests (sólo si algo falló)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reporte-tests
+          path: app/build/reports/tests/
+          retention-days: 7
+
+      - name: APK de depuración
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-debug
+          path: app/build/outputs/apk/debug/*.apk
+          retention-days: 14
