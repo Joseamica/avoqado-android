@@ -7,9 +7,13 @@ y confirma el edit — Google lo somete a su revisión automáticamente.
 Uso:
   scripts/play_release.py <ruta.aab> <versionCode> [--notes archivo.txt]
       [--track production|internal|beta] [--status completed|draft]
+  scripts/play_release.py --promote <versionCode> --track production [--notes archivo.txt]
 
   --status completed  (default) se envía a revisión de Google — el uso manual de siempre.
   --status draft      queda en Play Console esperando tu clic en "Iniciar lanzamiento".
+  --promote           NO sube nada: asigna a --track un versionCode que Play YA CONOCE
+                       (subido antes a otro canal). Lleva a producción el binario EXACTO
+                       que ya probaron tus probadores internos, sin recompilar.
 
 Credenciales, por orden:
   1. Variable de entorno PLAY_SERVICE_ACCOUNT_JSON (el JSON completo). La usa
@@ -73,15 +77,21 @@ def oauth_token():
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("aab")
+    ap.add_argument("aab", nargs="?", help="ruta del AAB (se omite con --promote)")
     ap.add_argument("version_code", type=int)
     ap.add_argument("--notes", help="archivo de texto con las notas (español)")
     ap.add_argument("--track", default="production")
+    ap.add_argument(
+        "--promote", action="store_true",
+        help="no sube el AAB — asigna a --track un versionCode que Play ya conoce.")
     ap.add_argument(
         "--status", default="completed", choices=["completed", "draft"],
         help="completed = se envía SOLO a revisión de Google (default, uso manual). "
              "draft = queda esperando tu clic en 'Iniciar lanzamiento' en Play Console.")
     a = ap.parse_args()
+
+    if not a.promote and not a.aab:
+        sys.exit("ERROR: falta la ruta del AAB (o usa --promote para no subir nada).")
 
     # 🔴 Un robot NO publica a producción por su cuenta. Un APK tarda días en llegar
     # a los usuarios y no hay rollback rápido: la última palabra la da una persona.
@@ -108,12 +118,18 @@ def main():
     eid = edit["id"]
     print("✓ Edit:", eid)
 
-    print("▸ Subiendo AAB…", os.path.basename(a.aab))
-    bundle = api(
-        f"https://androidpublisher.googleapis.com/upload/androidpublisher/v3/applications/{PKG}/edits/{eid}/bundles",
-        "POST", raw=open(a.aab, "rb").read(), ctype="application/octet-stream")
-    print(f"✓ AAB subido — versionCode {bundle['versionCode']}")
-    assert bundle["versionCode"] == a.version_code, "versionCode del AAB no coincide"
+    if a.promote:
+        # No se sube nada: Play ya conoce este versionCode porque otro canal lo
+        # subió antes. Confirmar el edit con ESTE número basta para promoverlo —
+        # es lo mismo que hace el botón "Promote release" de la consola.
+        print(f"▸ PROMOCIÓN — versionCode {a.version_code} ya conocido por Play, sin recompilar")
+    else:
+        print("▸ Subiendo AAB…", os.path.basename(a.aab))
+        bundle = api(
+            f"https://androidpublisher.googleapis.com/upload/androidpublisher/v3/applications/{PKG}/edits/{eid}/bundles",
+            "POST", raw=open(a.aab, "rb").read(), ctype="application/octet-stream")
+        print(f"✓ AAB subido — versionCode {bundle['versionCode']}")
+        assert bundle["versionCode"] == a.version_code, "versionCode del AAB no coincide"
 
     notas = open(a.notes).read().strip() if a.notes else ""
     release = {"versionCodes": [str(a.version_code)], "status": a.status}
