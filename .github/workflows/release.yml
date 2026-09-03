@@ -46,7 +46,9 @@ on:
         type: string
 
 permissions:
-  contents: read
+  # write: crear el GitHub Release (y su etiqueta) que sirve el APK para Sunmi
+  # y cualquier sideload — el flujo NO empuja commits, sólo esto.
+  contents: write
 
 concurrency:
   group: release-${{ github.ref }}
@@ -185,6 +187,33 @@ jobs:
             "${{ steps.v.outputs.versionCode }}" \
             --track "$TRACK" --status "$ESTADO" --notes /tmp/notas.txt
 
+      # ── GitHub Releases ─────────────────────────────────────────────────────
+      # Independiente del canal de Play: esto es "el binario firmado, en un link
+      # estable, sin login" — lo que hace falta para bajarlo y subirlo a mano al
+      # portal de Sunmi. La versión de arriba probó que Play NO toca este archivo:
+      # "automatic protection" sólo modifica los APK que PLAY genera a partir del
+      # AAB al servirlos por la tienda — nunca el que compila esta CI. Así que
+      # instalarlo por Sunmi no dispara ningún aviso de "consíguela en Play".
+      - name: Publicar el APK en GitHub Releases (para Sunmi y sideload)
+        id: gh_release
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # El versionCode SIEMPRE es nuevo (sale de --next contra Play), así que
+          # la etiqueta nunca choca aunque versionName no haya cambiado — como en
+          # esta misma corrida, que publicó 2.17.0 con un versionCode más alto que
+          # el 2.17.1 sin commitear.
+          TAG="v${{ steps.v.outputs.versionName }}-${{ steps.v.outputs.versionCode }}"
+          URL=$(gh release create "$TAG" \
+            app/build/outputs/apk/release/app-release.apk \
+            app/build/outputs/bundle/release/app-release.aab \
+            --title "Avoqado ${{ steps.v.outputs.versionName }} (${{ steps.v.outputs.versionCode }}) — $TRACK" \
+            --notes-file /tmp/notas.txt \
+            --target "${{ github.sha }}")
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "Release: $URL"
+
       - name: Guardar artefactos
         uses: actions/upload-artifact@v4
         with:
@@ -210,4 +239,6 @@ jobs:
             else
               echo "Tus probadores internos lo reciben en minutos, sin revisión de Google."
             fi
+            echo ""
+            echo "📦 APK/AAB para Sunmi u otro sideload: ${{ steps.gh_release.outputs.url }}"
           } >> "$GITHUB_STEP_SUMMARY"
