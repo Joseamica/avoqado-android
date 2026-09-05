@@ -1,6 +1,7 @@
 package com.avoqado.pos.payment
 
 import com.avoqado.pos.MainDispatcherRule
+import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.local.database.PendingPaymentDao
 import com.avoqado.pos.core.data.local.database.PaymentSyncStatus
@@ -34,6 +35,7 @@ class PaymentSyncServiceTest {
     private val secureStorage = mockk<SecureStorage>(relaxed = true)
     private val client = mockk<OkHttpClient>(relaxed = true)
     private val connectivityMonitor = mockk<ConnectivityMonitor>(relaxed = true)
+    private val cajon = mockk<CashDrawerRepository>(relaxed = true)
 
     private lateinit var service: PaymentSyncService
 
@@ -46,7 +48,10 @@ class PaymentSyncServiceTest {
         coEvery { dao.getPendingCount() } returns flowOf(0)
         coEvery { dao.getFailedCount() } returns flowOf(0)
 
-        service = PaymentSyncService(dao, secureStorage, client, connectivityMonitor)
+        // Sin apertura pendiente en la cola del cajón: los cobros salen como siempre.
+        coEvery { cajon.sincronizarCajonPrimero() } returns true
+
+        service = PaymentSyncService(dao, secureStorage, client, connectivityMonitor, cajon)
     }
 
     @After

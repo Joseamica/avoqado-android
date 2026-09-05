@@ -9,6 +9,8 @@ import com.avoqado.pos.cashdrawer.data.model.CashDrawerStatus
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ApiConstants
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlin.math.roundToInt
@@ -318,6 +320,53 @@ internal fun estadoDeAperturaVisible(cola: List<PendingDrawerOp>, sessionId: Str
         ?: return EstadoDeLaApertura.CONFIRMADA
     return if (apertura.rechazadaEn != null) EstadoDeLaApertura.RECHAZADA else EstadoDeLaApertura.PENDIENTE
 }
+
+/**
+ * 🔴 EL CAJÓN ES BARRERA DE LOS COBROS — y el orden NO es cosmético (F1, medido el 5-sep-2026).
+ *
+ * Medido en una Samsung SM-X133: al volver el WiFi, `PaymentSyncService` reintentaba sus cobros y
+ * la cola del cajón NO se reproducía sola. Los cobros en efectivo llegaban al servidor ANTES que el
+ * `OPEN`, así que nacían con `shiftId = null` y sin `CASH_SALE` en la caja — y el barrido del
+ * servidor no los recupera después, porque el `openedAt` que acaba registrando es la hora del
+ * replay y no la real. Un cobro que llega sin caja abierta queda huérfano **para siempre**.
+ *
+ * Por eso: mientras una APERTURA VIVA siga esperando al servidor, los cobros de ese ciclo esperan
+ * al siguiente. Es un ciclo de retraso contra dinero que nadie puede reatribuir.
+ *
+ * 🔴 Una apertura RECHAZADA (`rechazadaEn != null`) NO es barrera, a propósito: el servidor nunca
+ * la va a aceptar por su cuenta, así que bloquear con ella congelaría la cola de cobros **para
+ * siempre** — y esa apertura ya grita en rojo en la pantalla de Caja, con su propio «Reintentar».
+ * Un cobro mal atribuido se puede investigar; un cobro que nunca se manda no existe en ningún
+ * reporte. La barrera vale exactamente lo que dura el defecto que la motivó, ni un caso más.
+ */
+internal fun losCobrosPuedenSalir(cola: List<PendingDrawerOp>): Boolean =
+    cola.none { it.kind == "OPEN" && it.rechazadaEn == null }
+
+/**
+ * 🔴 ¿La caja que el servidor devolvió al LIGAR es la mía, que llegó por otro camino? (F2)
+ *
+ * Medido el 5-sep-2026: dos replays simultáneos mandaron dos `POST /open`; el segundo recibió
+ * `cajaCreada:false` sobre la caja que el primero acababa de crear, y la pantalla dijo «Esta caja
+ * ya estaba abierta · Se adoptó la caja abierta por Main Owner» sobre la caja del PROPIO cajero.
+ * Con el candado de un solo vuelo ese caso desaparece, pero el mismo cuadro se repite cuando el
+ * `OPEN` sí aterrizó y su respuesta se perdió: el reintento recibe `cajaCreada:false` sobre mi
+ * propia caja.
+ *
+ * Tres condiciones, y la del FONDO es la que la vuelve segura: dos tablets idénticas del mismo
+ * local comparten `deviceName` («samsung SM-X133») y pueden compartir la sesión del dueño, así que
+ * mirar sólo aparato y persona podría callar una adopción REAL. Con el fondo dentro, un aviso sólo
+ * se calla cuando no había nada que avisar — si los montos difieren, que es justo cuando el dinero
+ * importa, el aviso sale siempre.
+ */
+internal fun esMiPropiaCaja(
+    server: CashDrawerSessionEntity,
+    op: PendingDrawerOp,
+    miAparato: String,
+    miStaffId: String,
+): Boolean =
+    server.deviceName == miAparato &&
+        server.openedByStaffId == miStaffId &&
+        server.startingAmountCents == op.amountCents
 
 /** Los movimientos que el servidor deduplica por `localId`. Un CLOSE no lleva llave. */
 private val TIPOS_CON_LLAVE = setOf("PAY_IN", "PAY_OUT")
@@ -1362,6 +1411,15 @@ class CashDrawerRepository @Inject constructor(
      * PAY_IN sería inventar un ingreso que nadie autorizó.
      */
     private fun anotarAdopcion(op: PendingDrawerOp, server: CashDrawerSessionEntity) = synchronized(candadoDeLaCola) {
+        // 🔴 LA CAJA PROPIA NO SE «ADOPTA» (F2). Si el servidor devuelve MI caja —mismo aparato,
+        // misma persona y mismo fondo— es que mi apertura sí aterrizó y sólo se perdió su respuesta.
+        // Decirle al cajero «se adoptó la caja abierta por …» sobre su propia caja es una mentira
+        // que además ENTRENA a ignorar el aviso, y el día que adopte la caja de otro de verdad no
+        // lo va a leer. Ver [esMiPropiaCaja].
+        if (esMiPropiaCaja(server, op, deviceName, staffId)) {
+            Log.d(TAG, "🔁 El servidor devolvió MI propia caja (${server.id}): no es una adopción, no se avisa")
+            return@synchronized
+        }
         val aviso = AvisoDeAdopcion(
             sessionId = server.id,
             openedByName = server.openedByName,
@@ -1441,7 +1499,47 @@ class CashDrawerRepository @Inject constructor(
      *
      * Corre al entrar a Caja, en cada sync, al cerrar y al abrir otra caja.
      */
-    internal suspend fun reproducirPendientes(ademas: PendingDrawerOp? = null): ResultadoDelReplay {
+    internal suspend fun reproducirPendientes(ademas: PendingDrawerOp? = null): ResultadoDelReplay =
+        candadoDelReplay.withLock { reproducirPendientesYaConElCandado(ademas) }
+
+    /**
+     * 🔴 UN SOLO VUELO — F2, medido el 5-sep-2026 en una Samsung SM-X133.
+     *
+     * Al entrar a Caja salieron DOS `POST /open` con 48 ms de diferencia (11:31:27.131 y .179),
+     * los dos 201: el primero creó la caja y el segundo recibió `cajaCreada:false` sobre esa misma
+     * caja recién creada. La pantalla lo leyó como adoptar la caja de OTRO y la hora saltó de la
+     * real (10:22) a la del servidor (10:31). Con un aparato sólo se pierde el fondo de la vista;
+     * con dos, un aviso falso TAPA una adopción de verdad.
+     *
+     * Causa: `syncAndLoad()` y `loadCurrentSession()` disparan el replay casi a la vez, y cada uno
+     * leía la MISMA cola antes de que el otro quitara nada. El candado hace que la segunda llamada
+     * espere y encuentre la cola ya vacía — que es exactamente lo que debe pasar.
+     *
+     * Es un `Mutex` de corrutinas (no `synchronized`) porque el cuerpo SUSPENDE en cada POST, y
+     * bloquear un hilo mientras se espera la red sería peor que el defecto. No es reentrante y no
+     * hace falta que lo sea: ningún camino de dentro (`enviarApertura`, `fireApiClose`,
+     * `reproducirMovimiento`, `adoptServerSession`) vuelve a llamar aquí — verificado.
+     */
+    private val candadoDelReplay = Mutex()
+
+    /**
+     * 🔴 EL CAJÓN PRIMERO, LOS COBROS DESPUÉS — el punto de entrada del sincronizador de pagos.
+     *
+     * Devuelve `true` si los cobros encolados pueden salir detrás. Ver [losCobrosPuedenSalir] para
+     * el porqué (F1: un cobro que llega antes que su apertura nace huérfano para siempre).
+     *
+     * Nunca lanza: si el replay truena, se registra y se sigue. Y la barrera es **de datos, no de
+     * errores** — si ni siquiera se pudo leer la cola, los cobros salen. Un fallo interno que se
+     * repitiera congelaría la cola de cobros sin que nadie pudiera verlo; la barrera vale sólo
+     * mientras haya una apertura viva esperando, que es lo que de verdad protege el dinero.
+     */
+    suspend fun sincronizarCajonPrimero(): Boolean {
+        runCatching { reproducirPendientes() }
+            .onFailure { Log.e(TAG, "❌ El replay del cajón falló: ${it.message}") }
+        return runCatching { losCobrosPuedenSalir(pendientes()) }.getOrDefault(true)
+    }
+
+    private suspend fun reproducirPendientesYaConElCandado(ademas: PendingDrawerOp?): ResultadoDelReplay {
         // 🔴 Las entradas legadas (sin `localId`) reciben su llave determinista ANTES de nada:
         // así se mandan como cualquier otro movimiento en vez de descartarse en silencio (P2 #6).
         completarLlavesLegadas()

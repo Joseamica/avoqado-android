@@ -1,6 +1,7 @@
 package com.avoqado.pos.payment.data
 
 import android.util.Log
+import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.local.database.PendingPaymentDao
 import com.avoqado.pos.core.data.local.database.PendingPaymentEntity
@@ -15,6 +16,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -39,6 +41,15 @@ class PaymentSyncService @Inject constructor(
     private val secureStorage: SecureStorage,
     private val client: OkHttpClient,
     private val connectivityMonitor: ConnectivityMonitor,
+    /**
+     * 🔴 EL CAJÓN VIAJA EN ESTE MISMO CARRIL, Y VA PRIMERO (F1, 5-sep-2026).
+     *
+     * La cola del cajón no tenía quién la reprodujera al volver la red: sólo se disparaba al entrar
+     * a la pantalla de Caja, que es justo donde el cajero NO está (está en Cobrar). Este servicio ya
+     * tiene lo que hace falta —ciclo de vida de app, observador de red y temporizador— así que el
+     * replay del cajón se engancha aquí en vez de estrenar un servicio y un timer paralelos.
+     */
+    private val cajon: CashDrawerRepository,
 ) {
     // MARK: - Constants
 
@@ -54,6 +65,36 @@ class PaymentSyncService @Inject constructor(
         private val JSON_MEDIA = "application/json".toMediaType()
 
         private val RESPONSE_JSON = Json { ignoreUnknownKeys = true }
+
+        /** Lo que se espera a que la ruta suba antes de mandar nada. Ver [alReconectar]. */
+        internal const val ESPERA_DE_ESTABILIZACION_MS = 2000L
+
+        /**
+         * «Volvió la red» = pasar de NO plenamente conectado a plenamente conectado, esperar a que
+         * la ruta suba, y sólo entonces actuar. UNA vez por transición, nunca por cada emisión.
+         *
+         * Vive aquí, fuera del `collect`, para que un test lo ejercite con un flujo falso y tiempo
+         * virtual: es la única parte del disparador donde se puede meter un defecto (actuar dos
+         * veces, actuar sin haber estado caído, mandar antes de que la ruta suba) y las tres se
+         * ven en segundos. Medido el 5-sep: la app mandó su `POST /open` justo cuando el WiFi
+         * apenas subía, falló, y NADIE volvió a intentarlo en 8 minutos.
+         */
+        internal suspend fun alReconectar(
+            plenamenteConectado: Flow<Boolean>,
+            esperaMs: Long = ESPERA_DE_ESTABILIZACION_MS,
+            accion: suspend () -> Unit,
+        ) {
+            var estuvoCaido = false
+            plenamenteConectado.collect { conectado ->
+                if (!conectado) {
+                    estuvoCaido = true
+                } else if (estuvoCaido) {
+                    estuvoCaido = false
+                    delay(esperaMs)
+                    accion()
+                }
+            }
+        }
 
         /**
          * The create-order endpoint answers {"success":true,"order":{...}}; other endpoints
@@ -227,19 +268,16 @@ class PaymentSyncService @Inject constructor(
     private fun startConnectivityListener() {
         connectivityJob?.cancel()
         connectivityJob = syncScope.launch {
-            var wasDisconnected = false
-            combine(
-                connectivityMonitor.isConnected,
-                connectivityMonitor.isServerReachable,
-            ) { network, server -> network && server }.collect { fullyConnected ->
-                if (!fullyConnected) {
-                    wasDisconnected = true
-                } else if (wasDisconnected) {
-                    wasDisconnected = false
-                    Log.d(TAG, "Network reconnected — triggering sync")
-                    delay(2000) // small delay for network to stabilize
-                    syncNow()
-                }
+            alReconectar(
+                combine(
+                    connectivityMonitor.isConnected,
+                    connectivityMonitor.isServerReachable,
+                ) { network, server -> network && server },
+            ) {
+                // 🔴 `syncNow()` arranca por el CAJÓN. Sin esa línea, esta reconexión mandaba los
+                // cobros y dejaba la apertura en la cola — el defecto F1 completo.
+                Log.d(TAG, "Network reconnected — triggering sync")
+                syncNow()
             }
         }
     }
@@ -254,6 +292,18 @@ class PaymentSyncService @Inject constructor(
 
         syncJob = syncScope.launch {
             try {
+                // 🔴 EL CAJÓN VA PRIMERO, Y SI SU APERTURA NO LLEGA LOS COBROS ESPERAN (F1).
+                //
+                // El orden NO es cosmético: un cobro en efectivo que aterriza ANTES que el `OPEN`
+                // de su caja nace con `shiftId = null` y sin `CASH_SALE` en el cajón, y ya no hay
+                // quién lo reatribuya — el barrido del servidor no puede, porque el `openedAt` que
+                // acaba registrando es la hora del replay y no la real. Medido en una Samsung el
+                // 5-sep-2026. Esperar un ciclo es barato; un cobro huérfano es permanente.
+                if (!cajon.sincronizarCajonPrimero()) {
+                    Log.w(TAG, "⏸️ La apertura de la caja aún no llega al servidor: los cobros esperan al siguiente ciclo")
+                    return@launch
+                }
+
                 // Cleanup old synced payments
                 val cutoff = System.currentTimeMillis() - CLEANUP_AFTER_MS
                 dao.deleteSynced(cutoff)
