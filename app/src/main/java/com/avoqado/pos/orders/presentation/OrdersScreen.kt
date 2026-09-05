@@ -122,14 +122,29 @@ fun OrdersScreen(
     onDismiss: () -> Unit,
     viewModel: OrdersViewModel = hiltViewModel(),
     // Task 7b: "Cierre del día → Cuentas abiertas" abre esta pantalla YA
-    // filtrada. null (el botón "Pedidos" normal) se comporta exactamente
-    // como antes de esta tarea — no toca el filtro.
+    // filtrada. null (el botón "Pedidos" normal) SIEMPRE termina en "Todos"
+    // — Ronda de arreglo 1 (2026-09-04): si el ViewModel ya traía otro
+    // filtro puesto de una visita anterior, se resetea (ver
+    // applyInitialStatusFilter más abajo).
     initialStatusFilter: String? = null,
 ) {
     // Overlay del Más (spec de refresco §4.8): LaunchedEffect cubre el "al
     // mostrarse" (el ON_RESUME de la Activity NO dispara al abrir un overlay)
     // y LifecycleResumeEffect el regreso desde background. La duplicación la
     // absorbe el single-flight del gate.
+    //
+    // Unit YA garantiza "una vez por ENTRADA a la pantalla", sin cambiar la
+    // llave: en MoreMenuScreen.kt, `if (showOrders) { OrdersScreen(...) }` es
+    // condicional ESTRUCTURAL de Compose — al cerrar (showOrders = false)
+    // este composable se DESMONTA por completo (el subárbol se descarta y
+    // este LaunchedEffect se cancela); al reabrir es una instancia de
+    // composición NUEVA, así que el efecto vuelve a correr desde cero. Lo
+    // que SÍ sobrevive a ese ciclo de desmontar/remontar es el propio
+    // OrdersViewModel: hiltViewModel() sin key lo resuelve del ViewModelStore
+    // del NavBackStackEntry de "Más" (el ViewModelStoreOwner ambiental), no
+    // del propio OrdersScreen. Por eso el estado que hay que resetear vive
+    // en applyInitialStatusFilter (que lee el filtro ACTUAL del ViewModel),
+    // no en esta llave.
     LaunchedEffect(Unit) { applyInitialStatusFilter(viewModel, initialStatusFilter) }
     LifecycleResumeEffect(Unit) {
         viewModel.autoRefresh()
@@ -146,8 +161,17 @@ fun OrdersScreen(
 /**
  * Qué hacer al abrir la pantalla con un filtro inicial opcional (Task 7b).
  * Con valor: aplica ESE filtro (arranca con su pill seleccionado y la lista
- * ya filtrada) — `setStatusFilter` ya invalida y refresca. Con null: se
- * comporta EXACTAMENTE como hoy, el autoRefresh de siempre, sin tocar filtro.
+ * ya filtrada) — `setStatusFilter` ya invalida y refresca.
+ *
+ * Con null: SIEMPRE termina en "Todos" (Ronda de arreglo 1, 2026-09-04).
+ * `OrdersViewModel` es un `@HiltViewModel` COMPARTIDO por toda la visita a
+ * "Más" — sobrevive a cerrar y reabrir esta pantalla (ver el comentario de
+ * `OrdersScreen` arriba) —, así que si el filtro que trae puesto NO es null
+ * (alguien entró antes por "Cuentas abiertas"), hay que RESETEARLO con
+ * `setStatusFilter(null)`, que invalida y vuelve a pedir sin `status`. Sólo
+ * cuando el filtro YA es null se usa el `autoRefresh()` de siempre — evita
+ * invalidar el TTL de refresco en el camino más común (abrir "Pedidos"
+ * cuando nadie tocó ningún filtro todavía).
  *
  * Pura y sin Compose a propósito, para poder probarla directo contra el
  * ViewModel (ver `OrdersViewModelInitialFilterTest`) sin infraestructura de
@@ -155,10 +179,10 @@ fun OrdersScreen(
  * `setStatusFilter`.
  */
 internal fun applyInitialStatusFilter(viewModel: OrdersViewModel, initialStatusFilter: String?) {
-    if (initialStatusFilter != null) {
-        viewModel.setStatusFilter(initialStatusFilter)
-    } else {
-        viewModel.autoRefresh()
+    when {
+        initialStatusFilter != null -> viewModel.setStatusFilter(initialStatusFilter)
+        viewModel.statusFilter.value != null -> viewModel.setStatusFilter(null)
+        else -> viewModel.autoRefresh()
     }
 }
 

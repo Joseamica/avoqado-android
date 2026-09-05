@@ -82,10 +82,44 @@ class OrdersViewModelInitialFilterTest {
     @Test
     fun `con initialStatusFilter null el filtro queda en Todos, igual que hoy`() = runTest {
         val viewModel = createViewModel()
+        // Estado previo: el VM YA trae "Abiertas" puesto. Sin esto la prueba
+        // pasaría trivialmente con un VM recién creado (nace en null por
+        // construcción) y no ejercitaría el reset — es justo el estado que
+        // sobrevive a cerrar y reabrir "Pedidos" dentro de la misma visita a
+        // "Más", porque OrdersViewModel es un @HiltViewModel compartido
+        // (Ronda de arreglo 1, ver el hallazgo Critical de la revisión).
+        viewModel.setStatusFilter(OPEN_ORDERS_STATUS_FILTER)
+
         applyInitialStatusFilter(viewModel, null)
 
         assertNull(viewModel.statusFilter.value)
-        // "igual que hoy" = el camino de siempre (autoRefresh), no setStatusFilter.
+        // La última llamada al repositorio queda SIN status — sea porque se
+        // reseteó (había Abiertas puesto) o porque ya estaba en Todos y sólo
+        // se hizo autoRefresh: lo que importa es que la lista termine sin
+        // filtro, no por qué camino interno se llegó ahí.
+        coVerify(exactly = 1) {
+            repository.loadOrders(page = 1, search = null, status = null, append = false)
+        }
+    }
+
+    @Test
+    fun `escenario del Critical — Abiertas, cerrar, Pedidos normal, el filtro vuelve a Todos`() = runTest {
+        val viewModel = createViewModel()
+
+        // 1. "Cierre del día" -> "Cuentas abiertas": abre la lista YA filtrada.
+        applyInitialStatusFilter(viewModel, OPEN_ORDERS_STATUS_FILTER)
+        assertEquals(OPEN_ORDERS_STATUS_FILTER, viewModel.statusFilter.value)
+
+        // 2. El cajero cierra la pantalla. A propósito NO hay nada que
+        // simular aquí: el OrdersViewModel es @HiltViewModel y sobrevive al
+        // cierre del composable (mismo ViewModelStore del NavBackStackEntry
+        // de "Más") — es el MISMO `viewModel` de arriba, no uno nuevo. Ese
+        // es exactamente el hallazgo Critical de la revisión.
+
+        // 3. El botón "Pedidos" normal abre con initialStatusFilter = null.
+        applyInitialStatusFilter(viewModel, null)
+
+        assertNull(viewModel.statusFilter.value)
         coVerify(exactly = 1) {
             repository.loadOrders(page = 1, search = null, status = null, append = false)
         }
