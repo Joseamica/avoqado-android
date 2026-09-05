@@ -1413,6 +1413,7 @@ private fun AvisoDeMovimientosRechazados(
 }
 
 private fun etiquetaDeOperacion(kind: String): String = when (kind) {
+    "OPEN" -> "Apertura de caja"
     "PAY_IN" -> "Ingreso"
     "PAY_OUT" -> "Retiro"
     "CLOSE" -> "Cierre de caja"
