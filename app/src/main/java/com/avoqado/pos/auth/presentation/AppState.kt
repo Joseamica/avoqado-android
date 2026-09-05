@@ -23,6 +23,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -40,6 +41,7 @@ class AppState @Inject constructor(
     private val reservationRepository: com.avoqado.pos.reservations.data.ReservationRepository,
     private val tableSyncCoordinator: com.avoqado.pos.tables.data.TableSyncCoordinator,
     private val posModeManager: PosModeManager,
+    cashDrawerRepository: com.avoqado.pos.cashdrawer.data.CashDrawerRepository,
     val venueSwitchState: com.avoqado.pos.settings.domain.VenueSwitchState,
     connectivityMonitor: ConnectivityMonitor,
 ) : ViewModel() {
@@ -105,6 +107,25 @@ class AppState @Inject constructor(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5_000),
             initialValue = 0,
+        )
+
+    /**
+     * 🔴 LA ESPERA DE LOS COBROS SE DICE, NO SE DEDUCE (P2-4).
+     *
+     * Cuando la apertura de la caja no llega al servidor, los cobros encolados esperan a propósito
+     * (ver `losCobrosPuedenSalir`) — pero la red está bien, así que el banner de «sin conexión» NO
+     * sale y el cajero, que está en Cobrar y no en Caja, sólo ve subir un contador de pendientes
+     * que va a leer como «no hay internet». Un estado que sólo vive en un `Log.w` no lo puede
+     * resolver nadie.
+     *
+     * `null` = no hay nada que decir. La banda es la MISMA de siempre: ámbar, nunca roja.
+     */
+    val avisoDeCobrosRetenidos: StateFlow<String?> = cashDrawerRepository.estadoDeLosCobros
+        .map { com.avoqado.pos.cashdrawer.data.textoDeCobrosRetenidos(it) }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000),
+            initialValue = null,
         )
 
     val showOfflineBanner: StateFlow<Boolean> = combine(

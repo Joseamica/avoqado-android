@@ -9,6 +9,9 @@ import com.avoqado.pos.cashdrawer.data.model.CashDrawerStatus
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ApiConstants
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -292,6 +295,16 @@ internal data class PendingDrawerOp(
      */
     val rechazadaEn: Long? = null,
     val motivoDelRechazo: String? = null,
+    /**
+     * 🔴 Cuándo se intentó mandar esto por PRIMERA vez sin conseguirlo (P2-4, ronda de arreglo 1).
+     *
+     * Sólo lo escribe la APERTURA, y sirve para una cosa: medir cuánto llevan los cobros
+     * esperándola. Vive en disco —no en memoria— porque la espera tiene que sobrevivir a que el
+     * cajero mate la app, que es justo lo que pasa en un mostrador. Nulo = todavía no se intentó,
+     * o ya se confirmó. Campo NUEVO con default: una cola guardada por la versión anterior se lee
+     * igual (hay prueba).
+     */
+    val primerReintentoEn: Long? = null,
 )
 
 /**
@@ -338,9 +351,80 @@ internal fun estadoDeAperturaVisible(cola: List<PendingDrawerOp>, sessionId: Str
  * siempre** — y esa apertura ya grita en rojo en la pantalla de Caja, con su propio «Reintentar».
  * Un cobro mal atribuido se puede investigar; un cobro que nunca se manda no existe en ningún
  * reporte. La barrera vale exactamente lo que dura el defecto que la motivó, ni un caso más.
+ *
+ * 🔴 Y POR ESO MISMO LA BARRERA TIENE TOPE: ver [TOPE_DE_LA_BARRERA_MS] y [estadoDeLosCobros].
  */
-internal fun losCobrosPuedenSalir(cola: List<PendingDrawerOp>): Boolean =
-    cola.none { it.kind == "OPEN" && it.rechazadaEn == null }
+internal fun losCobrosPuedenSalir(cola: List<PendingDrawerOp>, ahora: Long): Boolean =
+    estadoDeLosCobros(cola, ahora) != EstadoDeLosCobros.ESPERANDO_LA_APERTURA
+
+/**
+ * 🔴 CUÁNTO PUEDEN ESPERAR LOS COBROS A QUE LA APERTURA LLEGUE — media hora, y ni un minuto más.
+ *
+ * Se mide desde el PRIMER intento fallido de la apertura ([PendingDrawerOp.primerReintentoEn]),
+ * no desde que se encoló: mientras no haya red no hay nada que reprochar, y el aparato ni siquiera
+ * lo intentó.
+ *
+ * El porqué del tope (P2-4, revisión independiente del 5-sep-2026): hay clases de error que el
+ * diseño trata como transitorias PARA SIEMPRE —un 409 cuyo `/current` viene vacío (decisión I3),
+ * un 401, un 429, un timeout—. En ese estado la red está bien, el banner de «sin conexión» NO
+ * sale, y el cajero, que está en Cobrar y no en Caja, sólo ve subir un contador. Sin tope, sus
+ * ventas del día se quedan en el aparato indefinidamente.
+ *
+ * La comparación que decide el número: **una venta que NUNCA llega al servidor es peor que una
+ * venta sin turno.** La segunda se ve en el dashboard como «fuera de turno» y se reatribuye; la
+ * primera no existe en ningún reporte. Media hora es más de lo que dura cualquier bache real de
+ * WiFi y menos que un turno.
+ *
+ * La apertura NO se descarta al levantar la barrera: sigue en la cola y se reintenta igual.
+ */
+internal const val TOPE_DE_LA_BARRERA_MS = 30L * 60 * 1000
+
+/**
+ * Qué está pasando con los cobros que dependen de una apertura que aún no llega al servidor.
+ *
+ * 🔴 Existe para que la app pueda DECIRLO. La barrera es correcta y es invisible: el cajero ve
+ * su contador de pendientes subir y lo lee como «no hay internet», cuando la red está bien y lo
+ * que falta es su caja. Un estado que sólo aparece en un `Log.w` no es un estado que el negocio
+ * pueda resolver. Ver [textoDeCobrosRetenidos].
+ */
+enum class EstadoDeLosCobros {
+    /** Nadie está esperando: no hay una apertura viva en la cola. */
+    LIBRES,
+
+    /** Hay una apertura viva y aún dentro del tope: los cobros esperan al siguiente ciclo. */
+    ESPERANDO_LA_APERTURA,
+
+    /** La apertura pasó el tope: los cobros ya salen SIN caja, y eso también se dice. */
+    ENVIADOS_SIN_CAJA,
+}
+
+/** Función PURA: en qué estado está la espera de los cobros. El reloj entra por parámetro. */
+internal fun estadoDeLosCobros(cola: List<PendingDrawerOp>, ahora: Long): EstadoDeLosCobros {
+    val apertura = cola.firstOrNull { it.kind == "OPEN" && it.rechazadaEn == null }
+        ?: return EstadoDeLosCobros.LIBRES
+    // Nunca se ha intentado mandar (no hay red todavía): la espera ni siquiera ha empezado.
+    val desde = apertura.primerReintentoEn ?: return EstadoDeLosCobros.ESPERANDO_LA_APERTURA
+    return if (ahora - desde >= TOPE_DE_LA_BARRERA_MS) {
+        EstadoDeLosCobros.ENVIADOS_SIN_CAJA
+    } else {
+        EstadoDeLosCobros.ESPERANDO_LA_APERTURA
+    }
+}
+
+/**
+ * Lo que la banda de arriba dice, o `null` si no hay nada que decir.
+ *
+ * 🔴 Ámbar, nunca rojo: esto no es una falla, es el estado normal de un mostrador con WiFi malo
+ * — la misma regla que el banner de «sin conexión». Y las dos frases dicen QUÉ pasó con el dinero,
+ * que es lo único que el cajero necesita saber para decidir si llama a alguien.
+ */
+internal fun textoDeCobrosRetenidos(estado: EstadoDeLosCobros): String? = when (estado) {
+    EstadoDeLosCobros.LIBRES -> null
+    EstadoDeLosCobros.ESPERANDO_LA_APERTURA ->
+        "La apertura de caja aún no llega al servidor: los cobros se enviarán en cuanto llegue"
+    EstadoDeLosCobros.ENVIADOS_SIN_CAJA ->
+        "Cobros enviados sin caja: la apertura sigue pendiente"
+}
 
 /**
  * 🔴 ¿La caja que el servidor devolvió al LIGAR es la mía, que llegó por otro camino? (F2)
@@ -352,11 +436,23 @@ internal fun losCobrosPuedenSalir(cola: List<PendingDrawerOp>): Boolean =
  * `OPEN` sí aterrizó y su respuesta se perdió: el reintento recibe `cajaCreada:false` sobre mi
  * propia caja.
  *
- * Tres condiciones, y la del FONDO es la que la vuelve segura: dos tablets idénticas del mismo
- * local comparten `deviceName` («samsung SM-X133») y pueden compartir la sesión del dueño, así que
- * mirar sólo aparato y persona podría callar una adopción REAL. Con el fondo dentro, un aviso sólo
- * se calla cuando no había nada que avisar — si los montos difieren, que es justo cuando el dinero
- * importa, el aviso sale siempre.
+ * Tres condiciones, y la del FONDO es la que la vuelve razonable: dos tablets idénticas del mismo
+ * local comparten `deviceName` («samsung SM-X133» es el MODELO, no una identidad de aparato) y
+ * pueden compartir la sesión del dueño, así que mirar sólo aparato y persona callaría adopciones
+ * reales a diario. Con el fondo dentro, la coincidencia exige además que las dos hayan abierto con
+ * el MISMO monto.
+ *
+ * 🔴 RESIDUO DECLARADO, y se escribe tal cual porque prometer más sería mentir: **dos aparatos del
+ * mismo modelo, con la misma cuenta y el mismo fondo comparten caja SIN aviso.** Con fondos
+ * redondos ($500 es el fondo estándar) eso no es exótico. No se puede distinguir desde el cliente:
+ * haría falta que el `POST /open` llevara una llave idempotente y que el servidor guardara el
+ * aparato que la mandó — es el pendiente **N1**, que el brief dejó fuera a propósito porque toca
+ * el servidor. Cuando N1 exista, esta regla se cambia por «¿es MI apertura?» y el residuo
+ * desaparece; mientras tanto Android ya tiene un `deviceId` estable (`SyncOutbox.deviceId`,
+ * el del header `X-Device-Id`) listo para ocupar el lugar de `deviceName`.
+ *
+ * Lo que SÍ está garantizado hoy: si el fondo difiere —que es justo cuando el dinero importa— el
+ * aviso sale siempre.
  */
 internal fun esMiPropiaCaja(
     server: CashDrawerSessionEntity,
@@ -940,15 +1036,28 @@ class CashDrawerRepository @Inject constructor(
         // proceso ya murió. Ahora la apertura entra a la MISMA cola durable que los ingresos, los
         // retiros y el cierre, y se reproduce en cada sync y al entrar a Caja.
         val op = PendingDrawerOp("OPEN", session.id, startingAmountCents, null, event.id, System.currentTimeMillis())
-        encolar(op)
+        val quedoGuardada = encolar(op)
 
         // 🔴 YA NO SE DISPARA UN POST DIRECTO (hallazgo C1). El disparo inmediato se saltaba la
         // cola, así que la apertura de la caja NUEVA salía antes que el cierre no aterrizado de la
         // ANTERIOR: el servidor ligaba las dos y el arqueo de la vieja quedaba firmado con el
         // dinero de la nueva. Se reproduce la cola, que es FIFO y se DETIENE en lo que no confirme.
         // Esta apertura es la última por `at`, así que sale al final — o no sale, que es lo correcto.
-        val adoptada = reproducirPendientes(ademas = op).adoptadas[session.id]
-        return adoptada ?: dao.getSession(session.id) ?: session
+        //
+        // 🔴 Y `ademas` va SÓLO si el disco falló (P3-4). Si la apertura quedó guardada, la cola ya
+        // la tiene y volver a inyectarla podía mandarla DOS veces: el replay del sincronizador pudo
+        // ganar el candado mientras tanto, confirmarla y quitarla de la cola, y entonces `ademas`
+        // la resucitaba. Un POST duplicado es literalmente F2 — el defecto que esta tarea existe
+        // para cerrar—, así que ningún camino puede seguir pudiendo mandarlo.
+        val adoptada = reproducirPendientes(ademas = if (quedoGuardada) null else op).adoptadas[session.id]
+        return adoptada
+            ?: dao.getSession(session.id)
+            // 🔴 El replay del sincronizador pudo confirmar ESTA MISMA apertura mientras tanto y
+            // mudar la caja al id del servidor: la fila local ya no existe con su id viejo. La caja
+            // abierta del venue ES ésa. Sin este eslabón se devolvería la caja provisional, con un
+            // id y una hora que el servidor ya no usa — el mismo síntoma de F2, sin el POST de más.
+            ?: getOpenSession()
+            ?: session
     }
 
     /** Lo que pasó con UNA apertura. `ligada = true` ⇒ el servidor NO creó mi caja: adopté la suya. */
@@ -1287,9 +1396,20 @@ class CashDrawerRepository @Inject constructor(
         secureStorage.setPendingDrawerOpsJson(venueId, if (lista.isEmpty()) null else json.encodeToString(ListSerializer(PendingDrawerOp.serializer()), lista))
     }
 
-    private fun encolar(op: PendingDrawerOp) = synchronized(candadoDeLaCola) {
+    /**
+     * Guarda la operación y contesta si de verdad QUEDÓ guardada.
+     *
+     * 🔴 El booleano existe para el hallazgo P3-4: `openSession` pasaba su apertura como `ademas`
+     * SIEMPRE, y `reproducirPendientesYaConElCandado` la re-añade cuando ya no está en la cola
+     * guardada — que es exactamente lo que pasa si el replay del sincronizador ganó el candado y
+     * acaba de confirmarla. Resultado: un SEGUNDO `POST /open`, que es el defecto F2 otra vez, por
+     * la puerta de al lado. Ahora el respaldo `ademas` se usa SÓLO cuando el disco falló de
+     * verdad, que es el único caso para el que se escribió.
+     */
+    private fun encolar(op: PendingDrawerOp): Boolean = synchronized(candadoDeLaCola) {
         val lista = pendientes().filter { !mismaOperacion(it, op) } + op
         guardarPendientes(lista)
+        pendientes().any { mismaOperacion(it, op) }
     }
 
     private fun quitar(op: PendingDrawerOp) = synchronized(candadoDeLaCola) {
@@ -1415,7 +1535,11 @@ class CashDrawerRepository @Inject constructor(
         // misma persona y mismo fondo— es que mi apertura sí aterrizó y sólo se perdió su respuesta.
         // Decirle al cajero «se adoptó la caja abierta por …» sobre su propia caja es una mentira
         // que además ENTRENA a ignorar el aviso, y el día que adopte la caja de otro de verdad no
-        // lo va a leer. Ver [esMiPropiaCaja].
+        // lo va a leer.
+        //
+        // ⚠️ Y NO afirma «sólo se calla cuando no había nada que avisar»: con dos tablets del mismo
+        // modelo, la misma cuenta y el mismo fondo, esto calla una adopción REAL. El residuo está
+        // declarado en [esMiPropiaCaja] y sólo se cierra con la llave idempotente del servidor (N1).
         if (esMiPropiaCaja(server, op, deviceName, staffId)) {
             Log.d(TAG, "🔁 El servidor devolvió MI propia caja (${server.id}): no es una adopción, no se avisa")
             return@synchronized
@@ -1536,7 +1660,44 @@ class CashDrawerRepository @Inject constructor(
     suspend fun sincronizarCajonPrimero(): Boolean {
         runCatching { reproducirPendientes() }
             .onFailure { Log.e(TAG, "❌ El replay del cajón falló: ${it.message}") }
-        return runCatching { losCobrosPuedenSalir(pendientes()) }.getOrDefault(true)
+        val estado = runCatching { estadoDeLosCobros(pendientes(), System.currentTimeMillis()) }
+            .getOrDefault(EstadoDeLosCobros.LIBRES)
+        publicarEstadoDeLosCobros(estado)
+        if (estado == EstadoDeLosCobros.ENVIADOS_SIN_CAJA) {
+            Log.w(TAG, "⏱️ La apertura lleva más de 30 min sin llegar: los cobros salen SIN caja (quedarán fuera de turno)")
+        }
+        return estado != EstadoDeLosCobros.ESPERANDO_LA_APERTURA
+    }
+
+    /**
+     * 🔴 LA VOZ DE LA BARRERA (P2-4). Lo que la banda de arriba tiene que decir mientras los cobros
+     * esperan a que la caja llegue al servidor — o mientras salen sin ella.
+     *
+     * Se publica desde [sincronizarCajonPrimero] y desde el replay, que son los dos momentos en que
+     * el hecho puede cambiar. No hay temporizador propio: el sincronizador de cobros ya corre al
+     * reconectar y cada 15 min, y la banda cambia EXACTAMENTE cuando cambia el comportamiento —
+     * nunca antes, que sería mentir, ni mucho después.
+     */
+    private val _estadoDeLosCobros = MutableStateFlow(EstadoDeLosCobros.LIBRES)
+    val estadoDeLosCobros: StateFlow<EstadoDeLosCobros> = _estadoDeLosCobros.asStateFlow()
+
+    private fun publicarEstadoDeLosCobros(nuevo: EstadoDeLosCobros) {
+        _estadoDeLosCobros.value = nuevo
+    }
+
+    /**
+     * 🔴 Marca CUÁNDO empezó la espera de esta apertura, una sola vez (P2-4).
+     *
+     * Sólo la primera: si se reescribiera en cada reintento el tope nunca se cumpliría y los cobros
+     * esperarían para siempre, que es justo el defecto que el tope viene a cerrar. Se escribe en
+     * disco porque la espera tiene que sobrevivir a que la app se reinicie.
+     */
+    private fun marcarPrimerReintento(op: PendingDrawerOp, ahora: Long) = synchronized(candadoDeLaCola) {
+        val lista = pendientes()
+        if (lista.none { mismaOperacion(it, op) && it.primerReintentoEn == null }) return@synchronized
+        guardarPendientes(
+            lista.map { if (mismaOperacion(it, op) && it.primerReintentoEn == null) it.copy(primerReintentoEn = ahora) else it },
+        )
     }
 
     private suspend fun reproducirPendientesYaConElCandado(ademas: PendingDrawerOp?): ResultadoDelReplay {
@@ -1602,6 +1763,10 @@ class CashDrawerRepository @Inject constructor(
                         break
                     }
                     ResultadoDeLaApertura.Reintentar -> {
+                        // 🔴 Aquí empieza a correr el reloj del tope de la barrera (P2-4): desde el
+                        // PRIMER intento fallido, no desde que se encoló. Sin red no hay nada que
+                        // reprochar — el aparato ni siquiera lo intentó.
+                        marcarPrimerReintento(original, System.currentTimeMillis())
                         Log.w(TAG, "⏸️ La apertura de ${original.sessionId} no llegó: nada posterior se manda")
                         break
                     }
@@ -1634,6 +1799,8 @@ class CashDrawerRepository @Inject constructor(
             }
         }
         if (confirmados > 0) Log.d(TAG, "✅ $confirmados movimiento(s) del cajón confirmados por el server")
+        // La banda se entera en el MISMO momento en que cambia el hecho, no en el siguiente ciclo.
+        publicarEstadoDeLosCobros(estadoDeLosCobros(pendientes(), System.currentTimeMillis()))
         return ResultadoDelReplay(adoptadas)
     }
 

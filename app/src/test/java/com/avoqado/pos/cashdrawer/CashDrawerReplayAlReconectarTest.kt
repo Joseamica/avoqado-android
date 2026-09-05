@@ -2,8 +2,12 @@ package com.avoqado.pos.cashdrawer
 
 import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
 import com.avoqado.pos.cashdrawer.data.PendingDrawerOp
+import com.avoqado.pos.cashdrawer.data.EstadoDeLosCobros
+import com.avoqado.pos.cashdrawer.data.TOPE_DE_LA_BARRERA_MS
 import com.avoqado.pos.cashdrawer.data.esMiPropiaCaja
+import com.avoqado.pos.cashdrawer.data.estadoDeLosCobros
 import com.avoqado.pos.cashdrawer.data.losCobrosPuedenSalir
+import com.avoqado.pos.cashdrawer.data.textoDeCobrosRetenidos
 import com.avoqado.pos.cashdrawer.data.model.CashDrawerSessionEntity
 import com.avoqado.pos.core.data.local.SecureStorage
 import io.mockk.every
@@ -167,6 +171,63 @@ class CashDrawerReplayAlReconectarTest {
         assertTrue("Un solo vuelo no puede producir un aviso de adopción", repo.cajasAdoptadas().isEmpty())
     }
 
+    /**
+     * 🔴 P1 (P3-4, subido a P2 por el controlador) — `openSession` concurrente con un replay manda
+     * UN SOLO `POST /open`.
+     *
+     * Es F2 por la puerta de al lado: `openSession` encolaba su apertura y luego la volvía a
+     * inyectar como `ademas`, y `reproducirPendientesYaConElCandado` la re-añade cuando ya NO está
+     * en la cola guardada — que es exactamente lo que pasa si el replay del sincronizador ganó el
+     * candado y acaba de confirmarla. El respaldo `ademas` ahora se usa SÓLO si el disco falló.
+     */
+    @Test
+    fun `P1 abrir la caja mientras corre un replay manda UN solo POST`() = runTest {
+        val aperturas = AtomicInteger(0)
+        val st = almacenConCola(null)
+        val client = servidorQueCuentaAperturas(aperturas, retrasoMs = 60) { nth ->
+            cuerpoDeCaja("server-1", cajaCreada = nth == 1, fondo = 500.0, aparato = miAparato, staffId = "staff-1")
+        }
+        // El MISMO repositorio: en producción es `@Singleton`, así que el candado se comparte.
+        val repo = repo(st, client)
+
+        listOf(
+            async(Dispatchers.IO) { repo.openSession(50_000) },
+            async(Dispatchers.IO) { repo.reproducirPendientes() },
+        ).awaitAll()
+
+        assertEquals("La apertura salió más de una vez", 1, aperturas.get())
+        assertTrue("La apertura confirmada no puede quedarse en la cola", cola(st).none { it.kind == "OPEN" })
+        assertTrue("Un solo POST no puede producir un aviso de adopción", repo.cajasAdoptadas().isEmpty())
+    }
+
+    /**
+     * 🔴 P2 (P2-4) — el replay marca CUÁNDO empezó la espera, y sólo la primera vez.
+     *
+     * Sin esa marca el tope de 30 minutos no se puede medir; si se reescribiera en cada intento,
+     * nunca se cumpliría y los cobros esperarían para siempre — justo lo que el tope viene a cerrar.
+     */
+    @Test
+    fun `P2 la apertura que no llega guarda cuando empezo la espera, una sola vez`() = runTest {
+        val st = almacenConCola("[" + apertura("local-1", 50_000, "ev-1", 1_000) + "]")
+        val sinRed = mockk<OkHttpClient> {
+            every { newCall(any()) } answers {
+                mockk<Call>().also { every { it.execute() } throws IOException("sin red") }
+            }
+        }
+        val repo = repo(st, sinRed)
+
+        repo.reproducirPendientes()
+        val primera = cola(st).first { it.kind == "OPEN" }.primerReintentoEn
+        assertTrue("El primer intento fallido tiene que quedar fechado", primera != null && primera > 0)
+
+        repo.reproducirPendientes()
+        assertEquals(
+            "El reloj arranca UNA vez: reescribirlo dejaría la barrera sin tope",
+            primera,
+            cola(st).first { it.kind == "OPEN" }.primerReintentoEn,
+        )
+    }
+
     // MARK: - F2 · la caja propia no se "adopta"
 
     /**
@@ -246,13 +307,13 @@ class CashDrawerReplayAlReconectarTest {
     @Test
     fun `P1 una apertura viva en la cola frena los cobros`() {
         val cola = listOf(PendingDrawerOp("OPEN", "local-1", 50_000, null, "ev-1", 1_000))
-        assertFalse(losCobrosPuedenSalir(cola))
+        assertFalse(losCobrosPuedenSalir(cola, ahora = 1_000))
     }
 
     /** Sin apertura pendiente (o con la cola vacía) los cobros salen como siempre. */
     @Test
     fun `P1 sin apertura pendiente los cobros salen`() {
-        assertTrue(losCobrosPuedenSalir(emptyList()))
+        assertTrue(losCobrosPuedenSalir(emptyList(), ahora = 1_000))
         assertTrue(
             "Un retiro o un cierre pendientes no frenan los cobros: su caja YA existe en el server",
             losCobrosPuedenSalir(
@@ -260,8 +321,75 @@ class CashDrawerReplayAlReconectarTest {
                     PendingDrawerOp("PAY_OUT", "local-1", 5_000, null, "ev-2", 2_000),
                     PendingDrawerOp("CLOSE", "local-1", 45_000, null, null, 3_000),
                 ),
+                ahora = 4_000,
             ),
         )
+    }
+
+    // MARK: - P2-4 · la barrera tiene TOPE, y lo DICE
+
+    /**
+     * 🔴 P1 — una apertura atorada NO congela los cobros para siempre: a la media hora la barrera
+     * se levanta y los cobros salen SIN caja.
+     *
+     * El porqué, que es una comparación de daños y no una preferencia: una venta que nunca llega
+     * al servidor no existe en ningún reporte; una venta sin turno se ve como «fuera de turno» y
+     * se reatribuye. Y sí hay errores que el diseño trata como transitorios PARA SIEMPRE (el 409
+     * con `/current` vacío, decisión I3), así que sin tope «para siempre» es literal.
+     */
+    @Test
+    fun `P1 a los 30 minutos la barrera se levanta y los cobros salen sin caja`() {
+        val cola = listOf(
+            PendingDrawerOp("OPEN", "local-1", 50_000, null, "ev-1", 1_000, primerReintentoEn = 1_000),
+        )
+        val tope = TOPE_DE_LA_BARRERA_MS
+
+        assertFalse("Un minuto antes del tope los cobros siguen esperando", losCobrosPuedenSalir(cola, ahora = 1_000 + tope - 60_000))
+        assertEquals(EstadoDeLosCobros.ESPERANDO_LA_APERTURA, estadoDeLosCobros(cola, 1_000 + tope - 60_000))
+
+        assertTrue("Justo en el tope ya salen", losCobrosPuedenSalir(cola, ahora = 1_000 + tope))
+        assertEquals(EstadoDeLosCobros.ENVIADOS_SIN_CAJA, estadoDeLosCobros(cola, 1_000 + tope))
+    }
+
+    /**
+     * 🔴 P1 — el reloj arranca en el PRIMER REINTENTO, no al encolar. Sin red el aparato ni
+     * siquiera lo intentó: contar esa espera levantaría la barrera por un apagón de WiFi.
+     */
+    @Test
+    fun `P1 una apertura que nunca se ha intentado sigue frenando los cobros`() {
+        val cola = listOf(PendingDrawerOp("OPEN", "local-1", 50_000, null, "ev-1", 1_000))
+        assertFalse(
+            "Sin primer reintento la espera ni siquiera ha empezado",
+            losCobrosPuedenSalir(cola, ahora = 1_000 + TOPE_DE_LA_BARRERA_MS * 10),
+        )
+    }
+
+    /** 🔴 P2 — la espera se DICE, y no en rojo. Sin nada pendiente no hay banda. */
+    @Test
+    fun `P2 el estado visible dice que los cobros esperan y despues que salieron sin caja`() {
+        assertEquals(null, textoDeCobrosRetenidos(EstadoDeLosCobros.LIBRES))
+        assertEquals(
+            "La apertura de caja aún no llega al servidor: los cobros se enviarán en cuanto llegue",
+            textoDeCobrosRetenidos(EstadoDeLosCobros.ESPERANDO_LA_APERTURA),
+        )
+        assertEquals(
+            "Cobros enviados sin caja: la apertura sigue pendiente",
+            textoDeCobrosRetenidos(EstadoDeLosCobros.ENVIADOS_SIN_CAJA),
+        )
+        assertEquals(
+            "Sin apertura pendiente no hay nada que decir",
+            EstadoDeLosCobros.LIBRES,
+            estadoDeLosCobros(emptyList(), 99_999_999),
+        )
+    }
+
+    /** Una apertura RECHAZADA no espera ni avisa: de ella habla el aviso ROJO de la pantalla de Caja. */
+    @Test
+    fun `P2 una apertura rechazada no produce banda de espera`() {
+        val cola = listOf(
+            PendingDrawerOp("OPEN", "local-1", 50_000, null, "ev-1", 1_000, rechazadaEn = 2_000, motivoDelRechazo = "no"),
+        )
+        assertEquals(EstadoDeLosCobros.LIBRES, estadoDeLosCobros(cola, 3_000))
     }
 
     /**
@@ -274,7 +402,7 @@ class CashDrawerReplayAlReconectarTest {
         val cola = listOf(
             PendingDrawerOp("OPEN", "local-1", 50_000, null, "ev-1", 1_000, rechazadaEn = 9_999, motivoDelRechazo = "no"),
         )
-        assertTrue(losCobrosPuedenSalir(cola))
+        assertTrue(losCobrosPuedenSalir(cola, ahora = 10_000))
     }
 
     /** 🔴 P1 — el punto de entrada del sincronizador reproduce Y contesta si los cobros salen. */
@@ -317,6 +445,7 @@ class CashDrawerReplayAlReconectarTest {
         assertEquals(2, leida.size)
         assertEquals("PAY_OUT", leida[0].kind)
         assertEquals(5_000, leida[0].amountCents)
-        assertTrue("Sin apertura encolada, esa cola vieja no frena ningún cobro", losCobrosPuedenSalir(leida))
+        assertTrue("Sin apertura encolada, esa cola vieja no frena ningún cobro", losCobrosPuedenSalir(leida, ahora = 5_000))
+        assertEquals("El campo nuevo llega nulo, no roto", null, leida[0].primerReintentoEn)
     }
 }

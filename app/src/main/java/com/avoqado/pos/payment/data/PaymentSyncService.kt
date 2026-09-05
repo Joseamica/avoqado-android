@@ -10,6 +10,7 @@ import com.avoqado.pos.core.data.network.ApiConstants
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
@@ -202,7 +203,21 @@ class PaymentSyncService @Inject constructor(
     private var connectivityJob: Job? = null
     private var pendingCountJob: Job? = null
     private var failedCountJob: Job? = null
-    private val syncScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var syncScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /**
+     * 🔴 SÓLO PARA PRUEBAS, y se fija ANTES de `start()`.
+     *
+     * En producción el servicio corre en `Dispatchers.IO` y nadie toca esto. Existe porque las
+     * pruebas del ORDEN entre las dos colas dependían de `Thread.sleep(500)` de tiempo REAL: en
+     * esta Mac, que corre con ~20 sesiones encima, medio segundo puede no alcanzar y la prueba
+     * falla por CARGA, no por código. Con un `TestDispatcher` la misma prueba corre en tiempo
+     * virtual y es determinista.
+     */
+    internal fun usarContextoDeSincronizacion(contexto: kotlin.coroutines.CoroutineContext) {
+        syncScope.cancel()
+        syncScope = CoroutineScope(SupervisorJob() + contexto)
+    }
     private val json = Json { ignoreUnknownKeys = true }
 
     internal sealed interface OrderResolution {

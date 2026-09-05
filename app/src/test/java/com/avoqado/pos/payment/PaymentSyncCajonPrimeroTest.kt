@@ -14,6 +14,8 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -47,7 +49,12 @@ class PaymentSyncCajonPrimeroTest {
 
     private var service: PaymentSyncService? = null
 
-    private fun servicio(): PaymentSyncService {
+    /**
+     * 🔴 El servicio corre en el MISMO scheduler del test (P3-2): sin eso, sus corrutinas vivían en
+     * `Dispatchers.IO` y la única forma de esperarlas era un `Thread.sleep(500)` de tiempo REAL —
+     * una prueba que en esta Mac, con ~20 sesiones encima, falla por CARGA y no por código.
+     */
+    private fun TestScope.servicio(): PaymentSyncService {
         every { secureStorage.venueId } returns "venue-123"
         every { secureStorage.userId } returns "user-456"
         every { connectivityMonitor.isConnected } returns MutableStateFlow(true)
@@ -55,7 +62,10 @@ class PaymentSyncCajonPrimeroTest {
         coEvery { dao.getPendingCount() } returns flowOf(0)
         coEvery { dao.getFailedCount() } returns flowOf(0)
         return PaymentSyncService(dao, secureStorage, client, connectivityMonitor, cajon)
-            .also { service = it }
+            .also {
+                it.usarContextoDeSincronizacion(StandardTestDispatcher(testScheduler))
+                service = it
+            }
     }
 
     @After
@@ -120,7 +130,17 @@ class PaymentSyncCajonPrimeroTest {
         // `start()` y no `syncNow()` a secas: el drenado se corta con `if (!isStarted) return`, así
         // que arrancar el servicio es el ÚNICO camino que ejercita el orden real.
         servicio().start()
-        Thread.sleep(500)
+        // `runCurrent()` y NO `advanceUntilIdle()`: el temporizador de seguridad del servicio es un
+        // `while (isActive) { delay(15 min) }`, así que siempre hay una tarea futura agendada y
+        // avanzar "hasta que no quede nada" no terminaría nunca. Aquí basta drenar lo que está
+        // agendado para ESTE instante, que es todo lo que dispara `start()`.
+        runCurrent()
+        // 🔴 Se DETIENE dentro del cuerpo del test, no en el `@After`: el temporizador de seguridad
+        // del servicio es un `while (isActive) { delay(15 min) }` sobre ESTE scheduler, y `runTest`
+        // termina avanzando el tiempo virtual «hasta que no quede nada». Con el temporizador vivo,
+        // eso son millones de vueltas de 15 minutos virtuales y el worker muere por memoria — un
+        // fallo que se lee como OOM de la máquina y en realidad es de la prueba.
+        service?.stop()
 
         assertEquals("El cajón tiene que ir primero", listOf("cajon", "cobros"), orden.take(2))
     }
@@ -136,7 +156,17 @@ class PaymentSyncCajonPrimeroTest {
         coEvery { cajon.sincronizarCajonPrimero() } returns false
 
         servicio().start()
-        Thread.sleep(500)
+        // `runCurrent()` y NO `advanceUntilIdle()`: el temporizador de seguridad del servicio es un
+        // `while (isActive) { delay(15 min) }`, así que siempre hay una tarea futura agendada y
+        // avanzar "hasta que no quede nada" no terminaría nunca. Aquí basta drenar lo que está
+        // agendado para ESTE instante, que es todo lo que dispara `start()`.
+        runCurrent()
+        // 🔴 Se DETIENE dentro del cuerpo del test, no en el `@After`: el temporizador de seguridad
+        // del servicio es un `while (isActive) { delay(15 min) }` sobre ESTE scheduler, y `runTest`
+        // termina avanzando el tiempo virtual «hasta que no quede nada». Con el temporizador vivo,
+        // eso son millones de vueltas de 15 minutos virtuales y el worker muere por memoria — un
+        // fallo que se lee como OOM de la máquina y en realidad es de la prueba.
+        service?.stop()
 
         coVerify(exactly = 0) { dao.getPendingPayments(any()) }
         coVerify(atLeast = 1) { cajon.sincronizarCajonPrimero() }
@@ -149,7 +179,17 @@ class PaymentSyncCajonPrimeroTest {
         coEvery { dao.getPendingPayments(any()) } returns emptyList()
 
         servicio().start()
-        Thread.sleep(500)
+        // `runCurrent()` y NO `advanceUntilIdle()`: el temporizador de seguridad del servicio es un
+        // `while (isActive) { delay(15 min) }`, así que siempre hay una tarea futura agendada y
+        // avanzar "hasta que no quede nada" no terminaría nunca. Aquí basta drenar lo que está
+        // agendado para ESTE instante, que es todo lo que dispara `start()`.
+        runCurrent()
+        // 🔴 Se DETIENE dentro del cuerpo del test, no en el `@After`: el temporizador de seguridad
+        // del servicio es un `while (isActive) { delay(15 min) }` sobre ESTE scheduler, y `runTest`
+        // termina avanzando el tiempo virtual «hasta que no quede nada». Con el temporizador vivo,
+        // eso son millones de vueltas de 15 minutos virtuales y el worker muere por memoria — un
+        // fallo que se lee como OOM de la máquina y en realidad es de la prueba.
+        service?.stop()
 
         coVerify(atLeast = 1) { dao.getPendingPayments(any()) }
     }

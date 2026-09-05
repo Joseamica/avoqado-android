@@ -111,6 +111,7 @@ fun AvoqadoNavGraph(
     val pendingPaymentCount by appState.pendingPaymentCount.collectAsState()
     val showOfflineBanner by appState.showOfflineBanner.collectAsState()
     val offlinePendingCount by appState.offlinePendingCount.collectAsState()
+    val avisoDeCobrosRetenidos by appState.avisoDeCobrosRetenidos.collectAsState()
     val reconciliationCount by appState.reconciliationCount.collectAsState()
     val sessionGuardMessage by appState.sessionGuardMessage.collectAsState()
     val visibleTabs by appState.visibleTabs.collectAsState()
@@ -136,6 +137,7 @@ fun AvoqadoNavGraph(
                     pendingPaymentCount = pendingPaymentCount,
                     showOfflineBanner = showOfflineBanner,
                     offlinePendingCount = offlinePendingCount,
+                    avisoDeCobrosRetenidos = avisoDeCobrosRetenidos,
                     syncIssueCount = reconciliationCount,
                     onTabsShouldRefresh = { appState.refreshTabs() },
                 )
@@ -213,6 +215,8 @@ private fun MainScaffold(
     pendingPaymentCount: Int = 0,
     showOfflineBanner: Boolean = false,
     offlinePendingCount: Int = 0,
+    /** Ver `AppState.avisoDeCobrosRetenidos`: la espera de la caja se DICE (P2-4). */
+    avisoDeCobrosRetenidos: String? = null,
     syncIssueCount: Int = 0,
     onTabsShouldRefresh: () -> Unit = {},
 ) {
@@ -323,7 +327,11 @@ private fun MainScaffold(
             contentWindowInsets = WindowInsets.statusBars,
             topBar = {
                 androidx.compose.foundation.layout.Column {
-                    ConnectivityBanner(visible = showOfflineBanner, pendingSync = offlinePendingCount)
+                    ConnectivityBanner(
+                        visible = showOfflineBanner,
+                        pendingSync = offlinePendingCount,
+                        avisoDeLaCaja = avisoDeCobrosRetenidos,
+                    )
                     com.avoqado.pos.sync.presentation.QuarantineBanner(count = syncIssueCount) { showQuarantineSheet = true }
                 }
             },
@@ -600,7 +608,11 @@ private fun MainScaffold(
         Scaffold(
             topBar = {
                 androidx.compose.foundation.layout.Column {
-                    ConnectivityBanner(visible = showOfflineBanner, pendingSync = offlinePendingCount)
+                    ConnectivityBanner(
+                        visible = showOfflineBanner,
+                        pendingSync = offlinePendingCount,
+                        avisoDeLaCaja = avisoDeCobrosRetenidos,
+                    )
                     com.avoqado.pos.sync.presentation.QuarantineBanner(count = syncIssueCount) { showQuarantineSheet = true }
                 }
             },

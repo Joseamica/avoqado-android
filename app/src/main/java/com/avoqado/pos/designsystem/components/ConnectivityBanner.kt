@@ -25,9 +25,18 @@ fun ConnectivityBanner(
     modifier: Modifier = Modifier,
     /** Operaciones offline esperando replay (outbox + cola de pagos). */
     pendingSync: Int = 0,
+    /**
+     * 🔴 Cobros retenidos porque la apertura de la caja aún no llega al servidor, o ya enviados sin
+     * ella tras el tope (P2-4). `null` = no hay nada que decir.
+     *
+     * Va en ESTA banda y no en una nueva: es el mismo mecanismo, el mismo ámbar y el mismo sitio
+     * que el cajero ya aprendió a mirar. Cuando además no hay red, gana el mensaje de «sin
+     * conexión» — porque eso explica las dos cosas a la vez y dos bandas apiladas no se leen.
+     */
+    avisoDeLaCaja: String? = null,
 ) {
     AnimatedVisibility(
-        visible = visible,
+        visible = visible || avisoDeLaCaja != null,
         enter = slideInVertically { -it },
         exit = slideOutVertically { -it },
         modifier = modifier,
@@ -41,10 +50,10 @@ fun ConnectivityBanner(
             contentAlignment = Alignment.Center,
         ) {
             Text(
-                text = if (pendingSync > 0) {
-                    "Sin conexión — $pendingSync por sincronizar (todo se guarda aquí)"
-                } else {
-                    "Sin conexión — las ventas se guardan en el dispositivo"
+                text = when {
+                    !visible && avisoDeLaCaja != null -> avisoDeLaCaja
+                    pendingSync > 0 -> "Sin conexión — $pendingSync por sincronizar (todo se guarda aquí)"
+                    else -> "Sin conexión — las ventas se guardan en el dispositivo"
                 },
                 color = Color.White,
                 style = MaterialTheme.typography.labelMedium,

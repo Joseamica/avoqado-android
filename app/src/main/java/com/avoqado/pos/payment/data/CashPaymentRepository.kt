@@ -32,6 +32,18 @@ class CashPaymentRepository @Inject constructor(
     /**
      * Queue a cash payment for offline sync.
      * Called when the order creation API fails with a network/server error.
+     *
+     * 🔴 LÍMITE DECLARADO (P3-5, revisión independiente del 5-sep-2026): **el cobro en efectivo
+     * hecho CON red no pasa por ninguna cola, y por tanto tampoco por la barrera del cajón.**
+     * Esta función sólo se usa cuando el intento en línea falla; un cobro nuevo con la red ya de
+     * vuelta y el `OPEN` todavía pendiente aterriza directo y nace igual de huérfano.
+     *
+     * No se arregla a propósito, y la razón es la misma regla de siempre: retener un cobro que el
+     * cajero está haciendo AHORA, con red, sería impedir una venta — y el hub LAN ya dejó escrito
+     * que nada de esto puede bloquear un cobro. Además, con red el `OPEN` o ya salió, o está en
+     * REINTENTAR porque el SERVIDOR lo rechazó: en el segundo caso esperar no arregla nada.
+     * Lo que sí queda: la banda de arriba lo DICE (ver `estadoDeLosCobros`), y el dueño ve esos
+     * cobros como «fuera de turno» y puede reatribuirlos.
      */
     suspend fun queueCashPayment(
         orderRequest: CreateOrderRequest,

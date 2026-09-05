@@ -131,6 +131,11 @@ class AppStateVenueRecoveryTest {
             reservationRepository = reservationRepository,
             tableSyncCoordinator = mockk<TableSyncCoordinator>(relaxed = true),
             posModeManager = posModeManager,
+            cashDrawerRepository = mockk<com.avoqado.pos.cashdrawer.data.CashDrawerRepository>(relaxed = true) {
+                every { estadoDeLosCobros } returns MutableStateFlow(
+                    com.avoqado.pos.cashdrawer.data.EstadoDeLosCobros.LIBRES,
+                )
+            },
             venueSwitchState = mockk<VenueSwitchState>(relaxed = true),
             connectivityMonitor = connectivityMonitor,
         )

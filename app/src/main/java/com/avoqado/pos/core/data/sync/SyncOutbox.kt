@@ -55,6 +55,16 @@ class SyncOutbox @Inject constructor(
     private val apiService: ApiService,
     private val connectivityMonitor: ConnectivityMonitor,
     private val secureStorage: SecureStorage,
+    /**
+     * 🔴 EL EFECTIVO DE MESAS VIAJA POR AQUÍ, Y TAMBIÉN TIENE QUE ESPERAR A LA CAJA (P2-3).
+     *
+     * En este workspace un cobro en efectivo llega al servidor por DOS colas: la de
+     * `PaymentSyncService` (venta rápida) y los intents `PAY_CASH` de este outbox (mesas). La
+     * ronda anterior sólo protegió la primera, así que al volver la red un `PAY_CASH` de mesa
+     * podía aterrizar antes que el `POST /open` y nacer con `shiftId = null` — el defecto F1 por
+     * la otra puerta, con el mismo dinero de por medio y sin nadie mirando.
+     */
+    private val cajon: com.avoqado.pos.cashdrawer.data.CashDrawerRepository,
     @ApplicationContext context: Context,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -194,11 +204,29 @@ class SyncOutbox @Inject constructor(
         ) {
             return
         }
+        // 🔴 EL CAJÓN VA PRIMERO, TAMBIÉN POR ESTA PUERTA (P2-3). Es el MISMO punto de entrada y el
+        // MISMO candado de un solo vuelo que usa `PaymentSyncService`: si ya hay un replay del
+        // cajón en vuelo, éste espera su turno y encuentra la cola vacía, así que la apertura NUNCA
+        // se manda dos veces por sumar un segundo llamador.
+        val cobrosPuedenSalir = runCatching { cajon.sincronizarCajonPrimero() }
+            .onFailure { Log.e(TAG, "❌ No se pudo sincronizar el cajón antes del outbox: ${it.message}") }
+            .getOrDefault(true)
         replayMutex.withLock {
             while (true) {
                 if (activeVenueId != venueId) break
-                val batch = dao.pendingFifo(venueId, BATCH_SIZE)
-                if (batch.isEmpty()) break
+                val leidos = dao.pendingFifo(venueId, BATCH_SIZE)
+                if (leidos.isEmpty()) break
+
+                // 🔴 SE CORTA EN EL PRIMER `PAY_CASH`, NO SE REORDENA. El FIFO por aparato es lo
+                // que hace que una mesa se abra antes de que le agreguen artículos: adelantar lo
+                // que no es dinero rompería ese orden. Lo que NO es dinero sigue fluyendo; el
+                // cobro en efectivo y todo lo posterior esperan a que la caja aterrice.
+                val cuantos = cuantosIntentsSePuedenMandar(leidos.map { it.type }, cobrosPuedenSalir)
+                val batch = leidos.take(cuantos)
+                if (batch.isEmpty()) {
+                    Log.w(TAG, "⏸️ El outbox se detiene en el primer PAY_CASH: la caja aún no llega al servidor")
+                    break
+                }
 
                 val request = SyncIntentsRequest(
                     deviceId = deviceId,
@@ -250,6 +278,12 @@ class SyncOutbox @Inject constructor(
                 refreshCounts(venueId)
                 Log.d(TAG, "✅ Replay de ${batch.size} intents aplicado")
                 if (sawRetry) break // no hot-loop sobre el mismo PENDING
+                if (batch.size < leidos.size) {
+                    // El lote venía recortado por la barrera del cajón: lo que sigue es el
+                    // `PAY_CASH` que tiene que esperar. Volver al `while` lo re-leería en caliente.
+                    Log.w(TAG, "⏸️ Quedan ${leidos.size - batch.size} intents esperando a que la caja llegue al servidor")
+                    break
+                }
             }
         }
     }
@@ -286,6 +320,23 @@ class SyncOutbox @Inject constructor(
         dao.pendingCount(venueId) + dao.rejectedCount(venueId)
 
     companion object {
+        /** El tipo de intent que MUEVE DINERO EN EFECTIVO. Espejo exacto del `SyncIntentType` del server. */
+        internal const val TIPO_PAGO_EN_EFECTIVO = "PAY_CASH"
+
+        /**
+         * 🔴 Cuántas entradas del lote se pueden mandar cuando la caja todavía no llegó al servidor.
+         *
+         * Función PURA para poder ejercitar el corte sin red ni base: con la barrera abierta va el
+         * lote entero; con la barrera cerrada va TODO lo anterior al primer `PAY_CASH` y ahí se
+         * detiene. Lo que se protege es el dinero, no la cola: un `OPEN_TABLE` o un `ADD_ITEMS`
+         * que aterrice sin caja abierta no pierde nada — un cobro en efectivo, sí, y para siempre.
+         */
+        internal fun cuantosIntentsSePuedenMandar(tipos: List<String>, cobrosPuedenSalir: Boolean): Int {
+            if (cobrosPuedenSalir) return tipos.size
+            val primerCobro = tipos.indexOf(TIPO_PAGO_EN_EFECTIVO)
+            return if (primerCobro < 0) tipos.size else primerCobro
+        }
+
         private const val KEY_DEVICE_ID = "sync_device_id"
         private const val BATCH_SIZE = 50
         private const val SAFETY_TIMER_MS = 5L * 60 * 1000
