@@ -315,6 +315,11 @@ class CashDrawerReplayAlReconectarTest {
      *
      * Es la otra mitad, y la que justifica que el tope exista: con red, un 500 que se repite es
      * exactamente el «transitorio para siempre» que dejaría las ventas del día en el aparato.
+     *
+     * ⚠️ Esta prueba usa un `mockk<OkHttpClient>` SIN el `ConnectivityInterceptor`, así que fija la
+     * regla pero no el estado del aparato: la versión con el interceptor REAL montado y un
+     * `MockWebServer` que contesta 500 vive en `CashDrawerIntentoLlegoALaRedTest`, y es la que
+     * caza R2-P2-1. Se conserva ésta porque cubre además el camino de `sincronizarCajonPrimero`.
      */
     @Test
     fun `P2 media hora de intentos CON RED suelta los cobros`() = runTest {

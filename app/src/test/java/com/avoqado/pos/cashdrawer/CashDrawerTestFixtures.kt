@@ -14,6 +14,7 @@ import com.avoqado.pos.core.data.local.database.SyncIntentPayload
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.flow.MutableStateFlow
 import okhttp3.Call
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -290,9 +291,17 @@ internal fun intentPayCash(
  * además el valor conservador — sin red no arranca el reloj del tope ni el backoff de la apertura,
  * que es exactamente el comportamiento que tenían estas pruebas antes de la ronda 2. Quien
  * necesite ejercitar el tope pasa `hayRed = true` y lo dice.
+ *
+ * 🔴 Se dobla `isConnected` —la red del APARATO—, que es lo que el repositorio lee desde la ronda
+ * 3 (R2-P2-1). `isFullyConnected` se dobla igual sólo para que un doble relajado no devuelva
+ * `false` por accidente a quien todavía la consulte; el veredicto de «el intento contó» ya no sale
+ * de aquí sino del desenlace del intento.
  */
 internal fun conectividadDePrueba(hayRed: Boolean = false): ConnectivityMonitor =
-    mockk<ConnectivityMonitor>(relaxed = true).also { every { it.isFullyConnected } returns hayRed }
+    mockk<ConnectivityMonitor>(relaxed = true).also {
+        every { it.isConnected } returns MutableStateFlow(hayRed)
+        every { it.isFullyConnected } returns hayRed
+    }
 
 internal fun cashDrawerRepo(
     dao: CashDrawerDao,

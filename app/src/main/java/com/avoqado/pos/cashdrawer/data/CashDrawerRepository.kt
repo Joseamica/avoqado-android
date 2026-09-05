@@ -31,6 +31,9 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.net.ConnectException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
 import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -238,6 +241,91 @@ internal fun clasificarApertura(
 }
 
 /**
+ * Cómo terminó UN intento contra el servidor, visto desde la única pregunta que le importa al
+ * tope de la barrera y al backoff: **¿el servidor se enteró?**
+ *
+ * 🔴 Existe porque preguntárselo a una bandera global era MENTIRA en este aparato (R2-P2-1, la
+ * re-revisión del 5-sep-2026). `ConnectivityMonitor.isFullyConnected` incluye `isServerReachable`,
+ * y esa la escribe el [com.avoqado.pos.core.data.network.ConnectivityInterceptor] montado en el
+ * MISMO `OkHttpClient` que hace el `POST /open`: ante un 5xx o un `IOException` llama a
+ * `reportServerError()` **dentro** del `execute()`. O sea que el propio intento apagaba la bandera
+ * milisegundos antes de que se la consultara, y con el servidor 500eando el reloj del tope no
+ * arrancaba NUNCA — los cobros del día se quedaban en la tablet. Y la prueba que lo cubría pasaba
+ * porque su `OkHttpClient` falso no lleva el interceptor: un estado que el aparato no produce.
+ */
+internal sealed interface DesenlaceDelIntento {
+    /** Hubo respuesta HTTP. El código da igual: un 500 demuestra que el servidor contestó. */
+    data class Respondio(val code: Int) : DesenlaceDelIntento
+
+    /** No hubo respuesta; sólo queda la excepción que lo impidió. */
+    data class Fallo(val error: Throwable) : DesenlaceDelIntento
+}
+
+/**
+ * Los fallos que demuestran que el paquete NUNCA salió del aparato, por MENSAJE. Se miran además
+ * de los tipos porque «Network is unreachable» viaja a veces dentro de un `SocketException` pelón.
+ */
+private val MARCAS_DE_SIN_RUTA = listOf(
+    "unable to resolve host",
+    "network is unreachable",
+    "no route to host",
+    "no address associated with hostname",
+)
+
+/**
+ * 🔴 Función PURA: ¿este intento LLEGÓ a la red? Es lo único que decide si arranca el reloj del
+ * tope ([TOPE_DE_LA_BARRERA_MS]) y si aplica el backoff ([BACKOFF_DE_LA_APERTURA_MS]).
+ *
+ * La regla, y se decide por el DESENLACE del propio intento, jamás preguntándole a un monitor que
+ * ese intento acaba de mutar:
+ *
+ * | Desenlace | ¿Llegó? | Por qué |
+ * |---|---|---|
+ * | Respuesta HTTP, **cualquier código** (500 incluido) | **sí** | si contestó, se enteró |
+ * | `SocketTimeoutException` | **sí** | hubo ruta y algo al otro lado nos hizo esperar 30 s |
+ * | `UnknownHostException` | no | ni siquiera resolvió el nombre: el DNS es lo primero que muere sin WiFi |
+ * | `ConnectException` | no | el sistema supo al instante que no había a dónde ir |
+ * | mensaje con «unreachable» / «no route to host» | no | lo mismo, por otra puerta |
+ * | cualquier otra excepción | **sí** | ver abajo |
+ *
+ * 🔴 **Por qué lo desconocido cuenta como «sí».** El coste es asimétrico y va en direcciones
+ * distintas: clasificar de más suelta los cobros a la media hora y eso se VE («Cobros enviados sin
+ * caja», y el dashboard los muestra fuera de turno); clasificar de menos deja el dinero del día
+ * dentro de la tablet para siempre y en silencio. Además el caso «no hay red» ya está cubierto dos
+ * veces —el pre-chequeo del monitor antes de intentar y los tipos de arriba, que son los que
+ * Android lanza de verdad con el WiFi apagado—, así que una excepción desconocida DESPUÉS de que
+ * el aparato dijera tener red es casi siempre una conversación real con el servidor.
+ *
+ * ⚠️ DECLARADO: un timeout de CONEXIÓN también es `SocketTimeoutException` en OkHttp, así que
+ * cuenta como «llegó». Distinguirlo exigiría leer el TEXTO del mensaje («failed to connect»), que
+ * es justo la clase de llave frágil que este repo ya pagó cara; y treinta segundos de espera no es
+ * la firma de un WiFi apagado — ésa falla al instante, por DNS.
+ */
+internal fun intentoLlegoALaRed(desenlace: DesenlaceDelIntento): Boolean = when (desenlace) {
+    is DesenlaceDelIntento.Respondio -> true
+    is DesenlaceDelIntento.Fallo -> cadenaDeCausas(desenlace.error).none(::esFalloSinRuta)
+}
+
+/** La excepción y sus causas, sin ciclos (una causa que se apunte a sí misma colgaría el bucle). */
+private fun cadenaDeCausas(error: Throwable): List<Throwable> {
+    val vistos = mutableListOf<Throwable>()
+    var actual: Throwable? = error
+    while (actual != null && vistos.none { it === actual } && vistos.size < 16) {
+        vistos += actual
+        actual = actual.cause
+    }
+    return vistos
+}
+
+private fun esFalloSinRuta(e: Throwable): Boolean = when {
+    // 🔴 Antes que nada: `SocketTimeoutException` NO hereda de `ConnectException`, pero dejarlo
+    // explícito impide que un futuro «if es IOException» se lo lleve por delante.
+    e is SocketTimeoutException -> false
+    e is UnknownHostException || e is ConnectException -> true
+    else -> MARCAS_DE_SIN_RUTA.any { it in e.message?.lowercase().orEmpty() }
+}
+
+/**
  * `data.cajaCreada` del cuerpo de `POST /open`, o `null` si no viene / no se puede leer.
  *
  * 🔴 Se lee la LLAVE, nunca el texto. Y `null` NO es `false`: un servidor viejo que no manda el
@@ -307,8 +395,15 @@ internal data class PendingDrawerOp(
      * 🔴 «CON RED» es literal y es lo que arregló la ronda 2: un fallo de red devuelve el mismo
      * `Reintentar` que un 5xx, así que abrir la caja con el WiFi apagado fechaba esto milisegundos
      * después y el presupuesto de media hora se consumía **offline** — justo en el local con mala
-     * red que el tope decía proteger. Ahora sólo lo fecha un intento hecho con red y servidor
-     * alcanzables (`ConnectivityMonitor.isFullyConnected`).
+     * red que el tope decía proteger.
+     *
+     * 🔴 Y quién contesta «¿hubo red?» cambió en la ronda 3, porque la respuesta anterior era
+     * falsa en el aparato: lo decide [intentoLlegoALaRed] sobre el DESENLACE del propio intento
+     * (respuesta HTTP —500 incluido— o timeout de socket ⇒ sí; `UnknownHost`/`ConnectException` ⇒
+     * no), más el pre-chequeo de que el aparato tuviera red al empezar. Preguntarle a
+     * `isFullyConnected` DESPUÉS del intento no servía: el `ConnectivityInterceptor` la apaga
+     * dentro de ese mismo POST ante cualquier 5xx, así que con el servidor caído esto se quedaba
+     * en `null` para siempre y los cobros del día no salían nunca (R2-P2-1).
      *
      * Nulo = todavía no se ha intentado CON RED, o ya se confirmó. Campo con default: una cola
      * guardada por una versión anterior se lee igual (hay prueba).
@@ -322,10 +417,11 @@ internal data class PendingDrawerOp(
      * estuviera atorada — un POST por artículo agregado a una mesa. Con esto, la apertura no se
      * vuelve a mandar hasta que pasen [BACKOFF_DE_LA_APERTURA_MS].
      *
-     * 🔴 También se fecha SÓLO con red, y no es un detalle: un fallo sin red nunca tocó al
-     * servidor, así que no hay nada de lo que hacer backoff — y aplicarlo igual retrasaría hasta
-     * medio minuto la apertura en el momento que más importa, el instante en que vuelve el WiFi.
-     * Esa es la única diferencia frente a la letra del fallo, y está aquí escrita a propósito.
+     * 🔴 También se fecha SÓLO cuando el intento LLEGÓ al servidor, y no es un detalle: un fallo
+     * sin ruta nunca lo tocó, así que no hay nada de lo que hacer backoff — y aplicarlo igual
+     * retrasaría hasta medio minuto la apertura en el momento que más importa, el instante en que
+     * vuelve el WiFi. Esa es la única diferencia frente a la letra del fallo, y está aquí escrita
+     * a propósito. Mismo juez que el tope: [intentoLlegoALaRed] sobre el desenlace del intento.
      */
     val ultimoReintentoEn: Long? = null,
 )
@@ -383,10 +479,15 @@ internal fun losCobrosPuedenSalir(cola: List<PendingDrawerOp>, ahora: Long): Boo
 /**
  * 🔴 CUÁNTO PUEDEN ESPERAR LOS COBROS A QUE LA APERTURA LLEGUE — media hora, y ni un minuto más.
  *
- * Se mide desde el primer intento fallido **CON RED** de la apertura
+ * Se mide desde el primer intento fallido **QUE LLEGÓ AL SERVIDOR**
  * ([PendingDrawerOp.primerReintentoEn]), no desde que se encoló: sin red no hay nada que
  * reprochar —el servidor ni se enteró— y contar esa espera gastaría el presupuesto entero durante
  * un apagón de WiFi, que es exactamente el defecto N-P2-1 de la re-revisión del 5-sep-2026.
+ *
+ * 🔴 «Llegó» lo contesta [intentoLlegoALaRed] sobre el desenlace del intento, NUNCA el monitor de
+ * conectividad: ver R2-P2-1 en el KDoc de esa función. Con la versión anterior, un `/open` que
+ * contestaba 500 —o que se agotaba por timeout— no arrancaba este reloj JAMÁS, así que las cuatro
+ * clases de error que el párrafo de abajo enumera se quedaban sin el tope que dice tener.
  *
  * ⚠️ RESIDUO DECLARADO, porque el comentario no puede prometer más que el código: lo que se guarda
  * es un INSTANTE de arranque, no un cronómetro de tiempo conectado. Una vez que el reloj arrancó
@@ -579,10 +680,11 @@ class CashDrawerRepository @Inject constructor(
     private val client: OkHttpClient,
     private val pendingCashSales: PendingCashSales,
     /**
-     * 🔴 La conectividad ENTRA, no se adivina (ronda 2, N-P2-1). El reloj del tope de la barrera
-     * y el backoff de la apertura sólo cuentan intentos hechos con red y servidor alcanzables:
-     * `isFullyConnected` es exactamente esa pregunta, y es la MISMA fuente que usan el banner de
-     * «sin conexión» y el outbox, así que la app no puede contarse dos historias distintas.
+     * 🔴 La conectividad ENTRA, no se adivina (ronda 2, N-P2-1) — pero sólo como PRE-CHEQUEO de
+     * que el aparato tuviera red antes de intentar (ronda 3, R2-P2-1). Ver [hayRedDelAparato]: se
+     * lee `isConnected`, jamás `isFullyConnected`, porque esa segunda bandera la apaga el
+     * `ConnectivityInterceptor` durante el mismo POST que se está evaluando. Si el intento CONTÓ
+     * o no lo decide su desenlace ([intentoLlegoALaRed]).
      */
     private val conectividad: ConnectivityMonitor,
 ) {
@@ -1131,7 +1233,13 @@ class CashDrawerRepository @Inject constructor(
     /** Lo que pasó con UNA apertura. `ligada = true` ⇒ el servidor NO creó mi caja: adopté la suya. */
     internal sealed interface ResultadoDeLaApertura {
         data class Adoptada(val session: CashDrawerSessionEntity, val ligada: Boolean) : ResultadoDeLaApertura
-        data object Reintentar : ResultadoDeLaApertura
+        /**
+         * 🔴 [llegoALaRed] es lo que la ronda 3 añadió, y es dinero: sólo un intento que LLEGÓ al
+         * servidor arranca el reloj del tope y activa el backoff. Lo contesta la función pura
+         * [intentoLlegoALaRed] sobre el desenlace del propio intento — nunca un monitor global,
+         * que es la bandera que el interceptor apaga durante este mismo POST (R2-P2-1).
+         */
+        data class Reintentar(val llegoALaRed: Boolean) : ResultadoDeLaApertura
         data object Rechazada : ResultadoDeLaApertura
     }
 
@@ -1151,8 +1259,11 @@ class CashDrawerRepository @Inject constructor(
                 response.code to (response.body?.string() ?: "")
             }
         } catch (e: Exception) {
-            Log.e(TAG, "❌ API open session error: ${e.message}")
-            return ResultadoDeLaApertura.Reintentar
+            // 🔴 El desenlace lo decide la EXCEPCIÓN, no una bandera (R2-P2-1). Un `UnknownHost`
+            // con el WiFi apagado no cuenta; un timeout de socket sí, porque hubo ruta.
+            val llegoALaRed = intentoLlegoALaRed(DesenlaceDelIntento.Fallo(e))
+            Log.e(TAG, "❌ API open session error (llegoALaRed=$llegoALaRed): ${e.message}")
+            return ResultadoDeLaApertura.Reintentar(llegoALaRed)
         }
 
         return when (clasificarApertura(code, codigoDeNegocio(body), leerCajaCreada(body))) {
@@ -1172,7 +1283,9 @@ class CashDrawerRepository @Inject constructor(
             }
             DesenlaceDeLaApertura.REINTENTAR -> {
                 Log.w(TAG, "🔁 Apertura sin confirmar ($code); sigue en cola — $body")
-                ResultadoDeLaApertura.Reintentar
+                // Hubo código HTTP ⇒ el servidor contestó. Cuenta para el tope y para el backoff
+                // aunque ese código sea un 500 — que es justo el caso que R2-P2-1 dejaba inerte.
+                ResultadoDeLaApertura.Reintentar(intentoLlegoALaRed(DesenlaceDelIntento.Respondio(code)))
             }
             // 🔴 Se MARCA, no se borra (hallazgo I4): la caja existe en el aparato y su cierre no
             // puede mandarse. El aviso trae «Reintentar», nunca «Ya lo vi».
@@ -1210,8 +1323,12 @@ class CashDrawerRepository @Inject constructor(
         val respuesta = try {
             pedirCajaAbiertaAlServidor(sesionLocal = op.sessionId)
         } catch (e: Exception) {
+            // 🔴 `llegoALaRed = true` sin mirar la excepción, y es correcto: aquí sólo se llega
+            // DESPUÉS de que `POST /open` devolviera un código HTTP (201 ilegible o 409). El
+            // servidor ya contestó una vez; que el `GET /current` de después tropiece no lo
+            // desmiente.
             Log.e(TAG, "❌ No se pudo consultar la caja del server: ${e.message}")
-            return ResultadoDeLaApertura.Reintentar
+            return ResultadoDeLaApertura.Reintentar(llegoALaRed = true)
         }
         return when (respuesta) {
             is CajaDelServidor.Adoptada -> {
@@ -1224,9 +1341,9 @@ class CashDrawerRepository @Inject constructor(
             // dentro del cajón. Quedarse atorado es ruidoso y se arregla; perder la apertura no.
             CajaDelServidor.NoHayNinguna -> {
                 Log.w(TAG, "🔁 El server dijo que el turno ya estaba abierto y su /current no trae ninguno: se reintenta")
-                ResultadoDeLaApertura.Reintentar
+                ResultadoDeLaApertura.Reintentar(llegoALaRed = true)
             }
-            CajaDelServidor.NoSeSupo -> ResultadoDeLaApertura.Reintentar
+            CajaDelServidor.NoSeSupo -> ResultadoDeLaApertura.Reintentar(llegoALaRed = true)
         }
     }
 
@@ -1762,16 +1879,27 @@ class CashDrawerRepository @Inject constructor(
      *    el defecto que el tope viene a cerrar.
      *  - `ultimoReintentoEn`, **siempre**: es el backoff, que por definición mira el último.
      *
-     * 🔴 Y NO SE LLAMA SIN RED. Un fallo de red devuelve el mismo `Reintentar` que un 5xx, así que
-     * antes abrir la caja con el WiFi apagado arrancaba el reloj de la media hora en el acto
-     * (N-P2-1). Sin red el servidor ni se enteró: no hay espera que reprochar ni POST del que
-     * hacer backoff.
+     * 🔴 Y NO SE LLAMA SI EL INTENTO NO LLEGÓ AL SERVIDOR. Un fallo de red devuelve el mismo
+     * `Reintentar` que un 5xx, así que antes abrir la caja con el WiFi apagado arrancaba el reloj
+     * de la media hora en el acto (N-P2-1). Sin red el servidor ni se enteró: no hay espera que
+     * reprochar ni POST del que hacer backoff. Quién lo decide: [intentoLlegoALaRed] sobre el
+     * desenlace, con el pre-chequeo de [hayRedDelAparato] delante — nunca el monitor solo, que es
+     * lo que dejaba el reloj muerto ante un 5xx (R2-P2-1).
      *
      * Se escribe en disco porque la espera tiene que sobrevivir a que la app se reinicie.
      */
     private fun marcarReintentoConRed(op: PendingDrawerOp, ahora: Long) = synchronized(candadoDeLaCola) {
         val lista = pendientes()
         if (lista.none { mismaOperacion(it, op) }) return@synchronized
+        // 🔴 Se DICE en el log, y no es adorno: el arranque de este reloj es lo único que separa
+        // «los cobros esperan media hora» de «los cobros esperan para siempre», y con la versión
+        // anterior nunca ocurría ante un 5xx sin que nada lo delatara. Ahora se ve en logcat.
+        val yaCorria = lista.firstOrNull { mismaOperacion(it, op) }?.primerReintentoEn != null
+        if (yaCorria) {
+            Log.d(TAG, "⏱️ Intento con red fallido: se refresca el backoff de la apertura de ${op.sessionId}")
+        } else {
+            Log.w(TAG, "⏱️ ARRANCA el reloj del tope de la barrera para ${op.sessionId}: el intento LLEGÓ al servidor y falló")
+        }
         guardarPendientes(
             lista.map {
                 if (mismaOperacion(it, op)) {
@@ -1783,8 +1911,19 @@ class CashDrawerRepository @Inject constructor(
         )
     }
 
-    /** ¿Hay red Y el servidor contesta? Es lo que decide si un intento fallido cuenta. */
-    private fun hayRedYServidor(): Boolean = conectividad.isFullyConnected
+    /**
+     * 🔴 ¿El APARATO tenía red ANTES de intentar? Pre-chequeo, nunca veredicto (R2-P2-1).
+     *
+     * Lee `isConnected` —el callback de `ConnectivityManager`— y NO `isFullyConnected`, que
+     * incluye `isServerReachable`: esa segunda bandera la apaga el `ConnectivityInterceptor`
+     * DURANTE el propio POST que estamos evaluando, así que consultarla después del intento era
+     * preguntarle al testigo que el acusado acababa de sobornar. Quién decide si el intento contó
+     * es [intentoLlegoALaRed], sobre el desenlace; esto sólo descarta el caso en que el aparato ni
+     * siquiera tenía red al empezar.
+     *
+     * Se compone con AND, y por eso es seguro: para contar hacen falta las DOS cosas.
+     */
+    private fun hayRedDelAparato(): Boolean = conectividad.isConnected.value
 
     private suspend fun reproducirPendientesYaConElCandado(ademas: PendingDrawerOp?): ResultadoDelReplay {
         // 🔴 Las entradas legadas (sin `localId`) reciben su llave determinista ANTES de nada:
@@ -1828,6 +1967,14 @@ class CashDrawerRepository @Inject constructor(
                 // mismo —la caja sigue sin existir en el servidor— y dejar pasar lo posterior
                 // rompería la barrera de orden (C1). La única diferencia es que no se molesta al
                 // servidor por enésima vez en el mismo medio minuto.
+                //
+                // ⚠️ DECLARADO (R2-P3-4): el `break` detiene la corrida ENTERA, no sólo esta
+                // apertura, así que los movimientos de OTRAS cajas esperan hasta medio minuto de
+                // más. Es deliberado y coherente con C1: una apertura sin confirmar es barrera de
+                // todo lo POSTERIOR en el tiempo, y saltarse el intento no cambia el hecho —la
+                // caja sigue sin existir en el servidor—, así que el backoff tiene que comportarse
+                // igual que el `Reintentar` que sustituye. El coste es despreciable frente a los
+                // ciclos de 15 min del sincronizador.
                 if (aperturaEnBackoff(op, System.currentTimeMillis())) {
                     Log.w(TAG, "⏳ La apertura de ${original.sessionId} falló hace menos de 30 s: se espera antes de reintentar")
                     break
@@ -1857,16 +2004,22 @@ class CashDrawerRepository @Inject constructor(
                         Log.w(TAG, "🛑 Apertura rechazada: la corrida se detiene aquí")
                         break
                     }
-                    ResultadoDeLaApertura.Reintentar -> {
+                    is ResultadoDeLaApertura.Reintentar -> {
                         // 🔴 Aquí arranca el reloj del tope de la barrera (P2-4) — pero SÓLO si el
-                        // intento se hizo con red y con el servidor contestando (N-P2-1). Sin red
-                        // no hay nada que reprochar: el servidor ni se enteró, y contar esa espera
-                        // gastaba la media hora entera durante un apagón de WiFi, que es cuando la
-                        // barrera más protege. El mismo intento con red fecha además el backoff.
-                        if (hayRedYServidor()) {
+                        // intento LLEGÓ a la red (N-P2-1, y su corrección real en R2-P2-1). Sin
+                        // red no hay nada que reprochar: el servidor ni se enteró, y contar esa
+                        // espera gastaba la media hora entera durante un apagón de WiFi, que es
+                        // cuando la barrera más protege. El mismo intento fecha además el backoff.
+                        //
+                        // 🔴 Y el veredicto lo da el DESENLACE del intento
+                        // ([ResultadoDeLaApertura.Reintentar.llegoALaRed]), no el monitor: con un
+                        // `/open` que contesta 500, el interceptor marcaba el servidor caído
+                        // durante ese mismo POST y el reloj no arrancaba NUNCA. El monitor entra
+                        // sólo como pre-chequeo de que el aparato tenía red al empezar.
+                        if (hayRedDelAparato() && resultado.llegoALaRed) {
                             marcarReintentoConRed(original, System.currentTimeMillis())
                         } else {
-                            Log.d(TAG, "📡 La apertura falló sin red: no cuenta para el tope de la barrera")
+                            Log.d(TAG, "📡 La apertura no llegó al servidor (red=${hayRedDelAparato()}, llegó=${resultado.llegoALaRed}): no cuenta para el tope de la barrera")
                         }
                         Log.w(TAG, "⏸️ La apertura de ${original.sessionId} no llegó: nada posterior se manda")
                         break
