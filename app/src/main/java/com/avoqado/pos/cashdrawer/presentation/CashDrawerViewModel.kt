@@ -78,6 +78,15 @@ class CashDrawerViewModel @Inject constructor(
     private val _rechazadas = MutableStateFlow<List<CashDrawerRepository.OperacionRechazada>>(emptyList())
     val rechazadas: StateFlow<List<CashDrawerRepository.OperacionRechazada>> = _rechazadas.asStateFlow()
 
+    /**
+     * 🔴 Cajas que se ADOPTARON del servidor en vez de abrir la del cajero (hallazgo I1). El
+     * servidor liga en vez de rebotar y **nunca pisa el fondo de lo que ya estaba**: sin este aviso,
+     * quien contó $2,000 opera sobre una caja de $500 y se entera al cerrar, como un sobrante de
+     * $1,500 sin explicación.
+     */
+    private val _cajasAdoptadas = MutableStateFlow<List<CashDrawerRepository.CajaAdoptada>>(emptyList())
+    val cajasAdoptadas: StateFlow<List<CashDrawerRepository.CajaAdoptada>> = _cajasAdoptadas.asStateFlow()
+
     private val _tenderBreakdown = MutableStateFlow<List<CashDrawerRepository.TenderRow>?>(null)
     val tenderBreakdown: StateFlow<List<CashDrawerRepository.TenderRow>?> = _tenderBreakdown.asStateFlow()
 
@@ -130,11 +139,34 @@ class CashDrawerViewModel @Inject constructor(
         }
     }
 
-    /** El cajero ya vio el aviso y decidió qué hacer con ese dinero: se saca de la cola. */
+    /**
+     * El cajero ya vio el aviso y decidió qué hacer con ese dinero: se saca de la cola.
+     *
+     * 🔴 Sobre una APERTURA no aplica y el repositorio la conserva (hallazgo I4): ahí el único
+     * camino es [reintentarApertura], y por eso el aviso de una apertura no ofrece «Ya lo vi».
+     */
     fun descartarRechazada(op: CashDrawerRepository.OperacionRechazada) {
         viewModelScope.launch {
             runCatching { repository.descartarRechazada(op.localKey) }
             _rechazadas.value = runCatching { repository.operacionesRechazadas() }.getOrDefault(emptyList())
+        }
+    }
+
+    /** Vuelve a intentar una APERTURA rechazada: se le quita la marca y se reproduce la cola. */
+    fun reintentarApertura(op: CashDrawerRepository.OperacionRechazada) {
+        viewModelScope.launch {
+            runCatching { repository.reintentarApertura(op.localKey) }
+            runCatching { repository.reproducirPendientes() }
+            _rechazadas.value = runCatching { repository.operacionesRechazadas() }.getOrDefault(emptyList())
+            loadCurrentSession()
+        }
+    }
+
+    /** El cajero cerró el aviso de la caja adoptada. Sólo desaparece cuando él lo cierra. */
+    fun descartarAvisoDeAdopcion(caja: CashDrawerRepository.CajaAdoptada) {
+        viewModelScope.launch {
+            runCatching { repository.descartarAvisoDeAdopcion(caja.sessionId) }
+            _cajasAdoptadas.value = runCatching { repository.cajasAdoptadas() }.getOrDefault(emptyList())
         }
     }
 
@@ -148,6 +180,7 @@ class CashDrawerViewModel @Inject constructor(
                 // crear el ViewModel (que sobrevive entre visitas): visto en la Samsung, 27-ago.
                 runCatching { repository.reproducirCierresPendientes() }
                 _rechazadas.value = runCatching { repository.operacionesRechazadas() }.getOrDefault(emptyList())
+                _cajasAdoptadas.value = runCatching { repository.cajasAdoptadas() }.getOrDefault(emptyList())
                 val session = repository.getOpenSession()
                 _currentSession.value = session
                 if (session != null) {

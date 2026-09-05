@@ -208,7 +208,26 @@ class SecureStorage @Inject constructor(
      * cerrar en local y encolar, el cierre no se pierde. Ver `CashDrawerRepository.reproducirPendientes`.
      */
     fun pendingDrawerOpsJson(venueId: String): String? = prefs.getString("pendingDrawerOps.$venueId", null)
-    fun setPendingDrawerOpsJson(venueId: String, value: String?) = prefs.edit().putString("pendingDrawerOps.$venueId", value).apply()
+
+    /**
+     * 🔴 `commit()`, NO `apply()` (hallazgo M2). `apply()` escribe a disco de forma ASÍNCRONA: si
+     * el proceso muere entre encolar y el flush, la intención —el fondo que el cajero acaba de
+     * contar, o su retiro— se pierde, que es justo lo que esta cola existe para impedir. `commit()`
+     * cuesta unos milisegundos en un camino que ya iba a tocar la red; la cola del cajón es lo
+     * único de esta clase que se escribe en el camino del dinero.
+     */
+    fun setPendingDrawerOpsJson(venueId: String, value: String?) {
+        prefs.edit().putString("pendingDrawerOps.$venueId", value).commit()
+    }
+
+    /**
+     * Avisos de que una apertura terminó ADOPTANDO la caja de alguien más (hallazgo I1). Durable
+     * por el mismo motivo que la cola: el cajero tiene que verlo aunque la app se reinicie antes.
+     */
+    fun drawerAdoptionNoticesJson(venueId: String): String? = prefs.getString("drawerAdoptionNotices.$venueId", null)
+    fun setDrawerAdoptionNoticesJson(venueId: String, value: String?) {
+        prefs.edit().putString("drawerAdoptionNotices.$venueId", value).commit()
+    }
 
     var venuePermissions: List<String>
         get() {

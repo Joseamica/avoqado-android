@@ -1,6 +1,7 @@
 package com.avoqado.pos.cashdrawer.presentation
 
 import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
+import com.avoqado.pos.cashdrawer.data.textoDeAdopcion
 import androidx.compose.material3.TextButton
 import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.background
@@ -702,6 +703,7 @@ private fun CurrentDrawerContent(
     val expectedCents by viewModel.expectedAmountCents.collectAsState()
     val isPrintingCorte by viewModel.isPrintingCorte.collectAsState()
     val rechazadas by viewModel.rechazadas.collectAsState()
+    val cajasAdoptadas by viewModel.cajasAdoptadas.collectAsState()
     // Corte PARCIAL en pantalla. Antes el botón sólo mandaba a imprimir: sin
     // impresora configurada —o con ella caída— no había forma de ver cómo iba la
     // caja a media jornada, que es justo para lo que sirve.
@@ -742,6 +744,16 @@ private fun CurrentDrawerContent(
         AvisoDeMovimientosRechazados(
             rechazadas = rechazadas,
             onDescartar = { viewModel.descartarRechazada(it) },
+            onReintentar = { viewModel.reintentarApertura(it) },
+        )
+    }
+
+    // 🔴 Y si esta caja se ADOPTÓ del servidor en vez de abrirse, también se dice: el fondo que el
+    // cajero contó no quedó registrado en ninguna parte (hallazgo I1).
+    if (cajasAdoptadas.isNotEmpty()) {
+        AvisoDeCajaAdoptada(
+            cajas = cajasAdoptadas,
+            onDescartar = { viewModel.descartarAvisoDeAdopcion(it) },
         )
     }
 
@@ -1361,11 +1373,17 @@ private fun PrintCorteResultDialog(viewModel: CashDrawerViewModel) {
  * Dice CUÁNTO, de QUÉ tipo, y POR QUÉ lo rechazó el servidor. El botón no "arregla" nada: sólo
  * reconoce que ya se vio, porque corregirlo es un movimiento nuevo que alguien tiene que hacer
  * a conciencia.
+ *
+ * 🔴 **Una APERTURA es el caso contrario y por eso ofrece «Reintentar», no «Ya lo vi»** (hallazgo
+ * I4): ahí no se movió dinero en el cajón —«anótalo antes de cerrar» sería falso— y descartarla
+ * dejaba la caja en un limbo sin salida: sus movimientos darían 404 para siempre y su cierre queda
+ * bloqueado, sin ninguna forma de volver a intentar la apertura desde la pantalla.
  */
 @Composable
 private fun AvisoDeMovimientosRechazados(
     rechazadas: List<CashDrawerRepository.OperacionRechazada>,
     onDescartar: (CashDrawerRepository.OperacionRechazada) -> Unit,
+    onReintentar: (CashDrawerRepository.OperacionRechazada) -> Unit,
 ) {
     Column(
         modifier = Modifier
@@ -1376,13 +1394,14 @@ private fun AvisoDeMovimientosRechazados(
             .padding(AvoqadoTheme.spacing.lg),
         verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
     ) {
+        val soloAperturas = rechazadas.all { it.kind == "OPEN" }
         Text(
-            text = if (rechazadas.size == 1) "Un movimiento no se registró" else "${rechazadas.size} movimientos no se registraron",
+            text = tituloDeRechazos(rechazadas.size, soloAperturas),
             style = MaterialTheme.typography.titleSmall,
             color = MaterialTheme.colorScheme.onErrorContainer,
         )
         Text(
-            text = "El dinero ya se movió en el cajón, pero el servidor no lo aceptó. Anótalo antes de cerrar la caja.",
+            text = explicacionDeRechazos(soloAperturas),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onErrorContainer,
         )
@@ -1404,13 +1423,98 @@ private fun AvisoDeMovimientosRechazados(
                         color = MaterialTheme.colorScheme.onErrorContainer,
                     )
                 }
-                TextButton(onClick = { onDescartar(op) }) {
-                    Text(text = "Ya lo vi", color = MaterialTheme.colorScheme.onErrorContainer)
+                if (op.kind == "OPEN") {
+                    TextButton(onClick = { onReintentar(op) }) {
+                        Text(text = "Reintentar", color = MaterialTheme.colorScheme.onErrorContainer)
+                    }
+                } else {
+                    TextButton(onClick = { onDescartar(op) }) {
+                        Text(text = "Ya lo vi", color = MaterialTheme.colorScheme.onErrorContainer)
+                    }
                 }
             }
         }
     }
 }
+
+/**
+ * 🔴 El encabezado del aviso no puede hablar de «movimientos» cuando lo único rechazado es una
+ * APERTURA: ahí no se movió dinero en el cajón. Puro texto, para poder probarlo sin pantalla.
+ */
+internal fun tituloDeRechazos(cuantos: Int, soloAperturas: Boolean): String = when {
+    soloAperturas && cuantos == 1 -> "La caja no se registró en el servidor"
+    soloAperturas -> "$cuantos cajas no se registraron en el servidor"
+    cuantos == 1 -> "Un movimiento no se registró"
+    else -> "$cuantos movimientos no se registraron"
+}
+
+internal fun explicacionDeRechazos(soloAperturas: Boolean): String = if (soloAperturas) {
+    "El servidor no aceptó la apertura de esta caja. Sus cobros van a quedar fuera del turno: " +
+        "toca Reintentar, y si sigue fallando avísale a tu administrador antes de seguir cobrando."
+} else {
+    "El dinero ya se movió en el cajón, pero el servidor no lo aceptó. Anótalo antes de cerrar la caja."
+}
+
+/**
+ * 🔴 EL AVISO DE QUE ESTA CAJA ES DE OTRO (hallazgo I1).
+ *
+ * El servidor liga en vez de rebotar cuando ya hay un turno abierto, y **nunca pisa el fondo de lo
+ * que ya estaba**: el cajero que contó $2,000 se queda operando sobre una caja de $500 y sólo se
+ * entera al cerrar, como un sobrante de $1,500 sin explicación. Es ámbar, no rojo: no es un error
+ * —el dinero está donde debe— pero tiene que decirse, y persiste hasta que él lo cierre.
+ *
+ * No se crea ningún movimiento automáticamente: meter el fondo local como un ingreso sería
+ * inventar dinero que nadie autorizó.
+ */
+@Composable
+private fun AvisoDeCajaAdoptada(
+    cajas: List<CashDrawerRepository.CajaAdoptada>,
+    onDescartar: (CashDrawerRepository.CajaAdoptada) -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(AvoqadoTheme.spacing.lg)
+            .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.lg))
+            .background(MaterialTheme.colorScheme.tertiaryContainer)
+            .padding(AvoqadoTheme.spacing.lg),
+        verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
+    ) {
+        Text(
+            text = "Esta caja ya estaba abierta",
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.onTertiaryContainer,
+        )
+        cajas.forEach { caja ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    modifier = Modifier.weight(1f),
+                    text = textoDeAdopcion(
+                        quien = caja.openedByName,
+                        hora = horaDelVenue(caja.openedAtMillis),
+                        fondoServidorCents = caja.fondoServidorCents,
+                        fondoLocalCents = caja.fondoLocalCents,
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onTertiaryContainer,
+                )
+                TextButton(onClick = { onDescartar(caja) }) {
+                    Text(text = "Entendido", color = MaterialTheme.colorScheme.onTertiaryContainer)
+                }
+            }
+        }
+    }
+}
+
+/** La hora en el reloj del NEGOCIO, no en el del aparato (regla del workspace). */
+private fun horaDelVenue(millis: Long): String =
+    java.time.Instant.ofEpochMilli(millis)
+        .atZone(com.avoqado.pos.core.util.VenueTimeZone.zoneId())
+        .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm", Locale("es", "MX")))
 
 private fun etiquetaDeOperacion(kind: String): String = when (kind) {
     "OPEN" -> "Apertura de caja"

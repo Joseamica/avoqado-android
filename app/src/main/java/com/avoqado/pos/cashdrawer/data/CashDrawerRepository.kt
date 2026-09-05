@@ -18,6 +18,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.double
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.MediaType.Companion.toMediaType
@@ -99,15 +100,13 @@ private data class PayOutRequest(val amount: Double, val note: String? = null, v
 private data class CloseDrawerRequest(val actualAmount: Double, val note: String? = null, val sessionId: String? = null)
 
 /**
- * Qué hacer con una operación de la cola, según lo que contestó el servidor.
+ * Qué hacer con un INGRESO, un RETIRO o un CIERRE de la cola, según lo que contestó el servidor.
  *
- * 🔴 `ADOPTAR_LA_DEL_SERVIDOR` es el cuarto desenlace, y sólo lo produce una APERTURA: el
- * servidor contesta 409 `CASH_SHIFT_ALREADY_OPEN` porque ese negocio ya tiene un turno de caja
- * abierto — casi siempre el que este mismo aparato mandó y cuya respuesta se perdió. No es un
- * rechazo (el dinero está donde debe) ni una confirmación de ESTA petición: hay que preguntarle
- * al servidor cuál es su caja (`GET /cash-drawer/current`) y adoptarla.
+ * 🔴 Una APERTURA no pasa por aquí: su contrato es distinto y vive en [clasificarApertura].
+ * Mezclarlas fue el defecto C2 — el 409 de una apertura significa «ya hay un turno abierto», que
+ * NO es un rechazo, mientras que en un retiro sí lo es.
  */
-internal enum class DestinoDeLaOperacion { CONFIRMADA, REINTENTAR, RECHAZADA, ADOPTAR_LA_DEL_SERVIDOR }
+internal enum class DestinoDeLaOperacion { CONFIRMADA, REINTENTAR, RECHAZADA }
 
 /** Ya hay un turno de caja abierto en el negocio. Sobre una APERTURA significa «adopta el mío». */
 internal const val CODIGO_CAJA_YA_ABIERTA = "CASH_SHIFT_ALREADY_OPEN"
@@ -166,19 +165,107 @@ internal fun clasificarRespuestaDelServer(
     codigoDelServidor: String? = null,
 ): DestinoDeLaOperacion = when {
     code in 200..299 -> DestinoDeLaOperacion.CONFIRMADA
-    // Los dos códigos de negocio se leen ANTES del 409 genérico, que si no se los tragaría.
+    // El código de negocio se lee ANTES del 409 genérico, que si no se lo tragaría.
     code == 409 && codigoDelServidor == CODIGO_CIERRE_EN_PROCESO -> DestinoDeLaOperacion.REINTENTAR
-    code == 409 && kind == "OPEN" && codigoDelServidor == CODIGO_CAJA_YA_ABIERTA ->
-        DestinoDeLaOperacion.ADOPTAR_LA_DEL_SERVIDOR
     // El 404 dice lo contrario según la operación: para un CIERRE es "ya estaba cerrada"
-    // (nada que reintentar); para un movimiento —o para una apertura que el servidor todavía
-    // no conoce— es "aún no conozco esa caja", y descartarlo borraría un retiro real.
+    // (nada que reintentar); para un movimiento es "aún no conozco esa caja", y descartarlo
+    // borraría un retiro real.
     code == 404 -> if (kind == "CLOSE") DestinoDeLaOperacion.CONFIRMADA else DestinoDeLaOperacion.REINTENTAR
     code in RECHAZOS_DEFINITIVOS -> DestinoDeLaOperacion.RECHAZADA
     // Todo lo demás se reintenta: sin red (0), 5xx, 408 y 429 ("vas muy rápido" / "se agotó el
     // tiempo"), 401 (token vencido) y cualquier 4xx que no esté en la lista de arriba.
     else -> DestinoDeLaOperacion.REINTENTAR
 }
+
+/**
+ * 🔴 EL CONTRATO REAL DE `POST /cash-drawer/open`, MEDIDO EN LAS DOS RAMAS DEL SERVIDOR (4-sep).
+ *
+ * La versión anterior de esta tarea se construyó sobre dos premisas FALSAS y por eso el camino
+ * que de verdad corre no tenía ni una prueba:
+ *
+ * | Servidor | Ya hay una caja abierta | Respuesta |
+ * |---|---|---|
+ * | `develop` (el que se despliega con estas apps) | no | **201** con `cajaCreada: true` |
+ * | `develop` | **sí** | **201 con la caja EXISTENTE** y `cajaCreada: false` — el servidor LIGA, no rebota |
+ * | `develop` | carrera de dos aperturas | 409 `CASH_SHIFT_ALREADY_OPEN` |
+ * | `develop` | cierre de turno en curso | 409 `SHIFT_CLOSE_IN_PROGRESS` (transitorio) |
+ * | `main` (producción HOY) | sí | **409 SIN `code`** |
+ * | `main` | no | 201 **sin** `cajaCreada` (campo ausente) |
+ *
+ * De ahí los cinco desenlaces:
+ *  - [CREADA] 201 con `cajaCreada: true` **o el campo ausente**: mi apertura creó la caja.
+ *  - [LIGADA] 201 con `cajaCreada: false`: el servidor me ligó a una caja que YA estaba. No es
+ *    «abriste»: es adoptar la de alguien más, y eso se le DICE al cajero (su fondo no se registró).
+ *  - [PREGUNTAR_POR_LA_SUYA] cualquier 409 que no sea el transitorio — **con código o sin él**,
+ *    porque producción no manda ninguno: se consulta `GET /current` y se adopta lo que conteste.
+ *  - [REINTENTAR] sin red, 5xx, 401, 404, 408, 429 y el 409 `SHIFT_CLOSE_IN_PROGRESS`.
+ *  - [RECHAZADA] 400 / 403 / 422: el servidor nunca la va a aceptar. **La apertura NO se borra.**
+ */
+internal enum class DesenlaceDeLaApertura { CREADA, LIGADA, PREGUNTAR_POR_LA_SUYA, REINTENTAR, RECHAZADA }
+
+/** Los ÚNICOS códigos con los que una APERTURA no va a funcionar nunca. El 409 NO está: liga o pregunta. */
+private val RECHAZOS_DE_APERTURA = setOf(400, 403, 422)
+
+/**
+ * 🔴 Función PURA: es la única forma de probar fila por fila la tabla de arriba sin un servidor
+ * que la produzca.
+ *
+ * @param cajaCreada lo que dijo el cuerpo (ver [leerCajaCreada]). `null` = el campo no venía, que
+ * es lo que contesta producción hoy y significa CREADA: ese servidor rebota con 409 cuando ya hay
+ * una caja, así que un 201 suyo sólo puede ser una caja nueva.
+ */
+internal fun clasificarApertura(
+    code: Int,
+    codigoDelServidor: String? = null,
+    cajaCreada: Boolean? = null,
+): DesenlaceDeLaApertura = when {
+    code in 200..299 -> if (cajaCreada == false) DesenlaceDeLaApertura.LIGADA else DesenlaceDeLaApertura.CREADA
+    // Transitorio: dura milisegundos. Descartarlo perdería la intención de abrir para siempre.
+    code == 409 && codigoDelServidor == CODIGO_CIERRE_EN_PROCESO -> DesenlaceDeLaApertura.REINTENTAR
+    // 🔴 CUALQUIER otro 409, con código o SIN él. Producción (`main`) contesta 409 pelón y la
+    // versión anterior lo leía como RECHAZO: bloqueaba la caja de por vida por una respuesta
+    // que sólo quiere decir «ya hay un turno abierto, adopta el mío».
+    code == 409 -> DesenlaceDeLaApertura.PREGUNTAR_POR_LA_SUYA
+    code in RECHAZOS_DE_APERTURA -> DesenlaceDeLaApertura.RECHAZADA
+    // 404 incluido: el servidor todavía no conoce nada de esta caja.
+    else -> DesenlaceDeLaApertura.REINTENTAR
+}
+
+/**
+ * `data.cajaCreada` del cuerpo de `POST /open`, o `null` si no viene / no se puede leer.
+ *
+ * 🔴 Se lee la LLAVE, nunca el texto. Y `null` NO es `false`: un servidor viejo que no manda el
+ * campo abrió una caja nueva (rebota con 409 si ya había una), así que confundirlos le sacaría al
+ * cajero un aviso de «adopté la caja de otro» en cada apertura normal contra producción.
+ */
+internal fun leerCajaCreada(cuerpo: String): Boolean? = try {
+    val root = Json { ignoreUnknownKeys = true }.parseToJsonElement(cuerpo).jsonObject
+    val obj = (root["data"] as? JsonObject) ?: root
+    obj["cajaCreada"]?.jsonPrimitive?.booleanOrNull
+} catch (_: Exception) {
+    null
+}
+
+/** Pesos con dos decimales para un texto que lee una persona. Espejo de `formatCurrency`. */
+internal fun pesosDeCentavos(cents: Int): String = "$" + String.format(java.util.Locale.US, "%,.2f", cents / 100.0)
+
+/**
+ * 🔴 ADOPTAR LA CAJA DE OTRO NUNCA ES SILENCIOSO (hallazgo I1).
+ *
+ * El servidor liga en vez de rebotar, y **el fondo de lo que ya estaba NUNCA se pisa**: el cajero
+ * que contó $2,000 se queda operando sobre una caja de $500 y sólo se entera al cerrar, como un
+ * sobrante de $1,500 sin explicación. La regla del proyecto es explícita: lo tardío no se descarta
+ * en silencio.
+ *
+ * Función PURA para que el texto sea IDÉNTICO en Android y en iOS y se pueda probar sin pantalla.
+ */
+internal fun textoDeAdopcion(quien: String, hora: String, fondoServidorCents: Int, fondoLocalCents: Int): String =
+    if (fondoServidorCents == fondoLocalCents) {
+        "Se adoptó la caja abierta por $quien."
+    } else {
+        "Ya había una caja abierta por $quien desde las $hora con fondo ${pesosDeCentavos(fondoServidorCents)}. " +
+            "Tu apertura de ${pesosDeCentavos(fondoLocalCents)} no se registró como una caja nueva."
+    }
 
 /**
  * Una operación del cajón que este aparato YA hizo en local y que el server aún no confirmó.
@@ -203,6 +290,22 @@ internal data class PendingDrawerOp(
      */
     val rechazadaEn: Long? = null,
     val motivoDelRechazo: String? = null,
+)
+
+/**
+ * El aviso durable de que una apertura terminó ADOPTANDO la caja de alguien más (I1).
+ *
+ * Vive en disco, no en memoria: el cajero tiene que enterarse aunque la app se reinicie entre la
+ * adopción y el momento en que mira la pantalla.
+ */
+@Serializable
+internal data class AvisoDeAdopcion(
+    /** El id de la caja del SERVIDOR que se adoptó. Es la identidad del aviso. */
+    val sessionId: String,
+    val openedByName: String,
+    val openedAtMillis: Long,
+    val fondoServidorCents: Int,
+    val fondoLocalCents: Int,
 )
 
 @Singleton
@@ -392,7 +495,7 @@ class CashDrawerRepository @Inject constructor(
      *
      * Propaga la excepción de red a propósito: `syncFromApi` ya la atrapa y el replay la traduce.
      */
-    private suspend fun pedirCajaAbiertaAlServidor(): CajaDelServidor {
+    private suspend fun pedirCajaAbiertaAlServidor(sesionLocal: String? = null): CajaDelServidor {
         val request = Request.Builder()
             .url("$baseUrl/current")
             .get()
@@ -411,7 +514,7 @@ class CashDrawerRepository @Inject constructor(
                 CajaDelServidor.NoHayNinguna
             } else {
                 // Events live inside the session payload (fallback: top-level).
-                val session = adoptServerSession(sessionObj, root["events"]?.jsonArray)
+                val session = adoptServerSession(sessionObj, root["events"]?.jsonArray, sesionLocal)
                 Log.d(TAG, "✅ Caja del server sincronizada: ${session.id}")
                 CajaDelServidor.Adoptada(session)
             }
@@ -478,8 +581,20 @@ class CashDrawerRepository @Inject constructor(
     private suspend fun adoptServerSession(
         sessionObj: JsonObject,
         fallbackEvents: kotlinx.serialization.json.JsonArray? = null,
+        /**
+         * La caja LOCAL que se está adoptando, si la hay. 🔴 Va aquí porque la mudanza de la cola
+         * y de la fila local tiene que ocurrir **también cuando esa caja ya se cerró en local**
+         * (hallazgo I2): antes sólo se promovían las abiertas, así que abrir sin red por la mañana
+         * y cerrar sin red por la noche dejaba entrar la caja del servidor como una SEGUNDA caja
+         * abierta y vacía —la caja fantasma— con la local duplicada en el historial.
+         */
+        sesionLocal: String? = null,
     ): CashDrawerSessionEntity {
         val parsed = parseSessionFromApi(sessionObj)
+        // 🔴 La cola se muda ANTES de mirar nada: así el cierre encolado de la caja local queda
+        // nombrando ya a la caja del servidor y la guarda de abajo lo encuentra. Sin esto, un
+        // cierre encolado con el id LOCAL no frenaba la adopción y el conteo del cajero se perdía.
+        if (sesionLocal != null) reapuntarPendientes(sesionLocal, parsed.id)
         // 🔴 Si este aparato ya cerró ESA caja sin red, el server todavía la ve OPEN. Adoptarla
         // como abierta borraría el conteo del cajero (pasó en la Samsung, 27-ago). Se conserva
         // CERRADA con el conteo local; el cierre pendiente se reproduce en el siguiente sync.
@@ -497,9 +612,17 @@ class CashDrawerRepository @Inject constructor(
         } else parsed
         dao.insertSession(server)
 
-        if (server.status == CashDrawerStatus.OPEN.name && venueId.isNotEmpty()) {
-            dao.getOpenSessions(venueId)
-                .filter { it.id != server.id }
+        // Las cajas locales que tienen que MUDARSE a la del servidor: las abiertas de siempre, más
+        // —hallazgo I2— la que se está adoptando aunque ya esté CERRADA en local.
+        val aPromover = if (venueId.isEmpty()) emptyList() else buildList {
+            if (server.status == CashDrawerStatus.OPEN.name) {
+                addAll(dao.getOpenSessions(venueId).filter { it.id != server.id })
+            }
+            sesionLocal?.takeIf { it != server.id && none { s -> s.id == it } }
+                ?.let { id -> dao.getSession(id)?.let { add(it) } }
+        }
+        if (aPromover.isNotEmpty()) {
+            aPromover
                 .forEach { provisional ->
                     Log.d(TAG, "⬆️ Promoviendo caja provisional ${provisional.id} → ${server.id}")
                     dao.repointEventsFrom(provisional.id, server.id, server.openedAt)
@@ -712,22 +835,27 @@ class CashDrawerRepository @Inject constructor(
         val op = PendingDrawerOp("OPEN", session.id, startingAmountCents, null, event.id, System.currentTimeMillis())
         encolar(op)
 
-        // Si el server contesta, la caja adopta SU id aquí mismo y la apertura sale de la cola. Si
-        // no contesta —sin red, o el turno ya estaba abierto— se queda encolada y provisional, y la
-        // reproduce el primer replay que lo logre. Abrir la caja nunca depende de eso.
-        val adoptada = enviarApertura(op).second
-        if (adoptada != null) quitarAperturas(setOf(session.id, adoptada.id))
-        return adoptada ?: session
+        // 🔴 YA NO SE DISPARA UN POST DIRECTO (hallazgo C1). El disparo inmediato se saltaba la
+        // cola, así que la apertura de la caja NUEVA salía antes que el cierre no aterrizado de la
+        // ANTERIOR: el servidor ligaba las dos y el arqueo de la vieja quedaba firmado con el
+        // dinero de la nueva. Se reproduce la cola, que es FIFO y se DETIENE en lo que no confirme.
+        // Esta apertura es la última por `at`, así que sale al final — o no sale, que es lo correcto.
+        val adoptada = reproducirPendientes(ademas = op).adoptadas[session.id]
+        return adoptada ?: dao.getSession(session.id) ?: session
+    }
+
+    /** Lo que pasó con UNA apertura. `ligada = true` ⇒ el servidor NO creó mi caja: adopté la suya. */
+    internal sealed interface ResultadoDeLaApertura {
+        data class Adoptada(val session: CashDrawerSessionEntity, val ligada: Boolean) : ResultadoDeLaApertura
+        data object Reintentar : ResultadoDeLaApertura
+        data object Rechazada : ResultadoDeLaApertura
     }
 
     /**
-     * Manda UNA apertura al servidor y traduce su respuesta. Es la MISMA función para el disparo
-     * inmediato de `openSession` y para el replay de la cola: si fueran dos, sólo una entendería
-     * el 409 y el camino que se ejercita menos sería justo el de sin red.
-     *
-     * `second` es la caja del servidor ya adoptada (o `null` si no se pudo).
+     * Manda UNA apertura al servidor y traduce su respuesta con el contrato real
+     * ([clasificarApertura]). Es la MISMA función para `openSession` y para el replay.
      */
-    private suspend fun enviarApertura(op: PendingDrawerOp): Pair<DestinoDeLaOperacion, CashDrawerSessionEntity?> {
+    private suspend fun enviarApertura(op: PendingDrawerOp): ResultadoDeLaApertura {
         val (code, body) = try {
             val requestBody = json.encodeToString(
                 OpenDrawerRequest.serializer(),
@@ -740,40 +868,49 @@ class CashDrawerRepository @Inject constructor(
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ API open session error: ${e.message}")
-            return DestinoDeLaOperacion.REINTENTAR to null
+            return ResultadoDeLaApertura.Reintentar
         }
 
-        return when (clasificarRespuestaDelServer("OPEN", code, codigoDeNegocio(body))) {
-            DestinoDeLaOperacion.CONFIRMADA -> {
-                Log.d(TAG, "✅ API open session success")
-                val adoptada = try {
-                    parseSessionEnvelope(json.decodeFromString<JsonObject>(body))?.let { adoptServerSession(it) }
-                } catch (e: Exception) {
-                    Log.e(TAG, "❌ Parse open session error: ${e.message}")
-                    null
-                }
-                // 🔴 Un 2xx ilegible NO se reintenta: el servidor YA abrió el turno, y volver a
-                // pedirlo sólo daría 409. La caja se queda provisional y el siguiente `/current`
-                // la adopta — el mismo camino que el 409.
-                if (adoptada != null) DestinoDeLaOperacion.CONFIRMADA to adoptada
-                else DestinoDeLaOperacion.ADOPTAR_LA_DEL_SERVIDOR to null
+        return when (clasificarApertura(code, codigoDeNegocio(body), leerCajaCreada(body))) {
+            DesenlaceDeLaApertura.CREADA -> {
+                Log.d(TAG, "✅ El servidor creó la caja de esta apertura")
+                adoptarDelCuerpo(op, body, ligada = false) ?: preguntarPorLaCajaDelServidor(op)
             }
-            // 🔴 Ya hay un turno de caja abierto: casi siempre el que ESTE aparato mandó y cuya
-            // respuesta se perdió. No se duplica ni se descarta — se le pregunta al servidor cuál
-            // es su caja y se adopta, que es la misma semántica que el servidor impone al ligar.
-            DestinoDeLaOperacion.ADOPTAR_LA_DEL_SERVIDOR -> {
+            // 🔴 El servidor LIGÓ: la caja que devuelve NO es la que se pidió abrir. Se adopta —el
+            // dinero está donde debe— pero con aviso, porque el fondo tecleado no quedó registrado.
+            DesenlaceDeLaApertura.LIGADA -> {
+                Log.w(TAG, "🔗 El servidor ligó esta apertura a una caja que ya estaba abierta")
+                adoptarDelCuerpo(op, body, ligada = true) ?: preguntarPorLaCajaDelServidor(op)
+            }
+            DesenlaceDeLaApertura.PREGUNTAR_POR_LA_SUYA -> {
                 Log.w(TAG, "🔁 El servidor ya tiene un turno de caja abierto ($code): se adopta el suyo")
-                adoptarLaCajaDelServidor()
+                preguntarPorLaCajaDelServidor(op)
             }
-            DestinoDeLaOperacion.REINTENTAR -> {
+            DesenlaceDeLaApertura.REINTENTAR -> {
                 Log.w(TAG, "🔁 Apertura sin confirmar ($code); sigue en cola — $body")
-                DestinoDeLaOperacion.REINTENTAR to null
+                ResultadoDeLaApertura.Reintentar
             }
-            DestinoDeLaOperacion.RECHAZADA -> {
+            // 🔴 Se MARCA, no se borra (hallazgo I4): la caja existe en el aparato y su cierre no
+            // puede mandarse. El aviso trae «Reintentar», nunca «Ya lo vi».
+            DesenlaceDeLaApertura.RECHAZADA -> {
                 Log.e(TAG, "🛑 Apertura RECHAZADA por el server ($code) — $body")
-                DestinoDeLaOperacion.RECHAZADA to null
+                marcarRechazada(op, mensajeDeRechazo(code, body))
+                ResultadoDeLaApertura.Rechazada
             }
         }
+    }
+
+    /** Adopta la caja que vino en el cuerpo del `POST /open`. `null` = cuerpo ilegible. */
+    private suspend fun adoptarDelCuerpo(op: PendingDrawerOp, body: String, ligada: Boolean): ResultadoDeLaApertura? {
+        val session = try {
+            parseSessionEnvelope(json.decodeFromString<JsonObject>(body))
+                ?.let { adoptServerSession(it, sesionLocal = op.sessionId) }
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ Parse open session error: ${e.message}")
+            null
+        } ?: return null
+        if (ligada) anotarAdopcion(op, session)
+        return ResultadoDeLaApertura.Adoptada(session, ligada)
     }
 
     /**
@@ -785,20 +922,27 @@ class CashDrawerRepository @Inject constructor(
      * no): se marca para que alguien lo vea, nunca se borra en silencio. Todo lo demás —sin red,
      * 5xx, un cuerpo ilegible— es REINTENTAR: no sabemos nada y perder la apertura sería peor.
      */
-    private suspend fun adoptarLaCajaDelServidor(): Pair<DestinoDeLaOperacion, CashDrawerSessionEntity?> {
+    private suspend fun preguntarPorLaCajaDelServidor(op: PendingDrawerOp): ResultadoDeLaApertura {
         val respuesta = try {
-            pedirCajaAbiertaAlServidor()
+            pedirCajaAbiertaAlServidor(sesionLocal = op.sessionId)
         } catch (e: Exception) {
             Log.e(TAG, "❌ No se pudo consultar la caja del server: ${e.message}")
-            return DestinoDeLaOperacion.REINTENTAR to null
+            return ResultadoDeLaApertura.Reintentar
         }
         return when (respuesta) {
-            is CajaDelServidor.Adoptada -> DestinoDeLaOperacion.CONFIRMADA to respuesta.session
-            CajaDelServidor.NoHayNinguna -> {
-                Log.e(TAG, "🛑 El server dijo que el turno ya estaba abierto y su /current no trae ninguno")
-                DestinoDeLaOperacion.RECHAZADA to null
+            is CajaDelServidor.Adoptada -> {
+                anotarAdopcion(op, respuesta.session)
+                ResultadoDeLaApertura.Adoptada(respuesta.session, ligada = true)
             }
-            CajaDelServidor.NoSeSupo -> DestinoDeLaOperacion.REINTENTAR to null
+            // 🔴 REINTENTAR, no rechazo (hallazgo I3). «El servidor dijo que ya había un turno y su
+            // /current no trae ninguno» es casi siempre una carrera benigna —otro aparato cerró
+            // entre mi 409 y mi GET— y marcarla congelaba la caja para siempre, con el dinero ya
+            // dentro del cajón. Quedarse atorado es ruidoso y se arregla; perder la apertura no.
+            CajaDelServidor.NoHayNinguna -> {
+                Log.w(TAG, "🔁 El server dijo que el turno ya estaba abierto y su /current no trae ninguno: se reintenta")
+                ResultadoDeLaApertura.Reintentar
+            }
+            CajaDelServidor.NoSeSupo -> ResultadoDeLaApertura.Reintentar
         }
     }
 
@@ -1045,17 +1189,7 @@ class CashDrawerRepository @Inject constructor(
         guardarPendientes(pendientes().filter { !mismaOperacion(it, op) })
     }
 
-    /**
-     * Saca de la cola la apertura de estas cajas.
-     *
-     * 🔴 Recibe un CONJUNTO de ids porque adoptar la caja del servidor le CAMBIA el id a la
-     * apertura mientras está encolada (`reapuntarPendientes`): buscarla sólo por el id
-     * provisional dejaría la entrada viva y la apertura se reintentaría para siempre contra un
-     * servidor que ya la tiene.
-     */
-    private fun quitarAperturas(sessionIds: Set<String>) = synchronized(candadoDeLaCola) {
-        guardarPendientes(pendientes().filter { !(it.kind == "OPEN" && it.sessionId in sessionIds) })
-    }
+
 
     /**
      * 🔴 LA COLA TAMBIÉN SE MUDA CUANDO LA CAJA ADOPTA EL ID DEL SERVIDOR.
@@ -1075,12 +1209,21 @@ class CashDrawerRepository @Inject constructor(
     }
 
     /**
-     * 🔴 La identidad de una operación incluye su `localId`. Dos retiros de $50 de la MISMA caja
-     * son operaciones distintas: sin el localId, quitar uno quitaba los dos (Codex, 4ª auditoría).
+     * 🔴 La identidad de una operación es su `localId`, NO su caja (hallazgo M1).
+     *
+     * Dos retiros de $50 de la misma caja son operaciones distintas: sin el localId, quitar uno
+     * quitaba los dos (Codex, 4ª auditoría). Y adoptar la caja del servidor le CAMBIA el
+     * `sessionId` a la fila guardada, así que comparar por `(kind, sessionId)` dejaba de casar en
+     * cuanto el renombre no se aplicaba a las dos copias: entradas ya confirmadas que se quedaban
+     * en la cola y rechazos que nunca se registraban.
+     *
      * Un CLOSE no lleva localId, y ahí la caja basta — sólo puede haber un cierre por caja.
      */
-    private fun mismaOperacion(a: PendingDrawerOp, b: PendingDrawerOp) =
-        a.kind == b.kind && a.sessionId == b.sessionId && a.localId == b.localId
+    private fun mismaOperacion(a: PendingDrawerOp, b: PendingDrawerOp) = when {
+        a.kind != b.kind -> false
+        a.localId != null || b.localId != null -> a.localId == b.localId
+        else -> a.sessionId == b.sessionId
+    }
 
     /**
      * 🔴 Lo que el cajero TIENE que ver antes de cerrar: movimientos que el servidor rechazó
@@ -1102,9 +1245,83 @@ class CashDrawerRepository @Inject constructor(
 
     private fun llaveDe(op: PendingDrawerOp) = "${op.kind}|${op.sessionId}|${op.localId ?: ""}"
 
-    /** El cajero ya lo vio y decidió qué hacer: se saca de la cola. */
+    /**
+     * El cajero ya lo vio y decidió qué hacer con ese dinero: se saca de la cola.
+     *
+     * 🔴 NUNCA borra una APERTURA (hallazgo I4). Sobre un movimiento, «Ya lo vi» cierra el asunto:
+     * el dinero se movió en el cajón y alguien lo anotará. Sobre una apertura no cierra nada — deja
+     * la caja en un limbo del que no hay salida: sus movimientos darían 404 para siempre, su cierre
+     * queda bloqueado, y al desaparecer la fila desaparece también la barrera de entrada. Para una
+     * apertura el único camino es [reintentarApertura].
+     */
     fun descartarRechazada(localKey: String) = synchronized(candadoDeLaCola) {
-        guardarPendientes(pendientes().filter { it.rechazadaEn == null || llaveDe(it) != localKey })
+        guardarPendientes(pendientes().filter { it.kind == "OPEN" || it.rechazadaEn == null || llaveDe(it) != localKey })
+    }
+
+    /**
+     * Vuelve a poner en juego una APERTURA rechazada: se le quita la marca y el siguiente replay la
+     * intenta otra vez. Es lo único que el cajero puede hacer con ella, y por eso el aviso de una
+     * apertura dice «Reintentar» y no «Ya lo vi» (hallazgo I4).
+     */
+    fun reintentarApertura(localKey: String) = synchronized(candadoDeLaCola) {
+        guardarPendientes(
+            pendientes().map {
+                if (it.kind == "OPEN" && llaveDe(it) == localKey) it.copy(rechazadaEn = null, motivoDelRechazo = null) else it
+            },
+        )
+    }
+
+    // MARK: - Avisos de adopción (hallazgo I1)
+
+    /** Una caja que se adoptó del servidor en vez de crear la del cajero. Ver [textoDeAdopcion]. */
+    data class CajaAdoptada(
+        val sessionId: String,
+        val openedByName: String,
+        val openedAtMillis: Long,
+        val fondoServidorCents: Int,
+        val fondoLocalCents: Int,
+    )
+
+    private fun avisosDeAdopcion(): List<AvisoDeAdopcion> = try {
+        secureStorage.drawerAdoptionNoticesJson(venueId)
+            ?.let { json.decodeFromString(ListSerializer(AvisoDeAdopcion.serializer()), it) } ?: emptyList()
+    } catch (e: Exception) {
+        Log.e(TAG, "❌ Avisos de adopción ilegibles: ${e.message}")
+        emptyList()
+    }
+
+    private fun guardarAvisos(lista: List<AvisoDeAdopcion>) = secureStorage.setDrawerAdoptionNoticesJson(
+        venueId,
+        if (lista.isEmpty()) null else json.encodeToString(ListSerializer(AvisoDeAdopcion.serializer()), lista),
+    )
+
+    /**
+     * 🔴 Deja constancia de que ESTA apertura no creó una caja: adoptó la que ya estaba. El fondo
+     * que el cajero contó NO quedó registrado en ninguna parte del servidor, y él es el único que
+     * puede resolverlo (con un ingreso, o avisándole al dueño). Ver [textoDeAdopcion].
+     *
+     * 🔴 **No se crea ningún movimiento de dinero automáticamente**: meter el fondo local como un
+     * PAY_IN sería inventar un ingreso que nadie autorizó.
+     */
+    private fun anotarAdopcion(op: PendingDrawerOp, server: CashDrawerSessionEntity) = synchronized(candadoDeLaCola) {
+        val aviso = AvisoDeAdopcion(
+            sessionId = server.id,
+            openedByName = server.openedByName,
+            openedAtMillis = server.openedAt,
+            fondoServidorCents = server.startingAmountCents,
+            fondoLocalCents = op.amountCents,
+        )
+        guardarAvisos(avisosDeAdopcion().filter { it.sessionId != aviso.sessionId } + aviso)
+        Log.w(TAG, "🔗 Caja adoptada: ${server.id} (fondo del server ${server.startingAmountCents}, local ${op.amountCents})")
+    }
+
+    fun cajasAdoptadas(): List<CajaAdoptada> = avisosDeAdopcion().map {
+        CajaAdoptada(it.sessionId, it.openedByName, it.openedAtMillis, it.fondoServidorCents, it.fondoLocalCents)
+    }
+
+    /** El cajero cerró el aviso. Sólo desaparece cuando él lo cierra: nunca solo. */
+    fun descartarAvisoDeAdopcion(sessionId: String) = synchronized(candadoDeLaCola) {
+        guardarAvisos(avisosDeAdopcion().filter { it.sessionId != sessionId })
     }
 
     private fun marcarRechazada(op: PendingDrawerOp, motivo: String) = synchronized(candadoDeLaCola) {
@@ -1123,77 +1340,82 @@ class CashDrawerRepository @Inject constructor(
     /** Visible para test: ¿hay un cierre de ESTA caja esperando al server? */
     fun tieneCierrePendiente(sessionId: String): Boolean = pendientes().any { it.kind == "CLOSE" && it.sessionId == sessionId }
 
-    /**
-     * El orden en que se reproduce la cola de UNA caja, y es el corazón de que los números no
-     * mientan: **apertura → ingresos y retiros → cierre**.
-     *
-     * 🔴 La apertura va primero porque el servidor no puede recibir un retiro de una caja que no
-     * conoce (contesta 404, que es reintentar). Y el cierre va al final porque, mandado antes que
-     * un retiro, el servidor firma un faltante FALSO por el dinero que sí salió del cajón —
-     * exactamente los $50 inventados del 28-ago.
-     */
-    private fun ordenDeReproduccion(kind: String): Int = when (kind) {
-        "OPEN" -> 0
-        "CLOSE" -> 2
-        else -> 1
-    }
+    /** Lo que una corrida del replay adoptó, indexado por el id LOCAL con el que estaba encolada. */
+    data class ResultadoDelReplay(val adoptadas: Map<String, CashDrawerSessionEntity> = emptyMap())
 
     /**
-     * Reproduce contra el server, EN ORDEN, lo que se quedó sin confirmar: primero la APERTURA de
-     * la caja, luego los ingresos y retiros (con su llave idempotente) y al final el cierre. Corre
-     * al entrar a Caja, en cada sync y antes de abrir otra caja.
+     * 🔴 SE REPRODUCE EN ORDEN CRONOLÓGICO ESTRICTO — FIFO por `at`, sin importar el tipo.
+     *
+     * Antes se ordenaba por TIPO y globalmente (`OPEN → PAY_* → CLOSE` sobre TODA la cola), y eso
+     * era el hallazgo C1: con la caja A cerrada sin red y la caja B abierta después, el `OPEN(B)`
+     * salía SIEMPRE antes que el `CLOSE(A)`. El servidor —que sólo admite un turno abierto por
+     * negocio— ligaba B a la caja A que seguía abierta, el cliente lo leía como «mi apertura se
+     * confirmó», borraba `OPEN(B)` de la cola y mandaba los movimientos de B contra A: el arqueo de
+     * A quedaba firmado con dinero ajeno y la caja B no existía ni iba a existir. Dentro de UNA
+     * caja el orden no cambia: su apertura se encola al crearla, así que ya es la primera por `at`.
+     *
+     * 🔴 Y LA BARRERA ES LA OTRA MITAD: la corrida se DETIENE en la primera entrada que quede en
+     * REINTENTAR —sea apertura, movimiento o cierre—. Nada posterior en el tiempo se manda, así que
+     * el `OPEN(B)` no puede adelantarse a un `CLOSE(A)` que no aterrizó. Ordenar sin detenerse
+     * dejaría el mismo defecto para la segunda pasada.
+     *
+     * Corre al entrar a Caja, en cada sync, al cerrar y al abrir otra caja.
      */
-    suspend fun reproducirPendientes() {
-        val todas = pendientes()
+    internal suspend fun reproducirPendientes(ademas: PendingDrawerOp? = null): ResultadoDelReplay {
+        // 🔴 `ademas` es la operación que se ACABA de encolar. Se mezcla por si el almacén no la
+        // devolvió (cola ilegible, disco lleno): la intención del cajero no puede depender de que
+        // una lectura de disco funcione. Entra por `at`, así que sigue siendo la última y las
+        // barreras la frenan igual — no es un atajo alrededor del orden, es un respaldo del disco.
+        val guardadas = pendientes()
+        val todas = if (ademas != null && guardadas.none { mismaOperacion(it, ademas) }) guardadas + ademas else guardadas
         // Las ya rechazadas NO se reintentan: se quedan guardadas sólo para poder avisar.
-        val lista = todas.filter { it.rechazadaEn == null }
-            .sortedWith(compareBy({ ordenDeReproduccion(it.kind) }, { it.at }))
-        if (lista.isEmpty()) return
+        val lista = todas.filter { it.rechazadaEn == null }.sortedBy { it.at }
+        if (lista.isEmpty()) return ResultadoDelReplay()
         var confirmados = 0
-        // 🔴 CLOSE es una BARRERA (Codex 3ª auditoría): si un ingreso/retiro de ESA caja no se confirmó (red,
-        // 5xx), el cierre NO se manda — el server firmaría un faltante falso por el movimiento que no recibió.
-        //
-        // 🔴 Un movimiento RECHAZADO también bloquea: el servidor nunca lo va a tener, así que cerrar
-        // encima firmaría ese mismo faltante falso, sólo que para siempre. El cierre espera a que
-        // alguien resuelva el rechazo.
-        //
-        // 🔴 La barrera se SIEMBRA con los rechazos de corridas ANTERIORES, no sólo con los de
-        // ésta. Filtrarlos de `lista` (para no reintentarlos) los sacaba también del bucle, así
-        // que en la SEGUNDA pasada —tras reabrir la app, o al volver a entrar a Caja— el cierre
-        // ya no encontraba quién lo bloqueara y se mandaba con el retiro faltando: el servidor
-        // firmaba el faltante falso, sólo que un rato después y sin nadie mirando.
+        // 🔴 Un movimiento RECHAZADO en una corrida ANTERIOR bloquea el cierre de SU caja: el
+        // servidor nunca lo va a tener, así que cerrar encima firmaría un faltante falso para
+        // siempre. Se siembra con `todas` —no con `lista`— porque las rechazadas se filtraron para
+        // no reintentarlas, y filtrarlas las sacaba también del bucle: en la SEGUNDA pasada el
+        // cierre ya no encontraba quién lo bloqueara y se mandaba sin nadie mirando (Codex, 4ª).
         val cajasBloqueadas = todas.filter { it.rechazadaEn != null && it.kind != "CLOSE" }
             .map { it.sessionId }.toMutableSet()
         // 🔴 UNA APERTURA SIN CONFIRMAR ES BARRERA DE ENTRADA: mientras el servidor no conozca la
         // caja, NADA de esa caja se manda — ni un retiro (contestaría 404 y volvería a la cola) ni
-        // mucho menos el cierre, que firmaría un arqueo de una caja que allá no existe. Se siembra
-        // con TODA apertura pendiente, incluidas las rechazadas de corridas anteriores, por el
-        // mismo motivo por el que se siembran los movimientos rechazados: filtrarlas de `lista`
-        // las sacaba también del bucle y en la segunda pasada ya no bloqueaban a nadie.
+        // mucho menos el cierre, que firmaría el arqueo de una caja que allá no existe. Incluye las
+        // rechazadas de corridas anteriores, por el mismo motivo de arriba.
         val aperturasSinConfirmar = todas.filter { it.kind == "OPEN" }.map { it.sessionId }.toMutableSet()
         // Adoptar la caja del servidor le cambia el id a lo que sigue en la cola, y esta lista se
         // tomó ANTES. El mapa traduce el resto de la corrida; la cola guardada ya la reapuntó
         // `adoptServerSession`.
         val renombres = mutableMapOf<String, String>()
+        val adoptadas = mutableMapOf<String, CashDrawerSessionEntity>()
         for (original in lista) {
             // La caja pudo cambiar de id a media corrida (la apertura acaba de adoptar la del
             // servidor). La BARRERA se evalúa con el id ORIGINAL, que es como está la lista.
             val op = renombres[original.sessionId]?.let { original.copy(sessionId = it) } ?: original
 
             if (original.kind == "OPEN") {
-                val (resultado, adoptada) = enviarApertura(op)
-                when (resultado) {
-                    DestinoDeLaOperacion.CONFIRMADA -> {
+                when (val resultado = enviarApertura(op)) {
+                    is ResultadoDeLaApertura.Adoptada -> {
                         aperturasSinConfirmar -= original.sessionId
-                        if (adoptada != null && adoptada.id != original.sessionId) renombres[original.sessionId] = adoptada.id
-                        // Adoptar le cambió el id a la entrada guardada: se busca por los dos.
-                        quitarAperturas(setOfNotNull(original.sessionId, adoptada?.id))
+                        val adoptada = resultado.session
+                        if (adoptada.id != original.sessionId) renombres[original.sessionId] = adoptada.id
+                        adoptadas[original.sessionId] = adoptada
+                        // La entrada se localiza por su `localId`, que el renombre no toca (M1).
+                        quitar(op)
                         confirmados++
                     }
-                    DestinoDeLaOperacion.RECHAZADA -> marcarRechazada(op, "El servidor no aceptó la apertura de esta caja.")
-                    // REINTENTAR y el 2xx ilegible (ADOPTAR…) conservan la apertura en la cola: la
-                    // caja sigue bloqueada y el siguiente replay o `/current` la resuelve.
-                    else -> Unit
+                    // 🔴 Una apertura RECHAZADA detiene lo posterior EN EL TIEMPO, no sólo lo suyo:
+                    // el negocio se quedó sin la caja que el cajero abrió y mandar lo que viene
+                    // después sería colgarlo de una caja equivocada.
+                    ResultadoDeLaApertura.Rechazada -> {
+                        Log.w(TAG, "🛑 Apertura rechazada: la corrida se detiene aquí")
+                        break
+                    }
+                    ResultadoDeLaApertura.Reintentar -> {
+                        Log.w(TAG, "⏸️ La apertura de ${original.sessionId} no llegó: nada posterior se manda")
+                        break
+                    }
                 }
                 continue
             }
@@ -1209,19 +1431,37 @@ class CashDrawerRepository @Inject constructor(
             }
             when (destino) {
                 DestinoDeLaOperacion.CONFIRMADA -> { quitar(op); confirmados++ }
-                // Sólo una apertura produce ADOPTAR…, y ya salió del bucle con su `continue`.
-                DestinoDeLaOperacion.REINTENTAR, DestinoDeLaOperacion.RECHAZADA, DestinoDeLaOperacion.ADOPTAR_LA_DEL_SERVIDOR ->
+                // 🔴 REINTENTAR detiene la corrida: lo que viene después es POSTERIOR en el tiempo
+                // y mandarlo adelantaría, por ejemplo, la apertura de la caja siguiente al cierre
+                // de ésta. Es exactamente C1.
+                DestinoDeLaOperacion.REINTENTAR -> {
                     if (op.kind != "CLOSE") cajasBloqueadas += original.sessionId
+                    Log.w(TAG, "⏸️ ${op.kind} de ${op.sessionId} sin confirmar: la corrida se detiene aquí")
+                    break
+                }
+                // Un rechazo de un movimiento se MARCA y se salta: es visible, bloquea el cierre de
+                // SU caja, y no tiene por qué congelar las cajas siguientes.
+                DestinoDeLaOperacion.RECHAZADA -> if (op.kind != "CLOSE") cajasBloqueadas += original.sessionId
             }
         }
         if (confirmados > 0) Log.d(TAG, "✅ $confirmados movimiento(s) del cajón confirmados por el server")
+        return ResultadoDelReplay(adoptadas)
     }
 
     /** Alias histórico (sync/VM). */
-    suspend fun reproducirCierresPendientes() = reproducirPendientes()
+    suspend fun reproducirCierresPendientes(): ResultadoDelReplay = reproducirPendientes(null)
 
     /** Qué pasó con el movimiento según el servidor. Ver [clasificarRespuestaDelServer]. */
     private suspend fun reproducirMovimiento(op: PendingDrawerOp): DestinoDeLaOperacion {
+        // 🔴 UN `kind` DESCONOCIDO NUNCA SE MANDA COMO RETIRO (hallazgo M3). El `else` de abajo
+        // caía en `pay-out`: una versión futura que introdujera un tipo nuevo y luego se degradara
+        // publicaría esa operación —el fondo de una apertura, por ejemplo— como dinero SALIENDO
+        // del cajón. Se salta, se registra y se MUESTRA: bloquea el cierre en vez de mentir.
+        if (op.kind != "PAY_IN" && op.kind != "PAY_OUT") {
+            Log.e(TAG, "🛑 Movimiento de un tipo que esta versión no conoce: «${op.kind}». No se manda.")
+            marcarRechazada(op, "Esta versión de la app no reconoce el movimiento «${op.kind}». Actualízala.")
+            return DestinoDeLaOperacion.RECHAZADA
+        }
         val localId = op.localId ?: return DestinoDeLaOperacion.CONFIRMADA
         return try {
             val dollars = op.amountCents / 100.0
@@ -1240,8 +1480,8 @@ class CashDrawerRepository @Inject constructor(
             when (clasificarRespuestaDelServer(op.kind, code, codigoDeNegocio(resp))) {
                 DestinoDeLaOperacion.CONFIRMADA -> { promoteEvent(localId, parseEventId(resp)); Log.d(TAG, "✅ ${op.kind} reproducido ($localId)"); DestinoDeLaOperacion.CONFIRMADA }
                 DestinoDeLaOperacion.RECHAZADA -> { Log.e(TAG, "🛑 ${op.kind} RECHAZADO por el server ($code): se marca para avisarle al cajero — $resp"); marcarRechazada(op, mensajeDeRechazo(code, resp)); DestinoDeLaOperacion.RECHAZADA }
-                // Un movimiento nunca produce ADOPTAR… (sólo lo da una apertura): se reintenta,
-                // que es el lado conservador — quedarse atorado es ruidoso, perderlo no.
+                // Cualquier otra cosa se reintenta, que es el lado conservador — quedarse
+                // atorado es ruidoso, perderlo no.
                 else -> { Log.w(TAG, "🔁 ${op.kind} de la caja ${op.sessionId} sin confirmar ($code); sigue en cola — $resp"); DestinoDeLaOperacion.REINTENTAR }
             }
         } catch (e: Exception) {

@@ -79,6 +79,8 @@ internal class FakeCashDrawerDao : CashDrawerDao {
     override suspend fun getOpenSessions(venueId: String): List<CashDrawerSessionEntity> =
         sessions.values.filter { it.venueId == venueId && it.status == "OPEN" }
 
+    override suspend fun getSession(sessionId: String): CashDrawerSessionEntity? = sessions[sessionId]
+
     override suspend fun insertSession(session: CashDrawerSessionEntity) {
         sessions.remove(session.id)
         sessions[session.id] = session
@@ -333,13 +335,22 @@ internal fun sesionJson(
     id: String,
     vararg eventos: String,
     openedAt: Long = haceMinutos(60),
+    /**
+     * 🔴 `null` = el campo NO viene, que es lo que contesta producción (`main`) hoy y significa
+     * "el servidor creó esta caja". `false` = el servidor LIGÓ esta apertura a una caja que ya
+     * estaba abierta (`develop`, Fase 2 del turno de caja del negocio). No son lo mismo.
+     */
+    cajaCreada: Boolean? = null,
+    startingAmount: Double = 5000.00,
+    openedByName: String = "Ana Ruiz",
 ) = """
     {"success":true,"data":{
       "id":"$id","venueId":"venue-1","deviceName":"Sunmi D3","status":"OPEN",
-      "openedByStaffId":"staff-1","openedByName":"Ana Ruiz",
-      "openedAt":"${isoDe(openedAt)}","startingAmount":5000.00,
+      "openedByStaffId":"staff-1","openedByName":"$openedByName",
+      "openedAt":"${isoDe(openedAt)}","startingAmount":$startingAmount,
       "closedByStaffId":null,"closedByName":null,"closedAt":null,
       "actualAmount":null,"overShort":null,"closingNote":null,
+      ${if (cajaCreada == null) "" else "\"cajaCreada\":$cajaCreada,"}
       "events":[${eventos.joinToString(",")}]
     }}
 """.trimIndent()

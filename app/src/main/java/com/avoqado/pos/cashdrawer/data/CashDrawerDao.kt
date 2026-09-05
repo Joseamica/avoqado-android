@@ -65,6 +65,13 @@ interface CashDrawerDao {
     @Query("SELECT * FROM cash_drawer_sessions WHERE venueId = :venueId AND status = 'OPEN'")
     suspend fun getOpenSessions(venueId: String): List<CashDrawerSessionEntity>
 
+    /**
+     * UNA caja por id, abierta o cerrada. La necesita la adopción para mudar a la del servidor una
+     * caja que este aparato ya cerró sin red (hallazgo I2): `getOpenSessions` no la ve.
+     */
+    @Query("SELECT * FROM cash_drawer_sessions WHERE id = :sessionId")
+    suspend fun getSession(sessionId: String): CashDrawerSessionEntity?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertSession(session: CashDrawerSessionEntity)
 
