@@ -367,6 +367,12 @@ internal fun sesionJson(
     cajaCreada: Boolean? = null,
     startingAmount: Double = 5000.00,
     openedByName: String = "Ana Ruiz",
+    /**
+     * El ECHO de la llave de la apertura (`data.localId`, Task 8b N1): la `localId` con la que quedó
+     * guardado el evento OPEN de la caja que el servidor devuelve. `null` = el campo NO viene (servidor
+     * anterior a N1, o caja abierta por una app sin llave): el cliente cae a la regla heurística.
+     */
+    localId: String? = null,
 ) = """
     {"success":true,"data":{
       "id":"$id","venueId":"venue-1","deviceName":"Sunmi D3","status":"OPEN",
@@ -375,6 +381,7 @@ internal fun sesionJson(
       "closedByStaffId":null,"closedByName":null,"closedAt":null,
       "actualAmount":null,"overShort":null,"closingNote":null,
       ${if (cajaCreada == null) "" else "\"cajaCreada\":$cajaCreada,"}
+      ${if (localId == null) "" else "\"localId\":\"$localId\","}
       "events":[${eventos.joinToString(",")}]
     }}
 """.trimIndent()

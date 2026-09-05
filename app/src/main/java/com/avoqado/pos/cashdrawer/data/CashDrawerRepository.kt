@@ -20,6 +20,7 @@ import kotlinx.serialization.Serializable
 import kotlin.math.roundToInt
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.double
 import kotlinx.serialization.json.jsonArray
@@ -79,8 +80,21 @@ internal fun cashDrawerSyncEventJson(event: CashDrawerEventEntity): String = Jso
 
 // MARK: - API Request/Response Models
 
+/**
+ * El cuerpo de `POST /cash-drawer/open`. `localId` y `openedAt` son ADITIVOS (Task 8b N1, 5-sep-2026):
+ * la LLAVE de la cola —la misma con la que el servidor ya deduplica `pay-in`/`pay-out`— y la hora REAL
+ * (ISO-8601) a la que la caja se abrió EN EL APARATO. Sin ellos el servidor estampaba la hora del
+ * REPLAY (medido en la Samsung: abierta 10:22, registrada 10:31) y no podía reconocer un reintento:
+ * devolvía `cajaCreada:false` sobre la PROPIA caja del cajero. Un servidor anterior a N1 los ignora, y
+ * `encodeDefaults = false` no manda los nulos: una cola legada sin llave viaja como antes.
+ */
 @Serializable
-private data class OpenDrawerRequest(val startingAmount: Double, val deviceName: String? = null)
+private data class OpenDrawerRequest(
+    val startingAmount: Double,
+    val deviceName: String? = null,
+    val localId: String? = null,
+    val openedAt: String? = null,
+)
 
 /**
  * 🔴 `localId` es la LLAVE DE IDEMPOTENCIA del movimiento, y es el mismo id con el
@@ -340,6 +354,29 @@ internal fun leerCajaCreada(cuerpo: String): Boolean? = try {
     null
 }
 
+/**
+ * La LLAVE de la apertura de la caja que el servidor devuelve (Task 8b N1): `data.localId`, el echo
+ * de la `localId` con la que quedó guardado su evento OPEN. Si el echo no viene, se busca en el
+ * evento OPEN de `data.events` (es la misma llave: `formatEvent` la manda por evento, y así también
+ * sirve para `GET /current`). `null` = servidor anterior a N1 o caja abierta por una app sin llave:
+ * [esMiPropiaCaja] cae entonces a la regla heurística de siempre.
+ */
+internal fun leerLlaveDeLaApertura(cuerpo: String): String? = try {
+    val root = Json { ignoreUnknownKeys = true }.parseToJsonElement(cuerpo).jsonObject
+    val obj = (root["data"] as? JsonObject) ?: root
+    obj["localId"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+        ?: llaveDelEventoOpen((obj["events"] ?: root["events"]) as? JsonArray)
+} catch (_: Exception) {
+    null
+}
+
+/** La `localId` del evento OPEN de una lista de eventos del servidor, o `null` si no hay o no trae llave. */
+internal fun llaveDelEventoOpen(events: JsonArray?): String? = events
+    ?.mapNotNull { it as? JsonObject }
+    ?.firstOrNull { it["type"]?.jsonPrimitive?.contentOrNull == CashDrawerEventType.OPEN.name }
+    ?.get("localId")?.jsonPrimitive?.contentOrNull
+    ?.takeIf { it.isNotBlank() }
+
 /** Pesos con dos decimales para un texto que lee una persona. Espejo de `formatCurrency`. */
 internal fun pesosDeCentavos(cents: Int): String = "$" + String.format(java.util.Locale.US, "%,.2f", cents / 100.0)
 
@@ -364,7 +401,8 @@ internal fun textoDeAdopcion(quien: String, hora: String, fondoServidorCents: In
 /**
  * Una operación del cajón que este aparato YA hizo en local y que el server aún no confirmó.
  * `kind` = OPEN | CLOSE | PAY_IN | PAY_OUT. `localId` es la llave idempotente del evento (PAY_*)
- * y, en `OPEN`, el id del evento de apertura local (el server no lee llave al abrir).
+ * y, en `OPEN`, el id del evento de apertura local — que desde N1 (5-sep-2026) viaja al servidor como
+ * su llave idempotente y vuelve como echo (`data.localId`).
  *
  * 🔴 `OPEN` entró después (Task 8b, 4-sep). Una cola guardada en un aparato de la calle sólo trae
  * CLOSE/PAY_IN/PAY_OUT y se lee EXACTAMENTE igual: no se agregó ningún campo, sólo un valor más
@@ -604,27 +642,35 @@ internal fun textoDeCobrosRetenidos(estado: EstadoDeLosCobros): String? = when (
  * reales a diario. Con el fondo dentro, la coincidencia exige además que las dos hayan abierto con
  * el MISMO monto.
  *
- * 🔴 RESIDUO DECLARADO, y se escribe tal cual porque prometer más sería mentir: **dos aparatos del
- * mismo modelo, con la misma cuenta y el mismo fondo comparten caja SIN aviso.** Con fondos
- * redondos ($500 es el fondo estándar) eso no es exótico. No se puede distinguir desde el cliente:
- * haría falta que el `POST /open` llevara una llave idempotente y que el servidor guardara el
- * aparato que la mandó — es el pendiente **N1**, que el brief dejó fuera a propósito porque toca
- * el servidor. Cuando N1 exista, esta regla se cambia por «¿es MI apertura?» y el residuo
- * desaparece; mientras tanto Android ya tiene un `deviceId` estable (`SyncOutbox.deviceId`,
- * el del header `X-Device-Id`) listo para ocupar el lugar de `deviceName`.
+ * 🔴 **Desde N1 (5-sep-2026) la pregunta la contesta el SERVIDOR cuando puede:** el `POST /open`
+ * lleva la `localId` de la apertura y el servidor hace echo de la llave con la que quedó guardada la
+ * caja que devuelve ([leerLlaveDeLaApertura]). Con echo, «¿es MI apertura?» es una comparación de
+ * llaves y el residuo de abajo desaparece: una llave ajena es una adopción aunque coincidan modelo,
+ * cuenta y fondo, y mi propia llave nunca lo es.
  *
- * Lo que SÍ está garantizado hoy: si el fondo difiere —que es justo cuando el dinero importa— el
- * aviso sale siempre.
+ * ⚠️ RESIDUO que SÓLO sigue vivo contra un servidor anterior a N1 (sin echo) o con una caja abierta
+ * por una app sin llave: **dos aparatos del mismo modelo, con la misma cuenta y el mismo fondo
+ * comparten caja SIN aviso.** Con fondos redondos ($500 es el fondo estándar) eso no es exótico. Ahí
+ * lo que SÍ está garantizado: si el fondo difiere —que es justo cuando el dinero importa— el aviso
+ * sale siempre.
+ *
+ * @param llaveDelServidor la llave con la que quedó guardada la apertura de la caja devuelta, o `null`
+ *   si el servidor no la mandó. Función PURA: se prueba fila por fila sin red.
  */
 internal fun esMiPropiaCaja(
     server: CashDrawerSessionEntity,
     op: PendingDrawerOp,
     miAparato: String,
     miStaffId: String,
+    llaveDelServidor: String? = null,
 ): Boolean =
-    server.deviceName == miAparato &&
-        server.openedByStaffId == miStaffId &&
-        server.startingAmountCents == op.amountCents
+    if (llaveDelServidor != null) {
+        llaveDelServidor == op.localId
+    } else {
+        server.deviceName == miAparato &&
+            server.openedByStaffId == miStaffId &&
+            server.startingAmountCents == op.amountCents
+    }
 
 /** Los movimientos que el servidor deduplica por `localId`. Un CLOSE no lleva llave. */
 private val TIPOS_CON_LLAVE = setOf("PAY_IN", "PAY_OUT")
@@ -853,8 +899,11 @@ class CashDrawerRepository @Inject constructor(
      * exactamente la diferencia entre un aviso rojo falso y perder la apertura para siempre.
      */
     private sealed interface CajaDelServidor {
-        /** El servidor tiene una caja abierta y ya quedó adoptada en Room. */
-        data class Adoptada(val session: CashDrawerSessionEntity) : CajaDelServidor
+        /**
+         * El servidor tiene una caja abierta y ya quedó adoptada en Room. [llave] es la `localId` de su
+         * evento OPEN si la trae (N1): es lo que decide si esa caja es la de MI apertura o la de otro.
+         */
+        data class Adoptada(val session: CashDrawerSessionEntity, val llave: String? = null) : CajaDelServidor
 
         /** 2xx legible que dice explícitamente que NO hay caja abierta. */
         data object NoHayNinguna : CajaDelServidor
@@ -889,7 +938,7 @@ class CashDrawerRepository @Inject constructor(
                 // Events live inside the session payload (fallback: top-level).
                 val session = adoptServerSession(sessionObj, root["events"]?.jsonArray, sesionLocal)
                 Log.d(TAG, "✅ Caja del server sincronizada: ${session.id}")
-                CajaDelServidor.Adoptada(session)
+                CajaDelServidor.Adoptada(session, llaveDelEventoOpen((sessionObj["events"] ?: root["events"]) as? JsonArray))
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ Parse current session error: ${e.message}")
@@ -950,6 +999,13 @@ class CashDrawerRepository @Inject constructor(
      * Lo que queda fuera de la ventana NO se borra ni se toca: es dinero que salió de
      * verdad, sigue colgado de su propia caja. No contaminar nunca puede significar
      * destruir.
+     *
+     * 🔴 **La única excepción a la ventana es la provisional PROPIA** ([sesionLocal]: la
+     * caja cuya apertura se está reproduciendo o adoptando). Sus eventos nacieron todos
+     * después de tocar «Abrir caja», así que la ventana no los protege de nada — sólo
+     * los dejaba fuera cuando el servidor estampaba la hora del REPLAY (F3, 5-sep-2026).
+     * Desde N1 el servidor estampa la hora real que le manda el POST, pero la regla no
+     * depende de eso: contra un servidor viejo la venta sin red también cuenta.
      */
     private suspend fun adoptServerSession(
         sessionObj: JsonObject,
@@ -998,7 +1054,16 @@ class CashDrawerRepository @Inject constructor(
             aPromover
                 .forEach { provisional ->
                     Log.d(TAG, "⬆️ Promoviendo caja provisional ${provisional.id} → ${server.id}")
-                    dao.repointEventsFrom(provisional.id, server.id, server.openedAt)
+                    // 🔴 F3 (medido en la Samsung, 5-sep-2026): la provisional cuya APERTURA se está
+                    // reproduciendo (`sesionLocal`) muda TODOS sus eventos — son suyos por construcción:
+                    // nacieron después de tocar «Abrir caja», y el servidor los va a recibir todos (los
+                    // movimientos por su `sessionId` reapuntado, las ventas por el replay de cobros).
+                    // Acotarla a `server.openedAt` dejaba fuera la venta hecha sin red cuando el
+                    // servidor estampaba la hora del REPLAY: pantalla en $0 de ventas y el ticket del
+                    // corte contradiciéndose. La ventana se conserva para las OTRAS cajas abiertas —la
+                    // de un turno anterior que este aparato nunca vio cerrar—, que es para lo que existía.
+                    val desde = if (provisional.id == sesionLocal) 0L else server.openedAt
+                    dao.repointEventsFrom(provisional.id, server.id, desde)
                     // La cola durable nombra a la caja igual que Room, o sus movimientos viajarían
                     // con un id que el servidor no conoce. Ver [reapuntarPendientes].
                     reapuntarPendientes(provisional.id, server.id)
@@ -1244,6 +1309,14 @@ class CashDrawerRepository @Inject constructor(
     }
 
     /**
+     * 🔴 La hora REAL de la apertura, para el `openedAt` del POST: la de la fila local de la caja (el
+     * reloj del aparato al tocar «Abrir caja») y, si esa fila ya no existe —promovida y borrada tras
+     * una respuesta perdida—, la hora en que se encoló, que son los mismos milisegundos con unos ms
+     * de diferencia. NUNCA `now`: `now` es la hora del replay, que es justo el defecto (F3).
+     */
+    private suspend fun horaDeLaApertura(op: PendingDrawerOp): Long = dao.getSession(op.sessionId)?.openedAt ?: op.at
+
+    /**
      * Manda UNA apertura al servidor y traduce su respuesta con el contrato real
      * ([clasificarApertura]). Es la MISMA función para `openSession` y para el replay.
      */
@@ -1251,7 +1324,12 @@ class CashDrawerRepository @Inject constructor(
         val (code, body) = try {
             val requestBody = json.encodeToString(
                 OpenDrawerRequest.serializer(),
-                OpenDrawerRequest(startingAmount = op.amountCents / 100.0, deviceName = deviceName),
+                OpenDrawerRequest(
+                    startingAmount = op.amountCents / 100.0,
+                    deviceName = deviceName,
+                    localId = op.localId,
+                    openedAt = java.time.Instant.ofEpochMilli(horaDeLaApertura(op)).toString(),
+                ),
             ).toRequestBody("application/json".toMediaType())
             val request = Request.Builder().url("$baseUrl/open").post(requestBody).build()
             withContext(Dispatchers.IO) {
@@ -1306,7 +1384,7 @@ class CashDrawerRepository @Inject constructor(
             Log.e(TAG, "❌ Parse open session error: ${e.message}")
             null
         } ?: return null
-        if (ligada) anotarAdopcion(op, session)
+        if (ligada) anotarAdopcion(op, session, leerLlaveDeLaApertura(body))
         return ResultadoDeLaApertura.Adoptada(session, ligada)
     }
 
@@ -1332,7 +1410,7 @@ class CashDrawerRepository @Inject constructor(
         }
         return when (respuesta) {
             is CajaDelServidor.Adoptada -> {
-                anotarAdopcion(op, respuesta.session)
+                anotarAdopcion(op, respuesta.session, respuesta.llave)
                 ResultadoDeLaApertura.Adoptada(respuesta.session, ligada = true)
             }
             // 🔴 REINTENTAR, no rechazo (hallazgo I3). «El servidor dijo que ya había un turno y su
@@ -1715,17 +1793,16 @@ class CashDrawerRepository @Inject constructor(
      * 🔴 **No se crea ningún movimiento de dinero automáticamente**: meter el fondo local como un
      * PAY_IN sería inventar un ingreso que nadie autorizó.
      */
-    private fun anotarAdopcion(op: PendingDrawerOp, server: CashDrawerSessionEntity) = synchronized(candadoDeLaCola) {
+    private fun anotarAdopcion(op: PendingDrawerOp, server: CashDrawerSessionEntity, llaveDelServidor: String? = null) = synchronized(candadoDeLaCola) {
         // 🔴 LA CAJA PROPIA NO SE «ADOPTA» (F2). Si el servidor devuelve MI caja —mismo aparato,
         // misma persona y mismo fondo— es que mi apertura sí aterrizó y sólo se perdió su respuesta.
         // Decirle al cajero «se adoptó la caja abierta por …» sobre su propia caja es una mentira
         // que además ENTRENA a ignorar el aviso, y el día que adopte la caja de otro de verdad no
         // lo va a leer.
         //
-        // ⚠️ Y NO afirma «sólo se calla cuando no había nada que avisar»: con dos tablets del mismo
-        // modelo, la misma cuenta y el mismo fondo, esto calla una adopción REAL. El residuo está
-        // declarado en [esMiPropiaCaja] y sólo se cierra con la llave idempotente del servidor (N1).
-        if (esMiPropiaCaja(server, op, deviceName, staffId)) {
+        // Con el echo de la llave (N1) la decisión es exacta; sin él (servidor viejo) queda la regla
+        // heurística y su residuo, declarado en [esMiPropiaCaja].
+        if (esMiPropiaCaja(server, op, deviceName, staffId, llaveDelServidor)) {
             Log.d(TAG, "🔁 El servidor devolvió MI propia caja (${server.id}): no es una adopción, no se avisa")
             return@synchronized
         }
