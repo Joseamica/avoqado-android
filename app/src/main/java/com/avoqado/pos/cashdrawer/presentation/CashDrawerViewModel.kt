@@ -232,12 +232,31 @@ class CashDrawerViewModel @Inject constructor(
                 val session = repository.openSession(startingAmountCents)
                 _currentSession.value = session
                 _events.value = repository.getEvents(session.id)
-                _expectedAmountCents.value = startingAmountCents
+                // 🔴 EL ESPERADO SALE DE LA CAJA QUE QUEDÓ, NO DEL MONTO TECLEADO (hallazgo N4).
+                // Si el servidor LIGÓ esta apertura a una caja que ya estaba abierta, el fondo
+                // bueno es el de ESA caja: pintar los $2,000 que tecleó el cajero encima de una
+                // caja de $500 es un número que miente hasta el siguiente `loadCurrentSession()`.
+                _expectedAmountCents.value = repository.computeExpectedAmount(
+                    session.id,
+                    session.startingAmountCents,
+                )
                 Log.d(TAG, "✅ Session opened")
             } catch (e: Exception) {
                 Log.e(TAG, "❌ Error opening session: ${e.message}")
                 errorMessage.value = "No se pudo abrir la caja. Intenta de nuevo."
             }
+            // 🔴 EL AVISO SE PINTA EN EL MOMENTO EN QUE LA ADOPCIÓN OCURRE (hallazgo N1).
+            //
+            // Abrir la caja es el ÚNICO instante en que el servidor LIGA, y este camino no volvía
+            // a leer los avisos: `_cajasAdoptadas` sólo se llenaba en `loadCurrentSession()`, que
+            // la pantalla llama al ENTRAR. El cajero tecleaba su fondo, tocaba «Abrir caja» y se
+            // quedaba operando la caja de otro sin un solo indicio, hasta que salía y volvía a
+            // entrar a Caja — normalmente ya para cerrarla, con el sobrante encima.
+            //
+            // Va FUERA del `try`: si la apertura falló, el aviso de una adopción anterior —o el de
+            // una apertura rechazada— sigue siendo justo lo que hay que enseñar.
+            _cajasAdoptadas.value = runCatching { repository.cajasAdoptadas() }.getOrDefault(emptyList())
+            _rechazadas.value = runCatching { repository.operacionesRechazadas() }.getOrDefault(emptyList())
         }
     }
 

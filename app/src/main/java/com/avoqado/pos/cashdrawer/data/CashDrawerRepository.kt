@@ -1405,9 +1405,17 @@ class CashDrawerRepository @Inject constructor(
                         quitar(op)
                         confirmados++
                     }
-                    // 🔴 Una apertura RECHAZADA detiene lo posterior EN EL TIEMPO, no sólo lo suyo:
-                    // el negocio se quedó sin la caja que el cajero abrió y mandar lo que viene
-                    // después sería colgarlo de una caja equivocada.
+                    // 🔴 Una apertura RECHAZADA detiene lo posterior EN EL TIEMPO, no sólo lo
+                    // suyo: el negocio se quedó sin la caja que el cajero abrió y mandar lo que
+                    // viene después sería colgarlo de una caja equivocada.
+                    //
+                    // ⚠️ Y ESO SÓLO PASA EN LA PASADA EN QUE SE RECHAZA (hallazgo N6). En las
+                    // siguientes la entrada ya está marcada, se filtró de `lista` para no
+                    // reintentarla, y por tanto no vuelve a romper el bucle: lo que sigue
+                    // protegiendo el dinero es `aperturasSinConfirmar`, que se siembra con las
+                    // rechazadas incluidas y bloquea TODO lo de SU caja para siempre. Entradas
+                    // posteriores de OTRAS cajas sí se mandan, y eso es correcto: cada una tiene
+                    // su propia apertura confirmada o su propia barrera.
                     ResultadoDeLaApertura.Rechazada -> {
                         Log.w(TAG, "🛑 Apertura rechazada: la corrida se detiene aquí")
                         break

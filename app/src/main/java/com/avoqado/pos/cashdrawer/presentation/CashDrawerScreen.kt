@@ -1394,14 +1394,14 @@ private fun AvisoDeMovimientosRechazados(
             .padding(AvoqadoTheme.spacing.lg),
         verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
     ) {
-        val soloAperturas = rechazadas.all { it.kind == "OPEN" }
+        val (titulo, explicacion) = encabezadoDeRechazos(rechazadas.map { it.kind })
         Text(
-            text = tituloDeRechazos(rechazadas.size, soloAperturas),
+            text = titulo,
             style = MaterialTheme.typography.titleSmall,
             color = MaterialTheme.colorScheme.onErrorContainer,
         )
         Text(
-            text = explicacionDeRechazos(soloAperturas),
+            text = explicacion,
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onErrorContainer,
         )
@@ -1435,6 +1435,22 @@ private fun AvisoDeMovimientosRechazados(
             }
         }
     }
+}
+
+/**
+ * 🔴 EL ENCABEZADO HABLA DEL TIPO DEL PRIMER RECHAZO PENDIENTE, Y CUENTA SÓLO LOS SUYOS (N5).
+ *
+ * Con una APERTURA y un retiro rechazados a la vez, `soloAperturas` era `false` y el aviso volvía
+ * a decir «El dinero ya se movió en el cajón» — falso para el renglón de la apertura, que es justo
+ * el copy que I4 vino a corregir. Y contar los dos habría producido «2 cajas no se registraron»,
+ * una mentira nueva en la otra dirección: se cuentan sólo los del tipo del que manda.
+ *
+ * Con una sola clase de rechazo el resultado es idéntico al de antes (regresión fijada en prueba).
+ */
+internal fun encabezadoDeRechazos(kinds: List<String>): Pair<String, String> {
+    val primeroEsApertura = kinds.firstOrNull() == "OPEN"
+    val cuantos = kinds.count { (it == "OPEN") == primeroEsApertura }
+    return tituloDeRechazos(cuantos, primeroEsApertura) to explicacionDeRechazos(primeroEsApertura)
 }
 
 /**
