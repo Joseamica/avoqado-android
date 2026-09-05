@@ -1,6 +1,7 @@
 package com.avoqado.pos.cashdrawer.presentation
 
 import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
+import com.avoqado.pos.cashdrawer.data.EstadoDeLaApertura
 import com.avoqado.pos.cashdrawer.data.textoDeAdopcion
 import androidx.compose.material3.TextButton
 import androidx.compose.ui.draw.clip
@@ -704,6 +705,7 @@ private fun CurrentDrawerContent(
     val isPrintingCorte by viewModel.isPrintingCorte.collectAsState()
     val rechazadas by viewModel.rechazadas.collectAsState()
     val cajasAdoptadas by viewModel.cajasAdoptadas.collectAsState()
+    val estadoDeLaApertura by viewModel.estadoDeLaApertura.collectAsState()
     // Corte PARCIAL en pantalla. Antes el botón sólo mandaba a imprimir: sin
     // impresora configurada —o con ella caída— no había forma de ver cómo iba la
     // caja a media jornada, que es justo para lo que sirve.
@@ -755,6 +757,14 @@ private fun CurrentDrawerContent(
             cajas = cajasAdoptadas,
             onDescartar = { viewModel.descartarAvisoDeAdopcion(it) },
         )
+    }
+
+    // 🔴 Y si la caja SÓLO existe en este aparato, también se dice (P2 #4). Ámbar, no rojo:
+    // offline es un estado NORMAL de operación —el cajero puede seguir cobrando— y lo único que
+    // hay que decirle es que todavía no llegó. Cuando el servidor la RECHAZA, esto se calla: de
+    // eso ya habla el aviso rojo de arriba, que además ofrece «Reintentar».
+    if (estadoDeLaApertura == EstadoDeLaApertura.PENDIENTE) {
+        AvisoDeCajaSinConexion()
     }
 
     if (session == null) {
@@ -893,7 +903,7 @@ private fun OpenDrawerContent(
                 }
         }
         Text(
-            text = "Abierta $openedDisplay por ${formatOpenedBy(session.openedByName, session.deviceName)}",
+            text = lineaDeApertura(openedDisplay, session.openedByName, session.deviceName),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -1327,6 +1337,23 @@ fun formatCurrency(cents: Int): String {
  * que nace sin conexión. `deviceName` puede llegar `null` o en blanco desde un server viejo: se
  * degrada mostrando sólo el nombre, nunca "· null" ni un punto medio suelto.
  */
+/**
+ * 🔴 La línea completa, para que «por» no quede colgando (P3 #11 de la auditoría de apps).
+ *
+ * `formatOpenedBy` ya degradaba bien, pero el renglón que la envolvía imprimía «Abierta {fecha}
+ * por {resultado}» pasara lo que pasara: con el nombre vacío quedaba «Abierta … por SM-X133» (el
+ * aparato haciéndose pasar por persona) y con los dos vacíos, «Abierta … por » a secas. Armar la
+ * línea entera aquí es lo que permite omitir el «por» cuando no hay a quién nombrar.
+ */
+internal fun lineaDeApertura(fecha: String, openedByName: String, deviceName: String?): String {
+    val quien = formatOpenedBy(openedByName, deviceName)
+    return when {
+        quien.isEmpty() -> "Abierta $fecha"
+        openedByName.isBlank() -> "Abierta $fecha · $quien"
+        else -> "Abierta $fecha por $quien"
+    }
+}
+
 internal fun formatOpenedBy(openedByName: String, deviceName: String?): String =
     listOfNotNull(
         openedByName.trim().takeIf { it.isNotEmpty() },
@@ -1469,6 +1496,33 @@ internal fun explicacionDeRechazos(soloAperturas: Boolean): String = if (soloApe
         "toca Reintentar, y si sigue fallando avísale a tu administrador antes de seguir cobrando."
 } else {
     "El dinero ya se movió en el cajón, pero el servidor no lo aceptó. Anótalo antes de cerrar la caja."
+}
+
+/**
+ * 🔴 «ESTA CAJA TODAVÍA NO LLEGÓ AL SERVIDOR» (P2 #4 de la auditoría de apps).
+ *
+ * Una apertura cuyo `OPEN` sigue en la cola —sin red, 5xx, reintentos— se veía IDÉNTICA a una
+ * caja sana. La regla del workspace es explícita: offline es un estado NORMAL y se DICE con todas
+ * sus letras, nunca en rojo de error. Mismo tono ámbar y misma forma que el aviso de la caja
+ * adoptada; el texto es el de la banda que ya usa el resto de la app para lo encolado.
+ */
+@Composable
+private fun AvisoDeCajaSinConexion() {
+    Text(
+        text = "Caja abierta sin conexión: se sincronizará al recuperar la red",
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onTertiaryContainer,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(
+                start = AvoqadoTheme.spacing.lg,
+                end = AvoqadoTheme.spacing.lg,
+                top = AvoqadoTheme.spacing.lg,
+            )
+            .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.lg))
+            .background(MaterialTheme.colorScheme.tertiaryContainer)
+            .padding(AvoqadoTheme.spacing.lg),
+    )
 }
 
 /**

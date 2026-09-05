@@ -4,6 +4,7 @@ import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
+import com.avoqado.pos.cashdrawer.data.EstadoDeLaApertura
 import com.avoqado.pos.cashdrawer.data.model.CashDrawerEventEntity
 import com.avoqado.pos.cashdrawer.data.model.CashDrawerEventType
 import com.avoqado.pos.cashdrawer.data.model.CashDrawerSessionEntity
@@ -86,6 +87,13 @@ class CashDrawerViewModel @Inject constructor(
      */
     private val _cajasAdoptadas = MutableStateFlow<List<CashDrawerRepository.CajaAdoptada>>(emptyList())
     val cajasAdoptadas: StateFlow<List<CashDrawerRepository.CajaAdoptada>> = _cajasAdoptadas.asStateFlow()
+
+    /**
+     * 🔴 «Caja abierta sin conexión» (P2 #4). Una caja cuyo `OPEN` sigue en la cola se veía
+     * IDÉNTICA a una que el servidor ya conoce. Offline es un estado NORMAL y se DICE.
+     */
+    private val _estadoDeLaApertura = MutableStateFlow(EstadoDeLaApertura.CONFIRMADA)
+    val estadoDeLaApertura: StateFlow<EstadoDeLaApertura> = _estadoDeLaApertura.asStateFlow()
 
     private val _tenderBreakdown = MutableStateFlow<List<CashDrawerRepository.TenderRow>?>(null)
     val tenderBreakdown: StateFlow<List<CashDrawerRepository.TenderRow>?> = _tenderBreakdown.asStateFlow()
@@ -183,6 +191,8 @@ class CashDrawerViewModel @Inject constructor(
                 _cajasAdoptadas.value = runCatching { repository.cajasAdoptadas() }.getOrDefault(emptyList())
                 val session = repository.getOpenSession()
                 _currentSession.value = session
+                _estadoDeLaApertura.value = runCatching { repository.estadoDeApertura(session?.id) }
+                    .getOrDefault(EstadoDeLaApertura.CONFIRMADA)
                 if (session != null) {
                     _events.value = repository.getEvents(session.id)
                     _expectedAmountCents.value = repository.computeExpectedAmount(
@@ -257,6 +267,8 @@ class CashDrawerViewModel @Inject constructor(
             // una apertura rechazada— sigue siendo justo lo que hay que enseñar.
             _cajasAdoptadas.value = runCatching { repository.cajasAdoptadas() }.getOrDefault(emptyList())
             _rechazadas.value = runCatching { repository.operacionesRechazadas() }.getOrDefault(emptyList())
+            _estadoDeLaApertura.value = runCatching { repository.estadoDeApertura(_currentSession.value?.id) }
+                .getOrDefault(EstadoDeLaApertura.CONFIRMADA)
         }
     }
 

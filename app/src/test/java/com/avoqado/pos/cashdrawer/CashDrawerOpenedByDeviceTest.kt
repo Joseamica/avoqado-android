@@ -42,4 +42,10 @@ class CashDrawerOpenedByDeviceTest {
     fun `los dos en blanco da cadena vacia, nunca un punto medio suelto`() {
         assertEquals("", formatOpenedBy("", null))
     }
+
+    /** Nombre vacio con aparato presente ⇒ solo el aparato (la direccion CONTRARIA del degradado). */
+    @Test
+    fun `nombre vacio y aparato presente muestra solo el aparato`() {
+        assertEquals("SM-X133", formatOpenedBy("", "SM-X133"))
+    }
 }

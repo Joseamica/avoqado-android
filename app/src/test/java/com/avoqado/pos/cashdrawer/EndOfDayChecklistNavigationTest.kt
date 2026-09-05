@@ -63,6 +63,26 @@ class EndOfDayChecklistNavigationTest {
         assertEquals(1, llamadas)
     }
 
+    /**
+     * 🔴 P3 #8 de la auditoria de apps: un renglon EN ADVERTENCIA pero SIN destino cableado no
+     * puede quedar `clickable` y muerto.
+     *
+     * Los tres destinos tenian default `= {}`, asi que un llamador que no los pasara producia una
+     * lambda vacia: la fila se volvia clickable y tocarla no hacia nada — el boton muerto que
+     * describe la memoria del workspace `callback-con-default-se-vuelve-boton-muerto`. Con el
+     * default en `null`, la fila se queda QUIETA, que es lo honesto.
+     */
+    @Test
+    fun `un renglon en advertencia SIN destino cableado no es clickable`() {
+        assertNull(checklistOnClick(ok = false, destino = null))
+    }
+
+    /** Y un renglon resuelto sin destino tampoco, por las dos razones a la vez. */
+    @Test
+    fun `un renglon resuelto sin destino tampoco es clickable`() {
+        assertNull(checklistOnClick(ok = true, destino = null))
+    }
+
     @Test
     fun `un renglon resuelto no navega, exactamente como antes de este cambio`() {
         var llamadas = 0

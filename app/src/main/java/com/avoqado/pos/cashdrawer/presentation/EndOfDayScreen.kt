@@ -80,11 +80,15 @@ fun EndOfDayScreen(
     onDismiss: () -> Unit,
     // Los tres renglones del checklist llevaban meses SIN `onClick` — una cajera de Testarudo
     // los veía al abrir la app y no iban a ningún lado. Cada uno navega SOLO cuando su renglón
-    // está en advertencia (ver `checklistOnClick`); el default `{}` mantiene el resto del árbol
-    // (previews, otros llamadores) compilando sin tener que decidir un destino.
-    onVerCuentasAbiertas: () -> Unit = {},
-    onIrACaja: () -> Unit = {},
-    onIrAChecador: () -> Unit = {},
+    // está en advertencia (ver `checklistOnClick`).
+    //
+    // 🔴 El default es `null`, NO `{}` (P3 #8 de la auditoría de apps): una lambda vacía por
+    // default vuelve el renglón `clickable` y lo deja sin hacer nada — el botón muerto que la
+    // memoria del workspace `callback-con-default-se-vuelve-boton-muerto` describe. Con `null`,
+    // un llamador que no cablee el destino deja la fila QUIETA, que es lo honesto.
+    onVerCuentasAbiertas: (() -> Unit)? = null,
+    onIrACaja: (() -> Unit)? = null,
+    onIrAChecador: (() -> Unit)? = null,
     viewModel: CashDrawerViewModel = hiltViewModel(),
 ) {
     val summary by viewModel.endOfDay.collectAsState()
@@ -262,10 +266,11 @@ private fun StatusBanner(s: EndOfDaySummary) {
 
 /**
  * Visible para test: sólo se cablea un destino cuando el renglón está en ADVERTENCIA (`ok =
- * false`). Un renglón ya resuelto (`ok = true`) devuelve `null` — [ChecklistItem] se comporta
- * entonces EXACTAMENTE como antes de este cambio: tocarlo no hace nada.
+ * false`) **y hay un destino que cablear**. En cualquier otro caso devuelve `null` —
+ * [ChecklistItem] se comporta entonces EXACTAMENTE como antes de este cambio: tocarlo no hace
+ * nada, y sobre todo la fila ni siquiera se vuelve `clickable`.
  */
-internal fun checklistOnClick(ok: Boolean, destino: () -> Unit): (() -> Unit)? =
+internal fun checklistOnClick(ok: Boolean, destino: (() -> Unit)?): (() -> Unit)? =
     if (ok) null else destino
 
 @Composable

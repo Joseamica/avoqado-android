@@ -293,6 +293,64 @@ internal data class PendingDrawerOp(
 )
 
 /**
+ * En qué estado está la APERTURA de la caja que se está viendo, frente al servidor.
+ *
+ * 🔴 Existe porque una caja que sólo vive en el aparato se veía IDÉNTICA a una sana (P2 #4 de la
+ * auditoría de apps). La regla del workspace es explícita: sin red es un estado NORMAL y se DICE,
+ * nunca en rojo. Aquí no hay red que consultar — lo contesta la COLA, que es la verdad de qué
+ * llegó y qué no.
+ */
+enum class EstadoDeLaApertura {
+    /** El servidor ya conoce esta caja (o no hay caja que mirar). */
+    CONFIRMADA,
+
+    /** Su `OPEN` sigue en la cola: se sincroniza sola al volver la red. Banda ámbar. */
+    PENDIENTE,
+
+    /** El servidor la rechazó de plano. De eso ya avisa el aviso ROJO, que además ofrece Reintentar. */
+    RECHAZADA,
+}
+
+/** Función PURA: el estado visible de la apertura de [sessionId] según la cola. */
+internal fun estadoDeAperturaVisible(cola: List<PendingDrawerOp>, sessionId: String?): EstadoDeLaApertura {
+    if (sessionId == null) return EstadoDeLaApertura.CONFIRMADA
+    val apertura = cola.firstOrNull { it.kind == "OPEN" && it.sessionId == sessionId }
+        ?: return EstadoDeLaApertura.CONFIRMADA
+    return if (apertura.rechazadaEn != null) EstadoDeLaApertura.RECHAZADA else EstadoDeLaApertura.PENDIENTE
+}
+
+/** Los movimientos que el servidor deduplica por `localId`. Un CLOSE no lleva llave. */
+private val TIPOS_CON_LLAVE = setOf("PAY_IN", "PAY_OUT")
+
+/** ¿Es una entrada de una versión anterior a la idempotencia, sin llave? */
+internal fun necesitaLlaveLegada(op: PendingDrawerOp): Boolean =
+    op.kind in TIPOS_CON_LLAVE && op.localId.isNullOrBlank()
+
+/**
+ * 🔴 UN MOVIMIENTO SIN `localId` NUNCA SE DESCARTA EN SILENCIO NI SE MANDA VACÍO (P2 #6).
+ *
+ * Las colas escritas por versiones anteriores a la idempotencia traen ingresos y retiros sin
+ * llave. Android los descartaba con un `return CONFIRMADA` —dinero que se evaporaba sin que nadie
+ * se enterara— y iOS los mandaba con `localId: ""`, que el servidor rechaza con 400. Dos formas
+ * distintas de perder el mismo dinero.
+ *
+ * La llave se DERIVA de lo que la entrada ya tiene, así que es la misma en cada reintento y el
+ * servidor puede deduplicar: `legacy-` + sha256(caja|tipo|hora|monto). Determinista a propósito —
+ * un UUID nuevo por intento convertiría un reintento en un segundo retiro.
+ */
+internal fun localIdLegado(op: PendingDrawerOp): String =
+    "legacy-" + sha256Hex("${op.sessionId}|${op.kind}|${op.at}|${op.amountCents}").take(32)
+
+/** La cola con las llaves legadas ya puestas. Las entradas que ya tienen llave NO se tocan. */
+internal fun conLlavesLegadas(cola: List<PendingDrawerOp>): List<PendingDrawerOp> =
+    cola.map { if (necesitaLlaveLegada(it)) it.copy(localId = localIdLegado(it)) else it }
+
+private fun sha256Hex(texto: String): String =
+    java.security.MessageDigest.getInstance("SHA-256")
+        .digest(texto.toByteArray(Charsets.UTF_8))
+        .joinToString("") { "%02x".format(it) }
+
+/**
  * El aviso durable de que una apertura terminó ADOPTANDO la caja de alguien más (I1).
  *
  * Vive en disco, no en memoria: el cajero tiene que enterarse aunque la app se reinicie entre la
@@ -1337,6 +1395,28 @@ class CashDrawerRepository @Inject constructor(
             ?.takeIf { it.isNotBlank() && it != "null" } ?: "El servidor lo rechazó (error $code)."
     } catch (_: Exception) { "El servidor lo rechazó (error $code)." }
 
+    /**
+     * 🔴 «Esta caja todavía no llega al servidor» — lo que la pantalla necesita para DECIRLO.
+     * Ver [estadoDeAperturaVisible].
+     */
+    fun estadoDeApertura(sessionId: String?): EstadoDeLaApertura =
+        estadoDeAperturaVisible(pendientes(), sessionId)
+
+    /**
+     * 🔴 Le pone llave determinista a los movimientos legados ANTES de reproducir (P2 #6).
+     *
+     * Se escribe en la cola, no sólo en la copia que va al cable: así la identidad de la entrada
+     * (`mismaOperacion`, que compara por `localId`) deja de ser ambigua y confirmarla o marcarla
+     * no puede llevarse por delante al retiro de al lado. Es idempotente: la llave se deriva de la
+     * propia entrada, así que correrlo dos veces da lo mismo.
+     */
+    private fun completarLlavesLegadas() = synchronized(candadoDeLaCola) {
+        val lista = pendientes()
+        if (lista.none { necesitaLlaveLegada(it) }) return@synchronized
+        guardarPendientes(conLlavesLegadas(lista))
+        Log.w(TAG, "🔑 Movimiento(s) de una versión anterior sin llave: se les puso una determinista")
+    }
+
     /** Visible para test: ¿hay un cierre de ESTA caja esperando al server? */
     fun tieneCierrePendiente(sessionId: String): Boolean = pendientes().any { it.kind == "CLOSE" && it.sessionId == sessionId }
 
@@ -1362,6 +1442,9 @@ class CashDrawerRepository @Inject constructor(
      * Corre al entrar a Caja, en cada sync, al cerrar y al abrir otra caja.
      */
     internal suspend fun reproducirPendientes(ademas: PendingDrawerOp? = null): ResultadoDelReplay {
+        // 🔴 Las entradas legadas (sin `localId`) reciben su llave determinista ANTES de nada:
+        // así se mandan como cualquier otro movimiento en vez de descartarse en silencio (P2 #6).
+        completarLlavesLegadas()
         // 🔴 `ademas` es la operación que se ACABA de encolar. Se mezcla por si el almacén no la
         // devolvió (cola ilegible, disco lleno): la intención del cajero no puede depender de que
         // una lectura de disco funcione. Entra por `at`, así que sigue siendo la última y las
@@ -1470,7 +1553,11 @@ class CashDrawerRepository @Inject constructor(
             marcarRechazada(op, "Esta versión de la app no reconoce el movimiento «${op.kind}». Actualízala.")
             return DestinoDeLaOperacion.RECHAZADA
         }
-        val localId = op.localId ?: return DestinoDeLaOperacion.CONFIRMADA
+        // 🔴 SIN LLAVE NO SE DESCARTA: se le pone una DETERMINISTA y se manda (P2 #6). Antes esta
+        // línea decía `?: return CONFIRMADA` — un retiro de una cola vieja desaparecía sin dejar
+        // rastro, y el arqueo salía con un faltante que nadie podía explicar. La cola ya viene
+        // migrada por `completarLlavesLegadas`; esto cubre la entrada que llega por `ademas`.
+        val localId = op.localId?.takeIf { it.isNotBlank() } ?: localIdLegado(op)
         return try {
             val dollars = op.amountCents / 100.0
             val (path, body) = if (op.kind == "PAY_IN") {
