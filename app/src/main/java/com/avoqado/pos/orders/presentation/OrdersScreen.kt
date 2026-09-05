@@ -81,10 +81,21 @@ import java.util.Locale
 
 // MARK: - File-level constants
 
-private data class FilterOption(val label: String, val value: String?)
+// internal (no private): Task 7b necesita leer/probar esto desde MoreMenuScreen.kt
+// y desde el test de OrdersViewModel — visibilidad de módulo, no de paquete.
+internal data class FilterOption(val label: String, val value: String?)
 
-private val statusFilters = listOf(
+/**
+ * Lo que el servidor interpreta como "abierta" (`end-of-day.mobile.service.ts:60-63`):
+ * Order.status NOT IN (COMPLETED, CANCELLED, DELETED). El endpoint de lista
+ * (`order.mobile.service.ts:354-357`) ya acepta esta cadena tal cual — no hay
+ * cambio de servidor.
+ */
+internal const val OPEN_ORDERS_STATUS_FILTER = "PENDING,CONFIRMED,PREPARING,READY"
+
+internal val statusFilters = listOf(
     FilterOption("Todos", null),
+    FilterOption("Abiertas", OPEN_ORDERS_STATUS_FILTER),
     FilterOption("Pendientes", "PENDING"),
     FilterOption("Completados", "COMPLETED"),
     FilterOption("Cancelados", "CANCELLED"),
@@ -110,12 +121,16 @@ fun OrdersScreen(
     isTablet: Boolean,
     onDismiss: () -> Unit,
     viewModel: OrdersViewModel = hiltViewModel(),
+    // Task 7b: "Cierre del día → Cuentas abiertas" abre esta pantalla YA
+    // filtrada. null (el botón "Pedidos" normal) se comporta exactamente
+    // como antes de esta tarea — no toca el filtro.
+    initialStatusFilter: String? = null,
 ) {
     // Overlay del Más (spec de refresco §4.8): LaunchedEffect cubre el "al
     // mostrarse" (el ON_RESUME de la Activity NO dispara al abrir un overlay)
     // y LifecycleResumeEffect el regreso desde background. La duplicación la
     // absorbe el single-flight del gate.
-    LaunchedEffect(Unit) { viewModel.autoRefresh() }
+    LaunchedEffect(Unit) { applyInitialStatusFilter(viewModel, initialStatusFilter) }
     LifecycleResumeEffect(Unit) {
         viewModel.autoRefresh()
         onPauseOrDispose { }
@@ -125,6 +140,25 @@ fun OrdersScreen(
         TabletOrdersLayout(viewModel = viewModel, onDismiss = onDismiss)
     } else {
         PhoneOrdersLayout(viewModel = viewModel, onDismiss = onDismiss)
+    }
+}
+
+/**
+ * Qué hacer al abrir la pantalla con un filtro inicial opcional (Task 7b).
+ * Con valor: aplica ESE filtro (arranca con su pill seleccionado y la lista
+ * ya filtrada) — `setStatusFilter` ya invalida y refresca. Con null: se
+ * comporta EXACTAMENTE como hoy, el autoRefresh de siempre, sin tocar filtro.
+ *
+ * Pura y sin Compose a propósito, para poder probarla directo contra el
+ * ViewModel (ver `OrdersViewModelInitialFilterTest`) sin infraestructura de
+ * UI — así se prueba con el mismo mock que ya usan los tests existentes de
+ * `setStatusFilter`.
+ */
+internal fun applyInitialStatusFilter(viewModel: OrdersViewModel, initialStatusFilter: String?) {
+    if (initialStatusFilter != null) {
+        viewModel.setStatusFilter(initialStatusFilter)
+    } else {
+        viewModel.autoRefresh()
     }
 }
 

@@ -99,6 +99,7 @@ import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.estimates.presentation.EstimatesScreen
 import com.avoqado.pos.kds.presentation.KDSScreen
 import com.avoqado.pos.orders.presentation.OrdersScreen
+import com.avoqado.pos.orders.presentation.OPEN_ORDERS_STATUS_FILTER
 import com.avoqado.pos.printing.presentation.PrinterSettingsSheet
 import com.avoqado.pos.reports.presentation.ReportsScreen
 import com.avoqado.pos.reservations.domain.VenueMode
@@ -139,6 +140,10 @@ fun MoreMenuScreen(
     var showCustomers by remember { mutableStateOf(false) }
     var showReports by remember { mutableStateOf(false) }
     var showOrders by remember { mutableStateOf(false) }
+    // Task 7b: filtro con el que arranca la lista de Pedidos al abrirla.
+    // null = "Pedidos" normal, sin tocar filtro. Con valor: Cierre del día
+    // → "Cuentas abiertas" abre la lista YA filtrada a abiertas.
+    var ordersInitialStatusFilter by remember { mutableStateOf<String?>(null) }
     var showCashDrawer by remember { mutableStateOf(false) }
     var showEndOfDay by remember { mutableStateOf(false) }
     var showEstimates by remember { mutableStateOf(false) }
@@ -163,6 +168,7 @@ fun MoreMenuScreen(
         showCustomers = false
         showReports = false
         showOrders = false
+        ordersInitialStatusFilter = null
         showCashDrawer = false
         showEndOfDay = false
         showEstimates = false
@@ -467,7 +473,11 @@ fun MoreMenuScreen(
                 MenuEntry(
                     icon = Icons.AutoMirrored.Outlined.ReceiptLong,
                     label = "Pedidos",
-                    onClick = { showOrders = true },
+                    onClick = {
+                        // Botón normal: sin filtro, igual que siempre (Task 7b).
+                        ordersInitialStatusFilter = null
+                        showOrders = true
+                    },
                 ),
             )
             add(
@@ -732,7 +742,11 @@ fun MoreMenuScreen(
                 ),
         ) {
             val isTablet = maxWidth >= 600.dp
-            OrdersScreen(isTablet = isTablet, onDismiss = { showOrders = false })
+            OrdersScreen(
+                isTablet = isTablet,
+                onDismiss = { showOrders = false },
+                initialStatusFilter = ordersInitialStatusFilter,
+            )
         }
     }
 
@@ -777,6 +791,8 @@ fun MoreMenuScreen(
                 // navegación nueva, sólo cerrar "Cierre del día" y abrir el destino real.
                 onVerCuentasAbiertas = {
                     showEndOfDay = false
+                    // Task 7b: llega YA filtrada a "abiertas" — antes abría en "Todos".
+                    ordersInitialStatusFilter = OPEN_ORDERS_STATUS_FILTER
                     showOrders = true
                 },
                 onIrACaja = {
