@@ -773,6 +773,20 @@ fun MoreMenuScreen(
         ) {
             com.avoqado.pos.cashdrawer.presentation.EndOfDayScreen(
                 onDismiss = { showEndOfDay = false },
+                // Los tres overlays ya existen como hermanos de éste — no hace falta
+                // navegación nueva, sólo cerrar "Cierre del día" y abrir el destino real.
+                onVerCuentasAbiertas = {
+                    showEndOfDay = false
+                    showOrders = true
+                },
+                onIrACaja = {
+                    showEndOfDay = false
+                    showCashDrawer = true
+                },
+                onIrAChecador = {
+                    showEndOfDay = false
+                    showTimeClock = true
+                },
             )
         }
     }

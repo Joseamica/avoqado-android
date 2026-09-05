@@ -1,6 +1,7 @@
 package com.avoqado.pos.cashdrawer.presentation
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -77,6 +78,13 @@ private fun hhmm(iso: String): String = try {
 @Composable
 fun EndOfDayScreen(
     onDismiss: () -> Unit,
+    // Los tres renglones del checklist llevaban meses SIN `onClick` — una cajera de Testarudo
+    // los veía al abrir la app y no iban a ningún lado. Cada uno navega SOLO cuando su renglón
+    // está en advertencia (ver `checklistOnClick`); el default `{}` mantiene el resto del árbol
+    // (previews, otros llamadores) compilando sin tener que decidir un destino.
+    onVerCuentasAbiertas: () -> Unit = {},
+    onIrACaja: () -> Unit = {},
+    onIrAChecador: () -> Unit = {},
     viewModel: CashDrawerViewModel = hiltViewModel(),
 ) {
     val summary by viewModel.endOfDay.collectAsState()
@@ -186,6 +194,7 @@ fun EndOfDayScreen(
                 okText = "Sin cuentas abiertas",
                 warnText = "${Plurales.contar(s.openChecks.count, "cuenta abierta", "cuentas abiertas")} (${money(s.openChecks.totalCents)})",
                 detail = if (s.openChecks.count > 0) "Cóbralas o anúlalas antes de cerrar" else null,
+                onClick = checklistOnClick(ok = s.openChecks.count == 0, destino = onVerCuentasAbiertas),
             )
             ChecklistItem(
                 icon = Icons.Filled.PointOfSale,
@@ -195,6 +204,7 @@ fun EndOfDayScreen(
                 detail = s.openDrawers.joinToString("\n") {
                     "${it.openedByName} · abierta ${hhmm(it.openedAt)} · inicial ${money(it.startingAmountCents)}"
                 }.ifEmpty { null },
+                onClick = checklistOnClick(ok = s.openDrawers.isEmpty(), destino = onIrACaja),
             )
             ChecklistItem(
                 icon = Icons.Filled.Schedule,
@@ -204,6 +214,7 @@ fun EndOfDayScreen(
                 detail = s.clockedInStaff.joinToString("\n") {
                     "${it.name} · desde ${hhmm(it.clockInTime)}" + if (it.status == "ON_BREAK") " (en descanso)" else ""
                 }.ifEmpty { null },
+                onClick = checklistOnClick(ok = s.clockedInStaff.isEmpty(), destino = onIrAChecador),
             )
 
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
@@ -249,6 +260,14 @@ private fun StatusBanner(s: EndOfDaySummary) {
     }
 }
 
+/**
+ * Visible para test: sólo se cablea un destino cuando el renglón está en ADVERTENCIA (`ok =
+ * false`). Un renglón ya resuelto (`ok = true`) devuelve `null` — [ChecklistItem] se comporta
+ * entonces EXACTAMENTE como antes de este cambio: tocarlo no hace nada.
+ */
+internal fun checklistOnClick(ok: Boolean, destino: () -> Unit): (() -> Unit)? =
+    if (ok) null else destino
+
 @Composable
 private fun ChecklistItem(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
@@ -256,10 +275,12 @@ private fun ChecklistItem(
     okText: String,
     warnText: String,
     detail: String?,
+    onClick: (() -> Unit)? = null,
 ) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .let { m -> onClick?.let { m.clickable(onClick = it) } ?: m }
             .padding(vertical = AvoqadoTheme.spacing.sm),
     ) {
         Icon(

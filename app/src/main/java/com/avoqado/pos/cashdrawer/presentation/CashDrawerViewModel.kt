@@ -22,7 +22,10 @@ import com.avoqado.pos.cashdrawer.data.CorteTicketBuilder
 private const val TAG = "💰 CashDrawerVM"
 
 enum class CashDrawerSection(val label: String) {
-    CURRENT("Caja en curso"),
+    // "Turno en curso": el encabezado de la pantalla ya dice "Turno de caja" (decisión del
+    // founder, 27-ago/2-sep) — dejar esta pestaña como "Caja en curso" se leía inconsistente
+    // justo debajo, porque las dos conviven a la vista en el mismo sidebar.
+    CURRENT("Turno en curso"),
     HISTORY("Historial"),
 }
 

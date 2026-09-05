@@ -172,7 +172,7 @@ private fun TabletCashDrawerLayout(
                 CircleBackButton(onClick = onDismiss)
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
                 Text(
-                    text = "Caja",
+                    text = "Turno de caja",
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurface,
@@ -302,7 +302,7 @@ private fun TabletCashDrawerLayout(
 
     if (drawerError != null) {
         AvoqadoDialog(
-            title = "Caja",
+            title = "Turno de caja",
             description = drawerError ?: "",
             onDismiss = { viewModel.errorMessage.value = null },
             actionButton = {
@@ -469,7 +469,7 @@ private fun PhoneCashDrawerLayout(
                 CircleBackButton(onClick = onDismiss)
                 Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.md))
                 Text(
-                    text = "Caja",
+                    text = "Turno de caja",
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurface,
@@ -569,7 +569,7 @@ private fun PhoneCashDrawerLayout(
 
     if (drawerError != null) {
         AvoqadoDialog(
-            title = "Caja",
+            title = "Turno de caja",
             description = drawerError ?: "",
             onDismiss = { viewModel.errorMessage.value = null },
             actionButton = {
@@ -787,13 +787,13 @@ private fun EmptyDrawerState(onOpenDrawer: () -> Unit) {
         )
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
         Text(
-            text = "No hay caja abierta",
+            text = "No hay turno de caja abierto",
             style = MaterialTheme.typography.titleMedium,
             color = MaterialTheme.colorScheme.onSurface,
         )
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
         Text(
-            text = "Abre una caja para comenzar a registrar movimientos de efectivo.",
+            text = "Abre un turno de caja para comenzar a registrar movimientos de efectivo.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
@@ -857,7 +857,7 @@ private fun OpenDrawerContent(
             )
         } else {
             Text(
-                text = "Caja abierta",
+                text = "Turno de caja abierto",
                 style = MaterialTheme.typography.displayMedium,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onSurface,
@@ -881,7 +881,7 @@ private fun OpenDrawerContent(
                 }
         }
         Text(
-            text = "Abierta $openedDisplay por ${session.openedByName}",
+            text = "Abierta $openedDisplay por ${formatOpenedBy(session.openedByName, session.deviceName)}",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -1168,7 +1168,7 @@ private fun HistoryContent(
             )
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
             Text(
-                text = "Aquí aparecerán las cajas cerradas.",
+                text = "Aquí aparecerán los turnos de caja cerrados.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 textAlign = TextAlign.Center,
@@ -1307,6 +1307,19 @@ fun formatCurrency(cents: Int): String {
     val pesos = cents / 100.0
     return "$${String.format(Locale.US, "%,.2f", pesos)}"
 }
+
+/**
+ * "Quién lo abrió y desde qué aparato" (Task 6, plan turno-de-caja fase 2-3). `openedByName` y
+ * `deviceName` ya viven en [CashDrawerSessionEntity] — la sesión local los llena de fábrica al
+ * abrir la caja, ANTES de tocar la red, así que el dato es correcto incluso en la fila provisional
+ * que nace sin conexión. `deviceName` puede llegar `null` o en blanco desde un server viejo: se
+ * degrada mostrando sólo el nombre, nunca "· null" ni un punto medio suelto.
+ */
+internal fun formatOpenedBy(openedByName: String, deviceName: String?): String =
+    listOfNotNull(
+        openedByName.trim().takeIf { it.isNotEmpty() },
+        deviceName?.trim()?.takeIf { it.isNotEmpty() },
+    ).joinToString(" · ")
 
 @Composable
 private fun PrintCorteResultDialog(viewModel: CashDrawerViewModel) {
