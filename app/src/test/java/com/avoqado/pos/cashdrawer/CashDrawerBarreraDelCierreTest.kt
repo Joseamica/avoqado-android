@@ -49,6 +49,7 @@ class CashDrawerBarreraDelCierreTest {
             secureStorage = almacenConCola(cola),
             client = cashDrawerClient(capturadas = capturadas),
             pendingCashSales = sinCobrosEnCola(),
+            conectividad = conectividadDePrueba(),
         )
 
     @Test

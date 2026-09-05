@@ -121,6 +121,7 @@ class CashDrawerAvisoAlAbrirTest {
             secureStorage = almacen(),
             client = cliente(*rutas),
             pendingCashSales = sinCobrosEnCola(),
+            conectividad = conectividadDePrueba(),
         )
         return CashDrawerViewModel(
             repository = repo,

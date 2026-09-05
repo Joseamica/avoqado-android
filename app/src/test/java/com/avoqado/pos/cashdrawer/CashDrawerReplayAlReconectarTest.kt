@@ -3,7 +3,9 @@ package com.avoqado.pos.cashdrawer
 import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
 import com.avoqado.pos.cashdrawer.data.PendingDrawerOp
 import com.avoqado.pos.cashdrawer.data.EstadoDeLosCobros
+import com.avoqado.pos.cashdrawer.data.BACKOFF_DE_LA_APERTURA_MS
 import com.avoqado.pos.cashdrawer.data.TOPE_DE_LA_BARRERA_MS
+import com.avoqado.pos.cashdrawer.data.aperturaEnBackoff
 import com.avoqado.pos.cashdrawer.data.esMiPropiaCaja
 import com.avoqado.pos.cashdrawer.data.estadoDeLosCobros
 import com.avoqado.pos.cashdrawer.data.losCobrosPuedenSalir
@@ -78,6 +80,30 @@ class CashDrawerReplayAlReconectarTest {
         every { st.setDrawerAdoptionNoticesJson(any(), any()) } answers { avisos = secondArg() }
     }
 
+    /**
+     * Un servidor alcanzable que CUENTA los `POST /open` y contesta 500. Es el escenario que el
+     * tope existe para acotar: hay red, el servidor responde, y la apertura no aterriza igual.
+     * (`IOException` sería «sin red», que es justo el caso contrario.)
+     */
+    private fun servidorConRedQueFalla(contador: AtomicInteger): OkHttpClient = mockk {
+        every { newCall(any()) } answers {
+            val request = firstArg<Request>()
+            val call = mockk<Call>()
+            if (request.url.encodedPath.endsWith("/open")) contador.incrementAndGet()
+            every { call.execute() } answers { respuesta(500, """{"message":"boom"}""", request.url.toString()) }
+            call
+        }
+    }
+
+    /** Reescribe la cola guardada. Es la forma de mover el reloj sin esperar en tiempo real. */
+    private fun reescribirCola(st: SecureStorage, f: (PendingDrawerOp) -> PendingDrawerOp) {
+        val nueva = cola(st).map(f)
+        st.setPendingDrawerOpsJson(
+            VENUE_ID,
+            Json { encodeDefaults = false }.encodeToString(ListSerializer(PendingDrawerOp.serializer()), nueva),
+        )
+    }
+
     private fun cola(st: SecureStorage): List<PendingDrawerOp> =
         st.pendingDrawerOpsJson(VENUE_ID)
             ?.let { Json { ignoreUnknownKeys = true }.decodeFromString(ListSerializer(PendingDrawerOp.serializer()), it) }
@@ -119,8 +145,20 @@ class CashDrawerReplayAlReconectarTest {
         }
     }
 
-    private fun repo(st: SecureStorage, client: OkHttpClient) =
-        CashDrawerRepository(dao = FakeCashDrawerDao(), secureStorage = st, client = client, pendingCashSales = sinCobrosEnCola())
+    /**
+     * `hayRed` es el parámetro que la ronda 2 volvió imprescindible: el reloj del tope y el
+     * backoff sólo cuentan intentos hechos CON red, así que una prueba que no lo diga no ejercita
+     * nada. Por default `false` —igual que el resto de las suites del cajón— porque el cliente
+     * falso de casi todas lanza `IOException("sin red")`.
+     */
+    private fun repo(st: SecureStorage, client: OkHttpClient, hayRed: Boolean = false) =
+        CashDrawerRepository(
+            dao = FakeCashDrawerDao(),
+            secureStorage = st,
+            client = client,
+            pendingCashSales = sinCobrosEnCola(),
+            conectividad = conectividadDePrueba(hayRed),
+        )
 
     private fun apertura(sessionId: String, cents: Int, localId: String, at: Long) =
         """{"kind":"OPEN","sessionId":"$sessionId","amountCents":$cents,"localId":"$localId","at":$at}"""
@@ -207,24 +245,220 @@ class CashDrawerReplayAlReconectarTest {
      * nunca se cumpliría y los cobros esperarían para siempre — justo lo que el tope viene a cerrar.
      */
     @Test
-    fun `P2 la apertura que no llega guarda cuando empezo la espera, una sola vez`() = runTest {
+    fun `P2 la apertura que no llega CON RED guarda cuando empezo la espera, una sola vez`() = runTest {
+        val st = almacenConCola("[" + apertura("local-1", 50_000, "ev-1", 1_000) + "]")
+        val repo = repo(st, servidorConRedQueFalla(AtomicInteger(0)), hayRed = true)
+
+        repo.reproducirPendientes()
+        val primera = cola(st).first { it.kind == "OPEN" }.primerReintentoEn
+        assertTrue("El primer intento fallido CON RED tiene que quedar fechado", primera != null && primera > 0)
+
+        // El backoff impide el segundo POST, pero el reloj de arranque tampoco puede moverse.
+        repo.reproducirPendientes()
+        assertEquals(
+            "El reloj arranca UNA vez: reescribirlo dejaría la barrera sin tope",
+            primera,
+            cola(st).first { it.kind == "OPEN" }.primerReintentoEn,
+        )
+    }
+
+    // MARK: - N-P2-1 · el tope sólo cuenta intentos CON RED
+
+    /**
+     * 🔴 P2 (N-P2-1, el defecto de dinero de la re-revisión) — 35 MINUTOS DE INTENTOS SIN RED NO
+     * GASTAN EL TOPE.
+     *
+     * Antes, un fallo de red devolvía el mismo `Reintentar` que un 5xx y fechaba el reloj en el
+     * acto: abrir la caja con el WiFi apagado, cerrar el local y volver al día siguiente dejaba el
+     * presupuesto de media hora consumido, así que el PRIMER tropiezo al reconectar soltaba los
+     * cobros sin turno. En un ICP con WiFi malo eso es el martes, no una anomalía.
+     */
+    @Test
+    fun `P2 los intentos SIN RED no arrancan el reloj del tope`() = runTest {
         val st = almacenConCola("[" + apertura("local-1", 50_000, "ev-1", 1_000) + "]")
         val sinRed = mockk<OkHttpClient> {
             every { newCall(any()) } answers {
                 mockk<Call>().also { every { it.execute() } throws IOException("sin red") }
             }
         }
-        val repo = repo(st, sinRed)
 
-        repo.reproducirPendientes()
-        val primera = cola(st).first { it.kind == "OPEN" }.primerReintentoEn
-        assertTrue("El primer intento fallido tiene que quedar fechado", primera != null && primera > 0)
-
-        repo.reproducirPendientes()
+        // 35 minutos de la vida real: el cajero abre sin red y la app reintenta una y otra vez.
+        val offline = repo(st, sinRed, hayRed = false)
+        repeat(3) { offline.reproducirPendientes() }
         assertEquals(
-            "El reloj arranca UNA vez: reescribirlo dejaría la barrera sin tope",
-            primera,
+            "Sin red el reloj del tope no puede arrancar: el servidor ni se enteró",
+            null,
             cola(st).first { it.kind == "OPEN" }.primerReintentoEn,
+        )
+        assertEquals(
+            "Y por tanto los cobros siguen retenidos por muchas horas que pasen",
+            EstadoDeLosCobros.ESPERANDO_LA_APERTURA,
+            estadoDeLosCobros(cola(st), ahora = 1_000 + TOPE_DE_LA_BARRERA_MS * 10),
+        )
+
+        // Vuelve la red y el servidor contesta mal UNA vez: aquí SÍ arranca el reloj, en cero.
+        val conRed = repo(st, servidorConRedQueFalla(AtomicInteger(0)), hayRed = true)
+        assertFalse(
+            "Un solo fallo con red no puede soltar los cobros: la espera acaba de empezar",
+            conRed.sincronizarCajonPrimero(),
+        )
+        val arranque = cola(st).first { it.kind == "OPEN" }.primerReintentoEn
+        assertTrue("El primer fallo CON red sí fecha el arranque", arranque != null)
+        assertTrue(
+            "El reloj arranca AHORA, no cuando se encoló hace 35 minutos",
+            arranque!! > 1_000,
+        )
+    }
+
+    /**
+     * 🔴 P2 (N-P2-1) — media hora de intentos CON RED sí gasta el tope: los cobros salen sin caja.
+     *
+     * Es la otra mitad, y la que justifica que el tope exista: con red, un 500 que se repite es
+     * exactamente el «transitorio para siempre» que dejaría las ventas del día en el aparato.
+     */
+    @Test
+    fun `P2 media hora de intentos CON RED suelta los cobros`() = runTest {
+        val st = almacenConCola("[" + apertura("local-1", 50_000, "ev-1", 1_000) + "]")
+        val repo = repo(st, servidorConRedQueFalla(AtomicInteger(0)), hayRed = true)
+
+        repo.reproducirPendientes()
+        assertTrue("El reloj tiene que estar corriendo", cola(st).first { it.kind == "OPEN" }.primerReintentoEn != null)
+
+        // Media hora después (se mueve el reloj guardado, no se espera en tiempo real).
+        val hace31 = System.currentTimeMillis() - TOPE_DE_LA_BARRERA_MS - 60_000
+        reescribirCola(st) { if (it.kind == "OPEN") it.copy(primerReintentoEn = hace31, ultimoReintentoEn = hace31) else it }
+
+        assertTrue("Pasado el tope, los cobros salen SIN caja", repo.sincronizarCajonPrimero())
+        assertEquals(
+            EstadoDeLosCobros.ENVIADOS_SIN_CAJA,
+            estadoDeLosCobros(cola(st), System.currentTimeMillis()),
+        )
+    }
+
+    /** 🔴 P2 (N-P2-1) — confirmar la apertura borra el reloj: la caja siguiente no hereda la espera. */
+    @Test
+    fun `P2 confirmar la apertura resetea el reloj del tope`() = runTest {
+        val st = almacenConCola("[" + apertura("local-1", 50_000, "ev-1", 1_000) + "]")
+        repo(st, servidorConRedQueFalla(AtomicInteger(0)), hayRed = true).reproducirPendientes()
+        assertTrue("Precondición: el reloj arrancó", cola(st).first { it.kind == "OPEN" }.primerReintentoEn != null)
+
+        val conRed = servidorQueCuentaAperturas(AtomicInteger(0), retrasoMs = 0) {
+            cuerpoDeCaja("server-1", cajaCreada = true, fondo = 500.0, aparato = miAparato, staffId = "staff-1")
+        }
+        // El backoff acaba de fecharse, así que se mueve el reloj guardado para que toque reintentar.
+        reescribirCola(st) { it.copy(ultimoReintentoEn = null) }
+        assertTrue("Con la apertura confirmada los cobros salen", repo(st, conRed, hayRed = true).sincronizarCajonPrimero())
+
+        assertTrue("La apertura confirmada sale de la cola, y su reloj con ella", cola(st).none { it.kind == "OPEN" })
+        assertEquals(EstadoDeLosCobros.LIBRES, estadoDeLosCobros(cola(st), System.currentTimeMillis()))
+    }
+
+    // MARK: - N-P3-5 · el tope es por TODAS las aperturas, no por la primera
+
+    /**
+     * 🔴 P2 (N-P3-5) — una apertura vieja y vencida NO levanta la barrera para una caja NUEVA.
+     *
+     * Con `firstOrNull`, el reloj de la caja de ayer decidía por la de hoy: el cajero abría su
+     * caja, cobraba, y sus cobros salían sin turno aunque su apertura llevara dos minutos
+     * esperando. El tope es un permiso de último recurso para UNA apertura agotada, no un
+     * interruptor que se queda encendido.
+     */
+    @Test
+    fun `P2 una apertura vieja vencida no suelta los cobros de una caja nueva`() {
+        val ahora = 10_000_000L
+        val vieja = PendingDrawerOp(
+            "OPEN", "local-vieja", 50_000, null, "ev-1", 1_000,
+            primerReintentoEn = ahora - TOPE_DE_LA_BARRERA_MS - 60_000,
+        )
+        val nueva = PendingDrawerOp(
+            "OPEN", "local-nueva", 30_000, null, "ev-2", ahora - 60_000,
+            primerReintentoEn = ahora - 60_000,
+        )
+
+        assertEquals(
+            "La vieja sola sí levanta la barrera",
+            EstadoDeLosCobros.ENVIADOS_SIN_CAJA,
+            estadoDeLosCobros(listOf(vieja), ahora),
+        )
+        assertEquals(
+            "Con una apertura NUEVA dentro del plazo, los cobros esperan",
+            EstadoDeLosCobros.ESPERANDO_LA_APERTURA,
+            estadoDeLosCobros(listOf(vieja, nueva), ahora),
+        )
+        assertFalse(losCobrosPuedenSalir(listOf(vieja, nueva), ahora))
+        assertEquals(
+            "Y el orden en la cola no puede cambiar la respuesta",
+            EstadoDeLosCobros.ESPERANDO_LA_APERTURA,
+            estadoDeLosCobros(listOf(nueva, vieja), ahora),
+        )
+    }
+
+    // MARK: - N-P3-4 · backoff de la apertura atorada
+
+    /**
+     * 🔴 P2 (N-P3-4) — con la apertura atorada CON RED, dos replays seguidos mandan UN solo POST.
+     *
+     * Desde que el outbox de mesas reproduce el cajón antes de drenar, cada intent encolado
+     * dispara un replay: sin backoff, agregar artículos a una mesa producía un `POST /open` por
+     * artículo contra un servidor que ya está contestando mal.
+     */
+    @Test
+    fun `P2 la apertura atorada con red no se remanda antes de 30 segundos`() = runTest {
+        val intentos = AtomicInteger(0)
+        val st = almacenConCola("[" + apertura("local-1", 50_000, "ev-1", 1_000) + "]")
+        val repo = repo(st, servidorConRedQueFalla(intentos), hayRed = true)
+
+        repo.reproducirPendientes()
+        repo.reproducirPendientes()
+        repo.reproducirPendientes()
+        assertEquals("Tres replays seguidos, un solo POST", 1, intentos.get())
+
+        // Pasados los 30 s vuelve a intentar (se mueve el reloj guardado, no se espera de verdad).
+        reescribirCola(st) {
+            if (it.kind == "OPEN") it.copy(ultimoReintentoEn = System.currentTimeMillis() - BACKOFF_DE_LA_APERTURA_MS - 1_000) else it
+        }
+        repo.reproducirPendientes()
+        assertEquals("Pasado el backoff sí se reintenta", 2, intentos.get())
+    }
+
+    /**
+     * 🔴 P1 — y el backoff NO puede retrasar el caso que esta tarea existe para cerrar: sin red no
+     * hubo POST del que hacer backoff, así que al volver el WiFi la apertura sale de inmediato.
+     */
+    @Test
+    fun `P1 un fallo SIN RED no activa el backoff`() = runTest {
+        val st = almacenConCola("[" + apertura("local-1", 50_000, "ev-1", 1_000) + "]")
+        val sinRed = mockk<OkHttpClient> {
+            every { newCall(any()) } answers {
+                mockk<Call>().also { every { it.execute() } throws IOException("sin red") }
+            }
+        }
+        repo(st, sinRed, hayRed = false).reproducirPendientes()
+        assertEquals(
+            "Sin red no se fecha el backoff: no hubo POST que amortiguar",
+            null,
+            cola(st).first { it.kind == "OPEN" }.ultimoReintentoEn,
+        )
+
+        // Vuelve el WiFi en el mismo segundo: la apertura tiene que salir YA, no dentro de 30 s.
+        val aperturas = AtomicInteger(0)
+        val conRed = servidorQueCuentaAperturas(aperturas, retrasoMs = 0) {
+            cuerpoDeCaja("server-1", cajaCreada = true, fondo = 500.0, aparato = miAparato, staffId = "staff-1")
+        }
+        assertTrue(repo(st, conRed, hayRed = true).sincronizarCajonPrimero())
+        assertEquals("La apertura sale en cuanto vuelve la red", 1, aperturas.get())
+    }
+
+    /** La función pura del backoff, en su frontera exacta. */
+    @Test
+    fun `P2 aperturaEnBackoff mide desde el ultimo intento con red`() {
+        val base = PendingDrawerOp("OPEN", "local-1", 50_000, null, "ev-1", 1_000)
+        assertFalse("Sin intentos con red no hay backoff", aperturaEnBackoff(base, ahora = 99_999))
+        val recien = base.copy(ultimoReintentoEn = 100_000)
+        assertTrue(aperturaEnBackoff(recien, ahora = 100_000 + BACKOFF_DE_LA_APERTURA_MS - 1))
+        assertFalse(
+            "Justo en el tope ya toca reintentar",
+            aperturaEnBackoff(recien, ahora = 100_000 + BACKOFF_DE_LA_APERTURA_MS),
         )
     }
 

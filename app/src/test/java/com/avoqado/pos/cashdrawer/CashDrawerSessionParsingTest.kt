@@ -24,6 +24,7 @@ class CashDrawerSessionParsingTest {
         secureStorage = mockk(relaxed = true),
         client = mockk(relaxed = true),
         pendingCashSales = mockk(relaxed = true),
+        conectividad = conectividadDePrueba(),
     )
 
     private fun parse(json: String) =

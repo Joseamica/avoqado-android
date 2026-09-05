@@ -2,6 +2,7 @@ package com.avoqado.pos.cashdrawer
 
 import com.avoqado.pos.cashdrawer.data.CashDrawerDao
 import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
+import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.cashdrawer.data.CobroSinReproducir
 import com.avoqado.pos.cashdrawer.data.PendingCashSales
 import com.avoqado.pos.cashdrawer.data.model.CashDrawerEventEntity
@@ -281,15 +282,29 @@ internal fun intentPayCash(
     createdAt = createdAt,
 )
 
+/**
+ * El monitor de conectividad de las pruebas.
+ *
+ * 🔴 Por default dice que NO hay red, y no es pereza: casi todos los clientes falsos de estas
+ * suites lanzan `IOException("sin red")`, así que «sin red» es la verdad de esos escenarios. Y es
+ * además el valor conservador — sin red no arranca el reloj del tope ni el backoff de la apertura,
+ * que es exactamente el comportamiento que tenían estas pruebas antes de la ronda 2. Quien
+ * necesite ejercitar el tope pasa `hayRed = true` y lo dice.
+ */
+internal fun conectividadDePrueba(hayRed: Boolean = false): ConnectivityMonitor =
+    mockk<ConnectivityMonitor>(relaxed = true).also { every { it.isFullyConnected } returns hayRed }
+
 internal fun cashDrawerRepo(
     dao: CashDrawerDao,
     client: OkHttpClient,
     pendingCashSales: PendingCashSales = sinCobrosEnCola(),
+    conectividad: ConnectivityMonitor = conectividadDePrueba(),
 ) = CashDrawerRepository(
     dao = dao,
     secureStorage = cashDrawerSecureStorage(),
     client = client,
     pendingCashSales = pendingCashSales,
+    conectividad = conectividad,
 )
 
 // MARK: - Payloads del server (forma real de `formatSession`/`formatEvent`)

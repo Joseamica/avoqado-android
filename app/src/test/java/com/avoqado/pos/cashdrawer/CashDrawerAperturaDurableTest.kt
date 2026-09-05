@@ -115,7 +115,13 @@ class CashDrawerAperturaDurableTest {
     }
 
     private fun repo(st: SecureStorage, client: OkHttpClient, dao: FakeCashDrawerDao = FakeCashDrawerDao()) =
-        CashDrawerRepository(dao = dao, secureStorage = st, client = client, pendingCashSales = sinCobrosEnCola())
+        CashDrawerRepository(
+            dao = dao,
+            secureStorage = st,
+            client = client,
+            pendingCashSales = sinCobrosEnCola(),
+            conectividad = conectividadDePrueba(),
+        )
 
     private fun errorJson(code: String, message: String) = """{"message":"$message","code":"$code"}"""
 

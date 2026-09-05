@@ -7,6 +7,7 @@ import com.avoqado.pos.cashdrawer.data.model.CashDrawerEventType
 import com.avoqado.pos.cashdrawer.data.model.CashDrawerSessionEntity
 import com.avoqado.pos.cashdrawer.data.model.CashDrawerStatus
 import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.core.data.network.ApiConstants
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -296,15 +297,37 @@ internal data class PendingDrawerOp(
     val rechazadaEn: Long? = null,
     val motivoDelRechazo: String? = null,
     /**
-     * 🔴 Cuándo se intentó mandar esto por PRIMERA vez sin conseguirlo (P2-4, ronda de arreglo 1).
+     * 🔴 Cuándo se intentó mandar esto por primera vez **CON RED** sin conseguirlo (P2-4, y su
+     * corrección en la ronda 2).
      *
      * Sólo lo escribe la APERTURA, y sirve para una cosa: medir cuánto llevan los cobros
      * esperándola. Vive en disco —no en memoria— porque la espera tiene que sobrevivir a que el
-     * cajero mate la app, que es justo lo que pasa en un mostrador. Nulo = todavía no se intentó,
-     * o ya se confirmó. Campo NUEVO con default: una cola guardada por la versión anterior se lee
-     * igual (hay prueba).
+     * cajero mate la app, que es justo lo que pasa en un mostrador.
+     *
+     * 🔴 «CON RED» es literal y es lo que arregló la ronda 2: un fallo de red devuelve el mismo
+     * `Reintentar` que un 5xx, así que abrir la caja con el WiFi apagado fechaba esto milisegundos
+     * después y el presupuesto de media hora se consumía **offline** — justo en el local con mala
+     * red que el tope decía proteger. Ahora sólo lo fecha un intento hecho con red y servidor
+     * alcanzables (`ConnectivityMonitor.isFullyConnected`).
+     *
+     * Nulo = todavía no se ha intentado CON RED, o ya se confirmó. Campo con default: una cola
+     * guardada por una versión anterior se lee igual (hay prueba).
      */
     val primerReintentoEn: Long? = null,
+    /**
+     * 🔴 El ÚLTIMO intento fallido **CON RED** de esta apertura (N-P3-4, ronda 2).
+     *
+     * Sirve para el backoff, no para el tope: desde que el outbox de mesas también dispara el
+     * replay del cajón, cada intent encolado producía otro `POST /open` mientras la apertura
+     * estuviera atorada — un POST por artículo agregado a una mesa. Con esto, la apertura no se
+     * vuelve a mandar hasta que pasen [BACKOFF_DE_LA_APERTURA_MS].
+     *
+     * 🔴 También se fecha SÓLO con red, y no es un detalle: un fallo sin red nunca tocó al
+     * servidor, así que no hay nada de lo que hacer backoff — y aplicarlo igual retrasaría hasta
+     * medio minuto la apertura en el momento que más importa, el instante en que vuelve el WiFi.
+     * Esa es la única diferencia frente a la letra del fallo, y está aquí escrita a propósito.
+     */
+    val ultimoReintentoEn: Long? = null,
 )
 
 /**
@@ -360,9 +383,16 @@ internal fun losCobrosPuedenSalir(cola: List<PendingDrawerOp>, ahora: Long): Boo
 /**
  * 🔴 CUÁNTO PUEDEN ESPERAR LOS COBROS A QUE LA APERTURA LLEGUE — media hora, y ni un minuto más.
  *
- * Se mide desde el PRIMER intento fallido de la apertura ([PendingDrawerOp.primerReintentoEn]),
- * no desde que se encoló: mientras no haya red no hay nada que reprochar, y el aparato ni siquiera
- * lo intentó.
+ * Se mide desde el primer intento fallido **CON RED** de la apertura
+ * ([PendingDrawerOp.primerReintentoEn]), no desde que se encoló: sin red no hay nada que
+ * reprochar —el servidor ni se enteró— y contar esa espera gastaría el presupuesto entero durante
+ * un apagón de WiFi, que es exactamente el defecto N-P2-1 de la re-revisión del 5-sep-2026.
+ *
+ * ⚠️ RESIDUO DECLARADO, porque el comentario no puede prometer más que el código: lo que se guarda
+ * es un INSTANTE de arranque, no un cronómetro de tiempo conectado. Una vez que el reloj arrancó
+ * con red, sigue corriendo aunque después se caiga el WiFi. Es la letra del fallo del controlador
+ * y acota el daño al caso que importaba (abrir la caja sin red y quedarse sin red horas); medir
+ * sólo los minutos conectados exigiría acumular tiempo en cada intento, y no se hizo.
  *
  * El porqué del tope (P2-4, revisión independiente del 5-sep-2026): hay clases de error que el
  * diseño trata como transitorias PARA SIEMPRE —un 409 cuyo `/current` viene vacío (decisión I3),
@@ -378,6 +408,30 @@ internal fun losCobrosPuedenSalir(cola: List<PendingDrawerOp>, ahora: Long): Boo
  * La apertura NO se descarta al levantar la barrera: sigue en la cola y se reintenta igual.
  */
 internal const val TOPE_DE_LA_BARRERA_MS = 30L * 60 * 1000
+
+/**
+ * 🔴 CADA CUÁNTO SE PUEDE REINTENTAR UNA APERTURA ATORADA — medio minuto (N-P3-4).
+ *
+ * Desde que el outbox de mesas reproduce el cajón antes de drenar (P2-3), CADA intent encolado
+ * dispara un replay: con una apertura atorada, agregar diez artículos a una mesa mandaba diez
+ * `POST /open` (más sus `GET /current`) contra un servidor que ya está contestando mal. El
+ * backoff no cambia ninguna barrera ni ninguna decisión de dinero — sólo deja de repetir en vano.
+ *
+ * Se mide desde el último intento **con red** ([PendingDrawerOp.ultimoReintentoEn]): un fallo sin
+ * red no tocó al servidor, así que al volver el WiFi la apertura sale de inmediato. Sin esa
+ * condición, el caso que esta tarea existe para cerrar —abrir sin red y que la apertura vuele en
+ * cuanto vuelva— se retrasaría hasta 30 s.
+ */
+internal const val BACKOFF_DE_LA_APERTURA_MS = 30L * 1000
+
+/**
+ * Función PURA: ¿esta apertura acaba de fallar CON RED, y por tanto toca esperar antes de volver
+ * a mandarla? El reloj entra por parámetro.
+ */
+internal fun aperturaEnBackoff(op: PendingDrawerOp, ahora: Long): Boolean {
+    val ultimo = op.ultimoReintentoEn ?: return false
+    return ahora - ultimo < BACKOFF_DE_LA_APERTURA_MS
+}
 
 /**
  * Qué está pasando con los cobros que dependen de una apertura que aún no llega al servidor.
@@ -400,11 +454,18 @@ enum class EstadoDeLosCobros {
 
 /** Función PURA: en qué estado está la espera de los cobros. El reloj entra por parámetro. */
 internal fun estadoDeLosCobros(cola: List<PendingDrawerOp>, ahora: Long): EstadoDeLosCobros {
-    val apertura = cola.firstOrNull { it.kind == "OPEN" && it.rechazadaEn == null }
-        ?: return EstadoDeLosCobros.LIBRES
-    // Nunca se ha intentado mandar (no hay red todavía): la espera ni siquiera ha empezado.
-    val desde = apertura.primerReintentoEn ?: return EstadoDeLosCobros.ESPERANDO_LA_APERTURA
-    return if (ahora - desde >= TOPE_DE_LA_BARRERA_MS) {
+    val aperturas = cola.filter { it.kind == "OPEN" && it.rechazadaEn == null }
+    if (aperturas.isEmpty()) return EstadoDeLosCobros.LIBRES
+    // 🔴 TODAS, no la primera (N-P3-5). Con `firstOrNull`, una apertura vieja y vencida mandaba
+    // sobre la cola entera: el cajero abría una caja NUEVA y sus cobros salían igual sin caja,
+    // porque el reloj que decidía era el de la anterior. Basta UNA apertura dentro del plazo para
+    // que los cobros esperen — el tope es un permiso de último recurso, no un interruptor que se
+    // queda encendido.
+    val vencida = { op: PendingDrawerOp ->
+        // Nunca se ha intentado CON RED: la espera ni siquiera ha empezado.
+        op.primerReintentoEn?.let { ahora - it >= TOPE_DE_LA_BARRERA_MS } ?: false
+    }
+    return if (aperturas.all(vencida)) {
         EstadoDeLosCobros.ENVIADOS_SIN_CAJA
     } else {
         EstadoDeLosCobros.ESPERANDO_LA_APERTURA
@@ -517,6 +578,13 @@ class CashDrawerRepository @Inject constructor(
     private val secureStorage: SecureStorage,
     private val client: OkHttpClient,
     private val pendingCashSales: PendingCashSales,
+    /**
+     * 🔴 La conectividad ENTRA, no se adivina (ronda 2, N-P2-1). El reloj del tope de la barrera
+     * y el backoff de la apertura sólo cuentan intentos hechos con red y servidor alcanzables:
+     * `isFullyConnected` es exactamente esa pregunta, y es la MISMA fuente que usan el banner de
+     * «sin conexión» y el outbox, así que la app no puede contarse dos historias distintas.
+     */
+    private val conectividad: ConnectivityMonitor,
 ) {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = false }
 
@@ -1686,19 +1754,37 @@ class CashDrawerRepository @Inject constructor(
     }
 
     /**
-     * 🔴 Marca CUÁNDO empezó la espera de esta apertura, una sola vez (P2-4).
+     * 🔴 Marca un intento fallido de esta apertura hecho **CON RED** (P2-4, corregido en la ronda 2).
      *
-     * Sólo la primera: si se reescribiera en cada reintento el tope nunca se cumpliría y los cobros
-     * esperarían para siempre, que es justo el defecto que el tope viene a cerrar. Se escribe en
-     * disco porque la espera tiene que sobrevivir a que la app se reinicie.
+     * Escribe dos cosas distintas con propósitos distintos:
+     *  - `primerReintentoEn`, **sólo la primera vez**: es el arranque del tope. Si se reescribiera
+     *    en cada intento, el tope nunca se cumpliría y los cobros esperarían para siempre — justo
+     *    el defecto que el tope viene a cerrar.
+     *  - `ultimoReintentoEn`, **siempre**: es el backoff, que por definición mira el último.
+     *
+     * 🔴 Y NO SE LLAMA SIN RED. Un fallo de red devuelve el mismo `Reintentar` que un 5xx, así que
+     * antes abrir la caja con el WiFi apagado arrancaba el reloj de la media hora en el acto
+     * (N-P2-1). Sin red el servidor ni se enteró: no hay espera que reprochar ni POST del que
+     * hacer backoff.
+     *
+     * Se escribe en disco porque la espera tiene que sobrevivir a que la app se reinicie.
      */
-    private fun marcarPrimerReintento(op: PendingDrawerOp, ahora: Long) = synchronized(candadoDeLaCola) {
+    private fun marcarReintentoConRed(op: PendingDrawerOp, ahora: Long) = synchronized(candadoDeLaCola) {
         val lista = pendientes()
-        if (lista.none { mismaOperacion(it, op) && it.primerReintentoEn == null }) return@synchronized
+        if (lista.none { mismaOperacion(it, op) }) return@synchronized
         guardarPendientes(
-            lista.map { if (mismaOperacion(it, op) && it.primerReintentoEn == null) it.copy(primerReintentoEn = ahora) else it },
+            lista.map {
+                if (mismaOperacion(it, op)) {
+                    it.copy(primerReintentoEn = it.primerReintentoEn ?: ahora, ultimoReintentoEn = ahora)
+                } else {
+                    it
+                }
+            },
         )
     }
+
+    /** ¿Hay red Y el servidor contesta? Es lo que decide si un intento fallido cuenta. */
+    private fun hayRedYServidor(): Boolean = conectividad.isFullyConnected
 
     private suspend fun reproducirPendientesYaConElCandado(ademas: PendingDrawerOp?): ResultadoDelReplay {
         // 🔴 Las entradas legadas (sin `localId`) reciben su llave determinista ANTES de nada:
@@ -1737,6 +1823,15 @@ class CashDrawerRepository @Inject constructor(
             val op = renombres[original.sessionId]?.let { original.copy(sessionId = it) } ?: original
 
             if (original.kind == "OPEN") {
+                // 🔴 BACKOFF (N-P3-4): si esta apertura acaba de fallar CON RED, no se repite el
+                // POST. Se DETIENE la corrida igual que un `Reintentar`, porque el hecho es el
+                // mismo —la caja sigue sin existir en el servidor— y dejar pasar lo posterior
+                // rompería la barrera de orden (C1). La única diferencia es que no se molesta al
+                // servidor por enésima vez en el mismo medio minuto.
+                if (aperturaEnBackoff(op, System.currentTimeMillis())) {
+                    Log.w(TAG, "⏳ La apertura de ${original.sessionId} falló hace menos de 30 s: se espera antes de reintentar")
+                    break
+                }
                 when (val resultado = enviarApertura(op)) {
                     is ResultadoDeLaApertura.Adoptada -> {
                         aperturasSinConfirmar -= original.sessionId
@@ -1763,10 +1858,16 @@ class CashDrawerRepository @Inject constructor(
                         break
                     }
                     ResultadoDeLaApertura.Reintentar -> {
-                        // 🔴 Aquí empieza a correr el reloj del tope de la barrera (P2-4): desde el
-                        // PRIMER intento fallido, no desde que se encoló. Sin red no hay nada que
-                        // reprochar — el aparato ni siquiera lo intentó.
-                        marcarPrimerReintento(original, System.currentTimeMillis())
+                        // 🔴 Aquí arranca el reloj del tope de la barrera (P2-4) — pero SÓLO si el
+                        // intento se hizo con red y con el servidor contestando (N-P2-1). Sin red
+                        // no hay nada que reprochar: el servidor ni se enteró, y contar esa espera
+                        // gastaba la media hora entera durante un apagón de WiFi, que es cuando la
+                        // barrera más protege. El mismo intento con red fecha además el backoff.
+                        if (hayRedYServidor()) {
+                            marcarReintentoConRed(original, System.currentTimeMillis())
+                        } else {
+                            Log.d(TAG, "📡 La apertura falló sin red: no cuenta para el tope de la barrera")
+                        }
                         Log.w(TAG, "⏸️ La apertura de ${original.sessionId} no llegó: nada posterior se manda")
                         break
                     }

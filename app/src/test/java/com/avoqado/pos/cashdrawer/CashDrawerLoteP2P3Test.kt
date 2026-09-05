@@ -141,6 +141,7 @@ class CashDrawerLoteP2P3Test {
                 capturadas = llamadas,
             ),
             pendingCashSales = sinCobrosEnCola(),
+            conectividad = conectividadDePrueba(),
         )
 
         repo.reproducirPendientes()

@@ -275,6 +275,7 @@ class CashDrawerRelojDesfasadoTest {
             secureStorage = mockk(relaxed = true),
             client = mockk(relaxed = true),
             pendingCashSales = mockk(relaxed = true),
+            conectividad = conectividadDePrueba(),
         )
         fun ventana(json: String) =
             repo.ventanaDeLaCaja(Json.parseToJsonElement(json) as JsonObject)
