@@ -1,0 +1,53 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__playwright__browser_navigate",
+      "mcp__playwright__browser_snapshot",
+      "mcp__playwright__browser_fill_form",
+      "mcp__playwright__browser_click",
+      "mcp__playwright__browser_console_messages",
+      "mcp__playwright__browser_take_screenshot",
+      "mcp__playwright__browser_evaluate",
+      "mcp__playwright__browser_wait_for",
+      "mcp__playwright__browser_press_key",
+      "mcp__playwright__browser_close",
+      "mcp__playwright__browser_type",
+      "Skill(investigate)",
+      "Skill(investigate:*)",
+      "mcp__000ea9ea-d8e4-416e-bdc2-be25470b61b2__list_my_venues",
+      "Skill(autoplan)",
+      "Skill(autoplan:*)",
+      "mcp__betterstack__sources",
+      "mcp__betterstack__query_help",
+      "Read(//private/tmp/**)",
+      "Skill(spec)",
+      "Skill(spec:*)",
+      "Artifact",
+      "mcp__huella__quien_trabaja",
+      "mcp__visualize__read_me",
+      "Skill(codex)",
+      "Skill(codex:*)",
+      "mcp__visualize__show_widget",
+      "mcp__playwright__browser_network_requests",
+      "mcp__Claude_Code_iOS_Simulator__build",
+      "Bash([ -f $SP/unit-tests.log ])",
+      "Bash([ -f $SP/unit-tests2.log ])",
+      "Bash([ -f $SP/unit-tests3.log ])",
+      "Bash(kill -0 70317)",
+      "Bash(LOG=\"/Users/amieva/.claude/projects/-Users-amieva-Documents-Programming-Avoqado-avoqado-android/skill-observations/log.md\" *)",
+      "Bash([ -f \"$LOG\" ])",
+      "mcp__claude-in-chrome__tabs_context_mcp",
+      "mcp__claude-in-chrome__navigate",
+      "mcp__playwright__browser_run_code_unsafe"
+    ],
+    "additionalDirectories": [
+      "/Users/amieva/Documents/Programming/Avoqado/avoqado-ios",
+      "/Users/amieva/Documents/Programming/Avoqado/avoqado-server",
+      "/Users/amieva/Documents/Programming/Avoqado/avoqado-web-dashboard"
+    ]
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "notion"
+  ]
+}

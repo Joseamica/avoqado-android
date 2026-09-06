@@ -5,10 +5,12 @@ import com.avoqado.pos.cashdrawer.data.CODIGO_CAJA_YA_ABIERTA
 import com.avoqado.pos.cashdrawer.data.CODIGO_CIERRE_EN_PROCESO
 import com.avoqado.pos.cashdrawer.data.DesenlaceDeLaApertura
 import com.avoqado.pos.cashdrawer.data.DestinoDeLaOperacion
+import com.avoqado.pos.cashdrawer.data.MOTIVO_CAJA_NO_REGISTRADA
 import com.avoqado.pos.cashdrawer.data.PendingDrawerOp
 import com.avoqado.pos.cashdrawer.data.clasificarApertura
 import com.avoqado.pos.cashdrawer.data.clasificarRespuestaDelServer
 import com.avoqado.pos.cashdrawer.data.codigoDeNegocio
+import com.avoqado.pos.cashdrawer.data.colaTrasAdoptarLaCaja
 import com.avoqado.pos.cashdrawer.data.leerCajaCreada
 import com.avoqado.pos.cashdrawer.data.textoDeAdopcion
 import com.avoqado.pos.core.data.local.SecureStorage
@@ -26,6 +28,7 @@ import okhttp3.Response
 import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.IOException
@@ -410,7 +413,14 @@ class CashDrawerAperturaDurableTest {
         assertTrue("un ligado NO es un rechazo que avisar en rojo", repo.operacionesRechazadas().isEmpty())
     }
 
-    /** Y lo que sigue en la cola viaja con el id ADOPTADO, no con el provisional. */
+    /**
+     * Y lo que sigue en la cola viaja con el id ADOPTADO, no con el provisional.
+     *
+     * 🔴 La caja ligada es LA MÍA —el `POST` aterrizó y su respuesta se perdió (F2)—, y por eso el
+     * cuerpo trae el eco de MI llave (`loc-open`). Es la condición que hace correcta la mudanza:
+     * cuando la caja ligada es la de OTRO APARATO, lo de esta caja NO viaja con su id (ver la
+     * sección 9), porque el servidor se lo restaría al arqueo ajeno.
+     */
     @Test
     fun `tras adoptar por cajaCreada false, el ingreso viaja con el id del servidor`() = runTest {
         val st = almacenConCola(
@@ -425,7 +435,7 @@ class CashDrawerAperturaDurableTest {
         val repo = repo(
             st,
             clienteConCodigos(
-                "/cash-drawer/open" to (201 to sesionJson("srv-1", cajaCreada = false)),
+                "/cash-drawer/open" to (201 to sesionJson("srv-1", cajaCreada = false, localId = "loc-open")),
                 "/cash-drawer/pay-in" to (201 to eventoJson("srv-e2", "PAY_IN", "30.00", localId = "loc-b")),
                 capturadas = llamadas,
             ),
@@ -830,8 +840,10 @@ class CashDrawerAperturaDurableTest {
         )
         val repo = repo(
             st,
-            // El servidor devuelve la caja ABIERTA (todavía no sabe del cierre).
-            clienteConCodigos("/cash-drawer/open" to (201 to sesionJson("srv-1", cajaCreada = false))),
+            // El servidor devuelve MI caja, todavía ABIERTA (no sabe del cierre). El eco de la llave
+            // (`loc-open`) es lo que dice que es la mía: sin él, aplicarle mi conteo firmaría el
+            // arqueo de la caja de OTRO aparato, que es justo lo que la sección 9 impide.
+            clienteConCodigos("/cash-drawer/open" to (201 to sesionJson("srv-1", cajaCreada = false, localId = "loc-open"))),
             dao,
         )
 
@@ -844,6 +856,274 @@ class CashDrawerAperturaDurableTest {
             "el cierre encolado tiene que quedar nombrando a la caja del servidor: ${cola(st)}",
             cola(st).any { it.kind == "CLOSE" && it.sessionId == "srv-1" },
         )
+    }
+
+
+    // MARK: - 9. La caja AJENA no se lleva mi dinero (adopción por 409, 5-sep-2026)
+
+    /**
+     * 🔴 EL DEFECTO DE DINERO: adoptar la caja de OTRO APARATO mudaba a ella el retiro que este
+     * cajero hizo ANTES de que esa caja existiera, y el servidor —que sólo comprueba el venue— se
+     * lo restaba al esperado de esa caja: un FALTANTE FABRICADO del tamaño exacto del retiro.
+     *
+     * El caso, medido sobre el código publicado (Android 2.18.0 / iOS 1.10): la tablet abre sin red
+     * a las 10:22, hace un retiro de $50 a las 10:30, y a las 12:00 otro aparato abre la caja del
+     * negocio. Al reconectar, el `POST /open` de la tablet recibe 409, `/current` devuelve la caja
+     * AJENA, y la excepción de la ventana (F3) se decidía con el ID LOCAL —«¿es la caja cuya
+     * apertura estoy reproduciendo?»— en vez de con la IDENTIDAD —«¿es MI caja?»—. Con `desde = 0`
+     * todo se mudaba, incluida la cola.
+     *
+     * La identidad la contesta la LLAVE del eco (N1): el evento OPEN de la caja del servidor trae
+     * la `localId` con la que se guardó, y aquí es la de OTRO aparato.
+     */
+    @Test
+    fun `P1 al adoptar la caja de otro aparato por 409 el retiro previo NO se muda ni se manda con su id`() = runTest {
+        val abrio = haceMinutos(120) // 10:22, sin red
+        val saco = haceMinutos(110) // 10:30, el retiro de $50, sin red
+        val ajena = haceMinutos(60) // 12:00, otro aparato abre la caja del negocio
+        val st = almacenConCola(
+            colaCon(
+                apertura("prov-1", 50_000, "ev-open", at = abrio),
+                retiro("prov-1", 5_000, "ev-retiro", at = saco),
+            ),
+        )
+        val dao = FakeCashDrawerDao()
+        dao.sessions["prov-1"] = sesionLocal("prov-1").copy(openedAt = abrio, startingAmountCents = 50_000)
+        dao.events["ev-open"] = eventoLocal("ev-open", "prov-1", "OPEN", 50_000, createdAt = abrio)
+        dao.events["ev-retiro"] = eventoLocal("ev-retiro", "prov-1", "PAY_OUT", 5_000, note = "vale", createdAt = saco)
+
+        val llamadas = mutableListOf<LlamadaCapturada>()
+        val repo = repo(
+            st,
+            clienteConCodigos(
+                "/cash-drawer/open" to (409 to errorJson(CODIGO_CAJA_YA_ABIERTA, "Ya hay un turno de caja abierto en este negocio.")),
+                "/cash-drawer/current" to (
+                    200 to sesionJson(
+                        "srv-ajena",
+                        eventoJson("srv-open", "OPEN", "300.00", localId = "llave-de-la-otra-tablet", createdAt = ajena),
+                        openedAt = ajena,
+                        startingAmount = 300.00,
+                    )
+                    ),
+                capturadas = llamadas,
+            ),
+            dao,
+        )
+
+        repo.reproducirPendientes()
+
+        assertEquals("el retiro no puede colgar de la caja de otro aparato", "prov-1", dao.events["ev-retiro"]?.sessionId)
+        assertTrue(
+            "el retiro se mandó con el sessionId ajeno: ${llamadas.map { it.path }}",
+            llamadas.none { it.path.endsWith("/pay-out") },
+        )
+        assertTrue(
+            "la cola no puede nombrar la caja ajena: ${cola(st)}",
+            cola(st).filter { it.kind == "PAY_OUT" }.all { it.sessionId == "prov-1" },
+        )
+        assertEquals("la provisional con dinero propio se conserva CERRADA", "CLOSED", dao.sessions["prov-1"]?.status)
+        assertTrue("el retiro sigue colgado de su caja", dao.getSessionEvents("prov-1").any { it.id == "ev-retiro" })
+        assertEquals(
+            "el esperado de la caja ajena no puede llevar mi retiro",
+            30_000,
+            repo.computeExpectedAmount("srv-ajena", 30_000),
+        )
+        assertTrue("la apertura que recibió el 409 se descarta: ya hay caja", cola(st).none { it.kind == "OPEN" })
+        assertEquals("adoptar la caja de OTRO nunca es silencioso", 1, repo.cajasAdoptadas().size)
+    }
+
+    /**
+     * 🔴 Y el movimiento que se quedó sin caja se DICE: su caja nunca existió en el servidor, así
+     * que nunca se va a poder mandar. Dejarlo en la cola lo haría dar vueltas contra un 404 eterno
+     * —deteniendo la corrida entera en cada pasada—; borrarlo sería un descarte en silencio.
+     */
+    @Test
+    fun `P1 el movimiento que se quedo sin caja se marca para que el cajero lo vea antes de cerrar`() = runTest {
+        val abrio = haceMinutos(120)
+        val saco = haceMinutos(110)
+        val ajena = haceMinutos(60)
+        val st = almacenConCola(
+            colaCon(
+                apertura("prov-1", 50_000, "ev-open", at = abrio),
+                retiro("prov-1", 5_000, "ev-retiro", at = saco),
+            ),
+        )
+        val dao = FakeCashDrawerDao()
+        dao.sessions["prov-1"] = sesionLocal("prov-1").copy(openedAt = abrio, startingAmountCents = 50_000)
+        dao.events["ev-open"] = eventoLocal("ev-open", "prov-1", "OPEN", 50_000, createdAt = abrio)
+        dao.events["ev-retiro"] = eventoLocal("ev-retiro", "prov-1", "PAY_OUT", 5_000, createdAt = saco)
+
+        val repo = repo(
+            st,
+            clienteConCodigos(
+                "/cash-drawer/open" to (409 to errorJson(CODIGO_CAJA_YA_ABIERTA, "Ya hay un turno de caja abierto en este negocio.")),
+                "/cash-drawer/current" to (
+                    200 to sesionJson(
+                        "srv-ajena",
+                        eventoJson("srv-open", "OPEN", "300.00", localId = "llave-de-la-otra-tablet", createdAt = ajena),
+                        openedAt = ajena,
+                        startingAmount = 300.00,
+                    )
+                    ),
+            ),
+            dao,
+        )
+
+        repo.reproducirPendientes()
+
+        val avisadas = repo.operacionesRechazadas()
+        assertEquals("el retiro huérfano tiene que ser visible: $avisadas", 1, avisadas.size)
+        assertEquals("PAY_OUT", avisadas.first().kind)
+        assertEquals(5_000, avisadas.first().amountCents)
+        assertTrue("el motivo tiene que explicar que su caja no quedó registrada: ${avisadas.first().motivo}", avisadas.first().motivo.isNotBlank())
+    }
+
+    /**
+     * 🔴 F3 SIGUE VERDE, que es la otra mitad: cuando el 409 devuelve MI PROPIA caja —el `POST`
+     * aterrizó y su respuesta se perdió—, la llave del eco coincide y TODO se muda sin ventana,
+     * incluida la venta hecha sin red antes de que el servidor registrara la apertura.
+     */
+    @Test
+    fun `F3 si la caja del 409 es la MIA todo se muda sin ventana y no hay adopcion que avisar`() = runTest {
+        val abrio = haceMinutos(120)
+        val vendio = haceMinutos(110)
+        val registrada = haceMinutos(60) // el servidor la estampó con la hora del replay
+        val st = almacenConCola(colaCon(apertura("prov-1", 50_000, "ev-open", at = abrio)))
+        val dao = FakeCashDrawerDao()
+        dao.sessions["prov-1"] = sesionLocal("prov-1").copy(openedAt = abrio, startingAmountCents = 50_000)
+        dao.events["ev-open"] = eventoLocal("ev-open", "prov-1", "OPEN", 50_000, createdAt = abrio)
+        dao.events["venta-80"] = eventoLocal("venta-80", "prov-1", "CASH_SALE", 8_000, orderId = "o-1", createdAt = vendio)
+
+        val repo = repo(
+            st,
+            clienteConCodigos(
+                "/cash-drawer/open" to (409 to errorJson(CODIGO_CAJA_YA_ABIERTA, "Ya hay un turno de caja abierto en este negocio.")),
+                "/cash-drawer/current" to (
+                    200 to sesionJson(
+                        "srv-1",
+                        eventoJson("srv-open", "OPEN", "500.00", localId = "ev-open", createdAt = registrada),
+                        openedAt = registrada,
+                        startingAmount = 500.00,
+                    )
+                    ),
+            ),
+            dao,
+        )
+
+        repo.reproducirPendientes()
+
+        assertEquals("la venta hecha sin red tiene que contar en la caja del servidor", "srv-1", dao.events["venta-80"]?.sessionId)
+        assertEquals("el esperado del cajero tiene que incluir la venta", 58_000, repo.computeExpectedAmount("srv-1", 50_000))
+        assertTrue("mi propia caja no es una adopción: no se avisa", repo.cajasAdoptadas().isEmpty())
+        assertTrue("y no hay nada que marcar", repo.operacionesRechazadas().isEmpty())
+    }
+
+    /**
+     * 🔴 EL CIERRE NUNCA VIAJA A LA CAJA DE OTRO. Cerrar sin red y que el servidor ligue la apertura
+     * a la caja de otro aparato firmaría SU arqueo con MI conteo — el defecto C1 por la puerta de al
+     * lado. La caja del negocio se queda ABIERTA (lo está: la abrió alguien más) y mi cierre local
+     * se conserva con su conteo, marcado para que el cajero lo vea.
+     */
+    @Test
+    fun `P1 el cierre hecho sin red no firma el arqueo de la caja de otro aparato`() = runTest {
+        val abrio = haceMinutos(180)
+        val cerro = haceMinutos(30)
+        val ajena = haceMinutos(60)
+        val st = almacenConCola(
+            colaCon(
+                apertura("prov-1", 50_000, "ev-open", at = abrio),
+                cierre("prov-1", 45_000, at = cerro),
+            ),
+        )
+        val dao = FakeCashDrawerDao()
+        dao.sessions["prov-1"] = sesionLocal("prov-1").copy(openedAt = abrio, startingAmountCents = 50_000)
+        dao.events["ev-open"] = eventoLocal("ev-open", "prov-1", "OPEN", 50_000, createdAt = abrio)
+
+        val llamadas = mutableListOf<LlamadaCapturada>()
+        val repo = repo(
+            st,
+            clienteConCodigos(
+                "/cash-drawer/open" to (409 to errorJson(CODIGO_CAJA_YA_ABIERTA, "Ya hay un turno de caja abierto en este negocio.")),
+                "/cash-drawer/current" to (
+                    200 to sesionJson(
+                        "srv-ajena",
+                        eventoJson("srv-open", "OPEN", "300.00", localId = "llave-de-la-otra-tablet", createdAt = ajena),
+                        openedAt = ajena,
+                        startingAmount = 300.00,
+                    )
+                    ),
+                "/cash-drawer/close" to (200 to """{"success":true}"""),
+                capturadas = llamadas,
+            ),
+            dao,
+        )
+
+        repo.reproducirPendientes()
+
+        assertTrue("mi conteo no puede cerrar la caja de otro: ${llamadas.map { it.path }}", llamadas.none { it.path.endsWith("/close") })
+        assertEquals("la caja del negocio sigue abierta: la abrió otro aparato", "OPEN", dao.sessions["srv-ajena"]?.status)
+        assertTrue(
+            "el cierre huérfano tiene que ser visible antes de cerrar",
+            repo.operacionesRechazadas().any { it.kind == "CLOSE" && it.sessionId == "prov-1" },
+        )
+    }
+
+    // MARK: - 10. La regla PURA de la cola tras adoptar
+
+    /** Caja MÍA (`ventana = null`): se muda TODO, como siempre. */
+    @Test
+    fun `la caja propia muda la cola entera`() {
+        val cola = listOf(
+            PendingDrawerOp("OPEN", "prov-1", 50_000, null, "a", 10),
+            PendingDrawerOp("PAY_OUT", "prov-1", 5_000, null, "b", 20),
+            PendingDrawerOp("CLOSE", "prov-1", 45_000, null, null, 30),
+            PendingDrawerOp("PAY_IN", "otra", 1_000, null, "c", 40),
+        )
+
+        val nueva = colaTrasAdoptarLaCaja(cola, "prov-1", "srv-1", ventana = null, ahora = 99)
+
+        assertEquals(listOf("srv-1", "srv-1", "srv-1", "otra"), nueva.map { it.sessionId })
+        assertTrue("nada se marca cuando la caja es mía", nueva.none { it.rechazadaEn != null })
+    }
+
+    /**
+     * Caja AJENA: viaja lo que ocurrió DENTRO de su ventana; la apertura se queda (quien la
+     * reprodujo la descarta), el cierre nunca viaja, y lo que se queda atrás se MARCA.
+     */
+    @Test
+    fun `la caja ajena solo se lleva lo que ocurrio dentro de su ventana`() {
+        val cola = listOf(
+            PendingDrawerOp("OPEN", "prov-1", 50_000, null, "a", 10),
+            PendingDrawerOp("PAY_OUT", "prov-1", 5_000, null, "b", 20), // antes de la ventana
+            PendingDrawerOp("PAY_IN", "prov-1", 2_000, null, "c", 70), // dentro de la ventana
+            PendingDrawerOp("CLOSE", "prov-1", 45_000, null, null, 80), // dentro, pero es un CIERRE
+            PendingDrawerOp("PAY_IN", "otra", 1_000, null, "d", 90),
+        )
+
+        val nueva = colaTrasAdoptarLaCaja(cola, "prov-1", "srv-1", ventana = 50, ahora = 99)
+        val porLlave = nueva.associateBy { it.localId ?: it.kind }
+
+        assertEquals("la apertura se queda: ya hay caja", "prov-1", porLlave["a"]?.sessionId)
+        assertEquals("el retiro anterior a la caja ajena NO viaja", "prov-1", porLlave["b"]?.sessionId)
+        assertEquals("lo que pasó con la caja ajena abierta sí es suyo", "srv-1", porLlave["c"]?.sessionId)
+        assertEquals("un cierre nunca firma el arqueo de otro", "prov-1", porLlave["CLOSE"]?.sessionId)
+        assertEquals("otra caja no se toca", "otra", porLlave["d"]?.sessionId)
+        assertEquals("el retiro que se quedó se MARCA", 99L, porLlave["b"]?.rechazadaEn)
+        assertEquals(MOTIVO_CAJA_NO_REGISTRADA, porLlave["b"]?.motivoDelRechazo)
+        assertEquals("y el cierre también", 99L, porLlave["CLOSE"]?.rechazadaEn)
+        assertNull("la apertura no se marca: su banner diría «Reintentar» sobre algo que no puede funcionar", porLlave["a"]?.rechazadaEn)
+        assertNull("lo que sí viaja no se marca", porLlave["c"]?.rechazadaEn)
+    }
+
+    /** Un rechazo que ya estaba NO se pisa: perderlo resucitaría un movimiento que el servidor negó. */
+    @Test
+    fun `una entrada ya rechazada conserva su motivo`() {
+        val cola = listOf(PendingDrawerOp("PAY_OUT", "prov-1", 5_000, null, "b", 20, rechazadaEn = 5, motivoDelRechazo = "Monto inválido"))
+
+        val nueva = colaTrasAdoptarLaCaja(cola, "prov-1", "srv-1", ventana = 50, ahora = 99)
+
+        assertEquals(5L, nueva[0].rechazadaEn)
+        assertEquals("Monto inválido", nueva[0].motivoDelRechazo)
     }
 
     // MARK: - Helpers de la cola

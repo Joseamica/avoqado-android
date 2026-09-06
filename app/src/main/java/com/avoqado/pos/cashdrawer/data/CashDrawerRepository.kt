@@ -704,6 +704,60 @@ private fun sha256Hex(texto: String): String =
         .joinToString("") { "%02x".format(it) }
 
 /**
+ * 🔴 EL MOTIVO QUE VE EL CAJERO cuando su caja nunca llegó a existir en el servidor.
+ *
+ * Texto IDÉNTICO en Android y en iOS: es lo único que explica un movimiento que se hizo de verdad
+ * y que el servidor no va a conocer nunca.
+ */
+internal const val MOTIVO_CAJA_NO_REGISTRADA: String =
+    "Tu caja nunca quedó registrada: el negocio ya tenía otra abierta. Este movimiento no se puede enviar al servidor."
+
+/**
+ * 🔴 LA COLA DESPUÉS DE ADOPTAR UNA CAJA DEL SERVIDOR — y todo depende de DE QUIÉN es esa caja.
+ *
+ * **El defecto que esta función cierra (medido sobre Android 2.18.0 / iOS 1.10):** la tablet abre
+ * sin red a las 10:22 y hace un retiro de $50 a las 10:30; a las 12:00 OTRO aparato abre la caja
+ * del negocio. Al reconectar, el `POST /open` recibe 409, se adopta la caja ajena, y la cola se
+ * mudaba ENTERA: el retiro salía con el `sessionId` de esa caja y el servidor —que sólo comprueba
+ * el venue— se lo restaba a SU esperado. Un faltante fabricado del tamaño exacto del retiro.
+ *
+ * - [ventana] `null` ⇒ la caja adoptada ES la de esta apertura ([esMiPropiaCaja]): se muda TODO,
+ *   como siempre. Sus entradas nacieron después de tocar «Abrir caja» y son suyas por construcción.
+ * - [ventana] con valor ⇒ la caja es de OTRO. Sólo viaja lo que ocurrió MIENTRAS esa caja estaba
+ *   abierta (`at >= ventana`, la MISMA cota con la que se mudan los eventos en
+ *   `CashDrawerDao.repointEventsFrom`, para que la cola y Room no puedan divergir), **nunca el
+ *   CIERRE** —firmaría el arqueo de la caja de otro con MI conteo— y **nunca la APERTURA**, que
+ *   quien la reprodujo descarta porque ya hay caja.
+ *
+ * 🔴 Y lo que se queda atrás NO se borra ni se deja dando vueltas: se MARCA. Su caja no existe en
+ * el servidor y no va a existir, así que reintentarlo sería un 404 eterno que detiene la corrida
+ * en cada pasada, y borrarlo sería un descarte en silencio de dinero que sí salió del cajón. Lo
+ * marcado es visible antes de cerrar ([OperacionRechazada]) y se cierra con «Ya lo vi».
+ *
+ * Función PURA: es la única forma de probar fila por fila las dos direcciones sin un servidor.
+ */
+internal fun colaTrasAdoptarLaCaja(
+    cola: List<PendingDrawerOp>,
+    deSesion: String,
+    aSesion: String,
+    ventana: Long?,
+    ahora: Long,
+    motivoHuerfano: String = MOTIVO_CAJA_NO_REGISTRADA,
+): List<PendingDrawerOp> {
+    if (deSesion == aSesion) return cola
+    return cola.map { op ->
+        when {
+            op.sessionId != deSesion -> op
+            ventana == null -> op.copy(sessionId = aSesion)
+            op.kind == "OPEN" -> op
+            op.kind != "CLOSE" && op.at >= ventana -> op.copy(sessionId = aSesion)
+            op.rechazadaEn != null -> op
+            else -> op.copy(rechazadaEn = ahora, motivoDelRechazo = motivoHuerfano)
+        }
+    }
+}
+
+/**
  * El aviso durable de que una apertura terminó ADOPTANDO la caja de alguien más (I1).
  *
  * Vive en disco, no en memoria: el cajero tiene que enterarse aunque la app se reinicie entre la
@@ -825,10 +879,14 @@ class CashDrawerRepository @Inject constructor(
                 val method = obj["method"]?.jsonPrimitive?.contentOrNull ?: return@map null
                 val dollars = obj["total"]?.jsonPrimitive?.doubleOrNull ?: 0.0
                 val tips = obj["tips"]?.jsonPrimitive?.doubleOrNull ?: 0.0
+                // 🔴 `roundToInt`, NUNCA `toInt()`: `toInt()` TRUNCA, y el binario no representa
+                // exacto $2.30 (2.2999…) ⇒ 229 en vez de 230; 4.06 → 405; 19.99 → 1998. Un centavo
+                // por renglón, siempre a la baja, en el papel que se queda en el cajón. El resto
+                // del archivo ya redondeaba (fondo, conteo, sobrante) y iOS también.
                 TenderRow(
                     method = method,
-                    totalCents = (dollars * 100).toInt(),
-                    tipsCents = (tips * 100).toInt(),
+                    totalCents = (dollars * 100).roundToInt(),
+                    tipsCents = (tips * 100).roundToInt(),
                 )
             }
             if (filas.any { it == null }) {
@@ -903,7 +961,12 @@ class CashDrawerRepository @Inject constructor(
          * El servidor tiene una caja abierta y ya quedó adoptada en Room. [llave] es la `localId` de su
          * evento OPEN si la trae (N1): es lo que decide si esa caja es la de MI apertura o la de otro.
          */
-        data class Adoptada(val session: CashDrawerSessionEntity, val llave: String? = null) : CajaDelServidor
+        data class Adoptada(
+            val session: CashDrawerSessionEntity,
+            val llave: String? = null,
+            /** ¿Esa caja es la de MI apertura? Ver [esMiPropiaCaja]. `true` cuando no hay apertura que comparar. */
+            val esLaPropia: Boolean = true,
+        ) : CajaDelServidor
 
         /** 2xx legible que dice explícitamente que NO hay caja abierta. */
         data object NoHayNinguna : CajaDelServidor
@@ -917,7 +980,7 @@ class CashDrawerRepository @Inject constructor(
      *
      * Propaga la excepción de red a propósito: `syncFromApi` ya la atrapa y el replay la traduce.
      */
-    private suspend fun pedirCajaAbiertaAlServidor(sesionLocal: String? = null): CajaDelServidor {
+    private suspend fun pedirCajaAbiertaAlServidor(opDeLaApertura: PendingDrawerOp? = null): CajaDelServidor {
         val request = Request.Builder()
             .url("$baseUrl/current")
             .get()
@@ -935,10 +998,17 @@ class CashDrawerRepository @Inject constructor(
             if (sessionObj == null) {
                 CajaDelServidor.NoHayNinguna
             } else {
+                // 🔴 LA IDENTIDAD SE DECIDE ANTES DE TOCAR NADA. La llave del eco ya se leía aquí,
+                // pero DESPUÉS de adoptar — y para entonces los eventos y la cola ya se habían
+                // mudado a la caja ajena. `esMiPropiaCaja` es la decisión real y tiene que ir
+                // primero, o el aviso llega cuando el dinero ya se movió.
+                val llave = llaveDelEventoOpen((sessionObj["events"] ?: root["events"]) as? JsonArray)
+                val esLaPropia = opDeLaApertura == null ||
+                    esMiPropiaCaja(parseSessionFromApi(sessionObj), opDeLaApertura, deviceName, staffId, llave)
                 // Events live inside the session payload (fallback: top-level).
-                val session = adoptServerSession(sessionObj, root["events"]?.jsonArray, sesionLocal)
-                Log.d(TAG, "✅ Caja del server sincronizada: ${session.id}")
-                CajaDelServidor.Adoptada(session, llaveDelEventoOpen((sessionObj["events"] ?: root["events"]) as? JsonArray))
+                val session = adoptServerSession(sessionObj, root["events"]?.jsonArray, opDeLaApertura?.sessionId, esLaPropia)
+                Log.d(TAG, "✅ Caja del server sincronizada: ${session.id} (¿es mi apertura? $esLaPropia)")
+                CajaDelServidor.Adoptada(session, llave, esLaPropia)
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ Parse current session error: ${e.message}")
@@ -1018,12 +1088,24 @@ class CashDrawerRepository @Inject constructor(
          * abierta y vacía —la caja fantasma— con la local duplicada en el historial.
          */
         sesionLocal: String? = null,
+        /**
+         * 🔴 ¿La caja que el servidor devolvió es LA DE ESTA APERTURA? Lo contesta [esMiPropiaCaja]
+         * con la llave del eco (N1), y decide la excepción de la ventana.
+         *
+         * Antes la excepción se decidía con el ID LOCAL (`provisional.id == sesionLocal`), que sólo
+         * dice «esta es la caja cuya apertura estoy reproduciendo» — y por el camino del 409 esa
+         * caja es la de OTRO APARATO. Con `desde = 0` se mudaba a ella el retiro que este cajero
+         * había hecho antes de que existiera, y el servidor se lo restaba a SU esperado: faltante
+         * fabricado. La identidad no se puede inferir del id local; la contesta la llave.
+         */
+        esLaPropia: Boolean = true,
     ): CashDrawerSessionEntity {
         val parsed = parseSessionFromApi(sessionObj)
         // 🔴 La cola se muda ANTES de mirar nada: así el cierre encolado de la caja local queda
         // nombrando ya a la caja del servidor y la guarda de abajo lo encuentra. Sin esto, un
         // cierre encolado con el id LOCAL no frenaba la adopción y el conteo del cajero se perdía.
-        if (sesionLocal != null) reapuntarPendientes(sesionLocal, parsed.id)
+        // Si la caja es AJENA se muda sólo lo que ocurrió dentro de su ventana (ver [ventana]).
+        if (sesionLocal != null) reapuntarPendientes(sesionLocal, parsed.id, if (esLaPropia) null else parsed.openedAt)
         // 🔴 Si este aparato ya cerró ESA caja sin red, el server todavía la ve OPEN. Adoptarla
         // como abierta borraría el conteo del cajero (pasó en la Samsung, 27-ago). Se conserva
         // CERRADA con el conteo local; el cierre pendiente se reproduce en el siguiente sync.
@@ -1062,11 +1144,18 @@ class CashDrawerRepository @Inject constructor(
                     // servidor estampaba la hora del REPLAY: pantalla en $0 de ventas y el ticket del
                     // corte contradiciéndose. La ventana se conserva para las OTRAS cajas abiertas —la
                     // de un turno anterior que este aparato nunca vio cerrar—, que es para lo que existía.
-                    val desde = if (provisional.id == sesionLocal) 0L else server.openedAt
+                    //
+                    // 🔴 Y la excepción se decide con la IDENTIDAD, no con el id local: por el
+                    // camino del 409 la caja del servidor la abrió OTRO APARATO, y `desde = 0`
+                    // le mudaba encima el retiro que este cajero hizo ANTES de que esa caja
+                    // existiera. Ver [esLaPropia].
+                    val esLaDeEstaApertura = provisional.id == sesionLocal
+                    val ajena = esLaDeEstaApertura && !esLaPropia
+                    val desde = if (esLaDeEstaApertura && esLaPropia) 0L else server.openedAt
                     dao.repointEventsFrom(provisional.id, server.id, desde)
                     // La cola durable nombra a la caja igual que Room, o sus movimientos viajarían
                     // con un id que el servidor no conoce. Ver [reapuntarPendientes].
-                    reapuntarPendientes(provisional.id, server.id)
+                    reapuntarPendientes(provisional.id, server.id, if (ajena) desde else null)
                     val sobrantes = dao.getSessionEvents(provisional.id)
                     // 🔴 Caja FANTASMA (vista dos veces en la Samsung, 27-ago): el OPEN local nace unos ms
                     // ANTES del openedAt del server, queda fuera de la ventana y la provisional se
@@ -1297,7 +1386,15 @@ class CashDrawerRepository @Inject constructor(
 
     /** Lo que pasó con UNA apertura. `ligada = true` ⇒ el servidor NO creó mi caja: adopté la suya. */
     internal sealed interface ResultadoDeLaApertura {
-        data class Adoptada(val session: CashDrawerSessionEntity, val ligada: Boolean) : ResultadoDeLaApertura
+        data class Adoptada(
+            val session: CashDrawerSessionEntity,
+            val ligada: Boolean,
+            /**
+             * 🔴 `false` = la caja adoptada la abrió OTRO APARATO. Lo de ESTA caja no puede viajar
+             * con el id de aquélla, así que el replay ni la renombra ni levanta su barrera.
+             */
+            val esLaPropia: Boolean = true,
+        ) : ResultadoDeLaApertura
         /**
          * 🔴 [llegoALaRed] es lo que la ronda 3 añadió, y es dinero: sólo un intento que LLEGÓ al
          * servidor arranca el reloj del tope y activa el backoff. Lo contesta la función pura
@@ -1377,15 +1474,31 @@ class CashDrawerRepository @Inject constructor(
 
     /** Adopta la caja que vino en el cuerpo del `POST /open`. `null` = cuerpo ilegible. */
     private suspend fun adoptarDelCuerpo(op: PendingDrawerOp, body: String, ligada: Boolean): ResultadoDeLaApertura? {
+        val llave = leerLlaveDeLaApertura(body)
+        // 🔴 `CREADA` es mía por definición: el servidor dice que la creó a partir de MI POST, así
+        // que no se le pregunta a la heurística —un `deviceName` que el servidor normalice distinto
+        // devolvería `false` y tiraría por la ventana la venta hecha sin red (F3)—. `LIGADA` sí:
+        // ahí la caja PUEDE ser la de otro aparato, y es el mismo defecto que el 409.
+        val esLaPropia = !ligada || (
+            parseSessionEnvelopeSeguro(body)
+                ?.let { esMiPropiaCaja(parseSessionFromApi(it), op, deviceName, staffId, llave) } ?: true
+            )
         val session = try {
             parseSessionEnvelope(json.decodeFromString<JsonObject>(body))
-                ?.let { adoptServerSession(it, sesionLocal = op.sessionId) }
+                ?.let { adoptServerSession(it, sesionLocal = op.sessionId, esLaPropia = esLaPropia) }
         } catch (e: Exception) {
             Log.e(TAG, "❌ Parse open session error: ${e.message}")
             null
         } ?: return null
-        if (ligada) anotarAdopcion(op, session, leerLlaveDeLaApertura(body))
-        return ResultadoDeLaApertura.Adoptada(session, ligada)
+        if (ligada) anotarAdopcion(op, session, llave)
+        return ResultadoDeLaApertura.Adoptada(session, ligada, esLaPropia)
+    }
+
+    /** El sobre de la sesión de un cuerpo, sin propagar la excepción: `null` = ilegible. */
+    private fun parseSessionEnvelopeSeguro(body: String): JsonObject? = try {
+        parseSessionEnvelope(json.decodeFromString<JsonObject>(body))
+    } catch (_: Exception) {
+        null
     }
 
     /**
@@ -1399,7 +1512,7 @@ class CashDrawerRepository @Inject constructor(
      */
     private suspend fun preguntarPorLaCajaDelServidor(op: PendingDrawerOp): ResultadoDeLaApertura {
         val respuesta = try {
-            pedirCajaAbiertaAlServidor(sesionLocal = op.sessionId)
+            pedirCajaAbiertaAlServidor(opDeLaApertura = op)
         } catch (e: Exception) {
             // 🔴 `llegoALaRed = true` sin mirar la excepción, y es correcto: aquí sólo se llega
             // DESPUÉS de que `POST /open` devolviera un código HTTP (201 ilegible o 409). El
@@ -1411,7 +1524,7 @@ class CashDrawerRepository @Inject constructor(
         return when (respuesta) {
             is CajaDelServidor.Adoptada -> {
                 anotarAdopcion(op, respuesta.session, respuesta.llave)
-                ResultadoDeLaApertura.Adoptada(respuesta.session, ligada = true)
+                ResultadoDeLaApertura.Adoptada(respuesta.session, ligada = true, esLaPropia = respuesta.esLaPropia)
             }
             // 🔴 REINTENTAR, no rechazo (hallazgo I3). «El servidor dijo que ya había un turno y su
             // /current no trae ninguno» es casi siempre una carrera benigna —otro aparato cerró
@@ -1689,13 +1802,21 @@ class CashDrawerRepository @Inject constructor(
      * el servidor contestaba 404 «esa caja no existe en este negocio» — que es REINTENTAR, no un
      * descarte — y el movimiento se quedaba dando vueltas para siempre, bloqueando además el
      * cierre. La cola tiene que hablar de la MISMA caja que Room.
+     *
+     * 🔴 Y por eso [ventana] existe: cuando la caja adoptada es de OTRO APARATO, mudar la cola
+     * entera le mandaba MI retiro con SU `sessionId` y le fabricaba un faltante del tamaño exacto
+     * del retiro. Qué viaja, qué se queda y qué se MARCA para que el cajero lo vea lo decide
+     * [colaTrasAdoptarLaCaja], que es pura. `null` = múdalo todo — el caso de siempre, cuando la
+     * caja adoptada es la mía.
      */
-    private fun reapuntarPendientes(deSesion: String, aSesion: String) = synchronized(candadoDeLaCola) {
+    private fun reapuntarPendientes(deSesion: String, aSesion: String, ventana: Long? = null) = synchronized(candadoDeLaCola) {
         if (deSesion == aSesion) return@synchronized
         val lista = pendientes()
         if (lista.none { it.sessionId == deSesion }) return@synchronized
-        guardarPendientes(lista.map { if (it.sessionId == deSesion) it.copy(sessionId = aSesion) else it })
-        Log.d(TAG, "🔀 Cola del cajón reapuntada: $deSesion → $aSesion")
+        val nueva = colaTrasAdoptarLaCaja(lista, deSesion, aSesion, ventana, System.currentTimeMillis())
+        if (nueva == lista) return@synchronized
+        guardarPendientes(nueva)
+        Log.d(TAG, "🔀 Cola del cajón reapuntada: $deSesion → $aSesion (ventana=$ventana)")
     }
 
     /**
@@ -2058,9 +2179,19 @@ class CashDrawerRepository @Inject constructor(
                 }
                 when (val resultado = enviarApertura(op)) {
                     is ResultadoDeLaApertura.Adoptada -> {
-                        aperturasSinConfirmar -= original.sessionId
                         val adoptada = resultado.session
-                        if (adoptada.id != original.sessionId) renombres[original.sessionId] = adoptada.id
+                        // 🔴 EL RENOMBRE Y LA BARRERA SÓLO SE LEVANTAN SI LA CAJA ES MÍA. Con una
+                        // caja ajena, `renombres` le ponía a lo que sigue en la cola el id de esa
+                        // caja —el retiro de este cajero salía contra el arqueo de otro aparato— y
+                        // quitar la barrera dejaba pasar lo demás de una caja que el servidor NO
+                        // tiene y no va a tener. Lo suyo se queda esperando y lo que ya no puede
+                        // viajar quedó MARCADO en [colaTrasAdoptarLaCaja], que es lo que el cajero ve.
+                        if (resultado.esLaPropia) {
+                            aperturasSinConfirmar -= original.sessionId
+                            if (adoptada.id != original.sessionId) renombres[original.sessionId] = adoptada.id
+                        } else {
+                            Log.w(TAG, "🔗 La caja adoptada (${adoptada.id}) no es la de esta apertura: lo de ${original.sessionId} no viaja con su id")
+                        }
                         adoptadas[original.sessionId] = adoptada
                         // La entrada se localiza por su `localId`, que el renombre no toca (M1).
                         quitar(op)

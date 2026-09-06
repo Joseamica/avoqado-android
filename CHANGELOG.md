@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+## [2.18.1] - 2026-09-06
+
+### Fixed
+- **🔴 Al reconectar, la caja abierta sin red ya no mete su dinero en la caja de otro aparato.** Si otro aparato abrió la caja del negocio mientras la tablet estaba sin red, la tablet adoptaba esa caja como propia y le colgaba sus movimientos previos (un retiro de $50 hecho antes de que esa caja existiera aparecía como faltante en la caja del otro). Ahora «¿es mi caja?» se decide con la identidad (la llave de la apertura), no con el id local: una caja ajena sólo recibe lo ocurrido mientras estuvo abierta, nunca el cierre ni la apertura, y lo que queda fuera se marca en Caja («Ya lo vi») en vez de reintentarse para siempre.
+- **El corte ya no pierde un centavo por renglón**: el desglose por método redondea en vez de truncar (2.30 salía como 2.29).
+
 ## [2.18.0] - 2026-09-05
 
 ### Added
