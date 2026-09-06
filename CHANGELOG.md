@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [2.18.0] - 2026-09-05
+
+### Added
+- **Turno de caja del NEGOCIO**: la pantalla de Caja dice «Turno de caja» y muestra quién lo abrió y desde qué aparato; abrir la caja crea o liga el turno del negocio en el servidor (ya no es de la persona), y cualquier cobro cae dentro de ese turno aunque lo haga otra persona.
+- **Cierre del día accionable**: cada pendiente (cuentas abiertas, caja, checador) navega a resolverlo; la lista de pedidos gana el filtro «Abiertas» y se abre ya filtrada.
+- **Apertura de caja sin red DURABLE**: la apertura entra a la cola antes de tocar la red, sobrevive a matar la app, se reproduce SOLA al volver la red y ANTES que los cobros (cobro rápido y mesas), una sola vez, y la caja del servidor conserva la hora real y una llave idempotente.
+- **Barrera con voz y tope**: si la apertura no llega al servidor, los cobros esperan y la app lo dice; a los 30 minutos con red (un 500 cuenta como «llegó») se sueltan con aviso; backoff de 30 s entre reintentos.
+
+### Fixed
+- Una apertura ligada a la caja ya abierta del negocio ya no se pinta como «adoptada» cuando es la propia; el aviso de adopción sale al abrir la caja, no al volver a entrar.
+- El retiro encolado por versiones anteriores ya no se pierde al actualizar; la caja que sólo existe en el aparato lo dice.
+
 ### Added
 - **Loader y splash de marca Avoqado**: las cargas bloqueantes ahora dibujan el isotipo desde la semilla y hacen crecer el trazo verde desde el pico inferior. El arranque nativo muestra la semilla de inmediato y Compose continúa la animación sin cambiar el flujo de navegación; los spinners compactos de botones y paginación permanecen nativos. Incluye modo sin movimiento para accesibilidad.
 
