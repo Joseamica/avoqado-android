@@ -374,6 +374,7 @@ private fun VenueData.toStoredVenue() = StoredVenue(
     timezone = timezone,
     permissions = permissions,
     organizationId = organizationId,
+    venueType = type,
 )
 
 /** Resultado de cambiar de usuario con PIN. */

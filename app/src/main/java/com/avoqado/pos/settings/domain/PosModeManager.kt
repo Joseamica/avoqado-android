@@ -49,4 +49,11 @@ class PosModeManager @Inject constructor(
     fun reloadForCurrentVenue() {
         _currentMode.value = loadMode()
     }
+
+    /**
+     * Modo que el GIRO del negocio sugiere para este local, o `null` si el giro
+     * no dice nada útil. Sólo alimenta la etiqueta "Sugerido para tu giro" del
+     * selector: no cambia `currentMode` ni se persiste — ver `modoSugeridoPorGiro`.
+     */
+    fun modoSugerido(): PosMode? = modoSugeridoPorGiro(secureStorage.venueType)
 }

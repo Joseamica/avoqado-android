@@ -350,6 +350,10 @@ class SecureStorage @Inject constructor(
     val venueLogo: String?
         get() = currentVenue?.logo
 
+    /** Giro del venue ACTUAL (`Venue.type`). Sólo SUGIERE el modo de punto de venta. */
+    val venueType: String?
+        get() = currentVenue?.venueType
+
     /** Nombre a mostrar del venue: el de la lista si el campo suelto viene vacío. */
     val venueDisplayName: String?
         get() = venueName?.takeIf { it.isNotBlank() } ?: currentVenue?.name
@@ -573,6 +577,9 @@ data class StoredVenue(
     // Organización dueña del venue (para agrupar en el picker de traslados CEDIS).
     // Default null: el JSON ya persistido de sesiones viejas decodifica sin él.
     val organizationId: String? = null,
+    // Giro del negocio. Espejo EXACTO del campo `venueType` de iOS.
+    // Default null: el JSON ya persistido de sesiones viejas decodifica sin él.
+    val venueType: String? = null,
 ) {
     val displayRole: String
         get() = roleDisplayName(role) ?: "Staff"

@@ -1,6 +1,7 @@
 package com.avoqado.pos.cashdrawer.presentation
 
 import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
+import com.avoqado.pos.cashdrawer.data.ConteoSospechoso
 import com.avoqado.pos.cashdrawer.data.EstadoDeLaApertura
 import com.avoqado.pos.cashdrawer.data.textoDeAdopcion
 import androidx.compose.material3.TextButton
@@ -320,6 +321,8 @@ private fun TabletCashDrawerLayout(
         val eventsForReport = viewModel.events.collectAsState().value
         CloseDrawerSheet(
             expectedAmountCents = expectedCents,
+            retiros = ConteoSospechoso.retirosDelDia(eventsForReport),
+            efectivoCobradoCents = ConteoSospechoso.efectivoCobradoCents(eventsForReport),
             onConfirm = { actualCents, note ->
                 // Capture session and events before closing
                 val closedSession = sessionForReport?.copy(
@@ -587,6 +590,8 @@ private fun PhoneCashDrawerLayout(
         val eventsForReport = viewModel.events.collectAsState().value
         CloseDrawerSheet(
             expectedAmountCents = expectedCents,
+            retiros = ConteoSospechoso.retirosDelDia(eventsForReport),
+            efectivoCobradoCents = ConteoSospechoso.efectivoCobradoCents(eventsForReport),
             onConfirm = { actualCents, note ->
                 val closedSession = sessionForReport?.copy(
                     actualAmountCents = actualCents,

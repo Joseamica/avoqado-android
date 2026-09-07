@@ -39,6 +39,10 @@ data class VenueData(
     // Para agrupar venues por organización (picker de traslados CEDIS). Opcional:
     // un server viejo que no lo mande deja null y el picker degrada a "todos".
     val organizationId: String? = null,
+    // Giro del negocio (`Venue.type`). El server ya lo mandaba y el aparato lo
+    // tiraba. Sólo SUGIERE el modo de punto de venta — ver `modoSugeridoPorGiro`.
+    // Opcional: un server viejo que no lo mande deja null y no se sugiere nada.
+    val type: String? = null,
 )
 
 @Serializable

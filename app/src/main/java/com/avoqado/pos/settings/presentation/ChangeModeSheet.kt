@@ -22,9 +22,13 @@ import androidx.compose.material3.RadioButton
 import androidx.compose.material3.RadioButtonDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -46,6 +50,8 @@ fun ChangeModeSheet(
 ) {
     val currentMode by posModeManager.currentMode.collectAsState()
     val modes = PosMode.entries.filter { it != PosMode.RESERVATIONS || reservationsAvailable }
+    // El giro del negocio no cambia mientras la hoja está abierta.
+    val modoSugerido = remember { posModeManager.modoSugerido() }
 
     ModalBottomSheet(
         onDismissRequest = onDismiss,
@@ -80,6 +86,7 @@ fun ChangeModeSheet(
                 ModeRow(
                     mode = mode,
                     isSelected = mode == currentMode,
+                    isSugerido = mode == modoSugerido,
                     onClick = { posModeManager.switchMode(mode) },
                 )
             }
@@ -112,6 +119,8 @@ internal fun posModeIcon(mode: PosMode): ImageVector = when (mode) {
 private fun ModeRow(
     mode: PosMode,
     isSelected: Boolean,
+    /** El giro del negocio apunta a este modo. Informa; no lo selecciona. */
+    isSugerido: Boolean,
     onClick: () -> Unit,
 ) {
     val icon = posModeIcon(mode)
@@ -144,6 +153,21 @@ private fun ModeRow(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+            if (isSugerido) {
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xs))
+                Text(
+                    text = "Sugerido para tu giro",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(percent = 50))
+                        .background(MaterialTheme.colorScheme.secondaryContainer)
+                        .padding(
+                            horizontal = AvoqadoTheme.spacing.sm,
+                            vertical = AvoqadoTheme.spacing.xxs,
+                        ),
+                )
+            }
             Text(
                 text = "Activo en 1 dispositivo",
                 style = MaterialTheme.typography.labelSmall,
