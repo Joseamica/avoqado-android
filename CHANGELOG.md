@@ -4,6 +4,21 @@
 
 ## [2.18.1] - 2026-09-06
 
+> Publicada a Play en dos builds con el mismo nombre: **(37)** trae sólo los arreglos de caja de
+> abajo; **(38)**, subida el 6-sep por la noche, añade además el renombre de modos y el conteo
+> sospechoso listados aquí. El `versionCode` lo calcula la CI contra Play, así que el nombre no
+> cambió.
+
+### Added
+- **Los modos del punto de venta se llaman como el mercado**: Retail → **Mostrador**, Restaurante →
+  **Mesas**, Reservas → **Citas**. Sólo cambia la etiqueta: el modo que cada aparato tenía guardado
+  no se mueve. Y el giro del negocio ahora **sugiere** un modo en el selector («Sugerido para tu
+  giro») sin cambiarlo por su cuenta — un negocio con giro de restaurante que cobra en mostrador
+  sigue abriendo en Mostrador.
+- **Al cerrar la caja, si el conteo coincide con el dinero que ya se sacó** (los retiros del día, o
+  todo lo cobrado en efectivo), la app pregunta una vez si contaste lo que quedó DENTRO del cajón.
+  Es una pregunta, no un bloqueo, y no revela el esperado: el conteo sigue siendo ciego.
+
 ### Fixed
 - **🔴 Al reconectar, la caja abierta sin red ya no mete su dinero en la caja de otro aparato.** Si otro aparato abrió la caja del negocio mientras la tablet estaba sin red, la tablet adoptaba esa caja como propia y le colgaba sus movimientos previos (un retiro de $50 hecho antes de que esa caja existiera aparecía como faltante en la caja del otro). Ahora «¿es mi caja?» se decide con la identidad (la llave de la apertura), no con el id local: una caja ajena sólo recibe lo ocurrido mientras estuvo abierta, nunca el cierre ni la apertura, y lo que queda fuera se marca en Caja («Ya lo vi») en vez de reintentarse para siempre.
 - **El corte ya no pierde un centavo por renglón**: el desglose por método redondea en vez de truncar (2.30 salía como 2.29).
