@@ -12,6 +12,6 @@ import com.avoqado.pos.printing.data.AlmacenDeTexto
 class AlmacenEnMemoria : AlmacenDeTexto {
     private var texto: String? = null
     override fun leer(): String? = texto
-    override fun escribir(texto: String) { this.texto = texto }
+    override fun escribir(texto: String): Boolean { this.texto = texto; return true }
     override fun borrar() { texto = null }
 }

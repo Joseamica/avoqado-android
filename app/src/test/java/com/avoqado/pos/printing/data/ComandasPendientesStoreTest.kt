@@ -6,6 +6,7 @@ import com.avoqado.pos.printing.routing.PrinterInfo
 import com.avoqado.pos.printing.routing.StationInfo
 import com.avoqado.pos.printing.routing.TicketPlan
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Test
 
@@ -13,7 +14,7 @@ import org.junit.Test
 private class AlmacenFalso(var texto: String? = null) : AlmacenDeTexto {
     var borrados = 0
     override fun leer(): String? = texto
-    override fun escribir(texto: String) { this.texto = texto }
+    override fun escribir(texto: String): Boolean { this.texto = texto; return true }
     override fun borrar() { texto = null; borrados++ }
 }
 
@@ -143,7 +144,10 @@ class ComandasPendientesStoreTest {
             "volvió un aviso de otra sucursal: se puede imprimir en el local equivocado",
             ComandasPendientesStore(almacen).leer("venue-OTRO", ahora),
         )
-        assertNull(almacen.texto)
+        // 🔴 SUSPENDE, no borra: al volver a su sucursal la comanda pendiente sigue ahí.
+        // Borrarla haría desaparecer un pedido real sólo porque alguien cambió de sucursal.
+        assertNotNull("se BORRÓ un pendiente real al cambiar de sucursal", almacen.texto)
+        assertEquals("ORD-42", ComandasPendientesStore(almacen).leer("venue-1", ahora)?.orderNumber)
     }
 
     @Test

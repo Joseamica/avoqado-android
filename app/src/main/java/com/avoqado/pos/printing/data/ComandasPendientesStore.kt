@@ -47,14 +47,18 @@ class ComandasPendientesStore @Inject constructor(
         val guardadaEn: Long,
     )
 
-    fun guardar(estado: EstadoDeComanda.NoSalio, ahora: Long = System.currentTimeMillis()) {
+    /**
+     * @return `true` si el aviso quedó de verdad en el aparato. 🔴 Un `false` NO se puede tratar
+     * como éxito: significa que si la app muere ahora, esa comanda desaparece.
+     */
+    fun guardar(estado: EstadoDeComanda.NoSalio, ahora: Long = System.currentTimeMillis()): Boolean =
         runCatching {
             val texto = json.encodeToString(
                 Guardada(estado.estaciones, estado.causa, estado.orderNumber, estado.trabajo, ahora),
             )
             almacen.escribir(texto)
         }.onFailure { Log.w(TAG, "No se pudo guardar la comanda pendiente: ${it.message}") }
-    }
+            .getOrDefault(false)
 
     /**
      * Devuelve el aviso guardado, o `null` si no hay o si ya VENCIÓ.
@@ -86,7 +90,11 @@ class ComandasPendientesStore @Inject constructor(
         // FÍSICAMENTE en el local equivocado (P1 #5 de la 2ª auditoría de Codex, 2026-09-07).
         // Sin venue no se arriesga: se descarta.
         if (guardada.trabajo?.venueId == null || guardada.trabajo.venueId != venueIdActual) {
-            limpiar()
+            // 🔴 SUSPENDE, no borra. Es de otra sucursal: no se enseña ni se puede reimprimir
+            // aquí —con dos locales en un 192.168.1.x el papel saldría en el equivocado— pero
+            // BORRARLO haría desaparecer una comanda pendiente real sólo porque alguien cambió
+            // de sucursal en la tablet. Al volver a su sucursal, ahí sigue.
+            // (Lo señaló Codex al revisar mi propio arreglo del venue, 2026-09-08.)
             return null
         }
         return EstadoDeComanda.NoSalio(
@@ -111,13 +119,19 @@ class ComandasPendientesStore @Inject constructor(
 /** Dónde se guarda el texto. Ver el constructor de pruebas de [ComandasPendientesStore]. */
 interface AlmacenDeTexto {
     fun leer(): String?
-    fun escribir(texto: String)
+    /** @return `true` si de verdad quedó en disco — ver la nota de `commit()` vs `apply()`. */
+    fun escribir(texto: String): Boolean
     fun borrar()
 }
 
 class PrefsComoAlmacen(context: Context) : AlmacenDeTexto {
     private val prefs = context.getSharedPreferences("comandas_pendientes", Context.MODE_PRIVATE)
     override fun leer(): String? = prefs.getString("ultima_no_salio", null)
-    override fun escribir(texto: String) = prefs.edit().putString("ultima_no_salio", texto).apply()
-    override fun borrar() = prefs.edit().remove("ultima_no_salio").apply()
+    // 🔴 `commit()`, no `apply()`. `apply()` escribe en segundo plano y devuelve de inmediato:
+    // si el proceso muere justo después, lo «guardado» puede no estar en disco — y este almacén
+    // existe precisamente para sobrevivir a que la app muera. Android distingue las dos a
+    // propósito. El coste es un write síncrono de un JSON pequeño, y quien llama ya está fuera
+    // del camino del cobro. Devuelve si de verdad quedó guardado.
+    override fun escribir(texto: String): Boolean = prefs.edit().putString("ultima_no_salio", texto).commit()
+    override fun borrar() { prefs.edit().remove("ultima_no_salio").commit() }
 }
