@@ -1,6 +1,8 @@
 package com.avoqado.pos.orders
 
 import com.avoqado.pos.MainDispatcherRule
+import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.core.domain.printing.ComandaDispatcher
 import com.avoqado.pos.orders.data.OrdersRepository
 import com.avoqado.pos.orders.data.model.OrderSummary
 import com.avoqado.pos.orders.presentation.OrdersViewModel
@@ -41,7 +43,14 @@ class OrdersViewModelTest {
         val refreshGateFactory = mockk<com.avoqado.pos.core.domain.refresh.RefreshGateFactory>()
         every { refreshGateFactory.create(any(), any()) } returns
             com.avoqado.pos.core.domain.refresh.RefreshGate(clock = { kotlin.time.Duration.ZERO })
-        return OrdersViewModel(repository, refreshGateFactory)
+        // Task 6 (reimprimir comanda): ninguna prueba de este archivo la ejercita — mocks
+        // relajados que no interfieren con nada de lo de arriba.
+        return OrdersViewModel(
+            repository,
+            refreshGateFactory,
+            mockk<ComandaDispatcher>(relaxed = true),
+            mockk<SecureStorage>(relaxed = true),
+        )
     }
 
     // MARK: - Initial State

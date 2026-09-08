@@ -5,6 +5,7 @@ import com.avoqado.pos.printing.data.EstadoDeComanda
 import com.avoqado.pos.printing.data.PoliticaDeReintento
 import com.avoqado.pos.printing.data.PrinterService
 import com.avoqado.pos.printing.data.ReintentoDeComanda
+import com.avoqado.pos.printing.data.ReporteDeComandas
 import com.avoqado.pos.printing.data.model.KitchenItem
 import com.avoqado.pos.printing.data.model.KitchenTicketData
 import com.avoqado.pos.printing.routing.PrintConfig
@@ -86,7 +87,11 @@ class ComandaDispatcherTest {
         // con el MISMO mock de `comandaPrinter` de siempre. `ReintentoDeComanda` YA es inyectable
         // por Hilt (Tarea 3 le quitó el parámetro función de su constructor `@Inject`), así que
         // aquí también se construye directo, sin ningún rodeo.
-        dispatcher = ComandaDispatcher(printConfigRepository, ReintentoDeComanda(comandaPrinter), printerService)
+        dispatcher = ComandaDispatcher(
+            printConfigRepository,
+            ReintentoDeComanda(comandaPrinter, reporteDeComandas = mockk<ReporteDeComandas>(relaxed = true)),
+            printerService,
+        )
     }
 
     // MARK: - No regresión: el camino POST-PAGO del mostrador

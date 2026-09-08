@@ -6,11 +6,17 @@ import com.avoqado.pos.printing.routing.PrinterInfo
 import com.avoqado.pos.printing.routing.StationInfo
 import com.avoqado.pos.printing.routing.TicketPlan
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.mockk
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+
+/** «La libreta» (Task 16) por defecto no espera nada de nadie — relajado a propósito en las
+ *  pruebas que no la conciernen; las que SÍ la conciernen viven al final del archivo y verifican
+ *  contra su propio mock, no contra éste. */
+private fun reporteDeComandasFalso(): ReporteDeComandas = mockk<ReporteDeComandas>(relaxed = true)
 
 class ReintentoDeComandaTest {
 
@@ -63,7 +69,7 @@ class ReintentoDeComandaTest {
     fun `si sale al primer intento no espera ni reintenta`() = runTest {
         val esperas = mutableListOf<Long>()
         val printer = ComandaPrinterFalso(resultados = listOf(exito()))
-        val sut = ReintentoDeComanda(printer.comandaPrinter, esperar = { esperas += it })
+        val sut = ReintentoDeComanda(printer.comandaPrinter, esperar = { esperas += it }, reporteDeComandas = reporteDeComandasFalso())
 
         val estado = sut.insistir(planes, config, "ORD-1", "En tienda", null, emptyMap())
 
@@ -76,7 +82,7 @@ class ReintentoDeComandaTest {
     fun `si el primero truena y el segundo sale, sale sola sin molestar a nadie`() = runTest {
         val esperas = mutableListOf<Long>()
         val printer = ComandaPrinterFalso(resultados = listOf(fallo("Cocina"), exito()))
-        val sut = ReintentoDeComanda(printer.comandaPrinter, esperar = { esperas += it })
+        val sut = ReintentoDeComanda(printer.comandaPrinter, esperar = { esperas += it }, reporteDeComandas = reporteDeComandasFalso())
 
         val estado = sut.insistir(planes, config, "ORD-1", "En tienda", null, emptyMap())
 
@@ -88,7 +94,7 @@ class ReintentoDeComandaTest {
     @Test
     fun `se rinde tras seis intentos y reporta la causa REAL del ultimo`() = runTest {
         val printer = ComandaPrinterFalso(resultados = List(6) { fallo("Cocina", causa = "timeout 192.168.1.141:9100") })
-        val sut = ReintentoDeComanda(printer.comandaPrinter, esperar = { })
+        val sut = ReintentoDeComanda(printer.comandaPrinter, esperar = { }, reporteDeComandas = reporteDeComandasFalso())
 
         val estado = sut.insistir(planes, config, "ORD-1", "En tienda", null, emptyMap())
 
@@ -101,7 +107,7 @@ class ReintentoDeComandaTest {
         val printer = ComandaPrinterFalso(
             resultados = listOf(fallo("Cocina", planesQueFallaron = listOf(planCocina)), exito()),
         )
-        val sut = ReintentoDeComanda(printer.comandaPrinter, esperar = { })
+        val sut = ReintentoDeComanda(printer.comandaPrinter, esperar = { }, reporteDeComandas = reporteDeComandasFalso())
 
         sut.insistir(listOf(planCocina, planBarra), config, "ORD-1", "En tienda", null, emptyMap())
 
@@ -112,7 +118,7 @@ class ReintentoDeComandaTest {
     @Test
     fun `una estacion SALTADA no se reintenta ni una vez`() = runTest {
         val printer = ComandaPrinterFalso(resultados = listOf(saltada("Barra")))
-        val sut = ReintentoDeComanda(printer.comandaPrinter, esperar = { })
+        val sut = ReintentoDeComanda(printer.comandaPrinter, esperar = { }, reporteDeComandas = reporteDeComandasFalso())
 
         val estado = sut.insistir(planes, config, "ORD-1", "En tienda", null, emptyMap())
 
@@ -138,7 +144,7 @@ class ReintentoDeComandaTest {
                 exito(),
             ),
         )
-        val sut = ReintentoDeComanda(printer.comandaPrinter, esperar = { })
+        val sut = ReintentoDeComanda(printer.comandaPrinter, esperar = { }, reporteDeComandas = reporteDeComandasFalso())
 
         val estadoFinal = sut.insistir(planes, config, "ORD-1", "En tienda", null, emptyMap()) { estados += it }
 
@@ -162,7 +168,7 @@ class ReintentoDeComandaTest {
     fun `cuando se rinde, el ultimo estado emitido es NoSalio con las estaciones y la causa reales`() = runTest {
         val estados = mutableListOf<EstadoDeComanda>()
         val printer = ComandaPrinterFalso(resultados = List(6) { fallo("Cocina", causa = "timeout 192.168.1.141:9100") })
-        val sut = ReintentoDeComanda(printer.comandaPrinter, esperar = { })
+        val sut = ReintentoDeComanda(printer.comandaPrinter, esperar = { }, reporteDeComandas = reporteDeComandasFalso())
 
         val estadoFinal = sut.insistir(planes, config, "ORD-1", "En tienda", null, emptyMap()) { estados += it }
 
@@ -185,7 +191,7 @@ class ReintentoDeComandaTest {
         val estados = mutableListOf<EstadoDeComanda>()
         val esperas = mutableListOf<Long>()
         val printer = ComandaPrinterFalso(resultados = List(6) { fallo("Cocina", causa = "timeout") })
-        val sut = ReintentoDeComanda(printer.comandaPrinter, esperar = { esperas += it })
+        val sut = ReintentoDeComanda(printer.comandaPrinter, esperar = { esperas += it }, reporteDeComandas = reporteDeComandasFalso())
 
         val estadoFinal = sut.insistir(planes, config, "ORD-1", "En tienda", null, emptyMap(), maxIntentos = 1) {
             estados += it
@@ -201,11 +207,85 @@ class ReintentoDeComandaTest {
     @Test
     fun `sin pasar maxIntentos el tope sigue siendo el de PoliticaDeReintento`() = runTest {
         val printer = ComandaPrinterFalso(resultados = List(6) { fallo("Cocina", causa = "timeout") })
-        val sut = ReintentoDeComanda(printer.comandaPrinter, esperar = { })
+        val sut = ReintentoDeComanda(printer.comandaPrinter, esperar = { }, reporteDeComandas = reporteDeComandasFalso())
 
         sut.insistir(planes, config, "ORD-1", "En tienda", null, emptyMap())
 
         assertEquals(PoliticaDeReintento.INTENTOS_MAXIMOS, printer.llamadas)
+    }
+
+    // MARK: - «La libreta» (Task 16): AL TERMINAR, insistir() reporta — nunca a media insistencia
+
+    @Test
+    fun `al salir reporta UN agregado, sin estacion, con el venueId y el orderId reales`() = runTest {
+        val reporte = mockk<ReporteDeComandas>(relaxed = true)
+        val printer = ComandaPrinterFalso(resultados = listOf(exito()))
+        val sut = ReintentoDeComanda(printer.comandaPrinter, esperar = { }, reporteDeComandas = reporte)
+
+        sut.insistir(
+            planes, config, "ORD-1", "En tienda", null, emptyMap(),
+            venueId = "venue-1", orderId = "order-1",
+        )
+
+        coVerify(exactly = 1) {
+            reporte.reportar(
+                venueId = "venue-1",
+                orderId = "order-1",
+                orderNumber = "ORD-1",
+                estado = EstadoDeComanda.Salio,
+                intentos = 1,
+                stationId = null,
+                printerId = null,
+            )
+        }
+    }
+
+    @Test
+    fun `al rendirse reporta UNA vez POR ESTACION que de verdad tronó, con su stationId`() = runTest {
+        val reporte = mockk<ReporteDeComandas>(relaxed = true)
+        val printer = ComandaPrinterFalso(resultados = List(6) { fallo("Cocina", causa = "timeout") })
+        val sut = ReintentoDeComanda(printer.comandaPrinter, esperar = { }, reporteDeComandas = reporte)
+
+        val estadoFinal = sut.insistir(
+            planes, config, "ORD-1", "En tienda", null, emptyMap(),
+            venueId = "venue-1", orderId = "order-1",
+        )
+
+        coVerify(exactly = 1) {
+            reporte.reportar(
+                venueId = "venue-1",
+                orderId = "order-1",
+                orderNumber = "ORD-1",
+                estado = estadoFinal,
+                intentos = PoliticaDeReintento.INTENTOS_MAXIMOS,
+                stationId = "st_cocina",
+                printerId = null,
+            )
+        }
+    }
+
+    @Test
+    fun `una estacion SALTADA sin failedPlans reporta AGREGADO en vez de no reportar nada`() = runTest {
+        val reporte = mockk<ReporteDeComandas>(relaxed = true)
+        val printer = ComandaPrinterFalso(resultados = listOf(saltada("Barra")))
+        val sut = ReintentoDeComanda(printer.comandaPrinter, esperar = { }, reporteDeComandas = reporte)
+
+        val estadoFinal = sut.insistir(
+            planes, config, "ORD-1", "En tienda", null, emptyMap(),
+            venueId = "venue-1", orderId = "order-1",
+        )
+
+        coVerify(exactly = 1) {
+            reporte.reportar(
+                venueId = "venue-1",
+                orderId = "order-1",
+                orderNumber = "ORD-1",
+                estado = estadoFinal,
+                intentos = 1,
+                stationId = null,
+                printerId = null,
+            )
+        }
     }
 }
 

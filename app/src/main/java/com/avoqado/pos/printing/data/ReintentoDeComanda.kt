@@ -44,11 +44,17 @@ sealed interface EstadoDeComanda {
 @Singleton
 class ReintentoDeComanda @Inject constructor(
     private val comandaPrinter: ComandaPrinter,
+    /** «La libreta» (Task 16) — se reporta AL TERMINAR, nunca a media insistencia. */
+    private val reporteDeComandas: ReporteDeComandas,
 ) {
     private var esperar: suspend (Long) -> Unit = { delay(it) }
 
     /** Visible para pruebas: inyecta una espera falsa sin pasar por Hilt. */
-    constructor(comandaPrinter: ComandaPrinter, esperar: suspend (Long) -> Unit) : this(comandaPrinter) {
+    constructor(
+        comandaPrinter: ComandaPrinter,
+        esperar: suspend (Long) -> Unit,
+        reporteDeComandas: ReporteDeComandas,
+    ) : this(comandaPrinter, reporteDeComandas) {
         this.esperar = esperar
     }
 
@@ -59,6 +65,9 @@ class ReintentoDeComanda @Inject constructor(
      *   reintentos), porque insistir ahí retendría la reclamación del pedido hasta ~50 s en vez
      *   de soltarla en segundos para que otro aparato la tome — ver
      *   [com.avoqado.pos.kds.presentation.KDSViewModel].
+     * @param venueId y @param orderId son para [ReporteDeComandas] — sin `venueId` no se reporta
+     *   nada (nunca se inventa un venue); sin `orderId` el reporte cae a `orderNumber` para no
+     *   colisionar el `eventId` de dos órdenes sin id persistido.
      */
     suspend fun insistir(
         plans: List<TicketPlan>,
@@ -68,6 +77,8 @@ class ReintentoDeComanda @Inject constructor(
         serverName: String?,
         comboNames: Map<String, String>,
         maxIntentos: Int = PoliticaDeReintento.INTENTOS_MAXIMOS,
+        venueId: String? = null,
+        orderId: String? = null,
         alCambiarEstado: (EstadoDeComanda) -> Unit = {},
     ): EstadoDeComanda {
         var pendientes = plans
@@ -94,6 +105,39 @@ class ReintentoDeComanda @Inject constructor(
             EstadoDeComanda.NoSalio(sinComanda, ultimo.lastError, orderNumber)
         }
         alCambiarEstado(estado)
+        reportar(estado, ultimo, orderNumber, intentos, venueId, orderId)
         return estado
+    }
+
+    /**
+     * «La libreta»: un reporte AGREGADO si todo salió (no hay, hoy, una lista de estaciones que
+     * SÍ salieron — sólo [ComandaPrinter.Result.failedPlans], que Task 2 ya expone), y uno POR
+     * ESTACIÓN que de verdad TRONÓ cuando algo se quedó sin comanda — para que el dashboard sepa
+     * QUÉ impresora falló, no sólo que "algo" falló. Nunca frena ni rompe: ver [ReporteDeComandas].
+     */
+    private suspend fun reportar(
+        estado: EstadoDeComanda,
+        ultimo: ComandaPrinter.Result,
+        orderNumber: String,
+        intentos: Int,
+        venueId: String?,
+        orderId: String?,
+    ) {
+        when {
+            estado is EstadoDeComanda.Salio -> {
+                reporteDeComandas.reportar(venueId, orderId, orderNumber, estado, intentos)
+            }
+            ultimo.failedPlans.isNotEmpty() -> {
+                for (plan in ultimo.failedPlans) {
+                    reporteDeComandas.reportar(venueId, orderId, orderNumber, estado, intentos, stationId = plan.stationId)
+                }
+            }
+            else -> {
+                // Todo lo que faltó fue SALTADO (sin impresora resoluble) — no un fallo de
+                // impresión. `Result` no trae el id de esas estaciones (Task 2 sólo agregó
+                // `failedPlans`), así que se reporta AGREGADO en vez de no reportar nada.
+                reporteDeComandas.reportar(venueId, orderId, orderNumber, estado, intentos)
+            }
+        }
     }
 }

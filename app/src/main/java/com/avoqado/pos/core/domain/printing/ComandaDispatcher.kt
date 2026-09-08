@@ -103,6 +103,9 @@ class ComandaDispatcher @Inject constructor(
      *   mientras insiste, para que la pantalla pueda mostrar "reintentando…" y, al final, el
      *   aviso con la causa real. Nunca se llama en el camino legado (fire-and-forget: no hay
      *   nada que avisar hasta que termina, y termina imprimiendo, no reportando).
+     * @param orderId el id REAL de la orden (server) — para «la libreta» (Task 16), que lo manda
+     *   al servidor junto con el resultado. `null` en los caminos que todavía no lo tienen a
+     *   mano (hoy: el KDS); ahí el reporte cae a `orderNumber` en vez de perderse.
      * @return el [EstadoDeComanda] final del ruteo, para que el caller pueda AVISAR de una
      *   comanda que no salió (Testarudo cobró días sin comanda de barra porque este resultado
      *   se tiraba). `null` cuando no hubo ruteo que reportar: sin renglones, o el camino
@@ -117,6 +120,7 @@ class ComandaDispatcher @Inject constructor(
         serverName: String? = null,
         noStationsFallback: NoStationsFallback = NoStationsFallback.RouteAnyway,
         maxIntentos: Int = PoliticaDeReintento.INTENTOS_MAXIMOS,
+        orderId: String? = null,
         alCambiarEstado: (EstadoDeComanda) -> Unit = {},
     ): EstadoDeComanda? {
         // Sin renglones no hay nada que imprimir — y nos ahorramos hasta el refresh, igual que el
@@ -153,6 +157,9 @@ class ComandaDispatcher @Inject constructor(
             // ruteado, para que cada estación encabece SUS productos con su combo.
             comboNames = lines.mapNotNull { line -> line.comboName?.let { line.orderItemId to it } }.toMap(),
             maxIntentos = maxIntentos,
+            // «La libreta» (Task 16) — el MISMO venueId que ya se usa arriba para el refresh.
+            venueId = venueId,
+            orderId = orderId,
             alCambiarEstado = alCambiarEstado,
         )
     }

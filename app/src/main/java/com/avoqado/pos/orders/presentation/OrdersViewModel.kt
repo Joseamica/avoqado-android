@@ -2,9 +2,13 @@ package com.avoqado.pos.orders.presentation
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.core.domain.printing.ComandaDispatcher
 import com.avoqado.pos.core.domain.refresh.RefreshGateFactory
 import com.avoqado.pos.orders.data.OrdersRepository
 import com.avoqado.pos.orders.data.model.OrderSummary
+import com.avoqado.pos.printing.data.EstadoDeComanda
+import com.avoqado.pos.printing.routing.RoutableItem
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -16,10 +20,18 @@ import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
+/**
+ * Texto EXACTO cuando la comanda sí salió — vive aquí (no un literal repetido) para que
+ * [OrdersScreen] pueda distinguir éxito de aviso sin arriesgarse a que los dos textos diverjan.
+ */
+internal const val MENSAJE_COMANDA_REIMPRESA = "Comanda reimpresa"
+
 @HiltViewModel
 class OrdersViewModel @Inject constructor(
     private val repository: OrdersRepository,
     refreshGateFactory: RefreshGateFactory,
+    private val comandaDispatcher: ComandaDispatcher,
+    private val secureStorage: SecureStorage,
 ) : ViewModel() {
 
     // MARK: - Refresco (spec estrategia-de-refresco)
@@ -120,6 +132,9 @@ class OrdersViewModel @Inject constructor(
 
     fun selectOrder(orderId: String) {
         _selectedOrderId.value = orderId
+        // Un aviso de reimpresión es del PEDIDO que estaba abierto — abrir uno distinto no
+        // puede arrastrar "No salió la comanda de: Cocina" del anterior.
+        _mensajeDeReimpresion.value = null
         viewModelScope.launch {
             repository.loadOrderDetail(orderId)
         }
@@ -127,7 +142,88 @@ class OrdersViewModel @Inject constructor(
 
     fun clearSelection() {
         _selectedOrderId.value = null
+        _mensajeDeReimpresion.value = null
         repository.clearSelectedOrder()
+    }
+
+    // MARK: - Reimpresión de comanda (mostrador, Task 6)
+
+    private val venueId: String? get() = secureStorage.venueId
+
+    private val _isReimprimiendoComanda = MutableStateFlow(false)
+    val isReimprimiendoComanda: StateFlow<Boolean> = _isReimprimiendoComanda.asStateFlow()
+
+    private val _mensajeDeReimpresion = MutableStateFlow<String?>(null)
+    val mensajeDeReimpresion: StateFlow<String?> = _mensajeDeReimpresion.asStateFlow()
+
+    /**
+     * El botón «Volver a imprimir» sólo existía en Mesas ([com.avoqado.pos.tables.presentation.TableOrderViewModel.reprintComandas]).
+     * En mostrador — el caso real que abrió esta tarea— una comanda que no sale deja al cajero
+     * sin nada que tocar más que gritarle el pedido a cocina. Rearma la comanda desde la orden
+     * YA cobrada y la manda por el MISMO [ComandaDispatcher] que usa el cobro, marcada
+     * `REIMPRESIÓN` para que cocina no la confunda con un pedido nuevo.
+     *
+     * 🔴 El resultado se MIRA, nunca se asume: cantar éxito sin haber impreso nada es
+     * exactamente el bug ya medido en este repo (T3: ~10s esperando una impresora inalcanzable
+     * y aun así paloma verde). [mensajeDeEstado] sólo dice "reimpresa" cuando el despachador
+     * confirma [EstadoDeComanda.Salio].
+     */
+    fun reimprimirComanda(orderId: String) {
+        if (_isReimprimiendoComanda.value) return
+        val order = repository.selectedOrder.value?.takeIf { it.id == orderId }
+        if (order == null) {
+            _mensajeDeReimpresion.value = "No se encontró el pedido para reimprimir"
+            return
+        }
+
+        // Mismo filtro que TableOrderViewModel.reprintComandas: sólo lo que es un PRODUCTO
+        // real va a cocina — un cargo o un importe libre sin productId no tiene nada que
+        // preparar.
+        val lineas = order.items
+            ?.filter { it.productId != null }
+            ?.map { item ->
+                RoutableItem(
+                    orderItemId = item.id,
+                    productId = item.productId,
+                    categoryId = null,
+                    productName = item.productName.ifBlank { "Artículo" },
+                    quantity = item.quantity,
+                    modifiers = item.modifiers?.map { modifier -> modifier.name } ?: emptyList(),
+                    notes = item.notes,
+                )
+            }
+            ?: emptyList()
+
+        if (lineas.isEmpty()) {
+            _mensajeDeReimpresion.value = "No hay artículos para reimprimir en este pedido"
+            return
+        }
+
+        viewModelScope.launch {
+            _isReimprimiendoComanda.value = true
+            try {
+                val estado = comandaDispatcher.dispatch(
+                    venueId = venueId,
+                    lines = lineas,
+                    orderNumber = order.orderNumber,
+                    orderType = "REIMPRESIÓN",
+                    orderId = order.id,
+                )
+                _mensajeDeReimpresion.value = mensajeDeEstado(estado)
+            } finally {
+                _isReimprimiendoComanda.value = false
+            }
+        }
+    }
+
+    /** [EstadoDeComanda.Insistiendo] nunca llega aquí: [ComandaDispatcher.dispatch] sólo lo
+     *  reporta por el callback `alCambiarEstado` mientras insiste — lo que DEVUELVE es
+     *  siempre [EstadoDeComanda.Salio] o [EstadoDeComanda.NoSalio] (o `null` sin renglones). */
+    private fun mensajeDeEstado(estado: EstadoDeComanda?): String = when (estado) {
+        is EstadoDeComanda.NoSalio ->
+            "No salió la comanda de: ${estado.estaciones.joinToString(", ")} · " +
+                (estado.causa ?: "La impresora no respondió.")
+        else -> MENSAJE_COMANDA_REIMPRESA
     }
 
     // MARK: - Grouping

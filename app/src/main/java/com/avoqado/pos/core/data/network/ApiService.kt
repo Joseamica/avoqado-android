@@ -7,6 +7,7 @@ import com.avoqado.pos.auth.data.model.RefreshResponse
 import com.avoqado.pos.printing.routing.GatewayHeartbeatRequest
 import com.avoqado.pos.printing.routing.PrintConfigResponse
 import com.avoqado.pos.printing.routing.SyncPrintJobsRequest
+import com.avoqado.pos.printing.routing.SyncPrintJobsResponse
 import retrofit2.http.Body
 import retrofit2.http.GET
 import retrofit2.http.HTTP
@@ -203,7 +204,7 @@ interface ApiService {
     suspend fun syncPrintJobs(
         @Path("venueId") venueId: String,
         @Body request: SyncPrintJobsRequest,
-    ): Any // replica ack (upserted / errors / newlyFailed)
+    ): SyncPrintJobsResponse // { success, data: { upserted, errors, newlyFailed, registered } }
 
     @POST("mobile/venues/{venueId}/print-gateway/heartbeat")
     suspend fun gatewayHeartbeat(

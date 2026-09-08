@@ -2048,6 +2048,9 @@ class PaymentFlowViewModel @Inject constructor(
             },
             orderNumber = orderNumber,
             orderType = "En tienda",
+            // «La libreta» (Task 16) — el id REAL de la orden, para que el reporte al servidor
+            // no dependa del `orderNumber` truncado/aleatorio de arriba.
+            orderId = createdOrderId,
             // Sin estaciones configuradas: EXACTAMENTE lo de antes — un solo ticket de cocina
             // abanicado a todas las impresoras con rol KITCHEN.
             noStationsFallback = NoStationsFallback.LegacySingleTicket(

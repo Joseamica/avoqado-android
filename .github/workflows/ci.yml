@@ -72,6 +72,16 @@ jobs:
       # Guarda propia del repo: un emoji en el nombre de un test rompe la caché de
       # Gradle con un error que no menciona el emoji (costó una investigación entera
       # el 2026-08-20). Va primero porque tarda segundos y falla claro.
+      # 🔴 google-services.json NO viaja en git (.gitignore, igual que en avoqado-tpv,
+      # y este repo es PÚBLICO): se reconstruye del secreto. Sin el archivo, el plugin
+      # com.google.gms.google-services MATA el build entero — así que va ANTES de
+      # compilar a propósito: un secreto ausente se caza en segundos, no tras el build.
+      - name: Reconstruir google-services.json
+        run: |
+          mkdir -p app
+          echo "${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}" | base64 -d > app/google-services.json
+          test -s app/google-services.json || { echo "::error::google-services.json quedó vacío — falta el secreto GOOGLE_SERVICES_JSON_BASE64 (Settings → Secrets and variables → Actions)."; exit 1; }
+
       - name: Sin emoji en nombres de test
         run: ./gradlew checkNoEmojiInTestNames
 

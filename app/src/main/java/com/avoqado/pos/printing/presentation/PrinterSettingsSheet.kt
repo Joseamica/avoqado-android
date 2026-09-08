@@ -105,8 +105,18 @@ fun PrinterSettingsSheet(
     // Search automatically on open (Square-style): USB appears instantly, network
     // results stream in. Without BT permission the scan still covers USB + WiFi
     // (the Bluetooth leg skips itself); the button below can request BT explicitly.
+    //
+    // 🔴 Task 7 — probarTodas() corre EN PARALELO con startDiscovery() (que ya
+    // no bloquea: lanza su propio trabajo y regresa). Sustituye el "no sé
+    // todavía" (SinComprobar) de cada impresora WiFi guardada por la verdad
+    // medida, con espera corta — así el cajero deja de ver "Desconectada" en
+    // una impresora que nadie ha probado. Bluetooth/USB se quedan en
+    // SinComprobar hasta "Conectar" a mano (ronda 1 de revisión: conectar sin
+    // que nadie lo pida filtraba el socket Bluetooth, que no se libera tras
+    // imprimir, y podía disparar el diálogo de permiso de USB solo).
     LaunchedEffect(Unit) {
         printerService.startDiscovery()
+        printerService.probarTodas()
     }
 
     // 🔴 La conexion con la impresora NO se queda abierta al salir. Muchas impresoras de

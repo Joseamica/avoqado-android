@@ -128,6 +128,16 @@ jobs:
           echo "versionCode=$CODE" >> "$GITHUB_OUTPUT"
           echo "Se publicará: $NAME ($CODE) → canal $TRACK"
 
+      # 🔴 google-services.json NO viaja en git (.gitignore, igual que en avoqado-tpv,
+      # y este repo es PÚBLICO): se reconstruye del secreto. Sin el archivo, el plugin
+      # com.google.gms.google-services MATA el build entero — así que va ANTES de
+      # compilar a propósito: un secreto ausente se caza en segundos, no tras el build.
+      - name: Reconstruir google-services.json
+        run: |
+          mkdir -p app
+          echo "${{ secrets.GOOGLE_SERVICES_JSON_BASE64 }}" | base64 -d > app/google-services.json
+          test -s app/google-services.json || { echo "::error::google-services.json quedó vacío — falta el secreto GOOGLE_SERVICES_JSON_BASE64 (Settings → Secrets and variables → Actions)."; exit 1; }
+
       # ── Firma ────────────────────────────────────────────────────────────────
       # Llave de CARGA, no de firma: Play App Signing está activo en com.avoqado.pos,
       # así que si se filtrara, Google la reemplaza. La que firma lo que llega al

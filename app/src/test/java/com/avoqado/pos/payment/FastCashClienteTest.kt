@@ -21,6 +21,7 @@ import com.avoqado.pos.pos.presentation.cart.CartState
 import com.avoqado.pos.printing.data.ComandaPrinter
 import com.avoqado.pos.printing.data.PrinterService
 import com.avoqado.pos.printing.data.ReintentoDeComanda
+import com.avoqado.pos.printing.data.ReporteDeComandas
 import com.avoqado.pos.printing.routing.PrintConfigRepository
 import com.avoqado.pos.tpvsettings.data.TpvSettings
 import com.avoqado.pos.tpvsettings.data.TpvSettingsRepository
@@ -124,7 +125,11 @@ class FastCashClienteTest {
             secureStorage = secureStorage,
             // Ronda de arreglo 1 (Task 4): `ComandaDispatcher` recibe `ReintentoDeComanda` por
             // Hilt ahora — construido aquí con el mismo `comandaPrinter` mockeado de siempre.
-            comandaDispatcher = ComandaDispatcher(printConfigRepository, ReintentoDeComanda(comandaPrinter), printerService),
+            comandaDispatcher = ComandaDispatcher(
+                printConfigRepository,
+                ReintentoDeComanda(comandaPrinter, reporteDeComandas = mockk<ReporteDeComandas>(relaxed = true)),
+                printerService,
+            ),
             tableSession = com.avoqado.pos.tables.data.TableSession(),
             syncOutbox = mockk(relaxed = true),
             customerDisplay = com.avoqado.pos.customerdisplay.CustomerDisplayState(),

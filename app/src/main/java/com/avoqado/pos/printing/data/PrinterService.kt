@@ -33,6 +33,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -59,6 +62,16 @@ private const val PAPER_STATUS_TIMEOUT_MS = 1500
 
 /** Connection timeout in milliseconds */
 private const val CONNECTION_TIMEOUT_MS = 10_000L
+
+/**
+ * Ventana CORTA para "¿esta impresora responde?" — usada sólo por
+ * [PrinterService.probarTodas] al abrir Ajustes › Impresoras. Deliberadamente
+ * más corta que [CONNECTION_TIMEOUT_MS]: probar varias impresoras guardadas
+ * no puede colgar la pantalla varios segundos porque una se quedó apagada.
+ * Se prueban EN PARALELO, así que el costo para quien mira la pantalla es
+ * ~esta ventana, no la suma de todas.
+ */
+private const val PROBE_TIMEOUT_MS = 2_500
 
 /** How long a discovery scan runs before auto-stopping. mDNS browsing never
  *  "finishes" on its own, so without this the UI spinner spins forever. */
@@ -246,13 +259,27 @@ class PrinterService @Inject constructor(
      * tiene cabezal— `isAvailable` también da `true` y diríamos "Conectada" de
      * una impresora que no existe. Sería la misma mentira al revés, y en el lado
      * peor: el local creería que tiene con qué imprimir.
+     *
+     * 🔴 Task 7 — el arreglo de agosto de arriba sólo cubrió la integrada. Las
+     * impresoras de RED/Bluetooth/USB seguían cayendo al `else` y arrancaban
+     * en [PrinterStatus.Disconnected] SIN que nadie hubiera probado nada: el
+     * mismo letrero mentiroso, en otro transporte. Caso real: el cajero veía
+     * la impresora de cocina como "Desconectada", picaba "Conectar", respondía
+     * al instante (siempre estuvo bien) y creía haber arreglado algo — y como
+     * el estado sólo vive en memoria, cada reinicio de la app repetía la
+     * mentira. Ahora esas arrancan en [PrinterStatus.SinComprobar] — un "no sé
+     * todavía" honesto — hasta que [probarTodas] mida la verdad.
      */
-    private fun estadoInicial(printer: SavedPrinter): PrinterStatus =
-        if (printer.connectionTypeEnum == PrinterConnectionType.INTERNAL && innerPrinter.hasPhysicalPrinter) {
+    private fun estadoInicial(printer: SavedPrinter): PrinterStatus = when {
+        printer.connectionTypeEnum == PrinterConnectionType.INTERNAL && innerPrinter.hasPhysicalPrinter ->
             PrinterStatus.Connected
-        } else {
+        // La integrada SIN cabezal (residuo de un T3 mal configurado) sigue
+        // siendo Disconnected a propósito: no hace falta "comprobar" nada,
+        // ya lo sabemos con certeza vía hasPhysicalPrinter — no es un "no sé".
+        printer.connectionTypeEnum == PrinterConnectionType.INTERNAL ->
             PrinterStatus.Disconnected
-        }
+        else -> PrinterStatus.SinComprobar
+    }
 
     fun savePrinter(printer: SavedPrinter) {
         val list = _savedPrinters.value.toMutableList()
@@ -293,11 +320,11 @@ class PrinterService @Inject constructor(
 
     // MARK: - Connection
 
-    suspend fun connect(printer: SavedPrinter) {
+    suspend fun connect(printer: SavedPrinter, wifiTimeoutMs: Int = CONNECTION_TIMEOUT_MS.toInt()) {
         updateStatus(printer.id, PrinterStatus.Connecting)
         try {
             when (printer.connectionTypeEnum) {
-                PrinterConnectionType.WIFI -> connectWiFi(printer)
+                PrinterConnectionType.WIFI -> connectWiFi(printer, wifiTimeoutMs)
                 PrinterConnectionType.BLUETOOTH -> {
                     // Residuo: equipos que ya guardaron el "InnerPrinter" por BT
                     // antes de este fix. El socket abre y los bytes se pierden,
@@ -353,11 +380,111 @@ class PrinterService @Inject constructor(
         _savedPrinters.value.forEach { disconnect(it) }
     }
 
-    private suspend fun connectWiFi(printer: SavedPrinter) = withContext(Dispatchers.IO) {
+    // MARK: - Comprobación ("¿respondes?", no imprime nada)
+
+    /**
+     * Comprueba las impresoras guardadas EN PARALELO y sustituye el "no sé
+     * todavía" ([PrinterStatus.SinComprobar]) por la verdad medida — **sólo
+     * para WIFI**. Bluetooth y USB se quedan en `SinComprobar` hasta que
+     * alguien toque "Conectar" a mano; ver [probar] para el porqué.
+     *
+     * 🔴 El caso real de Task 7: `estadoInicial()` marcaba "Desconectada" a
+     * toda impresora que no fuera la integrada SIN PROBAR NADA — un texto que
+     * vivía sólo en memoria, así que cada reinicio de la app volvía a
+     * mostrarlo aunque la impresora estuviera perfecta. El cajero picaba
+     * "Conectar", el socket abría al instante (la impresora SIEMPRE estuvo
+     * bien) y creía haber arreglado algo. Se llama al abrir
+     * [com.avoqado.pos.printing.presentation.PrinterSettingsSheet] para
+     * sustituir esa mentira por una medición real.
+     *
+     * EN PARALELO, no en serie: tres impresoras apagadas en serie colgarían
+     * la pantalla ~3× la ventana de una sola. En paralelo, el costo para
+     * quien mira la pantalla es ~[PROBE_TIMEOUT_MS], no la suma.
+     */
+    suspend fun probarTodas() = coroutineScope {
+        _savedPrinters.value.map { printer -> async { probar(printer) } }.awaitAll()
+    }
+
+    /**
+     * Comprueba UNA impresora guardada. Nunca lanza — cualquier fallo se
+     * traduce a [PrinterStatus.Disconnected] ("No responde"), igual que hoy
+     * hace un [connect] fallido desde la hoja de configuración.
+     *
+     * 🔴 Ronda 1 de revisión de Task 7 — SÓLO prueba WIFI. `connect()` aquí es
+     * el PRIMER lugar del repo que conecta SIN QUE NADIE LO PIDIERA: los otros
+     * tres llamadores ([PrinterConfigSheet] "Conectar",
+     * [com.avoqado.pos.printing.presentation.PrinterSettingsSheet] al agregar
+     * una impresora nueva, `ManualIpSection` al darla de alta) van todos
+     * detrás de un toque explícito del cajero. Bluetooth y USB se saltan por
+     * dos razones distintas, cada una real:
+     *
+     * - **Bluetooth NO libera su socket tras imprimir** — a diferencia de
+     *   WIFI (ver `sendData`/`releaseWifiConnection`, que suelta el puerto
+     *   9100 después de CADA trabajo), un socket Bluetooth se queda VIVO en
+     *   [btConnections] por diseño. Escenario real: el cajero imprime un
+     *   recibo por Bluetooth, entra a Ajustes › Impresoras por cualquier
+     *   motivo, y si `probarTodas()` la tocara, `connectBluetooth()`
+     *   sobreescribiría `btConnections[id]` con un socket NUEVO sin cerrar el
+     *   viejo — la impresora térmica (que casi siempre sólo acepta UNA
+     *   conexión SPP) queda inutilizable hasta apagarla. Es el mismo
+     *   "teléfono descolgado" que Task 5 cerró para WiFi, reabierto para
+     *   Bluetooth por este mecanismo nuevo.
+     * - **USB puede hacer saltar el diálogo de permiso del sistema** sólo por
+     *   abrir esta pantalla, sin que el usuario haya tocado nada
+     *   (`UsbPrinterManager.open()` → `ensurePermission()`).
+     *
+     * 🔴 Defensa barata contra el mismo hueco en WIFI: si la impresora YA
+     * está conectada, no se re-prueba. Sin esto, una WiFi con un socket vivo
+     * (alguien tocó "Conectar" a mano y no ha impreso desde entonces) sufriría
+     * el mismo problema — `connectWiFi()` tampoco cierra un socket cacheado
+     * antes de sobreescribirlo.
+     *
+     * SIEMPRE suelta lo que abre (WiFi): un socket vivo tras la prueba sería
+     * el mismo "teléfono descolgado", sólo que contra una impresora que apenas
+     * tardó en contestar. `disconnect()` ya deja el estado en Desconectada; lo
+     * corregimos después a la verdad que sí se midió.
+     *
+     * WIFI usa la ventana CORTA ([PROBE_TIMEOUT_MS]) porque su socket acepta
+     * un timeout explícito sin arriesgar dejar una conexión huérfana si la
+     * corrutina se cancelara a medias — el timeout lo aplica el propio
+     * `Socket.connect(addr, ms)` de Java, no una cancelación de corrutina que
+     * carrera contra una llamada bloqueante que no se puede interrumpir. La
+     * INTERNA no pasa por el filtro de tipo: no hay socket, la pregunta es
+     * síncrona.
+     */
+    private suspend fun probar(printer: SavedPrinter) {
+        if (printer.connectionTypeEnum == PrinterConnectionType.INTERNAL) {
+            // Va soldada al equipo: no hay socket que abrir. La pregunta
+            // síncrona de estadoInicial() YA es la verdad completa.
+            updateStatus(
+                printer.id,
+                if (innerPrinter.hasPhysicalPrinter) PrinterStatus.Connected else PrinterStatus.Disconnected,
+            )
+            return
+        }
+        // Bluetooth/USB: se quedan en SinComprobar. Ver el doc de arriba.
+        if (printer.connectionTypeEnum != PrinterConnectionType.WIFI) return
+
+        // Ya conectada: no la toques (evita el mismo hueco en WiFi).
+        if (_printerStatuses.value[printer.id]?.isConnected == true) return
+
+        var respondio = false
+        try {
+            connect(printer, wifiTimeoutMs = PROBE_TIMEOUT_MS)
+            respondio = true
+        } catch (e: Exception) {
+            respondio = false
+        } finally {
+            disconnect(printer)
+            updateStatus(printer.id, if (respondio) PrinterStatus.Connected else PrinterStatus.Disconnected)
+        }
+    }
+
+    private suspend fun connectWiFi(printer: SavedPrinter, timeoutMs: Int) = withContext(Dispatchers.IO) {
         val port = printer.port ?: DEFAULT_PORT
         val socket = Socket()
         try {
-            socket.connect(InetSocketAddress(printer.address, port), CONNECTION_TIMEOUT_MS.toInt())
+            socket.connect(InetSocketAddress(printer.address, port), timeoutMs)
             wifiConnections[printer.id] = socket
             connectionEndpoints[printer.id] = "${printer.address}:$port"
         } catch (e: Exception) {

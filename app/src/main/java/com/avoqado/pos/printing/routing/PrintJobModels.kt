@@ -36,6 +36,29 @@ data class SyncPrintJobsRequest(
     val jobs: List<PrintJobDto>,
 )
 
+/**
+ * `POST print-jobs/sync` ack (`print.mobile.service.ts` → `syncPrintJobs`). Was `Any` on
+ * [com.avoqado.pos.core.data.network.ApiService] — kotlinx.serialization has no built-in
+ * serializer for a bare `Any` (no `@Serializable`, no contextual/polymorphic registration in
+ * `NetworkModule.provideJson`), so the Retrofit converter would fail to resolve a deserializer
+ * for the response BEFORE the body is even parsed. Grep-confirmed nobody called
+ * `syncPrintJobs`/`gatewayHeartbeat` before Task 16 («la libreta»), so this never surfaced.
+ */
+@Serializable
+data class SyncPrintJobsResult(
+    val upserted: Int = 0,
+    val errors: Int = 0,
+    val newlyFailed: Int = 0,
+    /** false = el server DESCARTÓ el lote en silencio (este terminalId no es el gateway del venue). */
+    val registered: Boolean = false,
+)
+
+@Serializable
+data class SyncPrintJobsResponse(
+    val success: Boolean = true,
+    val data: SyncPrintJobsResult = SyncPrintJobsResult(),
+)
+
 @Serializable
 data class PrinterStatusReport(
     val printerId: String,

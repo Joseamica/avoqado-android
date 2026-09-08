@@ -190,13 +190,46 @@ sealed class PrinterStatus {
     data object Printing : PrinterStatus()
     data class Error(val message: String) : PrinterStatus()
 
+    /**
+     * Arranque HONESTO: todavía nadie probó si esta impresora responde.
+     *
+     * 🔴 Antes de esto, `estadoInicial()` (en [com.avoqado.pos.printing.data.PrinterService])
+     * devolvía [Disconnected] para TODA impresora que no fuera la integrada —
+     * sin abrir un socket, sin mandar un byte. El letrero decía "Desconectada"
+     * aunque la impresora estuviera perfecta; el cajero picaba "Conectar", el
+     * socket abría al instante (la impresora SIEMPRE estuvo bien) y creía
+     * haber arreglado algo. Como el estado real sólo vivía en memoria, cada
+     * reinicio de la app volvía a mentir. El mismo defecto ya se había cazado
+     * en agosto y arreglado SÓLO para la integrada; las de red se quedaron
+     * con la mentira.
+     *
+     * `isConnected = false` (por herencia de [isConnected], que no la lista
+     * como conectada) para que [com.avoqado.pos.printing.data.shouldReconnect]
+     * la trate exactamente igual que hoy trata a [Disconnected]: reconectar
+     * antes de imprimir. `shouldReconnect` es camino COMPARTIDO — lo usan
+     * también los recibos y el corte de caja, no sólo las comandas — así que
+     * si este estado dejara de disparar la reconexión, una impresora recién
+     * arrancada se quedaría sin poder imprimir nada.
+     *
+     * Para WIFI, se sustituye por [Connected] o [Disconnected] en cuanto
+     * [com.avoqado.pos.printing.data.PrinterService.probarTodas] mide la
+     * verdad, al abrir Ajustes › Impresoras. Bluetooth y USB se QUEDAN en
+     * `SinComprobar` hasta que alguien toque "Conectar" a mano — probarlas
+     * sin que nadie lo pida filtraría el socket Bluetooth (no se libera tras
+     * imprimir, a diferencia de WiFi) y podría disparar el diálogo de permiso
+     * de USB con sólo abrir la pantalla. Ver el doc de `probar()` en
+     * [com.avoqado.pos.printing.data.PrinterService] (ronda 1 de revisión).
+     */
+    data object SinComprobar : PrinterStatus()
+
     val displayName: String
         get() = when (this) {
-            Disconnected -> "Desconectada"
+            Disconnected -> "No responde"
             Connecting -> "Conectando..."
-            Connected -> "Conectada"
+            Connected -> "Responde"
             Printing -> "Imprimiendo..."
             is Error -> "Error: $message"
+            SinComprobar -> "Sin comprobar"
         }
 
     val isConnected: Boolean

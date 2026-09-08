@@ -33,7 +33,12 @@ class OrdersViewModelRefreshTest {
     private fun buildViewModel(): OrdersViewModel {
         every { factory.create(any(), any()) } returns RefreshGate(clock = { now }, random = { 0.5 })
         coEvery { repository.loadOrders(any(), any(), any(), any()) } returns Result.success(Unit)
-        return OrdersViewModel(repository = repository, refreshGateFactory = factory)
+        return OrdersViewModel(
+            repository = repository,
+            refreshGateFactory = factory,
+            comandaDispatcher = mockk(relaxed = true),
+            secureStorage = mockk(relaxed = true),
+        )
     }
 
     @Test

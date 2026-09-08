@@ -383,6 +383,10 @@ class KDSViewModel @Inject constructor(
                     // en vez de soltarse en segundos (`release-print`, abajo) para que otro
                     // aparato la reclame — comportamiento EXACTO de antes del reintento.
                     maxIntentos = 1,
+                    // «La libreta» (Task 16) — el id REAL de la orden, ya presente en el pedido
+                    // (KDSRepository lo llena del JSON del server); sin él, «la libreta» caía al
+                    // orderNumber para armar el eventId, correcto pero menos preciso que el id real.
+                    orderId = pedido.orderId,
                 )
             }.isSuccess
 

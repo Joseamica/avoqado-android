@@ -37,6 +37,7 @@ import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Payments
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.SwapHoriz
+import com.avoqado.pos.designsystem.components.PrimaryButton
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -235,6 +236,8 @@ private fun PhoneOrdersLayout(
 ) {
     val selectedOrder by viewModel.selectedOrder.collectAsState()
     val selectedOrderId by viewModel.selectedOrderId.collectAsState()
+    val isReimprimiendoComanda by viewModel.isReimprimiendoComanda.collectAsState()
+    val mensajeDeReimpresion by viewModel.mensajeDeReimpresion.collectAsState()
 
     if (selectedOrderId != null && selectedOrder != null) {
         // Show detail full screen on phone
@@ -242,6 +245,9 @@ private fun PhoneOrdersLayout(
             order = selectedOrder!!,
             onBack = { viewModel.clearSelection() },
             modifier = Modifier.fillMaxSize(),
+            isReimprimiendoComanda = isReimprimiendoComanda,
+            mensajeDeReimpresion = mensajeDeReimpresion,
+            onReimprimirComanda = { viewModel.reimprimirComanda(selectedOrder!!.id) },
         )
     } else if (selectedOrderId != null && selectedOrder == null) {
         // Loading detail
@@ -401,6 +407,8 @@ private fun OrderDetailPanel(
 ) {
     val selectedOrder by viewModel.selectedOrder.collectAsState()
     val isLoadingDetail by viewModel.isLoadingDetail.collectAsState()
+    val isReimprimiendoComanda by viewModel.isReimprimiendoComanda.collectAsState()
+    val mensajeDeReimpresion by viewModel.mensajeDeReimpresion.collectAsState()
 
     Box(
         modifier = modifier.background(MaterialTheme.colorScheme.surface),
@@ -417,6 +425,9 @@ private fun OrderDetailPanel(
                     order = selectedOrder!!,
                     onBack = null,
                     modifier = Modifier.fillMaxSize(),
+                    isReimprimiendoComanda = isReimprimiendoComanda,
+                    mensajeDeReimpresion = mensajeDeReimpresion,
+                    onReimprimirComanda = { viewModel.reimprimirComanda(selectedOrder!!.id) },
                 )
             }
             else -> {
@@ -450,6 +461,11 @@ fun OrderDetailView(
     order: OrderDetail,
     onBack: (() -> Unit)?,
     modifier: Modifier = Modifier,
+    // Reimpresión de comanda (mostrador, Task 6) — defaults para no romper otros
+    // llamadores: sin `onReimprimirComanda` la sección simplemente no se dibuja.
+    isReimprimiendoComanda: Boolean = false,
+    mensajeDeReimpresion: String? = null,
+    onReimprimirComanda: (() -> Unit)? = null,
 ) {
     Column(
         modifier = modifier
@@ -494,6 +510,16 @@ fun OrderDetailView(
 
             // Totals section
             OrderTotalsSection(order = order)
+
+            // Reimprimir comanda (mostrador, Task 6) — junto a los totales, a propósito: es
+            // la acción de "algo salió mal con ESTA cuenta", no un dato más de la orden.
+            if (onReimprimirComanda != null) {
+                ReprintComandaSection(
+                    isReimprimiendoComanda = isReimprimiendoComanda,
+                    mensajeDeReimpresion = mensajeDeReimpresion,
+                    onReimprimirComanda = onReimprimirComanda,
+                )
+            }
 
             // Payments section
             if (!order.payments.isNullOrEmpty()) {
@@ -732,6 +758,43 @@ private fun TotalRow(label: String, amount: String) {
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+    }
+}
+
+// MARK: - Reprint Comanda Section (mostrador, Task 6)
+
+/**
+ * Equivalente de mostrador al «Volver a imprimir» de Mesas
+ * ([com.avoqado.pos.tables.presentation.TableOrderViewModel.reprintComandas]): antes de esto,
+ * una comanda que no salía en un negocio SIN mesas se quedaba sin ningún botón que tocar.
+ *
+ * El botón se deshabilita mientras corre (`enabled`/`isLoading` de [PrimaryButton]) para que un
+ * doble toque no dispare dos reimpresiones y duplique el ticket de cocina.
+ */
+@Composable
+private fun ReprintComandaSection(
+    isReimprimiendoComanda: Boolean,
+    mensajeDeReimpresion: String?,
+    onReimprimirComanda: () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+        PrimaryButton(
+            text = "Reimprimir comanda",
+            onClick = onReimprimirComanda,
+            enabled = !isReimprimiendoComanda,
+            isLoading = isReimprimiendoComanda,
+            fullWidth = true,
+        )
+        // 🔴 El mensaje se DICE, nunca se calla — es lo que evita el bug de la T3 (cantar
+        // éxito sin haber impreso nada). Verde sólo cuando el texto es EXACTAMENTE el de
+        // éxito; cualquier otra cosa (no salió, no se encontró el pedido…) sale en rojo.
+        mensajeDeReimpresion?.let { mensaje ->
+            Text(
+                text = mensaje,
+                style = MaterialTheme.typography.bodySmall,
+                color = if (mensaje == MENSAJE_COMANDA_REIMPRESA) Success else Error,
+            )
+        }
     }
 }
 
