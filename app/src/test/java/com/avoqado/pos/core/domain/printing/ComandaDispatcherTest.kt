@@ -1,7 +1,10 @@
 package com.avoqado.pos.core.domain.printing
 
 import com.avoqado.pos.printing.data.ComandaPrinter
+import com.avoqado.pos.printing.data.EstadoDeComanda
+import com.avoqado.pos.printing.data.PoliticaDeReintento
 import com.avoqado.pos.printing.data.PrinterService
+import com.avoqado.pos.printing.data.ReintentoDeComanda
 import com.avoqado.pos.printing.data.model.KitchenItem
 import com.avoqado.pos.printing.data.model.KitchenTicketData
 import com.avoqado.pos.printing.routing.PrintConfig
@@ -77,7 +80,13 @@ class ComandaDispatcherTest {
             ComandaPrinter.Result(attempted = 1, printed = 1, skippedNoPrinter = 0, lastError = null)
         coEvery { printerService.autoPrintKitchenTicket(any()) } returns Unit
 
-        dispatcher = ComandaDispatcher(printConfigRepository, comandaPrinter, printerService)
+        // 🔴 NO REGRESIÓN (Task 4): `ComandaDispatcher` ya no llama a `comandaPrinter.printComandas`
+        // directo — pasa por `ReintentoDeComanda`, REAL (sin mockear: es justo lo que ya prueba
+        // ReintentoDeComandaTest, y mockearlo aquí escondería si el cableado quedó bien), armado
+        // con el MISMO mock de `comandaPrinter` de siempre. `ReintentoDeComanda` YA es inyectable
+        // por Hilt (Tarea 3 le quitó el parámetro función de su constructor `@Inject`), así que
+        // aquí también se construye directo, sin ningún rodeo.
+        dispatcher = ComandaDispatcher(printConfigRepository, ReintentoDeComanda(comandaPrinter), printerService)
     }
 
     // MARK: - No regresión: el camino POST-PAGO del mostrador
@@ -220,6 +229,8 @@ class ComandaDispatcherTest {
                 skippedNoPrinter = 1,
                 lastError = null,
                 skippedStations = listOf("Barra"),
+                // Un plan SALTADO nunca entra a `failedPlans` — no hay impresora que reintentar,
+                // así que ReintentoDeComanda da esto por definitivo en el primer intento.
             )
 
         val resultado = dispatcher.dispatch(
@@ -229,8 +240,8 @@ class ComandaDispatcherTest {
             orderType = "En tienda",
         )
 
-        assertEquals(1, resultado?.printed)
-        assertEquals(listOf("Barra"), resultado?.skippedStations)
+        val noSalio = resultado as? EstadoDeComanda.NoSalio
+        assertEquals(listOf("Barra"), noSalio?.estaciones)
     }
 
     @Test
@@ -244,6 +255,64 @@ class ComandaDispatcherTest {
         )
 
         assertNull(resultado)
+    }
+
+    // MARK: - maxIntentos se hereda hasta ReintentoDeComanda (ronda de arreglo 1, el KDS)
+
+    /**
+     * El KDS pasa `maxIntentos = 1` para no retener la reclamación del pedido mientras otra
+     * tablet podría tomarlo. Esta prueba fija que `dispatch` REALMENTE lo hereda hasta
+     * `ReintentoDeComanda.insistir` — que un fallo NO dispare ni un solo reintento.
+     */
+    @Test
+    fun `dispatch con maxIntentos 1 no reintenta aunque la impresora siga fallando`() = runTest {
+        every { printConfigRepository.getCurrentConfig() } returns conEstaciones
+        coEvery { comandaPrinter.printComandas(any(), any(), any(), any(), any()) } returns
+            ComandaPrinter.Result(
+                attempted = 1,
+                printed = 0,
+                skippedNoPrinter = 0,
+                lastError = "timeout",
+                failedStations = listOf("Cocina"),
+                failedPlans = listOf(TicketPlan(stationId = "st_cocina", unrouted = false, lines = emptyList())),
+            )
+
+        val resultado = dispatcher.dispatch(
+            venueId = "venue-1",
+            lines = listOf(taco),
+            orderNumber = "1234",
+            orderType = "En tienda",
+            maxIntentos = 1,
+        )
+
+        coVerify(exactly = 1) { comandaPrinter.printComandas(any(), any(), any(), any(), any()) }
+        assertTrue(resultado is EstadoDeComanda.NoSalio)
+    }
+
+    /** Sin pasar `maxIntentos`, el default sigue siendo el de siempre — el mostrador no cambia. */
+    @Test
+    fun `dispatch sin maxIntentos conserva el reintento completo de siempre`() = runTest {
+        every { printConfigRepository.getCurrentConfig() } returns conEstaciones
+        coEvery { comandaPrinter.printComandas(any(), any(), any(), any(), any()) } returns
+            ComandaPrinter.Result(
+                attempted = 1,
+                printed = 0,
+                skippedNoPrinter = 0,
+                lastError = "timeout",
+                failedStations = listOf("Cocina"),
+                failedPlans = listOf(TicketPlan(stationId = "st_cocina", unrouted = false, lines = emptyList())),
+            )
+
+        dispatcher.dispatch(
+            venueId = "venue-1",
+            lines = listOf(taco),
+            orderNumber = "1234",
+            orderType = "En tienda",
+        )
+
+        coVerify(exactly = PoliticaDeReintento.INTENTOS_MAXIMOS) {
+            comandaPrinter.printComandas(any(), any(), any(), any(), any())
+        }
     }
 
     // MARK: - Vale de área (PRE-PAGO) — §5.6

@@ -42,6 +42,7 @@ import com.avoqado.pos.pos.presentation.cart.CartState
 import com.avoqado.pos.pos.presentation.cart.CartViewModel
 import com.avoqado.pos.printing.data.ComandaPrinter
 import com.avoqado.pos.printing.data.PrinterService
+import com.avoqado.pos.printing.data.ReintentoDeComanda
 import com.avoqado.pos.printing.routing.PrintConfig
 import com.avoqado.pos.printing.routing.PrintConfigRepository
 import com.avoqado.pos.referrals.domain.usecase.CaptureReferralUseCase
@@ -710,7 +711,9 @@ class OrderRequestPromotionTest {
             kdsOrderBus = kdsOrderBus,
             printerService = printerService,
             secureStorage = secureStorage,
-            comandaDispatcher = ComandaDispatcher(printConfigRepository, comandaPrinter, printerService),
+            // Ronda de arreglo 1 (Task 4): `ComandaDispatcher` recibe `ReintentoDeComanda` por
+            // Hilt ahora — construido aquí con el mismo `comandaPrinter` mockeado de siempre.
+            comandaDispatcher = ComandaDispatcher(printConfigRepository, ReintentoDeComanda(comandaPrinter), printerService),
             tableSession = com.avoqado.pos.tables.data.TableSession(),
             syncOutbox = mockk(relaxed = true),
             customerDisplay = com.avoqado.pos.customerdisplay.CustomerDisplayState(),

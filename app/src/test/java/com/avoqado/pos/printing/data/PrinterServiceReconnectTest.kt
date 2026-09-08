@@ -1,13 +1,24 @@
 package com.avoqado.pos.printing.data
 
+import android.content.Context
+import android.content.SharedPreferences
 import com.avoqado.pos.printing.data.model.PrinterRole
 import com.avoqado.pos.printing.data.model.PrinterStatus
 import com.avoqado.pos.printing.data.model.SavedPrinter
+import io.mockk.every
+import io.mockk.mockk
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
+import java.net.InetAddress
+import java.net.ServerSocket
+import java.net.Socket
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
 
 /**
  * Unit tests for [shouldReconnect] — the pure decision function [PrinterService.sendData]
@@ -179,5 +190,108 @@ class PrinterServiceReconnectTest {
         )
 
         assertNull(selected)
+    }
+
+    // MARK: - disconnectAll() — Task 5, "la comanda que no sale"
+    //
+    // `disconnectAll()` YA EXISTÍA — el defecto real es que nadie la llamaba desde
+    // la pantalla de Ajustes › Impresora. Tocar "Conectar" abría un socket TCP y lo
+    // dejaba abierto para siempre: muchas impresoras ESC/POS de puerto 9100 aceptan
+    // UNA sola conexión a la vez, así que la caja se quedaba con el teléfono
+    // descolgado y la primera comanda de cocina del día no entraba. Con el POS
+    // anterior del cliente (SoftRestaurant, Windows) esto no pasaba porque imprime
+    // por el spooler: conecta, imprime y cuelga, cada vez.
+
+    private fun printerServiceConDependenciasFalsas(): PrinterService {
+        // Sin esto, el `init { loadSavedPrinters() }` del constructor real
+        // truena: no hay Robolectric en este módulo (unitTests.isReturnDefaultValues
+        // basta para android.util.Log, pero context.getSharedPreferences(...)
+        // devuelve un objeto, no un primitivo, y sin stub sería null).
+        val prefs = mockk<SharedPreferences>(relaxed = true)
+        every { prefs.getString(any(), any()) } returns null
+        val context = mockk<Context>(relaxed = true)
+        every { context.getSharedPreferences(any(), any()) } returns prefs
+        val innerPrinter = mockk<SunmiInnerPrinter>(relaxed = true)
+        val receiptBranding = mockk<ReceiptBranding>(relaxed = true)
+        return PrinterService(context, innerPrinter, receiptBranding)
+    }
+
+    @Test
+    fun `soltar todas cierra el socket y deja el estado en desconectada`() = runTest {
+        // "socketFalso": un ServerSocket real en loopback hace de impresora, para
+        // comprobar que el socket TCP se cierra DE VERDAD — no sólo que se olvida
+        // del mapa en memoria, que es una prueba mucho más débil.
+        val impresoraFalsa = ServerSocket(0, 1, InetAddress.getLoopbackAddress())
+        val ladoDeLaImpresora = CompletableFuture<Socket>()
+        val hiloAceptador = Thread {
+            runCatching { impresoraFalsa.accept() }
+                .onSuccess { ladoDeLaImpresora.complete(it) }
+                .onFailure { ladoDeLaImpresora.completeExceptionally(it) }
+        }.apply { isDaemon = true; start() }
+
+        try {
+            val service = printerServiceConDependenciasFalsas()
+            val printer = SavedPrinter(
+                id = "cocina-wifi",
+                name = "Cocina",
+                connectionType = "wifi",
+                address = "127.0.0.1",
+                port = impresoraFalsa.localPort,
+            )
+            // Con una impresora WIFI conectada en el cache:
+            service.savePrinter(printer)
+            service.connect(printer)
+
+            val socketDeLaImpresora = ladoDeLaImpresora.get(5, TimeUnit.SECONDS)
+
+            service.disconnectAll()
+
+            assertEquals(
+                "disconnectAll() debe dejar el estado en Desconectada",
+                PrinterStatus.Disconnected,
+                service.printerStatuses.value[printer.id],
+            )
+
+            // -1 = la impresora falsa ve el cierre (FIN/EOF) de verdad. Si el
+            // socket se hubiera quedado abierto —el defecto real—, este read()
+            // colgaría hasta el timeout: exactamente el "teléfono descolgado"
+            // del caso de la cafetería.
+            socketDeLaImpresora.soTimeout = 2000
+            assertEquals(
+                "el socket TCP debe cerrarse; si no, la impresora queda ocupada para siempre",
+                -1,
+                socketDeLaImpresora.getInputStream().read(),
+            )
+            socketDeLaImpresora.close()
+        } finally {
+            impresoraFalsa.close()
+            hiloAceptador.interrupt()
+        }
+    }
+
+    @Test
+    fun `alguien llama a disconnectAll (si no, la conexion queda abierta para siempre)`() {
+        // POR ARCHIVO, no concatenado: un `contains` sobre el directorio entero
+        // pegado en un solo String deja pasar el sabotaje de quitar la llamada
+        // de UNO solo de los dos sitios — el otro archivo "tapa" al que quedó
+        // huérfano. Verificado adversarialmente (ronda 1 de revisión): quitar
+        // sólo la de PrinterConfigSheet.kt, o sólo la de PrinterSettingsSheet.kt,
+        // seguía dando 14/14 en verde con la versión concatenada.
+        val base = File("src/main/java/com/avoqado/pos/printing/presentation")
+        val archivosQueDebenSoltarLaConexion = listOf(
+            "PrinterSettingsSheet.kt",
+            "PrinterConfigSheet.kt",
+        )
+        archivosQueDebenSoltarLaConexion.forEach { nombre ->
+            val archivo = File(base, nombre)
+            assertTrue(
+                "no encontre $nombre en ${base.path} — el test necesita ajustar la ruta",
+                archivo.exists(),
+            )
+            assertTrue(
+                "disconnectAll() volvio a ser codigo muerto en $nombre: la conexion con la impresora se queda abierta",
+                archivo.readText().contains("disconnectAll()"),
+            )
+        }
     }
 }

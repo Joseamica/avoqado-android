@@ -27,7 +27,10 @@ package com.avoqado.pos.core.domain.printing
 
 import android.util.Log
 import com.avoqado.pos.printing.data.ComandaPrinter
+import com.avoqado.pos.printing.data.EstadoDeComanda
+import com.avoqado.pos.printing.data.PoliticaDeReintento
 import com.avoqado.pos.printing.data.PrinterService
+import com.avoqado.pos.printing.data.ReintentoDeComanda
 import com.avoqado.pos.printing.data.model.KitchenItem
 import com.avoqado.pos.printing.data.model.KitchenTicketData
 import com.avoqado.pos.printing.routing.PrintConfigRepository
@@ -67,7 +70,7 @@ sealed interface NoStationsFallback {
 @Singleton
 class ComandaDispatcher @Inject constructor(
     private val printConfigRepository: PrintConfigRepository,
-    private val comandaPrinter: ComandaPrinter,
+    private val reintentoDeComanda: ReintentoDeComanda,
     private val printerService: PrinterService,
 ) {
 
@@ -76,14 +79,31 @@ class ComandaDispatcher @Inject constructor(
      *
      *  1. refrescar la config de impresión (sólo si hay [venueId] — igual que antes),
      *  2. leer la config vigente (cache-first: un refresh fallido nunca borra la buena),
-     *  3. rutear con [PrintRoutingMapper.buildComandas] e imprimir con [ComandaPrinter.printComandas];
-     *     salvo que no haya estaciones activas y quien llama haya pedido
-     *     [NoStationsFallback.LegacySingleTicket].
+     *  3. rutear con [PrintRoutingMapper.buildComandas] e imprimir CON REINTENTO
+     *     ([ReintentoDeComanda.insistir], que sigue [com.avoqado.pos.printing.data.PoliticaDeReintento] —
+     *     hasta ~1 minuto, y sólo vuelve a mandar lo que TRONÓ); salvo que no haya estaciones
+     *     activas y quien llama haya pedido [NoStationsFallback.LegacySingleTicket].
      *
      * Nunca lanza hacia afuera de lo que ya lanzaba: `refresh` falla en silencio por contrato y
-     * `printComandas` envuelve cada estación por separado.
+     * `ReintentoDeComanda` (como antes `ComandaPrinter` directo) envuelve cada estación por
+     * separado.
      *
-     * @return el [ComandaPrinter.Result] del ruteo, para que el caller pueda AVISAR de una
+     * 🔴 Esta función puede tardar hasta ~1 minuto cuando una estación insiste en fallar —
+     * frenar el camino del cobro con eso es EXACTAMENTE lo que no puede pasar. El llamador es
+     * quien decide: el disparo post-cobro la corre en su propio `viewModelScope.launch`, ya
+     * desligado del flujo de pago (el dinero se resuelve antes de que esto siquiera empiece a
+     * reintentar).
+     *
+     * @param maxIntentos tope de intentos para ESTA llamada — default el de
+     *   [PoliticaDeReintento.INTENTOS_MAXIMOS] (~1 minuto, el mostrador). El KDS pasa **1** (sin
+     *   reintento): sus tablets hermanas pueden tomar el pedido si ésta no lo saca, y con el
+     *   reintento activo la reclamación se quedaría retenida hasta ~50 s en vez de soltarse en
+     *   segundos — ver [com.avoqado.pos.kds.presentation.KDSViewModel].
+     * @param alCambiarEstado se dispara cada vez que [ReintentoDeComanda] cambia de estado
+     *   mientras insiste, para que la pantalla pueda mostrar "reintentando…" y, al final, el
+     *   aviso con la causa real. Nunca se llama en el camino legado (fire-and-forget: no hay
+     *   nada que avisar hasta que termina, y termina imprimiendo, no reportando).
+     * @return el [EstadoDeComanda] final del ruteo, para que el caller pueda AVISAR de una
      *   comanda que no salió (Testarudo cobró días sin comanda de barra porque este resultado
      *   se tiraba). `null` cuando no hubo ruteo que reportar: sin renglones, o el camino
      *   legado ([NoStationsFallback.LegacySingleTicket]), cuyo abanico es fire-and-forget.
@@ -96,7 +116,9 @@ class ComandaDispatcher @Inject constructor(
         orderType: String,
         serverName: String? = null,
         noStationsFallback: NoStationsFallback = NoStationsFallback.RouteAnyway,
-    ): ComandaPrinter.Result? {
+        maxIntentos: Int = PoliticaDeReintento.INTENTOS_MAXIMOS,
+        alCambiarEstado: (EstadoDeComanda) -> Unit = {},
+    ): EstadoDeComanda? {
         // Sin renglones no hay nada que imprimir — y nos ahorramos hasta el refresh, igual que el
         // mostrador, que salía antes de tocar la red. No es un guard de configuración: es que
         // literalmente no hay qué mandar a cocina.
@@ -120,7 +142,7 @@ class ComandaDispatcher @Inject constructor(
         }
 
         val plans = PrintRoutingMapper.buildComandas(lines, config)
-        return comandaPrinter.printComandas(
+        return reintentoDeComanda.insistir(
             plans = plans,
             config = config,
             orderNumber = orderNumber,
@@ -130,6 +152,8 @@ class ComandaDispatcher @Inject constructor(
             // del server y no sabe de promociones) y se vuelve a atar por `orderItemId` ya
             // ruteado, para que cada estación encabece SUS productos con su combo.
             comboNames = lines.mapNotNull { line -> line.comboName?.let { line.orderItemId to it } }.toMap(),
+            maxIntentos = maxIntentos,
+            alCambiarEstado = alCambiarEstado,
         )
     }
 

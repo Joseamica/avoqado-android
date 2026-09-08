@@ -33,6 +33,7 @@ import com.avoqado.pos.pos.presentation.cart.CartState
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.domain.printing.ComandaDispatcher
 import com.avoqado.pos.core.domain.printing.NoStationsFallback
+import com.avoqado.pos.printing.data.EstadoDeComanda
 import com.avoqado.pos.printing.data.PrinterService
 import com.avoqado.pos.printing.data.model.ComboPrintLines
 import com.avoqado.pos.printing.data.model.KitchenItem
@@ -430,15 +431,19 @@ class PaymentFlowViewModel @Inject constructor(
     fun clearCancelFailure() { _cancelFailure.value = null }
 
     /**
-     * La comanda automática post-cobro NO salió (o salió a medias) en alguna estación.
+     * Estado de la comanda automática post-cobro: `null` cuando salió bien (o todavía no se
+     * sabe), [EstadoDeComanda.Insistiendo] mientras [ComandaDispatcher] sigue reintentando, y
+     * [EstadoDeComanda.NoSalio] cuando se rindió — con la causa REAL del servidor, no un texto
+     * genérico.
      *
      * 🔴 El cobro nunca se frena por una impresora — pero callar el fallo deja al barista
      * sin enterarse del pedido: Testarudo (2026-08-31) cobró cafés durante días sin que
-     * saliera la comanda de barra y el único rastro era una línea de logcat. El aviso
-     * nombra la estación para que el cajero sepa QUÉ impresora revisar.
+     * saliera la comanda de barra y el único rastro era una línea de logcat. Antes esto se
+     * daba por vencido al primer intento; ahora insiste (ver [ComandaDispatcher.dispatch]) y
+     * el aviso final trae botón para volver a intentarlo a mano ([reintentarComanda]).
      */
-    private val _comandaWarning = MutableStateFlow<String?>(null)
-    val comandaWarning: StateFlow<String?> = _comandaWarning.asStateFlow()
+    private val _comandaWarning = MutableStateFlow<EstadoDeComanda?>(null)
+    val comandaWarning: StateFlow<EstadoDeComanda?> = _comandaWarning.asStateFlow()
 
     fun clearComandaWarning() { _comandaWarning.value = null }
 
@@ -1968,9 +1973,6 @@ class PaymentFlowViewModel @Inject constructor(
 
     private fun autoPrintAfterPayment(method: PaymentMethod, changeCents: Int? = null) {
         val cart = cartState ?: return
-        val realItems = cart.items.filter {
-            it.type is CartItemType.ProductItem && !it.locked
-        }
 
         viewModelScope.launch {
             buildReceiptSnapshot(method, changeCents)?.let { receipt ->
@@ -1994,61 +1996,131 @@ class PaymentFlowViewModel @Inject constructor(
                 }.onFailure { Log.w("💰", "No se pudo abrir el cajón en venta de efectivo: ${it.message}") }
             }
 
-            // Auto-print kitchen ticket(s)
-            if (realItems.isEmpty()) return@launch
-            val orderNumber = createdOrderId?.takeLast(4) ?: "Q-${(1000..9999).random()}"
+            // 🔴 Sigue dentro de ESTE `viewModelScope.launch` — desligado del camino del cobro,
+            // que a esta altura ya resolvió `_state` (ver `createKDSOrderAndPrint`, llamado
+            // DESPUÉS de `_state.value = Success`). Con el reintento esto puede tardar hasta
+            // ~1 minuto: si viviera en la coroutine del pago, congelaría la caja con el
+            // cliente enfrente. `PaymentFlowViewModelTest` fija que `state` llega a `Success`
+            // aunque la comanda siga reintentando.
+            despacharComanda(cart)
+        }
+    }
 
-            // PRINT_STATIONS — el disparo POST-PAGO del mostrador. La secuencia (refrescar config →
-            // rutear → imprimir, o el ticket legado si el venue no tiene estaciones) vive ahora en
-            // [ComandaDispatcher], que es la MISMA pieza que usa el disparo PRE-PAGO del vale de
-            // área (§5.6). Mover el mecanismo no cambió ni una llamada de este camino: mismos
-            // argumentos, mismo orden, mismo ticket legado (con su `category`) — lo fijan
-            // PaymentFlowViewModelTest y ComandaDispatcherTest.
-            val comandaResult = comandaDispatcher.dispatch(
-                venueId = secureStorage.venueId,
-                lines = realItems.map { item ->
-                    RoutableItem(
-                        orderItemId = item.id,
-                        productId = (item.type as? CartItemType.ProductItem)?.productId,
-                        categoryId = item.categoryId,
-                        productName = item.name,
-                        quantity = item.quantity,
-                        modifiers = item.selectedModifiers.map { it.modifierName },
-                        notes = item.itemNote,
-                        // COMBOS — el nombre viaja con la línea para que cada estación
-                        // pueda encabezar SUS productos con el combo al que pertenecen.
-                        comboName = item.promotionInstanceId?.let { item.promotionName ?: "Combo" },
-                    )
-                },
-                orderNumber = orderNumber,
-                orderType = "En tienda",
-                // Sin estaciones configuradas: EXACTAMENTE lo de antes — un solo ticket de cocina
-                // abanicado a todas las impresoras con rol KITCHEN.
-                noStationsFallback = NoStationsFallback.LegacySingleTicket(
-                    // COMBOS — en la comanda la llave es el NOMBRE (ver ComboPrintLines):
-                    // los productos del mismo combo van juntos bajo un encabezado.
-                    ComboPrintLines.kitchen(
-                        realItems.map { item ->
-                            val comboName = item.promotionInstanceId?.let { item.promotionName ?: "Combo" }
-                            val tag = comboName?.let { ComboPrintLines.Tag(key = it, name = it) }
-                            tag to KitchenItem(
-                                name = item.name,
-                                quantity = item.quantity,
-                                modifiers = item.selectedModifiers.map { it.modifierName }.ifEmpty { null },
-                                note = item.itemNote,
-                                category = item.subtitle,
-                            )
-                        },
-                    ),
+    /**
+     * Arma las líneas de la comanda automática post-cobro y llama a [ComandaDispatcher.dispatch].
+     * La comparten el disparo automático ([autoPrintAfterPayment]) y el botón manual del aviso
+     * ([reintentarComanda]) — así un reintento manda EXACTAMENTE la misma comanda, en vez de una
+     * reconstrucción aparte que se pueda desviar.
+     *
+     * SUSPEND a propósito y SIN lanzar su propio `viewModelScope.launch`: quien llama decide en
+     * qué coroutine corre. [autoPrintAfterPayment] ya la corre dentro de la suya; [reintentarComanda]
+     * abre una nueva. Nunca se llama desde el camino del cobro.
+     */
+    private suspend fun despacharComanda(cart: CartState) {
+        val realItems = cart.items.filter {
+            it.type is CartItemType.ProductItem && !it.locked
+        }
+        // Sin productos reales (venta de importe libre) no hay comanda que mandar.
+        if (realItems.isEmpty()) return
+        val orderNumber = createdOrderId?.takeLast(4) ?: "Q-${(1000..9999).random()}"
+
+        // PRINT_STATIONS — el disparo POST-PAGO del mostrador. La secuencia (refrescar config →
+        // rutear → imprimir CON REINTENTO, o el ticket legado si el venue no tiene estaciones)
+        // vive en [ComandaDispatcher], que es la MISMA pieza que usa el disparo PRE-PAGO del
+        // vale de área (§5.6). Mover el mecanismo no cambió ni una llamada de este camino:
+        // mismos argumentos, mismo orden, mismo ticket legado (con su `category`) — lo fijan
+        // PaymentFlowViewModelTest y ComandaDispatcherTest.
+        comandaDispatcher.dispatch(
+            venueId = secureStorage.venueId,
+            lines = realItems.map { item ->
+                RoutableItem(
+                    orderItemId = item.id,
+                    productId = (item.type as? CartItemType.ProductItem)?.productId,
+                    categoryId = item.categoryId,
+                    productName = item.name,
+                    quantity = item.quantity,
+                    modifiers = item.selectedModifiers.map { it.modifierName },
+                    notes = item.itemNote,
+                    // COMBOS — el nombre viaja con la línea para que cada estación
+                    // pueda encabezar SUS productos con el combo al que pertenecen.
+                    comboName = item.promotionInstanceId?.let { item.promotionName ?: "Combo" },
+                )
+            },
+            orderNumber = orderNumber,
+            orderType = "En tienda",
+            // Sin estaciones configuradas: EXACTAMENTE lo de antes — un solo ticket de cocina
+            // abanicado a todas las impresoras con rol KITCHEN.
+            noStationsFallback = NoStationsFallback.LegacySingleTicket(
+                // COMBOS — en la comanda la llave es el NOMBRE (ver ComboPrintLines):
+                // los productos del mismo combo van juntos bajo un encabezado.
+                ComboPrintLines.kitchen(
+                    realItems.map { item ->
+                        val comboName = item.promotionInstanceId?.let { item.promotionName ?: "Combo" }
+                        val tag = comboName?.let { ComboPrintLines.Tag(key = it, name = it) }
+                        tag to KitchenItem(
+                            name = item.name,
+                            quantity = item.quantity,
+                            modifiers = item.selectedModifiers.map { it.modifierName }.ifEmpty { null },
+                            note = item.itemNote,
+                            category = item.subtitle,
+                        )
+                    },
                 ),
-            )
+            ),
+            // Una comanda que sigue reintentando o que se rindió se DICE, con la estación por
+            // nombre y la CAUSA REAL que reportó la impresora — nunca un texto genérico.
+            alCambiarEstado = { estado ->
+                // 🔴 Ronda de arreglo 1 (hallazgo del revisor): el reintento estira la ventana
+                // de riesgo de segundos a ~50s. Si el cajero ya cobró la venta SIGUIENTE mientras
+                // ÉSTA seguía reintentando en segundo plano, un `Salio` tardío de esta venta NO
+                // puede limpiar el aviso — todavía sin resolver — de la otra. `orderNumber` (de
+                // ESTA venta, capturado arriba) decide: sólo se limpia si lo que está en pantalla
+                // es de la MISMA venta (o no hay nada que limpiar). `Insistiendo`/`NoSalio` sí se
+                // pintan siempre — son la información más reciente, y ahora llevan su propio
+                // pedido, así que nunca son ambiguos sobre DE QUÉ venta hablan.
+                if (estado is EstadoDeComanda.Salio) {
+                    val avisoActual = _comandaWarning.value
+                    val esDeEstaVenta = when (avisoActual) {
+                        null, EstadoDeComanda.Salio -> true
+                        is EstadoDeComanda.Insistiendo -> avisoActual.orderNumber == orderNumber
+                        is EstadoDeComanda.NoSalio -> avisoActual.orderNumber == orderNumber
+                    }
+                    if (esDeEstaVenta) _comandaWarning.value = null
+                } else {
+                    _comandaWarning.value = estado
+                }
+            },
+        )
+    }
 
-            // Una comanda que no salió se DICE, con la estación por nombre. El cobro ya
-            // terminó — esto es informativo y jamás lo frena.
-            val sinComanda = comandaResult?.stationsSinComanda.orEmpty()
-            if (sinComanda.isNotEmpty()) {
-                _comandaWarning.value =
-                    "No salió la comanda de: ${sinComanda.joinToString(", ")}. Revisa la impresora de esa estación."
+    private val _reintentandoComandaManualmente = MutableStateFlow(false)
+
+    /**
+     * El botón "Volver a imprimir" tiene un reintento manual EN VUELO. La pantalla lo usa para
+     * deshabilitarlo/mostrarlo cargando — un doble toque no puede disparar DOS ciclos de
+     * reintento en paralelo: los dos imprimirían la MISMA comanda y duplicarían el ticket de
+     * cocina, que es exactamente lo que este trabajo existe para evitar.
+     */
+    val reintentandoComandaManualmente: StateFlow<Boolean> = _reintentandoComandaManualmente.asStateFlow()
+
+    /**
+     * El cajero tocó "Volver a imprimir" en el aviso de comanda. Repite EXACTAMENTE la misma
+     * comanda (mismas líneas, mismo `orderNumber`) — nunca a ciegas: si ya no hay [cartState]
+     * de esta venta (el cajero salió y empezó otra), no hay qué reintentar y no se manda nada.
+     *
+     * 🔴 Con un reintento YA en vuelo, un segundo toque es un NO-OP — el chequeo y el `set` de
+     * [_reintentandoComandaManualmente] corren SÍNCRONOS en el hilo de UI (el `onClick` de
+     * Compose), así que dos toques seguidos jamás se cruzan a medio camino.
+     */
+    fun reintentarComanda() {
+        if (_reintentandoComandaManualmente.value) return
+        val cart = cartState ?: return
+        _reintentandoComandaManualmente.value = true
+        viewModelScope.launch {
+            try {
+                despacharComanda(cart)
+            } finally {
+                _reintentandoComandaManualmente.value = false
             }
         }
     }

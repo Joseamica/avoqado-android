@@ -381,6 +381,51 @@ class ComandaPrinterTest {
         assertEquals(0, result.printed)
     }
 
+    /**
+     * El Result trae el NOMBRE de la estación desde siempre, pero con un nombre no se puede
+     * reintentar — hace falta el PLAN. Sólo el plan cuya impresora TRONÓ vale la pena
+     * reintentar.
+     */
+    @Test
+    fun `un plan cuya impresora truena queda en failedPlans para poder reintentarlo`() = runTest {
+        coEvery { printerService.printKitchenTicket(any(), match { it.address == "192.168.1.50" }) } throws
+            RuntimeException("printer offline")
+        coEvery { printerService.printKitchenTicket(any(), match { it.address == "192.168.1.51" }) } returns Unit
+
+        val planCocina = plan("st_cocina", listOf(tacoLine))
+        val planBarra = plan("st_barra", listOf(cervezaLine))
+
+        val resultado = comandaPrinter.printComandas(
+            plans = listOf(planCocina, planBarra),
+            config = config,
+            orderNumber = "ORD-1",
+        )
+
+        assertEquals(listOf(planCocina), resultado.failedPlans)
+        assertEquals(listOf("Cocina"), resultado.failedStations)
+    }
+
+    /**
+     * Un plan SALTADO (sin impresora resoluble ni default de cocina) no tronó nada — no hay
+     * impresora que reintentar. Si entrara a failedPlans, la política de reintento insistiría
+     * contra la nada.
+     */
+    @Test
+    fun `un plan SIN impresora resoluble NO entra a failedPlans (reintentar no la inventa)`() = runTest {
+        every { printerService.getDefaultPrinter(PrinterRole.KITCHEN) } returns null
+
+        val planSinEstacion = plan(null, listOf(tacoLine))
+
+        val resultado = comandaPrinter.printComandas(
+            plans = listOf(planSinEstacion),
+            config = config,
+            orderNumber = "ORD-2",
+        )
+
+        assertEquals(emptyList<TicketPlan>(), resultado.failedPlans)
+        assertEquals(1, resultado.skippedNoPrinter)
+    }
+
     /** La consulta a la integrada es PEREZOSA: un venue sin impresora POS_INTERNAL no paga el bind. */
     @Test
     fun `printComandas does not query the integrated printer when no POS_INTERNAL printer exists in the config`() = runTest {

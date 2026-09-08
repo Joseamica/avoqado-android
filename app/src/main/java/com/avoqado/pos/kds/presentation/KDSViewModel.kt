@@ -377,6 +377,12 @@ class KDSViewModel @Inject constructor(
                     lines = lineas,
                     orderNumber = pedido.orderNumber,
                     orderType = "Delivery",
+                    // 🔴 SIN reintento: a diferencia del mostrador, el KDS SÍ tiene tablets
+                    // hermanas que pueden tomar este pedido si esta impresora no lo saca. Con
+                    // el default (~1 min) la reclamación se quedaría retenida todo ese tiempo
+                    // en vez de soltarse en segundos (`release-print`, abajo) para que otro
+                    // aparato la reclame — comportamiento EXACTO de antes del reintento.
+                    maxIntentos = 1,
                 )
             }.isSuccess
 

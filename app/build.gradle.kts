@@ -5,6 +5,8 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.hilt)
     alias(libs.plugins.ksp)
+    id("com.google.gms.google-services")  // Firebase
+    id("com.google.firebase.crashlytics")  // Firebase Crashlytics
 }
 
 // Load keystore properties
@@ -124,6 +126,13 @@ ksp {
 }
 
 dependencies {
+    // Firebase (Crashlytics: reportar errores en producción, ej. una impresora que no responde,
+    // que hoy mueren en la pantalla del cajero sin dejar rastro). Mismo BOM y patrón que
+    // avoqado-tpv, que ya lo tiene en producción.
+    implementation(platform("com.google.firebase:firebase-bom:33.7.0"))
+    implementation("com.google.firebase:firebase-crashlytics-ktx")
+    implementation("com.google.firebase:firebase-analytics-ktx")  // Requerido por Crashlytics
+
     // Compose BOM
     val composeBom = platform(libs.compose.bom)
     implementation(composeBom)

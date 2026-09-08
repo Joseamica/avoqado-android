@@ -22,6 +22,7 @@ import com.avoqado.pos.customers.presentation.CustomersView
 import com.avoqado.pos.customers.presentation.CustomersViewModel
 import com.avoqado.pos.payment.data.model.PaymentFlowState
 import com.avoqado.pos.pos.presentation.cart.CartState
+import com.avoqado.pos.printing.data.EstadoDeComanda
 
 @Composable
 fun PaymentFlowScreen(
@@ -351,16 +352,33 @@ fun PaymentFlowScreen(
         )
     }
 
-    // La comanda automática no salió en alguna estación. El cobro YA quedó registrado —
-    // ámbar, nunca rojo (misma regla que el aviso de inventario). Callarlo deja al
-    // barista sin enterarse del pedido: es el bug de Testarudo (2026-08-31).
+    // La comanda automática no salió en alguna estación (o sigue reintentando). El cobro YA
+    // quedó registrado — ámbar, nunca rojo (misma regla que el aviso de inventario). Callarlo
+    // deja al barista sin enterarse del pedido: es el bug de Testarudo (2026-08-31). El aviso
+    // final trae la causa REAL del servidor, EL PEDIDO al que pertenece (con el reintento
+    // activo la ventana en la que podrían solaparse dos ventas subió de segundos a ~50s), y un
+    // botón para volver a intentarlo a mano.
     val comandaWarning by viewModel.comandaWarning.collectAsState()
-    comandaWarning?.let { aviso ->
-        AvoqadoWarningToast(
-            message = "No salió la comanda",
-            subtitle = aviso,
+    val reintentandoComandaManualmente by viewModel.reintentandoComandaManualmente.collectAsState()
+    when (val aviso = comandaWarning) {
+        is EstadoDeComanda.Insistiendo -> AvoqadoWarningToast(
+            message = "Reintentando la comanda",
+            subtitle = "${aviso.estaciones.joinToString(", ")} · pedido ${aviso.orderNumber} · " +
+                "intento ${aviso.intento} de ${aviso.de}",
             onDismiss = { viewModel.clearComandaWarning() },
         )
+        is EstadoDeComanda.NoSalio -> AvoqadoWarningToast(
+            message = "No salió la comanda de: ${aviso.estaciones.joinToString(", ")} · pedido ${aviso.orderNumber}",
+            subtitle = aviso.causa ?: "La impresora no respondió.",
+            primaryLabel = "Volver a imprimir",
+            onPrimary = { viewModel.reintentarComanda() },
+            // Un doble toque no puede disparar DOS ciclos de reintento en paralelo — duplicaría
+            // el ticket de cocina, justo lo que este trabajo existe para evitar.
+            primaryLoading = reintentandoComandaManualmente,
+            secondaryLabel = "Ya la canté",
+            onDismiss = { viewModel.clearComandaWarning() },
+        )
+        else -> Unit
     }
 
     if (showCustomersSheet) {

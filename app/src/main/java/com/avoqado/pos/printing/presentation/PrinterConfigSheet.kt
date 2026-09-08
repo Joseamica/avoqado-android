@@ -34,6 +34,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -78,6 +79,15 @@ fun PrinterConfigSheet(
     val statuses by printerService.printerStatuses.collectAsState()
     val status = statuses[printer.id] ?: PrinterStatus.Disconnected
     val scope = rememberCoroutineScope()
+
+    // 🔴 La conexion con la impresora NO se queda abierta al salir. Muchas impresoras de
+    // puerto 9100 aceptan UNA sola conexion: dejarla colgada es el telefono descolgado, y la
+    // siguiente comanda no entra. Un POS de Windows imprime por el spooler — conecta,
+    // imprime y cuelga, cada vez. Cubre "Conectar" desde esta hoja de configuración (el botón
+    // reportado en el caso real); [PrinterSettingsSheet] cubre además salir sin entrar aquí.
+    DisposableEffect(Unit) {
+        onDispose { printerService.disconnectAll() }
+    }
 
     // Local editable state
     var name by remember { mutableStateOf(printer.name) }

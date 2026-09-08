@@ -20,6 +20,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -49,6 +50,20 @@ import kotlinx.coroutines.delay
  * formulario, como manda la regla de la casa.
  *
  * Auto-dismiss un poco más largo que el de éxito: hay texto que leer.
+ *
+ * @param primaryLabel botón primario OPCIONAL (p. ej. "Volver a imprimir"). Requiere
+ *   [onPrimary]; sin los dos, no se dibuja nada extra — así ningún consumidor existente
+ *   cambia con sólo actualizar el componente.
+ * @param primaryLoading el botón primario está OCUPADO (p. ej. un reintento manual ya en
+ *   vuelo) — se deshabilita y muestra su spinner en vez de aceptar otro toque. Sin esto un
+ *   doble toque sobre "Volver a imprimir" podía disparar DOS ciclos de reintento en paralelo
+ *   y duplicar el ticket de cocina.
+ * @param secondaryLabel acción secundaria OPCIONAL, de texto (p. ej. "Ya la canté"). Cierra
+ *   el aviso igual que [onDismiss] — es otra forma de decir "ya lo vi", no una acción propia.
+ *
+ * 🔴 Con un botón presente el aviso deja de autodesaparecer: un "Volver a imprimir" que se
+ * esfuma en 2.6 s mientras el cajero todavía está leyendo la causa es el mismo bug que esto
+ * vino a arreglar (Testarudo, 2026-08-31) — el cajero se queda sin poder actuar.
  */
 @Composable
 fun AvoqadoWarningToast(
@@ -56,13 +71,27 @@ fun AvoqadoWarningToast(
     onDismiss: () -> Unit,
     subtitle: String? = null,
     durationMs: Long = 2600L,
+    primaryLabel: String? = null,
+    onPrimary: (() -> Unit)? = null,
+    primaryLoading: Boolean = false,
+    secondaryLabel: String? = null,
 ) {
     var visible by remember { mutableStateOf(false) }
+    val esAccionable = (primaryLabel != null && onPrimary != null) || secondaryLabel != null
 
-    LaunchedEffect(Unit) {
+    // 🔴 Ronda de arreglo 1 (hallazgo del revisor): la llave depende del CONTENIDO, no de
+    // `Unit` — si el aviso se recompone con un texto NUEVO (p. ej. "intento 2 de 6" → "intento
+    // 3 de 6"), el timer de autodesaparición viejo no puede seguir corriendo con la cuenta
+    // regresiva de la versión anterior: eso producía el parpadeo (aparece, se desvanece a los
+    // ~2.6s, reaparece) durante los ~50s de reintento. Con la llave nueva, cada mensaje
+    // distinto arranca SU PROPIA cuenta — el timer viejo se cancela sin llegar a disparar su
+    // `onDismiss` sobre un aviso que, para entonces, ya cambió.
+    LaunchedEffect(message, subtitle) {
         visible = true
-        delay(durationMs)
-        onDismiss()
+        if (!esAccionable) {
+            delay(durationMs)
+            onDismiss()
+        }
     }
 
     val scale by animateFloatAsState(
@@ -130,6 +159,29 @@ fun AvoqadoWarningToast(
                         textAlign = TextAlign.Center,
                         modifier = Modifier.fillMaxWidth(),
                     )
+                }
+
+                if (primaryLabel != null && onPrimary != null) {
+                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
+                    PrimaryButton(
+                        text = primaryLabel,
+                        onClick = onPrimary,
+                        fullWidth = true,
+                        isLoading = primaryLoading,
+                    )
+                }
+
+                if (secondaryLabel != null) {
+                    TextButton(
+                        onClick = onDismiss,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            text = secondaryLabel,
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             }
         }

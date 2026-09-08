@@ -42,6 +42,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -106,6 +107,15 @@ fun PrinterSettingsSheet(
     // (the Bluetooth leg skips itself); the button below can request BT explicitly.
     LaunchedEffect(Unit) {
         printerService.startDiscovery()
+    }
+
+    // 🔴 La conexion con la impresora NO se queda abierta al salir. Muchas impresoras de
+    // puerto 9100 aceptan UNA sola conexion: dejarla colgada es el telefono descolgado, y la
+    // siguiente comanda no entra. Un POS de Windows imprime por el spooler — conecta,
+    // imprime y cuelga, cada vez. Va ANTES del `return` de abajo para que cubra la hoja
+    // ENTERA (lista + configuración de una impresora), no sólo la lista.
+    DisposableEffect(Unit) {
+        onDispose { printerService.disconnectAll() }
     }
 
     // If config sheet is open, render only that — avoid stacked ModalBottomSheets

@@ -11,6 +11,7 @@ import com.avoqado.pos.printing.routing.ConsolidatedLine
 import com.avoqado.pos.printing.routing.PrintConfig
 import com.avoqado.pos.printing.routing.PrinterInfo
 import com.avoqado.pos.printing.routing.TicketPlan
+import com.google.firebase.crashlytics.FirebaseCrashlytics
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -124,6 +125,11 @@ class ComandaPrinter @Inject constructor(
         val failedStations: List<String> = emptyList(),
         /** Estaciones que se SALTARON (sin impresora resoluble ni default de cocina). */
         val skippedStations: List<String> = emptyList(),
+        /**
+         * Los planes cuya impresora TRONÓ — los únicos que vale la pena reintentar.
+         * Un plan SALTADO no entra: reintentar no le inventa una impresora.
+         */
+        val failedPlans: List<TicketPlan> = emptyList(),
     ) {
         val nothingPrinted: Boolean get() = printed == 0
         val partial: Boolean get() = printed in 1 until attempted
@@ -156,6 +162,7 @@ class ComandaPrinter @Inject constructor(
         var lastError: String? = null
         val failedStations = mutableListOf<String>()
         val skippedStations = mutableListOf<String>()
+        val failedPlans = mutableListOf<TicketPlan>()
         for (plan in plans) {
             // La etiqueta se conoce ANTES de intentar imprimir, para que un fallo también
             // sepa decir de QUÉ estación era la comanda que no salió.
@@ -179,6 +186,17 @@ class ComandaPrinter @Inject constructor(
             } catch (e: Exception) {
                 lastError = e.message
                 failedStations += stationLabel
+                failedPlans += plan
+                // 🔴 Sin esto, el error de una impresora vive y muere en la LAN del local:
+                // ni el dashboard ni nosotros podemos verlo. Fue lo que hizo que diagnosticar
+                // «la impresora se desconecta» de Testarudo costara una sesión entera.
+                runCatching {
+                    FirebaseCrashlytics.getInstance().apply {
+                        setCustomKey("estacion", stationLabel)
+                        setCustomKey("impresora", plan.stationId ?: "sin-estacion")
+                        recordException(e)
+                    }
+                }
                 Log.e(TAG, "❌ Comanda print failed for station='${plan.stationId}': ${e.message}", e)
             }
         }
@@ -189,6 +207,7 @@ class ComandaPrinter @Inject constructor(
             lastError = lastError,
             failedStations = failedStations,
             skippedStations = skippedStations,
+            failedPlans = failedPlans,
         )
     }
 

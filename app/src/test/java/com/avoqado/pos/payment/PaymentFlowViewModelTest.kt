@@ -29,7 +29,9 @@ import com.avoqado.pos.pos.data.model.CartItemType
 import com.avoqado.pos.pos.data.model.SelectedModifier
 import com.avoqado.pos.pos.presentation.cart.CartState
 import com.avoqado.pos.printing.data.ComandaPrinter
+import com.avoqado.pos.printing.data.EstadoDeComanda
 import com.avoqado.pos.printing.data.PrinterService
+import com.avoqado.pos.printing.data.ReintentoDeComanda
 import com.avoqado.pos.printing.data.model.KitchenItem
 import com.avoqado.pos.printing.data.model.KitchenTicketData
 import com.avoqado.pos.printing.data.model.ReceiptData
@@ -151,7 +153,15 @@ class PaymentFlowViewModelTest {
             // verificando `printerService.autoPrintKitchenTicket` y `comandaPrinter.printComandas`
             // tal cual los verificaban antes de que ComandaDispatcher existiera, así que si la
             // extracción cambiara UNA llamada del camino post-pago, truenan.
-            comandaDispatcher = ComandaDispatcher(printConfigRepository, comandaPrinter, printerService),
+            //
+            // Task 4 + ronda de arreglo 1: `ReintentoDeComanda` también va REAL, construido con el
+            // MISMO `comandaPrinter` de siempre (su default `esperar = { delay(it) }`; ya es
+            // inyectable por Hilt de punta a punta, pero aquí se sigue construyendo a mano, igual
+            // que `ComandaDispatcher`, para poder controlarlo desde el mismo mock). Bajo
+            // `UnconfinedTestDispatcher` + `advanceUntilIdle()` los `delay()` del reintento se
+            // saltan en tiempo virtual; sin `advanceUntilIdle()` la coroutine queda SUSPENDIDA ahí,
+            // que es justo lo que exige "el cobro nunca se frena".
+            comandaDispatcher = ComandaDispatcher(printConfigRepository, ReintentoDeComanda(comandaPrinter), printerService),
             tableSession = com.avoqado.pos.tables.data.TableSession(),
             syncOutbox = mockk(relaxed = true),
             customerDisplay = com.avoqado.pos.customerdisplay.CustomerDisplayState(),
@@ -799,7 +809,10 @@ class PaymentFlowViewModelTest {
         // El cobro salió bien — el aviso es informativo, jamás bloquea el dinero.
         assertTrue(viewModel.state.value is PaymentFlowState.Success)
         val aviso = viewModel.comandaWarning.value
-        assertTrue("el aviso debe nombrar la estación: $aviso", aviso?.contains("Barra") == true)
+        assertTrue(
+            "el aviso debe nombrar la estación: $aviso",
+            aviso is EstadoDeComanda.NoSalio && aviso.estaciones.contains("Barra"),
+        )
     }
 
     @Test
@@ -828,6 +841,246 @@ class PaymentFlowViewModelTest {
         advanceUntilIdle()
 
         assertTrue(viewModel.comandaWarning.value == null)
+    }
+
+    // MARK: - Task 4: el aviso trae la causa REAL del server y no frena el cobro
+
+    /** Config con UNA estación activa ("Cocina") — fuerza el camino de ruteo, no el legado. */
+    private val cocinaActivaConfig = PrintConfig(
+        stations = listOf(StationInfo(id = "st_cocina", name = "Cocina", printerId = "pr_1", active = true)),
+        defaultStationId = "st_cocina",
+    )
+
+    private fun cartConUnProducto() = CartState(
+        items = listOf(
+            CartItem(id = "line-1", type = CartItemType.ProductItem("prod-1"), name = "Café", unitPrice = 1000),
+        ),
+    )
+
+    /**
+     * Arranca el cobro en efectivo de [cartConUnProducto] — a propósito SIN `advanceUntilIdle()`,
+     * para que quien llama decida si deja avanzar el reloj virtual (y con él, el reintento de
+     * la comanda) o si comprueba el estado justo como quedó al volver de este método.
+     */
+    private fun completarCobroEnEfectivo() {
+        coEvery {
+            orderRepository.createOrder(any(), any(), any(), any(), any())
+        } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-task4")))
+        coEvery {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any())
+        } returns Result.success(OrderRepository.CashPayResult(paymentId = "payment-task4", receiptAccessKey = null))
+
+        viewModel.startPaymentFlow(cartConUnProducto())
+        viewModel.confirmCashCustom(1000)
+    }
+
+    /**
+     * La impresora de "Cocina" TRUENA siempre — cada intento (el primero y los cinco
+     * reintentos) devuelve la MISMA causa que reportaría el server real, así que
+     * [com.avoqado.pos.printing.data.ReintentoDeComanda] agota los 6 intentos de
+     * [com.avoqado.pos.printing.data.PoliticaDeReintento] y se rinde con esa causa.
+     */
+    private fun laImpresoraFallaSiempre() {
+        every { printConfigRepository.getCurrentConfig() } returns cocinaActivaConfig
+        coEvery {
+            comandaPrinter.printComandas(any(), cocinaActivaConfig, any(), any(), any())
+        } coAnswers {
+            val plans = firstArg<List<TicketPlan>>()
+            ComandaPrinter.Result(
+                attempted = plans.size,
+                printed = 0,
+                skippedNoPrinter = 0,
+                lastError = "failed to connect to /192.168.1.141 (port 9100)",
+                failedStations = listOf("Cocina"),
+                failedPlans = plans,
+            )
+        }
+    }
+
+    @Test
+    fun `el aviso lleva la causa REAL del servidor, no un texto generico`() = runTest {
+        laImpresoraFallaSiempre()
+
+        completarCobroEnEfectivo()
+        advanceUntilIdle()
+
+        val aviso = viewModel.comandaWarning.value as EstadoDeComanda.NoSalio
+        assertEquals(listOf("Cocina"), aviso.estaciones)
+        assertEquals("failed to connect to /192.168.1.141 (port 9100)", aviso.causa)
+    }
+
+    /**
+     * 🔴 El corazón de la Tarea 4: con `ReintentoDeComanda` una comanda que no sale puede tardar
+     * hasta ~1 minuto en rendirse. Si esa espera viviera en la coroutine del cobro, el cajero
+     * vería la caja congelada con el cliente enfrente. Por eso esta prueba NO llama a
+     * `advanceUntilIdle()`: verifica el estado tal como queda al volver de
+     * `confirmCashCustom(...)`, con el reintento genuinamente SUSPENDIDO a media espera (bajo
+     * `UnconfinedTestDispatcher`, el primer `delay()` real del reintento es lo único que puede
+     * devolver el control aquí sin que la prueba lo pida).
+     */
+    @Test
+    fun `el cobro NUNCA se frena porque la comanda este reintentando`() = runTest {
+        laImpresoraFallaSiempre()
+
+        completarCobroEnEfectivo()
+
+        // El cobro ya es Success...
+        assertTrue(viewModel.state.value is PaymentFlowState.Success)
+        // ...y la prueba de que no fue casualidad: la comanda sigue insistiendo en este
+        // instante exacto, no ha terminado. Si `dispatch` se hubiera esperado desde el camino
+        // del cobro, `state` seguiría en Loading/Processing y esto ni se alcanzaría a leer.
+        assertTrue(viewModel.comandaWarning.value is EstadoDeComanda.Insistiendo)
+    }
+
+    @Test
+    fun `una comanda que salio no deja aviso`() = runTest {
+        every { printConfigRepository.getCurrentConfig() } returns cocinaActivaConfig
+        coEvery {
+            comandaPrinter.printComandas(any(), cocinaActivaConfig, any(), any(), any())
+        } returns ComandaPrinter.Result(attempted = 1, printed = 1, skippedNoPrinter = 0, lastError = null)
+
+        completarCobroEnEfectivo()
+        advanceUntilIdle()
+
+        assertNull(viewModel.comandaWarning.value)
+    }
+
+    // MARK: - Ronda de arreglo 1: dos ventas en vuelo a la vez (el reintento estiró la ventana)
+
+    /**
+     * P1 nuevo del revisor: con el reintento la ventana en la que DOS ventas pueden estar
+     * reintentando a la vez subió de segundos a ~50s. Simula el caso real: la venta A falla y
+     * queda esperando su reintento; ANTES de que resuelva, el cajero ya cobró la venta B (que
+     * también falla y queda esperando). Cuando el reintento de A —programado ANTES— por fin
+     * resuelve y sale bien, ese `Salio` NO debe borrar el aviso de B, que sigue sin resolver.
+     */
+    @Test
+    fun `un Salio tardio de una venta no limpia el aviso de OTRA venta que sigue reintentando`() = runTest {
+        every { printConfigRepository.getCurrentConfig() } returns cocinaActivaConfig
+
+        var intentoA = 0
+        coEvery {
+            comandaPrinter.printComandas(any(), cocinaActivaConfig, "AAAA", any(), any())
+        } coAnswers {
+            val plans = firstArg<List<TicketPlan>>()
+            intentoA++
+            if (intentoA == 1) {
+                ComandaPrinter.Result(
+                    attempted = plans.size, printed = 0, skippedNoPrinter = 0,
+                    lastError = "timeout A", failedStations = listOf("Cocina"), failedPlans = plans,
+                )
+            } else {
+                ComandaPrinter.Result(attempted = plans.size, printed = plans.size, skippedNoPrinter = 0, lastError = null)
+            }
+        }
+        coEvery {
+            comandaPrinter.printComandas(any(), cocinaActivaConfig, "BBBB", any(), any())
+        } coAnswers {
+            val plans = firstArg<List<TicketPlan>>()
+            ComandaPrinter.Result(
+                attempted = plans.size, printed = 0, skippedNoPrinter = 0,
+                lastError = "timeout B", failedStations = listOf("Cocina"), failedPlans = plans,
+            )
+        }
+
+        // Venta A: falla en el primer intento y queda esperando su reintento (a los 2s virtuales).
+        coEvery {
+            orderRepository.createOrder(any(), any(), any(), any(), any())
+        } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-AAAA")))
+        coEvery {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any())
+        } returns Result.success(OrderRepository.CashPayResult(paymentId = "payment-A", receiptAccessKey = null))
+        viewModel.startPaymentFlow(cartConUnProducto())
+        viewModel.confirmCashCustom(1000)
+        val avisoTrasA = viewModel.comandaWarning.value as EstadoDeComanda.Insistiendo
+        assertEquals("AAAA", avisoTrasA.orderNumber)
+
+        // Antes de que A reintente, el cajero ya cobró la venta B. Avanza el reloj un poco para
+        // que las dos esperas de 2s NO caigan en el mismo instante virtual.
+        advanceTimeBy(500)
+        coEvery {
+            orderRepository.createOrder(any(), any(), any(), any(), any())
+        } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-BBBB")))
+        coEvery {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any())
+        } returns Result.success(OrderRepository.CashPayResult(paymentId = "payment-B", receiptAccessKey = null))
+        viewModel.startPaymentFlow(cartConUnProducto())
+        viewModel.confirmCashCustom(1000)
+        val avisoTrasB = viewModel.comandaWarning.value as EstadoDeComanda.Insistiendo
+        assertEquals("BBBB", avisoTrasB.orderNumber)
+
+        // Avanza hasta DESPUÉS de que el reintento de A (programado antes, a los 2000ms) resuelve
+        // — y sale bien. `advanceTimeBy` no ejecuta lo agendado EXACTO en el nuevo límite (hace
+        // falta pasarse un poco o llamar `runCurrent()`), así que se avanza con margen — sin
+        // llegar a los 2500ms en que despierta el propio reintento de B.
+        advanceTimeBy(1600)
+
+        val avisoFinal = viewModel.comandaWarning.value
+        assertTrue(
+            "un Salio de A no debe limpiar el aviso de B, que sigue reintentando: $avisoFinal",
+            avisoFinal is EstadoDeComanda.Insistiendo && avisoFinal.orderNumber == "BBBB",
+        )
+    }
+
+    // MARK: - Ronda de arreglo 1: doble toque en "Volver a imprimir" no duplica el ticket
+
+    /**
+     * P2 del revisor: un doble tap sobre "Volver a imprimir" mientras el primero sigue en vuelo
+     * podía disparar DOS ciclos de reintento en paralelo — y ambos imprimirían la misma comanda.
+     */
+    @Test
+    fun `un segundo toque de Volver a imprimir mientras el primero sigue en vuelo no dispara otro ciclo`() = runTest {
+        var llamadas = 0
+        every { printConfigRepository.getCurrentConfig() } returns cocinaActivaConfig
+        coEvery {
+            comandaPrinter.printComandas(any(), cocinaActivaConfig, any(), any(), any())
+        } coAnswers {
+            val plans = firstArg<List<TicketPlan>>()
+            llamadas++
+            ComandaPrinter.Result(
+                attempted = plans.size, printed = 0, skippedNoPrinter = 0,
+                lastError = "sigue caída", failedStations = listOf("Cocina"), failedPlans = plans,
+            )
+        }
+
+        completarCobroEnEfectivo()
+        advanceUntilIdle() // agota los 6 intentos automáticos y se rinde con NoSalio
+        val llamadasTrasElAutomatico = llamadas
+        assertTrue(viewModel.comandaWarning.value is EstadoDeComanda.NoSalio)
+
+        // Doble tap: el segundo debe ser un NO-OP mientras el primero sigue en vuelo.
+        viewModel.reintentarComanda()
+        viewModel.reintentarComanda()
+        advanceUntilIdle()
+
+        // Con el guard: sólo UN ciclo más (6 llamadas). Sin el guard, serían 12 (dos ciclos).
+        assertEquals(llamadasTrasElAutomatico + 6, llamadas)
+    }
+
+    @Test
+    fun `reintentandoComandaManualmente refleja si el reintento manual sigue en vuelo`() = runTest {
+        every { printConfigRepository.getCurrentConfig() } returns cocinaActivaConfig
+        coEvery {
+            comandaPrinter.printComandas(any(), cocinaActivaConfig, any(), any(), any())
+        } coAnswers {
+            val plans = firstArg<List<TicketPlan>>()
+            ComandaPrinter.Result(
+                attempted = plans.size, printed = 0, skippedNoPrinter = 0,
+                lastError = "sigue caída", failedStations = listOf("Cocina"), failedPlans = plans,
+            )
+        }
+
+        completarCobroEnEfectivo()
+        advanceUntilIdle()
+        assertFalse(viewModel.reintentandoComandaManualmente.value)
+
+        viewModel.reintentarComanda()
+        // Bajo UnconfinedTestDispatcher el reintento manual ya corrió hasta su primer `delay()`
+        // real y quedó SUSPENDIDO ahí — todavía en vuelo.
+        assertTrue(viewModel.reintentandoComandaManualmente.value)
+
+        advanceUntilIdle() // se rinde otra vez
+        assertFalse(viewModel.reintentandoComandaManualmente.value)
     }
 
     @Test
