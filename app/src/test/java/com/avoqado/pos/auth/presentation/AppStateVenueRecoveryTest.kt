@@ -7,6 +7,7 @@ import com.avoqado.pos.core.data.sync.SyncOutbox
 import com.avoqado.pos.core.domain.PlanManager
 import com.avoqado.pos.core.domain.RoleManager
 import com.avoqado.pos.core.util.ConnectivityMonitor
+import com.avoqado.pos.inventory.data.InventoryCountSyncCoordinator
 import com.avoqado.pos.payment.data.PaymentSyncService
 import com.avoqado.pos.reservations.data.ReservationRepository
 import com.avoqado.pos.settings.domain.PosMode
@@ -42,10 +43,11 @@ class AppStateVenueRecoveryTest {
             repairResult = true,
             onRepair = { events += "repair" },
             onPaymentStart = { events += "payments" },
+            onInventoryStart = { events += "inventory" },
             onOutboxStart = { events += "outbox" },
         )
 
-        assertEquals(listOf("repair", "payments", "outbox"), events.take(3))
+        assertEquals(listOf("repair", "inventory", "payments", "outbox"), events.take(4))
     }
 
     @Test
@@ -56,10 +58,11 @@ class AppStateVenueRecoveryTest {
             repairResult = false,
             onRepair = { events += "repair-failed" },
             onPaymentStart = { events += "payments" },
+            onInventoryStart = { events += "inventory" },
             onOutboxStart = { events += "outbox" },
         )
 
-        assertEquals(listOf("repair-failed", "payments", "outbox"), events.take(3))
+        assertEquals(listOf("repair-failed", "inventory", "payments", "outbox"), events.take(4))
     }
 
     @Test
@@ -68,6 +71,7 @@ class AppStateVenueRecoveryTest {
             repairResult = true,
             onRepair = {},
             onPaymentStart = {},
+            onInventoryStart = {},
             onOutboxStart = {},
         )
 
@@ -76,10 +80,51 @@ class AppStateVenueRecoveryTest {
         assertEquals(false, appState.visibleTabs.value.isEmpty())
     }
 
+    @Test
+    fun `logout detiene inventory sync sin bloquear por trabajo durable separado`() = runTest {
+        val events = mutableListOf<String>()
+        val appState = createAppState(
+            repairResult = true,
+            onRepair = {},
+            onPaymentStart = {},
+            onInventoryStart = {},
+            onInventoryStop = { events += "inventory-stop" },
+            onOutboxStart = {},
+        )
+
+        appState.onLogout()
+        advanceUntilIdle()
+
+        assertEquals(listOf("inventory-stop"), events)
+    }
+
+    @Test
+    fun `logout detiene la sesion y el login siguiente inicia un solo replay nuevo`() = runTest {
+        val events = mutableListOf<String>()
+        val appState = createAppState(
+            repairResult = true,
+            onRepair = {},
+            onPaymentStart = {},
+            onInventoryStart = { events += "inventory-start" },
+            onInventoryStop = { events += "inventory-stop" },
+            onOutboxStart = {},
+        )
+        advanceUntilIdle()
+        events.clear()
+
+        appState.onLogout()
+        advanceUntilIdle()
+        appState.onLoginSuccess()
+
+        assertEquals(listOf("inventory-stop", "inventory-start"), events)
+    }
+
     private fun createAppState(
         repairResult: Boolean,
         onRepair: () -> Unit,
         onPaymentStart: () -> Unit,
+        onInventoryStart: () -> Unit,
+        onInventoryStop: () -> Unit = {},
         onOutboxStart: () -> Unit,
     ): AppState {
         val secureStorage = mockk<SecureStorage>(relaxed = true) {
@@ -118,6 +163,11 @@ class AppStateVenueRecoveryTest {
             every { isConnected } returns MutableStateFlow(true)
             every { isServerReachable } returns MutableStateFlow(true)
         }
+        val inventorySync = mockk<InventoryCountSyncCoordinator>(relaxed = true) {
+            every { start(any()) } answers { onInventoryStart() }
+            every { stop() } answers { onInventoryStop() }
+            every { blockingWorkCount() } returns 0
+        }
 
         return AppState(
             secureStorage = secureStorage,
@@ -133,6 +183,7 @@ class AppStateVenueRecoveryTest {
             reservationRepository = reservationRepository,
             tableSyncCoordinator = mockk<TableSyncCoordinator>(relaxed = true),
             posModeManager = posModeManager,
+            inventoryCountSyncCoordinator = inventorySync,
             cashDrawerRepository = mockk<com.avoqado.pos.cashdrawer.data.CashDrawerRepository>(relaxed = true) {
                 every { estadoDeLosCobros } returns MutableStateFlow(
                     com.avoqado.pos.cashdrawer.data.EstadoDeLosCobros.LIBRES,

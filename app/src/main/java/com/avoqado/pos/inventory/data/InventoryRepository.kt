@@ -104,7 +104,14 @@ data class LineaContadaRequest(val id: String, val counted: Double)
  * mandar `"note": null` en un envío incremental borraría la nota que el cajero ya escribió.
  */
 @Serializable
-data class ActualizarConteoRequest(val items: List<LineaContadaRequest>, val note: String? = null)
+data class ActualizarConteoRequest(
+    val items: List<LineaContadaRequest>,
+    val note: String? = null,
+    val expectedRevision: Int? = null,
+)
+
+@Serializable
+private data class EscrituraConRevisionRequest(val expectedRevision: Int? = null)
 
 /**
  * Respuesta cruda de un escritor: código HTTP y cuerpo. La clasificación vive en `ConteoEnCurso`.
@@ -168,7 +175,7 @@ class InventoryRepository @Inject constructor(
     private val client: OkHttpClient,
     private val purchaseOrderDao: PurchaseOrderDao,
     private val inventoryTransferDao: InventoryTransferDao,
-) {
+) : InventoryCountTransport {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = false }
 
     private val _stockItems = MutableStateFlow<List<StockItem>>(emptyList())
@@ -216,8 +223,10 @@ class InventoryRepository @Inject constructor(
         if (deFondo) header(ForbiddenInterceptor.BACKGROUND_HEADER, "1")
     }
 
-    private fun venueBaseUrl(): String? {
-        val venueId = secureStorage.venueId ?: return null
+    private fun venueBaseUrl(): String? = secureStorage.venueId?.let(::venueBaseUrl)
+
+    private fun venueBaseUrl(venueId: String): String? {
+        if (venueId.isBlank()) return null
         // Sólo los tests de JVM ponen esta propiedad (MockWebServer); en el aparato no existe.
         // 🔴 El candado de DEBUG no es ceremonia: este cliente lleva `AuthInterceptor`, que estampa
         // el `Bearer` decidiendo por RUTA y no por host, así que en release cualquier código del
@@ -397,20 +406,23 @@ class InventoryRepository @Inject constructor(
      * el servidor contestaba 400 — el cajero perdía su avance sin motivo visible.
      */
     private suspend fun putStockCount(
+        venueId: String,
         countId: String,
         items: List<StockCountItem>,
         note: String?,
+        expectedRevision: Int?,
         deFondo: Boolean,
     ): RespuestaHttp {
         // `venueBaseUrl()` va DENTRO del try: lee de `EncryptedSharedPreferences` y puede lanzar
         // (Tink/keystore). La interfaz promete que estos escritores NUNCA lanzan, y quien llama
         // no tiene `catch`: una excepción aquí reventaría dentro del `viewModelScope`.
         return try {
-            val base = venueBaseUrl() ?: return RespuestaHttp(SIN_VENUE, "No venue")
+            val base = venueBaseUrl(venueId) ?: return RespuestaHttp(SIN_VENUE, "No venue")
             val bodyJson = json.encodeToString(
                 ActualizarConteoRequest(
                     items = items.map { LineaContadaRequest(id = it.id, counted = it.counted) },
-                    note = note?.takeIf { it.isNotBlank() },
+                    note = note,
+                    expectedRevision = expectedRevision,
                 ),
             )
             val request = Request.Builder()
@@ -437,10 +449,21 @@ class InventoryRepository @Inject constructor(
      * conteo. Intenta de nuevo.» — y reintentar no podía funcionar NUNCA. El conflicto se conoce
      * aquí y se pierde una línea después.
      */
-    suspend fun enviarFinal(countId: String, items: List<StockCountItem>, note: String?): RespuestaHttp =
+    override suspend fun enviarFinal(
+        venueId: String,
+        countId: String,
+        items: List<StockCountItem>,
+        note: String?,
+        expectedRevision: Int,
+    ): RespuestaHttp =
         // NO de fondo: lo dispara un toque del cajero, así que conserva el modal de permisos y el
         // teclado de gerente. Sólo el envío automático se marca de fondo.
-        putStockCount(countId, items, note, deFondo = false)
+        putStockCount(venueId, countId, items, note, expectedRevision, deFondo = false)
+
+    suspend fun enviarFinal(countId: String, items: List<StockCountItem>, note: String?): RespuestaHttp {
+        val venueId = secureStorage.venueId ?: return RespuestaHttp(SIN_VENUE, "No venue")
+        return putStockCount(venueId, countId, items, note, expectedRevision = null, deFondo = false)
+    }
 
     /**
      * Envoltura histórica de [enviarFinal] con forma de `Result`. Se conserva porque fija por
@@ -468,11 +491,34 @@ class InventoryRepository @Inject constructor(
      * POST …/confirm con el código TAL CUAL, hermano de [enviarFinal]. Mismo motivo: un 404 aquí
      * significa «este conteo ya no está en progreso», no «vuelve a intentarlo».
      */
-    suspend fun confirmarConteo(countId: String): RespuestaHttp {
+    override suspend fun confirmarConteo(
+        venueId: String,
+        countId: String,
+        expectedRevision: Int,
+    ): RespuestaHttp {
         // `venueBaseUrl()` va DENTRO del try por lo mismo que en `putStockCount`: lee de
         // `EncryptedSharedPreferences` y puede lanzar.
         return try {
-            val base = venueBaseUrl() ?: return RespuestaHttp(SIN_VENUE, "No venue")
+            val base = venueBaseUrl(venueId) ?: return RespuestaHttp(SIN_VENUE, "No venue")
+            val body = json.encodeToString(EscrituraConRevisionRequest(expectedRevision))
+            val request = Request.Builder()
+                .url("$base/inventory/stock-counts/$countId/confirm")
+                .post(body.toRequestBody("application/json".toMediaType()))
+                .build()
+            withContext(Dispatchers.IO) {
+                val response = client.newCall(request).execute()
+                RespuestaHttp(response.code, response.body?.string() ?: "")
+            }
+        } catch (e: Exception) {
+            Log.e("📦", "❌ Confirm stock count error: ${e.message}")
+            RespuestaHttp(0, e.message ?: "")
+        }
+    }
+
+    suspend fun confirmarConteo(countId: String): RespuestaHttp {
+        val venueId = secureStorage.venueId ?: return RespuestaHttp(SIN_VENUE, "No venue")
+        return try {
+            val base = venueBaseUrl(venueId) ?: return RespuestaHttp(SIN_VENUE, "No venue")
             val request = Request.Builder()
                 .url("$base/inventory/stock-counts/$countId/confirm")
                 .post("{}".toRequestBody("application/json".toMediaType()))
@@ -506,20 +552,61 @@ class InventoryRepository @Inject constructor(
      * cajero). Devuelve el código TAL CUAL — quien llama lo clasifica con
      * `ConteoEnCurso.clasificarEnvio`, que distingue reintentar de rechazo y de conflicto.
      */
-    suspend fun enviarAvance(countId: String, items: List<StockCountItem>): RespuestaHttp =
+    override suspend fun enviarAvance(
+        venueId: String,
+        countId: String,
+        items: List<StockCountItem>,
+        expectedRevision: Int,
+    ): RespuestaHttp =
         // De fondo: se dispara sola mientras el cajero teclea y al reconectar, así que un 403 no
         // puede abrir el teclado del PIN de gerente encima de otra pantalla. El rechazo lo cuenta
         // la pantalla del conteo vía `ConteoEnCurso.clasificarEnvio(403) = RECHAZADO`.
-        putStockCount(countId, items, note = null, deFondo = true)
+        putStockCount(
+            venueId,
+            countId,
+            items,
+            note = null,
+            expectedRevision = expectedRevision,
+            deFondo = true,
+        )
+
+    suspend fun enviarAvance(countId: String, items: List<StockCountItem>): RespuestaHttp {
+        val venueId = secureStorage.venueId ?: return RespuestaHttp(SIN_VENUE, "No venue")
+        return putStockCount(venueId, countId, items, note = null, expectedRevision = null, deFondo = true)
+    }
 
     /** POST …/cancel. El llamador clasifica con `ConteoEnCurso.clasificarCancelacion`. */
-    suspend fun cancelStockCount(countId: String): RespuestaHttp {
+    override suspend fun cancelStockCount(
+        venueId: String,
+        countId: String,
+        expectedRevision: Int,
+    ): RespuestaHttp {
         return try {
-            val base = venueBaseUrl() ?: return RespuestaHttp(SIN_VENUE, "No venue")
+            val base = venueBaseUrl(venueId) ?: return RespuestaHttp(SIN_VENUE, "No venue")
+            val body = json.encodeToString(EscrituraConRevisionRequest(expectedRevision))
             val request = Request.Builder()
                 .url("$base/inventory/stock-counts/$countId/cancel")
                 // De fondo por lo mismo que `enviarAvance`: la cancelación también se reproduce al
                 // reconectar, sin nadie mirando. Su rechazo lo cuenta `clasificarCancelacion`.
+                .marcarDeFondo(true)
+                .post(body.toRequestBody("application/json".toMediaType()))
+                .build()
+            withContext(Dispatchers.IO) {
+                val response = client.newCall(request).execute()
+                RespuestaHttp(response.code, response.body?.string() ?: "")
+            }
+        } catch (e: Exception) {
+            Log.e("📦", "❌ Cancel stock count error: ${e.message}")
+            RespuestaHttp(0, e.message ?: "")
+        }
+    }
+
+    suspend fun cancelStockCount(countId: String): RespuestaHttp {
+        val venueId = secureStorage.venueId ?: return RespuestaHttp(SIN_VENUE, "No venue")
+        return try {
+            val base = venueBaseUrl(venueId) ?: return RespuestaHttp(SIN_VENUE, "No venue")
+            val request = Request.Builder()
+                .url("$base/inventory/stock-counts/$countId/cancel")
                 .marcarDeFondo(true)
                 .post("{}".toRequestBody("application/json".toMediaType()))
                 .build()

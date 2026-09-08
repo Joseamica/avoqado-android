@@ -93,6 +93,8 @@ fun StockCountingView(
     val isSaving by viewModel.isSaving.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     val conflictoDelServidor by viewModel.conflictoDelServidor.collectAsState()
+    val conflictoDeRevision by viewModel.conflictoDeRevision.collectAsState()
+    val soloConsulta by viewModel.soloConsulta.collectAsState()
     // UNA sola fuente para la banda ambar. La regla (el conflicto manda; si no, cuanto
     // trabajo vive solo en este aparato) vive en el ViewModel: repartida entre las dos
     // pantallas, cada una podia decir una cosa distinta del mismo conteo.
@@ -101,6 +103,10 @@ fun StockCountingView(
 
     var searchText by remember { mutableStateOf("") }
     var showAddPopup by remember { mutableStateOf(false) }
+
+    LaunchedEffect(soloConsulta) {
+        if (soloConsulta) showAddPopup = false
+    }
 
     // El BACK del sistema es la salida mas comun en una tablet: sin esto se perdia
     // el conteo sin preguntar. Vive mientras la pantalla esta montada (el Screen la
@@ -153,7 +159,7 @@ fun StockCountingView(
         CountingHeader(
             onCancel = { viewModel.pedirSalida() },
             onNext = { viewModel.finishCounting() },
-            hasItems = countItems.isNotEmpty(),
+            hasItems = countItems.isNotEmpty() && !soloConsulta,
         )
 
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -187,7 +193,8 @@ fun StockCountingView(
                         },
                         onAddItems = { showAddPopup = true },
                         isCycle = activeCountType == StockCountType.CYCLE,
-                        stockSuggestions = if (searchText.isBlank()) emptyList()
+                        puedeEditar = !soloConsulta,
+                        stockSuggestions = if (soloConsulta || searchText.isBlank()) emptyList()
                         else (stockItems + countableRawMaterials).filter { stock ->
                             stock.id !in countItems.map { it.productId } && (
                                 stock.name.contains(searchText, ignoreCase = true) ||
@@ -227,6 +234,7 @@ fun StockCountingView(
                             planQueFalta = if (viewModel.hasScaleIntegration) null else viewModel.scaleTierLabel,
                             onUseWeight = viewModel::updateCountedText,
                             onRetry = onRetryScale,
+                            puedeEditar = !soloConsulta,
                         )
                     }
 
@@ -236,6 +244,7 @@ fun StockCountingView(
                         countedText = countedText,
                         onIncrement = { viewModel.incrementCount() },
                         onDecrement = { viewModel.decrementCount() },
+                        enabled = !soloConsulta,
                     )
 
                     Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xl))
@@ -257,6 +266,7 @@ fun StockCountingView(
                                 viewModel.updateCountedText(countedText.dropLast(1))
                             }
                         },
+                        enabled = !soloConsulta,
                     )
 
                     Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
@@ -273,7 +283,7 @@ fun StockCountingView(
                         onClick = {
                             if (esUltimoArticulo) viewModel.finishCounting() else viewModel.moveToNextItem()
                         },
-                        enabled = selectedIndex >= 0 && countItems.isNotEmpty(),
+                        enabled = selectedIndex >= 0 && countItems.isNotEmpty() && !soloConsulta,
                     )
                 }
             }
@@ -286,6 +296,7 @@ fun StockCountingView(
                     onSearchChange = { searchText = it },
                     onAddItems = { showAddPopup = true },
                     isCycle = activeCountType == StockCountType.CYCLE,
+                    puedeAgregar = !soloConsulta,
                 )
 
                 // Quantity controls
@@ -310,6 +321,7 @@ fun StockCountingView(
                             onIncrement = { viewModel.incrementCount() },
                             onDecrement = { viewModel.decrementCount() },
                             compact = true,
+                            enabled = !soloConsulta,
                         )
                     }
                     InventoryScaleReading(
@@ -319,6 +331,7 @@ fun StockCountingView(
                         planQueFalta = if (viewModel.hasScaleIntegration) null else viewModel.scaleTierLabel,
                         onUseWeight = viewModel::updateCountedText,
                         onRetry = onRetryScale,
+                        puedeEditar = !soloConsulta,
                         modifier = Modifier.padding(
                             horizontal = AvoqadoTheme.spacing.lg,
                             vertical = AvoqadoTheme.spacing.sm,
@@ -345,6 +358,7 @@ fun StockCountingView(
                         }
                     },
                     modifier = Modifier.padding(horizontal = AvoqadoTheme.spacing.lg),
+                    enabled = !soloConsulta,
                 )
 
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
@@ -357,7 +371,7 @@ fun StockCountingView(
                     onClick = {
                         if (esUltimoArticuloCompacto) viewModel.finishCounting() else viewModel.moveToNextItem()
                     },
-                    enabled = selectedIndex >= 0 && countItems.isNotEmpty(),
+                    enabled = selectedIndex >= 0 && countItems.isNotEmpty() && !soloConsulta,
                     modifier = Modifier.padding(horizontal = AvoqadoTheme.spacing.lg),
                 )
 
@@ -384,7 +398,7 @@ fun StockCountingView(
     }
 
     // Add Items Popup
-    if (showAddPopup) {
+    if (showAddPopup && !soloConsulta) {
         AddItemsPopup(
             // Sólo lo que se puede contar físicamente. Los artículos por RECETA no
             // tienen existencia propia —se calcula desde sus ingredientes— y el
@@ -409,16 +423,23 @@ fun StockCountingView(
     // colapsarlas hace que la X del dialogo signifique una de ellas por accidente.
     if (salidaPendiente && confirmacionDeDescarte == null) {
         val contadas = ConteoEnCurso.contadas(countItems)
-        val hayConflicto = conflictoDelServidor != null
+        val cerradoEnServidor = conflictoDelServidor != null
+        val conflictoDeRevisionVisible = conflictoDeRevision
+        val descripcion = when {
+            cerradoEnServidor -> ConteoEnCurso.descripcionSalir(contadas, countItems.size, hayConflicto = true)
+            conflictoDeRevisionVisible != null ->
+                ConteoEnCurso.descripcionConflictoRevision(conflictoDeRevisionVisible)
+            else -> ConteoEnCurso.descripcionSalir(contadas, countItems.size)
+        }
         AvoqadoDialog(
             title = ConteoEnCurso.TITULO_SALIR,
-            description = ConteoEnCurso.descripcionSalir(contadas, countItems.size, hayConflicto),
+            description = descripcion,
             // Cerrar con la X o tocando fuera = «Seguir contando»: es lo unico que no
             // decide nada sobre el conteo.
             onDismiss = { viewModel.cancelarSalida() },
             actionButton = {
                 PrimaryButton(
-                    text = if (hayConflicto) ConteoEnCurso.SALIR_Y_CONSERVAR else ConteoEnCurso.GUARDAR_EL_AVANCE,
+                    text = if (soloConsulta) ConteoEnCurso.SALIR_Y_CONSERVAR else ConteoEnCurso.GUARDAR_EL_AVANCE,
                     onClick = { viewModel.guardarYSalir() },
                     fullWidth = true,
                     enabled = !isSaving,
@@ -435,7 +456,7 @@ fun StockCountingView(
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Text(
-                            text = if (hayConflicto) ConteoEnCurso.SEGUIR_VIENDO else ConteoEnCurso.SEGUIR_CONTANDO,
+                            text = if (soloConsulta) ConteoEnCurso.SEGUIR_VIENDO else ConteoEnCurso.SEGUIR_CONTANDO,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
@@ -532,6 +553,7 @@ private fun InventoryScaleReading(
     planQueFalta: String? = null,
     onUseWeight: (String) -> Unit,
     onRetry: () -> Unit,
+    puedeEditar: Boolean = true,
     modifier: Modifier = Modifier.padding(top = AvoqadoTheme.spacing.md),
 ) {
     val conversion = scaleConversion(item.unit) ?: return
@@ -604,6 +626,7 @@ private fun InventoryScaleReading(
                     PrimaryButton(
                         text = "Usar este peso",
                         onClick = { onUseWeight(formatScaleValue(converted)) },
+                        enabled = puedeEditar,
                     )
                 }
                 is ScaleConnectionState.Problem -> {
@@ -714,6 +737,7 @@ private fun SearchBar(
     onSearchChange: (String) -> Unit,
     onAddItems: () -> Unit,
     isCycle: Boolean,
+    puedeAgregar: Boolean = true,
 ) {
     Row(
         modifier = Modifier
@@ -738,7 +762,7 @@ private fun SearchBar(
             shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.md),
         )
 
-        if (isCycle) {
+        if (isCycle && puedeAgregar) {
             IconButton(onClick = onAddItems) {
                 Icon(Icons.Filled.Add, contentDescription = "Agregar artículos")
             }
@@ -757,6 +781,7 @@ private fun ItemListPanel(
     onItemTap: (Int) -> Unit,
     onAddItems: () -> Unit,
     isCycle: Boolean,
+    puedeEditar: Boolean = true,
     stockSuggestions: List<StockItem> = emptyList(),
     onAddSuggestion: (StockItem) -> Unit = {},
 ) {
@@ -766,6 +791,7 @@ private fun ItemListPanel(
             onSearchChange = onSearchChange,
             onAddItems = onAddItems,
             isCycle = isCycle,
+            puedeAgregar = puedeEditar,
         )
 
         val isSearching = searchText.isNotBlank()
@@ -794,7 +820,7 @@ private fun ItemListPanel(
                             style = MaterialTheme.typography.bodyLarge,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                        if (isCycle) {
+                        if (isCycle && puedeEditar) {
                             PrimaryButton(
                                 text = "Agregar artículos",
                                 onClick = onAddItems,
@@ -829,7 +855,7 @@ private fun ItemListPanel(
                             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                         }
                     }
-                    if (isSearching && hasSuggestions) {
+                    if (puedeEditar && isSearching && hasSuggestions) {
                         item(key = "suggestions_header") {
                             Text(
                                 text = "Agregar al conteo",
@@ -1049,6 +1075,7 @@ private fun QuantityControls(
     onIncrement: () -> Unit,
     onDecrement: () -> Unit,
     compact: Boolean = false,
+    enabled: Boolean = true,
 ) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -1060,7 +1087,7 @@ private fun QuantityControls(
             color = MaterialTheme.colorScheme.surfaceContainerHigh,
             modifier = Modifier
                 .size(if (compact) 36.dp else 48.dp)
-                .clickable(onClick = onDecrement),
+                .clickable(enabled = enabled, onClick = onDecrement),
         ) {
             Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
                 Icon(
@@ -1087,7 +1114,7 @@ private fun QuantityControls(
             color = MaterialTheme.colorScheme.surfaceContainerHigh,
             modifier = Modifier
                 .size(if (compact) 36.dp else 48.dp)
-                .clickable(onClick = onIncrement),
+                .clickable(enabled = enabled, onClick = onIncrement),
         ) {
             Box(contentAlignment = Alignment.Center, modifier = Modifier.fillMaxSize()) {
                 Icon(
@@ -1107,6 +1134,7 @@ private fun NumericKeypad(
     onDigit: (String) -> Unit,
     onBackspace: () -> Unit,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
 ) {
     val keys = listOf(
         listOf("1", "2", "3"),
@@ -1131,7 +1159,7 @@ private fun NumericKeypad(
                         modifier = Modifier
                             .weight(1f)
                             .height(56.dp)
-                            .clickable {
+                            .clickable(enabled = enabled) {
                                 if (key == "⌫") onBackspace()
                                 else onDigit(key)
                             },

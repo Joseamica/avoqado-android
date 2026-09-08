@@ -24,6 +24,8 @@ interface BorradorDeConteoStore {
     fun guardar(borrador: BorradorDeConteo): Boolean
     fun guardar(venueId: String, borrador: BorradorDeConteo): Boolean =
         if (borrador.venueId.isBlank() || borrador.venueId == venueId) guardar(borrador.copy(venueId = venueId)) else false
+    /** Aplica una edición de UI sobre la revisión viva bajo el mismo lock del store. */
+    fun guardarEdicion(venueId: String, borrador: BorradorDeConteo): Boolean = guardar(venueId, borrador)
     fun borrar(): Boolean
     fun borrar(venueId: String): Boolean = if (leer()?.venueId == venueId) borrar() else false
 
@@ -37,7 +39,15 @@ interface BorradorDeConteoStore {
         expectedRevision: Int,
         nuevaRevision: Int,
         sellos: Map<String, Pair<Double, String?>>,
+        notaEnviada: String? = null,
+        esFinal: Boolean = false,
     ): Boolean = false
+
+    fun guardarConflicto(venueId: String, countId: String, conflicto: ConflictoRevision): Boolean {
+        val actual = leer(venueId) ?: return false
+        if (actual.countId != countId) return false
+        return guardar(venueId, actual.copy(conflictoRevision = conflicto))
+    }
 
     /**
      * 🔴 Una LISTA, no una ranura: sin red se puede descartar un conteo y después otro, y con un
@@ -47,6 +57,12 @@ interface BorradorDeConteoStore {
     fun cancelacionesPendientes(): List<String>
     fun agregarCancelacionPendiente(countId: String): Boolean
     fun quitarCancelacionPendiente(countId: String): Boolean
+
+    fun cancelacionesPendientes(venueId: String): List<CancelacionPendienteDeConteo> = emptyList()
+    fun agregarCancelacionPendiente(cancelacion: CancelacionPendienteDeConteo): Boolean =
+        agregarCancelacionPendiente(cancelacion.countId)
+    fun quitarCancelacionPendiente(venueId: String, countId: String): Boolean =
+        quitarCancelacionPendiente(countId)
 
     /**
      * Descartar, en UNA sola escritura: quita el borrador Y encola su cancelación.
@@ -61,6 +77,11 @@ interface BorradorDeConteoStore {
      *   cíclico sin crear) y sólo se quita el borrador.
      */
     fun descartarYEncolarCancelacion(countId: String): Boolean
+    fun descartarYEncolarCancelacion(
+        venueId: String,
+        countId: String,
+        expectedRevision: Int?,
+    ): Boolean = descartarYEncolarCancelacion(countId)
 }
 
 /**
@@ -143,16 +164,70 @@ class BorradorDeConteoPrefs @Inject constructor(
             Log.w("📦", "⚠️ Borrador de otra sucursal (${borrador.venueId} != $venueId): no se guarda")
             return@synchronized false
         }
-        val estampado = borrador.copy(venueId = venueId)
+        val anterior = leer(venueId)
+        val mismoConteo = anterior?.countId == borrador.countId
+        if (mismoConteo && anterior?.revision != null && borrador.revision != null &&
+            anterior.revision != borrador.revision
+        ) {
+            Log.w("📦", "⚠️ Revisión stale ${borrador.revision}; vigente ${anterior.revision}: no se guarda")
+            return@synchronized false
+        }
+        val huboEdicion = anterior?.revisionConPutFinalConfirmado != null && (
+            anterior.countId != borrador.countId ||
+                anterior.lineas != borrador.lineas ||
+                anterior.nota != borrador.nota ||
+                borrador.pendientesDeEnviar.isNotEmpty() ||
+                ConteoEnCurso.notaPendienteDeEnviar(borrador)
+            )
+        val estampado = borrador.copy(
+            venueId = venueId,
+            // Los escritores viejos del VM no pueden volver atrás un ACK que llegó durante un await.
+            revision = borrador.revision ?: anterior?.revision?.takeIf { mismoConteo },
+            conflictoRevision = borrador.conflictoRevision
+                ?: anterior?.conflictoRevision?.takeIf { mismoConteo },
+            revisionConPutFinalConfirmado = when {
+                huboEdicion -> null
+                borrador.revisionConPutFinalConfirmado != null -> borrador.revisionConPutFinalConfirmado
+                mismoConteo -> anterior?.revisionConPutFinalConfirmado
+                else -> null
+            },
+        )
+        escribir(venueId, estampado)
+    }
+
+    override fun guardarEdicion(venueId: String, borrador: BorradorDeConteo): Boolean = synchronized(lock) {
+        val actual = leer(venueId)
+        if (actual == null || actual.countId != borrador.countId) return@synchronized guardar(venueId, borrador)
+        val anteriores = actual.lineas.associateBy { it.id }
+        val cambiadas = borrador.lineas.filter { linea ->
+            val previa = anteriores[linea.id]
+            previa == null || previa.counted != linea.counted || previa.countedAt != linea.countedAt
+        }.map { it.id }.filter { it.isNotBlank() }.toSet()
+        val estructuraCambio = actual.lineas.map { it.id } != borrador.lineas.map { it.id }
+        val notaCambio = actual.nota != borrador.nota
+        val huboEdicion = cambiadas.isNotEmpty() || estructuraCambio || notaCambio
+        val pendientes = if (borrador.countId == null) emptySet()
+        else actual.pendientesDeEnviar + cambiadas
+        escribir(
+            venueId,
+            borrador.copy(
+                venueId = venueId,
+                revision = actual.revision,
+                pendientesDeEnviar = pendientes,
+                notaPendienteDeEnviar = if (notaCambio) true else actual.notaPendienteDeEnviar,
+                conflictoRevision = actual.conflictoRevision,
+                revisionConPutFinalConfirmado = actual.revisionConPutFinalConfirmado.takeUnless { huboEdicion },
+            ),
+        )
+    }
+
+    private fun escribir(venueId: String, borrador: BorradorDeConteo): Boolean {
         val ok = prefs.edit()
-            .putString(llave("borrador", venueId), ConteoEnCurso.codificar(estampado))
+            .putString(llave("borrador", venueId), ConteoEnCurso.codificar(borrador))
             .commit()
-        // 🔴 La caché sólo describe lo que HAY EN DISCO. Actualizarla con la escritura fallida
-        // haría que `leer()` devolviera un borrador que no existe, y el siguiente arranque lo
-        // encontraría sin la línea que el cajero cree guardada.
-        if (ok) cache[venueId] = estampado
+        if (ok) cache[venueId] = borrador
         else Log.e("📦", "❌ El borrador NO quedó en disco (commit=false)")
-        ok
+        return ok
     }
 
     override fun borrar(): Boolean = secureStorage.venueId?.let(::borrar) ?: false
@@ -171,16 +246,28 @@ class BorradorDeConteoPrefs @Inject constructor(
         expectedRevision: Int,
         nuevaRevision: Int,
         sellos: Map<String, Pair<Double, String?>>,
+        notaEnviada: String?,
+        esFinal: Boolean,
     ): Boolean = synchronized(lock) {
         val actual = leer(venueId) ?: return@synchronized false
         if (actual.countId != countId || actual.revision != expectedRevision) return@synchronized false
         val vigentes = actual.lineas.associate { it.id to (it.counted to it.countedAt) }
         val confirmadas = sellos.filter { (id, sello) -> vigentes[id] == sello }.keys
-        guardar(
+        val pendientes = actual.pendientesDeEnviar - confirmadas
+        val notaReconocida = notaEnviada != null &&
+            ConteoEnCurso.notaPendienteDeEnviar(actual) &&
+            actual.nota == notaEnviada
+        val notaPendiente = if (notaReconocida) false else ConteoEnCurso.notaPendienteDeEnviar(actual)
+        escribir(
             venueId,
             actual.copy(
                 revision = nuevaRevision,
-                pendientesDeEnviar = actual.pendientesDeEnviar - confirmadas,
+                pendientesDeEnviar = pendientes,
+                notaPendienteDeEnviar = notaPendiente,
+                conflictoRevision = null,
+                revisionConPutFinalConfirmado = nuevaRevision.takeIf {
+                    esFinal && pendientes.isEmpty() && !notaPendiente
+                },
             ),
         )
     }
@@ -191,44 +278,102 @@ class BorradorDeConteoPrefs @Inject constructor(
      */
     override fun descartarYEncolarCancelacion(countId: String): Boolean {
         val venue = secureStorage.venueId ?: return false
-        val ids = cancelacionesPendientes()
-        val editor = prefs.edit().remove(llave("borrador", venue))
-        if (countId.isNotBlank() && countId !in ids) {
-            editor.putString(llave("cancelar", venue), ConteoEnCurso.codificarCancelaciones(ids + countId))
-        }
-        val ok = editor.commit()
-        if (ok) cache.remove(venue) else Log.e("📦", "❌ Descartar NO quedó en disco (commit=false)")
-        return ok
+        return descartarYEncolarCancelacion(venue, countId, leer(venue)?.revision)
     }
 
-    /** Bajo la MISMA llave `cancelar.<venue>`, ahora como lista JSON. */
-    override fun cancelacionesPendientes(): List<String> {
-        val raw = llave("cancelar")?.let { prefs.getString(it, null) } ?: return emptyList()
-        // La versión anterior guardaba el id A PELO. Descartarlo por no ser JSON perdería una
-        // cancelación ya encolada en un aparato que se actualiza, y ese conteo se quedaría
-        // abierto para siempre.
-        return ConteoEnCurso.decodificarCancelaciones(raw) ?: listOf(raw).filter { it.isNotBlank() }
+    override fun descartarYEncolarCancelacion(
+        venueId: String,
+        countId: String,
+        expectedRevision: Int?,
+    ): Boolean = synchronized(lock) {
+        if (venueId.isBlank()) return@synchronized false
+        val actuales = cancelacionesPendientes(venueId)
+        val editor = prefs.edit().remove(llave("borrador", venueId))
+        if (countId.isNotBlank() && actuales.none { it.countId == countId }) {
+            val conflicto = if (expectedRevision == null) conflictoSinRevision(venueId, countId) else null
+            editor.putString(
+                llave("cancelar", venueId),
+                ConteoEnCurso.codificarCancelacionesConRevision(
+                    actuales + CancelacionPendienteDeConteo(
+                        venueId = venueId,
+                        countId = countId,
+                        expectedRevision = expectedRevision,
+                        conflictoRevision = conflicto,
+                    ),
+                ),
+            )
+        }
+        val ok = editor.commit()
+        if (ok) cache.remove(venueId) else Log.e("📦", "❌ Descartar NO quedó en disco (commit=false)")
+        ok
+    }
+
+    override fun cancelacionesPendientes(): List<String> =
+        secureStorage.venueId?.let { cancelacionesPendientes(it).map(CancelacionPendienteDeConteo::countId) }
+            .orEmpty()
+
+    override fun cancelacionesPendientes(venueId: String): List<CancelacionPendienteDeConteo> = synchronized(lock) {
+        val raw = prefs.getString(llave("cancelar", venueId), null) ?: return@synchronized emptyList()
+        ConteoEnCurso.decodificarCancelacionesConRevision(raw) ?: run {
+            val ids = ConteoEnCurso.decodificarCancelaciones(raw)
+                ?: listOf(raw).filter { it.isNotBlank() }
+            ids.map { id ->
+                CancelacionPendienteDeConteo(
+                    venueId = venueId,
+                    countId = id,
+                    conflictoRevision = conflictoSinRevision(venueId, id),
+                )
+            }
+        }
     }
 
     override fun agregarCancelacionPendiente(countId: String): Boolean {
-        val k = llave("cancelar") ?: return false
-        val ids = cancelacionesPendientes()
-        // Ya encolada (o vacía) = nada que escribir: el disco YA dice lo que tiene que decir.
-        if (countId.isBlank() || countId in ids) return true
-        val ok = prefs.edit().putString(k, ConteoEnCurso.codificarCancelaciones(ids + countId)).commit()
-        if (!ok) Log.e("📦", "❌ La cancelación NO quedó en disco (commit=false): $countId")
-        return ok
+        val venue = secureStorage.venueId ?: return false
+        return agregarCancelacionPendiente(
+            CancelacionPendienteDeConteo(
+                venueId = venue,
+                countId = countId,
+                conflictoRevision = conflictoSinRevision(venue, countId),
+            ),
+        )
+    }
+
+    override fun agregarCancelacionPendiente(cancelacion: CancelacionPendienteDeConteo): Boolean = synchronized(lock) {
+        if (cancelacion.venueId.isBlank() || cancelacion.countId.isBlank()) return@synchronized true
+        val actuales = cancelacionesPendientes(cancelacion.venueId)
+        val existente = actuales.firstOrNull { it.countId == cancelacion.countId }
+        if (existente == cancelacion) return@synchronized true
+        val nuevos = actuales.filterNot { it.countId == cancelacion.countId } + cancelacion
+        val ok = prefs.edit().putString(
+            llave("cancelar", cancelacion.venueId),
+            ConteoEnCurso.codificarCancelacionesConRevision(nuevos),
+        ).commit()
+        if (!ok) Log.e("📦", "❌ La cancelación NO quedó en disco (commit=false): ${cancelacion.countId}")
+        ok
     }
 
     override fun quitarCancelacionPendiente(countId: String): Boolean {
-        val k = llave("cancelar") ?: return false
-        val ids = cancelacionesPendientes()
-        if (countId !in ids) return true
-        val quedan = ids - countId
+        val venue = secureStorage.venueId ?: return false
+        return quitarCancelacionPendiente(venue, countId)
+    }
+
+    override fun quitarCancelacionPendiente(venueId: String, countId: String): Boolean = synchronized(lock) {
+        val k = llave("cancelar", venueId)
+        val actuales = cancelacionesPendientes(venueId)
+        if (actuales.none { it.countId == countId }) return@synchronized true
+        val quedan = actuales.filterNot { it.countId == countId }
         val ok = prefs.edit().apply {
-            if (quedan.isEmpty()) remove(k) else putString(k, ConteoEnCurso.codificarCancelaciones(quedan))
+            if (quedan.isEmpty()) remove(k)
+            else putString(k, ConteoEnCurso.codificarCancelacionesConRevision(quedan))
         }.commit()
         if (!ok) Log.e("📦", "❌ La cancelación NO se quitó del disco (commit=false): $countId")
-        return ok
+        ok
     }
+
+    private fun conflictoSinRevision(venueId: String, countId: String) = ConflictoRevision(
+        code = ConteoEnCurso.CODIGO_REVISION_DESCONOCIDA,
+        message = ConteoEnCurso.REVISION_DESCONOCIDA,
+        venueId = venueId,
+        countId = countId,
+    )
 }

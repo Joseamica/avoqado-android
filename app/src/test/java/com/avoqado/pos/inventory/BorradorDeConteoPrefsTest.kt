@@ -41,6 +41,7 @@ class BorradorDeConteoPrefsTest {
         every { context.getSharedPreferences(any(), any()) } returns prefs
         every { prefs.edit() } returns editor
         every { prefs.getString(any(), any()) } returns null
+        every { prefs.all } returns emptyMap()
         // El editor se encadena consigo MISMO: si `putString` devolviera otro mock (lo que hace
         // un relaxed sin stub), el `commit()` caería en un objeto distinto y la verificación de
         // abajo pasaría por el motivo equivocado.
@@ -61,6 +62,7 @@ class BorradorDeConteoPrefsTest {
         ),
         nota = "estante 3",
         pendientesDeEnviar = setOf("uuid-1"),
+        revision = 4,
         actualizadoEn = 1_700_000_000_000,
     )
 
@@ -136,12 +138,13 @@ class BorradorDeConteoPrefsTest {
         // durabilidad sí exige— un getString y un decode del conteo ENTERO, en el hilo del que
         // llama.
         assertEquals("count-1", store.leer()?.countId)
-        verify(exactly = 0) { prefs.getString(any(), any()) }
+        // `guardar` relee una vez para proteger revisión/stage; la lectura posterior sale de cache.
+        verify(exactly = 1) { prefs.getString("borrador.$VENUE", null) }
 
         // Y borrar la invalida: si no, el borrador seguiría "existiendo" después de confirmar.
         store.borrar()
         assertNull(store.leer())
-        verify(exactly = 1) { prefs.getString("borrador.$VENUE", null) }
+        verify(exactly = 2) { prefs.getString("borrador.$VENUE", null) }
     }
 
     @Test
@@ -197,7 +200,7 @@ class BorradorDeConteoPrefsTest {
         // o ninguno.
         val store = store()
 
-        assertTrue(store.descartarYEncolarCancelacion("count-1"))
+        assertTrue(store.descartarYEncolarCancelacion(VENUE, "count-1", expectedRevision = 4))
 
         // Un solo `edit()` y un solo `commit()` = una sola escritura atómica.
         verify(exactly = 1) { prefs.edit() }
@@ -205,7 +208,11 @@ class BorradorDeConteoPrefsTest {
         verify(exactly = 0) { editor.apply() }
         // …con los DOS cambios dentro del mismo editor.
         verify(exactly = 1) { editor.remove("borrador.$VENUE") }
-        verify(exactly = 1) { editor.putString("cancelar.$VENUE", ConteoEnCurso.codificarCancelaciones(listOf("count-1"))) }
+        val cola = slot<String>()
+        verify(exactly = 1) { editor.putString("cancelar.$VENUE", capture(cola)) }
+        val cancelacion = ConteoEnCurso.decodificarCancelacionesConRevision(cola.captured)!!.single()
+        assertEquals("count-1", cancelacion.countId)
+        assertEquals(4, cancelacion.expectedRevision)
     }
 
     @Test
@@ -261,6 +268,70 @@ class BorradorDeConteoPrefsTest {
         assertTrue(store.agregarCancelacionPendiente("c1"))
         assertTrue(store.quitarCancelacionPendiente("no-esta"))
         verify(exactly = 0) { editor.commit() }
+    }
+
+    @Test
+    fun `P1 edicion UI sobre ACK concurrente conserva revision nueva y no revive linea reconocida`() {
+        val store = store()
+        val original = borrador()
+        assertTrue(store.guardar(original))
+        assertTrue(
+            store.reconocerPut(
+                VENUE,
+                "count-1",
+                expectedRevision = 4,
+                nuevaRevision = 5,
+                sellos = mapOf("uuid-1" to (8.0 to "2026-09-07T11:00:00Z")),
+            ),
+        )
+        val nueva = original.lineas.single().copy(
+            id = "uuid-2",
+            productId = "p2",
+            counted = 3.0,
+            countedAt = "2026-09-08T12:00:00Z",
+        )
+
+        assertTrue(
+            store.guardarEdicion(
+                VENUE,
+                original.copy(
+                    lineas = original.lineas + nueva,
+                    pendientesDeEnviar = setOf("uuid-1", "uuid-2"),
+                ),
+            ),
+        )
+
+        val vigente = store.leer(VENUE)!!
+        assertEquals(5, vigente.revision)
+        assertEquals(setOf("uuid-2"), vigente.pendientesDeEnviar)
+    }
+
+    @Test
+    fun `P1 cualquier edicion invalida el stage de cierre`() {
+        val store = store()
+        val original = borrador().copy(
+            pendientesDeEnviar = emptySet(),
+            notaPendienteDeEnviar = false,
+            revisionConPutFinalConfirmado = 4,
+        )
+        store.guardar(original)
+        val editada = original.lineas.single().copy(counted = 9.0, countedAt = "nuevo")
+
+        store.guardarEdicion(VENUE, original.copy(lineas = listOf(editada)))
+
+        assertNull(store.leer(VENUE)?.revisionConPutFinalConfirmado)
+        assertEquals(setOf("uuid-1"), store.leer(VENUE)?.pendientesDeEnviar)
+    }
+
+    @Test
+    fun `P1 indice durable enumera borradores y cancelaciones de todos los venues`() {
+        every { prefs.all } returns mapOf(
+            "borrador.venue-z" to "{}",
+            "cancelar.venue-a" to "[]",
+            "otra.llave" to "x",
+        )
+
+        assertEquals(listOf("venue-a", "venue-z"), store().venuesConTrabajo())
     }
 
     private companion object {

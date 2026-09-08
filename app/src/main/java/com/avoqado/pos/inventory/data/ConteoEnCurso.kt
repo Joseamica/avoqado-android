@@ -47,6 +47,8 @@ data class BorradorDeConteo(
     val revision: Int? = null,
     /** Un conflicto o base desconocida pausa cualquier replay hasta resolución humana. */
     val conflictoRevision: ConflictoRevision? = null,
+    /** Revisión reconocida por el PUT final; sólo un nuevo toque de confirmar puede consumirla. */
+    val revisionConPutFinalConfirmado: Int? = null,
     val actualizadoEn: Long,
 )
 
@@ -59,6 +61,14 @@ data class ConflictoRevision(
     val expectedRevision: Int? = null,
     val currentRevision: Int? = null,
     val status: String? = null,
+)
+
+@Serializable
+data class CancelacionPendienteDeConteo(
+    val venueId: String,
+    val countId: String,
+    val expectedRevision: Int? = null,
+    val conflictoRevision: ConflictoRevision? = null,
 )
 
 /** Qué hacer con la respuesta de un PUT incremental. */
@@ -75,8 +85,11 @@ object ConteoEnCurso {
 
     const val CODIGO_CONFLICTO_REVISION = "INVENTORY_COUNT_REVISION_CONFLICT"
     const val CODIGO_REVISION_DESCONOCIDA = "REVISION_UNKNOWN"
+    const val CODIGO_APLICANDO = "STOCK_COUNT_APPLYING"
     const val CONFLICTO_REVISION =
         "El conteo cambió en el servidor. Tu avance se conserva en este aparato."
+    const val REVISION_DESCONOCIDA =
+        "No pudimos comprobar si este conteo cambió. Tu avance se conserva en este aparato."
 
     const val TITULO_SALIR = "¿Qué hacemos con este conteo?"
     const val GUARDAR_EL_AVANCE = "Guardar el avance"
@@ -157,6 +170,9 @@ object ConteoEnCurso {
 
     fun sinResultados(busqueda: String): String = "Sin resultados para \"$busqueda\""
 
+    fun descripcionConflictoRevision(conflicto: ConflictoRevision): String =
+        if (conflicto.code == CODIGO_REVISION_DESCONOCIDA) REVISION_DESCONOCIDA else CONFLICTO_REVISION
+
     fun avisoSinRed(pendientes: Int): String =
         if (pendientes == 1) "Sin conexión — 1 línea guardada en este aparato"
         else "Sin conexión — $pendientes líneas guardadas en este aparato"
@@ -168,6 +184,13 @@ object ConteoEnCurso {
     /** Compatibilidad segura: antes del marcador, una nota no vacía nunca se había enviado en el avance. */
     fun notaPendienteDeEnviar(borrador: BorradorDeConteo): Boolean =
         borrador.notaPendienteDeEnviar ?: borrador.nota.isNotBlank()
+
+    fun puedeReintentarConfirmacion(borrador: BorradorDeConteo): Boolean =
+        borrador.revisionConPutFinalConfirmado != null &&
+            borrador.revision == borrador.revisionConPutFinalConfirmado &&
+            borrador.pendientesDeEnviar.isEmpty() &&
+            !notaPendienteDeEnviar(borrador) &&
+            borrador.conflictoRevision == null
 
     fun tituloBorrador(type: StockCountType): String = when (type) {
         StockCountType.FULL -> "Conteo completo sin terminar en este aparato"
@@ -304,4 +327,10 @@ object ConteoEnCurso {
     /** `null` = eso NO es una lista JSON (p. ej. el id suelto que escribía la versión anterior). */
     fun decodificarCancelaciones(raw: String?): List<String>? =
         raw?.let { runCatching { json.decodeFromString<List<String>>(it) }.getOrNull() }
+
+    fun codificarCancelacionesConRevision(cancelaciones: List<CancelacionPendienteDeConteo>): String =
+        json.encodeToString(cancelaciones)
+
+    fun decodificarCancelacionesConRevision(raw: String?): List<CancelacionPendienteDeConteo>? =
+        raw?.let { runCatching { json.decodeFromString<List<CancelacionPendienteDeConteo>>(it) }.getOrNull() }
 }

@@ -8,6 +8,7 @@ import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.inventory.data.BorradorDeConteo
 import com.avoqado.pos.inventory.data.BorradorDeConteoStore
 import com.avoqado.pos.inventory.data.ConteoEnCurso
+import com.avoqado.pos.inventory.data.ConflictoRevision
 import com.avoqado.pos.inventory.data.InventoryRepository
 import com.avoqado.pos.inventory.data.RespuestaHttp
 import com.avoqado.pos.inventory.data.model.StockCount
@@ -417,5 +418,55 @@ class WarningsUxTest {
             ConteoEnCurso.descripcionSalir(contadas = 3, total = 5, hayConflicto = true),
         )
         assertEquals("Sin resultados para \"Coctel\"", ConteoEnCurso.sinResultados("Coctel"))
+    }
+
+    @Test
+    fun `P1 conflicto real y revision desconocida usan explicaciones distintas`() {
+        val real = ConflictoRevision(
+            code = ConteoEnCurso.CODIGO_CONFLICTO_REVISION,
+            message = "detalle técnico",
+            venueId = "venue-a",
+            countId = "count-a",
+        )
+        val desconocida = real.copy(code = ConteoEnCurso.CODIGO_REVISION_DESCONOCIDA)
+
+        assertEquals(
+            "El conteo cambió en el servidor. Tu avance se conserva en este aparato.",
+            ConteoEnCurso.descripcionConflictoRevision(real),
+        )
+        assertEquals(
+            "No pudimos comprobar si este conteo cambió. Tu avance se conserva en este aparato.",
+            ConteoEnCurso.descripcionConflictoRevision(desconocida),
+        )
+    }
+
+    @Test
+    fun `P1 una revision desconocida conserva modo consulta sin fingir conteo cerrado`() = runTest(scheduler) {
+        val store = RecordingStore()
+        store.draft = BorradorDeConteo(
+            venueId = "venue-a",
+            countId = "a",
+            type = StockCountType.FULL,
+            lineas = count("a", countedAt = "2026-09-08T10:00:00Z").items.map { it.copy(counted = 3.0) },
+            revision = null,
+            conflictoRevision = ConflictoRevision(
+                code = ConteoEnCurso.CODIGO_REVISION_DESCONOCIDA,
+                message = ConteoEnCurso.REVISION_DESCONOCIDA,
+                venueId = "venue-a",
+                countId = "a",
+            ),
+            actualizadoEn = 1L,
+        )
+        val vm = viewModel(store)
+        vm.refrescarBorradorLocal()
+        vm.continuarBorrador()
+
+        assertTrue(vm.soloConsulta.value)
+        assertNull("el flag de cerrado conserva su semántica anterior", vm.conflictoDelServidor.value)
+        assertEquals(ConteoEnCurso.REVISION_DESCONOCIDA, vm.bandaDeAviso.value)
+        vm.selectCountItem(0)
+        vm.updateCountedText("9")
+        vm.moveToNextItem()
+        assertEquals(3.0, vm.countItems.value.single().counted, 0.0)
     }
 }

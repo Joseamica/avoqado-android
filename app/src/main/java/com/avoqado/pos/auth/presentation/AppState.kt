@@ -7,6 +7,7 @@ import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.domain.PlanManager
 import com.avoqado.pos.core.domain.RoleManager
 import com.avoqado.pos.core.util.ConnectivityMonitor
+import com.avoqado.pos.inventory.data.InventoryCountSyncCoordinator
 import com.avoqado.pos.navigation.MainNavigationState
 import com.avoqado.pos.navigation.MainTab
 import com.avoqado.pos.navigation.MainTabsPolicy
@@ -43,6 +44,7 @@ class AppState @Inject constructor(
     private val reservationRepository: com.avoqado.pos.reservations.data.ReservationRepository,
     private val tableSyncCoordinator: com.avoqado.pos.tables.data.TableSyncCoordinator,
     private val posModeManager: PosModeManager,
+    private val inventoryCountSyncCoordinator: InventoryCountSyncCoordinator,
     cashDrawerRepository: com.avoqado.pos.cashdrawer.data.CashDrawerRepository,
     val venueSwitchState: com.avoqado.pos.settings.domain.VenueSwitchState,
     connectivityMonitor: ConnectivityMonitor,
@@ -60,6 +62,24 @@ class AppState @Inject constructor(
         if (::deviceCapabilitySyncCoordinator.isInitialized) {
             deviceCapabilitySyncCoordinator.onSessionChanged()
         }
+    }
+
+    private var inventorySyncRunning = false
+    private var inventorySyncVenue: String? = null
+
+    private fun startInventorySyncIfNeeded() {
+        if (!secureStorage.isLoggedIn) return
+        val venue = secureStorage.venueId
+        if (inventorySyncRunning && inventorySyncVenue == venue) return
+        inventoryCountSyncCoordinator.start(viewModelScope)
+        inventorySyncRunning = true
+        inventorySyncVenue = venue
+    }
+
+    private fun stopInventorySync() {
+        inventoryCountSyncCoordinator.stop()
+        inventorySyncRunning = false
+        inventorySyncVenue = null
     }
 
     /** Offline-first Corte B: replay del outbox de comandas + reconciliación. */
@@ -95,6 +115,7 @@ class AppState @Inject constructor(
         // to Landing instead of leaving a zombie session behind.
         viewModelScope.launch {
             secureStorage.sessionInvalidated.collect {
+                stopInventorySync()
                 _isLoggedIn.value = false
                 notifyDeviceSessionChanged()
             }
@@ -237,6 +258,7 @@ class AppState @Inject constructor(
                 // con Dispatchers.Main.immediate el bloque puede avanzar durante
                 // la construcción y no debe observar propiedades sin inicializar.
                 authRepository.repairCurrentVenueBinding()
+                startInventorySyncIfNeeded()
                 paymentSyncService.start()
                 startOfflineOutbox()
                 refreshPlanAndSettings()
@@ -263,6 +285,7 @@ class AppState @Inject constructor(
         // Un cambio de venue debe rearmar los listeners/timer del outbox con
         // el nuevo contexto; start() reinicia cuando cambia el venue activo.
         startOfflineOutbox()
+        startInventorySyncIfNeeded()
         _roleVersion.value += 1
         notifyDeviceSessionChanged()
     }
@@ -272,6 +295,7 @@ class AppState @Inject constructor(
         notifyDeviceSessionChanged()
         paymentSyncService.start()
         startOfflineOutbox()
+        // refreshTabs rearma una sola generación de inventario para esta sesión/venue.
         refreshTabs()
         // Pull venue settings (incl. the plan block) right after login so
         // plan gates apply without waiting for a venue switch.
@@ -294,6 +318,7 @@ class AppState @Inject constructor(
             }
 
             paymentSyncService.stop()
+            stopInventorySync()
             syncOutbox.stop()
             secureStorage.clearSession()
             _isLoggedIn.value = false

@@ -54,6 +54,7 @@ class InventoryCountRefreshTest {
     private val serverCount = StockCount(
         id = "count-1",
         type = StockCountType.FULL,
+        revision = 4,
         items = listOf(
             StockCountItem(
                 id = "item-1",
@@ -73,6 +74,8 @@ class InventoryCountRefreshTest {
         every { repository.transfers } returns MutableStateFlow(emptyList())
         every { repository.suppliers } returns MutableStateFlow(emptyList())
         every { repository.isLoading } returns MutableStateFlow(false)
+        every { repository.venueIdActual() } returns "venue-a"
+        every { repository.venueNameActual() } returns "Sucursal A"
         coEvery { repository.createStockCount(any(), any(), any()) } returns Result.success(serverCount)
         // El cierre pasa por `enviarFinal` + `confirmarConteo`, que conservan el CÓDIGO: es lo
         // que permite distinguir un 404 («otro aparato ya lo cerró») de un fallo reintentable.

@@ -3,6 +3,7 @@ package com.avoqado.pos.inventory
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ForbiddenInterceptor
 import com.avoqado.pos.inventory.data.InventoryRepository
+import com.avoqado.pos.inventory.data.RespuestaHttp
 import com.avoqado.pos.inventory.data.SIN_VENUE
 import com.avoqado.pos.inventory.data.model.StockCountItem
 import io.mockk.every
@@ -15,6 +16,7 @@ import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -137,5 +139,72 @@ class InventoryRepositoryConteoTest {
         assertEquals(SIN_VENUE, repoSinVenue.enviarAvance("c1", emptyList()).code)
         assertEquals(SIN_VENUE, repoSinVenue.cancelStockCount("c1").code)
         assertEquals("no puede salir una peticion sin venue", 0, server.requestCount)
+    }
+
+    @Test
+    fun `P1 transporte explicito usa venue y expectedRevision sin mutar el venue activo`() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"success":true,"revision":5}"""))
+
+        val respuesta = repo.enviarAvance(
+            venueId = "venue-inactivo",
+            countId = "c9",
+            items = emptyList(),
+            expectedRevision = 4,
+        )
+
+        val request = server.takeRequest()
+        assertEquals("/api/v1/mobile/venues/venue-inactivo/inventory/stock-counts/c9", request.path)
+        assertEquals(4, JSONObject(request.body.readUtf8()).getInt("expectedRevision"))
+        assertEquals("1", request.getHeader(ForbiddenInterceptor.BACKGROUND_HEADER))
+        assertEquals(5, respuesta.revision)
+    }
+
+    @Test
+    fun `P1 final manda borrado de nota vacia y confirm manda la revision reconocida`() = runBlocking {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"success":true,"revision":5}"""))
+        repo.enviarFinal("venue-1", "c1", emptyList(), note = "", expectedRevision = 4)
+        val final = server.takeRequest()
+        val finalBody = JSONObject(final.body.readUtf8())
+        assertEquals("", finalBody.getString("note"))
+        assertEquals(4, finalBody.getInt("expectedRevision"))
+        assertNull(final.getHeader(ForbiddenInterceptor.BACKGROUND_HEADER))
+
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"success":true,"revision":6}"""))
+        repo.confirmarConteo("venue-1", "c1", expectedRevision = 5)
+        val confirm = server.takeRequest()
+        assertEquals(5, JSONObject(confirm.body.readUtf8()).getInt("expectedRevision"))
+    }
+
+    @Test
+    fun `P1 cancel explicito lleva revision y sigue marcado de fondo`() = runBlocking {
+        server.enqueue(
+            MockResponse().setResponseCode(200)
+                .setBody("""{"success":true,"count":{"revision":8}}"""),
+        )
+
+        val respuesta = repo.cancelStockCount("venue-a", "c7", expectedRevision = 7)
+
+        val request = server.takeRequest()
+        assertEquals(7, JSONObject(request.body.readUtf8()).getInt("expectedRevision"))
+        assertEquals("1", request.getHeader(ForbiddenInterceptor.BACKGROUND_HEADER))
+        assertEquals(8, respuesta.revision)
+    }
+
+    @Test
+    fun `P1 RespuestaHttp conserva conflicto revision estructurado y codigo applying separado`() {
+        val conflicto = RespuestaHttp(
+            409,
+            """{"message":"cambió","code":"INVENTORY_COUNT_REVISION_CONFLICT","details":{"venueId":"v","countId":"c","expectedRevision":2,"currentRevision":3,"status":"IN_PROGRESS"}}""",
+        )
+        assertEquals("INVENTORY_COUNT_REVISION_CONFLICT", conflicto.codigo)
+        assertNotNull(conflicto.conflictoRevision)
+        assertEquals(3, conflicto.conflictoRevision?.currentRevision)
+
+        val applying = RespuestaHttp(
+            409,
+            """{"code":"STOCK_COUNT_APPLYING","details":{"currentRevision":3,"status":"APPLYING"}}""",
+        )
+        assertEquals("STOCK_COUNT_APPLYING", applying.codigo)
+        assertNull(applying.conflictoRevision)
     }
 }
