@@ -2,6 +2,7 @@ package com.avoqado.pos.orders
 
 import com.avoqado.pos.MainDispatcherRule
 import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.pos.data.ProductsRepository
 import com.avoqado.pos.core.domain.printing.ComandaDispatcher
 import com.avoqado.pos.orders.data.OrdersRepository
 import com.avoqado.pos.orders.data.model.OrderSummary
@@ -50,6 +51,7 @@ class OrdersViewModelTest {
             refreshGateFactory,
             mockk<ComandaDispatcher>(relaxed = true),
             mockk<SecureStorage>(relaxed = true),
+            mockk<ProductsRepository>(relaxed = true),
         )
     }
 

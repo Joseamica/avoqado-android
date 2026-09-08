@@ -1,6 +1,8 @@
 package com.avoqado.pos.payment
 
 import com.avoqado.pos.MainDispatcherRule
+import com.avoqado.pos.printing.data.AlmacenDeTexto
+import com.avoqado.pos.printing.data.ComandasPendientesStore
 import com.avoqado.pos.areatickets.data.AreaTicketRepository
 import com.avoqado.pos.auth.data.AuthRepository
 import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
@@ -712,6 +714,7 @@ class OrderRequestPromotionTest {
             kdsOrderBus = kdsOrderBus,
             printerService = printerService,
             secureStorage = secureStorage,
+            comandasPendientesStore = ComandasPendientesStore(AlmacenEnMemoria()),
             // Ronda de arreglo 1 (Task 4): `ComandaDispatcher` recibe `ReintentoDeComanda` por
             // Hilt ahora — construido aquí con el mismo `comandaPrinter` mockeado de siempre.
             comandaDispatcher = ComandaDispatcher(

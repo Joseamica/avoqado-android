@@ -75,6 +75,17 @@ fun AvoqadoWarningToast(
     onPrimary: (() -> Unit)? = null,
     primaryLoading: Boolean = false,
     secondaryLabel: String? = null,
+    /**
+     * Qué hacer cuando el aviso se cierra SIN que nadie toque un botón — tocar fuera o el botón
+     * Atrás.
+     *
+     * 🔴 Por default es [onDismiss], que es lo correcto para un aviso informativo. Pero cuando
+     * `onDismiss` significa «esto ya se resolvió» —el caso de la comanda que no salió, donde
+     * además BORRA el pendiente del aparato— un toque accidental fuera del recuadro equivalía a
+     * declarar resuelto un pedido que la cocina nunca recibió (P2 #11 de la 2ª auditoría de
+     * Codex, 2026-09-07). Ahí se pasa un cierre que sólo OCULTA.
+     */
+    onCerrarSinResolver: (() -> Unit)? = null,
 ) {
     var visible by remember { mutableStateOf(false) }
     val esAccionable = (primaryLabel != null && onPrimary != null) || secondaryLabel != null
@@ -101,7 +112,7 @@ fun AvoqadoWarningToast(
     )
 
     Dialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { (onCerrarSinResolver ?: onDismiss)() },
         properties = DialogProperties(
             dismissOnBackPress = true,
             dismissOnClickOutside = true,

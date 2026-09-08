@@ -56,6 +56,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.avoqado.pos.printing.data.EstadoDeComanda
 import com.avoqado.pos.areatickets.presentation.AreaTicketOperationsViewModel
 import com.avoqado.pos.core.util.formatMoney
 
@@ -169,6 +170,10 @@ fun CheckoutScreen(
     // (tips, terminal, split) charges the EXISTING table order. With no
     // session active everything below is inert.
     val tablesViewModel: com.avoqado.pos.tables.presentation.TablesViewModel = hiltViewModel()
+    // La MISMA instancia que monta `PaymentFlowScreen` más abajo (mismo owner de navegación):
+    // es lo que permite que el aviso de comanda sobreviva a cerrar el cobro. Ver el bloque de
+    // «LA COMANDA QUE NO SALIÓ» al final de esta pantalla.
+    val paymentFlowViewModel: com.avoqado.pos.payment.presentation.PaymentFlowViewModel = hiltViewModel()
     val tableSessionActive by tablesViewModel.tableSession.active.collectAsState()
 
     // Upsell "¿Algo más?" — el momento previo al cobro. Con la perilla apagada o
@@ -1354,6 +1359,33 @@ fun CheckoutScreen(
                 )
             },
         ) {}
+    }
+
+    // 🔴 LA COMANDA QUE NO SALIÓ, fuera del cobro.
+    //
+    // El aviso vivía SÓLO dentro de `PaymentFlowScreen`, y el cajero cierra esa pantalla en
+    // cuanto entrega el cambio — mucho antes de que el reintento se rinda (hasta ~1 minuto).
+    // O sea que en el caso NORMAL el fallo llegaba a una pantalla que ya nadie tenía enfrente,
+    // y el mostrador seguía sin saber que la cocina no recibió el pedido: exactamente el bug de
+    // Testarudo, conservado por el propio arreglo (P1 #6 de la auditoría de Codex, 2026-09-07).
+    //
+    // Es el MISMO ViewModel que el del cobro (los dos cuelgan del mismo owner de navegación),
+    // así que no hay estado duplicado: es el mismo aviso, visible donde el cajero está.
+    val avisoDeComandaFueraDelCobro by paymentFlowViewModel.comandaWarning.collectAsState()
+    val reintentandoFueraDelCobro by paymentFlowViewModel.reintentandoComandaManualmente.collectAsState()
+    (avisoDeComandaFueraDelCobro as? EstadoDeComanda.NoSalio)?.takeIf { !showPaymentFlow }?.let { aviso ->
+        AvoqadoWarningToast(
+            message = "No salió la comanda de: ${aviso.estaciones.joinToString(", ")} · pedido ${aviso.orderNumber}",
+            subtitle = aviso.causa ?: "La impresora no respondió.",
+            // Sin trabajo pendiente no hay nada que reenviar: el botón quedaría muerto.
+            primaryLabel = "Volver a imprimir".takeIf { aviso.trabajo != null },
+            onPrimary = { paymentFlowViewModel.reintentarComanda() }.takeIf { aviso.trabajo != null },
+            primaryLoading = reintentandoFueraDelCobro,
+            secondaryLabel = "Ya la canté",
+            onDismiss = { paymentFlowViewModel.clearComandaWarning() },
+            // Un dedazo fuera del recuadro NO es «ya la canté»: oculta, no resuelve.
+            onCerrarSinResolver = { paymentFlowViewModel.ocultarAvisoDeComanda() },
+        )
     }
 
     // 🔴 El cliente PAGÓ su membresía y el paquete no se le entregó. La entrega

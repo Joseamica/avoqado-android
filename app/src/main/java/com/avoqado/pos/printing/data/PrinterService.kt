@@ -376,8 +376,30 @@ class PrinterService @Inject constructor(
         updateStatus(printer.id, PrinterStatus.Disconnected)
     }
 
+    /**
+     * Suelta las conexiones abiertas — **menos las que están IMPRIMIENDO**.
+     *
+     * 🔴 La excepción no es un detalle: esto lo llama el `onDispose` de las hojas de ajustes, y
+     * cerrar el socket de una impresora a media escritura deja la comanda cortada por la mitad
+     * —o sin salir— sin que nadie se entere. Puede ser incluso OTRA impresora: una comanda
+     * reintentando en segundo plano mientras el cajero configura una distinta (P1 #5 de la
+     * auditoría de Codex, 2026-09-07; el defecto lo introdujo el propio arreglo de la Tarea 5).
+     *
+     * Lo que sí cierra es lo que está ocioso, que es justo el objetivo: el socket que deja
+     * abierto el botón «Conectar» y que nadie vuelve a cerrar — la sospecha principal de por qué
+     * la impresora de Testarudo no contesta al día siguiente (muchas impresoras de puerto 9100
+     * aceptan UNA sola conexión).
+     */
     fun disconnectAll() {
-        _savedPrinters.value.forEach { disconnect(it) }
+        _savedPrinters.value.forEach { printer ->
+            // Se relee el estado impresora por impresora, no una foto de antes del bucle: una
+            // impresión puede arrancar mientras se cierran las anteriores.
+            if (!puedeSoltarseLaConexion(_printerStatuses.value[printer.id])) {
+                Log.d(TAG, "⏭️ ${printer.name} está imprimiendo — su conexión NO se cierra")
+                return@forEach
+            }
+            disconnect(printer)
+        }
     }
 
     // MARK: - Comprobación ("¿respondes?", no imprime nada)
@@ -806,9 +828,23 @@ class PrinterService @Inject constructor(
         }
     }
 
-    suspend fun autoPrintKitchenTicket(ticket: KitchenTicketData) {
-        _savedPrinters.value
+    /**
+     * Ticket de cocina del camino LEGADO (venue sin estaciones configuradas).
+     *
+     * 🔴 Devuelve las impresoras que TRONARON en vez de tragarse el fallo. Antes era `Unit` y
+     * cada error moría en un `Log.e`: ese camino se quedaba sin aviso al cajero, sin reintento
+     * y sin telemetría — o sea, EXACTAMENTE el fallo silencioso que este trabajo existe para
+     * matar, conservado en la rama que nadie miró (P1 #10 de la auditoría de Codex, 2026-09-07).
+     *
+     * 🔴 Devuelve TAMBIÉN cuántas se intentaron. Con sólo la lista de fallidas, «ninguna falló»
+     * y «no había ninguna impresora que intentarlo» se ven idénticos, y el despachador cantaba
+     * `Salio` sin haber mandado un solo byte (P2 #14 de la 2ª auditoría de Codex, 2026-09-07).
+     */
+    suspend fun autoPrintKitchenTicket(ticket: KitchenTicketData): ResultadoLegado {
+        val fallidas = mutableListOf<String>()
+        val candidatas = _savedPrinters.value
             .filter { it.isEnabled && it.autoPrintKitchenTickets && it.hasRole(PrinterRole.KITCHEN) }
+        candidatas
             .forEach { printer ->
                 try {
                     repeat(printer.numberOfCopies) {
@@ -816,9 +852,11 @@ class PrinterService @Inject constructor(
                     }
                     Log.d(TAG, "Auto-printed kitchen ticket on ${printer.name}")
                 } catch (e: Exception) {
+                    fallidas += printer.name
                     Log.e(TAG, "Auto-print failed on ${printer.name}: ${e.message}")
                 }
             }
+        return ResultadoLegado(intentadas = candidatas.size, fallidas = fallidas)
     }
 
     // MARK: - Discovery
@@ -1186,4 +1224,27 @@ private class PrinterStorage(private val context: Context) {
             Log.e("PrinterStorage", "Failed to save printers: ${e.message}")
         }
     }
+}
+
+/**
+ * ¿Se puede cerrar la conexión de una impresora en este estado?
+ *
+ * 🔴 PURA a propósito: la regla que impide cortar una comanda a media escritura tiene que poder
+ * probarse sin montar Compose ni congelar una impresión real. Vive fuera de la clase porque
+ * `PrinterService` arrastra Context, Bluetooth y USB — nada de eso hace falta para decidir esto.
+ *
+ * Sólo [PrinterStatus.Printing] retiene la conexión. Todo lo demás —conectada y ociosa, en
+ * error, sin comprobar, desconocida— se suelta: dejarla abierta es justo el "teléfono
+ * descolgado" que se sospecha detrás del caso de Testarudo.
+ */
+internal fun puedeSoltarseLaConexion(status: PrinterStatus?): Boolean = status != PrinterStatus.Printing
+
+/**
+ * Qué pasó en el camino LEGADO de impresión (venue sin estaciones configuradas).
+ *
+ * `intentadas == 0` NO es éxito: significa que no había ninguna impresora con rol de cocina y
+ * autoimpresión encendida, o sea que la comanda no salió por falta de configuración.
+ */
+data class ResultadoLegado(val intentadas: Int, val fallidas: List<String>) {
+    val salio: Boolean get() = intentadas > 0 && fallidas.isEmpty()
 }

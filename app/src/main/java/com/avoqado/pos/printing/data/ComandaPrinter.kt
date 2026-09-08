@@ -130,6 +130,12 @@ class ComandaPrinter @Inject constructor(
          * Un plan SALTADO no entra: reintentar no le inventa una impresora.
          */
         val failedPlans: List<TicketPlan> = emptyList(),
+        /**
+         * Cuántas copias le faltan a cada estación que falló. El reintento lo devuelve tal cual
+         * a [printComandas] para no volver a imprimir las que YA salieron — ver el parámetro
+         * `copiasPendientes`.
+         */
+        val copiasPendientes: Map<String?, Int> = emptyMap(),
     ) {
         val nothingPrinted: Boolean get() = printed == 0
         val partial: Boolean get() = printed in 1 until attempted
@@ -149,6 +155,18 @@ class ComandaPrinter @Inject constructor(
         serverName: String? = null,
         /** COMBOS — `orderItemId` → nombre del combo. Vacío = comanda de siempre. */
         comboNames: Map<String, String> = emptyMap(),
+        /**
+         * Copias que faltan por entregar, por estación (`stationId` → cuántas). SÓLO lo usa el
+         * reintento: vacío = se imprimen las copias que diga la configuración.
+         *
+         * 🔴 Existe porque el reintento imprimía el plan COMPLETO. Con una estación de 2 copias,
+         * si la primera salía y la segunda fallaba (se acabó el papel), reponer el rollo y
+         * reintentar entregaba las DOS otra vez: 3 copias donde debían ir 2 (P1 #4 de la
+         * auditoría de Codex, 2026-09-07). No va dentro de `TicketPlan` a propósito — esa clase
+         * es espejo byte a byte del motor del servidor y de iOS, atado por vectores dorados
+         * compartidos, y las copias no son cosa del RUTEO sino de la entrega.
+         */
+        copiasPendientes: Map<String?, Int> = emptyMap(),
     ): Result {
         // PEREZOSO a propósito: sólo se le pregunta al hardware por la integrada cuando la
         // config trae alguna impresora POS_INTERNAL — el resto de los venues no paga el bind.
@@ -163,6 +181,7 @@ class ComandaPrinter @Inject constructor(
         val failedStations = mutableListOf<String>()
         val skippedStations = mutableListOf<String>()
         val failedPlans = mutableListOf<TicketPlan>()
+        val copiasQueFaltan = mutableMapOf<String?, Int>()
         for (plan in plans) {
             // La etiqueta se conoce ANTES de intentar imprimir, para que un fallo también
             // sepa decir de QUÉ estación era la comanda que no salió.
@@ -180,7 +199,19 @@ class ComandaPrinter @Inject constructor(
                     skippedStations += stationLabel
                     continue
                 }
-                repeat(resolved.copies) { printerService.printKitchenTicket(resolved.ticket, printer) }
+                // Las copias se cuentan UNA A UNA: si la tercera truena, el reintento tiene que
+                // mandar sólo la tercera, no las tres.
+                val aEntregar = copiasPendientes[plan.stationId] ?: resolved.copies
+                var entregadas = 0
+                try {
+                    repeat(aEntregar) {
+                        printerService.printKitchenTicket(resolved.ticket, printer)
+                        entregadas++
+                    }
+                } catch (e: Exception) {
+                    copiasQueFaltan[plan.stationId] = (aEntregar - entregadas).coerceAtLeast(1)
+                    throw e
+                }
                 printed++
                 Log.d(TAG, "✅ Printed comanda for station='${resolved.stationLabel}' on ${printer.displayAddress}")
             } catch (e: Exception) {
@@ -208,6 +239,7 @@ class ComandaPrinter @Inject constructor(
             failedStations = failedStations,
             skippedStations = skippedStations,
             failedPlans = failedPlans,
+            copiasPendientes = copiasQueFaltan,
         )
     }
 

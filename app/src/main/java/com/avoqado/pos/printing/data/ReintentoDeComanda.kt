@@ -17,8 +17,65 @@ import javax.inject.Singleton
 sealed interface EstadoDeComanda {
     data object Salio : EstadoDeComanda
     data class Insistiendo(val intento: Int, val de: Int, val estaciones: List<String>, val orderNumber: String) : EstadoDeComanda
-    data class NoSalio(val estaciones: List<String>, val causa: String?, val orderNumber: String) : EstadoDeComanda
+
+    /**
+     * @param trabajo lo que hace falta para volver a mandar EXACTAMENTE lo que faltó. Nulo sólo
+     *   cuando no quedó nada reenviable (todas las estaciones se SALTARON: no tienen impresora,
+     *   así que insistir no se la inventa). Ver [TrabajoPendiente].
+     */
+    data class NoSalio(
+        val estaciones: List<String>,
+        val causa: String?,
+        val orderNumber: String,
+        val trabajo: TrabajoPendiente? = null,
+    ) : EstadoDeComanda
 }
+
+/**
+ * El trabajo que se quedó sin imprimir, congelado y COMPLETO — la única forma honesta de
+ * reintentar a mano.
+ *
+ * 🔴 Nace de dos P1 de la auditoría de Codex (2026-09-07). Antes, «Volver a imprimir»
+ * reconstruía la comanda desde el carrito que el cajero tuviera ENFRENTE, y eso rompía dos
+ * cosas a la vez:
+ *
+ *  1. **Duplicaba.** Si Cocina imprimió y Barra no, reenviar el carrito le mandaba a Cocina un
+ *     ticket idéntico — un platillo de más, que es peor que el que faltó.
+ *  2. **Imprimía OTRA venta.** Si el cajero ya empezó la venta siguiente, el carrito actual es
+ *     el de ESA venta: el botón del aviso de la venta A imprimía la B, con el folio de la B, y
+ *     A se quedaba igual de pendiente.
+ *
+ * Por eso lleva todo lo que necesita el reenvío (planes, config, folio, mesero, combos) en vez
+ * de una llave para volver a buscarlo: lo que se busca puede haber cambiado.
+ */
+@kotlinx.serialization.Serializable
+data class TrabajoPendiente(
+    val planes: List<TicketPlan>,
+    /**
+     * Copias que faltan por entregar, por estación.
+     *
+     * 🔴 Sin esto, «Volver a imprimir» reimprimía las copias que YA salieron: el arreglo de las
+     * copias sólo protegía los intentos del MISMO ciclo automático, y el reintento manual
+     * arranca un ciclo nuevo (P1 #1 de la 2ª auditoría de Codex, 2026-09-07).
+     */
+    val copiasPendientes: Map<String?, Int> = emptyMap(),
+    /**
+     * Estaciones que se SALTARON (sin impresora resoluble). No se reintentan —insistir no les
+     * inventa una impresora— pero tienen que seguir contando en el veredicto.
+     *
+     * 🔴 Sin esto, reparar la impresora de Cocina y reimprimir daba «Salio» y borraba el aviso
+     * ENTERO, aunque Barra nunca hubiera impreso: el acumulado de saltadas vivía sólo dentro de
+     * una llamada a `insistir` (P1 #2 de la 2ª auditoría de Codex).
+     */
+    val saltadas: List<String> = emptyList(),
+    val config: PrintConfig,
+    val orderNumber: String,
+    val orderType: String,
+    val serverName: String?,
+    val comboNames: Map<String, String>,
+    val venueId: String?,
+    val orderId: String?,
+)
 
 /**
  * Insiste con las comandas que no salieron.
@@ -79,10 +136,22 @@ class ReintentoDeComanda @Inject constructor(
         maxIntentos: Int = PoliticaDeReintento.INTENTOS_MAXIMOS,
         venueId: String? = null,
         orderId: String? = null,
+        /** Copias que faltan de un ciclo ANTERIOR — ver [TrabajoPendiente.copiasPendientes]. */
+        copiasPendientesIniciales: Map<String?, Int> = emptyMap(),
+        /** Saltadas arrastradas de un ciclo ANTERIOR — ver [TrabajoPendiente.saltadas]. */
+        saltadasPrevias: List<String> = emptyList(),
         alCambiarEstado: (EstadoDeComanda) -> Unit = {},
     ): EstadoDeComanda {
         var pendientes = plans
-        var ultimo = comandaPrinter.printComandas(pendientes, config, orderNumber, orderType, serverName, comboNames)
+        var ultimo = comandaPrinter.printComandas(
+            pendientes, config, orderNumber, orderType, serverName, comboNames, copiasPendientesIniciales,
+        )
+        // 🔴 Las estaciones SALTADAS se acumulan entre intentos. Un intento posterior sólo lleva
+        // los planes que TRONARON, así que su resultado ya no menciona la que se saltó — y el
+        // veredicto, que se calculaba sobre el ÚLTIMO resultado, la perdía: salía «Salio» con una
+        // estación que nunca imprimió. Es el bug original volviendo por otra puerta (P1 #1 de la
+        // auditoría de Codex, 2026-09-07).
+        val saltadas = LinkedHashSet<String>(saltadasPrevias).apply { addAll(ultimo.skippedStations) }
         var intentos = 1
 
         while (ultimo.failedPlans.isNotEmpty() && intentos < maxIntentos) {
@@ -94,15 +163,42 @@ class ReintentoDeComanda @Inject constructor(
             esperar((paso as PasoDeReintento.Esperar).esperaMs)
             // 🔴 SÓLO lo que tronó — nunca `plans` (el lote original). Ver el KDoc de la clase.
             pendientes = ultimo.failedPlans
-            ultimo = comandaPrinter.printComandas(pendientes, config, orderNumber, orderType, serverName, comboNames)
+            // 🔴 Se arrastran las copias que FALTAN. Sin esto, una estación de 2 copias cuya
+            // segunda falló recibía las dos otra vez al reintentar (P1 #4 de Codex).
+            val copiasQueFaltan = ultimo.copiasPendientes
+            ultimo = comandaPrinter.printComandas(
+                pendientes, config, orderNumber, orderType, serverName, comboNames, copiasQueFaltan,
+            )
+            saltadas += ultimo.skippedStations
             intentos++
         }
 
-        val sinComanda = ultimo.stationsSinComanda
+        // NO se usa `ultimo.stationsSinComanda`: ése sólo ve el último intento. Ver `saltadas`.
+        val sinComanda = (ultimo.failedStations + saltadas).distinct()
         val estado = if (sinComanda.isEmpty()) {
             EstadoDeComanda.Salio
         } else {
-            EstadoDeComanda.NoSalio(sinComanda, ultimo.lastError, orderNumber)
+            EstadoDeComanda.NoSalio(
+                estaciones = sinComanda,
+                causa = ultimo.lastError,
+                orderNumber = orderNumber,
+                // 🔴 SÓLO lo que TRONÓ. Un plan saltado no tiene impresora: reenviarlo no le
+                // inventa una, y meterlo aquí haría que el botón prometa algo imposible.
+                trabajo = ultimo.failedPlans.takeIf { it.isNotEmpty() }?.let {
+                    TrabajoPendiente(
+                        planes = it,
+                        copiasPendientes = ultimo.copiasPendientes,
+                        saltadas = saltadas.toList(),
+                        config = config,
+                        orderNumber = orderNumber,
+                        orderType = orderType,
+                        serverName = serverName,
+                        comboNames = comboNames,
+                        venueId = venueId,
+                        orderId = orderId,
+                    )
+                },
+            )
         }
         alCambiarEstado(estado)
         reportar(estado, ultimo, orderNumber, intentos, venueId, orderId)
@@ -140,4 +236,33 @@ class ReintentoDeComanda @Inject constructor(
             }
         }
     }
+
+    /**
+     * Vuelve a mandar un [TrabajoPendiente] tal cual — ni una línea más.
+     *
+     * 🔴 Es lo que hay detrás de «Volver a imprimir». No recibe un carrito ni un id que volver a
+     * resolver: recibe los planes YA congelados del fallo, así que no puede duplicar una estación
+     * que sí imprimió ni imprimir la venta equivocada.
+     *
+     * @param maxIntentos por default UNO. El cajero acaba de tocar el botón y está mirando: si
+     *   vuelve a fallar, quiere enterarse ahora, no dentro de un minuto de insistencia muda.
+     */
+    suspend fun reintentar(
+        trabajo: TrabajoPendiente,
+        maxIntentos: Int = 1,
+        alCambiarEstado: (EstadoDeComanda) -> Unit = {},
+    ): EstadoDeComanda = insistir(
+        plans = trabajo.planes,
+        config = trabajo.config,
+        orderNumber = trabajo.orderNumber,
+        orderType = trabajo.orderType,
+        serverName = trabajo.serverName,
+        comboNames = trabajo.comboNames,
+        maxIntentos = maxIntentos,
+        venueId = trabajo.venueId,
+        orderId = trabajo.orderId,
+        copiasPendientesIniciales = trabajo.copiasPendientes,
+        saltadasPrevias = trabajo.saltadas,
+        alCambiarEstado = alCambiarEstado,
+    )
 }

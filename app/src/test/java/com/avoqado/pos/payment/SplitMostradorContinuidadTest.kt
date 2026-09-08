@@ -1,6 +1,9 @@
 package com.avoqado.pos.payment
 
 import com.avoqado.pos.MainDispatcherRule
+import com.avoqado.pos.printing.data.ResultadoLegado
+import com.avoqado.pos.printing.data.AlmacenDeTexto
+import com.avoqado.pos.printing.data.ComandasPendientesStore
 import com.avoqado.pos.areatickets.data.AreaTicketRepository
 import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
 import com.avoqado.pos.core.data.local.SecureStorage
@@ -133,7 +136,7 @@ class SplitMostradorContinuidadTest {
         coEvery { kdsRepository.createOrder(any(), any(), any(), any()) } returns Result.success(Unit)
         coEvery { kdsOrderBus.publish(any()) } returns Unit
         coEvery { printerService.autoPrintReceipt(any()) } returns Unit
-        coEvery { printerService.autoPrintKitchenTicket(any()) } returns Unit
+        coEvery { printerService.autoPrintKitchenTicket(any()) } returns ResultadoLegado(intentadas = 1, fallidas = emptyList())
         every { secureStorage.venueName } returns "Avoqado Test"
         every { secureStorage.userId } returns "user-456"
         every { secureStorage.venueId } returns "venue-1"
@@ -156,6 +159,7 @@ class SplitMostradorContinuidadTest {
             kdsOrderBus = kdsOrderBus,
             printerService = printerService,
             secureStorage = secureStorage,
+            comandasPendientesStore = ComandasPendientesStore(AlmacenEnMemoria()),
             // Ronda de arreglo 1 (Task 4): `ComandaDispatcher` recibe `ReintentoDeComanda` por
             // Hilt ahora — construido aquí con el mismo `comandaPrinter` mockeado de siempre.
             comandaDispatcher = ComandaDispatcher(

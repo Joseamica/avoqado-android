@@ -10,6 +10,7 @@ import com.avoqado.pos.core.domain.printing.ComandaDispatcher
 import com.avoqado.pos.printing.data.ComandaPrinter
 import com.avoqado.pos.printing.routing.ConsolidatedLine
 import com.avoqado.pos.printing.routing.PrintConfigRepository
+import com.avoqado.pos.printing.data.EstadoDeComanda
 import com.avoqado.pos.printing.routing.RoutableItem
 import com.avoqado.pos.printing.routing.TicketPlan
 import com.avoqado.pos.core.data.sync.SyncOutbox
@@ -371,7 +372,11 @@ class KDSViewModel @Inject constructor(
                 )
             }
 
-            val ok = runCatching {
+            // 🔴 «No lanzó excepción» NO es «imprimió». `dispatch` NUNCA lanza ante un fallo de
+            // impresora: devuelve el estado. Con `.isSuccess` el KDS mandaba `confirm-print`
+            // sobre una comanda que no salió, y eso IMPIDE que otra tablet la recoja — el pedido
+            // se pierde con la reclamación consumida (P1 #11 de la auditoría de Codex).
+            val estadoDeLaComanda = runCatching {
                 comandaDispatcher.dispatch(
                     venueId = venueId,
                     lines = lineas,
@@ -388,7 +393,8 @@ class KDSViewModel @Inject constructor(
                     // orderNumber para armar el eventId, correcto pero menos preciso que el id real.
                     orderId = pedido.orderId,
                 )
-            }.isSuccess
+            }.getOrNull()
+            val ok = laComandaSalio(estadoDeLaComanda)
 
             // El ticket de EMPAQUE: el pedido completo en UNA hoja, para quien mete todo en
             // la bolsa y se la da al repartidor. No es una comanda —esas dicen qué cocinar y
@@ -530,3 +536,21 @@ fun KDSOrderItem(
     modifiers = modifiers,
     notes = notes,
 )
+
+/**
+ * ¿La comanda SALIÓ de verdad? Decide si el KDS confirma la impresión o suelta el pedido.
+ *
+ * 🔴 PURA a propósito: es la única forma de probar esta decisión sin montar el ViewModel entero
+ * con sus doce dependencias — y quedarse sin probarla fue justo lo que dejó vivo el defecto.
+ *
+ * Antes era `runCatching { dispatch(...) }.isSuccess`, que sólo dice «no lanzó excepción». Y
+ * `dispatch` NUNCA lanza ante un fallo de impresora: devuelve el estado. Así que el KDS mandaba
+ * `confirm-print` sobre una comanda que no había salido, y ese confirm **impide que otra tablet
+ * la recoja**: el pedido se pierde con su reclamación consumida — peor que no haber impreso,
+ * porque además cierra la puerta de la recuperación (P1 #11 de la auditoría de Codex, 2026-09-07).
+ *
+ * `null` significa que se atrapó una excepción o que no había nada que imprimir; en el KDS las
+ * líneas nunca vienen vacías, así que un `null` aquí es un fallo. Se suelta, que es el lado
+ * seguro: otro aparato lo intenta.
+ */
+internal fun laComandaSalio(estado: EstadoDeComanda?): Boolean = estado is EstadoDeComanda.Salio

@@ -370,13 +370,18 @@ fun PaymentFlowScreen(
         is EstadoDeComanda.NoSalio -> AvoqadoWarningToast(
             message = "No salió la comanda de: ${aviso.estaciones.joinToString(", ")} · pedido ${aviso.orderNumber}",
             subtitle = aviso.causa ?: "La impresora no respondió.",
-            primaryLabel = "Volver a imprimir",
-            onPrimary = { viewModel.reintentarComanda() },
+            // 🔴 Sin trabajo pendiente no hay nada que reenviar (camino legado, o todas las
+            // estaciones SALTADAS por no tener impresora): ofrecer el botón lo dejaría MUERTO
+            // — el cajero lo toca delante del cliente y no pasa nada.
+            primaryLabel = "Volver a imprimir".takeIf { aviso.trabajo != null },
+            onPrimary = { viewModel.reintentarComanda() }.takeIf { aviso.trabajo != null },
             // Un doble toque no puede disparar DOS ciclos de reintento en paralelo — duplicaría
             // el ticket de cocina, justo lo que este trabajo existe para evitar.
             primaryLoading = reintentandoComandaManualmente,
             secondaryLabel = "Ya la canté",
             onDismiss = { viewModel.clearComandaWarning() },
+            // Un dedazo fuera del recuadro NO es «ya la canté»: oculta, no resuelve.
+            onCerrarSinResolver = { viewModel.ocultarAvisoDeComanda() },
         )
         else -> Unit
     }

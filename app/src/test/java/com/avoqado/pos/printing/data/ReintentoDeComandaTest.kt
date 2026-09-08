@@ -98,7 +98,13 @@ class ReintentoDeComandaTest {
 
         val estado = sut.insistir(planes, config, "ORD-1", "En tienda", null, emptyMap())
 
-        assertEquals(EstadoDeComanda.NoSalio(listOf("Cocina"), "timeout 192.168.1.141:9100", "ORD-1"), estado)
+        val fallo = estado as EstadoDeComanda.NoSalio
+        assertEquals(listOf("Cocina"), fallo.estaciones)
+        assertEquals("timeout 192.168.1.141:9100", fallo.causa)
+        assertEquals("ORD-1", fallo.orderNumber)
+        // El aviso tiene que poder reimprimir SÓLO lo que faltó — si `trabajo` fuera nulo, el
+        // botón «Volver a imprimir» no tendría qué mandar.
+        assertEquals(listOf(planCocina), fallo.trabajo?.planes)
         assertEquals(6, printer.llamadas)
     }
 
@@ -139,8 +145,20 @@ class ReintentoDeComandaTest {
         val estados = mutableListOf<EstadoDeComanda>()
         val printer = ComandaPrinterFalso(
             resultados = listOf(
-                fallo("Cocina", planesQueFallaron = listOf(planCocina)),
-                fallo("Barra", planesQueFallaron = listOf(planBarra)),
+                // Intento 1: se manda TODO y truenan las dos.
+                ComandaPrinter.Result(
+                    attempted = 2, printed = 0, skippedNoPrinter = 0, lastError = "timeout",
+                    failedStations = listOf("Cocina", "Barra"),
+                    failedPlans = listOf(planCocina, planBarra),
+                ),
+                // Intento 2: se reintentan las DOS y sólo queda Barra — así las estaciones del
+                // aviso cambian de verdad, sin fabricar un estado imposible (un intento no puede
+                // reportar como fallido un plan que no recibió; el helper ahora lo exige).
+                ComandaPrinter.Result(
+                    attempted = 2, printed = 1, skippedNoPrinter = 0, lastError = "sin papel",
+                    failedStations = listOf("Barra"),
+                    failedPlans = listOf(planBarra),
+                ),
                 exito(),
             ),
         )
@@ -152,8 +170,8 @@ class ReintentoDeComandaTest {
             listOf(
                 // Tras el intento 1 (Cocina) se avisa que YA VIENE el intento 2 — no el 1, que
                 // acaba de terminar. Y las estaciones son las de ESTE fallo, no un eco del anterior.
-                EstadoDeComanda.Insistiendo(2, PoliticaDeReintento.INTENTOS_MAXIMOS, listOf("Cocina"), "ORD-1"),
-                // Tras el intento 2 (Barra, DISTINTA de Cocina) se avisa el 3 — con Barra, no Cocina.
+                EstadoDeComanda.Insistiendo(2, PoliticaDeReintento.INTENTOS_MAXIMOS, listOf("Cocina", "Barra"), "ORD-1"),
+                // Tras el intento 2 se avisa el 3 — ya sólo con Barra, no con las dos.
                 EstadoDeComanda.Insistiendo(3, PoliticaDeReintento.INTENTOS_MAXIMOS, listOf("Barra"), "ORD-1"),
                 EstadoDeComanda.Salio,
             ),
@@ -172,7 +190,11 @@ class ReintentoDeComandaTest {
 
         val estadoFinal = sut.insistir(planes, config, "ORD-1", "En tienda", null, emptyMap()) { estados += it }
 
-        assertEquals(EstadoDeComanda.NoSalio(listOf("Cocina"), "timeout 192.168.1.141:9100", "ORD-1"), estados.last())
+        val ultimoEstado = estados.last() as EstadoDeComanda.NoSalio
+        assertEquals(listOf("Cocina"), ultimoEstado.estaciones)
+        assertEquals("timeout 192.168.1.141:9100", ultimoEstado.causa)
+        assertEquals("ORD-1", ultimoEstado.orderNumber)
+        assertEquals(listOf(planCocina), ultimoEstado.trabajo?.planes)
         assertEquals(estados.last(), estadoFinal)
         // 5 Insistiendo (rumbo a los intentos 2..6) y luego se rinde — el intento 6 no anuncia un
         // 7 que nunca va a pasar.
@@ -200,7 +222,11 @@ class ReintentoDeComandaTest {
         assertEquals(1, printer.llamadas)
         assertEquals(emptyList<Long>(), esperas)
         assertTrue(estados.none { it is EstadoDeComanda.Insistiendo })
-        assertEquals(EstadoDeComanda.NoSalio(listOf("Cocina"), "timeout", "ORD-1"), estadoFinal)
+        val finalNoSalio = estadoFinal as EstadoDeComanda.NoSalio
+        assertEquals(listOf("Cocina"), finalNoSalio.estaciones)
+        assertEquals("timeout", finalNoSalio.causa)
+        assertEquals("ORD-1", finalNoSalio.orderNumber)
+        assertEquals(listOf(planCocina), finalNoSalio.trabajo?.planes)
     }
 
     /** El default sigue siendo el de siempre: `PoliticaDeReintento.INTENTOS_MAXIMOS` (6, ~1 min). */
@@ -307,12 +333,163 @@ private class ComandaPrinterFalso(private val resultados: List<ComandaPrinter.Re
     private val planesPorIntento = mutableListOf<List<TicketPlan>>()
 
     val comandaPrinter: ComandaPrinter = mockk {
-        coEvery { printComandas(any(), any(), any(), any(), any(), any()) } coAnswers {
-            planesPorIntento += firstArg<List<TicketPlan>>()
-            resultados[llamadas].also { llamadas++ }
+        coEvery { printComandas(any(), any(), any(), any(), any(), any(), any()) } coAnswers {
+            val recibidos = firstArg<List<TicketPlan>>()
+            planesPorIntento += recibidos
+            val resultado = resultados[llamadas]
+            // 🔴 Un intento NO puede reportar como fallido un plan que nunca recibió. Sin esta
+            // comprobación, una prueba puede fijar un estado IMPOSIBLE y pasar sin ejercitar
+            // nada — pasó de verdad: la prueba de la secuencia devolvía `planBarra` en un
+            // intento que sólo llevaba `planCocina`, y aun así acusaba en verde.
+            val intrusos = resultado.failedPlans.filterNot { it in recibidos }
+            require(intrusos.isEmpty()) {
+                "El intento ${llamadas + 1} recibió ${recibidos.map { it.stationId }} pero el " +
+                    "resultado dice que fallaron ${intrusos.map { it.stationId }} — estado imposible."
+            }
+            resultado.also { llamadas++ }
         }
     }
 
     /** Los planes que se mandaron en el intento número [numeroDeIntento] (1-based). */
     fun planesDelIntento(numeroDeIntento: Int): List<TicketPlan> = planesPorIntento[numeroDeIntento - 1]
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+// Ronda de arreglo tras la auditoría de Codex (gpt-6-astra, 2026-09-07): P1 #1, #2 y #3.
+// Los tres salen de la MISMA raíz — el estado `NoSalio` no sabía QUÉ faltó ni DE QUÉ venta,
+// sólo nombres para pintar en pantalla. Con eso, el veredicto olvidaba estaciones saltadas y
+// el botón «Volver a imprimir» tenía que adivinar reconstruyendo el carrito ACTUAL.
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+
+class ReintentoDeComandaRondaDeArregloTest {
+
+    private val cocinaPrinterInfo = PrinterInfo("pr_cocina", "Cocina Printer", "NETWORK", "192.168.1.50:9100")
+    private val cocinaStation = StationInfo(id = "st_cocina", name = "Cocina", printerId = "pr_cocina", copies = 1)
+    private val config = PrintConfig(printers = listOf(cocinaPrinterInfo), stations = listOf(cocinaStation))
+
+    private val planCocina = TicketPlan("st_cocina", false, listOf(ConsolidatedLine("Taco", 2, emptyList(), null, listOf("oi_1"))))
+    private val planBarra = TicketPlan("st_barra", false, listOf(ConsolidatedLine("Cerveza", 1, emptyList(), null, listOf("oi_2"))))
+    private val planes = listOf(planCocina, planBarra)
+
+    /**
+     * P1 #1 de Codex. Barra se SALTA en el intento 1 (sin impresora resoluble) y Cocina falla.
+     * El intento 2 sólo lleva Cocina, que sale. El veredicto se calculaba sobre el ÚLTIMO
+     * resultado, así que Barra —que nunca imprimió— desaparecía y el cajero veía «Salio».
+     *
+     * 🔴 Es el bug original regresando por otra puerta: una comanda que no salió y nadie avisa.
+     */
+    @Test
+    fun `P1 una estacion SALTADA en el primer intento no desaparece del veredicto`() = runTest {
+        val intento1 = ComandaPrinter.Result(
+            attempted = 2, printed = 0, skippedNoPrinter = 1, lastError = "timeout",
+            failedStations = listOf("Cocina"), skippedStations = listOf("Barra"),
+            failedPlans = listOf(planCocina),
+        )
+        val intento2 = ComandaPrinter.Result(attempted = 1, printed = 1, skippedNoPrinter = 0, lastError = null)
+        val printer = ComandaPrinterFalso(listOf(intento1, intento2))
+        val sut = ReintentoDeComanda(printer.comandaPrinter, esperar = { }, reporteDeComandas = mockk(relaxed = true))
+
+        val estado = sut.insistir(planes, config, "ORD-1", "En tienda", null, emptyMap())
+
+        assertTrue("Barra nunca imprimió y el veredicto dijo que todo salió", estado is EstadoDeComanda.NoSalio)
+        assertEquals(listOf("Barra"), (estado as EstadoDeComanda.NoSalio).estaciones)
+    }
+
+    /**
+     * P1 #2 de Codex. El aviso tiene que llevar EXACTAMENTE lo que faltó — nunca el lote
+     * entero. Si Cocina imprimió y Barra no, reenviar todo le manda a Cocina un ticket
+     * duplicado, y en una cocina eso es un platillo de más.
+     */
+    @Test
+    fun `P1 NoSalio lleva SOLO los planes que faltaron, nunca los que si salieron`() = runTest {
+        val soloBarraFalla = ComandaPrinter.Result(
+            attempted = 2, printed = 1, skippedNoPrinter = 0, lastError = "sin papel",
+            failedStations = listOf("Barra"), failedPlans = listOf(planBarra),
+        )
+        val printer = ComandaPrinterFalso(List(PoliticaDeReintento.INTENTOS_MAXIMOS) { soloBarraFalla })
+        val sut = ReintentoDeComanda(printer.comandaPrinter, esperar = { }, reporteDeComandas = mockk(relaxed = true))
+
+        val estado = sut.insistir(planes, config, "ORD-7", "En tienda", "Ana", emptyMap(), venueId = "v1", orderId = "o1")
+
+        val trabajo = (estado as EstadoDeComanda.NoSalio).trabajo
+        assertEquals("sin el trabajo pendiente, reimprimir tiene que adivinar", listOf(planBarra), trabajo?.planes)
+        assertEquals("ORD-7", trabajo?.orderNumber)
+        assertEquals("Ana", trabajo?.serverName)
+        assertEquals("o1", trabajo?.orderId)
+    }
+
+    /**
+     * P1 #2/#3 de Codex. Reintentar a mano manda ese trabajo y NADA MÁS: ni el lote original,
+     * ni el carrito que el cajero tenga enfrente en ese momento.
+     */
+    @Test
+    fun `P1 reintentar manda EXACTAMENTE los planes pendientes, no el lote entero`() = runTest {
+        val soloBarraFalla = ComandaPrinter.Result(
+            attempted = 2, printed = 1, skippedNoPrinter = 0, lastError = "sin papel",
+            failedStations = listOf("Barra"), failedPlans = listOf(planBarra),
+        )
+        val printer = ComandaPrinterFalso(List(PoliticaDeReintento.INTENTOS_MAXIMOS + 1) { soloBarraFalla })
+        val sut = ReintentoDeComanda(printer.comandaPrinter, esperar = { }, reporteDeComandas = mockk(relaxed = true))
+        val fallo = sut.insistir(planes, config, "ORD-7", "En tienda", null, emptyMap()) as EstadoDeComanda.NoSalio
+        val llamadasAntes = printer.llamadas
+
+        sut.reintentar(fallo.trabajo!!, maxIntentos = 1)
+
+        assertEquals("reintentar tiene que mandar exactamente un lote", llamadasAntes + 1, printer.llamadas)
+        assertEquals(listOf(planBarra), printer.planesDelIntento(llamadasAntes + 1))
+    }
+
+    /**
+     * P1 #1 de la 2ª auditoría de Codex (2026-09-07). El arreglo de las copias sólo protegía los
+     * intentos del MISMO ciclo automático; el reintento manual arranca un ciclo nuevo, y ahí
+     * volvía a mandar las copias que ya habían salido.
+     */
+    @Test
+    fun `P1 el trabajo congelado lleva las copias que faltan, para que reimprimir no las repita`() = runTest {
+        val faltaUna = ComandaPrinter.Result(
+            attempted = 1, printed = 0, skippedNoPrinter = 0, lastError = "sin papel",
+            failedStations = listOf("Cocina"), failedPlans = listOf(planCocina),
+            copiasPendientes = mapOf<String?, Int>("st_cocina" to 1),
+        )
+        val printer = ComandaPrinterFalso(List(PoliticaDeReintento.INTENTOS_MAXIMOS) { faltaUna })
+        val sut = ReintentoDeComanda(printer.comandaPrinter, esperar = { }, reporteDeComandas = mockk(relaxed = true))
+
+        val fallo = sut.insistir(listOf(planCocina), config, "ORD-9", "En tienda", null, emptyMap()) as EstadoDeComanda.NoSalio
+
+        assertEquals(
+            "sin esto, «Volver a imprimir» reimprime las copias que ya salieron",
+            mapOf<String?, Int>("st_cocina" to 1),
+            fallo.trabajo?.copiasPendientes,
+        )
+    }
+
+    /**
+     * P1 #2 de la 2ª auditoría. `saltadas` vivía sólo dentro de una llamada a `insistir`: al
+     * reintentar a mano, la estación sin impresora desaparecía del veredicto y el aviso se
+     * borraba entero aunque esa estación nunca hubiera impreso.
+     */
+    @Test
+    fun `P1 una estacion saltada sigue contando al reintentar A MANO`() = runTest {
+        val cocinaFallaBarraSaltada = ComandaPrinter.Result(
+            attempted = 2, printed = 0, skippedNoPrinter = 1, lastError = "timeout",
+            failedStations = listOf("Cocina"), skippedStations = listOf("Barra"),
+            failedPlans = listOf(planCocina),
+        )
+        val printer = ComandaPrinterFalso(
+            List(PoliticaDeReintento.INTENTOS_MAXIMOS) { cocinaFallaBarraSaltada } +
+                // El reintento manual: Cocina ya se reparó y sale.
+                ComandaPrinter.Result(attempted = 1, printed = 1, skippedNoPrinter = 0, lastError = null),
+        )
+        val sut = ReintentoDeComanda(printer.comandaPrinter, esperar = { }, reporteDeComandas = mockk(relaxed = true))
+        val fallo = sut.insistir(planes, config, "ORD-9", "En tienda", null, emptyMap()) as EstadoDeComanda.NoSalio
+        assertEquals(listOf("Barra"), fallo.trabajo?.saltadas)
+
+        val trasReintentar = sut.reintentar(fallo.trabajo!!, maxIntentos = 1)
+
+        assertTrue(
+            "Cocina imprimió y el aviso desapareció entero, con Barra todavía sin comanda",
+            trasReintentar is EstadoDeComanda.NoSalio,
+        )
+        assertEquals(listOf("Barra"), (trasReintentar as EstadoDeComanda.NoSalio).estaciones)
+    }
 }

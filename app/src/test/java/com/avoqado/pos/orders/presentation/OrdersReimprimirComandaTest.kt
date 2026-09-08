@@ -2,6 +2,8 @@ package com.avoqado.pos.orders.presentation
 
 import com.avoqado.pos.MainDispatcherRule
 import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.pos.data.ProductsRepository
+import com.avoqado.pos.pos.data.model.Product
 import com.avoqado.pos.core.domain.printing.ComandaDispatcher
 import com.avoqado.pos.core.domain.refresh.RefreshGate
 import com.avoqado.pos.core.domain.refresh.RefreshGateFactory
@@ -16,7 +18,10 @@ import io.mockk.mockk
 import io.mockk.slot
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertEquals
 import org.junit.Before
 import org.junit.Rule
@@ -62,6 +67,21 @@ class OrdersReimprimirComandaTest {
     private val repository = mockk<OrdersRepository>(relaxed = true)
     private val secureStorage = mockk<SecureStorage>(relaxed = true)
 
+    /**
+     * El catálogo local — la MISMA fuente de la que el carrito saca `categoryId` al imprimir la
+     * primera vez. Sin él, reimprimir mandaba todo a la estación por defecto (P1 #8 de Codex).
+     */
+    private val catalogo = MutableStateFlow(
+        listOf(
+            Product(id = "prod-1", name = "Café", categoryId = "cat-bebidas"),
+            Product(id = "prod-2", name = "Muffin", categoryId = "cat-panaderia"),
+            Product(id = "prod-3", name = "Té", categoryId = "cat-bebidas"),
+        ),
+    )
+    private val productsRepository = mockk<ProductsRepository>(relaxed = true).also {
+        every { it.products } returns catalogo
+    }
+
     // 3 artículos, los tres con productId — ninguno se queda fuera del filtro que reusa
     // TableOrderViewModel.reprintComandas (sólo PRODUCTOS reales van a cocina).
     private val ordenDePrueba = OrderDetail(
@@ -83,12 +103,13 @@ class OrdersReimprimirComandaTest {
     private fun createViewModel(): OrdersViewModel {
         val refreshGateFactory = mockk<RefreshGateFactory>()
         every { refreshGateFactory.create(any(), any()) } returns RefreshGate(clock = { Duration.ZERO })
-        return OrdersViewModel(repository, refreshGateFactory, dispatcherFalso.mock, secureStorage)
+        return OrdersViewModel(repository, refreshGateFactory, dispatcherFalso.mock, secureStorage, productsRepository)
     }
 
     @Test
     fun `reimprimir rearma la comanda desde la orden y la manda marcada como REIMPRESION`() = runTest {
         val viewModel = createViewModel()
+        viewModel.selectOrder("orden-1")
         viewModel.reimprimirComanda("orden-1")
         assertEquals("REIMPRESIÓN", dispatcherFalso.ultimoOrderType)
         assertEquals(3, dispatcherFalso.ultimasLineas.size)
@@ -98,6 +119,7 @@ class OrdersReimprimirComandaTest {
     fun `si la reimpresion no sale, lo DICE (no canta exito como el bug de la T3)`() = runTest {
         dispatcherFalso.resultado = EstadoDeComanda.NoSalio(listOf("Cocina"), "sin conexion", "ORD-0001")
         val viewModel = createViewModel()
+        viewModel.selectOrder("orden-1")
         viewModel.reimprimirComanda("orden-1")
         assertEquals("No salió la comanda de: Cocina · sin conexion", viewModel.mensajeDeReimpresion.value)
     }
@@ -108,7 +130,55 @@ class OrdersReimprimirComandaTest {
             ordenDePrueba.copy(items = listOf(OrderDetailItem(id = "cargo-1", productId = null, productName = "Cargo por servicio"))),
         )
         val viewModel = createViewModel()
+        viewModel.selectOrder("orden-1")
         viewModel.reimprimirComanda("orden-1")
         assertEquals("No hay artículos para reimprimir en este pedido", viewModel.mensajeDeReimpresion.value)
+    }
+
+    /**
+     * P1 #8 de la auditoría de Codex (2026-09-07). `RoutableItem.categoryId` iba en `null`, y
+     * la categoría es lo que decide a qué estación va cada producto: un café que se imprime en
+     * Barra por una regla de categoría se iba a Cocina —la estación por defecto— en silencio.
+     *
+     * Se resuelve del catálogo local por `productId`, igual que hace el carrito.
+     */
+    @Test
+    fun `P1 reimprimir resuelve la CATEGORIA de cada producto, no la manda en null`() = runTest {
+        val viewModel = createViewModel()
+
+        viewModel.selectOrder("orden-1")
+        viewModel.reimprimirComanda("orden-1")
+        advanceUntilIdle()
+
+        val categorias = dispatcherFalso.ultimasLineas.associate { it.productId to it.categoryId }
+        assertEquals("sin categoría, el ruteo por categoría no aplica y todo cae en la default", "cat-bebidas", categorias["prod-1"])
+        assertEquals("cat-panaderia", categorias["prod-2"])
+        assertEquals("cat-bebidas", categorias["prod-3"])
+    }
+
+    /**
+     * P1 #9 de la auditoría de Codex (2026-09-07). En tablet, el cajero puede seleccionar OTRO
+     * pedido mientras una reimpresión sigue en vuelo. El resultado se publicaba a secas, así que
+     * el pedido B mostraba «Comanda reimpresa» — de una reimpresión que fue de A y que B nunca
+     * pidió. Atarlo al id no lo PIERDE: reaparece al volver a A.
+     */
+    @Test
+    fun `P1 el resultado de reimprimir A no aparece dentro de B`() = runTest {
+        val viewModel = createViewModel()
+        viewModel.selectOrder("orden-1")
+        viewModel.reimprimirComanda("orden-1")
+        advanceUntilIdle()
+        assertNotNull("la reimpresión de A no dijo nada", viewModel.mensajeDeReimpresion.value)
+
+        // El cajero abre otro pedido.
+        viewModel.selectOrder("orden-2")
+        assertNull(
+            "el pedido B enseñó el resultado de una reimpresión que fue de A",
+            viewModel.mensajeDeReimpresion.value,
+        )
+
+        // Y al volver a A, su resultado sigue ahí — no se perdió, sólo estaba en su sitio.
+        viewModel.selectOrder("orden-1")
+        assertNotNull("el resultado de A se perdió al ir y volver", viewModel.mensajeDeReimpresion.value)
     }
 }

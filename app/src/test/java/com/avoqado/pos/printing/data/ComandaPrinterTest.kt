@@ -486,4 +486,49 @@ class ComandaPrinterTest {
         assertEquals(listOf("Taco", "Cerveza"), resolved.ticket.items.map { it.name })
         assertTrue(resolved.ticket.items.none { it.isComboHeader || it.isComboComponent })
     }
+
+    // MARK: - P1 #4 (auditoría de Codex, 2026-09-07): las copias se cuentan una a una
+
+    private val cocinaDosCopias = PrintConfig(
+        printers = listOf(cocinaPrinterInfo),
+        stations = listOf(StationInfo(id = "st_cocina", name = "Cocina", printerId = "pr_cocina", copies = 2)),
+    )
+
+    /**
+     * Una estación de 2 copias: sale la primera y truena la segunda (se acabó el papel). El
+     * reintento imprimía el plan COMPLETO, así que reponer el rollo entregaba las dos otra vez
+     * — 3 copias donde debían ir 2. Ahora el resultado dice cuántas FALTAN.
+     */
+    @Test
+    fun `P1 si falla la segunda copia, el resultado dice que falta UNA, no dos`() = runTest {
+        var copiasIntentadas = 0
+        coEvery { printerService.printKitchenTicket(any(), any()) } coAnswers {
+            copiasIntentadas++
+            if (copiasIntentadas == 2) throw RuntimeException("sin papel")
+        }
+
+        val resultado = comandaPrinter.printComandas(
+            listOf(plan("st_cocina", listOf(tacoLine))), cocinaDosCopias, "1234",
+        )
+
+        assertEquals("se intentaron las 2 copias", 2, copiasIntentadas)
+        assertEquals("falta UNA copia, no el plan entero", mapOf<String?, Int>("st_cocina" to 1), resultado.copiasPendientes)
+    }
+
+    /**
+     * Y el reintento las honra: pasando «falta 1», se imprime UNA sola — no las dos de la
+     * configuración. Sin esto, el arreglo de arriba sería un dato que nadie usa.
+     */
+    @Test
+    fun `P1 al reintentar con copias pendientes se imprime solo lo que falta`() = runTest {
+        var copiasImpresas = 0
+        coEvery { printerService.printKitchenTicket(any(), any()) } coAnswers { copiasImpresas++ }
+
+        comandaPrinter.printComandas(
+            listOf(plan("st_cocina", listOf(tacoLine))), cocinaDosCopias, "1234",
+            copiasPendientes = mapOf<String?, Int>("st_cocina" to 1),
+        )
+
+        assertEquals("reimprimió las 2 copias en vez de la que faltaba", 1, copiasImpresas)
+    }
 }

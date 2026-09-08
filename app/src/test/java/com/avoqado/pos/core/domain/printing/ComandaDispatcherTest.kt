@@ -1,6 +1,7 @@
 package com.avoqado.pos.core.domain.printing
 
 import com.avoqado.pos.printing.data.ComandaPrinter
+import com.avoqado.pos.printing.data.ResultadoLegado
 import com.avoqado.pos.printing.data.EstadoDeComanda
 import com.avoqado.pos.printing.data.PoliticaDeReintento
 import com.avoqado.pos.printing.data.PrinterService
@@ -79,7 +80,7 @@ class ComandaDispatcherTest {
         every { printConfigRepository.getCurrentConfig() } returns sinEstaciones
         coEvery { comandaPrinter.printComandas(any(), any(), any(), any(), any()) } returns
             ComandaPrinter.Result(attempted = 1, printed = 1, skippedNoPrinter = 0, lastError = null)
-        coEvery { printerService.autoPrintKitchenTicket(any()) } returns Unit
+        coEvery { printerService.autoPrintKitchenTicket(any()) } returns ResultadoLegado(intentadas = 1, fallidas = emptyList())
 
         // 🔴 NO REGRESIÓN (Task 4): `ComandaDispatcher` ya no llama a `comandaPrinter.printComandas`
         // directo — pasa por `ReintentoDeComanda`, REAL (sin mockear: es justo lo que ya prueba
@@ -99,7 +100,7 @@ class ComandaDispatcherTest {
     @Test
     fun `sin estaciones y con fallback legado imprime UN ticket de cocina y no rutea nada`() = runTest {
         val ticketSlot = slot<KitchenTicketData>()
-        coEvery { printerService.autoPrintKitchenTicket(capture(ticketSlot)) } returns Unit
+        coEvery { printerService.autoPrintKitchenTicket(capture(ticketSlot)) } returns ResultadoLegado(intentadas = 1, fallidas = emptyList())
 
         dispatcher.dispatch(
             venueId = "venue-1",
@@ -249,8 +250,17 @@ class ComandaDispatcherTest {
         assertEquals(listOf("Barra"), noSalio?.estaciones)
     }
 
+    /**
+     * P1 #10 de la auditoría de Codex (2026-09-07). Esta prueba fijaba el DEFECTO: el camino
+     * legado (venue sin estaciones) devolvía `null` siempre, así que un fallo de impresora ahí
+     * era indistinguible de un éxito — sin aviso al cajero, sin reintento y sin telemetría.
+     * Era exactamente el fallo silencioso que este trabajo existe para matar, conservado en la
+     * rama que nadie miró. Ahora el camino legado DA UN VEREDICTO.
+     */
     @Test
-    fun `el camino legado devuelve null — su abanico es fire-and-forget y no sabe reportar`() = runTest {
+    fun `P1 el camino legado dice que SALIO cuando ninguna impresora falla`() = runTest {
+        coEvery { printerService.autoPrintKitchenTicket(any()) } returns ResultadoLegado(intentadas = 1, fallidas = emptyList())
+
         val resultado = dispatcher.dispatch(
             venueId = "venue-1",
             lines = listOf(taco),
@@ -259,7 +269,54 @@ class ComandaDispatcherTest {
             noStationsFallback = ticketLegado,
         )
 
-        assertNull(resultado)
+        assertEquals(EstadoDeComanda.Salio, resultado)
+    }
+
+    /**
+     * P2 #14 de la 2ª auditoría de Codex (2026-09-07). `autoPrintKitchenTicket` devolvía una
+     * lista vacía tanto cuando TODAS imprimieron como cuando no había NINGUNA impresora que
+     * intentarlo, y el despachador leía lo segundo como éxito.
+     *
+     * 🔴 Es la mentira más cara de todas: el mostrador cree que la cocina recibió el pedido.
+     */
+    @Test
+    fun `P2 el camino legado NO canta exito cuando no habia ninguna impresora`() = runTest {
+        coEvery { printerService.autoPrintKitchenTicket(any()) } returns
+            ResultadoLegado(intentadas = 0, fallidas = emptyList())
+
+        val resultado = dispatcher.dispatch(
+            venueId = "venue-1",
+            lines = listOf(taco),
+            orderNumber = "1234",
+            orderType = "En tienda",
+            noStationsFallback = ticketLegado,
+        )
+
+        val noSalio = resultado as? EstadoDeComanda.NoSalio
+        assertEquals(
+            "cero intentos se leyó como éxito: el mostrador cree que la cocina recibió el pedido",
+            "No hay ninguna impresora de cocina configurada.",
+            noSalio?.causa,
+        )
+    }
+
+    @Test
+    fun `P1 el camino legado DICE que no salio, con el nombre de la impresora`() = runTest {
+        coEvery { printerService.autoPrintKitchenTicket(any()) } returns ResultadoLegado(intentadas = 1, fallidas = listOf("Cocina"))
+
+        val resultado = dispatcher.dispatch(
+            venueId = "venue-1",
+            lines = listOf(taco),
+            orderNumber = "1234",
+            orderType = "En tienda",
+            noStationsFallback = ticketLegado,
+        )
+
+        val noSalio = resultado as? EstadoDeComanda.NoSalio
+        assertEquals("un fallo del camino legado volvió a ser mudo", listOf("Cocina"), noSalio?.estaciones)
+        assertEquals("1234", noSalio?.orderNumber)
+        // Aquí NO hay planes que reenviar: la pantalla no debe ofrecer «Volver a imprimir».
+        assertNull("el camino legado no tiene trabajo reenviable", noSalio?.trabajo)
     }
 
     // MARK: - maxIntentos se hereda hasta ReintentoDeComanda (ronda de arreglo 1, el KDS)

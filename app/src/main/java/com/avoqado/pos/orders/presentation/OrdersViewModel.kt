@@ -7,6 +7,7 @@ import com.avoqado.pos.core.domain.printing.ComandaDispatcher
 import com.avoqado.pos.core.domain.refresh.RefreshGateFactory
 import com.avoqado.pos.orders.data.OrdersRepository
 import com.avoqado.pos.orders.data.model.OrderSummary
+import com.avoqado.pos.pos.data.ProductsRepository
 import com.avoqado.pos.printing.data.EstadoDeComanda
 import com.avoqado.pos.printing.routing.RoutableItem
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -15,6 +16,9 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
@@ -32,6 +36,8 @@ class OrdersViewModel @Inject constructor(
     refreshGateFactory: RefreshGateFactory,
     private val comandaDispatcher: ComandaDispatcher,
     private val secureStorage: SecureStorage,
+    /** Para resolver la CATEGORÍA de cada producto al reimprimir — ver [reimprimirComanda]. */
+    private val productsRepository: ProductsRepository,
 ) : ViewModel() {
 
     // MARK: - Refresco (spec estrategia-de-refresco)
@@ -132,9 +138,10 @@ class OrdersViewModel @Inject constructor(
 
     fun selectOrder(orderId: String) {
         _selectedOrderId.value = orderId
-        // Un aviso de reimpresión es del PEDIDO que estaba abierto — abrir uno distinto no
-        // puede arrastrar "No salió la comanda de: Cocina" del anterior.
-        _mensajeDeReimpresion.value = null
+        // 🔴 Ya NO se borra el mensaje aquí. Era un parche para que el aviso de un pedido no se
+        // arrastrara al siguiente, y ahora eso lo garantiza el propio `mensajeDeReimpresion`,
+        // que filtra por id. Borrarlo además PERDÍA información: el cajero que abre otro pedido
+        // y vuelve ya no encontraba el resultado de su reimpresión.
         viewModelScope.launch {
             repository.loadOrderDetail(orderId)
         }
@@ -153,8 +160,21 @@ class OrdersViewModel @Inject constructor(
     private val _isReimprimiendoComanda = MutableStateFlow(false)
     val isReimprimiendoComanda: StateFlow<Boolean> = _isReimprimiendoComanda.asStateFlow()
 
-    private val _mensajeDeReimpresion = MutableStateFlow<String?>(null)
-    val mensajeDeReimpresion: StateFlow<String?> = _mensajeDeReimpresion.asStateFlow()
+    /**
+     * El resultado de reimprimir pertenece a UN pedido concreto.
+     *
+     * 🔴 En tablet, el cajero puede seleccionar otro pedido mientras una reimpresión sigue en
+     * vuelo. Publicando el texto a secas, el pedido B mostraba «Comanda reimpresa» — de una
+     * reimpresión que fue del pedido A y que B nunca pidió (P1 #9 de la auditoría de Codex,
+     * 2026-09-07). Atarlo al id no PIERDE el mensaje: reaparece si vuelve a ese pedido.
+     */
+    private data class MensajeDeReimpresion(val orderId: String, val texto: String)
+
+    private val _mensajeDeReimpresion = MutableStateFlow<MensajeDeReimpresion?>(null)
+    val mensajeDeReimpresion: StateFlow<String?> =
+        combine(_mensajeDeReimpresion, _selectedOrderId) { mensaje, seleccionado ->
+            mensaje?.takeIf { it.orderId == seleccionado }?.texto
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     /**
      * El botón «Volver a imprimir» sólo existía en Mesas ([com.avoqado.pos.tables.presentation.TableOrderViewModel.reprintComandas]).
@@ -172,20 +192,28 @@ class OrdersViewModel @Inject constructor(
         if (_isReimprimiendoComanda.value) return
         val order = repository.selectedOrder.value?.takeIf { it.id == orderId }
         if (order == null) {
-            _mensajeDeReimpresion.value = "No se encontró el pedido para reimprimir"
+            _mensajeDeReimpresion.value = MensajeDeReimpresion(orderId, "No se encontró el pedido para reimprimir")
             return
         }
 
         // Mismo filtro que TableOrderViewModel.reprintComandas: sólo lo que es un PRODUCTO
         // real va a cocina — un cargo o un importe libre sin productId no tiene nada que
         // preparar.
+        // 🔴 La CATEGORÍA decide a qué estación va cada producto. `OrderDetailItem` no la trae
+        // (el servidor no la manda en el detalle), y dejarla en `null` hacía que el ruteo por
+        // categoría no aplicara: un café que se imprime en Barra se iba a Cocina, la estación
+        // por defecto — en silencio (P1 #8 de la auditoría de Codex, 2026-09-07). Se resuelve
+        // del catálogo local por `productId`, que es EXACTAMENTE de donde la saca el carrito
+        // (`CartViewModel`), así que reimprimir rutea igual que imprimió la primera vez.
+        val categoriaPorProducto = productsRepository.products.value.associate { it.id to it.categoryId }
+
         val lineas = order.items
             ?.filter { it.productId != null }
             ?.map { item ->
                 RoutableItem(
                     orderItemId = item.id,
                     productId = item.productId,
-                    categoryId = null,
+                    categoryId = item.productId?.let { categoriaPorProducto[it] },
                     productName = item.productName.ifBlank { "Artículo" },
                     quantity = item.quantity,
                     modifiers = item.modifiers?.map { modifier -> modifier.name } ?: emptyList(),
@@ -195,7 +223,7 @@ class OrdersViewModel @Inject constructor(
             ?: emptyList()
 
         if (lineas.isEmpty()) {
-            _mensajeDeReimpresion.value = "No hay artículos para reimprimir en este pedido"
+            _mensajeDeReimpresion.value = MensajeDeReimpresion(orderId, "No hay artículos para reimprimir en este pedido")
             return
         }
 
@@ -209,7 +237,7 @@ class OrdersViewModel @Inject constructor(
                     orderType = "REIMPRESIÓN",
                     orderId = order.id,
                 )
-                _mensajeDeReimpresion.value = mensajeDeEstado(estado)
+                _mensajeDeReimpresion.value = MensajeDeReimpresion(orderId, mensajeDeEstado(estado))
             } finally {
                 _isReimprimiendoComanda.value = false
             }

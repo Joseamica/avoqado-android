@@ -33,6 +33,7 @@ import com.avoqado.pos.pos.presentation.cart.CartState
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.domain.printing.ComandaDispatcher
 import com.avoqado.pos.core.domain.printing.NoStationsFallback
+import com.avoqado.pos.printing.data.ComandasPendientesStore
 import com.avoqado.pos.printing.data.EstadoDeComanda
 import com.avoqado.pos.printing.data.PrinterService
 import com.avoqado.pos.printing.data.model.ComboPrintLines
@@ -80,6 +81,8 @@ class PaymentFlowViewModel @Inject constructor(
     private val printerService: PrinterService,
     private val secureStorage: SecureStorage,
     private val comandaDispatcher: ComandaDispatcher,
+    /** Sobrevive a que la app muera con una comanda sin salir — ver [ComandasPendientesStore]. */
+    private val comandasPendientesStore: ComandasPendientesStore,
     private val customerDisplay: com.avoqado.pos.customerdisplay.CustomerDisplayState,
     private val areaTicketRepository: AreaTicketRepository,
     private val savedStateHandle: androidx.lifecycle.SavedStateHandle,
@@ -445,7 +448,29 @@ class PaymentFlowViewModel @Inject constructor(
     private val _comandaWarning = MutableStateFlow<EstadoDeComanda?>(null)
     val comandaWarning: StateFlow<EstadoDeComanda?> = _comandaWarning.asStateFlow()
 
-    fun clearComandaWarning() { _comandaWarning.value = null }
+    /** «Ya la canté»: una PERSONA lo resolvió — deja de perseguirla entre arranques. */
+    fun clearComandaWarning() {
+        _comandaWarning.value = null
+        comandasPendientesStore.limpiar()
+    }
+
+    /**
+     * Quita el aviso de la pantalla SIN darlo por resuelto.
+     *
+     * 🔴 Es lo que corresponde a un toque fuera del recuadro o al botón Atrás: el cajero está
+     * ocupado y se lo quita de encima, pero la comanda sigue sin salir. Lo guardado se conserva,
+     * así que vuelve al siguiente arranque en vez de desaparecer para siempre por un dedazo
+     * (P2 #11 de la 2ª auditoría de Codex, 2026-09-07).
+     */
+    fun ocultarAvisoDeComanda() {
+        _comandaWarning.value = null
+    }
+
+    init {
+        // 🔴 Si la app murió con una comanda sin salir, el aviso vuelve al abrir — NO se
+        // reimprime sola (ver el KDoc de [ComandasPendientesStore]: eso duplicaría el ticket).
+        comandasPendientesStore.leer(secureStorage.venueId)?.let { _comandaWarning.value = it }
+    }
 
     private val _canPrintOnTerminal = MutableStateFlow(false)
     val canPrintOnTerminal: StateFlow<Boolean> = _canPrintOnTerminal.asStateFlow()
@@ -640,9 +665,18 @@ class PaymentFlowViewModel @Inject constructor(
     ) {
         cartState = cart
         completionConsumed = false
-        // El aviso de comanda es de la venta ANTERIOR: arrastrarlo culparía a una
-        // impresora que en esta venta puede estar perfectamente bien.
-        _comandaWarning.value = null
+        // 🔴 Un `Insistiendo` de la venta anterior SÍ se borra: describe algo que ya terminó,
+        // y arrastrarlo culparía a una impresora que en esta venta puede estar perfecta.
+        //
+        // Un `NoSalio` NO. Es una comanda que de verdad no salió y que nadie ha resuelto: el
+        // cajero tiene que poder verla y reimprimirla aunque ya haya empezado la venta
+        // siguiente. Borrarla aquí la hacía inalcanzable para siempre — y como el reintento
+        // tarda hasta ~1 minuto, el caso normal es que el aviso llegue DESPUÉS de que el cajero
+        // tocó «Listo» (P1 #6 de la auditoría de Codex, 2026-09-07). Se va con «Ya la canté»,
+        // que es una persona decidiendo, no un efecto secundario de cobrar otra cosa.
+        if (_comandaWarning.value !is EstadoDeComanda.NoSalio) {
+            _comandaWarning.value = null
+        }
         splitBaseAmountOverride = resolveSplitBaseAmount(cart)
         // El total autoritativo es de la venta ANTERIOR: arrastrarlo cobraría
         // esta venta al precio de la pasada.
@@ -2072,27 +2106,10 @@ class PaymentFlowViewModel @Inject constructor(
             ),
             // Una comanda que sigue reintentando o que se rindió se DICE, con la estación por
             // nombre y la CAUSA REAL que reportó la impresora — nunca un texto genérico.
-            alCambiarEstado = { estado ->
-                // 🔴 Ronda de arreglo 1 (hallazgo del revisor): el reintento estira la ventana
-                // de riesgo de segundos a ~50s. Si el cajero ya cobró la venta SIGUIENTE mientras
-                // ÉSTA seguía reintentando en segundo plano, un `Salio` tardío de esta venta NO
-                // puede limpiar el aviso — todavía sin resolver — de la otra. `orderNumber` (de
-                // ESTA venta, capturado arriba) decide: sólo se limpia si lo que está en pantalla
-                // es de la MISMA venta (o no hay nada que limpiar). `Insistiendo`/`NoSalio` sí se
-                // pintan siempre — son la información más reciente, y ahora llevan su propio
-                // pedido, así que nunca son ambiguos sobre DE QUÉ venta hablan.
-                if (estado is EstadoDeComanda.Salio) {
-                    val avisoActual = _comandaWarning.value
-                    val esDeEstaVenta = when (avisoActual) {
-                        null, EstadoDeComanda.Salio -> true
-                        is EstadoDeComanda.Insistiendo -> avisoActual.orderNumber == orderNumber
-                        is EstadoDeComanda.NoSalio -> avisoActual.orderNumber == orderNumber
-                    }
-                    if (esDeEstaVenta) _comandaWarning.value = null
-                } else {
-                    _comandaWarning.value = estado
-                }
-            },
+            // Una comanda que sigue reintentando o que se rindió se DICE, con la estación por
+            // nombre y la CAUSA REAL que reportó la impresora — nunca un texto genérico. La regla
+            // de "de qué venta habla este aviso" vive en UN solo sitio: [aplicarEstadoDeComanda].
+            alCambiarEstado = { estado -> aplicarEstadoDeComanda(estado, orderNumber) },
         )
     }
 
@@ -2117,13 +2134,63 @@ class PaymentFlowViewModel @Inject constructor(
      */
     fun reintentarComanda() {
         if (_reintentandoComandaManualmente.value) return
-        val cart = cartState ?: return
+        // 🔴 Se reenvía el trabajo CONGELADO del fallo — nunca el carrito de este momento.
+        // Leer `cartState` (lo que hacía antes) rompía dos cosas a la vez, y las dos las
+        // paga el cliente:
+        //   1. DUPLICABA. Si Cocina imprimió y Barra no, reenviar el carrito le mandaba a
+        //      Cocina un ticket idéntico — un platillo de más, peor que el que faltó.
+        //   2. IMPRIMÍA OTRA VENTA. Si el cajero ya empezó la siguiente, el carrito es el de
+        //      ESA venta: el botón del aviso de A imprimía la B con el folio de la B, y A se
+        //      quedaba igual de pendiente.
+        // (P1 #2 y #3 de la auditoría de Codex, 2026-09-07.)
+        val fallo = _comandaWarning.value as? EstadoDeComanda.NoSalio ?: return
+        val trabajo = fallo.trabajo ?: return
+        // 🔴 La vigencia (8 h) se comprobaba SÓLO al arrancar. Una tablet que se queda encendida
+        // toda la noche —lo normal en un mostrador— seguía ofreciendo «Volver a imprimir» a la
+        // mañana siguiente, y eso saca comida que nadie pidió. Preguntarle al almacén aquí
+        // reusa la MISMA regla en vez de copiarla (P2 #13 de la 2ª auditoría de Codex).
+        if (comandasPendientesStore.leer(secureStorage.venueId) == null) {
+            _comandaWarning.value = null
+            return
+        }
         _reintentandoComandaManualmente.value = true
         viewModelScope.launch {
             try {
-                despacharComanda(cart)
+                comandaDispatcher.reintentar(trabajo) { estado ->
+                    aplicarEstadoDeComanda(estado, trabajo.orderNumber)
+                }
             } finally {
                 _reintentandoComandaManualmente.value = false
+            }
+        }
+    }
+
+    /**
+     * Publica un [EstadoDeComanda] en el aviso, respetando de QUÉ venta habla.
+     *
+     * 🔴 Un `Salio` tardío de la venta anterior NO puede borrar el aviso —todavía sin
+     * resolver— de la venta que el cajero tiene enfrente. Por eso se compara el folio.
+     */
+    private fun aplicarEstadoDeComanda(estado: EstadoDeComanda, orderNumber: String) {
+        if (estado is EstadoDeComanda.Salio) {
+            val avisoActual = _comandaWarning.value
+            val esDeEstaVenta = when (avisoActual) {
+                null, EstadoDeComanda.Salio -> true
+                is EstadoDeComanda.Insistiendo -> avisoActual.orderNumber == orderNumber
+                is EstadoDeComanda.NoSalio -> avisoActual.orderNumber == orderNumber
+            }
+            if (esDeEstaVenta) {
+                _comandaWarning.value = null
+                comandasPendientesStore.limpiar()
+            }
+        } else {
+            _comandaWarning.value = estado
+            // Se guarda SÓLO el veredicto final Y sólo si hay algo que recuperar. Un
+            // `Insistiendo` describe algo en curso; y un `NoSalio` SIN trabajo (el camino
+            // legado, o todas las estaciones saltadas) no se puede reimprimir, así que
+            // guardarlo sólo serviría para PISAR en disco a uno que sí era recuperable.
+            if (estado is EstadoDeComanda.NoSalio && estado.trabajo != null) {
+                comandasPendientesStore.guardar(estado)
             }
         }
     }

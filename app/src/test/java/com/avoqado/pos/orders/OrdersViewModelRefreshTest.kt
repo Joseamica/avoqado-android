@@ -1,6 +1,7 @@
 package com.avoqado.pos.orders
 
 import com.avoqado.pos.MainDispatcherRule
+import com.avoqado.pos.pos.data.ProductsRepository
 import com.avoqado.pos.core.domain.refresh.RefreshGate
 import com.avoqado.pos.core.domain.refresh.RefreshGateFactory
 import com.avoqado.pos.orders.data.OrdersRepository
@@ -38,6 +39,7 @@ class OrdersViewModelRefreshTest {
             refreshGateFactory = factory,
             comandaDispatcher = mockk(relaxed = true),
             secureStorage = mockk(relaxed = true),
+            productsRepository = mockk(relaxed = true),
         )
     }
 

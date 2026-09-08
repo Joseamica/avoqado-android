@@ -31,6 +31,7 @@ import com.avoqado.pos.printing.data.EstadoDeComanda
 import com.avoqado.pos.printing.data.PoliticaDeReintento
 import com.avoqado.pos.printing.data.PrinterService
 import com.avoqado.pos.printing.data.ReintentoDeComanda
+import com.avoqado.pos.printing.data.TrabajoPendiente
 import com.avoqado.pos.printing.data.model.KitchenItem
 import com.avoqado.pos.printing.data.model.KitchenTicketData
 import com.avoqado.pos.printing.routing.PrintConfigRepository
@@ -135,14 +136,35 @@ class ComandaDispatcher @Inject constructor(
 
         val legacy = noStationsFallback as? NoStationsFallback.LegacySingleTicket
         if (legacy != null && config.stations.none { it.active }) {
-            printerService.autoPrintKitchenTicket(
+            val resultadoLegado = printerService.autoPrintKitchenTicket(
                 KitchenTicketData(
                     orderNumber = orderNumber,
                     orderType = orderType,
                     items = legacy.items,
                 ),
             )
-            return null
+            // 🔴 Este camino devolvía `null` SIEMPRE, y `null` no distingue «salió» de «tronó».
+            // El KDS lo leía como éxito y confirmaba la impresión de una comanda que no existía
+            // (P1 #10 y #11 de Codex). Ahora habla: si alguna impresora falló, se dice — con su
+            // nombre y sin botón de reimprimir, porque aquí no hay planes que reenviar.
+            val estadoLegado = if (resultadoLegado.salio) {
+                EstadoDeComanda.Salio
+            } else if (resultadoLegado.intentadas == 0) {
+                // No hubo NINGUNA impresora que intentarlo. Cantar «Salio» aquí es la mentira
+                // más cara de todas: el mostrador cree que la cocina recibió el pedido.
+                EstadoDeComanda.NoSalio(
+                    listOf("Cocina"),
+                    "No hay ninguna impresora de cocina configurada.",
+                    orderNumber,
+                    trabajo = null,
+                )
+            } else {
+                EstadoDeComanda.NoSalio(
+                    resultadoLegado.fallidas, "La impresora no respondió.", orderNumber, trabajo = null,
+                )
+            }
+            alCambiarEstado(estadoLegado)
+            return estadoLegado
         }
 
         val plans = PrintRoutingMapper.buildComandas(lines, config)
@@ -175,6 +197,32 @@ class ComandaDispatcher @Inject constructor(
      * @return `true` si la comanda se disparó; `false` si el modo del área no la pide en este
      *   momento (ver [AreaComandaPolicy], que es donde vive esa decisión y donde se prueba).
      */
+    /**
+     * «Volver a imprimir»: reenvía el [TrabajoPendiente] congelado de un fallo, tal cual.
+     *
+     * 🔴 NO reconstruye nada. Reconstruir desde el carrito —lo que hacía antes— duplicaba las
+     * estaciones que sí imprimieron y, si el cajero ya había empezado otra venta, imprimía la
+     * venta equivocada (P1 #2 y #3 de la auditoría de Codex, 2026-09-07).
+     */
+    suspend fun reintentar(
+        trabajo: TrabajoPendiente,
+        alCambiarEstado: (EstadoDeComanda) -> Unit = {},
+    ): EstadoDeComanda {
+        // 🔴 Se congela QUÉ imprimir, no DÓNDE. La config vieja llevaba la dirección de la
+        // impresora en el momento del fallo, así que corregir la IP en Ajustes y tocar «Volver
+        // a imprimir» seguía marcando la dirección averiada — para siempre, y también después
+        // de reiniciar (P2 #10 de la 2ª auditoría de Codex, 2026-09-07).
+        //
+        // El refresh falla abierto (conserva la config vigente), así que sin red esto es
+        // exactamente lo de antes: se reimprime con lo último que el aparato sabía.
+        trabajo.venueId?.let { printConfigRepository.refresh(it) }
+        val configVigente = printConfigRepository.getCurrentConfig()
+        return reintentoDeComanda.reintentar(
+            trabajo.copy(config = configVigente),
+            alCambiarEstado = alCambiarEstado,
+        )
+    }
+
     suspend fun dispatchAreaComanda(
         venueId: String?,
         lines: List<RoutableItem>,

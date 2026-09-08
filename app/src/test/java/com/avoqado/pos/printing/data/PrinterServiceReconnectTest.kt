@@ -290,9 +290,15 @@ class PrinterServiceReconnectTest {
                 "no encontre $nombre en ${base.path} — el test necesita ajustar la ruta",
                 archivo.exists(),
             )
+            // 🔴 Se exige la llamada DENTRO del `onDispose`, no en cualquier parte del archivo.
+            // Codex (P2 #20, 2026-09-07) señaló que el `contains` suelto pasaba aunque la
+            // llamada quedara comentada o en código inalcanzable. Sigue siendo una comprobación
+            // ESTRUCTURAL —montar y desmontar Compose pediría Robolectric— y se declara como tal:
+            // demuestra que el cableado está escrito, no que el ciclo de vida lo ejecute.
+            val texto = archivo.readText()
             assertTrue(
                 "disconnectAll() volvio a ser codigo muerto en $nombre: la conexion con la impresora se queda abierta",
-                archivo.readText().contains("disconnectAll()"),
+                Regex("""onDispose\s*\{[^}]*printerService\.disconnectAll\(\)""").containsMatchIn(texto),
             )
         }
     }
@@ -676,6 +682,37 @@ class PrinterServiceReconnectTest {
         } finally {
             impresoraFalsa.close()
             hiloAceptador.interrupt()
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+// P1 #5 de la auditoría de Codex (2026-09-07) — introducido por el propio arreglo de la Tarea 5.
+// `onDispose { disconnectAll() }` cerraba TODOS los transportes, incluida una impresora que
+// estuviera escribiendo una comanda en ese instante — y podía ser OTRA impresora: una comanda
+// reintentando en segundo plano mientras el cajero configura una distinta.
+// ═══════════════════════════════════════════════════════════════════════════════════════════
+
+class PuedeSoltarseLaConexionTest {
+
+    @Test
+    fun `P1 una impresora IMPRIMIENDO conserva su conexion`() {
+        assertFalse(
+            "cerrar el socket a media escritura deja la comanda cortada, y nadie se entera",
+            puedeSoltarseLaConexion(PrinterStatus.Printing),
+        )
+    }
+
+    @Test
+    fun `P1 todo lo demas se suelta — dejarlo abierto es el telefono descolgado`() {
+        listOf(
+            PrinterStatus.Connected,
+            PrinterStatus.Disconnected,
+            PrinterStatus.SinComprobar,
+            PrinterStatus.Error("sin papel"),
+            null,
+        ).forEach { estado ->
+            assertTrue("$estado deberia soltarse", puedeSoltarseLaConexion(estado))
         }
     }
 }

@@ -1,6 +1,9 @@
 package com.avoqado.pos.payment
 
 import com.avoqado.pos.MainDispatcherRule
+import com.avoqado.pos.printing.data.ResultadoLegado
+import com.avoqado.pos.printing.data.AlmacenDeTexto
+import com.avoqado.pos.printing.data.ComandasPendientesStore
 import com.avoqado.pos.areatickets.data.AreaTicketCheckout
 import com.avoqado.pos.areatickets.data.AreaTicketCheckoutOrder
 import com.avoqado.pos.areatickets.data.AreaTicketCheckoutTotals
@@ -49,6 +52,7 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.slot
 import io.mockk.verify
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -81,6 +85,9 @@ class PaymentFlowViewModelTest {
     private val printConfigRepository = mockk<PrintConfigRepository>(relaxed = true)
     private val comandaPrinter = mockk<ComandaPrinter>(relaxed = true)
     private val areaTicketRepository = mockk<AreaTicketRepository>(relaxed = true)
+
+    /** Visible para poder comprobar CUÁNDO se persiste una comanda que no salió. */
+    private val almacenDePendientes = AlmacenEnMemoria()
 
     private lateinit var viewModel: PaymentFlowViewModel
 
@@ -123,7 +130,7 @@ class PaymentFlowViewModelTest {
 
         coEvery { kdsOrderBus.publish(any()) } returns Unit
         coEvery { printerService.autoPrintReceipt(any()) } returns Unit
-        coEvery { printerService.autoPrintKitchenTicket(any()) } returns Unit
+        coEvery { printerService.autoPrintKitchenTicket(any()) } returns ResultadoLegado(intentadas = 1, fallidas = emptyList())
         coEvery { printerService.manualPrintReceipt(any()) } returns PrinterService.PrintOutcome.Printed(1)
         every { secureStorage.venueName } returns "Avoqado Test"
         every { secureStorage.userId } returns "user-456"
@@ -149,6 +156,7 @@ class PaymentFlowViewModelTest {
             kdsOrderBus = kdsOrderBus,
             printerService = printerService,
             secureStorage = secureStorage,
+            comandasPendientesStore = ComandasPendientesStore(almacenDePendientes),
             // 🔴 NO REGRESIÓN: el despachador va REAL, armado con los mismos mocks de siempre.
             // Mockearlo escondería justo lo que hay que probar — los tests de abajo siguen
             // verificando `printerService.autoPrintKitchenTicket` y `comandaPrinter.printComandas`
@@ -699,7 +707,7 @@ class PaymentFlowViewModelTest {
         } returns Result.success(OrderRepository.CashPayResult(paymentId = "payment-legacy-2", receiptAccessKey = null))
 
         val ticketSlot = slot<KitchenTicketData>()
-        coEvery { printerService.autoPrintKitchenTicket(capture(ticketSlot)) } returns Unit
+        coEvery { printerService.autoPrintKitchenTicket(capture(ticketSlot)) } returns ResultadoLegado(intentadas = 1, fallidas = emptyList())
 
         val cart = CartState(
             items = listOf(
@@ -854,6 +862,14 @@ class PaymentFlowViewModelTest {
     private val cocinaActivaConfig = PrintConfig(
         stations = listOf(StationInfo(id = "st_cocina", name = "Cocina", printerId = "pr_1", active = true)),
         defaultStationId = "st_cocina",
+    )
+
+    /** Un carrito DISTINTO del de [cartConUnProducto] — sirve para probar que el reintento NO
+     *  lee el carrito vigente. */
+    private fun cartConOtroProducto() = CartState(
+        items = listOf(
+            CartItem(id = "line-9", type = CartItemType.ProductItem("prod-9"), name = "Concha", unitPrice = 2500),
+        ),
     )
 
     private fun cartConUnProducto() = CartState(
@@ -1036,12 +1052,19 @@ class PaymentFlowViewModelTest {
     @Test
     fun `un segundo toque de Volver a imprimir mientras el primero sigue en vuelo no dispara otro ciclo`() = runTest {
         var llamadas = 0
+        val puertaDelManual = CompletableDeferred<Unit>()
+        var enManual = false
         every { printConfigRepository.getCurrentConfig() } returns cocinaActivaConfig
         coEvery {
             comandaPrinter.printComandas(any(), cocinaActivaConfig, any(), any(), any())
         } coAnswers {
             val plans = firstArg<List<TicketPlan>>()
             llamadas++
+            // 🔴 La puerta es lo que hace que esta prueba SIGA guardando algo. El reintento
+            // manual hace UN intento, así que sin un punto de suspensión terminaría antes del
+            // segundo toque y el guard nunca se ejercitaría — la prueba pasaría por el motivo
+            // equivocado.
+            if (enManual) puertaDelManual.await()
             ComandaPrinter.Result(
                 attempted = plans.size, printed = 0, skippedNoPrinter = 0,
                 lastError = "sigue caída", failedStations = listOf("Cocina"), failedPlans = plans,
@@ -1053,22 +1076,26 @@ class PaymentFlowViewModelTest {
         val llamadasTrasElAutomatico = llamadas
         assertTrue(viewModel.comandaWarning.value is EstadoDeComanda.NoSalio)
 
-        // Doble tap: el segundo debe ser un NO-OP mientras el primero sigue en vuelo.
-        viewModel.reintentarComanda()
-        viewModel.reintentarComanda()
-        advanceUntilIdle()
+        enManual = true
+        viewModel.reintentarComanda() // entra y se queda esperando en la puerta
+        viewModel.reintentarComanda() // NO-OP: el primero sigue en vuelo
+        assertEquals("el segundo toque disparó otro ciclo", llamadasTrasElAutomatico + 1, llamadas)
 
-        // Con el guard: sólo UN ciclo más (6 llamadas). Sin el guard, serían 12 (dos ciclos).
-        assertEquals(llamadasTrasElAutomatico + 6, llamadas)
+        puertaDelManual.complete(Unit)
+        advanceUntilIdle()
+        assertEquals("tras soltar la puerta se coló un ciclo de más", llamadasTrasElAutomatico + 1, llamadas)
     }
 
     @Test
     fun `reintentandoComandaManualmente refleja si el reintento manual sigue en vuelo`() = runTest {
+        val puertaDelManual = CompletableDeferred<Unit>()
+        var enManual = false
         every { printConfigRepository.getCurrentConfig() } returns cocinaActivaConfig
         coEvery {
             comandaPrinter.printComandas(any(), cocinaActivaConfig, any(), any(), any())
         } coAnswers {
             val plans = firstArg<List<TicketPlan>>()
+            if (enManual) puertaDelManual.await()
             ComandaPrinter.Result(
                 attempted = plans.size, printed = 0, skippedNoPrinter = 0,
                 lastError = "sigue caída", failedStations = listOf("Cocina"), failedPlans = plans,
@@ -1079,13 +1106,164 @@ class PaymentFlowViewModelTest {
         advanceUntilIdle()
         assertFalse(viewModel.reintentandoComandaManualmente.value)
 
+        enManual = true
         viewModel.reintentarComanda()
-        // Bajo UnconfinedTestDispatcher el reintento manual ya corrió hasta su primer `delay()`
-        // real y quedó SUSPENDIDO ahí — todavía en vuelo.
-        assertTrue(viewModel.reintentandoComandaManualmente.value)
+        assertTrue("no marcó 'en vuelo' con el reintento suspendido", viewModel.reintentandoComandaManualmente.value)
 
-        advanceUntilIdle() // se rinde otra vez
-        assertFalse(viewModel.reintentandoComandaManualmente.value)
+        puertaDelManual.complete(Unit)
+        advanceUntilIdle()
+        assertFalse("quedó marcado 'en vuelo' tras terminar", viewModel.reintentandoComandaManualmente.value)
+    }
+
+    /**
+     * P1 #2/#3 de la auditoría de Codex (2026-09-07). El botón «Volver a imprimir» leía
+     * `cartState` y reconstruía la comanda desde el carrito que el cajero tuviera ENFRENTE.
+     *
+     * 🔴 Esta prueba lo caza por donde duele: se BORRA el aviso y se deja el carrito intacto.
+     * Con el defecto, el botón seguía teniendo "algo que imprimir" y mandaba la comanda otra
+     * vez — la de una venta que nadie reclamó. Con el arreglo, sin aviso no hay trabajo
+     * pendiente, y sin trabajo pendiente no se manda NADA.
+     */
+    @Test
+    fun `P1 sin aviso de fallo, Volver a imprimir NO manda nada aunque el carrito siga cargado`() = runTest {
+        var llamadas = 0
+        every { printConfigRepository.getCurrentConfig() } returns cocinaActivaConfig
+        coEvery {
+            comandaPrinter.printComandas(any(), cocinaActivaConfig, any(), any(), any())
+        } coAnswers {
+            val plans = firstArg<List<TicketPlan>>()
+            llamadas++
+            ComandaPrinter.Result(
+                attempted = plans.size, printed = 0, skippedNoPrinter = 0,
+                lastError = "caída", failedStations = listOf("Cocina"), failedPlans = plans,
+            )
+        }
+
+        completarCobroEnEfectivo()
+        advanceUntilIdle()
+        assertTrue(viewModel.comandaWarning.value is EstadoDeComanda.NoSalio)
+
+        viewModel.clearComandaWarning()
+        val antes = llamadas
+        viewModel.reintentarComanda()
+        advanceUntilIdle()
+
+        assertEquals("reimprimió leyendo el carrito en vez del aviso", antes, llamadas)
+    }
+
+    /**
+     * P1 #3. Lo que se reenvía sale del AVISO —su folio y sus planes— y de ningún otro lado.
+     * Si esto se rompiera, el botón del aviso de la venta A imprimiría la venta que el cajero
+     * tenga abierta, con el folio de ESA venta, y A se quedaría igual de pendiente.
+     */
+    @Test
+    fun `P1 Volver a imprimir manda el folio y los planes del AVISO`() = runTest {
+        val foliosMandados = mutableListOf<String>()
+        val planesMandados = mutableListOf<List<TicketPlan>>()
+        every { printConfigRepository.getCurrentConfig() } returns cocinaActivaConfig
+        coEvery {
+            comandaPrinter.printComandas(any(), cocinaActivaConfig, any(), any(), any())
+        } coAnswers {
+            val plans = firstArg<List<TicketPlan>>()
+            foliosMandados += thirdArg<String>()
+            planesMandados += plans
+            ComandaPrinter.Result(
+                attempted = plans.size, printed = 0, skippedNoPrinter = 0,
+                lastError = "caída", failedStations = listOf("Cocina"), failedPlans = plans,
+            )
+        }
+
+        completarCobroEnEfectivo()
+        advanceUntilIdle()
+        val aviso = viewModel.comandaWarning.value as EstadoDeComanda.NoSalio
+
+        // 🔴 Lo que hace que esta prueba GUARDE algo: el cajero empieza otra venta, con OTRO
+        // producto. A partir de aquí el carrito vigente y el trabajo congelado son DISTINTOS —
+        // antes eran idénticos, así que una regresión que volviera a leer `cartState` habría
+        // pasado igual de verde (P2 #15 de la 2ª auditoría de Codex, 2026-09-07).
+        viewModel.startPaymentFlow(cartConOtroProducto())
+        assertEquals("el aviso de la venta anterior se perdió", aviso, viewModel.comandaWarning.value)
+        foliosMandados.clear()
+        planesMandados.clear()
+
+        viewModel.reintentarComanda()
+        advanceUntilIdle()
+
+        assertEquals("no se mandó ni un lote", 1, planesMandados.size)
+        assertEquals("el folio salió del carrito vigente, no del aviso", listOf(aviso.orderNumber), foliosMandados)
+        assertEquals("los planes salieron del carrito vigente", aviso.trabajo?.planes, planesMandados.single())
+        // Y la prueba definitiva de que NO vino del carrito de B:
+        assertTrue(
+            "se imprimió el producto de la venta NUEVA",
+            planesMandados.single().flatMap { it.lines }.none { it.productName == "Concha" },
+        )
+    }
+
+    /**
+     * P1 #6 de la auditoría de Codex (2026-09-07). El reintento tarda hasta ~1 minuto y el
+     * cajero cierra el cobro en cuanto entrega el cambio, así que el caso NORMAL es que el
+     * fallo llegue después. Empezar la venta siguiente BORRABA el aviso: la comanda que no
+     * salió quedaba fuera del alcance de nadie, para siempre.
+     *
+     * Un `NoSalio` sin resolver sobrevive; se va con «Ya la canté», que es una persona
+     * decidiendo — no un efecto secundario de cobrar otra cosa.
+     */
+    @Test
+    fun `P1 empezar otra venta NO borra una comanda que no salio`() = runTest {
+        every { printConfigRepository.getCurrentConfig() } returns cocinaActivaConfig
+        coEvery {
+            comandaPrinter.printComandas(any(), cocinaActivaConfig, any(), any(), any())
+        } coAnswers {
+            val plans = firstArg<List<TicketPlan>>()
+            ComandaPrinter.Result(
+                attempted = plans.size, printed = 0, skippedNoPrinter = 0,
+                lastError = "caída", failedStations = listOf("Cocina"), failedPlans = plans,
+            )
+        }
+
+        completarCobroEnEfectivo()
+        advanceUntilIdle()
+        val aviso = viewModel.comandaWarning.value as EstadoDeComanda.NoSalio
+
+        // El cajero empieza la venta siguiente.
+        viewModel.startPaymentFlow(cartConUnProducto())
+
+        assertEquals(
+            "la comanda que no salió se volvió inalcanzable al empezar otra venta",
+            aviso,
+            viewModel.comandaWarning.value,
+        )
+
+        // Y sí se va cuando una PERSONA lo decide.
+        viewModel.clearComandaWarning()
+        assertNull(viewModel.comandaWarning.value)
+    }
+
+    /**
+     * P2 #16 de la 2ª auditoría de Codex: las pruebas del almacén se guardaban a sí mismas, así
+     * que nadie comprobaba CUÁNDO se persiste. Esto lo fija donde vive la decisión.
+     */
+    @Test
+    fun `P1 una comanda que no salio queda guardada en el aparato, sin que nadie la guarde a mano`() = runTest {
+        every { printConfigRepository.getCurrentConfig() } returns cocinaActivaConfig
+        coEvery {
+            comandaPrinter.printComandas(any(), cocinaActivaConfig, any(), any(), any())
+        } coAnswers {
+            val plans = firstArg<List<TicketPlan>>()
+            ComandaPrinter.Result(
+                attempted = plans.size, printed = 0, skippedNoPrinter = 0,
+                lastError = "caída", failedStations = listOf("Cocina"), failedPlans = plans,
+            )
+        }
+        assertNull("el almacén no arrancó vacío", almacenDePendientes.leer())
+
+        completarCobroEnEfectivo()
+        advanceUntilIdle()
+
+        assertNotNull(
+            "el fallo no se persistió: si la app muere aquí, la comanda desaparece",
+            almacenDePendientes.leer(),
+        )
     }
 
     @Test
