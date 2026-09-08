@@ -1,8 +1,10 @@
 package com.avoqado.pos.inventory.data
 
 import android.util.Log
+import com.avoqado.pos.BuildConfig
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ApiConstants
+import com.avoqado.pos.core.data.network.ForbiddenInterceptor
 import com.avoqado.pos.inventory.data.local.InventoryTransferDao
 import com.avoqado.pos.inventory.data.local.InventoryTransferEntity
 import com.avoqado.pos.inventory.data.local.PurchaseOrderDao
@@ -30,6 +32,10 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -87,6 +93,75 @@ data class CreateTransferItemRequest(
     val unit: String? = null,
 )
 
+// MARK: - Conteo de inventario: cuerpo y respuesta cruda
+
+@Serializable
+data class LineaContadaRequest(val id: String, val counted: Double)
+
+/**
+ * Cuerpo del PUT del conteo. Con `encodeDefaults = false`, una `note` nula se OMITE —
+ * que es justo lo que el servidor espera: allí `note !== undefined` sobreescribe, así que
+ * mandar `"note": null` en un envío incremental borraría la nota que el cajero ya escribió.
+ */
+@Serializable
+data class ActualizarConteoRequest(val items: List<LineaContadaRequest>, val note: String? = null)
+
+/**
+ * Respuesta cruda de un escritor: código HTTP y cuerpo. La clasificación vive en `ConteoEnCurso`.
+ *
+ * Dos códigos sintéticos, y distinguirlos es lo que hace que el aviso de la pantalla sea CIERTO:
+ * - `0` = **no hubo transporte** (sin red). La pantalla puede decir «Sin conexión» sin mentir.
+ * - `-1` ([SIN_VENUE]) = **no hay venue activo**. Reusar el `0` aquí pintaría la banda de offline
+ *   con la red perfecta, y el cajero decide con ese aviso (`.claude/rules/todo-funciona-sin-red.md`).
+ *
+ * Los dos caen en REINTENTAR (`ConteoEnCurso.clasificarEnvio`), que es el lado seguro: lo contado
+ * se queda en el borrador del aparato en vez de darse por rechazado.
+ */
+data class RespuestaHttp(val code: Int, val body: String) {
+    private val metadatos: MetadatosDeRespuesta by lazy(LazyThreadSafetyMode.NONE) {
+        runCatching {
+            val raiz = Json.parseToJsonElement(body).jsonObject
+            val detalles = raiz["details"]?.jsonObject
+            val revision = raiz["revision"]?.jsonPrimitive?.intOrNull
+                ?: raiz["count"]?.jsonObject?.get("revision")?.jsonPrimitive?.intOrNull
+            val codigo = raiz["code"]?.jsonPrimitive?.contentOrNull
+            val conflicto = if (codigo == ConteoEnCurso.CODIGO_CONFLICTO_REVISION && detalles != null) {
+                ConflictoRevision(
+                    code = codigo,
+                    message = raiz["message"]?.jsonPrimitive?.contentOrNull
+                        ?: ConteoEnCurso.CONFLICTO_REVISION,
+                    venueId = detalles["venueId"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                    countId = detalles["countId"]?.jsonPrimitive?.contentOrNull.orEmpty(),
+                    expectedRevision = detalles["expectedRevision"]?.jsonPrimitive?.intOrNull,
+                    currentRevision = detalles["currentRevision"]?.jsonPrimitive?.intOrNull,
+                    status = detalles["status"]?.jsonPrimitive?.contentOrNull,
+                )
+            } else {
+                null
+            }
+            MetadatosDeRespuesta(revision, codigo, conflicto)
+        }.getOrDefault(MetadatosDeRespuesta())
+    }
+
+    /** Revisión devuelta por un escritor, tanto en la raíz como dentro de `count`. */
+    val revision: Int? get() = metadatos.revision
+
+    /** Código estable del servidor. El cuerpo crudo sigue disponible para contratos anteriores. */
+    val codigo: String? get() = metadatos.codigo
+
+    /** Detalle estructurado del 409 de revisión; null para cualquier otro error. */
+    val conflictoRevision: ConflictoRevision? get() = metadatos.conflictoRevision
+}
+
+private data class MetadatosDeRespuesta(
+    val revision: Int? = null,
+    val codigo: String? = null,
+    val conflictoRevision: ConflictoRevision? = null,
+)
+
+/** No hay venue activo. NO es «sin red» (ése es el `0`) — ver [RespuestaHttp]. */
+const val SIN_VENUE = -1
+
 @Singleton
 class InventoryRepository @Inject constructor(
     private val secureStorage: SecureStorage,
@@ -123,9 +198,33 @@ class InventoryRepository @Inject constructor(
         _isLoading.value = false
     }
 
+    /** El venue activo. La pantalla del conteo llavea con esto su borrador en disco. */
+    fun venueIdActual(): String? = secureStorage.venueId
+
+    /**
+     * El NOMBRE del venue activo, para nombrar la sucursal en un aviso. Un `venueId` es un cuid:
+     * enseñárselo al cajero no le dice a dónde volver.
+     */
+    fun venueNameActual(): String? = secureStorage.venueDisplayName
+
+    /**
+     * Marca una petición como «corre sola»: su 403 no saca el modal global de permisos ni abre el
+     * teclado del PIN de gerente encima de la pantalla en la que esté el cajero
+     * (`ForbiddenInterceptor:94`). Misma convención que `ArticlesRepository.markBackground`.
+     */
+    private fun Request.Builder.marcarDeFondo(deFondo: Boolean): Request.Builder = apply {
+        if (deFondo) header(ForbiddenInterceptor.BACKGROUND_HEADER, "1")
+    }
+
     private fun venueBaseUrl(): String? {
         val venueId = secureStorage.venueId ?: return null
-        return "${ApiConstants.BASE_URL}/mobile/venues/$venueId"
+        // Sólo los tests de JVM ponen esta propiedad (MockWebServer); en el aparato no existe.
+        // 🔴 El candado de DEBUG no es ceremonia: este cliente lleva `AuthInterceptor`, que estampa
+        // el `Bearer` decidiendo por RUTA y no por host, así que en release cualquier código del
+        // proceso que pusiera la propiedad mandaría el token de inventario a otro servidor, mudo.
+        val base = (if (BuildConfig.DEBUG) System.getProperty("avoqado.test.baseUrl") else null)
+            ?: ApiConstants.BASE_URL
+        return "$base/mobile/venues/$venueId"
     }
 
     // MARK: - Stock Overview
@@ -292,74 +391,145 @@ class InventoryRepository @Inject constructor(
 
     // MARK: - Update Stock Count
 
+    /**
+     * El PUT del conteo, con el cuerpo SERIALIZADO (no concatenado). Antes se armaba a mano
+     * escapando sólo las comillas: una nota con un salto de línea producía un JSON inválido y
+     * el servidor contestaba 400 — el cajero perdía su avance sin motivo visible.
+     */
+    private suspend fun putStockCount(
+        countId: String,
+        items: List<StockCountItem>,
+        note: String?,
+        deFondo: Boolean,
+    ): RespuestaHttp {
+        // `venueBaseUrl()` va DENTRO del try: lee de `EncryptedSharedPreferences` y puede lanzar
+        // (Tink/keystore). La interfaz promete que estos escritores NUNCA lanzan, y quien llama
+        // no tiene `catch`: una excepción aquí reventaría dentro del `viewModelScope`.
+        return try {
+            val base = venueBaseUrl() ?: return RespuestaHttp(SIN_VENUE, "No venue")
+            val bodyJson = json.encodeToString(
+                ActualizarConteoRequest(
+                    items = items.map { LineaContadaRequest(id = it.id, counted = it.counted) },
+                    note = note?.takeIf { it.isNotBlank() },
+                ),
+            )
+            val request = Request.Builder()
+                .url("$base/inventory/stock-counts/$countId")
+                .marcarDeFondo(deFondo)
+                .put(bodyJson.toRequestBody("application/json".toMediaType()))
+                .build()
+            withContext(Dispatchers.IO) {
+                val response = client.newCall(request).execute()
+                RespuestaHttp(response.code, response.body?.string() ?: "")
+            }
+        } catch (e: Exception) {
+            Log.e("📦", "❌ PUT stock count error: ${e.message}")
+            RespuestaHttp(0, e.message ?: "")
+        }
+    }
+
+    /**
+     * El PUT FINAL (el del confirm), con el código TAL CUAL — quien llama lo clasifica con
+     * `ConteoEnCurso.clasificarEnvio`, igual que el incremental.
+     *
+     * 🔴 Nace de que [updateStockCount] envolvía el 404 en un `Result.failure` genérico: al
+     * confirmar un conteo que otro aparato ya cerró, la pantalla decía «No se pudo guardar el
+     * conteo. Intenta de nuevo.» — y reintentar no podía funcionar NUNCA. El conflicto se conoce
+     * aquí y se pierde una línea después.
+     */
+    suspend fun enviarFinal(countId: String, items: List<StockCountItem>, note: String?): RespuestaHttp =
+        // NO de fondo: lo dispara un toque del cajero, así que conserva el modal de permisos y el
+        // teclado de gerente. Sólo el envío automático se marca de fondo.
+        putStockCount(countId, items, note, deFondo = false)
+
+    /**
+     * Envoltura histórica de [enviarFinal] con forma de `Result`. Se conserva porque fija por
+     * prueba dos contratos del PUT que nada más cubre (la nota escapada por el serializador y que
+     * NO va marcado de fondo); el camino del confirm usa [enviarFinal], que sí conserva el código.
+     */
     suspend fun updateStockCount(
         countId: String,
         items: List<StockCountItem>,
         note: String? = null,
     ): Result<Unit> {
-        val base = venueBaseUrl() ?: return Result.failure(Exception("No venue"))
-
-        return try {
-            val itemsJson = items.joinToString(",") { item ->
-                "{\"id\":\"${item.id}\",\"counted\":${item.counted}}"
-            }
-            val bodyJson = buildString {
-                append("{\"items\":[$itemsJson]")
-                if (!note.isNullOrBlank()) {
-                    append(",\"note\":\"${note.replace("\"", "\\\"")}\"")
-                }
-                append("}")
-            }
-
-            val request = Request.Builder()
-                .url("$base/inventory/stock-counts/$countId")
-                .put(bodyJson.toRequestBody("application/json".toMediaType()))
-                .build()
-
-            val (code, body) = withContext(Dispatchers.IO) {
-                val response = client.newCall(request).execute()
-                response.code to (response.body?.string() ?: "")
-            }
-
-            if (code in 200..299) {
-                Log.d("📦", "✅ Stock count updated: $countId")
-                Result.success(Unit)
-            } else {
-                Log.e("📦", "❌ Update stock count failed ($code): $body")
-                Result.failure(Exception("Error al actualizar conteo ($code)"))
-            }
-        } catch (e: Exception) {
-            Log.e("📦", "❌ Update stock count error: ${e.message}")
-            Result.failure(e)
+        val r = enviarFinal(countId, items, note)
+        return if (r.code in 200..299) {
+            Log.d("📦", "✅ Stock count updated: $countId")
+            Result.success(Unit)
+        } else {
+            Log.e("📦", "❌ Update stock count failed (${r.code}): ${r.body}")
+            Result.failure(Exception("Error al actualizar conteo (${r.code})"))
         }
     }
 
     // MARK: - Confirm Stock Count
 
-    suspend fun confirmStockCount(countId: String): Result<Unit> {
-        val base = venueBaseUrl() ?: return Result.failure(Exception("No venue"))
-
+    /**
+     * POST …/confirm con el código TAL CUAL, hermano de [enviarFinal]. Mismo motivo: un 404 aquí
+     * significa «este conteo ya no está en progreso», no «vuelve a intentarlo».
+     */
+    suspend fun confirmarConteo(countId: String): RespuestaHttp {
+        // `venueBaseUrl()` va DENTRO del try por lo mismo que en `putStockCount`: lee de
+        // `EncryptedSharedPreferences` y puede lanzar.
         return try {
+            val base = venueBaseUrl() ?: return RespuestaHttp(SIN_VENUE, "No venue")
             val request = Request.Builder()
                 .url("$base/inventory/stock-counts/$countId/confirm")
                 .post("{}".toRequestBody("application/json".toMediaType()))
                 .build()
-
-            val (code, body) = withContext(Dispatchers.IO) {
+            withContext(Dispatchers.IO) {
                 val response = client.newCall(request).execute()
-                response.code to (response.body?.string() ?: "")
-            }
-
-            if (code in 200..299) {
-                Log.d("📦", "✅ Stock count confirmed: $countId")
-                Result.success(Unit)
-            } else {
-                Log.e("📦", "❌ Confirm stock count failed ($code): $body")
-                Result.failure(Exception("Error al confirmar conteo ($code)"))
+                RespuestaHttp(response.code, response.body?.string() ?: "")
             }
         } catch (e: Exception) {
             Log.e("📦", "❌ Confirm stock count error: ${e.message}")
-            Result.failure(e)
+            RespuestaHttp(0, e.message ?: "")
+        }
+    }
+
+    /** Envoltura histórica de [confirmarConteo] con forma de `Result`. Ver [updateStockCount]. */
+    suspend fun confirmStockCount(countId: String): Result<Unit> {
+        val r = confirmarConteo(countId)
+        return if (r.code in 200..299) {
+            Log.d("📦", "✅ Stock count confirmed: $countId")
+            Result.success(Unit)
+        } else {
+            Log.e("📦", "❌ Confirm stock count failed (${r.code}): ${r.body}")
+            Result.failure(Exception("Error al confirmar conteo (${r.code})"))
+        }
+    }
+
+    // MARK: - Avance y cancelación del conteo
+
+    /**
+     * PUT incremental del avance (sin nota: un envío incremental no puede pisar la nota del
+     * cajero). Devuelve el código TAL CUAL — quien llama lo clasifica con
+     * `ConteoEnCurso.clasificarEnvio`, que distingue reintentar de rechazo y de conflicto.
+     */
+    suspend fun enviarAvance(countId: String, items: List<StockCountItem>): RespuestaHttp =
+        // De fondo: se dispara sola mientras el cajero teclea y al reconectar, así que un 403 no
+        // puede abrir el teclado del PIN de gerente encima de otra pantalla. El rechazo lo cuenta
+        // la pantalla del conteo vía `ConteoEnCurso.clasificarEnvio(403) = RECHAZADO`.
+        putStockCount(countId, items, note = null, deFondo = true)
+
+    /** POST …/cancel. El llamador clasifica con `ConteoEnCurso.clasificarCancelacion`. */
+    suspend fun cancelStockCount(countId: String): RespuestaHttp {
+        return try {
+            val base = venueBaseUrl() ?: return RespuestaHttp(SIN_VENUE, "No venue")
+            val request = Request.Builder()
+                .url("$base/inventory/stock-counts/$countId/cancel")
+                // De fondo por lo mismo que `enviarAvance`: la cancelación también se reproduce al
+                // reconectar, sin nadie mirando. Su rechazo lo cuenta `clasificarCancelacion`.
+                .marcarDeFondo(true)
+                .post("{}".toRequestBody("application/json".toMediaType()))
+                .build()
+            withContext(Dispatchers.IO) {
+                val response = client.newCall(request).execute()
+                RespuestaHttp(response.code, response.body?.string() ?: "")
+            }
+        } catch (e: Exception) {
+            Log.e("📦", "❌ Cancel stock count error: ${e.message}")
+            RespuestaHttp(0, e.message ?: "")
         }
     }
 

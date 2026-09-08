@@ -1,5 +1,6 @@
 package com.avoqado.pos.inventory.presentation
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -23,11 +24,14 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -56,6 +60,32 @@ fun StockCountReviewView(
     val countItems by viewModel.countItems.collectAsState()
     val countNote by viewModel.countNote.collectAsState()
     val isSaving by viewModel.isSaving.collectAsState()
+    // El MISMO flow que pinta la banda del conteo: una sola regla para las dos pantallas.
+    val aviso by viewModel.bandaDeAviso.collectAsState()
+    val errorMessage by viewModel.errorMessage.collectAsState()
+
+    // El BACK vuelve a contar, igual que el boton «Atras». Sin esto salia de la
+    // pantalla entera y lo capturado no se podia revisar ni confirmar.
+    //
+    // 🔴 Deshabilitado mientras dice «Confirmando…»: volver a contar ahi permite corregir una
+    // cantidad que el cierre EN VUELO va a sellar con su valor viejo, y al salir bien borra el
+    // borrador — la correccion desaparece sin un solo error. El boton «Atras» va igual.
+    // Siempre se consume: con `enabled = !isSaving` el BACK se escapaba del módulo durante
+    // «Confirmando…» y destruía el ViewModel con el cierre en vuelo (M1 de la re-revisión r2).
+    BackHandler { if (!isSaving) viewModel.backToCounting() }
+
+    // 🔴 Esta es LA pantalla del defecto que midio el QA: se toca «Confirmar» sin red, el
+    // ViewModel pone su mensaje... y no pasaba nada visible. El unico `SnackbarHost` del
+    // modulo vive en `InventoryScreen`, DESPUES de su `return` temprano, asi que aqui no hay
+    // ninguno montado y su `showSnackbar` se queda suspendido para siempre. Mismo patron que
+    // `InventoryScreen`: host propio + efecto + limpiar cuando se cierra.
+    val snackbarHostState = remember { SnackbarHostState() }
+    LaunchedEffect(errorMessage) {
+        errorMessage?.let {
+            snackbarHostState.showSnackbar(it)
+            viewModel.clearErrorMessage()
+        }
+    }
 
     var searchText by remember { mutableStateOf("") }
     var showNoteField by remember { mutableStateOf(false) }
@@ -74,7 +104,7 @@ fun StockCountReviewView(
                 .padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.md),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            TextButton(onClick = { viewModel.backToCounting() }) {
+            TextButton(onClick = { viewModel.backToCounting() }, enabled = !isSaving) {
                 Text("Atrás")
             }
 
@@ -93,6 +123,16 @@ fun StockCountReviewView(
         }
 
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+        // La misma banda del conteo, leyendo el MISMO flow: si otro aparato ya cerro este
+        // conteo, revisar linea por linea no sirve de nada y el cajero se enteraria hasta
+        // chocar al confirmar.
+        //
+        // 🔴 Y ahora dice tambien «sin conexion», que antes se callaba aqui con el argumento
+        // de que «todavia no hay nada que enviar». Era falso: en un ciclico que aun no existe
+        // en el servidor, TODAS las lineas contadas viven solo en este aparato. Y es la
+        // pantalla desde la que se toca «Confirmar», o sea donde mas caro sale no decirlo.
+        aviso?.let { BandaDeAvisoDeConteo(it) }
 
         // Search
         TextField(
@@ -203,6 +243,12 @@ fun StockCountReviewView(
                 enabled = !isSaving,
             )
         }
+    }
+
+    // Hermano del `Column` raiz para dibujarse encima de el. Un `Box` sin `pointerInput` no
+    // es blanco de toque: sin snackbar no estorba al boton «Confirmar» que tiene debajo.
+    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+        SnackbarHost(hostState = snackbarHostState)
     }
 }
 

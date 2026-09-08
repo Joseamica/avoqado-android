@@ -63,6 +63,11 @@ data class StockCount(
     val completedAt: String? = null,
     val createdBy: String? = null,
     val note: String? = null,
+    /** Aditivo (fase 1 del servidor): qué se contó de verdad. null en servidores viejos. */
+    val summary: StockCountSummary? = null,
+    val cancelledAt: String? = null,
+    /** Ausente en servidores anteriores; null significa base desconocida, nunca revisión 0. */
+    val revision: Int? = null,
     val items: List<StockCountItem> = emptyList(),
 ) {
     val statusDisplay: String
@@ -70,6 +75,7 @@ data class StockCount(
             "DRAFT" -> "Borrador"
             "IN_PROGRESS" -> "En progreso"
             "COMPLETED" -> "Completado"
+            "CANCELLED" -> "Cancelado"
             else -> status
         }
 }
@@ -136,6 +142,15 @@ data class StockOverviewResponse(
 data class StockCountsResponse(
     val success: Boolean = true,
     val counts: List<StockCount> = emptyList(),
+)
+
+/** Resumen del servidor: sólo líneas con countedAt. `differenceByUnit` se ignora aquí (la lista no lo pinta). */
+@Serializable
+data class StockCountSummary(
+    val itemCount: Int = 0,
+    val countedCount: Int = 0,
+    val matchedCount: Int = 0,
+    val mismatchedCount: Int = 0,
 )
 
 @Serializable

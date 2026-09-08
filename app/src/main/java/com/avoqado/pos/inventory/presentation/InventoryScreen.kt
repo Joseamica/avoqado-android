@@ -1,7 +1,6 @@
 package com.avoqado.pos.inventory.presentation
 
 import android.widget.Toast
-import com.avoqado.pos.core.util.Plurales
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.lifecycle.compose.LifecycleResumeEffect
@@ -41,6 +40,7 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -59,6 +59,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.avoqado.pos.designsystem.components.PlanGate
@@ -69,6 +70,8 @@ import com.avoqado.pos.designsystem.components.TierBadge
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Success
 import com.avoqado.pos.designsystem.theme.Warning
+import com.avoqado.pos.inventory.data.BorradorDeConteo
+import com.avoqado.pos.inventory.data.ConteoEnCurso
 import com.avoqado.pos.inventory.data.model.StockCount
 import com.avoqado.pos.inventory.data.model.StockItem
 import com.avoqado.pos.inventory.data.model.StockSortOption
@@ -111,9 +114,13 @@ fun InventoryScreen(
     // Van ANTES de los returns tempranos (composición incondicional). La doble
     // llamada la absorbe el single-flight del gate; con un conteo en curso el
     // guard del ViewModel deja el auto-refresh en SkippedBusy.
-    LaunchedEffect(Unit) { viewModel.autoRefresh() }
+    // El detalle tiene su propia revalidación autoritativa. Mientras está encima, pedir aquí la
+    // lista también duplicaría exactamente el mismo GET en cada regreso a primer plano.
+    LaunchedEffect(Unit) {
+        if (viewModel.selectedDetail.value == null) viewModel.autoRefresh()
+    }
     LifecycleResumeEffect(Unit) {
-        viewModel.autoRefresh()
+        if (viewModel.selectedDetail.value == null) viewModel.autoRefresh()
         onPauseOrDispose { }
     }
 
@@ -885,64 +892,131 @@ private fun StockCountsContent(
     counts: List<StockCount>,
     viewModel: InventoryViewModel,
 ) {
-    if (counts.isEmpty()) {
-        Box(
-            modifier = Modifier.fillMaxSize(),
-            contentAlignment = Alignment.Center,
-        ) {
-            Column(
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
-            ) {
-                Icon(
-                    Icons.Filled.Inventory2,
-                    contentDescription = null,
-                    modifier = Modifier.size(60.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f),
-                )
-                Text(
-                    text = "No hay conteos de inventario",
-                    style = MaterialTheme.typography.titleLarge,
-                    color = MaterialTheme.colorScheme.onSurface,
-                )
-                Text(
-                    text = "Crea tu primer conteo para verificar existencias",
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
-                PrimaryButton(
-                    text = "Contar existencia",
-                    onClick = { viewModel.openCountTypeSheet() },
-                )
-            }
-        }
-    } else {
-        Column {
-            // Header with "Contar existencia" button (matching iOS)
-            Row(
+    val borrador by viewModel.borradorLocal.collectAsState()
+    // Se relee al volver a la lista: el borrador pudo nacer o morir en la pantalla
+    // de conteo, y el StateFlow no se entera de un cambio hecho en disco.
+    LaunchedEffect(Unit) { viewModel.refrescarBorradorLocal() }
+
+    // La tarjeta va en los DOS estados. Con la lista vacia es cuando mas se necesita:
+    // un conteo local sin crear en el servidor no aparece en `counts`, asi que sin
+    // esto el aparato diria «No hay conteos» encima del trabajo del cajero.
+    Column(modifier = Modifier.fillMaxSize()) {
+        borrador?.let { BorradorPendienteCard(it) { viewModel.continuarBorrador() } }
+
+        // `weight(1f)` y no `fillMaxSize()`: deja explicito quien absorbe el alto
+        // sobrante, y sigue siendo correcto si manana alguien mete otro hermano debajo
+        // de la lista. (`fillMaxSize()` tampoco se salia de la pantalla: `Column` mide
+        // a los hijos SIN peso contra el alto que queda, no contra el total. El
+        // trade-off real es el inverso: `weight` colapsa a 0 de alto bajo un padre de
+        // altura no acotada —un `verticalScroll`—, y los dos padres de aqui la acotan.)
+        if (counts.isEmpty()) {
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(AvoqadoTheme.spacing.lg),
-                horizontalArrangement = Arrangement.End,
+                    .weight(1f),
+                contentAlignment = Alignment.Center,
             ) {
-                PrimaryButton(
-                    text = "Contar existencia",
-                    onClick = { viewModel.openCountTypeSheet() },
-                )
-            }
-
-            LazyColumn(
-                contentPadding = PaddingValues(horizontal = AvoqadoTheme.spacing.lg),
-            ) {
-                items(counts, key = { it.id }) { count ->
-                    StockCountRow(
-                        count = count,
-                        onTap = { viewModel.selectCountDetail(count) },
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
+                ) {
+                    Icon(
+                        Icons.Filled.Inventory2,
+                        contentDescription = null,
+                        modifier = Modifier.size(60.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.3f),
                     )
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    Text(
+                        text = "No hay conteos de inventario",
+                        style = MaterialTheme.typography.titleLarge,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Text(
+                        text = "Crea tu primer conteo para verificar existencias",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+                    PrimaryButton(
+                        text = "Contar existencia",
+                        onClick = { viewModel.openCountTypeSheet() },
+                    )
                 }
             }
+        } else {
+            Column(modifier = Modifier.weight(1f)) {
+                // Header with "Contar existencia" button (matching iOS)
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(AvoqadoTheme.spacing.lg),
+                    horizontalArrangement = Arrangement.End,
+                ) {
+                    PrimaryButton(
+                        text = "Contar existencia",
+                        onClick = { viewModel.openCountTypeSheet() },
+                    )
+                }
+
+                LazyColumn(
+                    contentPadding = PaddingValues(horizontal = AvoqadoTheme.spacing.lg),
+                ) {
+                    items(counts, key = { it.id }) { count ->
+                        StockCountRow(
+                            count = count,
+                            onTap = { viewModel.selectCountDetail(count) },
+                        )
+                        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * «Tienes un conteo sin terminar aqui». Es lo unico que le dice al cajero que su
+ * trabajo sigue vivo: el borrador vive en ESTE aparato, asi que ninguna lista del
+ * servidor puede mostrarlo.
+ */
+@Composable
+private fun BorradorPendienteCard(
+    borrador: BorradorDeConteo,
+    onContinuar: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.sm),
+        shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.lg),
+        // Ambar y no rojo: hay trabajo pendiente, no un error.
+        color = Warning.copy(alpha = 0.12f),
+    ) {
+        Row(
+            modifier = Modifier.padding(AvoqadoTheme.spacing.lg),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = ConteoEnCurso.tituloBorrador(borrador.type),
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = FontWeight.Medium,
+                    // En un telefono el titulo largo («Conteo completo sin terminar en
+                    // este aparato») se comeria la tarjeta a renglonazos: se acota a 2.
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = ConteoEnCurso.avanceTexto(
+                        ConteoEnCurso.contadas(borrador.lineas),
+                        borrador.lineas.size,
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.md))
+            PrimaryButton(text = ConteoEnCurso.CONTINUAR, onClick = onContinuar)
         }
     }
 }
@@ -1003,7 +1077,7 @@ private fun StockCountRow(
                 // justo lo que se necesita para auditar existencias.
                 text = listOfNotNull(
                     fechaCortaInv(count.createdAt),
-                    "${count.statusDisplay} - ${Plurales.articulos(count.itemCount)}",
+                    ConteoEnCurso.lineaDeEstado(count),
                 ).joinToString(" · "),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,

@@ -6,8 +6,14 @@ import android.util.Log
 import com.avoqado.pos.areatickets.data.ScaleIntegrationSettings
 import com.avoqado.pos.inventory.data.CreatePOItemRequest
 import com.avoqado.pos.inventory.data.CreateTransferItemRequest
+import com.avoqado.pos.inventory.data.BorradorDeConteo
+import com.avoqado.pos.inventory.data.BorradorDeConteoStore
+import com.avoqado.pos.inventory.data.ConteoEnCurso
+import com.avoqado.pos.inventory.data.DestinoDeLaCancelacion
+import com.avoqado.pos.inventory.data.DestinoDelEnvio
 import com.avoqado.pos.inventory.data.InventoryRepository
 import com.avoqado.pos.inventory.data.ReceiveItemRequest
+import com.avoqado.pos.inventory.data.RespuestaHttp
 import com.avoqado.pos.inventory.data.model.InventoryTransfer
 import com.avoqado.pos.inventory.data.model.PurchaseOrder
 import com.avoqado.pos.inventory.data.model.StockCount
@@ -18,12 +24,18 @@ import com.avoqado.pos.inventory.data.model.StockSortOption
 import com.avoqado.pos.inventory.domain.StockRefresher
 import com.avoqado.pos.core.domain.PlanManager
 import com.avoqado.pos.core.domain.refresh.RefreshGateFactory
+import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.scale.ScaleSettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
 import com.avoqado.pos.core.data.network.ServerErrorText
 
@@ -51,6 +63,18 @@ enum class InventoryTab(val label: String) {
     COUNTS("Conteos"),
 }
 
+enum class EstadoDelDetalleDeConteo {
+    SIN_VERIFICAR,
+    DISPONIBLE,
+    NO_DISPONIBLE,
+}
+
+data class ConfirmacionDeDescarte internal constructor(
+    val contadas: Int,
+    internal val countId: String?,
+    internal val venueId: String?,
+)
+
 @HiltViewModel
 class InventoryViewModel @Inject constructor(
     private val repository: InventoryRepository,
@@ -58,6 +82,8 @@ class InventoryViewModel @Inject constructor(
     private val scaleSettingsRepository: ScaleSettingsRepository,
     private val stockRefresher: StockRefresher,
     refreshGateFactory: RefreshGateFactory,
+    private val borradores: BorradorDeConteoStore,
+    private val connectivityMonitor: ConnectivityMonitor,
 ) : ViewModel() {
 
     private val gate = refreshGateFactory.create(viewModelScope)
@@ -154,12 +180,34 @@ class InventoryViewModel @Inject constructor(
     private val _countNote = MutableStateFlow("")
     val countNote: StateFlow<String> = _countNote.asStateFlow()
 
+    /** Última nota que sabemos que el servidor recibió. `null` = sólo tenemos el borrador. */
+    private var notaReconocidaPorServidor: String? = null
+    private var notaPendienteDeEnviar = false
+
     private val _scaleIntegrationSettings = MutableStateFlow<ScaleIntegrationSettings?>(null)
     val scaleIntegrationSettings: StateFlow<ScaleIntegrationSettings?> =
         _scaleIntegrationSettings.asStateFlow()
 
     private val _selectedDetail = MutableStateFlow<StockCount?>(null)
     val selectedDetail: StateFlow<StockCount?> = _selectedDetail.asStateFlow()
+
+    private val _estadoDelDetalle = MutableStateFlow(EstadoDelDetalleDeConteo.SIN_VERIFICAR)
+    val estadoDelDetalle: StateFlow<EstadoDelDetalleDeConteo> = _estadoDelDetalle.asStateFlow()
+
+    private val _detalleNoActualizado = MutableStateFlow(false)
+    val detalleNoActualizado: StateFlow<Boolean> = _detalleNoActualizado.asStateFlow()
+
+    private val _puedeContinuarDetalle = MutableStateFlow(false)
+    val puedeContinuarDetalle: StateFlow<Boolean> = _puedeContinuarDetalle.asStateFlow()
+
+    private var generacionDelDetalle = 0L
+    private var venueDelDetalle: String? = null
+    private var ultimoVenueObservadoEnDetalle: String? = null
+    private data class ClaveDeRefrescoDelDetalle(val generacion: Long, val countId: String, val venueId: String?)
+    private val refrescosDelDetalleEnCurso = mutableSetOf<ClaveDeRefrescoDelDetalle>()
+
+    private val _confirmacionDeDescarte = MutableStateFlow<ConfirmacionDeDescarte?>(null)
+    val confirmacionDeDescarte: StateFlow<ConfirmacionDeDescarte?> = _confirmacionDeDescarte.asStateFlow()
 
     // Detalle de un artículo tocado en la Descripción general.
     private val _selectedStockItem = MutableStateFlow<StockItem?>(null)
@@ -485,18 +533,306 @@ class InventoryViewModel @Inject constructor(
 
     /** Ids of lines the cashier actually recorded (typing "0" counts; never
      *  touching the line does not). Only these are sent on confirm — the
-     *  server zeroes whatever it receives as counted. */
+     *  server zeroes whatever it receives as counted.
+     *
+     *  Se DERIVA de `countedAt` en [actualizarLineas]: mantenerlo aparte era lo que
+     *  hacía que un cíclico (todas sus líneas con `id = ""`) marcara todas al contar una. */
     private val _touchedItemIds = MutableStateFlow<Set<String>>(emptySet())
     val touchedItemIds: StateFlow<Set<String>> = _touchedItemIds.asStateFlow()
 
+    /** El cajero pidió salir: la pantalla pregunta qué hacer con lo contado. */
+    private val _salidaPendiente = MutableStateFlow(false)
+    val salidaPendiente: StateFlow<Boolean> = _salidaPendiente.asStateFlow()
+
+    /** Líneas contadas aquí que el servidor todavía no confirmó por PUT (sólo FULL: un cíclico no existe allá). */
+    private val _pendientesDeEnviar = MutableStateFlow<Set<String>>(emptySet())
+    val pendientesDeEnviar: StateFlow<Set<String>> = _pendientesDeEnviar.asStateFlow()
+
+    private val _sinRedAlEnviar = MutableStateFlow(false)
+    val sinRedAlEnviar: StateFlow<Boolean> = _sinRedAlEnviar.asStateFlow()
+
+    /** El servidor dijo que este conteo ya no está en progreso (lo cerró otro aparato). Lo local se conserva. */
+    private val _conflictoDelServidor = MutableStateFlow<String?>(null)
+    val conflictoDelServidor: StateFlow<String?> = _conflictoDelServidor.asStateFlow()
+
+    private val _borradorLocal = MutableStateFlow(borradores.leer())
+    val borradorLocal: StateFlow<BorradorDeConteo?> = _borradorLocal.asStateFlow()
+
+    /**
+     * La sucursal en la que se ABRIÓ este conteo, y su nombre. Se fija al empezar o retomar y no
+     * cambia con el aparato.
+     *
+     * 🔴 El POS cambia de sucursal sin cerrar sesión, y el conteo no viaja con él: su id sólo
+     * existe en `/venues/<la de origen>/…`. Sin esta ancla, seguir contando en la otra mandaba el
+     * avance a la sucursal equivocada, el servidor contestaba 404 y la pantalla lo traducía a
+     * «este conteo ya se cerró desde otro aparato» — un CONFLICTO falso sobre trabajo que estaba
+     * perfectamente bien, y que además apaga el envío para el resto de la sesión.
+     */
+    private var _venueDelConteo: String? = null
+    private var _nombreDelVenueDelConteo: String? = null
+
+    /**
+     * «Hay red» = el aparato tiene red **y** el servidor contesta. Son dos cosas distintas y en el
+     * ICP la segunda se cae sola: el WiFi de la tienda sigue en pie mientras el túnel, el proxy o
+     * la API están muertos. Mirando sólo `isConnected`, la banda decía que todo iba bien, el
+     * botón «Confirmar» tocaba la red para nada, y al recuperarse el servidor no se disparaba el
+     * replay porque `isConnected` nunca volvió a emitir.
+     *
+     * `ConnectivityMonitor` ya publicaba las dos señales (y hace ping cada 10 s mientras el
+     * servidor está caído): lo único que faltaba era combinarlas en un solo sitio, para que la
+     * banda, el guard de confirmar y el disparador de reconexión no puedan discrepar.
+     */
+    private val conectado: StateFlow<Boolean> =
+        combine(connectivityMonitor.isConnected, connectivityMonitor.isServerReachable) { red, servidor ->
+            red && servidor
+        }.stateIn(
+            viewModelScope,
+            SharingStarted.Eagerly,
+            connectivityMonitor.isConnected.value && connectivityMonitor.isServerReachable.value,
+        )
+
+    /**
+     * Cuánto trabajo vive SÓLO en este aparato: en un conteo que YA existe en el servidor, lo que
+     * falta por subir; en un cíclico que todavía no se ha creado allá, TODO lo contado — porque
+     * allá no hay ni una línea.
+     */
+    private val soloEnElAparato: StateFlow<Int> =
+        combine(_activeCount, _pendientesDeEnviar, _countItems) { enElServidor, pendientes, lineas ->
+            if (enElServidor != null) pendientes.size else ConteoEnCurso.contadas(lineas)
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, 0)
+
+    /**
+     * Lo ÚNICO que la banda ámbar del conteo tiene que pintar, ya resuelto aquí: el conflicto
+     * manda, y si no lo hay se dice cuánto trabajo vive sólo en este aparato.
+     *
+     * 🔴 Nace de que en un CÍCLICO la banda no podía salir NUNCA (I1 de la revisión de la vista):
+     * `_pendientesDeEnviar` sólo crece con un conteo que existe en el servidor, y
+     * `_sinRedAlEnviar` sólo se enciende dentro de `enviarPendientes`, que en un cíclico sale en
+     * su primera línea. El cajero contaba con el WiFi apagado y la pantalla no decía nada —
+     * «funciona igual» SIN decirlo, que es justo lo que `todo-funciona-sin-red.md` no admite.
+     *
+     * Por eso «sin red» tiene DOS fuentes: el PUT que no salió (`code == 0`) y el monitor de
+     * conectividad. La segunda es la que cubre al cíclico, que no manda nada, y también al conteo
+     * que se ABRE ya sin red: el monitor es un StateFlow y no vuelve a emitir, así que un latch
+     * encendido al perder la red nunca se encendería para un conteo empezado después.
+     *
+     * Sin nada que sólo viva aquí no hay banda, ni siquiera sin red: avisar de cero enseña a
+     * ignorar el aviso.
+     */
+    val bandaDeAviso: StateFlow<String?> =
+        combine(
+            _conflictoDelServidor,
+            _sinRedAlEnviar,
+            conectado,
+            soloEnElAparato,
+            _pendientesDeEnviar,
+        ) { conflicto, noSalioElPut, conectado, soloAqui, pendientes ->
+            when {
+                conflicto != null -> conflicto
+                soloAqui == 0 -> null
+                noSalioElPut || !conectado -> ConteoEnCurso.avisoSinRed(soloAqui)
+                pendientes.isNotEmpty() -> ConteoEnCurso.avisoPendienteDeSubir(pendientes.size)
+                else -> null
+            }
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
+
+    /** Single-flight del PUT incremental: nunca dos avances del mismo conteo en vuelo. */
+    private var enviando = false
+
+    /**
+     * Un solo escritor del conteo EN EL SERVIDOR, incremental y cierre incluidos.
+     *
+     * 🔴 El `enviando` de arriba sólo ordenaba los PUT incrementales entre sí; el cierre iba por
+     * fuera. Con el WiFi del ICP eso basta para sellar un número que el cajero ya corrigió: sale
+     * el PUT de `5`, tarda, se corrige a `7`, se toca «Confirmar», el PUT final de `7` llega
+     * primero y el de `5` DESPUÉS — el `/confirm` cierra el conteo con `5` y el borrador se borra
+     * porque el cierre «salió bien». Con el candado compartido, el PUT viejo no puede aterrizar
+     * después del final: el cierre espera su turno.
+     */
+    private val candadoDeEnvio = Mutex()
+
+    init {
+        // Al volver la red sale lo que se quedó en el aparato: el avance y, si la hubo, la cancelación.
+        viewModelScope.launch {
+            var huboCorte = false
+            // El flanco lo da la señal COMBINADA: un servidor que vuelve sin que el WiFi se haya
+            // movido es exactamente el caso que antes no reproducía nada.
+            conectado.collect { hayRed ->
+                if (!hayRed) {
+                    huboCorte = true
+                    return@collect
+                }
+                enviarCancelacionesPendientes()
+                // 🔴 Con la pantalla del conteo cerrada, `enviarPendientes` salía en su primera
+                // línea (`_activeCount` es null tras «Guardar el avance») y lo pendiente se
+                // quedaba aquí hasta que alguien volviera a abrir ese conteo. La cola vive en el
+                // DISCO, no en la pantalla — igual que la del cajón.
+                if (_activeCount.value != null) enviarPendientes() else enviarPendientesDelDisco()
+                if (huboCorte) {
+                    huboCorte = false
+                    recuperarCatalogoSiQuedoVacio()
+                }
+            }
+        }
+    }
+
+    /**
+     * D1 del QA sin red (OrderPAD 3, 7-sep): el catálogo se pide UNA vez al entrar y, si esa
+     * petición murió por falta de red, nadie la reintenta — ni siquiera cuando la red vuelve.
+     * Medido con `/health` ya en 200: «Descripción general» decía «Sin artículos con inventario»
+     * en un venue con 28 productos, y el conteo CÍCLICO quedaba inservible porque «Agregar
+     * artículos» abría vacío. Es `lista-vacia-no-es-fallo-de-red` sobre el catálogo, y sólo se
+     * curaba reiniciando la app.
+     *
+     * Va FUERA del gate de refresco a propósito: esto es RECUPERACIÓN, no refresco — el gate se
+     * apaga con un conteo en curso (§4.5) y es justo cuando más falta hace. Y es seguro
+     * precisamente porque sólo corre con la lista VACÍA: no hay nada que pisar.
+     */
+    private suspend fun recuperarCatalogoSiQuedoVacio() {
+        // 🔴 Son DOS peticiones y pueden fallar por separado: `stock-overview` vuelve y
+        // `raw-materials` no. Cortando por la primera, los INSUMOS no reaparecían nunca y el
+        // cíclico se quedaba sin la mitad de lo que se puede contar (P2 #2 de Codex).
+        val faltanProductos = repository.stockItems.value.isEmpty()
+        val faltanInsumos = repository.countableRawMaterials.value.isEmpty()
+        if (!faltanProductos && !faltanInsumos) return
+        // ⚠️ Declarado: una lista vacía LEGÍTIMA (un venue sin insumos) se vuelve a pedir en cada
+        // reconexión. Es barato y acotado a los bordes; distinguir «vacío» de «falló» exigiría que
+        // el repositorio publicara el estado de cada carga, y eso es otro cambio.
+        Log.d(TAG, "🔁 Catálogo incompleto (productos=$faltanProductos, insumos=$faltanInsumos): se vuelve a pedir")
+        if (faltanProductos) repository.fetchStockOverview()
+        if (faltanInsumos) repository.fetchRawMaterials()
+    }
+
+    /**
+     * El mismo rescate, pero a petición de la pantalla: al empezar un cíclico y al abrir
+     * «Agregar artículos». Cubre el caso que la reconexión no ve — la red nunca se cayó, pero la
+     * primera carga falló (servidor caído, 5xx) y `isConnected` no vuelve a emitir.
+     */
+    fun asegurarCatalogo() {
+        if (repository.stockItems.value.isNotEmpty() && repository.countableRawMaterials.value.isNotEmpty()) return
+        // Sin red no se intenta: el catálogo no está en el aparato y pedirlo sólo suma un error.
+        if (!conectado.value) return
+        viewModelScope.launch { recuperarCatalogoSiQuedoVacio() }
+    }
+
+    fun refrescarBorradorLocal() { _borradorLocal.value = borradores.leer() }
+
+    /** ÚNICO escritor de `_countItems`: `touchedItemIds` se deriva de `countedAt`, nunca se mantiene aparte. */
+    private fun actualizarLineas(lineas: List<StockCountItem>) {
+        _countItems.value = lineas
+        _touchedItemIds.value = ConteoEnCurso.idsContadas(lineas)
+    }
+
+    private fun venueIdActual(): String? = borradores.leer()?.venueId ?: repository.venueIdActual()
+
+    /** Ancla el conteo a la sucursal en la que se abre. Se llama en los CUATRO puntos de entrada. */
+    private fun fijarSucursalDelConteo() {
+        _venueDelConteo = venueIdActual()
+        _nombreDelVenueDelConteo = repository.venueNameActual()
+    }
+
+    /**
+     * ¿El aparato se movió de sucursal desde que se abrió el conteo? Devuelve `true` (y lo DICE)
+     * cuando sí, para que quien llama no toque la red.
+     *
+     * Falla ABIERTO a propósito: sin sucursal conocida en alguno de los dos lados no se bloquea
+     * nada — impedir guardar por no saber dónde estamos sería peor que el defecto.
+     */
+    private fun cambioDeSucursal(): Boolean {
+        val delConteo = _venueDelConteo ?: return false
+        val actual = repository.venueIdActual() ?: return false
+        if (actual == delConteo) return false
+        _errorMessage.value = ConteoEnCurso.cambiasteDeSucursal(_nombreDelVenueDelConteo)
+        Log.w(TAG, "⛔ El conteo es de $delConteo y el aparato está en $actual: no se toca la red")
+        return true
+    }
+    /**
+     * Escribe el conteo en curso a disco. Se llama después de CADA cambio de lo contado y
+     * ANTES de tocar la red: si el proceso muere entre teclear y el PUT, la línea ya está aquí.
+     * Sin nada que perder (cero líneas contadas y sin una edición de nota pendiente) borra en vez
+     * de dejar un borrador vacío. Una nota vaciada sí es trabajo local hasta que el servidor pueda
+     * reconocer ese borrado.
+     */
+    private fun persistirBorrador() {
+        val lineas = _countItems.value
+        val hayAlgo = ConteoEnCurso.contadas(lineas) > 0 || notaPendienteDeEnviar
+        if (!hayAlgo) {
+            if (!borradores.borrar()) Log.e(TAG, "❌ El borrador vacío no se pudo borrar del disco")
+            refrescarBorradorLocal()
+            return
+        }
+        // 🔴 El venue del CONTEO, no el del aparato: si alguien cambió de sucursal a media
+        // captura, estampar el actual convertiría lo contado en A en un conteo de B. El almacén
+        // rechaza esa escritura (su guarda M4) y aquí queda dicho en el log.
+        val guardado = borradores.guardar(
+            BorradorDeConteo(
+                venueId = _venueDelConteo ?: venueIdActual() ?: "",
+                countId = _activeCount.value?.id,
+                type = _activeCountType.value,
+                lineas = lineas,
+                nota = _countNote.value,
+                notaPendienteDeEnviar = notaPendienteDeEnviar,
+                pendientesDeEnviar = _pendientesDeEnviar.value,
+                actualizadoEn = System.currentTimeMillis(),
+            ),
+        )
+        // No se puede hacer nada más aquí —la red todavía puede salvar lo que el disco no—, pero
+        // callarlo dejaba al aparato actuando como si la línea estuviera a salvo.
+        if (!guardado) Log.e(TAG, "❌ El avance del conteo NO quedó en disco")
+        refrescarBorradorLocal()
+    }
+
+    /**
+     * Un conteo en curso por aparato, como Square.
+     *
+     * 🔴 El almacén guarda UN borrador por sucursal, así que abrir otro conteo lo pisa. Antes se
+     * pisaba en silencio: bastaba tocar «Continuar» en un conteo distinto —o empezar uno nuevo—
+     * para que las líneas que este aparato todavía no había mandado dejaran de existir.
+     *
+     * «Trabajo que el servidor no tiene» son las líneas pendientes de PUT, un cíclico que ni
+     * siquiera existe allá (vive ENTERO en el borrador), y una edición local de la nota. Un conteo
+     * cuyas líneas y nota ya están sincronizadas se puede reemplazar sin preguntar.
+     *
+     * @param idDestino el conteo que se quiere abrir; `null` = uno nuevo, que nunca es el del borrador.
+     */
+    private fun otroBorradorConTrabajo(idDestino: String?): Boolean {
+        val b = borradores.leer() ?: return false
+        if (idDestino != null && b.countId == idDestino) return false
+        return b.pendientesDeEnviar.isNotEmpty() ||
+            ConteoEnCurso.notaPendienteDeEnviar(b) ||
+            (b.countId == null && ConteoEnCurso.contadas(b.lineas) > 0)
+    }
+
+    /** true = no se abre nada y se dice por qué. */
+    private fun bloqueadoPorOtroBorrador(idDestino: String?): Boolean {
+        if (!otroBorradorConTrabajo(idDestino)) return false
+        // 🔴 La hoja se cierra ANTES de poner el mensaje. El `SnackbarHost` que lo pinta vive en
+        // `InventoryScreen`, DEBAJO de la ventana del `ModalBottomSheet`, así que con la hoja abierta el
+        // aviso se emite y NO se ve (medido en la tablet, QA pasada 2 · DP2-1): el cajero vuelve a tocar
+        // creyendo que el botón está muerto y nunca se entera de que tiene un conteo suyo sin terminar.
+        _showCountTypeSheet.value = false
+        _errorMessage.value = ConteoEnCurso.HAY_OTRO_BORRADOR
+        Log.w(TAG, "⛔ Ya hay un conteo sin terminar en el aparato: no se abre otro")
+        return true
+    }
+
     fun startCycleCount() {
+        if (bloqueadoPorOtroBorrador(null)) return
+        fijarSucursalDelConteo()
+        // Un cíclico se arma ELIGIENDO artículos: sin catálogo el selector abre vacío y no se
+        // puede ni empezar.
+        asegurarCatalogo()
         _activeCountType.value = StockCountType.CYCLE
         _activeCount.value = null
-        _countItems.value = emptyList()
+        actualizarLineas(emptyList())
         _selectedItemIndex.value = -1
         _countedText.value = ""
         _countNote.value = ""
-        _touchedItemIds.value = emptySet()
+        notaReconocidaPorServidor = ""
+        notaPendienteDeEnviar = false
+        _pendientesDeEnviar.value = emptySet()
+        _conflictoDelServidor.value = null
+        _sinRedAlEnviar.value = false
         _showCountTypeSheet.value = false
         _showCounting.value = true
     }
@@ -513,35 +849,80 @@ class InventoryViewModel @Inject constructor(
      * Se posiciona en el primer artículo SIN contar, que es donde se dejó.
      */
     fun resumeCount(count: StockCount) {
+        if (bloqueadoPorOtroBorrador(count.id)) return
+        retomarConteo(count, conflicto = null)
+    }
+
+    /**
+     * El cuerpo de retomar, con el conflicto como PARÁMETRO: al retomar un conteo que el servidor
+     * ya cerró hay que abrirlo igual (para consulta) pero con la banda puesta, y ponerla después
+     * no serviría — `resumeCount` la borra al empezar y ya habría salido un PUT contra un conteo
+     * que no existe. Con el conflicto puesto, `enviarPendientes` no manda nada.
+     */
+    private fun retomarConteo(
+        count: StockCount,
+        conflicto: String?,
+        notaDelServidorConfirmada: Boolean = true,
+    ) {
+        // Lo contado en ESTE aparato gana línea por línea; el servidor manda QUÉ líneas existen.
+        val local = borradores.leer()?.takeIf { it.countId == count.id }
+        fijarSucursalDelConteo()
         _activeCountType.value = count.type
         _activeCount.value = count
-        _countItems.value = count.items.toMutableList()
-        val primerPendiente = count.items.indexOfFirst { !it.yaSeConto }
-        _selectedItemIndex.value = when {
-            count.items.isEmpty() -> -1
-            primerPendiente >= 0 -> primerPendiente
-            else -> 0
-        }
+        // Sólo lo PENDIENTE gana: una línea que este aparato ya subió y el servidor confirmó
+        // vuelve con el valor bueno —el de quien la haya corregido después—, y resucitar el mío
+        // sería pisar esa corrección y sellarla al confirmar.
+        actualizarLineas(
+            ConteoEnCurso.fusionar(count.items, local?.lineas, local?.pendientesDeEnviar.orEmpty()),
+        )
+        _selectedItemIndex.value = ConteoEnCurso.primerPendiente(_countItems.value)
         _countedText.value = ""
-        _countNote.value = count.note.orEmpty()
-        _touchedItemIds.value = emptySet()
+        val notaLocalPendiente = local?.let(ConteoEnCurso::notaPendienteDeEnviar) == true
+        notaReconocidaPorServidor = when {
+            notaDelServidorConfirmada -> count.note.orEmpty()
+            local?.notaPendienteDeEnviar == false -> local.nota
+            else -> null
+        }
+        notaPendienteDeEnviar = notaLocalPendiente
+        _countNote.value = when {
+            notaLocalPendiente -> local!!.nota
+            notaDelServidorConfirmada -> count.note.orEmpty()
+            else -> local?.nota ?: count.note.orEmpty()
+        }
+        // Un pendiente cuya línea el servidor ya no tiene no se puede mandar NUNCA (`fusionar` la
+        // descarta), así que arrastrarlo dejaría el aviso «1 línea guardada en este aparato»
+        // encendido para siempre.
+        val idsVigentes = _countItems.value.map { it.id }.toSet()
+        _pendientesDeEnviar.value = local?.pendientesDeEnviar.orEmpty().intersect(idsVigentes)
+        _conflictoDelServidor.value = conflicto
+        _sinRedAlEnviar.value = false
         _showCountTypeSheet.value = false
         _showCounting.value = true
-        Log.d(TAG, "▶️ Conteo retomado: ${count.id} (${count.items.size} artículos)")
+        persistirBorrador()
+        enviarPendientes()
+        Log.d(TAG, "▶️ Conteo retomado: ${count.id} (${count.items.size} artículos, ${_pendientesDeEnviar.value.size} por enviar)")
     }
 
     fun startFullCount() {
+        // 🔴 ANTES del `createStockCount`: negarse DESPUÉS dejaría un conteo huérfano IN_PROGRESS
+        // en el servidor que nadie va a cerrar.
+        if (bloqueadoPorOtroBorrador(null)) return
+        fijarSucursalDelConteo()
         viewModelScope.launch {
             _isSaving.value = true
             _activeCountType.value = StockCountType.FULL
             repository.createStockCount(StockCountType.FULL).fold(
                 onSuccess = { count ->
                     _activeCount.value = count
-                    _countItems.value = count.items.toMutableList()
+                    actualizarLineas(count.items)
                     _selectedItemIndex.value = if (count.items.isNotEmpty()) 0 else -1
                     _countedText.value = ""
                     _countNote.value = ""
-                    _touchedItemIds.value = emptySet()
+                    notaReconocidaPorServidor = count.note.orEmpty()
+                    notaPendienteDeEnviar = false
+                    _pendientesDeEnviar.value = emptySet()
+                    _conflictoDelServidor.value = null
+                    _sinRedAlEnviar.value = false
                     _showCountTypeSheet.value = false
                     _showCounting.value = true
                     Log.d(TAG, "✅ Full count started with ${count.items.size} items")
@@ -565,7 +946,9 @@ class InventoryViewModel @Inject constructor(
             // carries the raw material id, itemType switches the display.
             val isRaw = repository.isRawMaterial(stock.id)
             StockCountItem(
-                id = "",
+                // 🔴 Cada línea con su PROPIA llave: con `id = ""` todas compartían la de
+                // `touchedItemIds`, así que contar una marcaba las demás como contadas.
+                id = java.util.UUID.randomUUID().toString(),
                 productId = stock.id,
                 productName = stock.name,
                 sku = stock.sku,
@@ -584,18 +967,19 @@ class InventoryViewModel @Inject constructor(
         if (newItems.isEmpty()) return
 
         val previousSize = _countItems.value.size
-        _countItems.value = _countItems.value + newItems
+        actualizarLineas(_countItems.value + newItems)
 
         // Auto-select the first newly added item so the user can start counting it immediately
         _selectedItemIndex.value = previousSize
         _countedText.value = ""
+        persistirBorrador()
     }
 
     fun selectCountItem(index: Int) {
         saveCurrentCount()
         _selectedItemIndex.value = index
         val item = _countItems.value.getOrNull(index)
-        _countedText.value = if (item != null && _touchedItemIds.value.contains(item.id)) {
+        _countedText.value = if (item != null && item.yaSeConto) {
             formatQuantity(item.counted)
         } else {
             ""
@@ -603,6 +987,10 @@ class InventoryViewModel @Inject constructor(
     }
 
     fun updateCountedText(text: String) {
+        // 🔴 Con el cierre en vuelo, la captura se congela. Si no, el cajero corrige un número
+        // durante «Confirmando…», el confirm sella el valor VIEJO y al salir bien borra el
+        // borrador: la corrección desaparece sin que nadie la haya visto fallar.
+        if (_isSaving.value) return
         _countedText.value = text
     }
 
@@ -627,11 +1015,27 @@ class InventoryViewModel @Inject constructor(
         }
     }
 
+    /**
+     * La nota NO se escribe a disco por tecla: `persistirBorrador` serializa el conteo entero y
+     * hace un `commit()` con fsync en el hilo de la UI, así que una nota de 40 caracteres serían
+     * 40 en una tablet barata. Se guarda al terminar de contar, al pedir salir, al guardar el
+     * avance y al confirmar.
+     *
+     * Declarado: una nota tecleada justo antes de que el proceso muera se pierde. No es dinero —
+     * lo que sí lo es (una cantidad) sigue escribiéndose síncrono en cuanto se teclea.
+     */
     fun updateCountNote(note: String) {
+        // Igual que la cantidad: lo que se edite después de tomar la foto del PUT final podría
+        // quedar borrado por un confirm exitoso. La UI ya enseña «Confirmando…» durante este lapso.
+        if (_isSaving.value) return
         _countNote.value = note
+        notaPendienteDeEnviar = notaReconocidaPorServidor == null || note != notaReconocidaPorServidor
     }
 
     private fun saveCurrentCount() {
+        // Hermano del guard de `updateCountedText`: mientras el conteo se cierra en el servidor no
+        // se sella ni se manda nada nuevo.
+        if (_isSaving.value) return
         val index = _selectedItemIndex.value
         val text = _countedText.value
         // Empty field = the line was never counted; "0" = counted as zero.
@@ -648,6 +1052,15 @@ class InventoryViewModel @Inject constructor(
             }
             val updated = _countItems.value.toMutableList()
             val item = updated[index]
+            // Ya guardada con esta MISMA cantidad: no se re-sella ni se reescribe el disco.
+            // `moveToNextItem` llama aquí y enseguida a `selectCountItem`, que vuelve a llamar
+            // con el mismo texto — eran dos fsync del conteo entero y dos PUT por línea. Sí se
+            // reintenta lo pendiente: volver a teclear el mismo número es lo que hace el cajero
+            // cuando algo no salió.
+            if (item.yaSeConto && item.counted == counted) {
+                enviarPendientes()
+                return
+            }
             updated[index] = item.copy(
                 counted = counted,
                 difference = counted - item.expected,
@@ -656,13 +1069,20 @@ class InventoryViewModel @Inject constructor(
                 // de arreglar en el detalle.
                 countedAt = java.time.Instant.now().toString(),
             )
-            _countItems.value = updated
-            _touchedItemIds.value = _touchedItemIds.value + item.id
+            actualizarLineas(updated)
+            // Sólo un conteo que YA existe en el servidor tiene a quién mandarle el avance.
+            if (_activeCount.value != null && item.id.isNotBlank()) {
+                _pendientesDeEnviar.value = _pendientesDeEnviar.value + item.id
+            }
+            // 🔴 Disco ANTES que red: si el proceso muere aquí, la línea ya está guardada.
+            persistirBorrador()
+            enviarPendientes()
         }
     }
 
     fun finishCounting() {
         saveCurrentCount()
+        persistirBorrador() // por la nota, que ya no se escribe por tecla
         _showCounting.value = false
         _showReview.value = true
     }
@@ -672,19 +1092,464 @@ class InventoryViewModel @Inject constructor(
         _showCounting.value = true
     }
 
+    /**
+     * PUT del avance con lo pendiente. Single-flight; nunca bloquea la captura.
+     *
+     * Sólo se encadena otra pasada cuando la anterior SALIÓ: reintentar aquí un rechazo
+     * o un fallo de red sería un bucle de PUTs contra el servidor. Lo que quedó pendiente
+     * sale con la siguiente tecla o al volver la red.
+     */
+    private fun enviarPendientes() {
+        val countId = _activeCount.value?.id ?: return
+        // 🔴 `_isSaving` = el conteo se está CERRANDO. Ni uno más: el candado ordena el PUT que ya
+        // iba en vuelo, pero un incremental que ARRANCA durante el cierre volvería a aterrizar
+        // después del `/confirm` —y contra un conteo ya COMPLETED, que contesta 404— dejando la
+        // banda de conflicto encendida sobre una pantalla que ya se cerró bien. No se pierde nada:
+        // el PUT final manda TODAS las líneas contadas, no sólo las pendientes.
+        if (enviando || _isSaving.value || _conflictoDelServidor.value != null) return
+        val lineas = ConteoEnCurso.lineasParaEnviar(_countItems.value, _pendientesDeEnviar.value)
+        if (lineas.isEmpty()) return
+        // Se comprueba con algo pendiente delante, no en cada tecla: así el aviso sale cuando de
+        // verdad hay trabajo que no puede salir, en vez de repetirse por nada.
+        if (cambioDeSucursal()) return
+        enviando = true
+        viewModelScope.launch {
+            var enviado = false
+            try {
+                val r = putDelAvance(countId, lineas)
+                when (r.destino) {
+                    DestinoDelEnvio.ENVIADO -> {
+                        aplicarEnvio(countId, r.confirmadas)
+                        _sinRedAlEnviar.value = false
+                        enviado = true
+                    }
+                    DestinoDelEnvio.REINTENTAR -> _sinRedAlEnviar.value = (r.code == 0)
+                    DestinoDelEnvio.CONFLICTO -> {
+                        _conflictoDelServidor.value = ConteoEnCurso.CONFLICTO
+                        _sinRedAlEnviar.value = false
+                    }
+                    DestinoDelEnvio.RECHAZADO -> {
+                        _sinRedAlEnviar.value = false
+                        _errorMessage.value = ServerErrorText.humanize(r.cuerpo, "No se pudo guardar el avance en el servidor")
+                    }
+                }
+            } finally {
+                enviando = false
+            }
+            // Lo que se contó mientras viajaba el PUT anterior sale ahora.
+            if (!enviado) return@launch
+            if (_activeCount.value?.id == countId) {
+                if (_pendientesDeEnviar.value.isNotEmpty()) enviarPendientes()
+            } else {
+                // 🔴 La pantalla se cerró MIENTRAS el PUT viajaba («Guardar el avance»): la cola en
+                // memoria ya se limpió, así que el encadenado de arriba no ve nada y lo que se contó
+                // entre medias se quedaba en el aparato hasta la siguiente tecla, reconexión o
+                // apertura del conteo (P2 #1 de Codex). Una pasada MÁS por el disco, no un bucle:
+                // si ésa tampoco alcanza, sale al reconectar.
+                enviarPendientesDelDisco()
+            }
+        }
+    }
+
+    private data class ResultadoDelEnvio(
+        val destino: DestinoDelEnvio,
+        /** Las líneas que SALIERON y siguen siendo las que se mandaron — nunca «lo que queda pendiente». */
+        val confirmadas: Set<String>,
+        val code: Int,
+        val cuerpo: String,
+    )
+
+    /**
+     * Las líneas VIVAS de ESTE conteo: la pantalla si sigue abierta en él, y si no el borrador del
+     * disco. Un conteo distinto —o ninguno— no tiene nada que ofrecer aquí: devolver las de otro
+     * cerraría por error las de éste.
+     */
+    private fun lineasVigentes(countId: String): List<StockCountItem> =
+        if (_activeCount.value?.id == countId) {
+            _countItems.value
+        } else {
+            borradores.leer()?.takeIf { it.countId == countId }?.lineas.orEmpty()
+        }
+
+    /**
+     * Cierra en la cola las líneas que SALIERON, restándolas de lo que hay VIVO en este momento.
+     *
+     * 🔴 Reasignar la foto tomada antes del viaje descartaba lo contado DURANTE el vuelo: se cuenta
+     * A, el PUT viaja segundos con el WiFi del ICP, se cuenta B, y el 200 de A dejaba la cola en
+     * {} — B se caía de la cola Y del borrador, el encadenado no la veía y el servidor nunca
+     * recibía su cantidad, mientras la banda decía cero pendientes.
+     *
+     * 🔴 Con la pantalla ya cerrada (o en otro conteo) NO se persiste desde `_countItems`: está
+     * vacío, así que `persistirBorrador` borraría el borrador entero — con su nota, que el PUT del
+     * avance ni siquiera manda. Ahí se toca el borrador del disco, y sólo su cola.
+     */
+    private fun aplicarEnvio(countId: String, confirmadas: Set<String>) {
+        if (_activeCount.value?.id == countId) {
+            _pendientesDeEnviar.value = _pendientesDeEnviar.value - confirmadas
+            persistirBorrador()
+            return
+        }
+        val b = borradores.leer() ?: return
+        if (b.countId != countId) return
+        borradores.guardar(b.copy(pendientesDeEnviar = b.pendientesDeEnviar - confirmadas))
+        refrescarBorradorLocal()
+    }
+
+    /**
+     * El PUT del avance sin nada de estado de pantalla, para que lo usen los DOS caminos: la
+     * captura y el replay desde el disco cuando la pantalla está cerrada. Devuelve QUÉ SALIÓ; a
+     * quién se le resta lo decide `aplicarEnvio` mirando el estado vivo al volver — por eso aquí
+     * no entra ninguna foto de la cola, que es justo lo que no se puede volver a asignar.
+     *
+     * 🔴 Una línea sólo cuenta como enviada si sigue siendo LA QUE SE MANDÓ. Cerrarla por su id a
+     * secas dejaba al servidor con el valor viejo cuando el cajero corregía la cantidad mientras
+     * el PUT viajaba: el 200 del envío VIEJO cerraba la línea NUEVA y ya nadie la mandaba. El
+     * sello es el par (cantidad, countedAt) y no sólo el countedAt, porque dos `Instant.now()`
+     * seguidos pueden salir iguales si el reloj de la JVM tiene poca resolución — y entonces la
+     * protección dependería del reloj.
+     */
+    private suspend fun putDelAvance(
+        countId: String,
+        lineas: List<StockCountItem>,
+    ): ResultadoDelEnvio = candadoDeEnvio.withLock {
+        val sellos = lineas.associate { it.id to (it.counted to it.countedAt) }
+        val r = repository.enviarAvance(countId, lineas)
+        val destino = ConteoEnCurso.clasificarEnvio(r.code)
+        val confirmadas = if (destino == DestinoDelEnvio.ENVIADO) {
+            val ahora = lineasVigentes(countId).associate { it.id to (it.counted to it.countedAt) }
+            sellos.filter { (id, sello) -> ahora[id] == sello }.keys
+        } else {
+            emptySet()
+        }
+        ResultadoDelEnvio(destino, confirmadas, r.code, r.body)
+    }
+
+    /** El PUT final y el `/confirm`, juntos y bajo el MISMO candado que el avance incremental. */
+    private data class CierreDelConteo(val put: RespuestaHttp, val confirm: RespuestaHttp?)
+
+    private suspend fun cerrarEnElServidor(
+        countId: String,
+        items: List<StockCountItem>,
+        note: String?,
+    ): CierreDelConteo = candadoDeEnvio.withLock {
+        val put = repository.enviarFinal(countId, items, note)
+        if (ConteoEnCurso.clasificarEnvio(put.code) != DestinoDelEnvio.ENVIADO) {
+            return@withLock CierreDelConteo(put, null)
+        }
+        reconocerPutFinal(countId, items, note)
+        CierreDelConteo(put, repository.confirmarConteo(countId))
+    }
+
+    /**
+     * El PUT final ya llegó: guarda su ACK ANTES de tocar `/confirm`, porque el proceso puede morir
+     * o el confirm puede fallar. Sólo reconoce la foto que realmente salió; una corrección viva
+     * conserva su pendiente, igual que en el PUT incremental. La nota vacía no se reconoce: el
+     * repositorio la omite del JSON y un 200 no prueba que el servidor la haya borrado.
+     */
+    private fun reconocerPutFinal(
+        countId: String,
+        enviadas: List<StockCountItem>,
+        notaEnviada: String?,
+    ) {
+        if (_activeCount.value?.id != countId) return
+        val sellos = enviadas.associate { it.id to (it.counted to it.countedAt) }
+        val ahora = _countItems.value.associate { it.id to (it.counted to it.countedAt) }
+        val confirmadas = sellos.filter { (id, sello) -> ahora[id] == sello }.keys
+        _pendientesDeEnviar.value = _pendientesDeEnviar.value - confirmadas
+        if (notaEnviada != null && notaPendienteDeEnviar && _countNote.value == notaEnviada) {
+            notaReconocidaPorServidor = notaEnviada
+            notaPendienteDeEnviar = false
+        }
+        persistirBorrador()
+    }
+
+    /**
+     * Traduce el cierre a lo que ve el cajero, con la MISMA tabla que el avance incremental.
+     *
+     * 🔴 Antes los dos pasos volvían como `Result.failure` sin código, así que un 404 —«otro
+     * aparato ya cerró este conteo»— salía como «No se pudo guardar el conteo. Intenta de nuevo.»
+     * y `_conflictoDelServidor` nunca se ponía: el cajero reintentaba contra un conteo que ya no
+     * existía, sin banda y sin explicación posible.
+     */
+    private fun aplicarCierre(r: CierreDelConteo): Boolean {
+        // El paso que MANDA es el último que llegó a hablar: si el PUT no salió, el confirm ni
+        // siquiera se intentó.
+        val paso = r.confirm ?: r.put
+        return when (ConteoEnCurso.clasificarEnvio(paso.code)) {
+            DestinoDelEnvio.ENVIADO -> true
+            DestinoDelEnvio.CONFLICTO -> {
+                // El borrador NO se borra: el texto promete que lo contado se conserva.
+                _conflictoDelServidor.value = ConteoEnCurso.CONFLICTO
+                _errorMessage.value = ConteoEnCurso.CONFLICTO
+                Log.w(TAG, "⛔ El conteo ya no está en progreso en el servidor: no se cierra")
+                false
+            }
+            DestinoDelEnvio.RECHAZADO -> {
+                _errorMessage.value = ServerErrorText.humanize(paso.body, "No se pudo cerrar el conteo en el servidor")
+                false
+            }
+            DestinoDelEnvio.REINTENTAR -> {
+                _errorMessage.value = ServerErrorText.humanize(paso.body, "No se pudo cerrar el conteo. Intenta de nuevo.")
+                false
+            }
+        }
+    }
+
+    /**
+     * El mismo PUT, pero leyendo la cola del BORRADOR: es lo que corre al volver la red cuando el
+     * cajero ya cerró la pantalla del conteo. Lo que no sale se conserva tal cual — un conflicto
+     * o un rechazo se le enseña a la persona cuando retome el conteo, no en una pantalla ajena.
+     */
+    private suspend fun enviarPendientesDelDisco() {
+        val b = borradores.leer() ?: return
+        val countId = b.countId ?: return
+        val lineas = ConteoEnCurso.lineasParaEnviar(b.lineas, b.pendientesDeEnviar)
+        if (lineas.isEmpty() || enviando) return
+        enviando = true
+        try {
+            val r = putDelAvance(countId, lineas)
+            if (r.destino == DestinoDelEnvio.ENVIADO) {
+                // El borrador se relee DENTRO de `aplicarEnvio`: reescribir el `b` de antes del
+                // viaje revertía las líneas si alguien abrió el conteo y contó mientras viajaba.
+                aplicarEnvio(countId, r.confirmadas)
+                Log.d(TAG, "📤 Avance del borrador enviado al volver la red: ${lineas.size} línea(s)")
+            } else {
+                Log.w(TAG, "⚠️ El avance del borrador no salió (${r.code}): se conserva en el aparato")
+            }
+        } finally {
+            enviando = false
+        }
+    }
+
+    /**
+     * Las cancelaciones que no pudieron salir viven en disco hasta que el servidor las acepte.
+     *
+     * En PLURAL: sin red se puede descartar un conteo y luego otro, y con una sola ranura el
+     * segundo borraba al primero — que se quedaba abierto para siempre.
+     */
+    private fun enviarCancelacionesPendientes() {
+        val ids = borradores.cancelacionesPendientes()
+        if (ids.isEmpty()) return
+        viewModelScope.launch {
+            var algunaSalio = false
+            for (countId in ids) {
+                val r = repository.cancelStockCount(countId)
+                when (ConteoEnCurso.clasificarCancelacion(r.code, r.body)) {
+                    DestinoDeLaCancelacion.HECHA -> {
+                        borradores.quitarCancelacionPendiente(countId)
+                        algunaSalio = true
+                    }
+                    DestinoDeLaCancelacion.REINTENTAR -> Unit
+                    DestinoDeLaCancelacion.RECHAZADA -> {
+                        borradores.quitarCancelacionPendiente(countId)
+                        _errorMessage.value = ServerErrorText.humanize(r.body, "No se pudo cancelar el conteo en el servidor")
+                    }
+                }
+            }
+            // Una sola relectura al final: la lista no cambia por cada una.
+            if (algunaSalio) repository.fetchStockCounts()
+        }
+    }
+
+    fun pedirSalida() {
+        saveCurrentCount()
+        persistirBorrador() // por la nota, que ya no se escribe por tecla
+        _salidaPendiente.value = true
+    }
+
+    fun cancelarSalida() { _salidaPendiente.value = false }
+
+    /**
+     * El primer toque sólo pide confirmación cuando hay trabajo capturado. Una cantidad 0 con
+     * `countedAt` cuenta como trabajo: el cajero sí tomó una decisión y se perdería igual.
+     */
+    fun pedirDescarte() {
+        if (_isSaving.value) return
+        saveCurrentCount()
+        persistirBorrador()
+        val contadas = ConteoEnCurso.contadas(_countItems.value)
+        if (contadas == 0) {
+            descartarConteo()
+            return
+        }
+        _salidaPendiente.value = false
+        _confirmacionDeDescarte.value = ConfirmacionDeDescarte(
+            contadas = contadas,
+            countId = _activeCount.value?.id,
+            venueId = _venueDelConteo ?: repository.venueIdActual(),
+        )
+    }
+
+    /** Volver o cerrar el segundo diálogo no toca disco, líneas ni servidor. */
+    fun cancelarDescarte() {
+        if (_confirmacionDeDescarte.value == null) return
+        _confirmacionDeDescarte.value = null
+        _salidaPendiente.value = true
+    }
+
+    /**
+     * Consume el permiso antes de ejecutar: dos toques sólo pueden llegar una vez a la operación
+     * durable. También vuelve a comprobar conteo, sucursal y el guard de guardado.
+     */
+    fun confirmarDescarte() {
+        if (_isSaving.value) return
+        val confirmacion = _confirmacionDeDescarte.value ?: return
+        if (confirmacion.countId != _activeCount.value?.id) return
+        if (confirmacion.venueId != (_venueDelConteo ?: repository.venueIdActual())) return
+        if (cambioDeSucursal()) return
+        _confirmacionDeDescarte.value = null
+        descartarConteo()
+    }
+
+    private fun limpiarEstadoDeConteo() {
+        _venueDelConteo = null
+        _nombreDelVenueDelConteo = null
+        _showCounting.value = false
+        _showReview.value = false
+        _salidaPendiente.value = false
+        _confirmacionDeDescarte.value = null
+        _activeCount.value = null
+        actualizarLineas(emptyList())
+        _selectedItemIndex.value = -1
+        _countedText.value = ""
+        _countNote.value = ""
+        notaReconocidaPorServidor = null
+        notaPendienteDeEnviar = false
+        _pendientesDeEnviar.value = emptySet()
+        _conflictoDelServidor.value = null
+        _sinRedAlEnviar.value = false
+    }
+
+    /** El borrador ya está en disco: sólo se cierra la pantalla y se intenta mandar lo pendiente. */
+    fun guardarYSalir() {
+        saveCurrentCount()
+        persistirBorrador()
+        enviarPendientes()
+        limpiarEstadoDeConteo()
+        viewModelScope.launch { repository.fetchStockCounts() }
+    }
+
+    /**
+     * Descartar = borrar lo local y, si el conteo existe en el servidor, cancelarlo allá (con cola
+     * si no hay red).
+     *
+     * 🔴 Las dos escrituras van en UNA: borrar el borrador y encolar la cancelación eran dos
+     * `commit()` seguidos, y un proceso que muere entre ellos dejaba el conteo `IN_PROGRESS` en el
+     * servidor sin nada en el aparato que volviera a intentarlo. Y si la escritura falla, la
+     * pantalla NO se limpia: enseñar el conteo cerrado sobre un borrador que sigue en disco es
+     * peor que no cerrarlo.
+     */
+    fun descartarConteo() {
+        if (cambioDeSucursal()) return
+        val countId = _activeCount.value?.id
+        if (!borradores.descartarYEncolarCancelacion(countId.orEmpty())) {
+            _errorMessage.value = "No se pudo descartar el conteo en este aparato. Intenta de nuevo."
+            Log.e(TAG, "❌ Descartar no quedó en disco: la pantalla se conserva")
+            refrescarBorradorLocal()
+            return
+        }
+        limpiarEstadoDeConteo()
+        refrescarBorradorLocal()
+        if (countId != null) enviarCancelacionesPendientes()
+    }
+
+    /** Desde la tarjeta «sin terminar en este aparato». Sin red también funciona: las líneas viven en el borrador. */
+    fun continuarBorrador() {
+        val b = borradores.leer() ?: return
+        // El borrador dice de qué sucursal es; el nombre sale del aparato, que es donde está
+        // (`leer()` sólo devuelve borradores de la sucursal actual).
+        _venueDelConteo = b.venueId.takeIf { it.isNotBlank() } ?: repository.venueIdActual()
+        _nombreDelVenueDelConteo = repository.venueNameActual()
+        if (b.countId == null) {
+            // Un cíclico sin crear no existe en el servidor: se retoma entero desde el disco.
+            _activeCountType.value = StockCountType.CYCLE
+            _activeCount.value = null
+            actualizarLineas(b.lineas)
+            _selectedItemIndex.value = ConteoEnCurso.primerPendiente(b.lineas)
+            _countedText.value = ""
+            _countNote.value = b.nota
+            notaReconocidaPorServidor = null
+            notaPendienteDeEnviar = ConteoEnCurso.notaPendienteDeEnviar(b)
+            _pendientesDeEnviar.value = emptySet()
+            _conflictoDelServidor.value = null
+            _sinRedAlEnviar.value = false
+            _showCounting.value = true
+            return
+        }
+        // Continuar ES este borrador, nunca otro: la guarda de `resumeCount` no aplica aquí.
+        val desdeElDisco = StockCount(
+            id = b.countId,
+            type = b.type,
+            status = "IN_PROGRESS",
+            itemCount = b.lineas.size,
+            note = b.nota.ifBlank { null },
+            items = b.lineas,
+        )
+        val enServidor = repository.stockCounts.value.firstOrNull { it.id == b.countId }
+        when {
+            // Sin la lista del servidor (sin red) se retoma con lo que hay en disco.
+            enServidor == null -> retomarConteo(
+                desdeElDisco,
+                conflicto = null,
+                notaDelServidorConfirmada = false,
+            )
+            enServidor.status == "IN_PROGRESS" -> retomarConteo(enServidor, conflicto = null)
+            // 🔴 Otro aparato lo cerró. Se abre lo LOCAL para consulta y se avisa; NO se borra
+            // nada. El texto promete que lo contado se conserva, y borrarlo aquí era la UI
+            // mintiendo (spec §5: lo local nunca se descarta en silencio). Sólo «Descartar el
+            // conteo» borra, porque ahí lo decide el cajero.
+            else -> retomarConteo(
+                desdeElDisco,
+                conflicto = ConteoEnCurso.CONFLICTO,
+                notaDelServidorConfirmada = false,
+            )
+        }
+    }
+
     fun confirmCount() {
+        // Con el conteo ya cerrado desde otro aparato, confirmar da 404 y el mensaje sería «No se
+        // pudo guardar el conteo. Intenta de nuevo.» — falso: reintentar no puede funcionar. Se
+        // dice lo que de verdad pasó y no se toca el servidor.
+        _conflictoDelServidor.value?.let {
+            _errorMessage.value = it
+            return
+        }
+        // 🔴 Sin red no se intenta siquiera, y se DICE. Antes el botón no hacía nada visible: ni
+        // diálogo, ni toast, ni un spinner que resolviera en error (D2 del QA). Confirmar es
+        // online-only a propósito —el ajuste lo aplica el servidor—, así que lo honesto es
+        // guardar el trabajo aquí y nombrar lo que falta.
+        // Cambiar de sucursal a media captura deja este conteo fuera de alcance: confirmarlo
+        // mandaría el cierre a `/venues/<la otra>/…` y el 404 se leería como «lo cerró otro
+        // aparato», que sería falso.
+        if (cambioDeSucursal()) return
+        if (!conectado.value) {
+            saveCurrentCount()
+            persistirBorrador()
+            _errorMessage.value = ConteoEnCurso.CONFIRMAR_SIN_RED
+            Log.w(TAG, "⛔ Confirmar sin red: el conteo se queda en el aparato")
+            return
+        }
+        // Antes de tocar la red, como siempre: si el confirm falla, la nota y lo contado siguen
+        // en el aparato.
+        persistirBorrador()
         viewModelScope.launch {
             _isSaving.value = true
             try {
                 val items = _countItems.value
-                val note = _countNote.value.ifBlank { null }
+                // El PUT incremental nunca manda notas. El final sólo manda una nota que cambió
+                // aquí: reenviar una nota sincronizada pisaría la corrección de otro aparato.
+                // Vaciarla queda pendiente, pero no viaja porque el contrato HTTP actual omite
+                // blancos; un 200 de ese PUT no puede contarse como ACK del borrado.
+                val note = _countNote.value.takeIf { notaPendienteDeEnviar && it.isNotBlank() }
 
                 // Every step's Result is now checked: before, a failed
                 // update/confirm STILL closed the review as a success and
                 // discarded the whole count with no error.
                 var confirmed = false
 
-                if (_activeCountType.value == StockCountType.CYCLE) {
+                // 🔴 Sólo un cíclico que NO existe todavía en el servidor se crea: retomar uno
+                // ya creado por esta rama dejaba DOS conteos abiertos con las mismas líneas.
+                if (_activeCountType.value == StockCountType.CYCLE && _activeCount.value == null) {
                     // Cycle: create on backend first, then update and confirm
                     val productIds = items.filter { !it.isIngredient }.map { it.productId }
                     val rawMaterialIds = items.filter { it.isIngredient }.mapNotNull { it.rawMaterialId }
@@ -692,24 +1557,44 @@ class InventoryViewModel @Inject constructor(
                     createResult.fold(
                         onSuccess = { count ->
                             _activeCount.value = count
-                            // Map local items to server items with IDs
-                            val touched = _touchedItemIds.value
-                            val serverItems = count.items.mapNotNull { serverItem ->
-                                val localItem = items.find { it.productId == serverItem.productId }
-                                // Skip lines the cashier never counted — sending
-                                // them as counted=0 would zero real stock.
-                                if (localItem == null || !touched.contains(localItem.id)) return@mapNotNull null
-                                serverItem.copy(counted = localItem.counted)
+                            // 🔴 Se recorren las líneas del SERVIDOR, no las locales: `createStockCount`
+                            // DESCARTA en silencio lo que no puede contar (un producto dado de baja
+                            // entre que se listó y se creó el conteo, o uno cuyo inventario sale de una
+                            // receta). Recorrer las locales dejaba esas líneas con su UUID de aquí, y
+                            // el PUT del servidor es TODO-O-NADA: un id que no reconoce tumba el conteo
+                            // entero con un 400 que reintentar no puede arreglar nunca (el cuerpo sale
+                            // igual), dejando el trabajo del cajero atrapado. Lo contado y su countedAt
+                            // siguen siendo los del aparato; la diferencia se recalcula contra el
+                            // `expected` del servidor, igual que `ConteoEnCurso.fusionar`.
+                            val localesPorProducto = items.associateBy { it.productId }
+                            actualizarLineas(
+                                count.items.map { s ->
+                                    val l = localesPorProducto[s.productId]
+                                    if (l != null && l.yaSeConto) {
+                                        s.copy(counted = l.counted, difference = l.counted - s.expected, countedAt = l.countedAt)
+                                    } else {
+                                        s
+                                    }
+                                },
+                            )
+                            // El cíclico ya existe y sus ids locales dejaron de servir. Desde este
+                            // punto TODA línea contada remapeada es pendiente del servidor; se
+                            // persiste countId + líneas + cola ANTES del PUT final.
+                            _pendientesDeEnviar.value = ConteoEnCurso.idsContadas(_countItems.value)
+                            persistirBorrador()
+                            // Lo que el cajero contó y el servidor NO creó no se aplica a inventario:
+                            // se DICE (nunca se calla), y aun así el conteo se confirma — bloquearlo
+                            // por esto dejaría al cajero sin poder cerrar lo que sí contó.
+                            val idsDelServidor = count.items.map { it.productId }.toSet()
+                            val descartadasContadas = items.count { it.yaSeConto && it.productId !in idsDelServidor }
+                            if (descartadasContadas > 0) {
+                                _errorMessage.value = ConteoEnCurso.lineasNoIncluidas(descartadasContadas)
+                                Log.w(TAG, "⚠️ $descartadasContadas línea(s) contadas no entraron al conteo ${count.id}")
                             }
-                            val updateResult = repository.updateStockCount(count.id, serverItems, note)
-                            if (updateResult.isSuccess) {
-                                confirmed = repository.confirmStockCount(count.id).isSuccess
-                                if (!confirmed) {
-                                    _errorMessage.value = "No se pudo confirmar el conteo. Intenta de nuevo."
-                                }
-                            } else {
-                                _errorMessage.value = "No se pudo guardar el conteo. Intenta de nuevo."
-                            }
+                            // Sólo lo que el cajero contó: mandar el resto como counted=0 pondría
+                            // en cero existencia real.
+                            val serverItems = _countItems.value.filter { it.yaSeConto }
+                            confirmed = aplicarCierre(cerrarEnElServidor(count.id, serverItems, note))
                         },
                         onFailure = { e ->
                             _errorMessage.value = ServerErrorText.humanize(e.message, "Error al crear conteo")
@@ -720,26 +1605,32 @@ class InventoryViewModel @Inject constructor(
                     // Only lines the cashier actually counted: the server
                     // stamps countedAt on every received item and applies
                     // exactly those on confirm.
-                    val countId = _activeCount.value?.id ?: return@launch
-                    val touched = _touchedItemIds.value
-                    val countedOnly = items.filter { touched.contains(it.id) }
-                    val updateResult = repository.updateStockCount(countId, countedOnly, note)
-                    if (updateResult.isSuccess) {
-                        confirmed = repository.confirmStockCount(countId).isSuccess
-                        if (!confirmed) {
-                            _errorMessage.value = "No se pudo confirmar el conteo. Intenta de nuevo."
-                        }
-                    } else {
-                        _errorMessage.value = "No se pudo guardar el conteo. Intenta de nuevo."
+                    val countId = _activeCount.value?.id
+                    if (countId == null) {
+                        _errorMessage.value = ConteoEnCurso.SIN_CONTEO_ACTIVO
+                        Log.e(TAG, "❌ Se intentó confirmar un FULL sin conteo activo")
+                        return@launch
                     }
+                    // Se manda todo lo contado, no sólo lo pendiente: es idempotente y deja al
+                    // servidor con lo que el aparato enseña aunque un PUT incremental se perdiera.
+                    val countedOnly = items.filter { it.yaSeConto }
+                    confirmed = aplicarCierre(cerrarEnElServidor(countId, countedOnly, note))
                 }
 
                 if (confirmed) {
                     // Success - close and refresh (data preserved on failure)
-                    _showReview.value = false
-                    _showCounting.value = false
-                    _activeCount.value = null
-                    _countItems.value = emptyList()
+                    if (!borradores.borrar()) {
+                        // El conteo YA se aplicó en el servidor: no se puede deshacer ni fingir que
+                        // falló. Lo que queda es que el borrador huérfano no se lleve por delante el
+                        // siguiente conteo — lo bloquearía como «tienes uno sin terminar».
+                        Log.e(TAG, "❌ El conteo se confirmó pero el borrador sigue en disco")
+                    }
+                    refrescarBorradorLocal()
+                    // P2 #3 de Codex: el detalle desde el que se tocó «Continuar conteo» guarda una
+                    // FOTO en `IN_PROGRESS`. Sin limpiarlo, al confirmar reaparece diciendo «En
+                    // progreso · Continuar conteo» sobre un conteo que acaba de cerrarse.
+                    _selectedDetail.value = null
+                    limpiarEstadoDeConteo()
                     // El conteo YA movió el stock: sin esto la descripción
                     // general se queda con las cantidades de antes de contar.
                     refreshStockLevels()
@@ -755,18 +1646,74 @@ class InventoryViewModel @Inject constructor(
         }
     }
 
-    fun cancelCounting() {
-        _showCounting.value = false
-        _showReview.value = false
-        _activeCount.value = null
-        _countItems.value = emptyList()
-        _selectedItemIndex.value = -1
-        _countedText.value = ""
-        _countNote.value = ""
+    fun selectCountDetail(count: StockCount?) {
+        generacionDelDetalle += 1
+        venueDelDetalle = count?.let { repository.venueIdActual() }
+        ultimoVenueObservadoEnDetalle = venueDelDetalle
+        _selectedDetail.value = count
+        _estadoDelDetalle.value = EstadoDelDetalleDeConteo.SIN_VERIFICAR
+        _detalleNoActualizado.value = false
+        _puedeContinuarDetalle.value = count?.status == "IN_PROGRESS"
     }
 
-    fun selectCountDetail(count: StockCount?) {
-        _selectedDetail.value = count
+    /**
+     * Revalida contra la lectura de conteos existente, sin escribir ni estrenar un endpoint.
+     * Cada selección lleva generación propia: una respuesta A vieja no puede pisar B ni un A
+     * abierto después. Dos señales idénticas de lifecycle mientras la misma petición sigue viva
+     * se deduplican.
+     */
+    fun refreshSelectedCountDetail() {
+        val selected = _selectedDetail.value ?: return
+        val venueActual = repository.venueIdActual()
+        if (venueActual != ultimoVenueObservadoEnDetalle) {
+            // Cada transición OBSERVADA invalida la respuesta anterior, incluso A→B→A.
+            generacionDelDetalle += 1
+            ultimoVenueObservadoEnDetalle = venueActual
+        }
+        if (venueActual != venueDelDetalle) {
+            _detalleNoActualizado.value = true
+            _puedeContinuarDetalle.value = false
+            return
+        }
+        val key = ClaveDeRefrescoDelDetalle(
+            generacion = generacionDelDetalle,
+            countId = selected.id,
+            venueId = venueActual,
+        )
+        if (!refrescosDelDetalleEnCurso.add(key)) return
+
+        viewModelScope.launch {
+            try {
+                val result = repository.fetchStockCounts()
+                val sigueSiendoLaMismaSeleccion =
+                    key.generacion == generacionDelDetalle &&
+                        key.countId == _selectedDetail.value?.id &&
+                        key.venueId == repository.venueIdActual() &&
+                        key.venueId == venueDelDetalle
+                if (!sigueSiendoLaMismaSeleccion) return@launch
+
+                if (result.isFailure) {
+                    // La red no invalida lo que ya sabemos ni la copia que permite consultar.
+                    _detalleNoActualizado.value = true
+                    return@launch
+                }
+
+                _detalleNoActualizado.value = false
+                val authoritative = repository.stockCounts.value.firstOrNull { it.id == key.countId }
+                if (authoritative == null) {
+                    // La lista mobile omite cancelados. No inventamos CANCELLED: sólo sabemos que
+                    // este registro ya no está disponible en la lectura exitosa del mismo venue.
+                    _estadoDelDetalle.value = EstadoDelDetalleDeConteo.NO_DISPONIBLE
+                    _puedeContinuarDetalle.value = false
+                } else {
+                    _selectedDetail.value = authoritative
+                    _estadoDelDetalle.value = EstadoDelDetalleDeConteo.DISPONIBLE
+                    _puedeContinuarDetalle.value = authoritative.status == "IN_PROGRESS"
+                }
+            } finally {
+                refrescosDelDetalleEnCurso.remove(key)
+            }
+        }
     }
 
     fun formatQuantity(value: Double): String {

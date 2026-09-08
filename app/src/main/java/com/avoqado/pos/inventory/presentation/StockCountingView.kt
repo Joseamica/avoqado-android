@@ -1,5 +1,6 @@
 package com.avoqado.pos.inventory.presentation
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import com.avoqado.pos.inventory.data.model.onHandDisplay
 import androidx.compose.foundation.border
@@ -35,12 +36,15 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -56,8 +60,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.avoqado.pos.designsystem.components.AvoqadoDialog
 import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
+import com.avoqado.pos.designsystem.theme.Warning
+import com.avoqado.pos.inventory.data.ConteoEnCurso
 import com.avoqado.pos.inventory.data.model.StockCountItem
 import com.avoqado.pos.inventory.data.model.StockCountType
 import com.avoqado.pos.inventory.data.model.StockItem
@@ -81,9 +88,59 @@ fun StockCountingView(
     val activeCountType by viewModel.activeCountType.collectAsState()
     val stockItems by viewModel.stockItems.collectAsState()
     val countableRawMaterials by viewModel.countableRawMaterials.collectAsState()
+    val salidaPendiente by viewModel.salidaPendiente.collectAsState()
+    val confirmacionDeDescarte by viewModel.confirmacionDeDescarte.collectAsState()
+    val isSaving by viewModel.isSaving.collectAsState()
+    val isLoading by viewModel.isLoading.collectAsState()
+    val conflictoDelServidor by viewModel.conflictoDelServidor.collectAsState()
+    // UNA sola fuente para la banda ambar. La regla (el conflicto manda; si no, cuanto
+    // trabajo vive solo en este aparato) vive en el ViewModel: repartida entre las dos
+    // pantallas, cada una podia decir una cosa distinta del mismo conteo.
+    val aviso by viewModel.bandaDeAviso.collectAsState()
+    val errorMessage by viewModel.errorMessage.collectAsState()
 
     var searchText by remember { mutableStateOf("") }
     var showAddPopup by remember { mutableStateOf(false) }
+
+    // El BACK del sistema es la salida mas comun en una tablet: sin esto se perdia
+    // el conteo sin preguntar. Vive mientras la pantalla esta montada (el Screen la
+    // dibuja con `return` temprano, asi que solo existe con `showCounting` en true).
+    //
+    // 🔴 Son DOS capas y EXCLUYENTES entre si: `AddItemsPopup` NO es un `Dialog` —es
+    // un `Surface(fillMaxSize())` compuesto en linea, sin BackHandler propio—, asi que
+    // con un solo handler incondicional el BACK sobre el selector no cerraba el
+    // selector: abria el dialogo de salida ENCIMA de el, con «Descartar el conteo» de
+    // primer boton tocable. Cerrar lo que se ve encima es lo unico que el BACK puede
+    // significar ahi. Con `enabled` excluyente hay UN solo handler activo a la vez, asi
+    // que el resultado no depende del orden en que se registran.
+    //
+    // 🔴 Y ninguno de los dos mientras el conteo se esta cerrando en el servidor: el dialogo de
+    // salida trae «Descartar el conteo», y descartar lo local con el `/confirm` en vuelo deja al
+    // cajero mirando una pantalla vacia sobre un conteo que el servidor SI aplico.
+    BackHandler(enabled = showAddPopup) { if (!isSaving) showAddPopup = false }
+    // Siempre se consume mientras la pantalla exista; durante `isSaving` se ignora (M1 r2).
+    BackHandler(enabled = !showAddPopup) { if (!isSaving) viewModel.pedirSalida() }
+
+    // El selector se abre desde DOS sitios (tablet y telefono) y el catalogo pudo quedarse
+    // vacio si su unica peticion murio sin red: entonces «Agregar articulos» abre en blanco
+    // y el ciclico es inservible hasta reiniciar la app (D1 del QA). Se pide aqui, keyeado
+    // por el estado, y no en cada `onAddItems`: asi lo cubre TODO camino que abra el
+    // selector, tambien el que alguien agregue manana. `asegurarCatalogo` no hace nada si
+    // ya hay catalogo o si no hay red.
+    LaunchedEffect(showAddPopup) { if (showAddPopup) viewModel.asegurarCatalogo() }
+
+    // 🔴 Un error del ViewModel en esta pantalla NO se veia. El unico `SnackbarHost` del
+    // modulo vive en `InventoryScreen`, DESPUES de su `return` temprano: mientras se cuenta
+    // no hay ninguno montado, asi que su `showSnackbar` queda suspendido para siempre y el
+    // mensaje se lo traga la pantalla. Es lo que midio el QA en la tablet. Mismo patron que
+    // `InventoryScreen` (host propio + efecto + limpiar al cerrarse).
+    val snackbarHostState = remember { SnackbarHostState() }
+    LaunchedEffect(errorMessage) {
+        errorMessage?.let {
+            snackbarHostState.showSnackbar(it)
+            viewModel.clearErrorMessage()
+        }
+    }
 
     val filteredItems = if (searchText.isBlank()) countItems
     else countItems.filter {
@@ -94,12 +151,19 @@ fun StockCountingView(
     Column(modifier = Modifier.fillMaxSize()) {
         // Header
         CountingHeader(
-            onCancel = { viewModel.cancelCounting() },
+            onCancel = { viewModel.pedirSalida() },
             onNext = { viewModel.finishCounting() },
             hasItems = countItems.isNotEmpty(),
         )
 
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+        // 🔴 Calcular esto AQUI era el defecto I1: en un conteo CICLICO `pendientesDeEnviar`
+        // esta siempre vacio (no hay conteo en el servidor al que mandarle nada), asi que la
+        // banda de «sin conexion» no podia salir NUNCA y el cajero contaba con el WiFi
+        // apagado sin que la pantalla dijera una palabra. La regla ya resuelta la da el
+        // ViewModel.
+        aviso?.let { BandaDeAvisoDeConteo(it) }
 
         if (isTablet) {
             // iPad-style split layout
@@ -331,12 +395,130 @@ fun StockCountingView(
             // aparecen en esta misma lista.
             stockItems = stockItems.filter { it.isCountable } + countableRawMaterials,
             existingIds = countItems.map { it.productId }.toSet(),
+            isLoading = isLoading,
             onAdd = { selected ->
                 viewModel.addItemsToCycleCount(selected)
                 searchText = ""
                 showAddPopup = false
             },
             onDismiss = { showAddPopup = false },
+        )
+    }
+
+    // Tres opciones, no dos: «Descartar» y «Seguir contando» son cosas distintas y
+    // colapsarlas hace que la X del dialogo signifique una de ellas por accidente.
+    if (salidaPendiente && confirmacionDeDescarte == null) {
+        val contadas = ConteoEnCurso.contadas(countItems)
+        val hayConflicto = conflictoDelServidor != null
+        AvoqadoDialog(
+            title = ConteoEnCurso.TITULO_SALIR,
+            description = ConteoEnCurso.descripcionSalir(contadas, countItems.size, hayConflicto),
+            // Cerrar con la X o tocando fuera = «Seguir contando»: es lo unico que no
+            // decide nada sobre el conteo.
+            onDismiss = { viewModel.cancelarSalida() },
+            actionButton = {
+                PrimaryButton(
+                    text = if (hayConflicto) ConteoEnCurso.SALIR_Y_CONSERVAR else ConteoEnCurso.GUARDAR_EL_AVANCE,
+                    onClick = { viewModel.guardarYSalir() },
+                    fullWidth = true,
+                    enabled = !isSaving,
+                )
+            },
+            content = {
+                // 🔴 La irreversible va AL FINAL, nunca primero. `AvoqadoDialog` pinta
+                // `content` arriba del boton de accion, asi que «Descartar» era el
+                // primer elemento tocable bajo la descripcion: un dedo que baja leyendo
+                // aterrizaba en el boton rojo del conteo que vino a NO perder.
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    TextButton(
+                        onClick = { viewModel.cancelarSalida() },
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            text = if (hayConflicto) ConteoEnCurso.SEGUIR_VIENDO else ConteoEnCurso.SEGUIR_CONTANDO,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    TextButton(
+                        onClick = { viewModel.pedirDescarte() },
+                        enabled = !isSaving,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Text(
+                            text = ConteoEnCurso.DESCARTAR,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
+                    HorizontalDivider(
+                        modifier = Modifier.padding(top = AvoqadoTheme.spacing.lg),
+                        color = MaterialTheme.colorScheme.outlineVariant,
+                    )
+                }
+            },
+        )
+    }
+
+    confirmacionDeDescarte?.let { confirmacion ->
+        AvoqadoDialog(
+            title = ConteoEnCurso.tituloDescartar(confirmacion.contadas),
+            description = ConteoEnCurso.DESCRIPCION_DESCARTAR,
+            onDismiss = { viewModel.cancelarDescarte() },
+            actionButton = {
+                PrimaryButton(
+                    text = ConteoEnCurso.DESCARTAR,
+                    onClick = { viewModel.confirmarDescarte() },
+                    enabled = !isSaving,
+                    fullWidth = true,
+                    destructive = true,
+                )
+            },
+            content = {
+                TextButton(
+                    onClick = { viewModel.cancelarDescarte() },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(ConteoEnCurso.VOLVER, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            },
+        )
+    }
+
+    // Hermano del `Column` raiz y AL FINAL, que es el mismo recurso del que ya vive
+    // `AddItemsPopup` (un `Surface(fillMaxSize)` en linea): asi se dibuja encima de todo,
+    // incluido el selector de articulos. Un `Box` sin `pointerInput` no es blanco de toque,
+    // asi que sin snackbar no estorba a lo que hay debajo.
+    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+        SnackbarHost(hostState = snackbarHostState)
+    }
+}
+
+/**
+ * Banda de aviso del conteo — la MISMA en contar y en revisar.
+ *
+ * Ambar (`Warning`) y nunca roja: sin red es un estado NORMAL y el conflicto es un
+ * hecho del servidor, no una falla del cajero.
+ *
+ * Vive en un solo sitio a proposito: si cada pantalla dibujara la suya, una podria
+ * decir el conflicto y la otra callarlo — que es justo el defecto que se arreglo aqui.
+ *
+ * `Color.White` sobre `Warning` es el patron ya establecido en el repo para esta banda
+ * (`QuarantineSheet.kt:317`); hoy no hay token `OnWarning` en el tema.
+ */
+@Composable
+internal fun BandaDeAvisoDeConteo(texto: String) {
+    Box(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Warning)
+            .padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.sm),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = texto,
+            color = Color.White,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+            textAlign = TextAlign.Center,
         )
     }
 }
@@ -985,6 +1167,7 @@ private fun NumericKeypad(
 private fun AddItemsPopup(
     stockItems: List<StockItem>,
     existingIds: Set<String>,
+    isLoading: Boolean,
     onAdd: (List<StockItem>) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -1053,12 +1236,33 @@ private fun AddItemsPopup(
                 shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.md),
             )
 
-            // Items list
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(horizontal = AvoqadoTheme.spacing.lg),
-            ) {
-                items(filtered.size, key = { filtered[it].id }) { index ->
+            when {
+                isLoading && available.isEmpty() -> Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) { Text(ConteoEnCurso.CARGANDO_ARTICULOS, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+
+                available.isEmpty() -> Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) { Text(ConteoEnCurso.NO_HAY_ARTICULOS_DISPONIBLES, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+
+                searchText.isNotBlank() && filtered.isEmpty() -> Box(
+                    modifier = Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        ConteoEnCurso.sinResultados(searchText),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+
+                else -> LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(horizontal = AvoqadoTheme.spacing.lg),
+                ) {
+                    items(filtered.size, key = { filtered[it].id }) { index ->
                     val item = filtered[index]
                     val isSelected = item in selectedItems
 
@@ -1104,6 +1308,7 @@ private fun AddItemsPopup(
                         )
                     }
                     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+                    }
                 }
             }
         }

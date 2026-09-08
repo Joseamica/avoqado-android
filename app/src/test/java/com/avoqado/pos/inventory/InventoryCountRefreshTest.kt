@@ -3,7 +3,10 @@ package com.avoqado.pos.inventory
 import com.avoqado.pos.MainDispatcherRule
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.domain.PlanManager
+import com.avoqado.pos.core.util.ConnectivityMonitor
+import com.avoqado.pos.inventory.data.BorradorDeConteoStore
 import com.avoqado.pos.inventory.data.InventoryRepository
+import com.avoqado.pos.inventory.data.RespuestaHttp
 import com.avoqado.pos.inventory.data.model.StockCount
 import com.avoqado.pos.inventory.data.model.StockCountItem
 import com.avoqado.pos.inventory.data.model.StockCountType
@@ -71,8 +74,10 @@ class InventoryCountRefreshTest {
         every { repository.suppliers } returns MutableStateFlow(emptyList())
         every { repository.isLoading } returns MutableStateFlow(false)
         coEvery { repository.createStockCount(any(), any(), any()) } returns Result.success(serverCount)
-        coEvery { repository.updateStockCount(any(), any(), any()) } returns Result.success(Unit)
-        coEvery { repository.confirmStockCount(any()) } returns Result.success(Unit)
+        // El cierre pasa por `enviarFinal` + `confirmarConteo`, que conservan el CÓDIGO: es lo
+        // que permite distinguir un 404 («otro aparato ya lo cerró») de un fallo reintentable.
+        coEvery { repository.enviarFinal(any(), any(), any()) } returns RespuestaHttp(200, "{}")
+        coEvery { repository.confirmarConteo(any()) } returns RespuestaHttp(200, "{}")
     }
 
     private fun createViewModel(): InventoryViewModel {
@@ -82,7 +87,21 @@ class InventoryCountRefreshTest {
         val refreshGateFactory = mockk<com.avoqado.pos.core.domain.refresh.RefreshGateFactory>()
         every { refreshGateFactory.create(any(), any()) } returns
             com.avoqado.pos.core.domain.refresh.RefreshGate(clock = { kotlin.time.Duration.ZERO })
-        return InventoryViewModel(repository, PlanManager(storage), scaleSettingsRepository, stockRefresher, refreshGateFactory)
+        val borradores = mockk<BorradorDeConteoStore>(relaxed = true)
+        every { borradores.leer() } returns null
+        every { borradores.cancelacionesPendientes() } returns emptyList()
+        val connectivityMonitor = mockk<ConnectivityMonitor>()
+        every { connectivityMonitor.isConnected } returns MutableStateFlow(true)
+        every { connectivityMonitor.isServerReachable } returns MutableStateFlow(true)
+        return InventoryViewModel(
+            repository,
+            PlanManager(storage),
+            scaleSettingsRepository,
+            stockRefresher,
+            refreshGateFactory,
+            borradores,
+            connectivityMonitor,
+        )
     }
 
     /**
@@ -143,6 +162,11 @@ class InventoryCountRefreshTest {
     /** Un conteo cíclico aplica el mismo ajuste ⇒ mismo refresco. */
     @Test
     fun `confirmar un conteo ciclico refresca la descripcion general`() = runTest {
+        // Catálogo CARGADO: si estuviera vacío, empezar el cíclico dispararía además la
+        // recuperación de `asegurarCatalogo` (D1), que es otra cosa y tiene sus propias pruebas.
+        every { repository.stockItems } returns MutableStateFlow(
+            listOf(StockItem(id = "prod-corona", name = "Cerveza Corona", onHand = 89.0)),
+        )
         val viewModel = createViewModel()
         viewModel.startCycleCount()
         viewModel.addItemsToCycleCount(
@@ -178,13 +202,13 @@ class InventoryCountRefreshTest {
         assertEquals("La cantidad contada no puede ser negativa", viewModel.errorMessage.value)
         // La línea nunca se marcó como contada → confirmar no manda nada negativo
         viewModel.confirmCount()
-        coVerify(exactly = 0) { repository.updateStockCount(any(), match { items -> items.any { it.counted < 0 } }, any()) }
+        coVerify(exactly = 0) { repository.enviarFinal(any(), match { items -> items.any { it.counted < 0 } }, any()) }
     }
 
     /** Si el conteo NO se pudo confirmar, no se finge un refresco. */
     @Test
     fun `un conteo que falla al confirmar no refresca`() = runTest {
-        coEvery { repository.confirmStockCount(any()) } returns Result.failure(Exception("boom"))
+        coEvery { repository.confirmarConteo(any()) } returns RespuestaHttp(500, "boom")
         val viewModel = createViewModel()
         viewModel.startFullCount()
         viewModel.updateCountedText("7")

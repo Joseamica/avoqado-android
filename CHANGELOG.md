@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+## [2.18.2] - 2026-09-08
+
+### Fixed
+- Descartar un conteo deja el borrador y la cancelación pendiente en UNA sola escritura (antes, si la app moría entre las dos, el conteo se quedaba abierto en el servidor).
+- Confirmar espera a que termine cualquier envío en vuelo (un envío lento ya no puede sellar una cantidad vieja); mientras dice «Confirmando…» no se puede editar ni salir.
+- Al retomar, una línea que el servidor ya reconoció cede ante una corrección hecha desde otro aparato; sólo lo pendiente de este aparato gana.
+- «Sin conexión» mira si el servidor responde, no sólo si hay WiFi.
+- El conteo queda atado a su sucursal: cambiar de sucursal a media captura no manda nada a la sucursal equivocada.
+- Si otro aparato cerró el conteo, «Confirmar» lo dice con claridad (antes salía un error genérico).
+- Una cancelación pendiente contra un servidor sin la ruta de cancelar se conserva y se reintenta (antes se daba por hecha).
+- **El conteo de inventario ya no se pierde.** Lo contado se guarda en el aparato en cada línea (antes vivía sólo en memoria hasta «Confirmar»: salir, cerrar la app o quedarse sin red lo borraba, y al retomar el servidor estaba vacío — caso Mindform, 7-sep). Con red, el avance viaja al servidor conforme se cuenta.
+- Al salir de un conteo se pregunta «¿Qué hacemos con este conteo?» — Guardar el avance · Descartar el conteo · Seguir contando. El botón BACK del sistema también pregunta.
+- Retomar un conteo se para en la primera línea sin contar y conserva lo que se contó en este aparato aunque otro haya contado otras líneas.
+- En un conteo cíclico, contar un artículo ya NO marca los demás como contados (todas las líneas compartían un id vacío).
+- Retomar un conteo cíclico ya creado en el servidor ya no crea un segundo conteo.
+- Sin conexión, la banda ámbar dice cuántas líneas quedaron guardadas en el aparato; al volver la red salen solas.
+- Si otro aparato cerró o canceló el conteo, se avisa y lo contado aquí se conserva para consulta.
+- El mensaje de «tienes un conteo sin terminar» ahora se ve también desde el detalle de un conteo.
+
+### Added
+- Tarjeta «Conteo sin terminar en este aparato · X de N contados» con «Continuar» en la lista de conteos.
+- La lista muestra «En progreso · X de N contados» (dato del servidor).
+- Descartar un conteo completo lo cancela en el servidor (con cola si no hay red).
+- 🔴 Requiere el servidor con la fase 1 del conteo (cancelar, `countedAt`, `summary`) desplegado ANTES de instalar esta versión: sin él, «Descartar el conteo» no puede cancelar en el servidor.
+
 ## [2.18.1] - 2026-09-06
 
 > Publicada a Play en dos builds con el mismo nombre: **(37)** trae sólo los arreglos de caja de

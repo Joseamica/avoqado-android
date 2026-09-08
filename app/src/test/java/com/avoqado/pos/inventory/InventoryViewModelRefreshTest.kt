@@ -4,7 +4,10 @@ import com.avoqado.pos.MainDispatcherRule
 import com.avoqado.pos.core.domain.PlanManager
 import com.avoqado.pos.core.domain.refresh.RefreshGate
 import com.avoqado.pos.core.domain.refresh.RefreshGateFactory
+import com.avoqado.pos.core.util.ConnectivityMonitor
+import com.avoqado.pos.inventory.data.BorradorDeConteoStore
 import com.avoqado.pos.inventory.data.InventoryRepository
+import com.avoqado.pos.inventory.data.model.StockItem
 import com.avoqado.pos.inventory.domain.StockRefresher
 import com.avoqado.pos.inventory.presentation.InventorySection
 import com.avoqado.pos.inventory.presentation.InventoryViewModel
@@ -14,6 +17,7 @@ import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.TestCoroutineScheduler
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
@@ -35,8 +39,15 @@ class InventoryViewModelRefreshTest {
     private val factory: RefreshGateFactory = mockk()
     private val planManager: PlanManager = mockk(relaxed = true)
 
-    private fun buildViewModel(): InventoryViewModel {
+    private fun buildViewModel(
+        catalogo: List<StockItem> = emptyList(),
+        insumos: List<StockItem> = emptyList(),
+    ): InventoryViewModel {
         every { factory.create(any(), any()) } returns RefreshGate(clock = { now }, random = { 0.5 })
+        // Explícito y no relajado: `asegurarCatalogo` decide por las DOS listas del catálogo
+        // (productos e insumos), y un mock relajado contesta ahí un Object que revienta al leerlo.
+        every { repository.stockItems } returns MutableStateFlow(catalogo)
+        every { repository.countableRawMaterials } returns MutableStateFlow(insumos)
         coEvery { repository.fetchStockOverview() } returns Result.success(Unit)
         coEvery { repository.fetchRawMaterials() } returns Result.success(Unit)
         coEvery { repository.fetchStockCounts() } returns Result.success(Unit)
@@ -49,6 +60,14 @@ class InventoryViewModelRefreshTest {
             scaleSettingsRepository = mockk<ScaleSettingsRepository>(relaxed = true),
             stockRefresher = mockk<StockRefresher>(relaxed = true),
             refreshGateFactory = factory,
+            borradores = mockk<BorradorDeConteoStore>(relaxed = true).also {
+                every { it.leer() } returns null
+                every { it.cancelacionesPendientes() } returns emptyList()
+            },
+            connectivityMonitor = mockk<ConnectivityMonitor>().also {
+                every { it.isConnected } returns MutableStateFlow(true)
+                every { it.isServerReachable } returns MutableStateFlow(true)
+            },
         )
     }
 
@@ -65,7 +84,13 @@ class InventoryViewModelRefreshTest {
 
     @Test
     fun `con un conteo en curso ni el gesto manual refresca`() = runTest(scheduler) {
-        val vm = buildViewModel()
+        // Con el catálogo YA cargado, que es la única forma de estar contando de verdad: la
+        // recuperación de `asegurarCatalogo` sólo corre con la lista vacía, y lo que esta prueba
+        // guarda es el GATE, no eso.
+        val vm = buildViewModel(
+            catalogo = listOf(StockItem(id = "p1", name = "Uno", onHand = 1.0)),
+            insumos = listOf(StockItem(id = "r1", name = "Harina", onHand = 3.0)),
+        )
         vm.startCycleCount() // showCounting = true → guard de stock (spec §4.5)
         vm.manualRefresh()
         coVerify(exactly = 0) { repository.fetchStockOverview() }

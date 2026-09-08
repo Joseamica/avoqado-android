@@ -21,15 +21,20 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -42,6 +47,7 @@ import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Success
 import com.avoqado.pos.inventory.data.model.StockCount
 import com.avoqado.pos.inventory.data.model.StockCountItem
+import com.avoqado.pos.inventory.data.ConteoEnCurso
 
 // MARK: - Stock Count Detail View
 
@@ -52,6 +58,31 @@ fun StockCountDetailView(
     isTablet: Boolean,
     onBack: () -> Unit,
 ) {
+    val errorMessage by viewModel.errorMessage.collectAsState()
+    val estadoDelDetalle by viewModel.estadoDelDetalle.collectAsState()
+    val detalleNoActualizado by viewModel.detalleNoActualizado.collectAsState()
+    val puedeContinuar by viewModel.puedeContinuarDetalle.collectAsState()
+
+    // Entrada + cada regreso desde background. El ViewModel deduplica un ON_RESUME repetido y
+    // descarta respuestas de una selección o sucursal anteriores.
+    LifecycleResumeEffect(count.id) {
+        viewModel.refreshSelectedCountDetail()
+        onPauseOrDispose { }
+    }
+
+    // 🔴 «Continuar conteo» es la TERCERA puerta que llama a `resumeCount`: si ya hay otro
+    // borrador con trabajo sin enviar, el guard pone su mensaje y NO abre nada. Esta pantalla es de
+    // pantalla completa y el único `SnackbarHost` del módulo vive en `InventoryScreen`, DESPUÉS de su
+    // `return` temprano: el aviso se quedaba suspendido y el botón parecía muerto. Mismo patrón que
+    // `StockCountingView` / `StockCountReviewView`: host propio + efecto + limpiar al cerrarse.
+    val snackbarHostState = remember { SnackbarHostState() }
+    LaunchedEffect(errorMessage) {
+        errorMessage?.let {
+            snackbarHostState.showSnackbar(it)
+            viewModel.clearErrorMessage()
+        }
+    }
+
     var searchText by remember { mutableStateOf("") }
 
     val filteredItems = if (searchText.isBlank()) count.items
@@ -76,7 +107,11 @@ fun StockCountDetailView(
             Spacer(modifier = Modifier.weight(1f))
 
             Text(
-                text = "${count.type.label} - ${count.statusDisplay}",
+                text = if (estadoDelDetalle == EstadoDelDetalleDeConteo.NO_DISPONIBLE) {
+                    "${count.type.label} - ${ConteoEnCurso.ESTADO_NO_DISPONIBLE}"
+                } else {
+                    "${count.type.label} - ${count.statusDisplay}"
+                },
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
             )
@@ -87,7 +122,7 @@ fun StockCountDetailView(
             // lectura y "Contar existencia" creaba OTRO conteo: en la base del
             // local de pruebas quedaron dos completos abiertos desde el 11 de
             // julio, con 51 artículos cada uno, que nadie iba a cerrar.
-            if (count.status == "IN_PROGRESS") {
+            if (puedeContinuar) {
                 TextButton(onClick = { viewModel.resumeCount(count) }) {
                     Text("Continuar conteo")
                 }
@@ -98,6 +133,22 @@ fun StockCountDetailView(
         }
 
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+        if (estadoDelDetalle == EstadoDelDetalleDeConteo.NO_DISPONIBLE || detalleNoActualizado) {
+            Text(
+                text = if (estadoDelDetalle == EstadoDelDetalleDeConteo.NO_DISPONIBLE) {
+                    ConteoEnCurso.DETALLE_NO_DISPONIBLE
+                } else {
+                    ConteoEnCurso.DETALLE_NO_ACTUALIZADO
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                    .padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.md),
+            )
+        }
 
         // Info row
         Row(
@@ -200,6 +251,12 @@ fun StockCountDetailView(
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             }
         }
+    }
+
+    // Hermano del `Column` raíz para dibujarse encima de él. Un `Box` sin `pointerInput` no es
+    // blanco de toque: sin snackbar no estorba a la lista que tiene debajo.
+    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.BottomCenter) {
+        SnackbarHost(hostState = snackbarHostState)
     }
 }
 
