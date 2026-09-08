@@ -71,3 +71,23 @@ data class GatewayHeartbeatRequest(
     val address: String? = null,
     val printers: List<PrinterStatusReport> = emptyList(),
 )
+
+/**
+ * Respuesta del latido del gateway.
+ *
+ * 🔴 El `ApiService` lo declaraba como `Any`, que kotlinx.serialization **no puede
+ * deserializar**: la llamada habría reventado en cuanto alguien la usara. Es el mismo defecto que
+ * ya se cazó en `syncPrintJobs`, y sobrevivió porque nadie llamaba a este endpoint.
+ */
+@Serializable
+data class GatewayHeartbeatResponse(
+    val success: Boolean = true,
+    val data: GatewayHeartbeatResult = GatewayHeartbeatResult(),
+)
+
+@Serializable
+data class GatewayHeartbeatResult(
+    /** `false` = este aparato NO es el gateway designado del venue: el servidor descarta el latido. */
+    val registered: Boolean = false,
+    val printersUpdated: Int = 0,
+)

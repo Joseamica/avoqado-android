@@ -2,6 +2,9 @@ package com.avoqado.pos.printing.data
 
 import android.content.Context
 import android.util.Log
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -38,6 +41,23 @@ class ComandasPendientesStore @Inject constructor(
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
+    private val _pendiente = MutableStateFlow<EstadoDeComanda.NoSalio?>(null)
+
+    /**
+     * La comanda que no salió — **UNA sola en toda la app**.
+     *
+     * 🔴 Antes cada `PaymentFlowViewModel` cargaba su propia copia del disco. Checkout y el cobro
+     * de una mesa son destinos de navegación distintos, así que convivían dos: reimprimir desde
+     * uno dejaba al otro ofreciendo imprimirla otra vez (P1 #6 de la 2ª auditoría de Codex).
+     * Ahora todos observan esto y nadie guarda una copia.
+     */
+    val pendiente: StateFlow<EstadoDeComanda.NoSalio?> = _pendiente.asStateFlow()
+
+    /** Se llama UNA vez al abrir sesión en un venue — ver `AppState.startOfflineOutbox`. */
+    fun cargar(venueIdActual: String?, ahora: Long = System.currentTimeMillis()) {
+        _pendiente.value = leer(venueIdActual, ahora)
+    }
+
     @Serializable
     private data class Guardada(
         val estaciones: List<String>,
@@ -56,7 +76,7 @@ class ComandasPendientesStore @Inject constructor(
             val texto = json.encodeToString(
                 Guardada(estado.estaciones, estado.causa, estado.orderNumber, estado.trabajo, ahora),
             )
-            almacen.escribir(texto)
+            almacen.escribir(texto).also { if (it) _pendiente.value = estado }
         }.onFailure { Log.w(TAG, "No se pudo guardar la comanda pendiente: ${it.message}") }
             .getOrDefault(false)
 
@@ -107,6 +127,7 @@ class ComandasPendientesStore @Inject constructor(
 
     fun limpiar() {
         runCatching { almacen.borrar() }
+        _pendiente.value = null
     }
 
     private companion object {

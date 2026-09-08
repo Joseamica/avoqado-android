@@ -35,6 +35,7 @@ import com.avoqado.pos.core.domain.printing.ComandaDispatcher
 import com.avoqado.pos.core.domain.printing.NoStationsFallback
 import com.avoqado.pos.printing.data.ComandasPendientesStore
 import com.avoqado.pos.printing.data.EstadoDeComanda
+import com.avoqado.pos.printing.data.ReplayDeComandasPendientes
 import com.avoqado.pos.printing.data.PrinterService
 import com.avoqado.pos.printing.data.model.ComboPrintLines
 import com.avoqado.pos.printing.data.model.KitchenItem
@@ -44,6 +45,9 @@ import com.avoqado.pos.printing.routing.RoutableItem
 import com.avoqado.pos.tpvsettings.data.TpvSettings
 import com.avoqado.pos.tpvsettings.data.TpvSettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -83,6 +87,12 @@ class PaymentFlowViewModel @Inject constructor(
     private val comandaDispatcher: ComandaDispatcher,
     /** Sobrevive a que la app muera con una comanda sin salir — ver [ComandasPendientesStore]. */
     private val comandasPendientesStore: ComandasPendientesStore,
+    /**
+     * 🔴 El botón «Volver a imprimir» pasa por AQUÍ, no por el dispatcher directo: es el mismo
+     * ejecutor —y el mismo candado— que usa el reloj que reintenta sola. Si cada uno mandara por
+     * su cuenta, el tic y el toque del cajero podrían coincidir y la cocina recibiría DOS.
+     */
+    private val replayDeComandas: ReplayDeComandasPendientes,
     private val customerDisplay: com.avoqado.pos.customerdisplay.CustomerDisplayState,
     private val areaTicketRepository: AreaTicketRepository,
     private val savedStateHandle: androidx.lifecycle.SavedStateHandle,
@@ -445,12 +455,26 @@ class PaymentFlowViewModel @Inject constructor(
      * daba por vencido al primer intento; ahora insiste (ver [ComandaDispatcher.dispatch]) y
      * el aviso final trae botón para volver a intentarlo a mano ([reintentarComanda]).
      */
-    private val _comandaWarning = MutableStateFlow<EstadoDeComanda?>(null)
-    val comandaWarning: StateFlow<EstadoDeComanda?> = _comandaWarning.asStateFlow()
+    /**
+     * El aviso EN CURSO («reintentando…»), que es transitorio y de esta pantalla.
+     *
+     * 🔴 El fallo FINAL no vive aquí: vive en [ComandasPendientesStore.pendiente], que es único
+     * en toda la app. Antes cada ViewModel tenía su propia copia y dos pantallas podían ofrecer
+     * imprimir la misma comanda por separado (P1 #6 de la 2ª auditoría de Codex).
+     */
+    private val _avisoEnCurso = MutableStateFlow<EstadoDeComanda?>(null)
+
+    /** El pedido cuyo aviso el cajero se quitó de encima sin resolverlo (toque fuera / Atrás). */
+    private val _ocultoSinResolver = MutableStateFlow<String?>(null)
+
+    val comandaWarning: StateFlow<EstadoDeComanda?> =
+        combine(_avisoEnCurso, comandasPendientesStore.pendiente, _ocultoSinResolver) { enCurso, pendiente, oculto ->
+            enCurso ?: pendiente?.takeIf { it.orderNumber != oculto }
+        }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     /** «Ya la canté»: una PERSONA lo resolvió — deja de perseguirla entre arranques. */
     fun clearComandaWarning() {
-        _comandaWarning.value = null
+        _avisoEnCurso.value = null
         comandasPendientesStore.limpiar()
     }
 
@@ -463,14 +487,12 @@ class PaymentFlowViewModel @Inject constructor(
      * (P2 #11 de la 2ª auditoría de Codex, 2026-09-07).
      */
     fun ocultarAvisoDeComanda() {
-        _comandaWarning.value = null
+        _ocultoSinResolver.value = (comandaWarning.value as? EstadoDeComanda.NoSalio)?.orderNumber
+        _avisoEnCurso.value = null
     }
 
-    init {
-        // 🔴 Si la app murió con una comanda sin salir, el aviso vuelve al abrir — NO se
-        // reimprime sola (ver el KDoc de [ComandasPendientesStore]: eso duplicaría el ticket).
-        comandasPendientesStore.leer(secureStorage.venueId)?.let { _comandaWarning.value = it }
-    }
+    // 🔴 Ya NO se lee el disco aquí: lo pendiente lo carga `AppState` una sola vez al abrir
+    // sesión, y este ViewModel lo OBSERVA. Leerlo por instancia era lo que producía dos copias.
 
     private val _canPrintOnTerminal = MutableStateFlow(false)
     val canPrintOnTerminal: StateFlow<Boolean> = _canPrintOnTerminal.asStateFlow()
@@ -674,9 +696,9 @@ class PaymentFlowViewModel @Inject constructor(
         // tarda hasta ~1 minuto, el caso normal es que el aviso llegue DESPUÉS de que el cajero
         // tocó «Listo» (P1 #6 de la auditoría de Codex, 2026-09-07). Se va con «Ya la canté»,
         // que es una persona decidiendo, no un efecto secundario de cobrar otra cosa.
-        if (_comandaWarning.value !is EstadoDeComanda.NoSalio) {
-            _comandaWarning.value = null
-        }
+        // Un `Insistiendo` de la venta anterior describe algo que ya terminó: se limpia. El
+        // fallo final NO vive aquí, así que no hay nada que preservar a mano.
+        _avisoEnCurso.value = null
         splitBaseAmountOverride = resolveSplitBaseAmount(cart)
         // El total autoritativo es de la venta ANTERIOR: arrastrarlo cobraría
         // esta venta al precio de la pasada.
@@ -2134,31 +2156,17 @@ class PaymentFlowViewModel @Inject constructor(
      */
     fun reintentarComanda() {
         if (_reintentandoComandaManualmente.value) return
-        // 🔴 Se reenvía el trabajo CONGELADO del fallo — nunca el carrito de este momento.
-        // Leer `cartState` (lo que hacía antes) rompía dos cosas a la vez, y las dos las
-        // paga el cliente:
-        //   1. DUPLICABA. Si Cocina imprimió y Barra no, reenviar el carrito le mandaba a
-        //      Cocina un ticket idéntico — un platillo de más, peor que el que faltó.
-        //   2. IMPRIMÍA OTRA VENTA. Si el cajero ya empezó la siguiente, el carrito es el de
-        //      ESA venta: el botón del aviso de A imprimía la B con el folio de la B, y A se
-        //      quedaba igual de pendiente.
-        // (P1 #2 y #3 de la auditoría de Codex, 2026-09-07.)
-        val fallo = _comandaWarning.value as? EstadoDeComanda.NoSalio ?: return
-        val trabajo = fallo.trabajo ?: return
-        // 🔴 La vigencia (8 h) se comprobaba SÓLO al arrancar. Una tablet que se queda encendida
-        // toda la noche —lo normal en un mostrador— seguía ofreciendo «Volver a imprimir» a la
-        // mañana siguiente, y eso saca comida que nadie pidió. Preguntarle al almacén aquí
-        // reusa la MISMA regla en vez de copiarla (P2 #13 de la 2ª auditoría de Codex).
-        if (comandasPendientesStore.leer(secureStorage.venueId) == null) {
-            _comandaWarning.value = null
-            return
-        }
+        // Se comprueba que HAYA algo pendiente y vigente antes de marcar «en vuelo»: el almacén
+        // aplica la vigencia (8 h) en el mismo sitio, en vez de copiar la regla aquí.
+        val pendiente = comandasPendientesStore.pendiente.value ?: return
+        if (pendiente.trabajo == null) return
+        _ocultoSinResolver.value = null
         _reintentandoComandaManualmente.value = true
         viewModelScope.launch {
             try {
-                comandaDispatcher.reintentar(trabajo) { estado ->
-                    aplicarEstadoDeComanda(estado, trabajo.orderNumber)
-                }
+                // 🔴 Por el ejecutor compartido — ver el KDoc de [replayDeComandas]. Él limpia el
+                // pendiente si sale, así que la pantalla se actualiza sola al observarlo.
+                replayDeComandas.intentarAhora()
             } finally {
                 _reintentandoComandaManualmente.value = false
             }
@@ -2173,25 +2181,32 @@ class PaymentFlowViewModel @Inject constructor(
      */
     private fun aplicarEstadoDeComanda(estado: EstadoDeComanda, orderNumber: String) {
         if (estado is EstadoDeComanda.Salio) {
-            val avisoActual = _comandaWarning.value
+            // 🔴 Se mira lo que el cajero TIENE ENFRENTE (`comandaWarning`, que ya combina el
+            // aviso en curso con lo pendiente del almacén). Un `Salio` tardío de la venta
+            // anterior no puede borrar el aviso —todavía sin resolver— de la venta de ahora.
+            val avisoActual = comandaWarning.value
             val esDeEstaVenta = when (avisoActual) {
                 null, EstadoDeComanda.Salio -> true
                 is EstadoDeComanda.Insistiendo -> avisoActual.orderNumber == orderNumber
                 is EstadoDeComanda.NoSalio -> avisoActual.orderNumber == orderNumber
             }
             if (esDeEstaVenta) {
-                _comandaWarning.value = null
+                _avisoEnCurso.value = null
                 comandasPendientesStore.limpiar()
             }
+        } else if (estado is EstadoDeComanda.NoSalio && estado.trabajo != null) {
+            // El veredicto final CON algo que reenviar va al almacén, que es lo que ven TODAS
+            // las pantallas y lo que el reloj reintenta solo.
+            _avisoEnCurso.value = null
+            _ocultoSinResolver.value = null
+            comandasPendientesStore.guardar(estado)
         } else {
-            _comandaWarning.value = estado
-            // Se guarda SÓLO el veredicto final Y sólo si hay algo que recuperar. Un
-            // `Insistiendo` describe algo en curso; y un `NoSalio` SIN trabajo (el camino
-            // legado, o todas las estaciones saltadas) no se puede reimprimir, así que
-            // guardarlo sólo serviría para PISAR en disco a uno que sí era recuperable.
-            if (estado is EstadoDeComanda.NoSalio && estado.trabajo != null) {
-                comandasPendientesStore.guardar(estado)
-            }
+            // 🔴 Todo lo demás SE VE pero no se guarda: un `Insistiendo` describe algo en curso,
+            // y un `NoSalio` SIN trabajo (el camino legado, o todas las estaciones saltadas) no
+            // se puede reimprimir. Ver y poder reimprimir son cosas distintas: el cajero TIENE
+            // que enterarse de que la comanda no salió aunque nadie pueda reenviarla, y
+            // guardarlo en disco sólo serviría para PISAR a uno que sí era recuperable.
+            _avisoEnCurso.value = estado
         }
     }
 

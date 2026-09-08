@@ -2,6 +2,7 @@ package com.avoqado.pos.payment
 
 import com.avoqado.pos.MainDispatcherRule
 import com.avoqado.pos.printing.data.ResultadoLegado
+import com.avoqado.pos.printing.data.ReplayDeComandasPendientes
 import com.avoqado.pos.printing.data.AlmacenDeTexto
 import com.avoqado.pos.printing.data.ComandasPendientesStore
 import com.avoqado.pos.areatickets.data.AreaTicketCheckout
@@ -88,6 +89,15 @@ class PaymentFlowViewModelTest {
 
     /** Visible para poder comprobar CUÁNDO se persiste una comanda que no salió. */
     private val almacenDePendientes = AlmacenEnMemoria()
+    private val storeDePendientes by lazy { ComandasPendientesStore(almacenDePendientes) }
+    /** El MISMO dispatcher que ve el ViewModel y el reintento periódico — ver más abajo. */
+    private val comandaDispatcherReal by lazy {
+        ComandaDispatcher(
+            printConfigRepository,
+            ReintentoDeComanda(comandaPrinter, reporteDeComandas = mockk<ReporteDeComandas>(relaxed = true)),
+            printerService,
+        )
+    }
 
     private lateinit var viewModel: PaymentFlowViewModel
 
@@ -156,7 +166,11 @@ class PaymentFlowViewModelTest {
             kdsOrderBus = kdsOrderBus,
             printerService = printerService,
             secureStorage = secureStorage,
-            comandasPendientesStore = ComandasPendientesStore(almacenDePendientes),
+            comandasPendientesStore = storeDePendientes,
+            // 🔴 El REAL, con el mismo almacén y el mismo dispatcher: si aquí fuera un mock
+            // relajado, «Volver a imprimir» no mandaría nada y las pruebas del botón pasarían
+            // sin ejercitar una sola línea del camino que dicen guardar.
+            replayDeComandas = ReplayDeComandasPendientes(storeDePendientes, comandaDispatcherReal),
             // 🔴 NO REGRESIÓN: el despachador va REAL, armado con los mismos mocks de siempre.
             // Mockearlo escondería justo lo que hay que probar — los tests de abajo siguen
             // verificando `printerService.autoPrintKitchenTicket` y `comandaPrinter.printComandas`
@@ -170,11 +184,7 @@ class PaymentFlowViewModelTest {
             // `UnconfinedTestDispatcher` + `advanceUntilIdle()` los `delay()` del reintento se
             // saltan en tiempo virtual; sin `advanceUntilIdle()` la coroutine queda SUSPENDIDA ahí,
             // que es justo lo que exige "el cobro nunca se frena".
-            comandaDispatcher = ComandaDispatcher(
-                printConfigRepository,
-                ReintentoDeComanda(comandaPrinter, reporteDeComandas = mockk<ReporteDeComandas>(relaxed = true)),
-                printerService,
-            ),
+            comandaDispatcher = comandaDispatcherReal,
             tableSession = com.avoqado.pos.tables.data.TableSession(),
             syncOutbox = mockk(relaxed = true),
             customerDisplay = com.avoqado.pos.customerdisplay.CustomerDisplayState(),

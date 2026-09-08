@@ -127,6 +127,7 @@ class FastTarjetaClienteTest {
             printerService = printerService,
             secureStorage = secureStorage,
             comandasPendientesStore = ComandasPendientesStore(AlmacenEnMemoria()),
+            replayDeComandas = mockk(relaxed = true),
             // Ronda de arreglo 1 (Task 4): `ComandaDispatcher` recibe `ReintentoDeComanda` por
             // Hilt ahora — construido aquí con el mismo `comandaPrinter` mockeado de siempre.
             comandaDispatcher = ComandaDispatcher(

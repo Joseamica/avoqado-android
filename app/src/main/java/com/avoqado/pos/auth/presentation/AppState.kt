@@ -38,6 +38,8 @@ class AppState @Inject constructor(
     private val tpvSettingsRepository: TpvSettingsRepository,
     private val paymentSyncService: PaymentSyncService,
     private val syncOutbox: com.avoqado.pos.core.data.sync.SyncOutbox,
+    private val comandasPendientesStore: com.avoqado.pos.printing.data.ComandasPendientesStore,
+    private val replayDeComandas: com.avoqado.pos.printing.data.ReplayDeComandasPendientes,
     private val reservationRepository: com.avoqado.pos.reservations.data.ReservationRepository,
     private val tableSyncCoordinator: com.avoqado.pos.tables.data.TableSyncCoordinator,
     private val posModeManager: PosModeManager,
@@ -65,6 +67,11 @@ class AppState @Inject constructor(
         secureStorage.venueId?.let { venueId ->
             syncOutbox.start(venueId)
             tableSyncCoordinator.start()
+            // 🔴 La comanda que no salió: se recupera lo guardado de ESTE venue y se arranca el
+            // reloj que la reintenta sola. Es lo que hace que salga al prender la impresora, sin
+            // que nadie tenga que tocar un botón. Ver [ReplayDeComandasPendientes].
+            comandasPendientesStore.cargar(venueId)
+            replayDeComandas.iniciar(viewModelScope)
         }
     }
 

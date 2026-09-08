@@ -127,6 +127,8 @@ class AppStateVenueRecoveryTest {
             planManager = mockk<PlanManager>(relaxed = true),
             tpvSettingsRepository = tpvSettingsRepository,
             paymentSyncService = paymentSyncService,
+            comandasPendientesStore = mockk(relaxed = true),
+            replayDeComandas = mockk(relaxed = true),
             syncOutbox = syncOutbox,
             reservationRepository = reservationRepository,
             tableSyncCoordinator = mockk<TableSyncCoordinator>(relaxed = true),

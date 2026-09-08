@@ -5,6 +5,7 @@ import com.avoqado.pos.auth.data.model.LoginResponse
 import com.avoqado.pos.auth.data.model.RefreshRequest
 import com.avoqado.pos.auth.data.model.RefreshResponse
 import com.avoqado.pos.printing.routing.GatewayHeartbeatRequest
+import com.avoqado.pos.printing.routing.GatewayHeartbeatResponse
 import com.avoqado.pos.printing.routing.PrintConfigResponse
 import com.avoqado.pos.printing.routing.SyncPrintJobsRequest
 import com.avoqado.pos.printing.routing.SyncPrintJobsResponse
@@ -210,7 +211,7 @@ interface ApiService {
     suspend fun gatewayHeartbeat(
         @Path("venueId") venueId: String,
         @Body request: GatewayHeartbeatRequest,
-    ): Any // { registered, printersUpdated }
+    ): GatewayHeartbeatResponse
 
     // MARK: - Time Clock
 
