@@ -307,6 +307,120 @@ class BorradorDeConteoPrefsTest {
     }
 
     @Test
+    fun `P1 ACK de snapshot RAM vacio se vuelve durable sin inventar una base`() {
+        val store = store()
+        val snapshot = borrador().copy(actualizadoEn = 200L)
+
+        assertTrue(
+            store.reconocerPutDesdeMemoria(
+                VENUE,
+                "count-1",
+                expectedRevision = 4,
+                nuevaRevision = 5,
+                snapshot = snapshot,
+                durableAlSeleccionar = null,
+                sellos = mapOf("uuid-1" to (8.0 to "2026-09-07T11:00:00Z")),
+            ),
+        )
+
+        val vigente = store.leer(VENUE)!!
+        assertEquals(5, vigente.revision)
+        assertTrue(vigente.pendientesDeEnviar.isEmpty())
+        assertNull(vigente.revisionConPutFinalConfirmado)
+    }
+
+    @Test
+    fun `P1 ACK RAM reemplaza el disco viejo cuando no cambio durante el PUT`() {
+        val store = store()
+        val durableAlSeleccionar = borrador().copy(
+            lineas = listOf(
+                borrador().lineas.single().copy(counted = 1.0, difference = -9.0, countedAt = "viejo"),
+            ),
+            actualizadoEn = 200L,
+        )
+        assertTrue(store.guardar(durableAlSeleccionar))
+        val snapshot = durableAlSeleccionar.copy(
+            lineas = listOf(
+                durableAlSeleccionar.lineas.single().copy(
+                    counted = 8.0,
+                    difference = -2.0,
+                    countedAt = "2026-09-07T11:00:00Z",
+                ),
+            ),
+        )
+
+        assertTrue(
+            store.reconocerPutDesdeMemoria(
+                VENUE,
+                "count-1",
+                expectedRevision = 4,
+                nuevaRevision = 5,
+                snapshot = snapshot,
+                durableAlSeleccionar = durableAlSeleccionar,
+                sellos = mapOf("uuid-1" to (8.0 to "2026-09-07T11:00:00Z")),
+            ),
+        )
+
+        val vigente = store.leer(VENUE)!!
+        assertEquals(5, vigente.revision)
+        assertEquals(8.0, vigente.lineas.single().counted, 0.0)
+        assertTrue(vigente.pendientesDeEnviar.isEmpty())
+    }
+
+    @Test
+    fun `P1 ACK RAM conserva una edicion de disco hecha durante el PUT`() {
+        val store = store()
+        val durableAlSeleccionar = borrador().copy(
+            lineas = listOf(
+                borrador().lineas.single().copy(counted = 1.0, difference = -9.0, countedAt = "viejo"),
+            ),
+            actualizadoEn = 200L,
+        )
+        assertTrue(store.guardar(durableAlSeleccionar))
+        val enviada = durableAlSeleccionar.copy(
+            lineas = listOf(
+                durableAlSeleccionar.lineas.single().copy(
+                    counted = 8.0,
+                    difference = -2.0,
+                    countedAt = "2026-09-07T11:00:00Z",
+                ),
+            ),
+        )
+        val editada = enviada.copy(
+            lineas = listOf(
+                enviada.lineas.single().copy(
+                    counted = 9.0,
+                    difference = -1.0,
+                    countedAt = "2026-09-08T12:00:00Z",
+                ),
+            ),
+            pendientesDeEnviar = setOf("uuid-1"),
+            revisionConPutFinalConfirmado = null,
+            // Mismo milisegundo: el contenido contra la baseline decide, no el reloj.
+            actualizadoEn = 200L,
+        )
+        assertTrue(store.guardarEdicion(VENUE, editada))
+
+        assertTrue(
+            store.reconocerPutDesdeMemoria(
+                VENUE,
+                "count-1",
+                expectedRevision = 4,
+                nuevaRevision = 5,
+                snapshot = enviada,
+                durableAlSeleccionar = durableAlSeleccionar,
+                sellos = mapOf("uuid-1" to (8.0 to "2026-09-07T11:00:00Z")),
+            ),
+        )
+
+        val vigente = store.leer(VENUE)!!
+        assertEquals(5, vigente.revision)
+        assertEquals(9.0, vigente.lineas.single().counted, 0.0)
+        assertEquals(setOf("uuid-1"), vigente.pendientesDeEnviar)
+        assertNull(vigente.revisionConPutFinalConfirmado)
+    }
+
+    @Test
     fun `P1 cualquier edicion invalida el stage de cierre`() {
         val store = store()
         val original = borrador().copy(

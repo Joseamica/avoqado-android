@@ -15,14 +15,17 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Backspace
 import androidx.compose.material.icons.filled.Add
@@ -86,6 +89,7 @@ fun StockCountingView(
     val selectedIndex by viewModel.selectedItemIndex.collectAsState()
     val countedText by viewModel.countedText.collectAsState()
     val activeCountType by viewModel.activeCountType.collectAsState()
+    val countNote by viewModel.countNote.collectAsState()
     val stockItems by viewModel.stockItems.collectAsState()
     val countableRawMaterials by viewModel.countableRawMaterials.collectAsState()
     val salidaPendiente by viewModel.salidaPendiente.collectAsState()
@@ -160,6 +164,7 @@ fun StockCountingView(
             onCancel = { viewModel.pedirSalida() },
             onNext = { viewModel.finishCounting() },
             hasItems = countItems.isNotEmpty() && !soloConsulta,
+            soloConsulta = soloConsulta,
         )
 
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
@@ -170,6 +175,10 @@ fun StockCountingView(
         // apagado sin que la pantalla dijera una palabra. La regla ya resuelta la da el
         // ViewModel.
         aviso?.let { BandaDeAvisoDeConteo(it) }
+
+        if (soloConsulta) {
+            NotaLocalEnConsulta(countNote)
+        }
 
         if (isTablet) {
             // iPad-style split layout
@@ -460,15 +469,19 @@ fun StockCountingView(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                    TextButton(
-                        onClick = { viewModel.pedirDescarte() },
-                        enabled = !isSaving,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        Text(
-                            text = ConteoEnCurso.DESCARTAR,
-                            color = MaterialTheme.colorScheme.error,
-                        )
+                    // CLOSED conserva el descarte de W4. Un conflicto de revisión o UNKNOWN, en
+                    // cambio, es una copia local de consulta que no se puede borrar desde aquí.
+                    if (conflictoDeRevisionVisible == null) {
+                        TextButton(
+                            onClick = { viewModel.pedirDescarte() },
+                            enabled = !isSaving,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            Text(
+                                text = ConteoEnCurso.DESCARTAR,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
                     }
                     HorizontalDivider(
                         modifier = Modifier.padding(top = AvoqadoTheme.spacing.lg),
@@ -680,6 +693,7 @@ private fun CountingHeader(
     onCancel: () -> Unit,
     onNext: () -> Unit,
     hasItems: Boolean,
+    soloConsulta: Boolean,
 ) {
     Row(
         modifier = Modifier
@@ -694,7 +708,7 @@ private fun CountingHeader(
             color = MaterialTheme.colorScheme.surfaceContainerHigh,
         ) {
             Text(
-                text = "Cancelar",
+                text = if (soloConsulta) "Salir" else "Cancelar",
                 style = MaterialTheme.typography.labelLarge,
                 modifier = Modifier.padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.sm),
             )
@@ -724,6 +738,40 @@ private fun CountingHeader(
                 color = if (hasItems) MaterialTheme.colorScheme.onPrimary
                 else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f),
                 modifier = Modifier.padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.sm),
+            )
+        }
+    }
+}
+
+@Composable
+private fun NotaLocalEnConsulta(nota: String) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.sm),
+        verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.xs),
+    ) {
+        Text(
+            text = "Nota del conteo",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Surface(
+            modifier = Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.sm),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+        ) {
+            Text(
+                // Sólo la cadena exactamente vacía usa placeholder. Espacios y saltos son parte
+                // de la nota local y se conservan sin normalizar ni truncar.
+                text = if (nota.isEmpty()) "Sin nota" else nota,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 120.dp)
+                    .verticalScroll(rememberScrollState())
+                    .padding(AvoqadoTheme.spacing.md),
             )
         }
     }

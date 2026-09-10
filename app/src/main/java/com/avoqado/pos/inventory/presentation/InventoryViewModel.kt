@@ -17,6 +17,7 @@ import com.avoqado.pos.inventory.data.ResultadoDeCierreCoordinado
 import com.avoqado.pos.inventory.data.ConflictoRevision
 import com.avoqado.pos.inventory.data.ReceiveItemRequest
 import com.avoqado.pos.inventory.data.RespuestaHttp
+import com.avoqado.pos.inventory.data.ResultadoDeAvanceCoordinado
 import com.avoqado.pos.inventory.data.SIN_VENUE
 import com.avoqado.pos.inventory.data.model.InventoryTransfer
 import com.avoqado.pos.inventory.data.model.PurchaseOrder
@@ -44,6 +45,8 @@ import javax.inject.Inject
 import com.avoqado.pos.core.data.network.ServerErrorText
 
 private const val TAG = "📦 InventoryVM"
+private const val ERROR_GUARDADO_LOCAL =
+    "No pudimos guardar este avance en el aparato. Mantén este conteo abierto y vuelve a intentarlo."
 
 /** Espejo EXACTO de `PREMIUM_ONLY_CODES` en el backend y de iOS. */
 private const val SCALE_FEATURE_CODE = "SCALE_INTEGRATION"
@@ -577,6 +580,8 @@ class InventoryViewModel @Inject constructor(
 
     private val _borradorLocal = MutableStateFlow(borradores.leer())
     val borradorLocal: StateFlow<BorradorDeConteo?> = _borradorLocal.asStateFlow()
+    private var snapshotNoPersistido: BorradorDeConteo? = null
+    private var revisionReconocidaEnMemoria: Int? = null
 
     /**
      * La sucursal en la que se ABRIÓ este conteo, y su nombre. Se fija al empezar o retomar y no
@@ -753,7 +758,40 @@ class InventoryViewModel @Inject constructor(
         viewModelScope.launch { recuperarCatalogoSiQuedoVacio() }
     }
 
-    fun refrescarBorradorLocal() { _borradorLocal.value = borradores.leer() }
+    fun refrescarBorradorLocal() {
+        val venueId = repository.venueIdActual() ?: _venueDelConteo
+        val delCoordinador = if (venueId != null) {
+            inventoryCountSyncCoordinator?.borradorNoPersistido(venueId)
+        } else {
+            null
+        }
+        val vigente = borradorVigenteLocal(venueId = venueId, delCoordinador = delCoordinador)
+        if (delCoordinador != null && vigente == delCoordinador) {
+            snapshotNoPersistido = delCoordinador
+            revisionReconocidaEnMemoria = delCoordinador.revision
+        }
+        _borradorLocal.value = vigente
+    }
+
+    private fun borradorVigenteLocal(
+        venueId: String? = repository.venueIdActual() ?: _venueDelConteo,
+        countId: String? = null,
+        delCoordinador: BorradorDeConteo? = if (venueId != null) {
+            inventoryCountSyncCoordinator?.borradorNoPersistido(venueId)
+        } else {
+            null
+        },
+    ): BorradorDeConteo? {
+        val disco = borradores.leer()
+        val objetivo = venueId ?: disco?.venueId ?: snapshotNoPersistido?.venueId ?: delCoordinador?.venueId
+        val candidatos = listOfNotNull(disco, snapshotNoPersistido, delCoordinador)
+            .filter { objetivo == null || it.venueId == objetivo }
+            .filter { countId == null || it.countId == countId }
+        candidatos.firstOrNull { it.conflictoRevision != null }?.let { return it }
+        return candidatos.maxWithOrNull(
+            compareBy<BorradorDeConteo>({ it.revision ?: -1 }, { it.actualizadoEn }),
+        )
+    }
 
     private fun esConteoVisible(venueId: String, countId: String): Boolean =
         venueId == _venueDelConteo &&
@@ -805,7 +843,8 @@ class InventoryViewModel @Inject constructor(
         _touchedItemIds.value = ConteoEnCurso.idsContadas(lineas)
     }
 
-    private fun venueIdActual(): String? = borradores.leer()?.venueId ?: repository.venueIdActual()
+    private fun venueIdActual(): String? =
+        borradores.leer()?.venueId ?: snapshotNoPersistido?.venueId ?: repository.venueIdActual()
 
     /** Ancla el conteo a la sucursal en la que se abre. Se llama en los CUATRO puntos de entrada. */
     private fun fijarSucursalDelConteo() {
@@ -835,18 +874,41 @@ class InventoryViewModel @Inject constructor(
      * de dejar un borrador vacío. Una nota vaciada sí es trabajo local hasta que el servidor pueda
      * reconocer ese borrado.
      */
-    private fun persistirBorrador(edicionLocal: Boolean = false) {
+    private fun persistirBorrador(
+        edicionLocal: Boolean = false,
+        conservarConteoServerBacked: Boolean = false,
+    ): Boolean {
         val lineas = _countItems.value
         val venueId = _venueDelConteo ?: venueIdActual() ?: ""
-        val anterior = venueId.takeIf { it.isNotBlank() }?.let(borradores::leer)
+        val anteriorDisco = venueId.takeIf { it.isNotBlank() }?.let(borradores::leer)
+        val anteriorMemoria = snapshotNoPersistido?.takeIf {
+            it.venueId == venueId && it.countId == _activeCount.value?.id
+        }
+        val anterior = when {
+            anteriorMemoria == null -> anteriorDisco
+            anteriorDisco == null -> anteriorMemoria
+            (anteriorMemoria.revision ?: -1) > (anteriorDisco.revision ?: -1) -> anteriorMemoria
+            anteriorMemoria.revision == anteriorDisco.revision &&
+                anteriorMemoria.actualizadoEn >= anteriorDisco.actualizadoEn -> anteriorMemoria
+            else -> anteriorDisco
+        }
         val hayAlgo = ConteoEnCurso.contadas(lineas) > 0 || notaPendienteDeEnviar ||
-            anterior?.conflictoRevision != null || anterior?.revisionConPutFinalConfirmado != null
+            anterior?.conflictoRevision != null || anterior?.revisionConPutFinalConfirmado != null ||
+            (conservarConteoServerBacked && anterior?.countId == _activeCount.value?.id)
         if (!hayAlgo) {
-            if (venueId.isBlank() || !borradores.borrar(venueId)) {
+            // No había nada que borrar. Tratar el `false` de un store/mock como fallo en este caso
+            // tapa errores previos (por ejemplo una cantidad negativa) y bloquea el cierre antes
+            // de que pueda avisar «sin conteo activo».
+            if (anterior == null) {
+                refrescarBorradorLocal()
+                return true
+            }
+            val borrado = venueId.isNotBlank() && borradores.borrar(venueId)
+            if (!borrado) {
                 Log.e(TAG, "❌ El borrador vacío no se pudo borrar del disco")
             }
             refrescarBorradorLocal()
-            return
+            return borrado
         }
         // 🔴 El venue del CONTEO, no el del aparato: si alguien cambió de sucursal a media
         // captura, estampar el actual convertiría lo contado en A en un conteo de B. El almacén
@@ -873,15 +935,43 @@ class InventoryViewModel @Inject constructor(
                     ?.revisionConPutFinalConfirmado,
                 actualizadoEn = System.currentTimeMillis(),
         )
-        val guardado = if (edicionLocal) {
+        val guardado = if (revisionReconocidaEnMemoria == snapshot.revision && snapshot.revision != null) {
+            borradores.guardarSnapshotReconocido(
+                venueId,
+                snapshot.countId.orEmpty(),
+                snapshot.revision,
+                snapshot,
+                anteriorDisco,
+            )
+        } else if (edicionLocal) {
             borradores.guardarEdicion(venueId, snapshot)
         } else {
             borradores.guardar(venueId, snapshot)
         }
         // No se puede hacer nada más aquí —la red todavía puede salvar lo que el disco no—, pero
         // callarlo dejaba al aparato actuando como si la línea estuviera a salvo.
-        if (!guardado) Log.e(TAG, "❌ El avance del conteo NO quedó en disco")
-        aplicarBorradorVigente(borradores.leer(venueId))
+        if (!guardado) {
+            Log.e(TAG, "❌ El avance del conteo NO quedó en disco")
+            val discoVigente = borradores.leer(venueId)?.takeIf { it.countId == snapshot.countId }
+            if ((discoVigente?.revision ?: -1) > (snapshot.revision ?: -1)) {
+                snapshotNoPersistido = null
+                aplicarBorradorVigente(discoVigente)
+            } else {
+                snapshotNoPersistido = snapshot
+                inventoryCountSyncCoordinator?.recordarSnapshotNoPersistido(snapshot)
+                _borradorLocal.value = snapshot
+                _activeCount.value = _activeCount.value?.copy(revision = snapshot.revision)
+                _errorMessage.value = ERROR_GUARDADO_LOCAL
+            }
+        } else {
+            snapshotNoPersistido = null
+            revisionReconocidaEnMemoria = null
+            if (_errorMessage.value == ERROR_GUARDADO_LOCAL) _errorMessage.value = null
+            val durable = borradores.leer(venueId)
+            if (durable != null) inventoryCountSyncCoordinator?.reconocerSnapshotPersistido(durable)
+            aplicarBorradorVigente(durable)
+        }
+        return guardado
     }
 
     /**
@@ -898,10 +988,12 @@ class InventoryViewModel @Inject constructor(
      * @param idDestino el conteo que se quiere abrir; `null` = uno nuevo, que nunca es el del borrador.
      */
     private fun otroBorradorConTrabajo(idDestino: String?): Boolean {
-        val b = borradores.leer() ?: return false
+        val b = borradorVigenteLocal() ?: return false
         if (idDestino != null && b.countId == idDestino) return false
         return b.pendientesDeEnviar.isNotEmpty() ||
             ConteoEnCurso.notaPendienteDeEnviar(b) ||
+            b.conflictoRevision != null ||
+            b.revisionConPutFinalConfirmado != null ||
             (b.countId == null && ConteoEnCurso.contadas(b.lineas) > 0)
     }
 
@@ -926,6 +1018,8 @@ class InventoryViewModel @Inject constructor(
         asegurarCatalogo()
         _activeCountType.value = StockCountType.CYCLE
         _activeCount.value = null
+        snapshotNoPersistido = null
+        revisionReconocidaEnMemoria = null
         actualizarLineas(emptyList())
         _selectedItemIndex.value = -1
         _countedText.value = ""
@@ -969,7 +1063,7 @@ class InventoryViewModel @Inject constructor(
         conflictoRevision: ConflictoRevision? = null,
     ) {
         // Lo contado en ESTE aparato gana línea por línea; el servidor manda QUÉ líneas existen.
-        val local = borradores.leer()?.takeIf { it.countId == count.id }
+        val local = borradorVigenteLocal(countId = count.id)
         fijarSucursalDelConteo()
         _activeCountType.value = count.type
         _activeCount.value = count
@@ -979,8 +1073,17 @@ class InventoryViewModel @Inject constructor(
         actualizarLineas(
             ConteoEnCurso.fusionar(count.items, local?.lineas, local?.pendientesDeEnviar.orEmpty()),
         )
-        _selectedItemIndex.value = ConteoEnCurso.primerPendiente(_countItems.value)
-        _countedText.value = ""
+        val conflictoRevisionVigente = conflictoRevision ?: local?.conflictoRevision
+        val indiceSeleccionado = ConteoEnCurso.primerPendiente(_countItems.value)
+        _selectedItemIndex.value = indiceSeleccionado
+        val itemSeleccionado = _countItems.value.getOrNull(indiceSeleccionado)
+        _countedText.value = if (
+            (conflicto != null || conflictoRevisionVigente != null) && itemSeleccionado?.yaSeConto == true
+        ) {
+            formatQuantity(itemSeleccionado.counted)
+        } else {
+            ""
+        }
         val notaLocalPendiente = local?.let(ConteoEnCurso::notaPendienteDeEnviar) == true
         notaReconocidaPorServidor = when {
             notaDelServidorConfirmada -> count.note.orEmpty()
@@ -999,7 +1102,7 @@ class InventoryViewModel @Inject constructor(
         val idsVigentes = _countItems.value.map { it.id }.toSet()
         _pendientesDeEnviar.value = local?.pendientesDeEnviar.orEmpty().intersect(idsVigentes)
         _conflictoDelServidor.value = conflicto
-        _conflictoDeRevision.value = conflictoRevision ?: local?.conflictoRevision
+        _conflictoDeRevision.value = conflictoRevisionVigente
         _sinRedAlEnviar.value = false
         _showCountTypeSheet.value = false
         _showCounting.value = true
@@ -1233,10 +1336,14 @@ class InventoryViewModel @Inject constructor(
             enviando = true
             viewModelScope.launch {
                 try {
-                    val respuesta = coordinator.sincronizarAvanceAhora(venueId, countId)
+                    val resultado = coordinator.sincronizarAvanceAhora(
+                        venueId,
+                        countId,
+                        snapshotNoPersistido,
+                    )
                     if (esConteoVisible(venueId, countId)) {
-                        aplicarBorradorVigente(borradores.leer(venueId))
-                        aplicarRespuestaDeSync(respuesta)
+                        aplicarResultadoDeAvance(resultado)
+                        aplicarRespuestaDeSync(resultado?.respuesta)
                     }
                 } finally {
                     enviando = false
@@ -1283,6 +1390,74 @@ class InventoryViewModel @Inject constructor(
                 // si ésa tampoco alcanza, sale al reconectar.
                 enviarPendientesDelDisco()
             }
+        }
+    }
+
+    private fun aplicarResultadoDeAvance(resultado: ResultadoDeAvanceCoordinado?) {
+        val recibido = resultado?.borrador ?: return
+        val countId = recibido.countId ?: return
+        if (!esConteoVisible(recibido.venueId, countId)) return
+
+        val lineasActuales = _countItems.value
+        val sellosActuales = lineasActuales.associate { it.id to (it.counted to it.countedAt) }
+        val revisionRespuesta = resultado.respuesta?.revision
+        val respuestaReconocida = (resultado.respuesta?.code ?: -1) in 200..299 &&
+            revisionRespuesta != null && recibido.revision == revisionRespuesta &&
+            recibido.conflictoRevision == null
+        val confirmadas = if (respuestaReconocida) {
+            resultado.sellosEnviados.filter { (id, sello) -> sellosActuales[id] == sello }.keys
+        } else {
+            emptySet()
+        }
+        val pendientes = _pendientesDeEnviar.value - confirmadas
+        val vigenteEnMemoria = recibido.copy(
+            lineas = lineasActuales,
+            nota = _countNote.value,
+            notaPendienteDeEnviar = notaPendienteDeEnviar,
+            pendientesDeEnviar = pendientes,
+            actualizadoEn = System.currentTimeMillis(),
+        )
+
+        _borradorLocal.value = vigenteEnMemoria
+        _pendientesDeEnviar.value = pendientes
+        _conflictoDeRevision.value = vigenteEnMemoria.conflictoRevision
+        _activeCount.value = _activeCount.value?.copy(revision = vigenteEnMemoria.revision)
+
+        if (!respuestaReconocida) {
+            if (resultado.persistido) {
+                snapshotNoPersistido = null
+                revisionReconocidaEnMemoria = null
+                val durable = borradores.leer(vigenteEnMemoria.venueId)
+                if (durable != null) inventoryCountSyncCoordinator?.reconocerSnapshotPersistido(durable)
+                aplicarBorradorVigente(durable ?: vigenteEnMemoria)
+            } else {
+                snapshotNoPersistido = vigenteEnMemoria
+                inventoryCountSyncCoordinator?.recordarSnapshotNoPersistido(vigenteEnMemoria)
+            }
+            return
+        }
+
+        val revision = vigenteEnMemoria.revision!!
+        revisionReconocidaEnMemoria = revision
+        val durableAntesDeGuardar = borradores.leer(vigenteEnMemoria.venueId)
+        val guardado = borradores.guardarSnapshotReconocido(
+            vigenteEnMemoria.venueId,
+            countId,
+            revision,
+            vigenteEnMemoria,
+            durableAntesDeGuardar,
+        )
+        if (guardado) {
+            snapshotNoPersistido = null
+            revisionReconocidaEnMemoria = null
+            if (_errorMessage.value == ERROR_GUARDADO_LOCAL) _errorMessage.value = null
+            val durable = borradores.leer(vigenteEnMemoria.venueId)
+            if (durable != null) inventoryCountSyncCoordinator?.reconocerSnapshotPersistido(durable)
+            aplicarBorradorVigente(durable)
+        } else {
+            snapshotNoPersistido = vigenteEnMemoria
+            inventoryCountSyncCoordinator?.recordarSnapshotNoPersistido(vigenteEnMemoria)
+            _errorMessage.value = ERROR_GUARDADO_LOCAL
         }
     }
 
@@ -1367,6 +1542,8 @@ class InventoryViewModel @Inject constructor(
         val confirm: RespuestaHttp? = null,
         /** Sólo un 200 real de `/confirm`; un PUT 200 por sí solo nunca cierra la pantalla. */
         val completado: Boolean = false,
+        /** El ACK final quedó durable; sin esto /confirm podría cerrar un conteo irrecuperable. */
+        val ackFinalPersistido: Boolean = true,
     )
 
     private suspend fun cerrarEnElServidor(
@@ -1404,7 +1581,14 @@ class InventoryViewModel @Inject constructor(
             if (ConteoEnCurso.clasificarEnvio(put.code) != DestinoDelEnvio.ENVIADO) {
                 return@withLock CierreDelConteo(venueId, countId, put = put)
             }
-            reconocerPutFinal(countId, items, note)
+            if (!reconocerPutFinal(countId, items, note)) {
+                return@withLock CierreDelConteo(
+                    venueId = venueId,
+                    countId = countId,
+                    put = put,
+                    ackFinalPersistido = false,
+                )
+            }
             val confirm = repository.confirmarConteo(countId)
             CierreDelConteo(
                 venueId = venueId,
@@ -1426,8 +1610,8 @@ class InventoryViewModel @Inject constructor(
         countId: String,
         enviadas: List<StockCountItem>,
         notaEnviada: String?,
-    ) {
-        if (_activeCount.value?.id != countId) return
+    ): Boolean {
+        if (_activeCount.value?.id != countId) return false
         val sellos = enviadas.associate { it.id to (it.counted to it.countedAt) }
         val ahora = _countItems.value.associate { it.id to (it.counted to it.countedAt) }
         val confirmadas = sellos.filter { (id, sello) -> ahora[id] == sello }.keys
@@ -1436,7 +1620,9 @@ class InventoryViewModel @Inject constructor(
             notaReconocidaPorServidor = notaEnviada
             notaPendienteDeEnviar = false
         }
-        persistirBorrador()
+        // El PUT final todavía no cierra nada. Aunque su ACK deje cero líneas/notas pendientes,
+        // el borrador debe sobrevivir hasta que /confirm responda o la persona lo descarte.
+        return persistirBorrador(conservarConteoServerBacked = true)
     }
 
     /**
@@ -1453,6 +1639,10 @@ class InventoryViewModel @Inject constructor(
         if (r.venueId.isBlank() || r.venueId != _venueDelConteo ||
             r.countId != _activeCount.value?.id || repository.venueIdActual() != r.venueId
         ) return false
+        if (!r.ackFinalPersistido) {
+            _errorMessage.value = ERROR_GUARDADO_LOCAL
+            return false
+        }
         // El paso que MANDA es el último que llegó a hablar: si el PUT no salió, el confirm ni
         // siquiera se intentó.
         val paso = r.confirm ?: r.put ?: RespuestaHttp(0, "")
@@ -1571,6 +1761,10 @@ class InventoryViewModel @Inject constructor(
      */
     fun pedirDescarte() {
         if (_isSaving.value) return
+        // Un 409 de revisión o una base legacy desconocida convierte esta copia en consulta. El
+        // único desenlace seguro es conservarla: ni siquiera se concede una confirmación que pueda
+        // sobrevivir en pantalla mientras llega el conflicto.
+        if (_conflictoDeRevision.value != null) return
         saveCurrentCount()
         persistirBorrador(edicionLocal = true)
         val contadas = ConteoEnCurso.contadas(_countItems.value)
@@ -1600,6 +1794,13 @@ class InventoryViewModel @Inject constructor(
     fun confirmarDescarte() {
         if (_isSaving.value) return
         val confirmacion = _confirmacionDeDescarte.value ?: return
+        // El conflicto puede llegar después del primer diálogo, con un PUT todavía en vuelo. Ese
+        // permiso nació bajo otro estado y deja de autorizar una operación destructiva.
+        if (_conflictoDeRevision.value != null) {
+            _confirmacionDeDescarte.value = null
+            _salidaPendiente.value = true
+            return
+        }
         if (confirmacion.countId != _activeCount.value?.id) return
         if (confirmacion.venueId != (_venueDelConteo ?: repository.venueIdActual())) return
         if (cambioDeSucursal()) return
@@ -1615,6 +1816,8 @@ class InventoryViewModel @Inject constructor(
         _salidaPendiente.value = false
         _confirmacionDeDescarte.value = null
         _activeCount.value = null
+        snapshotNoPersistido = null
+        revisionReconocidaEnMemoria = null
         actualizarLineas(emptyList())
         _selectedItemIndex.value = -1
         _countedText.value = ""
@@ -1630,7 +1833,7 @@ class InventoryViewModel @Inject constructor(
     /** El borrador ya está en disco: sólo se cierra la pantalla y se intenta mandar lo pendiente. */
     fun guardarYSalir() {
         saveCurrentCount()
-        persistirBorrador(edicionLocal = true)
+        if (!persistirBorrador(edicionLocal = true)) return
         enviarPendientes()
         limpiarEstadoDeConteo()
         viewModelScope.launch { repository.fetchStockCounts() }
@@ -1647,6 +1850,13 @@ class InventoryViewModel @Inject constructor(
      * peor que no cerrarlo.
      */
     fun descartarConteo() {
+        // Defensa de última línea para callers antiguos y carreras entre los dos diálogos. CLOSED
+        // conserva su flujo W4 porque usa `_conflictoDelServidor`, no este flag de revisión.
+        if (_conflictoDeRevision.value != null) {
+            _confirmacionDeDescarte.value = null
+            _salidaPendiente.value = true
+            return
+        }
         if (cambioDeSucursal()) return
         val countId = _activeCount.value?.id
         val coordinator = inventoryCountSyncCoordinator
@@ -1686,7 +1896,7 @@ class InventoryViewModel @Inject constructor(
 
     /** Desde la tarjeta «sin terminar en este aparato». Sin red también funciona: las líneas viven en el borrador. */
     fun continuarBorrador() {
-        val b = borradores.leer() ?: return
+        val b = borradorVigenteLocal() ?: return
         // El borrador dice de qué sucursal es; el nombre sale del aparato, que es donde está
         // (`leer()` sólo devuelve borradores de la sucursal actual).
         _venueDelConteo = b.venueId.takeIf { it.isNotBlank() } ?: repository.venueIdActual()
@@ -1788,14 +1998,14 @@ class InventoryViewModel @Inject constructor(
         if (cambioDeSucursal()) return
         if (!conectado.value) {
             saveCurrentCount()
-            persistirBorrador(edicionLocal = true)
+            if (!persistirBorrador(edicionLocal = true)) return
             _errorMessage.value = ConteoEnCurso.CONFIRMAR_SIN_RED
             Log.w(TAG, "⛔ Confirmar sin red: el conteo se queda en el aparato")
             return
         }
         // Antes de tocar la red, como siempre: si el confirm falla, la nota y lo contado siguen
         // en el aparato.
-        persistirBorrador(edicionLocal = true)
+        if (!persistirBorrador(edicionLocal = true)) return
         viewModelScope.launch {
             _isSaving.value = true
             try {

@@ -5,6 +5,7 @@ import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.domain.PlanManager
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.inventory.data.BorradorDeConteoStore
+import com.avoqado.pos.inventory.data.BorradorDeConteo
 import com.avoqado.pos.inventory.data.InventoryRepository
 import com.avoqado.pos.inventory.data.RespuestaHttp
 import com.avoqado.pos.inventory.data.model.StockCount
@@ -92,7 +93,15 @@ class InventoryCountRefreshTest {
             com.avoqado.pos.core.domain.refresh.RefreshGate(clock = { kotlin.time.Duration.ZERO })
         val borradores = mockk<BorradorDeConteoStore>(relaxed = true)
         every { borradores.leer() } returns null
+        every { borradores.leer(any()) } returns null
         every { borradores.cancelacionesPendientes() } returns emptyList()
+        // Este doble representa disco sano. Los Boolean de un relaxed son `false`; dejarlo así
+        // convierte cada guardado válido en una falla de fsync y aborta el cierre que prueba aquí.
+        every { borradores.guardar(any<BorradorDeConteo>()) } returns true
+        every { borradores.guardar(any<String>(), any<BorradorDeConteo>()) } returns true
+        every { borradores.guardarEdicion(any(), any()) } returns true
+        every { borradores.borrar() } returns true
+        every { borradores.borrar(any()) } returns true
         val connectivityMonitor = mockk<ConnectivityMonitor>()
         every { connectivityMonitor.isConnected } returns MutableStateFlow(true)
         every { connectivityMonitor.isServerReachable } returns MutableStateFlow(true)

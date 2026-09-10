@@ -24,6 +24,18 @@ class CardChargeDecisionTest {
     // MARK: - ¿Qué es un fallo de transporte?
 
     @Test
+    fun `committed payment wins over stale active cancellation`() {
+        assertEquals(ProbeDecision.Resolved(CardChargeOutcome.Charged("payment")),
+            CardChargeDecision.decide(ChargeStatusProbe.Known("COMPLETED", false, "payment", "ACTIVE"), true))
+    }
+
+    @Test
+    fun `completed without payment evidence remains unknown`() {
+        assertEquals(ProbeDecision.Resolved(CardChargeOutcome.Undetermined(CardChargeDecision.UNDETERMINED_MESSAGE)),
+            CardChargeDecision.decide(ChargeStatusProbe.Known("COMPLETED", false), true))
+    }
+
+    @Test
     fun `los 5xx son fallos de transporte — el cobro pudo haber ocurrido`() {
         // 503 es EXACTAMENTE el del incidente (ngrok mientras el backend reiniciaba).
         assertTrue(CardChargeDecision.isTransportFailure(503))
@@ -93,7 +105,7 @@ class CardChargeDecisionTest {
     @Test
     fun `CANCELLED tampoco cobró`() {
         val decision = CardChargeDecision.decide(
-            probe = ChargeStatusProbe.Known(status = "CANCELLED", inProgress = false),
+            probe = ChargeStatusProbe.Known(status = "CANCELLED", inProgress = false, cancelDisposition = "ACCEPTED"),
             isFinalAttempt = false,
         )
 
@@ -128,7 +140,7 @@ class CardChargeDecisionTest {
         val afirmados = listOf("FAILED", "CANCELLED")
         afirmados.forEach { status ->
             val d = CardChargeDecision.decide(
-                ChargeStatusProbe.Known(status = status, inProgress = false),
+                ChargeStatusProbe.Known(status = status, inProgress = false, cancelDisposition = "ACCEPTED"),
                 isFinalAttempt = true,
             )
             assertTrue("$status debe constar como no cobrado", (d as ProbeDecision.Resolved).outcome is CardChargeOutcome.NotCharged)
@@ -166,7 +178,7 @@ class CardChargeDecisionTest {
     fun `TIMED_OUT y UNKNOWN son indeterminados — NUNCA se pintan como fracaso`() {
         listOf("TIMED_OUT", "UNKNOWN").forEach { status ->
             val decision = CardChargeDecision.decide(
-                ChargeStatusProbe.Known(status = status, inProgress = false),
+                ChargeStatusProbe.Known(status = status, inProgress = false, cancelDisposition = "ACCEPTED"),
                 isFinalAttempt = true,
             )
             assertTrue(
@@ -250,9 +262,9 @@ class CardChargeDecisionTest {
     fun `los rechazos de negocio NO mandan a preguntar — ya consta que no se cobró`() {
         // Sigue valiendo cuando NADIE canceló: ahí el 409 sí es "terminal ocupada", o sea que
         // el cobro nunca se despachó. Es el matiz que distingue este caso del de arriba.
-        assertFalse(CardChargeDecision.mustReconcile(ChargeWaitEnding.Http(404), cancelRequested = false))
-        assertFalse(CardChargeDecision.mustReconcile(ChargeWaitEnding.Http(409), cancelRequested = false))
-        assertFalse(CardChargeDecision.mustReconcile(ChargeWaitEnding.Http(422), cancelRequested = false))
+        assertTrue(CardChargeDecision.mustReconcile(ChargeWaitEnding.Http(404), cancelRequested = false))
+        assertTrue(CardChargeDecision.mustReconcile(ChargeWaitEnding.Http(409), cancelRequested = false))
+        assertTrue(CardChargeDecision.mustReconcile(ChargeWaitEnding.Http(422), cancelRequested = false))
     }
 
     // MARK: - Desenlace 4: SE VENCIÓ EL PLAZO
@@ -289,8 +301,8 @@ class CardChargeDecisionTest {
     @Test
     fun `el mensaje indeterminado le dice al cajero que revise la terminal`() {
         // Blindaje del texto: es lo único que evita el segundo cargo cuando nadie sabe nada.
-        assertTrue(CardChargeDecision.UNDETERMINED_MESSAGE.contains("No pudimos confirmar el cobro"))
-        assertTrue(CardChargeDecision.UNDETERMINED_MESSAGE.contains("Revisa la terminal"))
+        assertTrue(CardChargeDecision.UNDETERMINED_MESSAGE.contains("Estamos confirmando el cobro"))
+        assertTrue(CardChargeDecision.UNDETERMINED_MESSAGE.contains("No vuelvas a pasar la tarjeta"))
     }
 
     // MARK: - Cancelar es una PETICIÓN, no una garantía

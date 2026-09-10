@@ -58,6 +58,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.test.runCurrent
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -558,7 +559,163 @@ class PaymentFlowViewModelTest {
     }
 
     @Test
-    fun `cobrar de todos modos suelta la llave durable para no bloquear la siguiente venta`() = runTest {
+    fun `old POST joining current recovery cannot rearm resolved previous sale`() = runTest {
+        stubOrderCreation()
+        var pending: String? = null
+        every { secureStorage.accessToken } returns "token"
+        every { secureStorage.pendingCardChargeRequestId } answers { pending }
+        every { secureStorage.pendingCardChargeRequestId = any() } answers { pending = firstArg() }
+        every { secureStorage.persistPendingCardCharge(any(), any()) } answers { pending = firstArg(); true }
+        val server = okhttp3.mockwebserver.MockWebServer()
+        val postStarted = java.util.concurrent.CountDownLatch(1)
+        val getStarted = java.util.concurrent.CountDownLatch(1)
+        val releasePost = java.util.concurrent.CountDownLatch(1)
+        val releaseGet = java.util.concurrent.CountDownLatch(1)
+        val gets = java.util.concurrent.atomic.AtomicInteger()
+        server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+            override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): okhttp3.mockwebserver.MockResponse {
+                if (request.method == "POST") {
+                    postStarted.countDown()
+                    releasePost.await(10, java.util.concurrent.TimeUnit.SECONDS)
+                    return okhttp3.mockwebserver.MockResponse().setBody("""{"status":"unknown"}""")
+                }
+                gets.incrementAndGet()
+                getStarted.countDown()
+                releaseGet.await(10, java.util.concurrent.TimeUnit.SECONDS)
+                return okhttp3.mockwebserver.MockResponse().setBody("""{"status":"COMPLETED","inProgress":false,"paymentId":"old-payment"}""")
+            }
+        }
+        server.start()
+        val realService = TerminalPaymentService(secureStorage, okhttp3.OkHttpClient())
+        realService.baseUrl = server.url("/api/v1").toString().trimEnd('/')
+        every { terminalPaymentService.unresolvedRequestId } answers { realService.unresolvedRequestId }
+        every { terminalPaymentService.rearmUnresolvedCharge(any()) } answers { realService.rearmUnresolvedCharge(firstArg()) }
+        coEvery { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any()) } coAnswers {
+            realService.sendPaymentToTerminal("t1", 1500)
+        }
+        coEvery { terminalPaymentService.resolveOutcome(any()) } coAnswers { realService.resolveOutcome(firstArg()) }
+        try {
+            viewModel.startPaymentFlow(cardCart())
+            viewModel.selectPaymentMethod(PaymentMethod.CARD)
+            viewModel.selectTerminalAndPay("t1")
+            runCurrent()
+            assertTrue(postStarted.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            viewModel.cancel()
+            viewModel.startPaymentFlow(cardCart().copy(items = cardCart().items.map { it.copy(id = "B", unitPrice = 9900) }))
+            viewModel.recheckCardCharge()
+            runCurrent()
+            assertTrue(getStarted.await(5, java.util.concurrent.TimeUnit.SECONDS))
+            releasePost.countDown()
+            // Pump only ready work; never advance virtual financial deadlines while real HTTP waits.
+            repeat(20) { Thread.sleep(10); runCurrent() }
+            releaseGet.countDown()
+            repeat(50) { Thread.sleep(10); runCurrent() }
+            assertEquals(1, gets.get())
+            assertNotNull(viewModel.previousChargeResolved.value)
+            assertNull(pending)
+            assertFalse(viewModel.state.value is PaymentFlowState.Success)
+        } finally {
+            releasePost.countDown()
+            releaseGet.countDown()
+            server.shutdown()
+        }
+    }
+
+    @Test
+    fun `blocked send cannot adopt a pending request that appeared after checkout entry`() = runTest {
+        stubOrderCreation()
+        var armed: String? = null
+        every { terminalPaymentService.unresolvedRequestId } answers { armed }
+        val realGuard = TerminalPaymentService(secureStorage, okhttp3.OkHttpClient())
+        every { secureStorage.pendingCardChargeRequestId } returns "old-request"
+        coEvery { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any()) } coAnswers {
+            armed = "old-request"
+            realGuard.sendPaymentToTerminal("t1", 1500)
+        }
+        coEvery { terminalPaymentService.resolveOutcome("old-request") } returns TerminalPaymentResult.Success(paymentId = "old-payment")
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+        assertTrue((viewModel.state.value as PaymentFlowState.Undetermined).fromPreviousSale)
+        viewModel.recheckCardCharge()
+        advanceUntilIdle()
+        assertFalse(viewModel.state.value is PaymentFlowState.Success)
+        assertNotNull(viewModel.previousChargeResolved.value)
+    }
+
+    @Test
+    fun `two recovery callbacks share one current cycle`() = runTest {
+        every { terminalPaymentService.unresolvedRequestId } returns "pending"
+        val result = CompletableDeferred<TerminalPaymentResult>()
+        coEvery { terminalPaymentService.resolveOutcome("pending") } coAnswers { result.await() }
+        viewModel.startPaymentFlow(cardCart())
+        advanceUntilIdle()
+        viewModel.recheckCardCharge()
+        viewModel.recheckCardCharge()
+        advanceTimeBy(1)
+        result.complete(TerminalPaymentResult.Success(paymentId = "paid", requestId = "pending"))
+        advanceUntilIdle()
+        coVerify(exactly = 1) { terminalPaymentService.resolveOutcome("pending") }
+        assertNotNull(viewModel.previousChargeResolved.value)
+    }
+
+    @Test
+    fun `retained checkout never adopts an inherited request after reopening`() = runTest {
+        stubOrderCreation()
+        every { terminalPaymentService.unresolvedRequestId } returns "old-request"
+        coEvery { terminalPaymentService.resolveOutcome("old-request") } returns TerminalPaymentResult.Success(paymentId = "old-payment")
+        viewModel.startPaymentFlow(cardCart())
+        advanceUntilIdle()
+        viewModel.cancel()
+        viewModel.startPaymentFlow(cardCart().copy(items = cardCart().items.map { it.copy(id = "other-line", unitPrice = 9900) }))
+        advanceUntilIdle()
+        assertTrue((viewModel.state.value as PaymentFlowState.Undetermined).fromPreviousSale)
+        viewModel.recheckCardCharge()
+        advanceUntilIdle()
+        assertFalse(viewModel.state.value is PaymentFlowState.Success)
+        assertNotNull(viewModel.previousChargeResolved.value)
+    }
+
+    @Test
+    fun `recovery completing after cancel cannot pay the new checkout`() = runTest {
+        stubOrderCreation()
+        coEvery { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any()) } returns TerminalPaymentResult.Undetermined("Pending", "req-1")
+        val result = CompletableDeferred<TerminalPaymentResult>()
+        coEvery { terminalPaymentService.resolveOutcome("req-1") } coAnswers { result.await() }
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+        viewModel.recheckCardCharge()
+        advanceTimeBy(1)
+        viewModel.cancel()
+        viewModel.startPaymentFlow(cardCart().copy(items = cardCart().items.map { it.copy(id = "other-line", unitPrice = 9900) }))
+        advanceTimeBy(1)
+        val stateBeforeResult = viewModel.state.value
+        result.complete(TerminalPaymentResult.Success(paymentId = "old-payment", requestId = "req-1"))
+        advanceUntilIdle()
+        assertEquals(stateBeforeResult, viewModel.state.value)
+        assertFalse(viewModel.state.value is PaymentFlowState.Success)
+        verify { terminalPaymentService.rearmUnresolvedCharge("req-1") }
+    }
+
+    @Test
+    fun `inherited ACTIVE recovery preserves terminal confirmation instruction`() = runTest {
+        every { terminalPaymentService.unresolvedRequestId } returns "old-request"
+        val instruction = "El cobro sigue activo. Confirma en la terminal antes de intentar otro cobro."
+        coEvery { terminalPaymentService.resolveOutcome("old-request") } returns TerminalPaymentResult.Undetermined(instruction, "old-request")
+        viewModel.startPaymentFlow(cardCart())
+        advanceUntilIdle()
+        viewModel.recheckCardCharge()
+        advanceUntilIdle()
+        val state = viewModel.state.value as PaymentFlowState.Undetermined
+        assertTrue(state.fromPreviousSale)
+        assertTrue(state.message.contains(instruction))
+    }
+
+    @Test
+    fun `cobrar de todos modos conserva la llave y no permite otra autorizacion`() = runTest {
         stubOrderCreation()
         every { terminalPaymentService.unresolvedRequestId } returns "req-1"
 
@@ -568,7 +725,7 @@ class PaymentFlowViewModelTest {
         advanceUntilIdle()
 
         // El cajero asumió el riesgo tras la advertencia: la llave deja de gobernar.
-        verify { terminalPaymentService.forgetUnresolvedCharge() }
+        verify(exactly = 0) { terminalPaymentService.forgetUnresolvedCharge() }
     }
 
     @Test

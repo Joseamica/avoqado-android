@@ -7,10 +7,13 @@ import com.avoqado.pos.core.domain.refresh.RefreshGateFactory
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.inventory.data.BorradorDeConteo
 import com.avoqado.pos.inventory.data.BorradorDeConteoStore
+import com.avoqado.pos.inventory.data.CambioDeSyncDeInventario
 import com.avoqado.pos.inventory.data.ConteoEnCurso
 import com.avoqado.pos.inventory.data.ConflictoRevision
+import com.avoqado.pos.inventory.data.InventoryCountSyncCoordinator
 import com.avoqado.pos.inventory.data.InventoryRepository
 import com.avoqado.pos.inventory.data.RespuestaHttp
+import com.avoqado.pos.inventory.data.ResultadoDeAvanceCoordinado
 import com.avoqado.pos.inventory.data.model.StockCount
 import com.avoqado.pos.inventory.data.model.StockCountItem
 import com.avoqado.pos.inventory.data.model.StockCountType
@@ -25,6 +28,7 @@ import io.mockk.mockk
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.TestCoroutineScheduler
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
@@ -106,7 +110,10 @@ class WarningsUxTest {
         every { cancelacionesPendientes() } returns emptyList()
     }
 
-    private fun viewModel(store: BorradorDeConteoStore = emptyStore()): InventoryViewModel {
+    private fun viewModel(
+        store: BorradorDeConteoStore = emptyStore(),
+        coordinator: InventoryCountSyncCoordinator? = null,
+    ): InventoryViewModel {
         val factory = mockk<RefreshGateFactory>()
         every { factory.create(any(), any()) } returns RefreshGate(clock = { Duration.ZERO }, random = { 0.5 })
         every { repository.stockCounts } returns counts
@@ -128,6 +135,7 @@ class WarningsUxTest {
                 every { it.isConnected } returns MutableStateFlow(true)
                 every { it.isServerReachable } returns MutableStateFlow(true)
             },
+            inventoryCountSyncCoordinator = coordinator,
         )
     }
 
@@ -468,5 +476,122 @@ class WarningsUxTest {
         vm.updateCountedText("9")
         vm.moveToNextItem()
         assertEquals(3.0, vm.countItems.value.single().counted, 0.0)
+    }
+
+    @Test
+    fun `P1 conflicto de revision y base desconocida nunca descartan ni encolan cancelacion`() = runTest(scheduler) {
+        listOf(
+            ConteoEnCurso.CODIGO_CONFLICTO_REVISION to 4,
+            ConteoEnCurso.CODIGO_REVISION_DESCONOCIDA to null,
+        ).forEachIndexed { index, (code, revision) ->
+            val store = RecordingStore()
+            val countId = "protegido-$index"
+            val original = BorradorDeConteo(
+                venueId = "venue-a",
+                countId = countId,
+                type = StockCountType.FULL,
+                lineas = count(countId, countedAt = "2026-09-08T10:00:00Z").items
+                    .map { it.copy(counted = 7.0) },
+                nota = "nota local",
+                notaPendienteDeEnviar = false,
+                revision = revision,
+                conflictoRevision = ConflictoRevision(
+                    code = code,
+                    message = "detalle que no autoriza borrar",
+                    venueId = "venue-a",
+                    countId = countId,
+                    expectedRevision = revision,
+                    currentRevision = revision?.plus(1),
+                    status = "IN_PROGRESS",
+                ),
+                actualizadoEn = 1L,
+            )
+            store.draft = original
+            val vm = viewModel(store)
+            vm.refrescarBorradorLocal()
+            vm.continuarBorrador()
+
+            vm.pedirSalida()
+            val antesDelIntento = store.draft
+            vm.pedirDescarte()
+            vm.confirmarDescarte()
+            vm.descartarConteo()
+
+            assertNull("no se ofrece una segunda confirmación destructiva", vm.confirmacionDeDescarte.value)
+            assertEquals("la copia local se conserva exactamente", antesDelIntento, store.draft)
+            assertEquals(0, store.discards)
+            assertTrue(store.cancellations.isEmpty())
+            assertTrue(vm.showCounting.value)
+        }
+    }
+
+    @Test
+    fun `P1 un conflicto que llega entre pedir y confirmar invalida el descarte`() = runTest(scheduler) {
+        val store = RecordingStore()
+        val entroAlPut = CompletableDeferred<Unit>()
+        val responderPut = CompletableDeferred<Unit>()
+        val cambios = MutableSharedFlow<CambioDeSyncDeInventario>(
+            extraBufferCapacity = 1,
+        )
+        val coordinator = mockk<InventoryCountSyncCoordinator>(relaxed = true)
+        every { coordinator.cambios } returns cambios
+        every { coordinator.borradorNoPersistido(any()) } returns null
+        val vm = viewModel(store, coordinator)
+        coEvery { coordinator.sincronizarAvanceAhora("venue-a", "a", null) } coAnswers {
+            entroAlPut.complete(Unit)
+            responderPut.await()
+            val respuesta = RespuestaHttp(
+                409,
+                """{"message":"detalle técnico","code":"INVENTORY_COUNT_REVISION_CONFLICT","details":{"venueId":"venue-a","countId":"a","expectedRevision":4,"currentRevision":5,"status":"IN_PROGRESS"}}""",
+            )
+            val conflictivo = store.draft!!.copy(conflictoRevision = respuesta.conflictoRevision)
+            store.draft = conflictivo
+            ResultadoDeAvanceCoordinado(
+                respuesta = respuesta,
+                borrador = conflictivo,
+                persistido = true,
+            )
+        }
+        vm.resumeCount(count("a").copy(revision = 4))
+        vm.selectCountItem(0)
+        vm.updateCountedText("7")
+        vm.pedirSalida()
+        entroAlPut.await()
+        vm.pedirDescarte()
+        assertNotNull(vm.confirmacionDeDescarte.value)
+
+        responderPut.complete(Unit)
+        advanceUntilIdle()
+        assertNotNull(vm.conflictoDeRevision.value)
+        val antesDeConfirmar = store.draft
+
+        vm.confirmarDescarte()
+
+        assertEquals(antesDeConfirmar, store.draft)
+        assertEquals(0, store.discards)
+        assertTrue(store.cancellations.isEmpty())
+        assertNull("el permiso viejo se consume sin borrar", vm.confirmacionDeDescarte.value)
+    }
+
+    @Test
+    fun `W4 un conteo cerrado conserva la doble confirmacion de descarte`() = runTest(scheduler) {
+        val store = RecordingStore()
+        val vm = viewModel(store)
+        coEvery { repository.enviarAvance(any(), any()) } returns RespuestaHttp(404, "cerrado")
+        vm.resumeCount(count("cerrado").copy(revision = 4))
+        vm.selectCountItem(0)
+        vm.updateCountedText("3")
+        vm.pedirSalida()
+        advanceUntilIdle()
+        assertNotNull(vm.conflictoDelServidor.value)
+
+        vm.pedirDescarte()
+        assertNotNull(vm.confirmacionDeDescarte.value)
+        assertEquals(0, store.discards)
+
+        vm.confirmarDescarte()
+        advanceUntilIdle()
+        assertEquals(1, store.discards)
+        assertTrue("la cancelación durable conserva el comportamiento W4", "cerrado" in store.cancellations)
     }
 }

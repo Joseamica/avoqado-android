@@ -97,7 +97,7 @@ class SecureStorage @Inject constructor(
      * esa ceremonia se evapora y el siguiente "Cobrar" arranca limpio, sin advertencia.
      *
      * Se escribe al enviar el cobro y se borra SÓLO cuando el desenlace consta (cobró o no
-     * cobró), o cuando el cajero decide explícitamente cobrar de nuevo asumiendo el riesgo.
+     * cobró), siempre que corresponda a la misma identidad.
      * **NO se limpia en `clearSession`**: un cobro sin confirmar no deja de existir porque
      * alguien cierre sesión o cambie de venue.
      */
@@ -106,7 +106,7 @@ class SecureStorage @Inject constructor(
         set(value) {
             prefs.edit().apply {
                 if (value == null) remove(KEY_PENDING_CARD_CHARGE) else putString(KEY_PENDING_CARD_CHARGE, value)
-            }.apply()
+            }.commit().also { check(it) { "No se pudo guardar el cobro pendiente" } }
         }
 
     /**
@@ -249,6 +249,17 @@ class SecureStorage @Inject constructor(
     var refreshToken: String?
         get() = prefs.getString(KEY_REFRESH_TOKEN, null)
         set(value) = prefs.edit().putString(KEY_REFRESH_TOKEN, value).apply()
+
+    /** Payment-only synchronous journal: no network authorization before a checked commit. */
+    @Synchronized
+    fun persistPendingCardCharge(requestId: String, contextJson: String): Boolean {
+        if (pendingCardChargeRequestId != null) return false
+        return prefs.edit().putString(KEY_PENDING_CARD_CHARGE, requestId)
+            .putString("pendingCardChargeContext", contextJson).commit()
+    }
+
+    val pendingCardChargeContext: String?
+        get() = prefs.getString("pendingCardChargeContext", null)
 
     // MARK: - Biometric Data (NOT cleared on logout)
 

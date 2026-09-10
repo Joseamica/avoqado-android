@@ -14,8 +14,13 @@ import com.avoqado.pos.inventory.data.model.StockCountType
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runCurrent
@@ -60,6 +65,34 @@ class InventoryCountSyncCoordinatorTest {
     }
 
     @Test
+    fun `P1 cold start conectado drena avances y cancelaciones con dispatcher inmediato`() {
+        val store = FakeStore(
+            borrador("venue-a", "count-a", revision = 2, lineaId = "line-a"),
+        ).apply {
+            agregarCancelacionPendiente(
+                CancelacionPendienteDeConteo(
+                    venueId = "venue-b",
+                    countId = "count-b",
+                    expectedRevision = 7,
+                ),
+            )
+        }
+        val transport = FakeTransport()
+        val coordinator = InventoryCountSyncCoordinator(store, transport, connectivity())
+        val immediateScope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+
+        try {
+            coordinator.start(immediateScope)
+
+            assertEquals(listOf(AdvanceCall("venue-a", "count-a", 2)), transport.advances)
+            assertEquals(listOf(CancelCall("venue-b", "count-b", 7)), transport.cancels)
+        } finally {
+            coordinator.stop()
+            immediateScope.cancel()
+        }
+    }
+
+    @Test
     fun `P1 ack de PUT avanza revision y no borra una edicion hecha durante el viaje`() = runTest {
         val original = borrador("venue-a", "count-a", revision = 4, lineaId = "line-a")
         val store = FakeStore(original)
@@ -98,6 +131,166 @@ class InventoryCountSyncCoordinatorTest {
         assertEquals(5, vigente.revision)
         assertEquals(setOf("line-b"), vigente.pendientesDeEnviar)
         assertEquals(9.0, vigente.lineas.single { it.id == "line-b" }.counted, 0.0)
+    }
+
+    @Test
+    fun `P1 snapshot RAM con revision conocida sale aunque el store este vacio`() = runTest {
+        val store = FakeStore().apply { fallarSnapshotReconocido = true }
+        val enviados = mutableListOf<Double>()
+        val transport = FakeTransport(advance = { _, _, items, revision ->
+            enviados += items.single().counted
+            RespuestaHttp(200, """{"success":true,"revision":${revision + 1}}""")
+        })
+        val coordinator = InventoryCountSyncCoordinator(store, transport, connectivity())
+        coordinator.start(backgroundScope)
+        runCurrent()
+
+        val resultado = coordinator.sincronizarAvanceAhora(
+            "venue-a",
+            "count-a",
+            borrador("venue-a", "count-a", revision = 4, lineaId = "line-a"),
+        )
+
+        assertEquals(listOf(3.0), enviados)
+        assertEquals(5, resultado?.borrador?.revision)
+        assertEquals(emptySet<String>(), resultado?.borrador?.pendientesDeEnviar)
+        assertFalse(resultado?.persistido ?: true)
+        assertNull("el ACK no finge que llego al disco", store.leer("venue-a"))
+        assertTrue("un incremental nunca confirma", transport.confirms.isEmpty())
+        assertTrue("un incremental nunca manda PUT final", transport.finals.isEmpty())
+    }
+
+    @Test
+    fun `P1 ACK en RAM impide que replay del store viejo vuelva a mandar revision anterior`() = runTest {
+        val viejo = borrador("venue-a", "count-a", revision = 4, lineaId = "line-a").copy(
+            lineas = listOf(
+                borrador("venue-a", "count-a", revision = 4, lineaId = "line-a")
+                    .lineas.single().copy(counted = 1.0, countedAt = "viejo"),
+            ),
+        )
+        val nuevo = viejo.copy(
+            lineas = listOf(viejo.lineas.single().copy(counted = 7.0, countedAt = "ram")),
+        )
+        val store = FakeStore(viejo).apply { fallarSnapshotReconocido = true }
+        val enviados = mutableListOf<Pair<Int, Double>>()
+        val transport = FakeTransport(advance = { _, _, items, revision ->
+            enviados += revision to items.single().counted
+            RespuestaHttp(200, """{"success":true,"revision":${revision + 1}}""")
+        })
+        val coordinator = InventoryCountSyncCoordinator(store, transport, connectivity())
+        coordinator.start(backgroundScope)
+
+        val resultado = coordinator.sincronizarAvanceAhora("venue-a", "count-a", nuevo)
+        coordinator.solicitarSync()
+        runCurrent()
+
+        assertEquals(listOf(4 to 7.0), enviados)
+        assertEquals(5, resultado?.borrador?.revision)
+        assertEquals(7.0, resultado?.borrador?.lineas?.single()?.counted ?: -1.0, 0.0)
+        assertEquals(7.0, coordinator.borradorNoPersistido("venue-a")?.lineas?.single()?.counted ?: -1.0, 0.0)
+        assertEquals("el disco sigue viejo porque la escritura fallo", 4, store.leer("venue-a")?.revision)
+    }
+
+    @Test
+    fun `P1 ACK RAM sobrevive stop login y la siguiente edicion sale desde esa revision`() = runTest {
+        val viejo = borrador("venue-a", "count-a", revision = 4, lineaId = "line-a")
+        val store = FakeStore(viejo).apply { fallarSnapshotReconocido = true }
+        val enviados = mutableListOf<Pair<Int, Double>>()
+        val transport = FakeTransport(advance = { _, _, items, revision ->
+            enviados += revision to items.single().counted
+            RespuestaHttp(200, """{"success":true,"revision":${revision + 1}}""")
+        })
+        val coordinator = InventoryCountSyncCoordinator(store, transport, connectivity())
+        coordinator.start(backgroundScope)
+
+        val primero = coordinator.sincronizarAvanceAhora("venue-a", "count-a", viejo)!!
+        coordinator.stop()
+        coordinator.start(backgroundScope)
+        runCurrent()
+
+        assertEquals("el relogin no reproduce el disco r4", listOf(4 to 3.0), enviados)
+        assertEquals(5, coordinator.borradorNoPersistido("venue-a")?.revision)
+
+        val reconocido = primero.borrador!!
+        val editado = reconocido.copy(
+            lineas = listOf(reconocido.lineas.single().copy(counted = 8.0, countedAt = "ram-2")),
+            pendientesDeEnviar = setOf("line-a"),
+            actualizadoEn = reconocido.actualizadoEn + 1,
+        )
+        coordinator.recordarSnapshotNoPersistido(editado)
+        coordinator.solicitarSync()
+        runCurrent()
+
+        assertEquals(listOf(4 to 3.0, 5 to 8.0), enviados)
+        assertEquals(6, coordinator.borradorNoPersistido("venue-a")?.revision)
+    }
+
+    @Test
+    fun `P1 edicion RAM durante PUT conserva cantidad pendiente y sale con revision ACK`() = runTest {
+        val enviada = borrador("venue-a", "count-a", 4, "line-a")
+        val store = FakeStore(enviada).apply { fallarSnapshotReconocido = true }
+        val empezo = CompletableDeferred<Unit>()
+        val liberar = CompletableDeferred<Unit>()
+        val enviados = mutableListOf<Pair<Int, Double>>()
+        val transport = FakeTransport(advance = { _, _, items, revision ->
+            enviados += revision to items.single().counted
+            if (revision == 4) {
+                empezo.complete(Unit)
+                liberar.await()
+            }
+            RespuestaHttp(200, """{"success":true,"revision":${revision + 1}}""")
+        })
+        val coordinator = InventoryCountSyncCoordinator(store, transport, connectivity())
+        coordinator.start(backgroundScope)
+        val primero = async {
+            coordinator.sincronizarAvanceAhora("venue-a", "count-a", enviada)
+        }
+        empezo.await()
+
+        coordinator.recordarSnapshotNoPersistido(
+            enviada.copy(
+                lineas = listOf(enviada.lineas.single().copy(counted = 8.0, countedAt = "ram-nueva")),
+                pendientesDeEnviar = setOf("line-a"),
+                actualizadoEn = enviada.actualizadoEn + 1,
+            ),
+        )
+        liberar.complete(Unit)
+        val resultado = primero.await()
+
+        assertEquals(5, resultado?.borrador?.revision)
+        assertEquals(8.0, resultado?.borrador?.lineas?.single()?.counted ?: -1.0, 0.0)
+        assertEquals(setOf("line-a"), resultado?.borrador?.pendientesDeEnviar)
+        assertFalse(resultado?.persistido ?: true)
+        assertEquals(8.0, coordinator.borradorNoPersistido("venue-a")?.lineas?.single()?.counted ?: -1.0, 0.0)
+
+        runCurrent()
+
+        assertEquals(listOf(4 to 3.0, 5 to 8.0), enviados)
+        assertEquals(6, coordinator.borradorNoPersistido("venue-a")?.revision)
+    }
+
+    @Test
+    fun `P1 descarte consume revision ACK RAM aunque el disco siga atrasado`() = runTest {
+        val store = FakeStore(borrador("venue-a", "count-a", 4, "line-a")).apply {
+            fallarSnapshotReconocido = true
+        }
+        val transport = FakeTransport()
+        val coordinator = InventoryCountSyncCoordinator(store, transport, connectivity())
+        coordinator.start(backgroundScope)
+
+        coordinator.sincronizarAvanceAhora(
+            "venue-a",
+            "count-a",
+            borrador("venue-a", "count-a", 4, "line-a"),
+        )
+        coordinator.stop()
+        coordinator.start(backgroundScope)
+        assertTrue(coordinator.descartarManualmente("venue-a", "count-a"))
+        runCurrent()
+
+        assertEquals(listOf(CancelCall("venue-a", "count-a", 5)), transport.cancels)
+        assertNull(coordinator.borradorNoPersistido("venue-a"))
+        assertNull(store.leer("venue-a"))
     }
 
     @Test
@@ -256,6 +449,46 @@ class InventoryCountSyncCoordinatorTest {
     }
 
     @Test
+    fun `P1 descarte que esperaba PUT 409 conserva conflicto RAM y no encola cancelacion`() = runTest {
+        val original = borrador("venue-a", "count-a", 4, "line-a").copy(
+            nota = "nota local exacta",
+            notaPendienteDeEnviar = true,
+        )
+        val store = FakeStore(original)
+        val empezo = CompletableDeferred<Unit>()
+        val liberar = CompletableDeferred<Unit>()
+        val transport = FakeTransport(
+            advance = { _, _, _, _ ->
+                empezo.complete(Unit)
+                liberar.await()
+                // Fuerza la rama volátil: el 409 sí existe, pero el disco no puede guardar su
+                // marcador. `seleccionarBorrador` debe verlo en RAM al tomar el lock del descarte.
+                store.fallarGuardado = true
+                conflicto(expected = 4, current = 5)
+            },
+        )
+        val coordinator = InventoryCountSyncCoordinator(store, transport, connectivity())
+        coordinator.start(backgroundScope)
+        empezo.await()
+
+        val descarte = async { coordinator.descartarManualmente("venue-a", "count-a") }
+        runCurrent()
+        assertFalse("el descarte espera el mismo lock del PUT", descarte.isCompleted)
+
+        liberar.complete(Unit)
+        assertFalse("el 409 revoca la intención destructiva que estaba esperando", descarte.await())
+        runCurrent()
+
+        val conservado = coordinator.borradorNoPersistido("venue-a")!!
+        assertEquals(3.0, conservado.lineas.single().counted, 0.0)
+        assertEquals("nota local exacta", conservado.nota)
+        assertEquals(ConteoEnCurso.CODIGO_CONFLICTO_REVISION, conservado.conflictoRevision?.code)
+        assertEquals(original, store.leer("venue-a"))
+        assertTrue(store.cancelacionesPendientes("venue-a").isEmpty())
+        assertTrue(transport.cancels.isEmpty())
+    }
+
+    @Test
     fun `P1 barrera cancel existente evita replay de lineas del mismo conteo`() = runTest {
         val store = FakeStore(borrador("venue-a", "count-a", 4, "line-a"))
         store.agregarCancelacionPendiente(CancelacionPendienteDeConteo("venue-a", "count-a", 4))
@@ -366,6 +599,30 @@ class InventoryCountSyncCoordinatorTest {
         assertFalse(resultado.completado)
         assertEquals(7, store.leer("venue-a")?.conflictoRevision?.currentRevision)
         assertEquals(5, store.leer("venue-a")?.revisionConPutFinalConfirmado)
+    }
+
+    @Test
+    fun `P1 un 2xx sin revision siguiente no reconoce confirm ni cancel`() = runTest {
+        val store = FakeStore(
+            borrador("venue-a", "count-a", 5, "line-a").copy(
+                pendientesDeEnviar = emptySet(),
+                revisionConPutFinalConfirmado = 5,
+            ),
+        )
+        store.agregarCancelacionPendiente(CancelacionPendienteDeConteo("venue-b", "cancel-b", 2))
+        val transport = FakeTransport(
+            confirm = { _, _, _ -> RespuestaHttp(200, """{"success":true}""") },
+            cancel = { _, _, _ -> RespuestaHttp(200, """{"success":true,"count":{"status":"CANCELLED"}}""") },
+        )
+        val coordinator = InventoryCountSyncCoordinator(store, transport, connectivity())
+        coordinator.start(backgroundScope)
+        runCurrent()
+
+        val cierre = coordinator.cerrarManualmente("venue-a", "count-a")
+
+        assertFalse(cierre.completado)
+        assertEquals(ConteoEnCurso.CODIGO_REVISION_DESCONOCIDA, store.leer("venue-a")?.conflictoRevision?.code)
+        assertEquals("cancel-b", store.cancelacionesPendientes("venue-b").single().countId)
     }
 
     private fun borrador(
@@ -481,11 +738,14 @@ class InventoryCountSyncCoordinatorTest {
     private class FakeStore(vararg borradores: BorradorDeConteo) : BorradorDeConteoStore {
         private val porVenue = borradores.associateBy { it.venueId }.toMutableMap()
         private val cancelaciones = mutableMapOf<String, MutableList<CancelacionPendienteDeConteo>>()
+        var fallarSnapshotReconocido = false
+        var fallarGuardado = false
 
         override fun leer(): BorradorDeConteo? = null
         override fun leer(venueId: String): BorradorDeConteo? = porVenue[venueId]
         override fun venuesConTrabajo(): List<String> = (porVenue.keys + cancelaciones.keys).distinct().sorted()
         override fun guardar(borrador: BorradorDeConteo): Boolean {
+            if (fallarGuardado) return false
             porVenue[borrador.venueId] = borrador
             return true
         }
@@ -550,6 +810,38 @@ class InventoryCountSyncCoordinatorTest {
                     esFinal && pendientes.isEmpty() && !notaPendiente
                 },
             )
+            return true
+        }
+
+        override fun reconocerPutDesdeMemoria(
+            venueId: String,
+            countId: String,
+            expectedRevision: Int,
+            nuevaRevision: Int,
+            snapshot: BorradorDeConteo,
+            durableAlSeleccionar: BorradorDeConteo?,
+            sellos: Map<String, Pair<Double, String?>>,
+        ): Boolean {
+            if (fallarSnapshotReconocido) return false
+            val vigentes = snapshot.lineas.associate { it.id to (it.counted to it.countedAt) }
+            porVenue[venueId] = snapshot.copy(
+                revision = nuevaRevision,
+                pendientesDeEnviar = snapshot.pendientesDeEnviar -
+                    sellos.filter { (id, sello) -> vigentes[id] == sello }.keys,
+                revisionConPutFinalConfirmado = null,
+            )
+            return true
+        }
+
+        override fun guardarSnapshotReconocido(
+            venueId: String,
+            countId: String,
+            revisionReconocida: Int,
+            borrador: BorradorDeConteo,
+            durableAlSeleccionar: BorradorDeConteo?,
+        ): Boolean {
+            if (fallarSnapshotReconocido) return false
+            porVenue[venueId] = borrador.copy(venueId = venueId, countId = countId, revision = revisionReconocida)
             return true
         }
     }

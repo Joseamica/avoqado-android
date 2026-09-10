@@ -234,9 +234,21 @@ private fun MainScaffold(
     // El cobro se abre en un Dialog que NO cubre la pantalla completa: sin esto
     // el tab bar asomaba por debajo y era tocable a media transacción.
     val isPaying by com.avoqado.pos.payment.domain.PaymentOverlayState.isPaying.collectAsState()
-    val startTab = initialTab.takeIf { it in visibleTabs }
-        ?: visibleTabs.firstOrNull()
-        ?: MainTab.NOTIFICATIONS
+    // Session invalidation clears RoleManager's storage before AppState can
+    // remove this scaffold. Capture permissions once so tabs, start route and
+    // registered destinations cannot describe different instants mid-frame.
+    val graphSnapshot = resolveMainGraphSnapshot(
+        visibleTabs = visibleTabs,
+        initialTab = initialTab,
+        access = MainGraphAccess(
+            canAccessPOS = roleManager.canAccessPOS,
+            canAccessInventory = roleManager.canAccessInventory,
+            canAccessTransactions = roleManager.canAccessTransactions,
+        ),
+    )
+    val graphVisibleTabs = graphSnapshot.visibleTabs
+    val startTab = graphSnapshot.startTab
+    val registeredTabs = graphSnapshot.registeredTabs
 
     // Cuarentena de sincronización: hoja de resolución de rechazos.
     var showQuarantineSheet by remember { mutableStateOf(false) }
@@ -319,7 +331,7 @@ private fun MainScaffold(
         // con un `remember` paralelo, cambiar de modo/sucursal navegaba al tab
         // nuevo pero la píldora se quedaba en el tab viejo ("Más" resaltado
         // sobre la pantalla de Mesas).
-        val selectedTab = visibleTabs.firstOrNull { tab ->
+        val selectedTab = graphVisibleTabs.firstOrNull { tab ->
             currentDestination?.hierarchy?.any { it.route == tab.route } == true
         } ?: startTab
 
@@ -339,7 +351,7 @@ private fun MainScaffold(
                 // Durante el cobro el tab bar se esconde: el diálogo del pago no
                 // cubre la pantalla completa y este quedaba asomando y tocable.
                 if (!isPaying) TabletTabBar(
-                    visibleTabs = visibleTabs,
+                    visibleTabs = graphVisibleTabs,
                     selectedTab = selectedTab,
                     onTabSelected = { tab ->
                         if (tab == MainTab.MORE && selectedTab == MainTab.MORE) {
@@ -357,7 +369,7 @@ private fun MainScaffold(
                 startDestination = startTab.route,
                 modifier = Modifier.padding(innerPadding),
             ) {
-                if (roleManager.canAccessPOS) {
+                if (MainTab.CHECKOUT in registeredTabs) {
                     composable(MainTab.CHECKOUT.route) { CheckoutScreen(isTablet = true, roleManager = roleManager) }
                     composable(MainTab.TABLES.route) {
                         com.avoqado.pos.tables.presentation.TablesScreen(
@@ -378,10 +390,10 @@ private fun MainScaffold(
                         )
                     }
                 }
-                if (roleManager.canAccessInventory) {
+                if (MainTab.INVENTORY in registeredTabs) {
                     composable(MainTab.INVENTORY.route) { InventoryScreen(isTablet = true) }
                 }
-                if (roleManager.canAccessTransactions) {
+                if (MainTab.TRANSACTIONS in registeredTabs) {
                     composable(MainTab.TRANSACTIONS.route) { TransactionsScreen(isTablet = true) }
                 }
                 composable(MainTab.NOTIFICATIONS.route) {
@@ -620,7 +632,7 @@ private fun MainScaffold(
                 // Mismo criterio que el layout de tablet: durante el cobro no se
                 // muestra, porque asoma por debajo del diálogo del pago.
                 if (!isPaying) NavigationBar {
-                    visibleTabs.forEach { tab ->
+                    graphVisibleTabs.forEach { tab ->
                         val selected = currentDestination?.hierarchy?.any { it.route == tab.route } == true
                         NavigationBarItem(
                             selected = selected,
@@ -657,7 +669,7 @@ private fun MainScaffold(
                 startDestination = startTab.route,
                 modifier = Modifier.padding(innerPadding),
             ) {
-                if (roleManager.canAccessPOS) {
+                if (MainTab.CHECKOUT in registeredTabs) {
                     composable(MainTab.CHECKOUT.route) { CheckoutScreen(isTablet = false, roleManager = roleManager) }
                     composable(MainTab.TABLES.route) {
                         com.avoqado.pos.tables.presentation.TablesScreen(
@@ -678,10 +690,10 @@ private fun MainScaffold(
                         )
                     }
                 }
-                if (roleManager.canAccessInventory) {
+                if (MainTab.INVENTORY in registeredTabs) {
                     composable(MainTab.INVENTORY.route) { InventoryScreen(isTablet = false) }
                 }
-                if (roleManager.canAccessTransactions) {
+                if (MainTab.TRANSACTIONS in registeredTabs) {
                     composable(MainTab.TRANSACTIONS.route) { TransactionsScreen() }
                 }
                 composable(MainTab.NOTIFICATIONS.route) {

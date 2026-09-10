@@ -43,6 +43,30 @@ interface BorradorDeConteoStore {
         esFinal: Boolean = false,
     ): Boolean = false
 
+    /**
+     * Reconoce un PUT incremental cuya foto sólo alcanzó a vivir en RAM porque el guardado previo
+     * falló. La revisión viene de un 2xx real; nunca se usa para final/confirm. La implementación
+     * debe conservar una edición de disco posterior a [snapshot] y jamás retroceder una revisión.
+     */
+    fun reconocerPutDesdeMemoria(
+        venueId: String,
+        countId: String,
+        expectedRevision: Int,
+        nuevaRevision: Int,
+        snapshot: BorradorDeConteo,
+        durableAlSeleccionar: BorradorDeConteo?,
+        sellos: Map<String, Pair<Double, String?>>,
+    ): Boolean = false
+
+    /** Reintenta persistir una revisión ya reconocida por el coordinador y conservada en RAM. */
+    fun guardarSnapshotReconocido(
+        venueId: String,
+        countId: String,
+        revisionReconocida: Int,
+        borrador: BorradorDeConteo,
+        durableAlSeleccionar: BorradorDeConteo?,
+    ): Boolean = false
+
     fun guardarConflicto(venueId: String, countId: String, conflicto: ConflictoRevision): Boolean {
         val actual = leer(venueId) ?: return false
         if (actual.countId != countId) return false
@@ -268,6 +292,75 @@ class BorradorDeConteoPrefs @Inject constructor(
                 revisionConPutFinalConfirmado = nuevaRevision.takeIf {
                     esFinal && pendientes.isEmpty() && !notaPendiente
                 },
+            ),
+        )
+    }
+
+    override fun reconocerPutDesdeMemoria(
+        venueId: String,
+        countId: String,
+        expectedRevision: Int,
+        nuevaRevision: Int,
+        snapshot: BorradorDeConteo,
+        durableAlSeleccionar: BorradorDeConteo?,
+        sellos: Map<String, Pair<Double, String?>>,
+    ): Boolean = synchronized(lock) {
+        if (snapshot.venueId != venueId || snapshot.countId != countId || snapshot.revision != expectedRevision) {
+            return@synchronized false
+        }
+        val disco = leer(venueId)
+        if (disco != null && disco.countId != countId) return@synchronized false
+        val revisionDisco = disco?.revision
+        if (disco != null && (revisionDisco == null || revisionDisco > nuevaRevision)) return@synchronized false
+
+        // La igualdad con la foto durable capturada antes del PUT distingue el disco viejo de una
+        // edición hecha durante el viaje incluso si ambas escrituras caen en el mismo milisegundo.
+        // Si no cambió, gana RAM: contiene justo la edición aceptada por el servidor.
+        val base = if (disco != durableAlSeleccionar && disco != null) disco else snapshot
+        val vigentes = base.lineas.associate { it.id to (it.counted to it.countedAt) }
+        val confirmadas = sellos.filter { (id, sello) -> vigentes[id] == sello }.keys
+        escribir(
+            venueId,
+            base.copy(
+                venueId = venueId,
+                countId = countId,
+                revision = nuevaRevision,
+                pendientesDeEnviar = base.pendientesDeEnviar - confirmadas,
+                conflictoRevision = null,
+                revisionConPutFinalConfirmado = null,
+            ),
+        )
+    }
+
+    override fun guardarSnapshotReconocido(
+        venueId: String,
+        countId: String,
+        revisionReconocida: Int,
+        borrador: BorradorDeConteo,
+        durableAlSeleccionar: BorradorDeConteo?,
+    ): Boolean = synchronized(lock) {
+        if (borrador.venueId != venueId || borrador.countId != countId || borrador.revision != revisionReconocida) {
+            return@synchronized false
+        }
+        val disco = leer(venueId)
+        if (disco != null && disco.countId != countId) return@synchronized false
+        if (disco?.revision == null && disco != null) return@synchronized false
+        if ((disco?.revision ?: Int.MIN_VALUE) > revisionReconocida) return@synchronized false
+        val base = if (disco != durableAlSeleccionar && disco != null) {
+            disco.copy(revision = revisionReconocida)
+        } else {
+            borrador
+        }
+        escribir(
+            venueId,
+            base.copy(
+                venueId = venueId,
+                countId = countId,
+                revision = revisionReconocida,
+                conflictoRevision = borrador.conflictoRevision,
+                // El snapshot reconocido manda sobre un stage viejo: cualquier incremental lo
+                // invalida, incluso si una edición concurrente de disco aportó el contenido base.
+                revisionConPutFinalConfirmado = borrador.revisionConPutFinalConfirmado,
             ),
         )
     }

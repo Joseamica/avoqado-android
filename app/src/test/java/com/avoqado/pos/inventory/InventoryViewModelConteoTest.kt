@@ -23,9 +23,7 @@ import com.avoqado.pos.scale.ScaleSettingsRepository
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
-import io.mockk.firstArg
 import io.mockk.mockk
-import io.mockk.secondArg
 import io.mockk.slot
 import io.mockk.verify
 import kotlinx.coroutines.CompletableDeferred
@@ -143,6 +141,46 @@ class InventoryViewModelConteoTest {
                 revisionConPutFinalConfirmado = nuevaRevision.takeIf {
                     esFinal && pendientes.isEmpty() && !notaPendiente
                 },
+            )
+            return true
+        }
+
+        override fun guardarSnapshotReconocido(
+            venueId: String,
+            countId: String,
+            revisionReconocida: Int,
+            borrador: BorradorDeConteo,
+            durableAlSeleccionar: BorradorDeConteo?,
+        ): Boolean {
+            eventos += "ack-ram"
+            if (discoRoto) return false
+            this.borrador = borrador.copy(
+                venueId = venueId,
+                countId = countId,
+                revision = revisionReconocida,
+            )
+            return true
+        }
+
+        override fun reconocerPutDesdeMemoria(
+            venueId: String,
+            countId: String,
+            expectedRevision: Int,
+            nuevaRevision: Int,
+            snapshot: BorradorDeConteo,
+            durableAlSeleccionar: BorradorDeConteo?,
+            sellos: Map<String, Pair<Double, String?>>,
+        ): Boolean {
+            eventos += "ack-ram"
+            if (discoRoto) return false
+            val vigentes = snapshot.lineas.associate { it.id to (it.counted to it.countedAt) }
+            borrador = snapshot.copy(
+                venueId = venueId,
+                countId = countId,
+                revision = nuevaRevision,
+                pendientesDeEnviar = snapshot.pendientesDeEnviar -
+                    sellos.filter { (id, sello) -> vigentes[id] == sello }.keys,
+                revisionConPutFinalConfirmado = null,
             )
             return true
         }
@@ -601,10 +639,10 @@ class InventoryViewModelConteoTest {
         store.borrador = BorradorDeConteo(
             venueId = "v", countId = "full-1", type = StockCountType.FULL,
             lineas = listOf(linea("a", counted = 4.0, countedAt = "t"), linea("b")),
-            pendientesDeEnviar = setOf("a"), actualizadoEn = 1L,
+            pendientesDeEnviar = setOf("a"), revision = 4, actualizadoEn = 1L,
         )
         every { repository.stockCounts } returns MutableStateFlow(
-            listOf(StockCount(id = "full-1", type = StockCountType.FULL, status = "COMPLETED", itemCount = 2, items = listOf(linea("a"), linea("b")))),
+            listOf(StockCount(id = "full-1", type = StockCountType.FULL, status = "COMPLETED", itemCount = 2, revision = 5, items = listOf(linea("a"), linea("b")))),
         )
         vm.refrescarBorradorLocal()
         vm.contarEventosDesdeCero()
@@ -614,6 +652,7 @@ class InventoryViewModelConteoTest {
         assertNotNull("sólo «Descartar» borra", store.borrador)
         assertFalse("nada de borrar", eventos.contains("borrar"))
         assertEquals(4.0, vm.countItems.value[0].counted, 0.0)
+        assertEquals("la selección inicial intacta sigue vacía", "", vm.countedText.value)
         assertTrue(vm.showCounting.value)
         // Con conflicto puesto no se manda nada: el conteo ya no está IN_PROGRESS allá.
         coVerify(exactly = 0) { repository.enviarAvance(any(), any()) }
@@ -652,6 +691,7 @@ class InventoryViewModelConteoTest {
         vm.continuarBorrador()
 
         assertEquals(5.0, vm.countItems.value.single().counted, 0.0)
+        assertEquals("5", vm.countedText.value)
         assertEquals("nota local", vm.countNote.value)
         assertEquals(4, store.borrador?.revision)
         assertNotNull(vm.conflictoDeRevision.value)
@@ -683,11 +723,115 @@ class InventoryViewModelConteoTest {
         vm.continuarBorrador()
 
         assertEquals(5.0, vm.countItems.value.single().counted, 0.0)
+        assertEquals("5", vm.countedText.value)
         assertEquals("nota legacy", vm.countNote.value)
         assertNull("un GET posterior no inventa la base del borrador", store.borrador?.revision)
         assertEquals(ConteoEnCurso.CODIGO_REVISION_DESCONOCIDA, store.borrador?.conflictoRevision?.code)
         assertEquals(ConteoEnCurso.REVISION_DESCONOCIDA, vm.bandaDeAviso.value)
         coVerify(exactly = 0) { repository.enviarAvance(any(), any()) }
+    }
+
+    @Test
+    fun `P1 consulta cerrada muestra la cantidad del item seleccionado`() = runTest(scheduler) {
+        store.borrador = BorradorDeConteo(
+            venueId = VENUE,
+            countId = "full-1",
+            type = StockCountType.FULL,
+            lineas = listOf(linea("a", counted = 4.0, countedAt = "t-local")),
+            pendientesDeEnviar = setOf("a"),
+            revision = 4,
+            actualizadoEn = 1L,
+        )
+        val cerrado = conteoFull("a").copy(status = "COMPLETED", revision = 5)
+        val vm = buildViewModel(conteos = listOf(cerrado))
+        vm.refrescarBorradorLocal()
+
+        vm.continuarBorrador()
+
+        assertEquals(ConteoEnCurso.CONFLICTO, vm.conflictoDelServidor.value)
+        assertEquals(0, vm.selectedItemIndex.value)
+        assertEquals("4", vm.countedText.value)
+    }
+
+    @Test
+    fun `P1 consulta muestra cero cuando el item seleccionado fue contado en cero`() = runTest(scheduler) {
+        val conflicto = ConflictoRevision(
+            code = ConteoEnCurso.CODIGO_CONFLICTO_REVISION,
+            message = ConteoEnCurso.CONFLICTO_REVISION,
+            venueId = VENUE,
+            countId = "full-1",
+            expectedRevision = 4,
+            currentRevision = 5,
+            status = "IN_PROGRESS",
+        )
+        store.borrador = BorradorDeConteo(
+            venueId = VENUE,
+            countId = "full-1",
+            type = StockCountType.FULL,
+            lineas = listOf(linea("cero", counted = 0.0, countedAt = "t-cero")),
+            pendientesDeEnviar = setOf("cero"),
+            revision = 4,
+            conflictoRevision = conflicto,
+            actualizadoEn = 1L,
+        )
+        val vm = buildViewModel()
+        vm.refrescarBorradorLocal()
+
+        vm.continuarBorrador()
+
+        assertEquals("el cero explícito se puede leer", "0", vm.countedText.value)
+    }
+
+    @Test
+    fun `P1 consulta mantiene vacío un item seleccionado que nunca se contó`() = runTest(scheduler) {
+        store.borrador = BorradorDeConteo(
+            venueId = VENUE,
+            countId = "full-1",
+            type = StockCountType.FULL,
+            lineas = listOf(linea("intacta")),
+            pendientesDeEnviar = emptySet(),
+            revision = 4,
+            conflictoRevision = ConflictoRevision(
+                code = ConteoEnCurso.CODIGO_CONFLICTO_REVISION,
+                message = ConteoEnCurso.CONFLICTO_REVISION,
+                venueId = VENUE,
+                countId = "full-1",
+                expectedRevision = 4,
+                currentRevision = 5,
+                status = "IN_PROGRESS",
+            ),
+            actualizadoEn = 1L,
+        )
+        val vm = buildViewModel()
+        vm.refrescarBorradorLocal()
+
+        vm.continuarBorrador()
+
+        assertEquals(0, vm.selectedItemIndex.value)
+        assertEquals("", vm.countedText.value)
+    }
+
+    @Test
+    fun `continuar un borrador editable mantiene vacío el campo seleccionado`() = runTest(scheduler) {
+        conectado.value = false
+        store.borrador = BorradorDeConteo(
+            venueId = VENUE,
+            countId = "full-1",
+            type = StockCountType.FULL,
+            lineas = listOf(linea("a", counted = 33.0, countedAt = "t-local")),
+            pendientesDeEnviar = setOf("a"),
+            revision = 4,
+            actualizadoEn = 1L,
+        )
+        val vm = buildViewModel(conteos = listOf(conteoFull("a")))
+        vm.refrescarBorradorLocal()
+
+        vm.continuarBorrador()
+
+        assertNull(vm.conflictoDeRevision.value)
+        assertNull(vm.conflictoDelServidor.value)
+        assertEquals("", vm.countedText.value)
+        assertEquals(33.0, vm.countItems.value.single().counted, 0.0)
     }
 
     @Test
@@ -984,6 +1128,42 @@ class InventoryViewModelConteoTest {
 
         assertEquals(listOf("guardar", "enviar"), eventos.take(2))
         coVerify(exactly = 1) { repository.enviarAvance("full-1", match { it.map { l -> l.id } == listOf("a") }) }
+    }
+
+    @Test
+    fun `P1 coordinator real envia snapshot RAM conocido y conserva ACK si el store sigue roto`() = runTest(scheduler) {
+        val monitor = mockk<ConnectivityMonitor> {
+            every { isConnected } returns conectado
+            every { isServerReachable } returns servidorAlcanzable
+        }
+        val coordinator = InventoryCountSyncCoordinator(store, repository, monitor)
+        coordinator.start(backgroundScope)
+        coEvery {
+            repository.enviarAvance(VENUE, "full-1", any(), 4)
+        } returns RespuestaHttp(200, """{"success":true,"revision":5}""")
+        val vm = buildViewModel(coordinator = coordinator)
+        vm.resumeCount(conteoFull("a"))
+        store.discoRoto = true
+        eventos.clear()
+
+        vm.contar(0, "3")
+        scheduler.advanceUntilIdle()
+
+        coVerify(exactly = 1) {
+            repository.enviarAvance(
+                VENUE,
+                "full-1",
+                match { it.single().id == "a" && it.single().counted == 3.0 },
+                4,
+            )
+        }
+        assertNull("el store no finge durabilidad", store.borrador)
+        assertEquals(5, vm.activeCount.value?.revision)
+        assertEquals(5, vm.borradorLocal.value?.revision)
+        assertEquals(emptySet<String>(), vm.borradorLocal.value?.pendientesDeEnviar)
+        assertNotNull("el fallo durable sigue visible", vm.errorMessage.value)
+        coVerify(exactly = 0) { repository.enviarFinal(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { repository.confirmarConteo(any(), any(), any()) }
     }
 
     @Test
@@ -1392,6 +1572,7 @@ class InventoryViewModelConteoTest {
             nota = "nota sincronizada",
             notaPendienteDeEnviar = false,
             pendientesDeEnviar = emptySet(),
+            revision = 4,
             actualizadoEn = 1L,
         )
         val vm = buildViewModel()
@@ -1465,6 +1646,7 @@ class InventoryViewModelConteoTest {
             type = StockCountType.CYCLE,
             status = "IN_PROGRESS",
             itemCount = 1,
+            revision = 0,
             items = listOf(linea("srv-1")),
         )
         val primero = buildViewModel()
@@ -1563,6 +1745,30 @@ class InventoryViewModelConteoTest {
         assertNotNull("el borrador sin stage sigue disponible", store.borrador)
         assertFalse("un PUT 200 solo nunca autoriza borrar", eventos.contains("borrar"))
         coVerify(exactly = 0) { repository.confirmarConteo(VENUE, "full-1", any()) }
+    }
+
+    @Test
+    fun `P1 fallback no confirma si falla persistir el ACK del PUT final`() = runTest(scheduler) {
+        val vm = buildViewModel()
+        vm.resumeCount(conteoFull("a"))
+        vm.contar(0, "5")
+        vm.finishCounting()
+        coEvery { repository.enviarFinal("full-1", any(), null) } coAnswers {
+            // La escritura previa al HTTP sí quedó; falla exactamente el guardado del ACK.
+            store.discoRoto = true
+            RespuestaHttp(200, "{}")
+        }
+
+        vm.confirmCount()
+
+        assertTrue(vm.showReview.value)
+        assertNotNull("la copia RAM reconocida sigue disponible", vm.borradorLocal.value)
+        assertEquals(
+            "No pudimos guardar este avance en el aparato. Mantén este conteo abierto y vuelve a intentarlo.",
+            vm.errorMessage.value,
+        )
+        coVerify(exactly = 1) { repository.enviarFinal("full-1", any(), null) }
+        coVerify(exactly = 0) { repository.confirmarConteo("full-1") }
     }
 
     @Test

@@ -4,7 +4,7 @@ package com.avoqado.pos.payment.domain
  * Lo que el server sabe de una solicitud de cobro cuando le preguntamos por su `requestId`.
  *
  * 🔴 `NotFound` y `Unreachable` NO son lo mismo, y confundirlos es lo que cuesta dinero:
- * el primero PRUEBA que la solicitud nunca existió (la terminal jamás fue invocada);
+ * el primero sólo dice que la consulta no encontró la solicitud;
  * el segundo es ignorancia pura (no pudimos preguntar).
  */
 sealed class ChargeStatusProbe {
@@ -13,9 +13,10 @@ sealed class ChargeStatusProbe {
         val status: String,
         val inProgress: Boolean,
         val paymentId: String? = null,
+        val cancelDisposition: String? = null,
     ) : ChargeStatusProbe()
 
-    /** 404: no existe esa solicitud → nunca se persistió → nadie pasó una tarjeta. */
+    /** 404: no se encontró la solicitud; no demuestra ausencia de cargo. */
     data object NotFound : ChargeStatusProbe()
 
     /** No se pudo consultar (server caído, sin red, 5xx del proxy): NO se sabe nada. */
@@ -84,7 +85,7 @@ object CardChargeDecision {
 
     /** El texto que ve el cajero cuando nadie sabe si se cobró. Ni éxito ni fracaso. */
     const val UNDETERMINED_MESSAGE =
-        "No pudimos confirmar el cobro. Revisa la terminal antes de volver a cobrar."
+        "Estamos confirmando el cobro. No vuelvas a pasar la tarjeta."
 
     /**
      * Plazo máximo que el POS espera el resultado de la terminal antes de cortar la espera
@@ -103,48 +104,17 @@ object CardChargeDecision {
      */
     const val WAIT_CEILING_MS = 330_000L
 
-    /**
-     * ¿Hay que ir a preguntarle al server cómo quedó el cobro, en vez de concluir aquí?
-     *
-     * Todo final ambiguo (5xx, corte de red, plazo vencido) manda a consultar. Sólo las
-     * respuestas reales de negocio (4xx) permiten concluir de una vez, porque constan.
-     *
-     * @param cancelRequested el cajero pidió cancelar ESTE cobro, que ya iba en camino.
-     *
-     * 🔴 **Si se canceló, NINGÚN código permite concluir.** Cancelar es una PETICIÓN, no una
-     * garantía: si la tarjeta ya se pasó, la terminal cobra igual y avisa después. El cancel
-     * gana la carrera contra la respuesta del cobro, así que el server contesta 409 ("tu
-     * petición quedó superada") ANTES de que exista un desenlace — leerlo como "no se cobró"
-     * es afirmar algo que nadie afirmó.
-     *
-     * Medido con tarjeta real (2026-08-10, $0.15): 409 a las 22:35:16, la terminal cobró a las
-     * 22:35:22. La app dijo "consta que no se cobró" con el dinero ya cobrado, dejó la venta
-     * abierta y sin aviso, y el siguiente "Cobrar" habría cobrado por segunda vez.
-     *
-     * El parámetro NO tiene default a propósito: es la ruta del dinero y quien agregue una
-     * salida nueva tiene que decidir explícitamente si hubo cancel, no heredarlo por descuido.
-     */
+    /** Emitted commands require status recovery after transport, ambiguous HTTP, or cancellation. */
     fun mustReconcile(ending: ChargeWaitEnding, cancelRequested: Boolean): Boolean = when {
         cancelRequested -> true
         else -> when (ending) {
-            is ChargeWaitEnding.Http -> isTransportFailure(ending.code)
+            is ChargeWaitEnding.Http -> isTransportFailure(ending.code) || ending.code in setOf(400, 404, 409, 422)
             ChargeWaitEnding.NetworkError -> true
             ChargeWaitEnding.CeilingExceeded -> true
         }
     }
 
-    /**
-     * ¿Este código HTTP significa "no sé qué pasó con la tarjeta"?
-     *
-     * 5xx y 408 = el server/proxy nunca nos dijo el desenlace: la terminal pudo haber cobrado.
-     * Los 4xx (404 terminal desconectada, 409 ocupada, 422 sin socket) son respuestas REALES
-     * del server: constan como "nunca se despachó" y siguen siendo un error normal.
-     *
-     * 🔴 Eso vale SÓLO si nadie canceló. El mismo 409 significa dos cosas distintas: "la
-     * terminal está ocupada, no despaché nada" (consta) y "tu petición quedó superada por el
-     * cancel que acabas de mandar" (no consta NADA — la terminal ya tenía la solicitud y pudo
-     * cobrar). Por eso el cancel se evalúa ANTES que el código, en [mustReconcile].
-     */
+    /** Transport classification only; other ambiguous HTTP codes also reconcile above. */
     fun isTransportFailure(httpCode: Int): Boolean = httpCode >= 500 || httpCode == 408
 
     /**
@@ -174,7 +144,9 @@ object CardChargeDecision {
             }
 
         is ChargeStatusProbe.Known ->
-            if (probe.inProgress) ProbeDecision.KeepPolling
+            if (probe.status == "COMPLETED" && !probe.paymentId.isNullOrBlank()) ProbeDecision.Resolved(CardChargeOutcome.Charged(probe.paymentId))
+            else if (probe.cancelDisposition == "ACTIVE") ProbeDecision.Resolved(fromTerminalStatus(probe))
+            else if (probe.inProgress) ProbeDecision.KeepPolling
             else ProbeDecision.Resolved(fromTerminalStatus(probe))
     }
 
@@ -219,10 +191,11 @@ object CardChargeDecision {
     }
 
     private fun fromTerminalStatus(probe: ChargeStatusProbe.Known): CardChargeOutcome =
-        when (probe.status) {
-            "COMPLETED" -> CardChargeOutcome.Charged(probe.paymentId)
-            "FAILED" -> CardChargeOutcome.NotCharged("El cobro fue rechazado. No se cobró la tarjeta.")
-            "CANCELLED" -> CardChargeOutcome.NotCharged("El cobro se canceló. No se cobró la tarjeta.")
+        when {
+            probe.cancelDisposition == "ACTIVE" -> CardChargeOutcome.Undetermined("El cobro sigue activo. Confirma en la terminal. No vuelvas a pasar la tarjeta.")
+            probe.status == "COMPLETED" -> CardChargeOutcome.Undetermined(UNDETERMINED_MESSAGE)
+            probe.status == "FAILED" -> CardChargeOutcome.NotCharged("El cobro fue rechazado. No se cobró la tarjeta.")
+            probe.status == "CANCELLED" && probe.cancelDisposition == "ACCEPTED" -> CardChargeOutcome.NotCharged("El cobro se canceló. No se cobró la tarjeta.")
             // TIMED_OUT, UNKNOWN — y cualquier estado que este cliente no conozca todavía.
             // Adivinar aquí es exactamente el bug: se dice que no se sabe.
             else -> CardChargeOutcome.Undetermined(UNDETERMINED_MESSAGE)

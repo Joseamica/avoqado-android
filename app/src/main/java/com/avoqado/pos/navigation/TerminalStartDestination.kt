@@ -8,6 +8,53 @@ data class MainNavigationState(
     val contentKey: String,
 )
 
+internal data class MainGraphAccess(
+    val canAccessPOS: Boolean,
+    val canAccessInventory: Boolean,
+    val canAccessTransactions: Boolean,
+)
+
+internal data class MainGraphSnapshot(
+    val visibleTabs: List<MainTab>,
+    val startTab: MainTab,
+    val registeredTabs: Set<MainTab>,
+)
+
+/**
+ * Captures the permissions used to build one main navigation graph.
+ *
+ * `visibleTabs` and RoleManager can briefly describe two different instants
+ * while an invalid session is being cleared. Filtering and choosing the start
+ * destination from this one snapshot prevents Compose Navigation from receiving
+ * a start route that the same graph did not register.
+ */
+internal fun resolveMainGraphSnapshot(
+    visibleTabs: List<MainTab>,
+    initialTab: MainTab,
+    access: MainGraphAccess,
+): MainGraphSnapshot {
+    val registeredTabs = buildSet {
+        if (access.canAccessPOS) {
+            add(MainTab.CHECKOUT)
+            add(MainTab.TABLES)
+        }
+        if (access.canAccessInventory) add(MainTab.INVENTORY)
+        if (access.canAccessTransactions) add(MainTab.TRANSACTIONS)
+        add(MainTab.NOTIFICATIONS)
+        add(MainTab.MORE)
+        add(MainTab.CALENDAR)
+    }
+    val permittedVisibleTabs = visibleTabs.filter { it in registeredTabs }
+        .ifEmpty { listOf(MainTab.NOTIFICATIONS, MainTab.MORE) }
+    val startTab = initialTab.takeIf { it in permittedVisibleTabs }
+        ?: permittedVisibleTabs.first()
+    return MainGraphSnapshot(
+        visibleTabs = permittedVisibleTabs,
+        startTab = startTab,
+        registeredTabs = registeredTabs,
+    )
+}
+
 /**
  * Chooses the first surface for the current physical terminal.
  *

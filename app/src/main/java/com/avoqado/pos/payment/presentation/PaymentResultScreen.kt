@@ -660,7 +660,6 @@ fun PaymentUndeterminedView(
     /** El cobro sin confirmar quedó de otra venta: confirmarlo no paga la actual. */
     fromPreviousSale: Boolean = false,
 ) {
-    var showChargeAgainWarning by remember { mutableStateOf(false) }
     var showLeaveWarning by remember { mutableStateOf(false) }
 
     // 🔴 Sin esto, un "atrás" desmonta la pantalla y toda la ceremonia de la advertencia
@@ -714,56 +713,8 @@ fun PaymentUndeterminedView(
 
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
 
-        TextButton(
-            onClick = { showChargeAgainWarning = true },
-            enabled = !isChecking,
-        ) {
-            Text(
-                text = if (fromPreviousSale) "Cobrar esta venta de todos modos" else "Cobrar de nuevo",
-                color = if (isChecking) {
-                    MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.38f)
-                } else {
-                    MaterialTheme.colorScheme.error
-                },
-            )
-        }
-
         TextButton(onClick = onCancel, enabled = !isChecking) {
-            Text("Cancelar")
-        }
-    }
-
-    // La advertencia NO es decorativa: es lo único entre el cajero y un segundo cargo.
-    if (showChargeAgainWarning) {
-        AvoqadoDialog(
-            title = if (fromPreviousSale) "¿Cobrar esta venta?" else "¿Cobrar de nuevo?",
-            description = if (fromPreviousSale) {
-                "El cobro anterior sigue sin confirmarse y dejará de avisarte. Si aquel cobro " +
-                    "sí pasó y no lo verificaste, el cliente podría quedar cobrado dos veces. " +
-                    "Revisa la terminal antes de continuar."
-            } else {
-                "Puede que la tarjeta YA se haya cobrado. Revisa la terminal " +
-                    "y el estado del cobro antes de continuar: si el cobro anterior sí pasó, " +
-                    "esto le cobrará al cliente por segunda vez."
-            },
-            onDismiss = { showChargeAgainWarning = false },
-            actionButton = {
-                PrimaryButton(
-                    text = if (fromPreviousSale) "Sí, continuar" else "Sí, cobrar de nuevo",
-                    onClick = {
-                        showChargeAgainWarning = false
-                        onChargeAgain()
-                    },
-                    fullWidth = true,
-                )
-            },
-        ) {
-            Icon(
-                imageVector = Icons.Filled.Warning,
-                contentDescription = null,
-                tint = Warning,
-                modifier = Modifier.size(24.dp),
-            )
+            Text("Salir con el cobro pendiente")
         }
     }
 
