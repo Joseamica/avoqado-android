@@ -7,6 +7,8 @@ import com.avoqado.pos.core.data.network.ForbiddenInterceptor
 import com.avoqado.pos.payment.data.model.CreateOrderRequest
 import com.avoqado.pos.payment.data.model.CreateOrderResponse
 import com.avoqado.pos.payment.data.model.OrderData
+import com.avoqado.pos.payment.domain.CancelacionDeCobro
+import com.avoqado.pos.payment.domain.ResultadoDeCancelarOrden
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
@@ -77,6 +79,15 @@ class OrderRepository @Inject constructor(
         .build()
 
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
+
+    /**
+     * Seam de pruebas: apuntar a un MockWebServer. En producción es [ApiConstants.BASE_URL].
+     *
+     * Hoy sólo lo usa [cancelOrder] —el resto del repositorio arma la URL con la constante—:
+     * es la única llamada cuya LECTURA de la respuesta hay que poder fijar por caso.
+     */
+    @androidx.annotation.VisibleForTesting
+    internal var baseUrl: String = ApiConstants.BASE_URL
 
     // MARK: - Exception types
 
@@ -536,6 +547,36 @@ class OrderRepository @Inject constructor(
                 null
             }
         }
+
+        /**
+         * Cómo se lee la respuesta del DELETE de una orden. PURA, para poder fijar cada caso.
+         *
+         * 🔴 El 4xx de un INTERMEDIARIO (túnel caído, portal cautivo, proxy de plaza) no dice nada
+         * de la orden: se lee como falta de red, nunca como «la orden ya no existe». Leerlo al
+         * revés cerraría la intención de cancelar sin haber cancelado nada — el mismo defecto que
+         * ya costó una venta encolada muerta con el texto «la orden ya no existe».
+         */
+        fun leerCancelacionDeOrden(
+            code: Int,
+            contentType: String?,
+            ngrokError: String?,
+            body: String?,
+        ): ResultadoDeCancelarOrden {
+            if (code in 200..299) return ResultadoDeCancelarOrden.Cancelada
+            if (code >= 500) return ResultadoDeCancelarOrden.ErrorDeServidor(code)
+            if (isTransient4xx(code, contentType, ngrokError, body)) return ResultadoDeCancelarOrden.SinRed
+
+            val root = runCatching { errorParserJson.parseToJsonElement(body.orEmpty()).jsonObject }.getOrNull()
+            val codigo = root?.get("code")?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+            val mensaje = root?.get("message")?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
+            if (codigo == CancelacionDeCobro.ORDER_CANCEL_BLOCKED_BY_TERMINAL_CHARGE) {
+                val requestId = root["details"]?.jsonObject?.get("requestId")?.jsonPrimitive?.contentOrNull
+                    ?.takeIf { it.isNotBlank() }
+                return ResultadoDeCancelarOrden.BloqueadaPorCobro(requestId, mensaje)
+            }
+            if (code == 404) return ResultadoDeCancelarOrden.NoExiste
+            return ResultadoDeCancelarOrden.RechazoDeNegocio(code, codigo, mensaje)
+        }
     }
 
     suspend fun createOrder(
@@ -612,30 +653,62 @@ class OrderRepository @Inject constructor(
         }
     }
 
-    suspend fun cancelOrder(orderId: String): Result<Unit> {
-        val venueId = secureStorage.venueId ?: return Result.failure(Exception("No venue selected"))
-        val token = secureStorage.accessToken ?: return Result.failure(Exception("Not authenticated"))
+    /**
+     * DELETE /mobile/venues/:venueId/orders/:orderId — con RESULTADO TIPADO.
+     *
+     * 🔴 Antes devolvía `Result<Unit>` con un `Exception("Error al cancelar orden")` para TODO lo
+     * que no fuera 2xx: el 409 `ORDER_CANCEL_BLOCKED_BY_TERMINAL_CHARGE` —que dice QUÉ cobro
+     * bloquea— se leía igual que una cuenta ya pagada o que un túnel caído, y el cuerpo ni se
+     * cerraba. La cancelación durable necesita distinguirlos: sólo uno de ellos significa «vuelve
+     * a esperar el desenlace del cobro».
+     *
+     * @param venueId el venue de la ORDEN. Una cancelación pendiente sobrevive a un cambio de
+     *   sucursal, así que no puede apuntar al venue activo.
+     */
+    suspend fun cancelOrder(
+        orderId: String,
+        venueId: String? = null,
+        reason: String? = null,
+    ): ResultadoDeCancelarOrden {
+        val venue = venueId ?: secureStorage.venueId ?: return ResultadoDeCancelarOrden.SinRed
+        val token = secureStorage.accessToken ?: return ResultadoDeCancelarOrden.SinRed
 
         return try {
+            val cuerpo = buildJsonObject {
+                reason?.takeIf { it.isNotBlank() }?.let { put("reason", JsonPrimitive(it)) }
+            }.toString().toRequestBody("application/json".toMediaType())
+
             val request = Request.Builder()
-                .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/orders/$orderId")
+                .url("$baseUrl/mobile/venues/$venue/orders/$orderId")
                 .header("Authorization", "Bearer $token")
-                .delete()
+                // Esta cancelación presenta su propio error con contexto (la hoja de pendientes):
+                // un 403 aquí no puede sacar el modal global encima de la pantalla del cajero.
+                .header(ForbiddenInterceptor.LOCAL_ERROR_HEADER, "1")
+                .delete(cuerpo)
                 .build()
 
-            val responseCode = withContext(Dispatchers.IO) {
-                client.newCall(request).execute().code
+            // `moneyClient`: plazos cortos y FAIL_FAST — una llamada de la ruta del dinero no se
+            // queda esperando a que una persona teclee un PIN. El cuerpo se lee y se CIERRA.
+            val respuesta = withContext(Dispatchers.IO) {
+                moneyClient.newCall(request).execute().use { response ->
+                    RespuestaCruda(
+                        code = response.code,
+                        contentType = response.header("Content-Type"),
+                        ngrokError = response.header("ngrok-error-code"),
+                        body = response.body?.string() ?: "",
+                    )
+                }
             }
-            if (responseCode in 200..299) {
-                Log.d("📦", "✅ Order cancelled: $orderId")
-                Result.success(Unit)
-            } else {
-                Result.failure(Exception("Error al cancelar orden"))
-            }
+            leerCancelacionDeOrden(respuesta.code, respuesta.contentType, respuesta.ngrokError, respuesta.body)
+                .also { Log.d("📦", "Cancelación de $orderId → ${respuesta.code} ⇒ $it") }
         } catch (e: Exception) {
-            Result.failure(e)
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            Log.w("📦", "No se pudo cancelar la orden $orderId: ${e.message}")
+            ResultadoDeCancelarOrden.SinRed
         }
     }
+
+    private data class RespuestaCruda(val code: Int, val contentType: String?, val ngrokError: String?, val body: String)
 
     // MARK: - Fast Cash Payment (no products)
 

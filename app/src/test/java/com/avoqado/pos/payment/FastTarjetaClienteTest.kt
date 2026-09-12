@@ -139,6 +139,8 @@ class FastTarjetaClienteTest {
             syncOutbox = mockk(relaxed = true),
             customerDisplay = com.avoqado.pos.customerdisplay.CustomerDisplayState(),
             areaTicketRepository = areaTicketRepository,
+            // Esta prueba no cancela: el coordinador de cancelaciones va relajado.
+            cancelacionDeCobro = mockk(relaxed = true),
             savedStateHandle = androidx.lifecycle.SavedStateHandle(),
         )
     }

@@ -8,12 +8,29 @@ package com.avoqado.pos.payment.domain
  * el segundo es ignorancia pura (no pudimos preguntar).
  */
 sealed class ChargeStatusProbe {
-    /** El server contestó con el estado durable de la solicitud. */
+    /**
+     * El server contestó con el estado durable de la solicitud.
+     *
+     * Los campos desde [outcome] son el DESENLACE CANÓNICO del servidor (diseño §C.1, 11-sep) y son
+     * **opcionales**: un servidor que todavía no los manda los deja en `null` y cada cliente decide
+     * con lo de siempre. Se leen como texto libre, nunca como enum estricto — un valor nuevo del
+     * servidor no puede tumbar la lectura del estado de un cobro.
+     */
     data class Known(
         val status: String,
         val inProgress: Boolean,
         val paymentId: String? = null,
         val cancelDisposition: String? = null,
+        /** `CHARGED` · `NOT_CHARGED` · `UNRESOLVED`, o lo que el servidor agregue después. */
+        val outcome: String? = null,
+        val outcomeEvidence: String? = null,
+        val evidenceClass: String? = null,
+        /** Crudo, sólo diagnóstico. La única decisión que lo mira es la lápida de admisión `REJECTED_*`. */
+        val failureCode: String? = null,
+        val reconciliationRequired: Boolean? = null,
+        /** La orden del cobro según el servidor: completa una intención de cancelar que no la conocía. */
+        val orderId: String? = null,
+        val terminalId: String? = null,
     ) : ChargeStatusProbe()
 
     /** 404: no se encontró la solicitud; no demuestra ausencia de cargo. */
@@ -71,6 +88,21 @@ sealed class ProbeDecision {
 }
 
 /**
+ * Lo que el server dijo al RECHAZAR la creación del intento (cuerpo de un 4xx del POST), ya leído.
+ *
+ * `blockingRequestId` es la solicitud que, según el server, ocupa la terminal. Es la llave de la
+ * correlación: si nombra a OTRA, este intento nunca existió; si nombra a ÉSTA, es mi propio
+ * intento —de un POST anterior que sí llegó— y hay que preguntar cómo quedó.
+ */
+data class CreationRejection(
+    val code: String?,
+    val blockingRequestId: String?,
+    val amountCents: Int? = null,
+    val ageSeconds: Int? = null,
+    val senderDevice: String? = null,
+)
+
+/**
  * La decisión del camino del dinero, PURA y sin red: dado lo que el server dice de una
  * solicitud de cobro, ¿cobró, no cobró, o no se sabe?
  *
@@ -103,6 +135,54 @@ object CardChargeDecision {
      * Acortarlo rompería cobros legítimos, que es peor que el bug que cierra.
      */
     const val WAIT_CEILING_MS = 330_000L
+
+    /** Código con el que el server rechaza CREAR un intento porque la terminal está tomada. */
+    const val TERMINAL_BUSY_CODE = "TERMINAL_BUSY"
+
+    /** Frase que hace seguro reintentar: este intento no llegó a la terminal. */
+    const val NOT_SENT_NOTICE =
+        "Este cobro NO se envió a la terminal, no se cobró nada. Espera a que termine o elige otra terminal."
+
+    /**
+     * ¿El server se NEGÓ a crear ESTE intento porque OTRA solicitud ocupa la terminal?
+     *
+     * Es la única lectura de un 409 que permite concluir sin preguntar: el server sólo lanza
+     * `TERMINAL_BUSY` cuando la fila de ESTE `requestId` no existe (si existiera, haría replay
+     * de su desenlace, `terminal-payment.service.ts` → `isPrismaUniqueViolation`). Así que nada
+     * de este cobro llegó a la terminal y ninguna tarjeta pudo cobrarse con esta llave.
+     *
+     * Tratarlo como incertidumbre dejaba una llave armada que el GET contestaba con 404 para
+     * siempre: la tablet se quedaba en «Cobro sin confirmar» por un cobro que jamás se envió
+     * (Testarudo, 2026-09-10: la PAX con el slot tomado bloqueó a la tablet durante horas).
+     *
+     * 🔴 Lo que lo hace seguro es la CORRELACIÓN, no el código: un `TERMINAL_BUSY` que nombre a
+     * ESTA misma solicitud —o que no nombre a nadie (server viejo)— NO alcanza y se conserva la
+     * duda. Un cancel tampoco lo cambia: cancelar un intento que nunca se creó no pudo cobrar.
+     */
+    fun refusedForAnotherRequest(rejection: CreationRejection?, requestId: String): Boolean {
+        if (rejection?.code != TERMINAL_BUSY_CODE) return false
+        val blocker = rejection.blockingRequestId?.trim()?.takeIf { it.isNotEmpty() } ?: return false
+        return blocker != requestId
+    }
+
+    /**
+     * Lo que ve el cajero cuando la terminal está tomada: qué la ocupa, cuánto, desde cuándo y
+     * desde qué aparato — y, con todas sus letras, que ESTE cobro no se envió. Sin esa frase el
+     * cajero no sabe si puede volver a cobrar; con ella, elegir otra terminal es seguro.
+     */
+    fun busyMessage(rejection: CreationRejection, serverMessage: String?): String {
+        val amountCents = rejection.amountCents
+        val head = if (amountCents != null) {
+            val minutes = (rejection.ageSeconds ?: 0) / 60
+            val since = if (minutes < 1) "hace un momento" else "hace $minutes min"
+            val device = rejection.senderDevice?.takeIf { it.isNotBlank() }?.let { " ($it)" } ?: ""
+            val amount = java.math.BigDecimal(amountCents).movePointLeft(2).setScale(2).toPlainString()
+            "Terminal ocupada: otro cobro de $$amount $since$device."
+        } else {
+            serverMessage?.takeIf { it.isNotBlank() }?.trimEnd('.')?.plus(".") ?: "Terminal ocupada por otro cobro."
+        }
+        return "$head $NOT_SENT_NOTICE"
+    }
 
     /** Emitted commands require status recovery after transport, ambiguous HTTP, or cancellation. */
     fun mustReconcile(ending: ChargeWaitEnding, cancelRequested: Boolean): Boolean = when {

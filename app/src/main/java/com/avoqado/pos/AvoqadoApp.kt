@@ -22,6 +22,15 @@ class AvoqadoApp : Application() {
     @Inject lateinit var kioskState: com.avoqado.pos.kiosk.domain.KioskState
     @Inject lateinit var deviceCapabilitySyncCoordinator: DeviceCapabilitySyncCoordinator
 
+    /**
+     * 🔴 Las cancelaciones de cobro se reproducen desde el ARRANQUE DEL PROCESO, no desde la
+     * pantalla de cobro ni desde la sesión: una cancelación que quedó a medias cuando la app murió
+     * tiene que seguir su camino aunque nadie vuelva a abrir Cobrar, y sobrevive al logout y al
+     * cambio de sucursal igual que la llave durable del cobro.
+     */
+    @Inject lateinit var cancelacionDeCobroCoordinator:
+        com.avoqado.pos.payment.data.CancelacionDeCobroCoordinator
+
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     override fun onCreate() {
@@ -33,6 +42,7 @@ class AvoqadoApp : Application() {
         // (TransactionModel.timeDisplay etc.) work from the very first compose.
         VenueTimeZone.set(secureStorage.venueTimezone)
         reservationActionsRetrier.start(appScope)
+        cancelacionDeCobroCoordinator.start()
 
         // El kiosco: el interruptor del aparato manda, y el motor sólo se
         // enchufa una vez. Apagado (lo normal) esto no hace absolutamente

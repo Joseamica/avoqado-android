@@ -57,6 +57,11 @@ fun QuarantineSheet(
     val successMessage by viewModel.successMessage.collectAsState()
     val errorMessage by viewModel.errorMessage.collectAsState()
     val retryingPaymentId by viewModel.retryingPaymentId.collectAsState()
+    // Cancelaciones de cobro que no se pudieron confirmar: viven fuera del flujo de pago, así que
+    // sin esta sección el cajero salía de la venta y nadie volvía a enterarse.
+    val cancelacionesViewModel: com.avoqado.pos.payment.presentation.CancelacionesPendientesViewModel = hiltViewModel()
+    val cancelaciones by cancelacionesViewModel.pendientes.collectAsState()
+    val cancelacionesEnCurso by cancelacionesViewModel.enCurso.collectAsState()
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
     LaunchedEffect(Unit) { viewModel.load() }
@@ -86,7 +91,7 @@ fun QuarantineSheet(
             )
             Spacer(Modifier.height(AvoqadoTheme.spacing.md))
 
-            if (items.isEmpty() && failedPayments.isEmpty() && failedReservations.isEmpty()) {
+            if (items.isEmpty() && failedPayments.isEmpty() && failedReservations.isEmpty() && cancelaciones.isEmpty()) {
                 Text(
                     "No hay operaciones pendientes de revisión.",
                     style = MaterialTheme.typography.bodyMedium,
@@ -95,6 +100,75 @@ fun QuarantineSheet(
                 )
             } else {
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                    if (cancelaciones.isNotEmpty()) {
+                        item {
+                            Text(
+                                "Cancelaciones pendientes",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                        }
+                    }
+                    items(cancelaciones, key = { "cancelacion-${it.id}" }) { cancelacion ->
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(AvoqadoTheme.spacing.md))
+                                .background(MaterialTheme.colorScheme.surfaceVariant)
+                                .padding(AvoqadoTheme.spacing.md),
+                            verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.xs),
+                        ) {
+                            val esAvisoDeCobro = cancelacionesViewModel.esAvisoDeCobro(cancelacion)
+                            Text(
+                                if (esAvisoDeCobro) {
+                                    com.avoqado.pos.payment.domain.CancelacionDeCobro.SE_COBRO_AL_FINAL
+                                } else {
+                                    com.avoqado.pos.payment.domain.CancelacionDeCobro.TITULO_PENDIENTE
+                                },
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            cancelacion.montoCents?.let {
+                                Text(formatMoney(it), style = MaterialTheme.typography.bodyMedium)
+                            }
+                            if (!esAvisoDeCobro) {
+                                Text(
+                                    if (cancelacion.sinRed) {
+                                        com.avoqado.pos.payment.domain.CancelacionDeCobro.CUERPO_SIN_RED
+                                    } else {
+                                        com.avoqado.pos.payment.domain.CancelacionDeCobro.CUERPO_PENDIENTE
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                            // Lo que dijo el servidor la última vez, cuando dijo algo: es más útil
+                            // que cualquier guía nuestra (un «no tienes permiso», por ejemplo).
+                            cancelacion.motivo?.takeIf { it.isNotBlank() }?.let {
+                                Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            Text(
+                                formatTime(cancelacion.creadaEn),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                                val consultando = cancelacion.id in cancelacionesEnCurso
+                                OutlinedButton(
+                                    onClick = { cancelacionesViewModel.volverAConsultar(cancelacion.id) },
+                                    enabled = !consultando,
+                                ) {
+                                    Text(
+                                        if (consultando) {
+                                            "Consultando…"
+                                        } else {
+                                            com.avoqado.pos.payment.domain.CancelacionDeCobro.BOTON_VOLVER_A_CONSULTAR
+                                        },
+                                    )
+                                }
+                            }
+                        }
+                    }
                     if (failedPayments.isNotEmpty()) {
                         item {
                             Text(
@@ -292,6 +366,43 @@ private fun formatTime(epochMs: Long): String =
 
 private fun formatMoney(cents: Int): String =
     NumberFormat.getCurrencyInstance(Locale("es", "MX")).format(cents / 100.0)
+
+/**
+ * 🔴 Lo que queda por cancelar se VE fuera del flujo de cobro.
+ *
+ * Una cancelación que la terminal no confirmó sólo existía dentro de la pantalla de pago: el cajero
+ * salía, la venta seguía abierta y nadie volvía a enterarse. Ámbar, como la cuarentena: nada se
+ * perdió — falta que conste.
+ */
+@Composable
+fun CancelacionesPendientesBanner(onClick: () -> Unit) {
+    val viewModel: com.avoqado.pos.payment.presentation.CancelacionesPendientesViewModel = hiltViewModel()
+    val pendientes by viewModel.pendientes.collectAsState()
+    if (pendientes.isEmpty()) return
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Warning)
+            .clickable(onClick = onClick)
+            .padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.sm),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.Center,
+    ) {
+        Icon(
+            Icons.Filled.WarningAmber,
+            contentDescription = null,
+            tint = androidx.compose.ui.graphics.Color.White,
+            modifier = Modifier.size(16.dp),
+        )
+        Spacer(Modifier.size(AvoqadoTheme.spacing.sm))
+        Text(
+            text = com.avoqado.pos.payment.domain.CancelacionDeCobro.bannerPendientes(pendientes.size),
+            color = androidx.compose.ui.graphics.Color.White,
+            style = MaterialTheme.typography.labelMedium,
+            fontWeight = FontWeight.SemiBold,
+        )
+    }
+}
 
 /**
  * Banner persistente (visible AUNQUE haya conexión) cuando hay operaciones

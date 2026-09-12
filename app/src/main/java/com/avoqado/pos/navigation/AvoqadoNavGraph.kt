@@ -345,6 +345,9 @@ private fun MainScaffold(
                         avisoDeLaCaja = avisoDeCobrosRetenidos,
                     )
                     com.avoqado.pos.sync.presentation.QuarantineBanner(count = syncIssueCount) { showQuarantineSheet = true }
+                    // Cancelaciones de cobro que no se pudieron confirmar: se ven aquí —Cobrar
+                    // incluido— y se resuelven en la misma hoja de pendientes.
+                    com.avoqado.pos.sync.presentation.CancelacionesPendientesBanner { showQuarantineSheet = true }
                 }
             },
             bottomBar = {
@@ -626,6 +629,9 @@ private fun MainScaffold(
                         avisoDeLaCaja = avisoDeCobrosRetenidos,
                     )
                     com.avoqado.pos.sync.presentation.QuarantineBanner(count = syncIssueCount) { showQuarantineSheet = true }
+                    // Cancelaciones de cobro que no se pudieron confirmar: se ven aquí —Cobrar
+                    // incluido— y se resuelven en la misma hoja de pendientes.
+                    com.avoqado.pos.sync.presentation.CancelacionesPendientesBanner { showQuarantineSheet = true }
                 }
             },
             bottomBar = {

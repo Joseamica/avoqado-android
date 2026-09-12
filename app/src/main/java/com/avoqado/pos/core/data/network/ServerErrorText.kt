@@ -121,6 +121,38 @@ object ServerErrorText {
         fallback
     }
 
+    /**
+     * Lo que ve el mesero cuando el server RECHAZA anular, fusionar o cancelar una cuenta.
+     *
+     * 🔴 El 409 `ORDER_CANCEL_BLOCKED_BY_TERMINAL_CHARGE` tiene texto propio porque el motivo no
+     * basta: con fila enfrente hace falta el siguiente movimiento («cancélalo o espera a que
+     * termine»), no el diagnóstico. Todo lo demás conserva el mensaje del server.
+     *
+     * El cuerpo del error sólo se puede leer UNA vez: aquí se lee una sola y de ahí salen el
+     * código y el mensaje.
+     */
+    fun humanizeCancelacionDeCuenta(error: Throwable?, fallback: String): String {
+        if (error !is retrofit2.HttpException) return humanize(error, fallback)
+        val body = try {
+            error.response()?.errorBody()?.string()
+        } catch (_: Exception) {
+            null
+        }
+        val root = try {
+            body?.takeIf { it.isNotBlank() }?.let(JSON::parseToJsonElement) as? kotlinx.serialization.json.JsonObject
+        } catch (_: Exception) {
+            null
+        }
+        val code = (root?.get("code") as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull
+        if (code == com.avoqado.pos.payment.domain.CancelacionDeCobro.ORDER_CANCEL_BLOCKED_BY_TERMINAL_CHARGE) {
+            return com.avoqado.pos.payment.domain.CancelacionDeCobro.COBRO_EN_CURSO_BLOQUEA_CUENTA
+        }
+        val mensaje = listOf("message", "error", "errorMessage").firstNotNullOfOrNull { llave ->
+            (root?.get(llave) as? kotlinx.serialization.json.JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }
+        }
+        return humanize(mensaje, fallback)
+    }
+
     /** Espejo de iOS: distinguir sin-red de fallo real, sin tener la excepción. */
     fun isOffline(error: Throwable?): Boolean = when (error) {
         is java.net.UnknownHostException,

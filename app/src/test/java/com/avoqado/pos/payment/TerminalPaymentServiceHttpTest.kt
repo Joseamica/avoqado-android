@@ -294,6 +294,71 @@ class TerminalPaymentServiceHttpTest {
         }
     }
 
+    // MARK: - 409 TERMINAL_BUSY al CREAR el intento: correlacionado por request
+
+    private fun busyBody(blockerId: String) =
+        """{"success":false,"status":"failed","code":"TERMINAL_BUSY","errorMessage":"La terminal t1 está ocupada por un cobro de ${'$'}125.50 enviado hace 3 min desde Sunmi D3","message":"La terminal t1 está ocupada por un cobro de ${'$'}125.50 enviado hace 3 min desde Sunmi D3","blockingRequest":{"requestId":"$blockerId","amountCents":12550,"senderDevice":"Sunmi D3","ageSeconds":200}}"""
+
+    @Test
+    fun `un 409 TERMINAL_BUSY que nombra OTRA solicitud no es incertidumbre — se libera la llave y no se pregunta`() = runBlocking {
+        enqueue(409, busyBody("otra-solicitud"))
+        repeat(3) { enqueue(404) } // si el servicio fuera a preguntar, esto lo volvería Undetermined
+        val result = charge()
+        assertTrue("$result", result is TerminalPaymentResult.Error)
+        val message = (result as TerminalPaymentResult.Error).message
+        assertTrue(message, message.contains("\$125.50") && message.contains("3 min") && message.contains("Sunmi D3"))
+        assertTrue(message, message.contains("NO se envió"))
+        assertNull(pendingKey)
+        assertEquals(1, server.requestCount) // ni una consulta de estado: consta que nada se envió
+    }
+
+    @Test
+    fun `un 409 TERMINAL_BUSY que nombra ESTA MISMA solicitud sigue siendo incertidumbre`() = runBlocking {
+        server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+            override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse {
+                if (request.method == "GET") return MockResponse().setResponseCode(404)
+                val id = org.json.JSONObject(request.body.readUtf8()).getString("requestId")
+                return MockResponse().setResponseCode(409).setBody(busyBody(id))
+            }
+        }
+        val result = charge()
+        assertTrue("$result", result is TerminalPaymentResult.Undetermined)
+        assertEquals((result as TerminalPaymentResult.Undetermined).requestId, pendingKey)
+    }
+
+    @Test
+    fun `un 409 TERMINAL_BUSY sin solicitud nombrada (server viejo) sigue siendo incertidumbre`() = runBlocking {
+        enqueue(409, """{"success":false,"status":"failed","code":"TERMINAL_BUSY","message":"ocupada"}""")
+        repeat(3) { enqueue(404) }
+        val result = charge()
+        assertTrue("$result", result is TerminalPaymentResult.Undetermined)
+        assertEquals((result as TerminalPaymentResult.Undetermined).requestId, pendingKey)
+    }
+
+    @Test
+    fun `tras cancelar, un 409 que nombra OTRA solicitud sigue sin ser incertidumbre — este intento nunca se creo`() = runBlocking {
+        val arrived = java.util.concurrent.CountDownLatch(1)
+        val release = java.util.concurrent.CountDownLatch(1)
+        server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+            override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse {
+                if (request.path!!.endsWith("/cancel")) {
+                    release.countDown()
+                    return MockResponse().setResponseCode(404).setBody("{}")
+                }
+                if (request.method == "GET") return MockResponse().setResponseCode(404)
+                arrived.countDown()
+                release.await(5, java.util.concurrent.TimeUnit.SECONDS)
+                return MockResponse().setResponseCode(409).setBody(busyBody("otra-solicitud"))
+            }
+        }
+        val inFlight = async(kotlinx.coroutines.Dispatchers.IO) { charge() }
+        assertTrue(arrived.await(5, java.util.concurrent.TimeUnit.SECONDS))
+        service.cancelCurrentPayment()
+        val result = inFlight.await()
+        assertTrue("$result", result is TerminalPaymentResult.Error)
+        assertNull(pendingKey)
+    }
+
     @Test
     fun `unresolved sale cannot POST again on another terminal after restart`() = runBlocking {
         pendingKey = "old-request"

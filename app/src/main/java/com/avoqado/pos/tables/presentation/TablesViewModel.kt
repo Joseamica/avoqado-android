@@ -374,7 +374,11 @@ class TablesViewModel @Inject constructor(
                 },
                 onFailure = { e ->
                     repository.refresh(vId)
-                    _actionState.value = TableActionState.Error(com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo anular la cuenta"))
+                    // Un cobro con tarjeta vivo tiene texto propio: dice QUÉ hacer (cancelarlo o
+                    // esperar), no sólo qué pasó.
+                    _actionState.value = TableActionState.Error(
+                        com.avoqado.pos.core.data.network.ServerErrorText.humanizeCancelacionDeCuenta(e, "No se pudo anular la cuenta"),
+                    )
                 },
             )
         }
@@ -413,11 +417,14 @@ class TablesViewModel @Inject constructor(
     // MARK: - Acciones masivas del plano (Square: "Seleccionar cheques")
 
     /** Anula la cuenta de CADA mesa seleccionada (ocupadas) con una razón. */
-    fun bulkAnular(tables: List<DiningTable>, reason: String, onDone: (Int, Int) -> Unit) {
+    fun bulkAnular(tables: List<DiningTable>, reason: String, onDone: (Int, Int, String?) -> Unit) {
         val vId = venueId ?: return
         viewModelScope.launch {
             var ok = 0
             var fail = 0
+            // El MOTIVO de la primera que falló: "3 anuladas, 1 falló" sin decir por qué deja al
+            // mesero sin su siguiente movimiento — y el motivo más probable es un cobro vivo.
+            var primerMotivo: String? = null
             tables.forEach { table ->
                 val order = table.primaryCheck ?: return@forEach
                 repository.cancelOrder(vId, order.id, reason).fold(
@@ -427,11 +434,17 @@ class TablesViewModel @Inject constructor(
                         lanHub.release(table.id)
                         ok++
                     },
-                    onFailure = { fail++ },
+                    onFailure = { e ->
+                        fail++
+                        if (primerMotivo == null) {
+                            primerMotivo = com.avoqado.pos.core.data.network.ServerErrorText
+                                .humanizeCancelacionDeCuenta(e, "No se pudo anular la cuenta")
+                        }
+                    },
                 )
             }
             repository.refresh(vId)
-            onDone(ok, fail)
+            onDone(ok, fail, primerMotivo)
         }
     }
 
@@ -521,7 +534,10 @@ class TablesViewModel @Inject constructor(
                     onSuccess = { ok++ },
                     onFailure = { e ->
                         fail++
-                        if (firstError == null) firstError = e.message
+                        if (firstError == null) {
+                            firstError = com.avoqado.pos.core.data.network.ServerErrorText
+                                .humanizeCancelacionDeCuenta(e, "No se pudo fusionar")
+                        }
                     },
                 )
             }

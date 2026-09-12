@@ -53,6 +53,7 @@ import com.avoqado.pos.core.util.formatMoney
 
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.pos.data.model.CartItem
+import com.avoqado.pos.core.util.aCentavos
 
 // MARK: - Split Payment Types
 
@@ -463,7 +464,7 @@ private fun CustomAmountContent(
     onConfirm: (Int) -> Unit,
 ) {
     var amountText by remember { mutableStateOf("") }
-    val amountCents = ((amountText.toDoubleOrNull() ?: 0.0) * 100).toInt()
+    val amountCents = (amountText.toDoubleOrNull() ?: 0.0).aCentavos()
     val isValid = amountCents > 0 && amountCents <= totalCents
 
     Column {

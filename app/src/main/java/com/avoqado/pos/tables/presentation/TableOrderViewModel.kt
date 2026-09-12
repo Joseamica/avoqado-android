@@ -1000,7 +1000,11 @@ class TableOrderViewModel @Inject constructor(
                 // no se puede fusionar"): sin humanize, Retrofit entregaba
                 // "HTTP 400" y el mesero se quedaba sin saber qué hacer.
                 onFailure = { e ->
-                    onDone(false, com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo fusionar"))
+                    onDone(
+                        false,
+                        com.avoqado.pos.core.data.network.ServerErrorText
+                            .humanizeCancelacionDeCuenta(e, "No se pudo fusionar"),
+                    )
                 },
             )
         }
@@ -1107,7 +1111,11 @@ class TableOrderViewModel @Inject constructor(
                 },
                 onFailure = { e ->
                     repository.refresh(vId)
-                    onDone(false, com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo anular la cuenta"))
+                    onDone(
+                        false,
+                        com.avoqado.pos.core.data.network.ServerErrorText
+                            .humanizeCancelacionDeCuenta(e, "No se pudo anular la cuenta"),
+                    )
                 },
             )
         }

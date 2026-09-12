@@ -1,6 +1,7 @@
 package com.avoqado.pos.payment
 
 import com.avoqado.pos.MainDispatcherRule
+import com.avoqado.pos.payment.domain.CardChargeDecision
 import com.avoqado.pos.printing.data.ResultadoLegado
 import com.avoqado.pos.printing.data.ReplayDeComandasPendientes
 import com.avoqado.pos.printing.data.AlmacenDeTexto
@@ -102,6 +103,16 @@ class PaymentFlowViewModelTest {
 
     private lateinit var viewModel: PaymentFlowViewModel
 
+    /**
+     * El coordinador de la cancelación durable, REAL, con disco en memoria y transporte falso: si
+     * fuera un mock relajado, «Cancelar» no registraría nada y estas pruebas pasarían sin ejercitar
+     * una sola línea del camino que dicen guardar.
+     */
+    private val almacenDeCancelaciones = AlmacenQuePuedeFallar()
+    private val storeDeCancelaciones = com.avoqado.pos.payment.data.CancelacionesDeCobroEnTexto(almacenDeCancelaciones)
+    private val transporteDeCancelacion = CancelacionTransportFalso()
+    private lateinit var cancelacionDeCobro: com.avoqado.pos.payment.data.CancelacionDeCobroCoordinator
+
     @Before
     fun setup() {
         every {
@@ -147,6 +158,10 @@ class PaymentFlowViewModelTest {
         every { secureStorage.userId } returns "user-456"
         every { secureStorage.venueId } returns "venue-1"
         every { areaTicketRepository.session.current() } returns null
+        // Entradas del camino del dinero: se fijan explícitas, nunca al valor por defecto de un
+        // mock relajado. Sin cobro en vuelo y sin contexto guardado, salvo donde la prueba diga.
+        every { terminalPaymentService.intentoEnVuelo() } returns null
+        every { terminalPaymentService.contextoDe(any()) } returns null
 
         // PRINT_STATIONS — default to "no stations configured" so existing tests keep
         // exercising the legacy single-ticket path unless a test overrides this.
@@ -154,6 +169,19 @@ class PaymentFlowViewModelTest {
         every { printConfigRepository.getCurrentConfig() } returns PrintConfig()
         coEvery { comandaPrinter.printComandas(any(), any(), any(), any(), any()) } returns
             ComandaPrinter.Result(attempted = 1, printed = 1, skippedNoPrinter = 0, lastError = null)
+
+        // Sin `start()`: sin reloj de fondo que haga girar a `advanceUntilIdle`.
+        cancelacionDeCobro = com.avoqado.pos.payment.data.CancelacionDeCobroCoordinator(
+            store = storeDeCancelaciones,
+            transporte = transporteDeCancelacion,
+            conectado = kotlinx.coroutines.flow.MutableStateFlow(true),
+            servidorAlcanzable = kotlinx.coroutines.flow.MutableStateFlow(true),
+            scope = kotlinx.coroutines.CoroutineScope(
+                kotlinx.coroutines.SupervisorJob() + kotlinx.coroutines.Dispatchers.Main,
+            ),
+            reloj = { 0L },
+            esperasDeSondeo = listOf(1_000L, 2_000L),
+        )
 
         viewModel = PaymentFlowViewModel(
             orderRepository = orderRepository,
@@ -190,6 +218,7 @@ class PaymentFlowViewModelTest {
             syncOutbox = mockk(relaxed = true),
             customerDisplay = com.avoqado.pos.customerdisplay.CustomerDisplayState(),
             areaTicketRepository = areaTicketRepository,
+            cancelacionDeCobro = cancelacionDeCobro,
             savedStateHandle = androidx.lifecycle.SavedStateHandle(),
         )
     }
@@ -311,11 +340,14 @@ class PaymentFlowViewModelTest {
             kotlinx.coroutines.delay(60_000)
             result
         }
-        coEvery { orderRepository.cancelOrder(any()) } returns Result.success(Unit)
         // La ranura arranca LIBRE, como en producción (SharedPreferences devuelve null si no
         // hay nada). Explícito a propósito: es una entrada del camino del dinero y no puede
         // depender del valor por defecto de un mock relajado.
         every { terminalPaymentService.unresolvedRequestId } returns null
+        // Con el POST en vuelo, «Cancelar» apunta a ESA solicitud: es lo que el servicio real
+        // devuelve desde antes del POST y hasta que el intento termina.
+        every { terminalPaymentService.intentoEnVuelo() } returns
+            com.avoqado.pos.payment.data.IntentoDeCobroEnVuelo("req-1", "t1", "venue-1")
     }
 
     @Test
@@ -590,6 +622,8 @@ class PaymentFlowViewModelTest {
         realService.baseUrl = server.url("/api/v1").toString().trimEnd('/')
         every { terminalPaymentService.unresolvedRequestId } answers { realService.unresolvedRequestId }
         every { terminalPaymentService.rearmUnresolvedCharge(any()) } answers { realService.rearmUnresolvedCharge(firstArg()) }
+        // El cobro en vuelo lo conoce el servicio REAL: es a quien apunta «Cancelar».
+        every { terminalPaymentService.intentoEnVuelo() } answers { realService.intentoEnVuelo() }
         coEvery { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any()) } coAnswers {
             realService.sendPaymentToTerminal("t1", 1500)
         }
@@ -712,6 +746,22 @@ class PaymentFlowViewModelTest {
         val state = viewModel.state.value as PaymentFlowState.Undetermined
         assertTrue(state.fromPreviousSale)
         assertTrue(state.message.contains(instruction))
+    }
+
+    @Test
+    fun `el aviso de la venta anterior no repite la frase del cobro sin confirmar`() = runTest {
+        every { terminalPaymentService.unresolvedRequestId } returns "old-request"
+        coEvery { terminalPaymentService.resolveOutcome("old-request") } returns
+            TerminalPaymentResult.Undetermined(CardChargeDecision.UNDETERMINED_MESSAGE, "old-request")
+        viewModel.startPaymentFlow(cardCart())
+        advanceUntilIdle()
+        viewModel.recheckCardCharge()
+        advanceUntilIdle()
+        val state = viewModel.state.value as PaymentFlowState.Undetermined
+        assertTrue(state.fromPreviousSale)
+        assertTrue(state.message, state.message.startsWith("Quedó un cobro sin confirmar de una venta anterior."))
+        val veces = Regex(Regex.escape(CardChargeDecision.UNDETERMINED_MESSAGE)).findAll(state.message).count()
+        assertEquals("la instrucción se lee UNA vez: ${state.message}", 1, veces)
     }
 
     @Test
@@ -1801,6 +1851,117 @@ class PaymentFlowViewModelTest {
         val success = viewModel.state.value as PaymentFlowState.Success
         assertEquals(500, success.totalAmount)
         coVerify(exactly = 1) { cashDrawerRepository.addCashSale(500, "order-overflow") }
+    }
+
+    /**
+     * P1 — EL CAMBIO QUE SE LE DEVUELVE AL CLIENTE NO ES EL `changeCents` DEL SERVER.
+     *
+     * Son dos cosas distintas que se llamaban igual, y por eso el ticket de Testarudo
+     * (10-sep-2026) imprimió «Recibido: $544.50» sobre una venta donde el cliente
+     * entregó $550:
+     *
+     *  - Para el POS, cambio = **recibido − lo que se cobró** (lo que sale del cajón).
+     *  - Para el server, `changeCents` = lo que sobró del importe ENVIADO sobre el
+     *    saldo de la orden. Como el POS le manda exactamente el saldo, en un cobro
+     *    normal SIEMPRE vale 0.
+     *
+     * Dejar ganar al del server borraba el cambio real de TODAS las ventas en efectivo
+     * con productos (el camino de venta rápida nunca lo consultó, por eso ahí sí salía).
+     */
+    @Test
+    fun `P1 el cambio real sobrevive aunque el server responda changeCents cero`() = runTest {
+        coEvery {
+            orderRepository.createOrder(any(), any(), any(), any(), any())
+        } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-cambio")))
+        coEvery {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any())
+        } returns Result.success(
+            OrderRepository.CashPayResult(
+                paymentId = "payment-cambio",
+                receiptAccessKey = null,
+                recordedAmountCents = 54450,
+                recordedTipCents = 0,
+                // Lo que de verdad contesta el server en un cobro normal.
+                authoritativeChangeCents = 0,
+                remainingBalanceCents = 0,
+                orderPaymentStatus = "PAID",
+            ),
+        )
+
+        val cart = CartState(
+            items = listOf(
+                CartItem(
+                    id = "line-cambio",
+                    type = CartItemType.ProductItem("prod-cambio"),
+                    name = "Cuenta Testarudo",
+                    unitPrice = 54450,
+                ),
+            ),
+        )
+
+        viewModel.startPaymentFlow(cart)
+        viewModel.confirmCashPreset(tenderedCents = 55000)
+        advanceUntilIdle()
+
+        val success = viewModel.state.value as PaymentFlowState.Success
+        assertEquals("el cajero devuelve 550.00 - 544.50", 550, success.changeAmount)
+        assertEquals(54450, success.totalAmount)
+    }
+
+    /**
+     * P1 — EL TICKET IMPRIME EL BILLETE REAL, NO UNA RESTA AL REVÉS.
+     *
+     * El recibo deducía el recibido como `total + cambio`. Con el cambio en 0 (defecto
+     * de arriba) eso imprimía el total como si fuera el billete que entregó el cliente.
+     * El dato verdadero ya lo tenía la app guardado desde que el cajero lo tecleó.
+     *
+     * Se fija además el invariante que hace que el ticket cuadre consigo mismo:
+     * **Recibido − Cambio = TOTAL**.
+     */
+    @Test
+    fun `P1 el ticket imprime el efectivo recibido y el cambio reales`() = runTest {
+        coEvery {
+            orderRepository.createOrder(any(), any(), any(), any(), any())
+        } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-ticket")))
+        coEvery {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any())
+        } returns Result.success(
+            OrderRepository.CashPayResult(
+                paymentId = "payment-ticket",
+                receiptAccessKey = null,
+                recordedAmountCents = 54450,
+                recordedTipCents = 0,
+                authoritativeChangeCents = 0,
+                remainingBalanceCents = 0,
+                orderPaymentStatus = "PAID",
+            ),
+        )
+        val printedReceipt = slot<ReceiptData>()
+        coEvery { printerService.autoPrintReceipt(capture(printedReceipt)) } returns Unit
+
+        val cart = CartState(
+            items = listOf(
+                CartItem(
+                    id = "line-ticket",
+                    type = CartItemType.ProductItem("prod-ticket"),
+                    name = "Cuenta Testarudo",
+                    unitPrice = 54450,
+                ),
+            ),
+        )
+
+        viewModel.startPaymentFlow(cart)
+        viewModel.confirmCashPreset(tenderedCents = 55000)
+        advanceUntilIdle()
+
+        val recibo = printedReceipt.captured
+        assertEquals("recibido = el billete que entregó el cliente", 55000, recibo.cashTendered)
+        assertEquals(550, recibo.changeAmount)
+        assertEquals(
+            "el ticket tiene que cuadrar consigo mismo",
+            recibo.total,
+            recibo.cashTendered!! - recibo.changeAmount!!,
+        )
     }
 
     /**

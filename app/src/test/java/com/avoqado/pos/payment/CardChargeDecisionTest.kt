@@ -4,6 +4,7 @@ import com.avoqado.pos.payment.domain.CardChargeDecision
 import com.avoqado.pos.payment.domain.CardChargeOutcome
 import com.avoqado.pos.payment.domain.ChargeStatusProbe
 import com.avoqado.pos.payment.domain.ChargeWaitEnding
+import com.avoqado.pos.payment.domain.CreationRejection
 import com.avoqado.pos.payment.domain.ProbeDecision
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -431,5 +432,61 @@ class CardChargeDecisionTest {
                 armedKey = null,
             ),
         )
+    }
+
+    // MARK: - 409 al CREAR el intento: «ocupada por OTRA solicitud» NO es incertidumbre
+
+    // Contexto (Testarudo, 2026-09-10): la PAX tenía el slot tomado por filas viejas sin resolver.
+    // Cada POST de la tablet recibía 409 TERMINAL_BUSY, el cliente lo leía como "no sé si se
+    // cobró", armaba la llave durable, el GET contestaba 404 para siempre y la tablet se quedaba
+    // en «Cobro sin confirmar» por un cobro que JAMÁS se envió. El server sólo lanza TERMINAL_BUSY
+    // cuando la fila de ESTE requestId no existe (si existiera, haría replay de su desenlace).
+
+    @Test
+    fun `TERMINAL_BUSY que nombra OTRA solicitud significa que ESTE intento nunca existio`() {
+        val rejection = CreationRejection(code = "TERMINAL_BUSY", blockingRequestId = "otra-solicitud")
+        assertTrue(CardChargeDecision.refusedForAnotherRequest(rejection, requestId = "mi-solicitud"))
+    }
+
+    @Test
+    fun `TERMINAL_BUSY que nombra ESTA MISMA solicitud es mi propio intento vivo — hay que preguntar`() {
+        val rejection = CreationRejection(code = "TERMINAL_BUSY", blockingRequestId = "mi-solicitud")
+        assertFalse(CardChargeDecision.refusedForAnotherRequest(rejection, requestId = "mi-solicitud"))
+    }
+
+    @Test
+    fun `sin solicitud nombrada no hay correlacion — se conserva la duda`() {
+        for (blocker in listOf(null, "", "   ")) {
+            assertFalse("bloqueador='$blocker'", CardChargeDecision.refusedForAnotherRequest(CreationRejection("TERMINAL_BUSY", blocker), "mi-solicitud"))
+        }
+        assertFalse(CardChargeDecision.refusedForAnotherRequest(null, "mi-solicitud"))
+    }
+
+    @Test
+    fun `otro codigo con una solicitud nombrada NO es 'ocupada'`() {
+        assertFalse(CardChargeDecision.refusedForAnotherRequest(CreationRejection("ORDER_ALREADY_PAID", "otra"), "mi-solicitud"))
+        assertFalse(CardChargeDecision.refusedForAnotherRequest(CreationRejection(null, "otra"), "mi-solicitud"))
+    }
+
+    @Test
+    fun `el mensaje de ocupada dice monto, minutos y aparato — y que ESTE cobro no se envio`() {
+        val message = CardChargeDecision.busyMessage(
+            CreationRejection("TERMINAL_BUSY", "otra", amountCents = 12550, ageSeconds = 200, senderDevice = "Sunmi D3"),
+            serverMessage = null,
+        )
+        assertTrue(message, message.contains("\$125.50"))
+        assertTrue(message, message.contains("3 min"))
+        assertTrue(message, message.contains("Sunmi D3"))
+        assertTrue(message, message.contains("NO se envió"))
+    }
+
+    @Test
+    fun `sin datos del bloqueador, el mensaje cae al del server y sigue diciendo que no se envio`() {
+        val message = CardChargeDecision.busyMessage(
+            CreationRejection("TERMINAL_BUSY", "unknown"),
+            serverMessage = "La terminal X está ocupada procesando otro cobro",
+        )
+        assertTrue(message, message.contains("La terminal X está ocupada procesando otro cobro"))
+        assertTrue(message, message.contains("NO se envió"))
     }
 }

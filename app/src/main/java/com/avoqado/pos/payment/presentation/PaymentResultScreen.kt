@@ -62,6 +62,7 @@ import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Success
 import com.avoqado.pos.designsystem.theme.Warning
 import com.avoqado.pos.payment.data.model.PaymentMethod
+import com.avoqado.pos.payment.domain.CancelacionDeCobro
 
 @Composable
 fun PaymentResultScreen(
@@ -656,7 +657,15 @@ fun PaymentUndeterminedView(
     isChecking: Boolean,
     onRecheck: () -> Unit,
     onChargeAgain: () -> Unit,
-    onCancel: () -> Unit,
+    /** «Salir (queda pendiente)»: el cajero se va y NO se borra nada. */
+    onSalir: () -> Unit,
+    /**
+     * «Cancelar la venta»: cancela el cobro y, cuando conste que no se cobró, la venta.
+     *
+     * `null` cuando el cobro sin confirmar es de OTRA venta: esa orden no la creó este flujo y
+     * cancelarla desde aquí borraría una cuenta que nadie pidió cancelar.
+     */
+    onCancelarVenta: (() -> Unit)? = null,
     /** El cobro sin confirmar quedó de otra venta: confirmarlo no paga la actual. */
     fromPreviousSale: Boolean = false,
 ) {
@@ -713,8 +722,16 @@ fun PaymentUndeterminedView(
 
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
 
-        TextButton(onClick = onCancel, enabled = !isChecking) {
-            Text("Salir con el cobro pendiente")
+        // 🔴 Dos salidas DISTINTAS, y confundirlas es lo que dejaba órdenes huérfanas: salir no
+        // toca nada; cancelar la venta pide detener el cobro y sólo después cancela la cuenta.
+        TextButton(onClick = onSalir, enabled = !isChecking) {
+            Text(CancelacionDeCobro.BOTON_SALIR_PENDIENTE)
+        }
+
+        if (onCancelarVenta != null) {
+            TextButton(onClick = onCancelarVenta, enabled = !isChecking) {
+                Text(CancelacionDeCobro.BOTON_CANCELAR_VENTA)
+            }
         }
     }
 
@@ -743,6 +760,103 @@ fun PaymentUndeterminedView(
                 tint = Warning,
                 modifier = Modifier.size(24.dp),
             )
+        }
+    }
+}
+
+// MARK: - Cancelación del cobro (§C.4)
+
+/**
+ * «Cancelando el cobro…»: la intención ya está guardada en el aparato y va camino a la terminal.
+ *
+ * Lleva salida a propósito: si la terminal tarda, el cajero no se puede quedar atrapado mirando un
+ * loader con fila enfrente — la cancelación sigue sola aunque él se vaya.
+ */
+@Composable
+fun CancelandoCobroView(onSalir: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(AvoqadoTheme.spacing.xxxl),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        AvoqadoBrandLoader(size = 96.dp)
+
+        Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
+
+        Text(
+            text = CancelacionDeCobro.TEXTO_CANCELANDO,
+            style = MaterialTheme.typography.headlineMedium,
+            textAlign = TextAlign.Center,
+        )
+
+        Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxxl))
+
+        TextButton(onClick = onSalir) {
+            Text(CancelacionDeCobro.BOTON_SALIR_PENDIENTE)
+        }
+    }
+}
+
+/**
+ * 🔴 «Cancelación pendiente» — ÁMBAR, nunca rojo: no falló nada, falta que CONSTE.
+ *
+ * La venta se cancela sola en cuanto el desenlace llegue (la intención vive en disco y se
+ * reproduce sola), así que salir de aquí no pierde nada.
+ */
+@Composable
+fun CancelacionPendienteView(
+    sinRed: Boolean,
+    isChecking: Boolean,
+    onVolverAConsultar: () -> Unit,
+    onSalir: () -> Unit,
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(AvoqadoTheme.spacing.xxxl),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Icon(
+            Icons.Filled.HelpOutline,
+            contentDescription = null,
+            tint = Warning,
+            modifier = Modifier.size(80.dp),
+        )
+
+        Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
+
+        Text(
+            text = CancelacionDeCobro.TITULO_PENDIENTE,
+            style = MaterialTheme.typography.headlineLarge,
+            textAlign = TextAlign.Center,
+        )
+
+        Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+
+        Text(
+            text = if (sinRed) CancelacionDeCobro.CUERPO_SIN_RED else CancelacionDeCobro.CUERPO_PENDIENTE,
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+            modifier = Modifier.widthIn(max = 400.dp),
+        )
+
+        Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxxl))
+
+        PrimaryButton(
+            text = CancelacionDeCobro.BOTON_VOLVER_A_CONSULTAR,
+            onClick = onVolverAConsultar,
+            enabled = !isChecking,
+            isLoading = isChecking,
+        )
+
+        Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
+
+        TextButton(onClick = onSalir, enabled = !isChecking) {
+            Text(CancelacionDeCobro.BOTON_SALIR_PENDIENTE)
         }
     }
 }

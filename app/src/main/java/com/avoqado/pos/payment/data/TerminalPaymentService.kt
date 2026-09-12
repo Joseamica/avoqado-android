@@ -3,10 +3,12 @@ package com.avoqado.pos.payment.data
 import android.util.Log
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ApiConstants
+import com.avoqado.pos.payment.domain.CancelacionDeCobro
 import com.avoqado.pos.payment.domain.CardChargeDecision
 import com.avoqado.pos.payment.domain.CardChargeOutcome
 import com.avoqado.pos.payment.domain.ChargeStatusProbe
 import com.avoqado.pos.payment.domain.ChargeWaitEnding
+import com.avoqado.pos.payment.domain.CreationRejection
 import com.avoqado.pos.payment.domain.ProbeDecision
 import com.avoqado.pos.printing.data.model.ReceiptData
 import kotlinx.coroutines.Dispatchers
@@ -77,13 +79,37 @@ class TerminalPaymentService @Inject constructor(
          * para que "Consultando…" nunca se vuelva otro cuelgue.
          */
         const val RECONCILE_CEILING_MS = 35_000L
+
+        /**
+         * Cuántas veces se repite el POST cuando el servidor contesta que la ADMISIÓN está ocupada
+         * (503 `TERMINAL_PAYMENT_ADMISSION_RETRY`). Acotado: si no cede, se cae al camino de
+         * siempre —consultar el estado— y la llave durable se conserva.
+         */
+        const val MAX_REINTENTOS_DE_ADMISION = 2
+        const val ESPERA_DE_ADMISION_MS = 400L
     }
+
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true; explicitNulls = false }
+
+    /** El `code` del cuerpo de un rechazo, si el cuerpo es nuestro y lo trae. */
+    private fun codigoDeRechazo(body: String): String? =
+        runCatching { json.decodeFromString(TerminalPaymentRejectionDto.serializer(), body).code }.getOrNull()
 
     // Track current request for cancellation
     private var currentRequestId: String? = null
     private var currentTerminalId: String? = null
     private var currentVenueId: String? = null
+
+    /**
+     * El intento que TODAVÍA puede estar moviendo dinero: vive desde antes del POST hasta que el
+     * intento entero termina (re-consulta incluida).
+     *
+     * 🔴 No es lo mismo que [currentRequestId], que se limpia en cuanto el POST vuelve: entre esa
+     * limpieza y el final de la reconciliación pasan hasta 35 s en los que la pantalla sigue en
+     * «Procesando pago…» y el cajero puede tocar Cancelar. Con `currentRequestId` esa cancelación
+     * se quedaba sin solicitud a la que apuntar.
+     */
+    private var intentoVivo: IntentoDeCobroEnVuelo? = null
     private val attemptLock = Any()
     // Retained only while the bounded POST or recovery cycle is alive.
     private val activePosts = mutableSetOf<String>()
@@ -104,6 +130,63 @@ class TerminalPaymentService @Inject constructor(
             currentTerminalId = null
             currentVenueId = null
         }
+    }
+
+    /**
+     * El cobro que sigue vivo en este aparato (POST o re-consulta), si lo hay. Es a quien apunta
+     * «Cancelar» desde «Procesando pago…».
+     */
+    fun intentoEnVuelo(): IntentoDeCobroEnVuelo? = synchronized(attemptLock) { intentoVivo }
+
+    private fun terminarIntento(requestId: String) = synchronized(attemptLock) {
+        if (intentoVivo?.requestId == requestId) intentoVivo = null
+    }
+
+    /**
+     * Contexto guardado del cobro (la llave durable), si corresponde a ESA solicitud.
+     *
+     * Es lo que permite cancelar desde «Cobro sin confirmar» o desde «Error», cuando el POST ya
+     * terminó y el servicio no conserva nada en memoria: terminal, venue y orden salen del disco.
+     */
+    fun contextoDe(requestId: String): ContextoDeCobro? {
+        val crudo = secureStorage.pendingCardChargeContext ?: return null
+        val datos = runCatching { JSONObject(crudo) }.getOrNull() ?: return null
+        if (datos.optString("requestId") != requestId) return null
+        fun texto(llave: String): String? = datos.optString(llave).takeIf { it.isNotBlank() }
+        return ContextoDeCobro(
+            requestId = requestId,
+            venueId = texto("venueId"),
+            terminalId = texto("terminalId"),
+            orderId = texto("orderId"),
+            amountCents = if (datos.has("amountCents")) datos.optInt("amountCents") else null,
+            tipCents = if (datos.has("tipCents")) datos.optInt("tipCents") else null,
+        )
+    }
+
+    /**
+     * Marca, SÍNCRONO, que el cajero pidió cancelar ESTE cobro.
+     *
+     * 🔴 Se escribe antes de cualquier red a propósito: mientras el POST sigue en vuelo, un 409/504
+     * posterior NO se puede leer como «no se cobró» — es exactamente el doble cobro del 2026-08-10.
+     */
+    fun marcarCancelacionPedida(requestId: String) {
+        cancelRequestedFor = requestId
+    }
+
+    /** Suelta la llave durable SÓLO si es la de esta solicitud. */
+    fun soltarLlaveSiEs(requestId: String) = clearMatching(requestId)
+
+    /**
+     * Deja este cobro cargado en la llave durable, para que la próxima venta lo muestre.
+     *
+     * @return `false` si la llave la tiene OTRO cobro vivo — ése es más nuevo y todavía puede tener
+     *   dinero encima, así que jamás se pisa (misma regla que [CardChargeDecision.unresolvedKeyAfterStaleResult]).
+     */
+    fun armarLlaveSiLibre(requestId: String): Boolean = synchronized(attemptLock) {
+        val armada = unresolvedRequestId
+        if (armada != null && armada != requestId) return false
+        if (armada == null) unresolvedRequestId = requestId
+        true
     }
 
     /**
@@ -237,6 +320,7 @@ class TerminalPaymentService @Inject constructor(
             currentRequestId = requestId
             currentVenueId = venueId
             currentTerminalId = terminalId
+            intentoVivo = IntentoDeCobroEnVuelo(requestId, terminalId, venueId)
         }
         // Cobro nuevo, carrera nueva: el cancel del anterior no gobierna a éste.
         cancelRequestedFor = null
@@ -272,8 +356,8 @@ class TerminalPaymentService @Inject constructor(
             // Tope de reloj de pared sobre la espera. Sin esto, un aviso que NUNCA llega
             // (terminal apagada, sin batería, cancelada desde su propia pantalla) deja al
             // cajero en "Procesando pago…" para siempre, sin salida y con fila enfrente.
-            val call = client.newCall(request)
-            val (responseCode, body) = withContext(Dispatchers.IO) {
+            suspend fun enviar(): Pair<Int, String> = withContext(Dispatchers.IO) {
+                val call = client.newCall(request)
                 val watchdog = launch {
                     delay(CardChargeDecision.WAIT_CEILING_MS)
                     ceilingExceeded.set(true)
@@ -286,6 +370,26 @@ class TerminalPaymentService @Inject constructor(
                 } finally {
                     watchdog.cancel()
                 }
+            }
+
+            var (responseCode, body) = enviar()
+            // 🔴 El servidor pidió reintentar la ADMISIÓN (503): no pudo decidir ahora y NO creó
+            // la solicitud. Se reintenta con el MISMO `requestId` —la unicidad del id es el candado
+            // del servidor, así que una copia nunca crea un segundo cobro— y la llave durable se
+            // conserva. Estrenar identidad aquí sería pedir un cobro nuevo sobre el mismo carrito.
+            var reintentosDeAdmision = 0
+            while (
+                responseCode == 503 &&
+                codigoDeRechazo(body) == CancelacionDeCobro.ADMISSION_RETRY &&
+                reintentosDeAdmision < MAX_REINTENTOS_DE_ADMISION &&
+                cancelRequestedFor != requestId
+            ) {
+                reintentosDeAdmision++
+                Log.w("💳", "⏳ Admisión ocupada (503): reintento $reintentosDeAdmision con el MISMO requestId $requestId")
+                delay(ESPERA_DE_ADMISION_MS * reintentosDeAdmision)
+                val reintento = enviar()
+                responseCode = reintento.first
+                body = reintento.second
             }
 
             clearCurrent(requestId)
@@ -322,10 +426,46 @@ class TerminalPaymentService @Inject constructor(
                     // pudo haber cobrado y sólo se perdió el aviso. Fue exactamente el 503 de
                     // ngrok reiniciando el backend lo que produjo el doble cobro del 2026-08-10.
                     // Los 4xx sí son respuestas de negocio y se propagan tal cual.
-                    val errorMsg = try {
-                        val errorResp = json.decodeFromString(TerminalPaymentResponse.serializer(), body)
-                        errorResp.errorMessage ?: errorResp.message
+                    val rejectionDto = try {
+                        json.decodeFromString(TerminalPaymentRejectionDto.serializer(), body)
                     } catch (_: Exception) { null }
+                    val errorMsg = rejectionDto?.errorMessage ?: rejectionDto?.message
+                    val rejection = rejectionDto?.let {
+                        CreationRejection(
+                            code = it.code,
+                            blockingRequestId = it.blockingRequest?.requestId,
+                            amountCents = it.blockingRequest?.amountCents,
+                            ageSeconds = it.blockingRequest?.ageSeconds,
+                            senderDevice = it.blockingRequest?.senderDevice,
+                        )
+                    }
+                    // 🔴 La UNA excepción del 409: el server se negó a CREAR este intento porque
+                    // OTRA solicitud ocupa la terminal. Nada viajó a la terminal, así que no hay
+                    // nada que preguntar ni llave que conservar — ver CardChargeDecision.
+                    val busyByAnother = rejection?.takeIf {
+                        responseCode == 409 && CardChargeDecision.refusedForAnotherRequest(it, requestId)
+                    }
+                    if (busyByAnother != null) {
+                        Log.w("💳", "🔒 Terminal ocupada por OTRA solicitud (${busyByAnother.blockingRequestId}): este intento nunca se creó — se libera la llave")
+                        clearMatching(requestId)
+                        return TerminalPaymentResult.Error(
+                            CardChargeDecision.busyMessage(busyByAnother, errorMsg),
+                            requestId = requestId,
+                            noSeCreo = true,
+                        )
+                    }
+                    // 🔴 Misma familia que el 409 de arriba y la MISMA garantía: la CORRELACIÓN.
+                    // El servidor rechazó la admisión nombrando a ESTA solicitud (deja lápida por
+                    // `requestId`), así que consta que no se creó el cobro: se suelta la llave y se
+                    // dice, con todas sus letras, que este cobro no se envió.
+                    val rechazoQueNoSeCreo = rejectionDto
+                        ?.takeIf { responseCode in 400..499 }
+                        ?.let { CancelacionDeCobro.rechazoQueProbaNoSeCreo(it.code, it.details?.requestId, requestId) }
+                    if (rechazoQueNoSeCreo != null) {
+                        Log.w("💳", "🚫 Admisión rechazada (${rejectionDto?.code}) para $requestId: este cobro NO se envió")
+                        clearMatching(requestId)
+                        return TerminalPaymentResult.Error(rechazoQueNoSeCreo, requestId = requestId, noSeCreo = true)
+                    }
                     if (CardChargeDecision.mustReconcile(
                             ChargeWaitEnding.Http(responseCode),
                             cancelRequested = cancelRequestedFor == requestId,
@@ -336,7 +476,7 @@ class TerminalPaymentService @Inject constructor(
                     } else {
                         Log.e("💳", "❌ Terminal payment failed: $responseCode - $body")
                         clearMatching(requestId)
-                        TerminalPaymentResult.Error(errorMsg ?: "Error al procesar pago ($responseCode)")
+                        TerminalPaymentResult.Error(errorMsg ?: "Error al procesar pago ($responseCode)", requestId = requestId)
                     }
                 }
             }
@@ -352,10 +492,11 @@ class TerminalPaymentService @Inject constructor(
                 resolveOutcome(requestId, fromPost = true)
             } else {
                 clearMatching(requestId)
-                TerminalPaymentResult.Error(e.message ?: "Error al procesar pago")
+                TerminalPaymentResult.Error(e.message ?: "Error al procesar pago", requestId = requestId)
             }
         } finally {
             clearCurrent(requestId)
+            terminarIntento(requestId)
             synchronized(attemptLock) {
                 activePosts.remove(requestId)
                 if (requestId !in recoveryFlights) recoveredPosts.remove(requestId)
@@ -374,16 +515,38 @@ class TerminalPaymentService @Inject constructor(
      * (no se pudo preguntar). Colapsarlos en un solo "null" era lo que hacía que un server
      * inalcanzable pareciera un "no se cobró" y habilitara un reintento a ciegas.
      */
-    suspend fun getPaymentStatus(requestId: String): ChargeStatusProbe {
-        val storedVenue = runCatching { JSONObject(secureStorage.pendingCardChargeContext ?: "{}") }
-            .getOrNull()?.takeIf { it.optString("requestId") == requestId }?.optString("venueId")?.takeIf { it.isNotBlank() }
-        val venueId = storedVenue ?: secureStorage.venueId ?: return ChargeStatusProbe.Unreachable
-        val token = secureStorage.accessToken ?: return ChargeStatusProbe.Unreachable
+    suspend fun getPaymentStatus(requestId: String): ChargeStatusProbe = consultarEstado(requestId, venueId = null).probe
+
+    /**
+     * La misma consulta, diciendo además si HUBO respuesta del servidor.
+     *
+     * 🔴 «No se pudo preguntar» tiene dos causas distintas y la pantalla no las puede confundir: un
+     * 5xx o un 403 son una respuesta (el servidor está ahí), y sólo la ausencia de respuesta es
+     * falta de red — que es lo único que autoriza a decirle al cajero «sin conexión en esta tablet».
+     *
+     * @param venueId el venue del COBRO. La cancelación durable sobrevive a un cambio de sucursal,
+     *   así que no puede preguntar por el venue activo.
+     * @param enSegundoPlano la consulta corre sola (el coordinador): un 403 no puede sacar el modal
+     *   de permisos encima de la pantalla en la que esté el cajero.
+     */
+    suspend fun consultarEstado(
+        requestId: String,
+        venueId: String?,
+        enSegundoPlano: Boolean = false,
+    ): ConsultaDeEstado {
+        val storedVenue = contextoDe(requestId)?.venueId
+        val venue = venueId ?: storedVenue ?: secureStorage.venueId
+            ?: return ConsultaDeEstado(ChargeStatusProbe.Unreachable, sinRespuesta = true)
+        val token = secureStorage.accessToken
+            ?: return ConsultaDeEstado(ChargeStatusProbe.Unreachable, sinRespuesta = true)
 
         return try {
             val request = Request.Builder()
-                .url("$baseUrl/mobile/venues/$venueId/terminal-payment/$requestId")
+                .url("$baseUrl/mobile/venues/$venue/terminal-payment/$requestId")
                 .header("Authorization", "Bearer $token")
+                .apply {
+                    if (enSegundoPlano) header(com.avoqado.pos.core.data.network.ForbiddenInterceptor.BACKGROUND_HEADER, "1")
+                }
                 .get()
                 .build()
 
@@ -392,16 +555,11 @@ class TerminalPaymentService @Inject constructor(
                 response.code to (response.body?.string() ?: "")
             }
 
-            when {
+            val probe = when {
                 responseCode in 200..299 -> {
                     val dto = json.decodeFromString(TerminalPaymentStatusDto.serializer(), body)
-                    Log.d("💳", "Payment status $requestId → ${dto.status} (inProgress=${dto.inProgress})")
-                    ChargeStatusProbe.Known(
-                        status = dto.status,
-                        inProgress = dto.inProgress,
-                        paymentId = dto.paymentId,
-                        cancelDisposition = dto.cancelDisposition,
-                    )
+                    Log.d("💳", "Payment status $requestId → ${dto.status} (inProgress=${dto.inProgress}, outcome=${dto.outcome})")
+                    dto.aProbe()
                 }
                 responseCode == 404 -> {
                     Log.d("💳", "Payment status $requestId → 404 NOT_FOUND (no acredita ausencia de cargo)")
@@ -413,9 +571,10 @@ class TerminalPaymentService @Inject constructor(
                     ChargeStatusProbe.Unreachable
                 }
             }
+            ConsultaDeEstado(probe, sinRespuesta = false)
         } catch (e: Exception) {
             Log.e("💳", "Error fetching payment status: ${e.message}")
-            ChargeStatusProbe.Unreachable
+            ConsultaDeEstado(ChargeStatusProbe.Unreachable, sinRespuesta = true)
         }
     }
 
@@ -495,7 +654,7 @@ class TerminalPaymentService @Inject constructor(
             // Consta que NO se cobró: reintentar es seguro.
             clearMatching(requestId)
             Log.d("💳", "🚫 Consta que no se cobró: $message")
-            TerminalPaymentResult.Error(message).also {
+            TerminalPaymentResult.Error(message, requestId = requestId).also {
                 if (requestId in activePosts) recoveredPosts[requestId] = it
             }
         }
@@ -508,47 +667,65 @@ class TerminalPaymentService @Inject constructor(
     }
 
     /**
-     * POST /mobile/venues/{venueId}/terminal-payment/cancel
-     * Cancel a pending terminal payment.
+     * POST /mobile/venues/{venueId}/terminal-payment/cancel — y se LEE la respuesta.
+     *
+     * 🔴 Antes esto era un `Thread` que disparaba el POST con el cliente de 310 s y tiraba lo que
+     * contestara el servidor. Nadie podía saber si la cancelación quedó registrada, y el cajero se
+     * iba de la pantalla creyendo que sí. Ahora va por el cliente CORTO (10 s, `FAIL_FAST`: una
+     * llamada de este plazo no se queda esperando a que alguien teclee un PIN) y su respuesta
+     * gobierna el paso siguiente de la cancelación durable.
+     *
+     * `cancelRequestedFor` se escribe ANTES de suspender: el cobro sigue en vuelo y, en cuanto el
+     * servidor procese este cancel, le contestará 409/504 — leer eso como «no se cobró» es
+     * exactamente el doble cobro medido con tarjeta real el 2026-08-10.
      */
-    fun cancelCurrentPayment() {
-        val (terminalId, requestId, venueId) = synchronized(attemptLock) {
-            Triple(currentTerminalId, currentRequestId, currentVenueId)
-        }
-        if (terminalId == null || requestId == null || venueId == null) return
-        val token = secureStorage.accessToken ?: return
-
-        // 🔴 Marcar ANTES de disparar el cancel, no dentro del hilo: el cobro sigue en vuelo y
-        // en cuanto el server procese este cancel le contestará 409. Si la marca llegara tarde,
-        // ese 409 se leería como "no se cobró" — que es exactamente el doble cobro medido con
-        // tarjeta real el 2026-08-10.
+    suspend fun pedirCancelacion(
+        requestId: String,
+        terminalId: String,
+        venueId: String,
+        reason: String? = null,
+    ): RespuestaDeCancelacion {
         cancelRequestedFor = requestId
+        val token = secureStorage.accessToken ?: return RespuestaDeCancelacion(http = null)
 
-        // Fire-and-forget cancel
-        Thread {
-            try {
-                val cancelBody = json.encodeToString(
-                    CancelPaymentRequest.serializer(),
-                    CancelPaymentRequest(
-                        terminalId = terminalId,
-                        requestId = requestId,
-                    ),
-                ).toRequestBody("application/json".toMediaType())
+        return try {
+            val cancelBody = json.encodeToString(
+                CancelPaymentRequest.serializer(),
+                CancelPaymentRequest(terminalId = terminalId, requestId = requestId, reason = reason),
+            ).toRequestBody("application/json".toMediaType())
 
-                val request = Request.Builder()
-                    .url("$baseUrl/mobile/venues/$venueId/terminal-payment/cancel")
-                    .header("Authorization", "Bearer $token")
-                    .post(cancelBody)
-                    .build()
+            val request = Request.Builder()
+                .url("$baseUrl/mobile/venues/$venueId/terminal-payment/cancel")
+                .header("Authorization", "Bearer $token")
+                .header(com.avoqado.pos.core.data.network.ForbiddenInterceptor.LOCAL_ERROR_HEADER, "1")
+                .post(cancelBody)
+                .build()
 
-                val response = client.newCall(request).execute()
-                Log.d("💳", "Cancel payment response: ${response.code}")
-            } catch (e: Exception) {
-                Log.e("💳", "Cancel payment error: ${e.message}")
+            val (code, body) = withContext(Dispatchers.IO) {
+                statusClient.newCall(request).execute().use { it.code to (it.body?.string() ?: "") }
             }
-        }.start()
+            val dto = runCatching { json.decodeFromString(CancelPaymentResponseDto.serializer(), body) }.getOrNull()
+            Log.d("💳", "Cancel payment response: $code (intent=${dto?.cancelIntent}, emitido=${dto?.cancelEmitted})")
+            RespuestaDeCancelacion(
+                http = code,
+                success = dto?.success,
+                cancelIntent = dto?.cancelIntent,
+                cancelEmitted = dto?.cancelEmitted,
+                // El servidor nuevo devuelve el estado ya releído: una consulta menos.
+                estado = dto?.payment?.aProbe(),
+                mensaje = dto?.message,
+            )
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            Log.e("💳", "Cancel payment error: ${e.message}")
+            RespuestaDeCancelacion(http = null)
+        }
+    }
 
-        clearCurrent(requestId)
+    /** Cancela el cobro que sigue vivo en este aparato, si lo hay. */
+    suspend fun cancelCurrentPayment(): RespuestaDeCancelacion? {
+        val intento = intentoEnVuelo() ?: return null
+        return pedirCancelacion(intento.requestId, intento.terminalId, intento.venueId)
     }
 
     suspend fun printReceiptOnTerminal(
@@ -594,6 +771,11 @@ class TerminalPaymentService @Inject constructor(
                 receipt.changeAmount?.let { put("changeAmount", it) }
                 paymentId?.takeIf { it.isNotBlank() }?.let { put("paymentId", it) }
                 receiptAccessKey?.takeIf { it.isNotBlank() }?.let { put("receiptAccessKey", it) }
+                // 🔴 La terminal dibuja el QR con `receiptUrl` — la llave sola no le sirve, porque
+                // ella no arma la URL. Sin estos dos campos el ticket impreso EN la terminal desde
+                // esta app salía sin QR de facturación, aunque la propia terminal sepa dibujarlo.
+                receipt.receiptUrl?.takeIf { it.isNotBlank() }?.let { put("receiptUrl", it) }
+                put("autofacturaAvailable", receipt.autofacturaAvailable)
             }
 
             val bodyJson = JSONObject()
@@ -705,8 +887,19 @@ sealed class TerminalPaymentResult {
         val alreadyRecovered: Boolean = false,
     ) : TerminalPaymentResult()
 
-    /** Consta que NO se cobró (rechazo, cancelación, terminal desconectada): reintentar es seguro. */
-    data class Error(val message: String) : TerminalPaymentResult()
+    /**
+     * Consta que NO se cobró (rechazo, cancelación, terminal desconectada): reintentar es seguro.
+     *
+     * @param requestId la solicitud que produjo este error, cuando llegó a existir. La cancelación
+     *   durable la necesita para preguntar por ella en vez de borrar la orden a ciegas.
+     * @param noSeCreo el servidor rechazó la ADMISIÓN nombrando a esta solicitud: consta que el
+     *   cobro no se envió a la terminal, así que no hay nada que preguntarle.
+     */
+    data class Error(
+        val message: String,
+        val requestId: String? = null,
+        val noSeCreo: Boolean = false,
+    ) : TerminalPaymentResult()
 
     /**
      * 🔴 No se pudo determinar si la tarjeta se cobró. NI éxito NI fracaso — es el tercer
@@ -748,6 +941,76 @@ private data class TerminalPaymentRequest(
 private data class CancelPaymentRequest(
     val terminalId: String,
     val requestId: String? = null,
+    /** Por qué se canceló. ADITIVO: el servidor lo guarda en la bitácora; un server viejo lo ignora. */
+    val reason: String? = null,
+)
+
+/**
+ * Respuesta del POST de cancelación. `requestId`, `cancelIntent`, `cancelEmitted` y `payment` son
+ * del contrato nuevo (§C.2) y todavía no los manda producción: se leen si vienen y el cliente
+ * funciona igual sin ellos.
+ *
+ * 🔴 `cancelEmitted` NO prueba recepción — sólo que el servidor lo emitió a un socket del registro.
+ */
+@Serializable
+private data class CancelPaymentResponseDto(
+    val success: Boolean? = null,
+    val message: String? = null,
+    val requestId: String? = null,
+    val cancelIntent: String? = null,
+    val cancelEmitted: Boolean? = null,
+    val payment: TerminalPaymentStatusDto? = null,
+)
+
+/** El cobro que todavía puede estar moviendo dinero en este aparato. */
+data class IntentoDeCobroEnVuelo(
+    val requestId: String,
+    val terminalId: String,
+    val venueId: String,
+)
+
+/** El contexto con el que salió un cobro, releído de la llave durable. */
+data class ContextoDeCobro(
+    val requestId: String,
+    val venueId: String?,
+    val terminalId: String?,
+    val orderId: String?,
+    val amountCents: Int? = null,
+    val tipCents: Int? = null,
+)
+
+/**
+ * Lo que contestó el POST de cancelación.
+ *
+ * @param http `null` = no hubo respuesta (sin red). Es lo único que autoriza a decir «sin conexión».
+ */
+data class RespuestaDeCancelacion(
+    val http: Int?,
+    val success: Boolean? = null,
+    val cancelIntent: String? = null,
+    val cancelEmitted: Boolean? = null,
+    val estado: ChargeStatusProbe.Known? = null,
+    val mensaje: String? = null,
+) {
+    /**
+     * Ni aceptada ni rechazada: no dice NADA del cobro y se vuelve a intentar.
+     *
+     * Un 401 entra aquí a propósito (token vencido: transitorio, se resuelve al refrescar la
+     * sesión), igual que los 5xx y los plazos agotados. Un 4xx de negocio NO: ahí el servidor
+     * contestó, y quien decide es el estado durable del cobro.
+     */
+    val esTransitoria: Boolean get() = http == null || http >= 500 || http == 408 || http == 429 || http == 401
+}
+
+/**
+ * El estado del cobro y si HUBO respuesta del servidor.
+ *
+ * @param sinRespuesta `true` sólo cuando no llegó nada (sin red). Un 5xx o un 403 SON respuesta:
+ *   confundirlos hacía que la pantalla dijera «sin conexión» con la red perfecta.
+ */
+data class ConsultaDeEstado(
+    val probe: ChargeStatusProbe,
+    val sinRespuesta: Boolean,
 )
 
 @Serializable
@@ -761,6 +1024,36 @@ data class TerminalPaymentResponse(
     val errorMessage: String? = null,
     val message: String? = null,
     val receipt: ReceiptInfo? = null,
+)
+
+/**
+ * Cuerpo con el que el server RECHAZA crear el intento (4xx del POST). Sólo lo que el cliente usa.
+ * Espejo del 409 de `terminal-payment.mobile.controller.ts` (`code` + `blockingRequest` en la raíz).
+ */
+@Serializable
+data class TerminalPaymentRejectionDto(
+    val code: String? = null,
+    val message: String? = null,
+    val errorMessage: String? = null,
+    val blockingRequest: BlockingRequestDto? = null,
+    /**
+     * Datos del rechazo. `details.requestId` es la CORRELACIÓN: sin ella, un rechazo de admisión
+     * no prueba nada de ESTA solicitud (el servidor lo manda desde la pieza §C.3/H.5).
+     */
+    val details: RejectionDetailsDto? = null,
+)
+
+@Serializable
+data class RejectionDetailsDto(
+    val requestId: String? = null,
+)
+
+@Serializable
+data class BlockingRequestDto(
+    val requestId: String? = null,
+    val amountCents: Int? = null,
+    val senderDevice: String? = null,
+    val ageSeconds: Int? = null,
 )
 
 @Serializable
@@ -787,7 +1080,33 @@ data class TerminalPaymentStatusDto(
     val status: String = "",
     val inProgress: Boolean = false,
     val paymentId: String? = null,
-)
+    /**
+     * Desenlace CANÓNICO del servidor (§C.1). Opcionales: un servidor que no los manda deja `null`
+     * y el cliente decide con lo de siempre. Se leen como texto libre, nunca como enum estricto —
+     * un valor nuevo no puede tumbar la lectura del estado de un cobro.
+     */
+    val outcome: String? = null,
+    val outcomeEvidence: String? = null,
+    val evidenceClass: String? = null,
+    val failureCode: String? = null,
+    val reconciliationRequired: Boolean? = null,
+    val orderId: String? = null,
+    val terminalId: String? = null,
+) {
+    fun aProbe(): ChargeStatusProbe.Known = ChargeStatusProbe.Known(
+        status = status,
+        inProgress = inProgress,
+        paymentId = paymentId,
+        cancelDisposition = cancelDisposition,
+        outcome = outcome,
+        outcomeEvidence = outcomeEvidence,
+        evidenceClass = evidenceClass,
+        failureCode = failureCode,
+        reconciliationRequired = reconciliationRequired,
+        orderId = orderId,
+        terminalId = terminalId,
+    )
+}
 
 @Serializable
 data class OnlineTerminalsResponse(

@@ -99,6 +99,7 @@ import java.util.Locale
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.SnackbarHost
+import com.avoqado.pos.core.util.aCentavos
 
 /**
  * TABLE_SERVICE (PRO) — the DEDICATED table screen (Square's check view).
@@ -980,8 +981,12 @@ fun TableOrderScreen(
                     } else {
                         // El motivo lo da el server; el QUÉ HACER lo ponemos
                         // nosotros — un mesero con fila necesita su siguiente
-                        // movimiento, no un diagnóstico.
-                        viewModel.showError(msg, "Cobra el resto de esa cuenta por separado, o reversa su pago antes de fusionarla.")
+                        // movimiento, no un diagnóstico. Con un cobro de tarjeta vivo el mensaje
+                        // YA dice qué hacer (cancélalo o espera), así que no se le pega otra pista
+                        // que apunta a lo contrario.
+                        val pista = "Cobra el resto de esa cuenta por separado, o reversa su pago antes de fusionarla."
+                            .takeIf { msg != com.avoqado.pos.payment.domain.CancelacionDeCobro.COBRO_EN_CURSO_BLOQUEA_CUENTA }
+                        viewModel.showError(msg, pista)
                     }
                 }
                 panelTab = PanelTab.CUENTA
@@ -2445,7 +2450,7 @@ private fun CustomAmountDialog(
 ) {
     var name by remember { mutableStateOf("") }
     var amountText by remember { mutableStateOf("") }
-    val cents = amountText.toDoubleOrNull()?.let { (it * 100).toInt() } ?: 0
+    val cents = amountText.toDoubleOrNull()?.aCentavos() ?: 0
 
     AvoqadoDialog(
         title = "Importe personalizado",

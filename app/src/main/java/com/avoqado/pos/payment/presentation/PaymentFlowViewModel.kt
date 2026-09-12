@@ -95,6 +95,12 @@ class PaymentFlowViewModel @Inject constructor(
     private val replayDeComandas: ReplayDeComandasPendientes,
     private val customerDisplay: com.avoqado.pos.customerdisplay.CustomerDisplayState,
     private val areaTicketRepository: AreaTicketRepository,
+    /**
+     * 🔴 La cancelación de un cobro con tarjeta NO vive en esta pantalla: se guarda en disco antes
+     * de tocar la red y la reproduce un coordinador que sobrevive a que el cajero se vaya y a que
+     * el proceso muera. Ver [com.avoqado.pos.payment.data.CancelacionDeCobroCoordinator].
+     */
+    private val cancelacionDeCobro: com.avoqado.pos.payment.data.CancelacionDeCobroCoordinator,
     private val savedStateHandle: androidx.lifecycle.SavedStateHandle,
 ) : ViewModel() {
 
@@ -170,6 +176,34 @@ class PaymentFlowViewModel @Inject constructor(
     /// screen, marking Success and PRINTING a receipt for a cancelled payment.
     private var recoveryRequestId: String? = null
     private var paymentGeneration = 0
+
+    // MARK: - Cancelación durable del cobro (§C.4)
+
+    /**
+     * 🔴 La orden la creó ESTE flujo, así que cancelarlo puede cancelarla.
+     *
+     * Sin esta distinción, cancelar el cobro de una mesa (sesión PAYING) o de la parte 2 de un
+     * split borraba una cuenta que ya existía y que nadie pidió cancelar.
+     */
+    private var ordenCreadaPorEsteFlujo = false
+
+    /** El último cobro que ESTE flujo mandó a una terminal, y si consta que no llegó a crearse. */
+    private data class UltimoIntentoDeCobro(val requestId: String?, val noSeCreo: Boolean)
+    private var ultimoIntento: UltimoIntentoDeCobro? = null
+
+    /** La intención de cancelar que esta pantalla está observando. */
+    private var cancelacionObservada: String? = null
+    private var observadorDeCancelacion: kotlinx.coroutines.Job? = null
+
+    /** El cobro que esta pantalla ya aplicó tras descubrir que la terminal sí cobró. */
+    private var cobroAplicadoTrasCancelar: String? = null
+
+    private val _debeSalir = MutableStateFlow(false)
+
+    /** El flujo terminó por una cancelación: la pantalla anfitriona lo cierra. */
+    val debeSalir: StateFlow<Boolean> = _debeSalir.asStateFlow()
+
+    fun consumirSalida() { _debeSalir.value = false }
 
     init {
         // Refresca el catálogo de tipos de pago al entrar al flujo de cobro. Es
@@ -282,6 +316,9 @@ class PaymentFlowViewModel @Inject constructor(
                 is PaymentFlowState.Loading,
                 is PaymentFlowState.Error,
                 is PaymentFlowState.Undetermined,
+                // La cancelación es del mismo tipo: es asunto del cajero y de la terminal.
+                is PaymentFlowState.CancelandoCobro,
+                is PaymentFlowState.CancelacionPendiente,
                 ->
                     com.avoqado.pos.customerdisplay.CustomerContent.Idle
             },
@@ -718,6 +755,15 @@ class PaymentFlowViewModel @Inject constructor(
         currentTipCents = 0
         createdOrderId = null
         createdOrderNumber = null
+        // Una venta nueva no hereda la cancelación de la anterior: ni su observación, ni su aviso,
+        // ni su salida. El aviso de «no se pudo guardar» describía la venta pasada y reaparecía
+        // encima de ésta.
+        dejarDeObservarLaCancelacion()
+        ordenCreadaPorEsteFlujo = false
+        ultimoIntento = null
+        cobroAplicadoTrasCancelar = null
+        _debeSalir.value = false
+        _cancelFailure.value = null
 
         // 🔴 DINERO — MOSTRADOR: partes 2..N de un split.
         //
@@ -995,12 +1041,20 @@ class PaymentFlowViewModel @Inject constructor(
         isProcessingPayment = true
         val total = currentBaseAmount() + currentTipCents
         _state.value = PaymentFlowState.Processing(total)
+        // 🔴 La generación con la que entró este cobro. Crear la orden tarda, y en ese rato el
+        // cajero puede tocar «Cancelar»: si cuando vuelve la creación la generación cambió, el
+        // cobro NO se envía y lo único que queda es cancelar la orden recién creada.
+        val generacion = paymentGeneration
 
         viewModelScope.launch {
             try {
                 if (areaTicketRepository.session.current() != null) {
                     if (!materializeAreaTicketCheckout(cart)) return@launch
-                    processPaymentMethod(total)
+                    if (generacion != paymentGeneration) {
+                        cancelarLoCreadoTrasCancelar(orderId = null)
+                        return@launch
+                    }
+                    processPaymentMethod(total, generacion)
                     return@launch
                 }
                 val hasRealProducts = hasProductItems(cart)
@@ -1036,12 +1090,25 @@ class PaymentFlowViewModel @Inject constructor(
                                 }
                                 createdOrderId = orderId
                                 createdOrderNumber = response.data?.orderNumber
+                                ordenCreadaPorEsteFlujo = true
+                                if (generacion != paymentGeneration) {
+                                    // Se canceló mientras se creaba: ni un cobro más, y la orden
+                                    // que acaba de nacer se cancela por la vía durable.
+                                    cancelarLoCreadoTrasCancelar(orderId)
+                                    return@fold
+                                }
                                 // La orden ya existe y todavía no se ha tomado
                                 // dinero: se cobra lo que dice el server, no el
                                 // estimado del carrito. Ver `totalACobrarCents`.
-                                processPaymentMethod(adoptarTotalDelServer(orderRequest, response, total))
+                                processPaymentMethod(adoptarTotalDelServer(orderRequest, response, total), generacion)
                             },
                             onFailure = { error ->
+                                if (generacion != paymentGeneration) {
+                                    // Se canceló mientras se creaba y la orden ni siquiera nació:
+                                    // no se encola nada ni se pinta un error sobre la cancelación.
+                                    cancelarLoCreadoTrasCancelar(orderId = null)
+                                    return@fold
+                                }
                                 // For CASH payments: queue offline if network/server error
                                 if (selectedMethod == PaymentMethod.CASH) {
                                     val isQueueable = OrderRepository.isQueueableError(error) ||
@@ -1092,12 +1159,12 @@ class PaymentFlowViewModel @Inject constructor(
                         // mostrador— la parte 2 de una venta por artículos, donde el
                         // carrito conserva productos reales y crear una segunda orden
                         // duplicaría esas líneas en base.
-                        processPaymentMethod(total)
+                        processPaymentMethod(total, generacion)
                     }
                 } else {
                     // Custom amount only — use Fast Payment endpoint
                     Log.d("💰", "Custom amount payment (fast) - total: $total")
-                    processPaymentMethod(total)
+                    processPaymentMethod(total, generacion)
                 }
             } catch (e: Exception) {
                 Log.e("💰", "Payment error: ${e.message}")
@@ -1109,7 +1176,7 @@ class PaymentFlowViewModel @Inject constructor(
         }
     }
 
-    private suspend fun processPaymentMethod(total: Int) {
+    private suspend fun processPaymentMethod(total: Int, generacion: Int = paymentGeneration) {
         when (selectedMethod) {
             PaymentMethod.CARD -> {
                 val terminalId = selectedTerminalId
@@ -1121,6 +1188,12 @@ class PaymentFlowViewModel @Inject constructor(
                     return
                 }
 
+                // 🔴 Última puerta antes de que una tarjeta pueda cobrarse: si el cajero ya
+                // canceló, este cobro no sale. Lo que quede por cancelar ya se registró.
+                if (generacion != paymentGeneration) {
+                    Log.d("💰", "Cancelado antes de enviar: el cobro no se manda a la terminal")
+                    return
+                }
                 _state.value = PaymentFlowState.SentToTerminal(total)
                 val generation = paymentGeneration
                 val terminalResult = terminalPaymentService.sendPaymentToTerminal(
@@ -1138,6 +1211,7 @@ class PaymentFlowViewModel @Inject constructor(
                     // del camino de EFECTIVO (`recordFastCashPayment`).
                     customerId = attachedCustomerId,
                 )
+                recordarIntentoDeCobro(terminalResult)
                 if (terminalResult is TerminalPaymentResult.Success && terminalResult.alreadyRecovered) return
                 if (generation != paymentGeneration) {
                     // El cajero canceló mientras el envío seguía en vuelo (hasta 330 s): no se
@@ -1265,6 +1339,9 @@ class PaymentFlowViewModel @Inject constructor(
         isProcessingPayment = true
         lastCashTenderedCents = cashReceivedCents
         val total = currentBaseAmount() + currentTipCents
+        // Misma puerta que en tarjeta: crear la orden tarda, y si el cajero cancela mientras
+        // tanto, el efectivo NO se registra contra una venta que él ya dio por cancelada.
+        val generacion = paymentGeneration
 
         when (val result = cashPaymentRepository.processCashPayment(total, cashReceivedCents)) {
             is CashPaymentResult.Success -> {
@@ -1320,6 +1397,11 @@ class PaymentFlowViewModel @Inject constructor(
                                         return@fold
                                     }
                                     createdOrderId = orderId
+                                    ordenCreadaPorEsteFlujo = true
+                                    if (generacion != paymentGeneration) {
+                                        cancelarLoCreadoTrasCancelar(orderId)
+                                        return@fold
+                                    }
                                     // El efectivo ya está en la mano, así que el
                                     // total del server sólo se adopta si el
                                     // dinero recibido alcanza; si no, se cobra el
@@ -1341,6 +1423,10 @@ class PaymentFlowViewModel @Inject constructor(
                                     )
                                 },
                                 onFailure = { error ->
+                                    if (generacion != paymentGeneration) {
+                                        cancelarLoCreadoTrasCancelar(orderId = null)
+                                        return@fold
+                                    }
                                     val isQueueable = OrderRepository.isQueueableError(error) ||
                                         (error is OrderRepository.ServerException && OrderRepository.isQueueableHttpCode(error.code))
                                     if (isQueueable) {
@@ -1532,22 +1618,36 @@ class PaymentFlowViewModel @Inject constructor(
                 // fresco y devuelve el importe/cambio que de verdad registró.
                 // Pantalla, ticket y arqueo deben contar ese resultado; los
                 // campos opcionales conservan el fallback para servers viejos.
-                val authoritativeOutcome = result.recordedAmountCents?.let { recordedAmount ->
+                val authoritativeTotalOrNull = result.recordedAmountCents?.let { recordedAmount ->
                     result.recordedTipCents?.let { recordedTip ->
                         val recordedTotal = recordedAmount.toLong() + recordedTip.toLong()
                         recordedTotal
                             .takeIf { recordedAmount >= 0 && recordedTip >= 0 && it <= Int.MAX_VALUE.toLong() }
-                            ?.let { safeTotal ->
-                                safeTotal.toInt() to (result.authoritativeChangeCents ?: changeCents)
-                            }
+                            ?.toInt()
                     }
                 }
                 // Un payload imposible no puede desbordar Int y convertir una
                 // venta positiva en un movimiento negativo. Igual que iOS,
-                // ante cualquier inconsistencia conservamos TODO el resultado
-                // local (total y cambio), no una mezcla de ambas fuentes.
-                val authoritativeTotal = authoritativeOutcome?.first ?: total
-                val finalChange = authoritativeOutcome?.second ?: changeCents
+                // ante cualquier inconsistencia conservamos el total local.
+                val authoritativeTotal = authoritativeTotalOrNull ?: total
+                // 🔴 EL CAMBIO ES LO QUE SALE DEL CAJÓN: recibido − lo que de
+                // verdad se cobró. NUNCA `result.authoritativeChangeCents`.
+                //
+                // Son dos cosas distintas que se llamaban igual, y confundirlas
+                // borró el cambio de TODA venta en efectivo con productos (ticket
+                // de Testarudo, 10-sep-2026: el cliente dio $550 sobre $544.50 y
+                // el recibo imprimió «Recibido: $544.50» sin renglón de cambio):
+                //
+                //   · aquí        cambio = recibido − cobrado  → lo que se le regresa al cliente
+                //   · en el server `changeCents` = lo que sobró del importe ENVIADO
+                //     sobre el saldo de la orden. Como le mandamos exactamente el
+                //     saldo, en un cobro normal vale SIEMPRE 0.
+                //
+                // Esta resta subsume el caso que motivó el campo del server (otra
+                // caja movió la orden y el server recortó el importe al saldo
+                // fresco): al restar sobre el total REALMENTE cobrado, el sobrante
+                // recortado ya queda dentro del cambio, sin sumar dos fuentes.
+                val finalChange = (cashReceivedCents - authoritativeTotal).coerceAtLeast(0)
                 // Recibo → QR en pantalla del cliente y recibo impreso.
                 result.receiptAccessKey?.let { lastReceiptAccessKey = it }
                 result.receiptUrl?.let { lastReceiptUrl = it }
@@ -1696,7 +1796,12 @@ class PaymentFlowViewModel @Inject constructor(
      * descubre TARDE, re-consultando el estado durable. En ese segundo caso el cajero no ve
      * ningún error: el cobro salió bien, la app sólo se enteró después.
      */
-    private fun applyCardCharged(charged: TerminalPaymentResult.Success, total: Int) {
+    private fun applyCardCharged(
+        charged: TerminalPaymentResult.Success,
+        total: Int,
+        /** Se descubrió al cancelar: la pantalla lo DICE, porque el cajero creía cancelada la venta. */
+        trasCancelar: Boolean = false,
+    ) {
         undeterminedRequestId = null // el desenlace ya consta
         lastPaymentId = charged.paymentId
         lastReceiptAccessKey = charged.receiptAccessKey
@@ -1708,6 +1813,7 @@ class PaymentFlowViewModel @Inject constructor(
             paymentId = charged.paymentId,
             receiptAccessKey = charged.receiptAccessKey,
             receiptUrl = charged.receiptUrl,
+            cobroTrasCancelar = trasCancelar,
         )
         createKDSOrderAndPrint(PaymentMethod.CARD)
     }
@@ -1727,13 +1833,25 @@ class PaymentFlowViewModel @Inject constructor(
      * por la ruta `fromPreviousSale`: informa del cargo viejo SIN pagar la venta nueva.
      */
     private fun handleStaleCardResult(result: TerminalPaymentResult) {
-        val (outcome, requestId) = when (result) {
+        val (outcomeDelResultado, requestId) = when (result) {
             is TerminalPaymentResult.Success ->
                 CardChargeOutcome.Charged(result.paymentId) to result.requestId
             is TerminalPaymentResult.Error ->
                 CardChargeOutcome.NotCharged(result.message) to null
             is TerminalPaymentResult.Undetermined ->
                 CardChargeOutcome.Undetermined(result.message) to result.requestId
+        }
+        // 🔴 La cancelación durable pudo resolver ESTE cobro mientras su POST seguía en vuelo. Si
+        // ya consta que no se cobró —o si esta pantalla ya aplicó el cobro que sí ocurrió—, el
+        // resultado tardío no puede volver a armar la llave: dejaría a la venta siguiente pidiendo
+        // resolver un cobro que ya está resuelto.
+        val conocido = requestId?.let { cancelacionDeCobro.desenlaceConocido(it) }
+        val outcome = when {
+            conocido is com.avoqado.pos.payment.domain.DesenlaceDeCancelacion.NoSeCobro ->
+                CardChargeOutcome.NotCharged("La cancelación ya se resolvió: no se cobró.")
+            conocido is com.avoqado.pos.payment.domain.DesenlaceDeCancelacion.SeCobro && requestId == cobroAplicadoTrasCancelar ->
+                CardChargeOutcome.NotCharged("El cobro ya se aplicó a la venta.")
+            else -> outcomeDelResultado
         }
         val pending = CardChargeDecision.unresolvedKeyAfterStaleResult(
             outcome = outcome,
@@ -1801,7 +1919,7 @@ class PaymentFlowViewModel @Inject constructor(
                     if (!fromPreviousSale) undeterminedRequestId = outcome.requestId
                     _state.value = PaymentFlowState.Undetermined(
                         totalAmount = total,
-                        message = if (fromPreviousSale) "$PREVIOUS_CHARGE_MESSAGE ${outcome.message}" else outcome.message,
+                        message = if (fromPreviousSale) "$PREVIOUS_CHARGE_PREFIX ${outcome.message}" else outcome.message,
                         checking = false,
                         fromPreviousSale = fromPreviousSale,
                     )
@@ -1838,63 +1956,271 @@ class PaymentFlowViewModel @Inject constructor(
     fun chargeAgainDespiteUndetermined() { /* Only authoritative recovery permits another charge. */ }
 
 
-    fun cancel() {
-        isProcessingPayment = false
-        paymentGeneration++
-        undeterminedRequestId = null
-        paymentIdempotencyKey = null
-        // Cancel pending terminal payment if in progress
-        terminalPaymentService.cancelCurrentPayment()
+    // MARK: - Cancelar la venta (§C.4): el cobro primero, la orden sólo cuando conste
 
-        if (areaTicketRepository.session.current() != null) {
-            viewModelScope.launch {
-                runCatching { areaTicketRepository.cancel() }
-                    .onFailure { Log.e("PaymentFlow", "⚠️ No se pudo liberar la sesión de vales: ${it.message}") }
+    /**
+     * «Cancelar» en el cobro con terminal: **se cancela el COBRO y, sólo cuando conste que no se
+     * cobró, la ORDEN — si la creó este mismo flujo**.
+     *
+     * 🔴 Antes esto mandaba el cancel a la terminal y el DELETE de la orden EN PARALELO. Cuando el
+     * DELETE llegaba primero, el servidor contestaba 409 («hay un cobro en curso»), el aviso se
+     * perdía en un toast sobre una pantalla que ya se había ido, y la orden quedaba huérfana —
+     * medido en producción el 11-sep-2026. Ahora la intención se guarda en DISCO antes de tocar la
+     * red y la reproduce [cancelacionDeCobro] hasta que consta el desenlace.
+     */
+    fun cancelarVenta() {
+        val estado = _state.value
+        // Una cancelación ya en curso no se relanza: un doble toque mandaría dos cancel y, peor,
+        // dos borrados.
+        if (estado is PaymentFlowState.CancelandoCobro || estado is PaymentFlowState.CancelacionPendiente) return
+
+        val esDeVales = areaTicketRepository.session.current() != null
+        val cobro = objetivoDeCancelacion(estado)
+        val orderId = createdOrderId
+        // La cuenta de una MESA o la orden de un split que ya existía no las creó este flujo:
+        // cancelar su cobro jamás puede borrarlas. Los vales tienen su propia sesión.
+        val puedeBorrarLaOrden = ordenCreadaPorEsteFlujo && orderId != null && !esDeVales
+
+        when {
+            cobro != null -> {
+                val intencion = com.avoqado.pos.payment.data.IntencionDeCancelarCobro(
+                    id = cobro.requestId,
+                    requestId = cobro.requestId,
+                    venueId = cobro.venueId,
+                    terminalId = cobro.terminalId,
+                    orderId = orderId ?: cobro.orderId,
+                    borrarOrden = puedeBorrarLaOrden,
+                    actorStaffId = selectedStaffId().takeIf { it.isNotBlank() },
+                    montoCents = currentBaseAmount() + currentTipCents,
+                    orderNumber = createdOrderNumber,
+                    creadaEn = System.currentTimeMillis(),
+                    fase = com.avoqado.pos.payment.data.FaseDeCancelacion.PEDIR_CANCEL.name,
+                )
+                if (!cancelacionDeCobro.registrar(intencion)) return avisarQueNoSeGuardo()
+                // Con la intención ya en disco: el cobro en vuelo NO puede concluir nada por su
+                // cuenta (un 409/504 después de esto no es «no se cobró»).
+                terminalPaymentService.marcarCancelacionPedida(cobro.requestId)
+                empezarACancelar(intencion.id)
             }
-            return
-        }
 
-        createdOrderId?.let { orderId ->
-            viewModelScope.launch {
-                // 🔴 Un cancel rechazado deja la orden ABIERTA en el server. Loguearlo y
-                // navegar afuera le hacía creer al cajero que había cancelado — y un cobro
-                // podía aterrizar sobre esa orden viva. El rechazo se VE.
-                orderRepository.cancelOrder(orderId).onFailure { e ->
-                    Log.e("PaymentFlow", "⚠️ Failed to cancel order $orderId (may be left OPEN): ${e.message}")
-                    _cancelFailure.value =
-                        "No se pudo cancelar la orden: ${e.message ?: "error desconocido"}. Sigue abierta — revísala en Órdenes."
-                }
+            estado is PaymentFlowState.Processing && orderId == null && isProcessingPayment -> {
+                // La orden se está creando: al volver, `confirmPayment` ve la generación cambiada,
+                // NO manda el cobro y registra la cancelación de esa orden recién nacida.
+                paymentGeneration++
+                isProcessingPayment = false
+                _state.value = PaymentFlowState.CancelandoCobro(currentBaseAmount() + currentTipCents)
+            }
+
+            puedeBorrarLaOrden -> {
+                val intencion = intencionSoloDeOrden(orderId!!)
+                if (!cancelacionDeCobro.registrar(intencion)) return avisarQueNoSeGuardo()
+                empezarACancelar(intencion.id)
+            }
+
+            else -> {
+                // Nada que cancelar en el servidor: se sale como siempre.
+                paymentGeneration++
+                isProcessingPayment = false
+                cancelarSesionDeValesSiAplica()
+                salirDelFlujo()
             }
         }
     }
 
+    /** Nombre histórico; hoy TODA cancelación es durable. */
+    fun cancel() = cancelarVenta()
+
     /**
-     * Cancelación desde una pantalla de dinero (error / cobro sin confirmar): ESPERA el
-     * resultado antes de dejar salir. Si el server rechaza, no se sale: se muestra el motivo.
+     * «Salir (queda pendiente)»: el cajero se va y NO se borra nada.
      *
-     * @param onCancelled se invoca sólo cuando la cancelación realmente quedó.
+     * La llave durable del cobro sigue armada, así que la próxima venta vuelve a preguntar por él;
+     * y si había una cancelación registrada, el coordinador la sigue reproduciendo solo.
      */
-    fun cancelAndExit(onCancelled: () -> Unit) {
-        val orderId = createdOrderId
-        if (orderId == null || areaTicketRepository.session.current() != null) {
-            cancel()
-            onCancelled()
+    fun salirDejandoPendiente() {
+        dejarDeObservarLaCancelacion()
+        // Un desenlace que llegue tarde ya no gobierna esta pantalla, pero SÍ la llave durable.
+        paymentGeneration++
+        isProcessingPayment = false
+        salirDelFlujo()
+    }
+
+    /** «Volver a consultar» desde «Cancelación pendiente»: sólo pregunta, nunca cobra ni borra. */
+    fun volverAConsultarCancelacion() {
+        val id = cancelacionObservada ?: return
+        (_state.value as? PaymentFlowState.CancelacionPendiente)?.let { _state.value = it.copy(checking = true) }
+        cancelacionDeCobro.procesarAhora(id)
+    }
+
+    /** El cobro que esta pantalla puede pedir cancelar, con el contexto para poder hacerlo. */
+    private data class CobroACancelar(
+        val requestId: String,
+        val terminalId: String?,
+        val venueId: String,
+        val orderId: String?,
+    )
+
+    private fun objetivoDeCancelacion(estado: PaymentFlowState): CobroACancelar? {
+        // 1) El cobro que sigue vivo en este aparato (POST o re-consulta).
+        if (estado is PaymentFlowState.SentToTerminal || estado is PaymentFlowState.Processing) {
+            terminalPaymentService.intentoEnVuelo()?.let { enVuelo ->
+                val ctx = terminalPaymentService.contextoDe(enVuelo.requestId)
+                return CobroACancelar(enVuelo.requestId, enVuelo.terminalId, enVuelo.venueId, ctx?.orderId)
+            }
+        }
+        // 2) Un cobro de ESTE flujo cuyo desenlace no consta, o el último intento que sí llegó a
+        //    crearse. Un cobro de una venta ANTERIOR no es de este flujo: no se cancela desde aquí.
+        val requestId = when {
+            estado is PaymentFlowState.Undetermined && estado.fromPreviousSale -> null
+            estado is PaymentFlowState.Undetermined -> undeterminedRequestId ?: terminalPaymentService.unresolvedRequestId
+            estado is PaymentFlowState.SentToTerminal -> terminalPaymentService.unresolvedRequestId
+            // Un rechazo de admisión correlacionado ya probó que ese cobro no se creó: no hay a
+            // quién preguntarle, y esperar a la terminal dejaría la orden abierta para siempre.
+            else -> ultimoIntento?.takeIf { !it.noSeCreo }?.requestId
+        } ?: return null
+        val ctx = terminalPaymentService.contextoDe(requestId)
+        val venueId = ctx?.venueId ?: secureStorage.venueId ?: return null
+        return CobroACancelar(requestId, ctx?.terminalId ?: selectedTerminalId, venueId, ctx?.orderId)
+    }
+
+    private fun intencionSoloDeOrden(orderId: String) = com.avoqado.pos.payment.data.IntencionDeCancelarCobro(
+        id = "orden:$orderId",
+        requestId = null,
+        venueId = secureStorage.venueId.orEmpty(),
+        terminalId = null,
+        orderId = orderId,
+        borrarOrden = true,
+        actorStaffId = selectedStaffId().takeIf { it.isNotBlank() },
+        montoCents = currentBaseAmount() + currentTipCents,
+        orderNumber = createdOrderNumber,
+        creadaEn = System.currentTimeMillis(),
+        fase = com.avoqado.pos.payment.data.FaseDeCancelacion.BORRAR_ORDEN.name,
+    )
+
+    /**
+     * La orden nació DESPUÉS de que el cajero canceló: no se cobra, se cancela.
+     *
+     * @param orderId `null` = la creación falló, así que no hay nada que cancelar: sólo se sale.
+     */
+    private fun cancelarLoCreadoTrasCancelar(orderId: String?) {
+        if (areaTicketRepository.session.current() != null) {
+            cancelarSesionDeValesSiAplica()
+            salirDelFlujo()
             return
         }
-        isProcessingPayment = false
+        if (orderId == null) {
+            salirDelFlujo()
+            return
+        }
+        val intencion = intencionSoloDeOrden(orderId)
+        if (!cancelacionDeCobro.registrar(intencion)) return avisarQueNoSeGuardo()
+        empezarACancelar(intencion.id)
+    }
+
+    private fun empezarACancelar(id: String) {
         paymentGeneration++
-        undeterminedRequestId = null
+        isProcessingPayment = false
         paymentIdempotencyKey = null
-        terminalPaymentService.cancelCurrentPayment()
+        _state.value = PaymentFlowState.CancelandoCobro(currentBaseAmount() + currentTipCents)
+        observarLaCancelacion(id)
+        cancelacionDeCobro.procesarAhora(id)
+    }
+
+    /**
+     * 🔴 Si la intención no quedó en disco NO sale una sola petición: una cancelación que sólo vive
+     * en RAM desaparece con la app y deja la orden abierta con la terminal quizá cobrando. El
+     * cajero lo ve y puede volver a intentarlo.
+     */
+    private fun avisarQueNoSeGuardo() {
+        _cancelFailure.value = com.avoqado.pos.payment.domain.CancelacionDeCobro.NO_SE_PUDO_GUARDAR
+        Log.e("PaymentFlow", "⚠️ No se pudo guardar la cancelación: no se envía nada")
+    }
+
+    private fun observarLaCancelacion(id: String) {
+        observadorDeCancelacion?.cancel()
+        cancelacionObservada = id
+        observadorDeCancelacion = viewModelScope.launch {
+            cancelacionDeCobro.estado(id).collect { estado -> alCambiarLaCancelacion(id, estado) }
+        }
+    }
+
+    private fun dejarDeObservarLaCancelacion() {
+        observadorDeCancelacion?.cancel()
+        observadorDeCancelacion = null
+        cancelacionObservada = null
+    }
+
+    private fun alCambiarLaCancelacion(id: String, estado: com.avoqado.pos.payment.data.EstadoDeCancelacion?) {
+        val actual = _state.value
+        // Sólo gobierna mientras la pantalla esté en la cancelación. Si el cobro en efectivo
+        // aterrizó y la venta quedó pagada, ese hecho manda sobre cualquier aviso posterior.
+        if (actual !is PaymentFlowState.CancelandoCobro && actual !is PaymentFlowState.CancelacionPendiente) return
+        val total = currentBaseAmount() + currentTipCents
+        when (estado) {
+            null -> Unit
+            is com.avoqado.pos.payment.data.EstadoDeCancelacion.EnCurso ->
+                if (actual is PaymentFlowState.CancelacionPendiente) _state.value = actual.copy(checking = true)
+            is com.avoqado.pos.payment.data.EstadoDeCancelacion.Pendiente ->
+                _state.value = PaymentFlowState.CancelacionPendiente(totalAmount = total, sinRed = estado.sinRed)
+            // Consta que no se cobró: el dinero ya está resuelto. Lo que quede de la orden lo
+            // termina el coordinador solo, y el cajero puede seguir vendiendo.
+            is com.avoqado.pos.payment.data.EstadoDeCancelacion.NoSeCobroOrdenPendiente -> terminarLaCancelacion()
+            is com.avoqado.pos.payment.data.EstadoDeCancelacion.Cerrada -> terminarLaCancelacion()
+            is com.avoqado.pos.payment.data.EstadoDeCancelacion.SeCobro -> aplicarElCobroQueSiOcurrio(id)
+        }
+    }
+
+    private fun terminarLaCancelacion() {
+        dejarDeObservarLaCancelacion()
+        cancelarSesionDeValesSiAplica()
+        salirDelFlujo()
+    }
+
+    /**
+     * La terminal SÍ cobró el cobro que se pidió cancelar: la venta queda pagada.
+     *
+     * Se resuelve por el camino de siempre (`resolveOutcome`), que es el que suelta la llave
+     * durable y trae el recibo; la pantalla lo DICE, porque el cajero creía cancelada esta venta.
+     */
+    private fun aplicarElCobroQueSiOcurrio(id: String) {
+        val requestId = cancelacionObservada?.takeIf { it == id } ?: id
+        dejarDeObservarLaCancelacion()
+        val total = currentBaseAmount() + currentTipCents
         viewModelScope.launch {
-            orderRepository.cancelOrder(orderId).fold(
-                onSuccess = { onCancelled() },
-                onFailure = { e ->
-                    Log.e("PaymentFlow", "⚠️ Failed to cancel order $orderId (may be left OPEN): ${e.message}")
-                    _cancelFailure.value =
-                        "No se pudo cancelar la orden: ${e.message ?: "error desconocido"}. Sigue abierta — revísala en Órdenes."
-                },
-            )
+            when (val outcome = terminalPaymentService.resolveOutcome(requestId)) {
+                is TerminalPaymentResult.Success -> {
+                    cobroAplicadoTrasCancelar = requestId
+                    cancelacionDeCobro.cobroAplicado(id)
+                    applyCardCharged(outcome.copy(requestId = requestId), total, trasCancelar = true)
+                }
+                is TerminalPaymentResult.Undetermined -> {
+                    // El cobro consta en el coordinador pero la consulta no pudo confirmarlo:
+                    // pantalla honesta, con la llave armada y su "Volver a consultar".
+                    undeterminedRequestId = requestId
+                    _state.value = PaymentFlowState.Undetermined(totalAmount = total, message = outcome.message)
+                }
+                is TerminalPaymentResult.Error -> terminarLaCancelacion()
+            }
+        }
+    }
+
+    private fun cancelarSesionDeValesSiAplica() {
+        if (areaTicketRepository.session.current() == null) return
+        viewModelScope.launch {
+            runCatching { areaTicketRepository.cancel() }
+                .onFailure { Log.e("PaymentFlow", "⚠️ No se pudo liberar la sesión de vales: ${it.message}") }
+        }
+    }
+
+    private fun salirDelFlujo() {
+        _state.value = PaymentFlowState.Loading
+        _debeSalir.value = true
+    }
+
+    private fun recordarIntentoDeCobro(resultado: TerminalPaymentResult) {
+        ultimoIntento = when (resultado) {
+            is TerminalPaymentResult.Success -> UltimoIntentoDeCobro(resultado.requestId, noSeCreo = false)
+            is TerminalPaymentResult.Undetermined -> UltimoIntentoDeCobro(resultado.requestId, noSeCreo = false)
+            is TerminalPaymentResult.Error -> UltimoIntentoDeCobro(resultado.requestId, noSeCreo = resultado.noSeCreo)
         }
     }
 
@@ -2313,7 +2639,19 @@ class PaymentFlowViewModel @Inject constructor(
             },
             venueName = secureStorage.venueName ?: "Avoqado",
             customerName = _attachedCustomerName.value,
-            cashTendered = if (resolvedMethod == PaymentMethod.CASH && manualMethod == null) resolvedChange?.let { receiptTotal + it } else null,
+            // 🔴 EL BILLETE REAL QUE ENTREGÓ EL CLIENTE, no una resta al revés.
+            //
+            // Esto deducía el recibido como `total + cambio`, así que con el cambio
+            // en 0 imprimía el TOTAL como si fuera lo que el cliente puso sobre el
+            // mostrador — el defecto que se vio en el ticket de Testarudo. El dato
+            // verdadero ya lo tenía la app desde que el cajero tocó el monto
+            // (`processCashPayment`), sólo que nadie lo leía al armar el recibo.
+            //
+            // Invariante que hace que el ticket cuadre consigo mismo:
+            //     Recibido − Cambio = TOTAL
+            // porque `finalChange` se calcula como `recibido − total cobrado`, y ese
+            // mismo total cobrado es el que viaja en `Success.totalAmount`.
+            cashTendered = if (resolvedMethod == PaymentMethod.CASH && manualMethod == null) lastCashTenderedCents else null,
             changeAmount = resolvedChange,
             transactionId = lastPaymentId,
             receiptUrl = receiptUrl,
@@ -2698,9 +3036,14 @@ class PaymentFlowViewModel @Inject constructor(
         /** Sobrevive a la muerte del proceso junto con el resto del SavedStateHandle. */
         const val KEY_UNDETERMINED_REQUEST = "undeterminedChargeRequestId"
 
-        /** Copy para un cobro sin confirmar heredado de OTRA venta. */
-        const val PREVIOUS_CHARGE_MESSAGE =
-            "Quedó un cobro sin confirmar de una venta anterior. " +
-                "Estamos confirmando el cobro. No vuelvas a pasar la tarjeta."
+        /** Encabezado del aviso de un cobro sin confirmar heredado de OTRA venta. */
+        const val PREVIOUS_CHARGE_PREFIX = "Quedó un cobro sin confirmar de una venta anterior."
+
+        /**
+         * Copy completo mientras no hay más desenlace que la duda. Se COMPONE del prefijo y de
+         * la instrucción estándar: antes era una copia literal y, al anteponerse a un desenlace
+         * que ya traía esa misma instrucción, el cajero la leía dos veces seguidas.
+         */
+        const val PREVIOUS_CHARGE_MESSAGE = "$PREVIOUS_CHARGE_PREFIX ${CardChargeDecision.UNDETERMINED_MESSAGE}"
     }
 }

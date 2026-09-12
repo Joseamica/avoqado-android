@@ -333,9 +333,11 @@ fun TablesScreen(
             onDismiss = { showBulkAnular = false },
             onConfirm = { reason ->
                 showBulkAnular = false
-                viewModel.bulkAnular(selectedOccupied, reason) { ok, fail ->
+                viewModel.bulkAnular(selectedOccupied, reason) { ok, fail, motivo ->
                     val msg = "$ok anuladas" + (if (fail > 0) ", $fail fallaron" else "")
-                    if (fail > 0) viewModel.showError(msg) else viewModel.showMessage(msg)
+                    // El motivo de la primera que falló va como PISTA: con fila enfrente lo que
+                    // hace falta es el siguiente movimiento, no sólo el conteo.
+                    if (fail > 0) viewModel.showError(msg, motivo) else viewModel.showMessage(msg)
                 }
                 exitSelection()
             },

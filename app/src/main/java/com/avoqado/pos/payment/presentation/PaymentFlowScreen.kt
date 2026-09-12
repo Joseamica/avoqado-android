@@ -205,15 +205,28 @@ fun PaymentFlowScreen(
                 TerminalSelectionScreen(
                     terminals = terminals,
                     onTerminalSelected = { viewModel.selectTerminalAndPay(it) },
-                    onCancel = onCancel,
+                    // Tras un intento fallido esta pantalla vuelve con la ORDEN ya creada: salir
+                    // sin más la dejaba abierta para siempre. Sin nada que cancelar, sale igual.
+                    onCancel = { viewModel.cancelarVenta() },
                 )
             }
             is PaymentFlowState.Processing, is PaymentFlowState.SentToTerminal -> {
                 PaymentProcessingView(
-                    onCancel = {
-                        viewModel.cancel()
-                        onCancel()
-                    },
+                    // 🔴 Ya NO se cierra la pantalla aquí: la cancelación tiene que esperar el
+                    // desenlace del cobro antes de cancelar la venta. El flujo se cierra cuando el
+                    // coordinador dice que terminó (ver `debeSalir`).
+                    onCancel = { viewModel.cancelarVenta() },
+                )
+            }
+            is PaymentFlowState.CancelandoCobro -> {
+                CancelandoCobroView(onSalir = { viewModel.salirDejandoPendiente() })
+            }
+            is PaymentFlowState.CancelacionPendiente -> {
+                CancelacionPendienteView(
+                    sinRed = currentState.sinRed,
+                    isChecking = currentState.checking,
+                    onVolverAConsultar = { viewModel.volverAConsultarCancelacion() },
+                    onSalir = { viewModel.salirDejandoPendiente() },
                 )
             }
             is PaymentFlowState.Success -> {
@@ -275,11 +288,23 @@ fun PaymentFlowScreen(
                         },
                     )
 
+                    // 🔴 El cajero pidió CANCELAR y la terminal había cobrado igual: la venta
+                    // queda pagada. Ámbar y con acuse, no palomita verde — no es una celebración,
+                    // es dinero cobrado sobre una venta que él creía cancelada.
+                    var cobroTrasCancelarVisto by rememberSaveable(splashKey) { mutableStateOf(false) }
+                    if (!cobroTrasCancelarVisto && currentState.cobroTrasCancelar) {
+                        AvoqadoWarningToast(
+                            message = com.avoqado.pos.payment.domain.CancelacionDeCobro.SE_COBRO_AL_FINAL,
+                            onDismiss = { cobroTrasCancelarVisto = true },
+                        )
+                    }
+
                     // Aviso de inventario post-cobro (Square-parity, mockup ②): el cobro
                     // YA quedó registrado; el server avisa que el stock quedó en negativo
                     // o no se pudo descontar. Ámbar, nunca bloquea ni sugiere reintentar.
                     var inventoryWarningShown by rememberSaveable(splashKey) { mutableStateOf(false) }
-                    if (!inventoryWarningShown) {
+                    val cobroTrasCancelarAtendido = !currentState.cobroTrasCancelar || cobroTrasCancelarVisto
+                    if (!inventoryWarningShown && cobroTrasCancelarAtendido) {
                         currentState.inventoryWarningMessage?.let { aviso ->
                             AvoqadoWarningToast(
                                 message = "Revisa tu inventario",
@@ -313,9 +338,9 @@ fun PaymentFlowScreen(
                 PaymentErrorView(
                     message = currentState.message,
                     onRetry = { viewModel.retry() },
-                    // Cancelar aquí ESPERA al server: si rechaza (409, la orden ya está
-                    // pagada), no se sale — se muestra el motivo.
-                    onCancel = { viewModel.cancelAndExit(onCancel) },
+                    // Cancelar aquí NO borra la orden a ciegas: primero se resuelve el cobro (si
+                    // llegó a existir) y sólo cuando conste que no se cobró se cancela la venta.
+                    onCancel = { viewModel.cancelarVenta() },
                 )
             }
             // 🔴 Ni éxito ni fracaso: no se sabe si la tarjeta se cobró. Pantalla propia,
@@ -327,9 +352,22 @@ fun PaymentFlowScreen(
                     fromPreviousSale = currentState.fromPreviousSale,
                     onRecheck = { viewModel.recheckCardCharge() },
                     onChargeAgain = { viewModel.chargeAgainDespiteUndetermined() },
-                    onCancel = { viewModel.cancelAndExit(onCancel) },
+                    onSalir = { viewModel.salirDejandoPendiente() },
+                    // El cobro sin confirmar de OTRA venta no se cancela desde aquí: su orden no
+                    // la creó este flujo.
+                    onCancelarVenta = { viewModel.cancelarVenta() }.takeIf { !currentState.fromPreviousSale },
                 )
             }
+        }
+    }
+
+    // El flujo terminó por una cancelación (se canceló la venta, o el cajero salió dejándola
+    // pendiente): cerrar es decisión del ViewModel, que es quien sabe si el cobro ya se resolvió.
+    val debeSalir by viewModel.debeSalir.collectAsState()
+    LaunchedEffect(debeSalir) {
+        if (debeSalir) {
+            viewModel.consumirSalida()
+            onCancel()
         }
     }
 

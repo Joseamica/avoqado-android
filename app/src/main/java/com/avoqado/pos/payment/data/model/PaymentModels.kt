@@ -51,6 +51,13 @@ sealed class PaymentFlowState {
          * cobrar — el cliente se reasigna desde la misma pantalla de recibo.
          */
         val customerLinkWarning: String? = null,
+        /**
+         * 🔴 El cajero pidió CANCELAR esta venta y la terminal la había cobrado igual.
+         *
+         * No es una celebración: es dinero cobrado sobre una venta que se creía cancelada, y el
+         * cajero tiene que enterarse antes de cobrarla otra vez por otro medio.
+         */
+        val cobroTrasCancelar: Boolean = false,
     ) : PaymentFlowState()
     data class Error(val message: String, val source: PaymentErrorSource) : PaymentFlowState()
 
@@ -74,6 +81,26 @@ sealed class PaymentFlowState {
         val message: String,
         val checking: Boolean = false,
         val fromPreviousSale: Boolean = false,
+    ) : PaymentFlowState()
+
+    /**
+     * Se está cancelando el cobro: la petición ya está guardada en el aparato y va camino a la
+     * terminal. Ni éxito ni error — el cajero espera un desenlace, no un veredicto.
+     */
+    data class CancelandoCobro(val totalAmount: Int) : PaymentFlowState()
+
+    /**
+     * 🔴 La cancelación quedó PENDIENTE: la terminal todavía no confirma que el cobro se detuvo.
+     *
+     * Ámbar, nunca rojo: no falló nada: falta que conste. La venta se cancela sola en cuanto el
+     * desenlace llegue, y el cajero puede salir — la intención vive en disco y sigue reproduciéndose.
+     *
+     * @param sinRed el último intento murió sin respuesta del servidor.
+     */
+    data class CancelacionPendiente(
+        val totalAmount: Int,
+        val sinRed: Boolean = false,
+        val checking: Boolean = false,
     ) : PaymentFlowState()
 }
 

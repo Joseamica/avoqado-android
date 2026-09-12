@@ -212,6 +212,10 @@ class QuarantineViewModel @Inject constructor(
 
     /** Guía de resolución según la razón del rechazo. */
     fun resolutionHint(errorCode: String?, type: String): String = when (errorCode) {
+        // 🔴 Esta cuenta NO se puede anular ni fusionar hasta que su cobro con tarjeta termine:
+        // lo que hace falta es resolver el cobro, no volver a intentar la operación.
+        com.avoqado.pos.payment.domain.CancelacionDeCobro.ORDER_CANCEL_BLOCKED_BY_TERMINAL_CHARGE ->
+            com.avoqado.pos.payment.domain.CancelacionDeCobro.COBRO_EN_CURSO_BLOQUEA_CUENTA
         "TABLE_OWNED_BY_OTHER" -> "Otro mesero ya trabajaba esta mesa. Revisa con él y vuelve a hacer la operación si aplica."
         "FEATURE_LOCKED" -> "El plan del local no tiene esta función activa. Contacta a administración."
         "ORDER_NOT_FOUND" -> "La orden ya no existe (pudo cancelarse). No requiere acción."

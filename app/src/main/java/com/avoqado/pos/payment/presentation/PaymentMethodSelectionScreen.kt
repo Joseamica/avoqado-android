@@ -53,6 +53,7 @@ import com.avoqado.pos.payment.data.model.PaymentContext
 import com.avoqado.pos.payment.data.model.PaymentItem
 import com.avoqado.pos.payment.data.model.PaymentMethod
 import kotlin.math.ceil
+import com.avoqado.pos.core.util.aCentavos
 
 /**
  * Combined payment method selection screen (matching iOS).
@@ -897,7 +898,7 @@ private fun calculateCashSuggestions(totalCents: Int): List<Int> {
         totalPesos < 500 -> ceil(totalPesos / 50.0) * 50.0
         else -> ceil(totalPesos / 100.0) * 100.0
     }
-    val roundedCents = (rounded * 100).toInt()
+    val roundedCents = rounded.aCentavos()
     if (roundedCents > totalCents) {
         suggestions.add(roundedCents)
     }
@@ -906,7 +907,7 @@ private fun calculateCashSuggestions(totalCents: Int): List<Int> {
     val commonBills = listOf(20, 50, 100, 200, 500, 1000)
     for (bill in commonBills) {
         val multiplier = ceil(totalPesos / bill.toDouble())
-        val billAmount = (multiplier * bill * 100).toInt()
+        val billAmount = (multiplier * bill).aCentavos()
         if (billAmount >= totalCents && !suggestions.contains(billAmount)) {
             suggestions.add(billAmount)
         }
