@@ -680,7 +680,9 @@ class ESCPOSPrinter(
             printLine()
             printDivider()
             setAlignment(TextAlignment.CENTER)
-            printLine("Escanea para tu recibo y factura")
+            // La leyenda sólo promete factura cuando el ticket SE PUEDE autofacturar:
+            // mandar a facturar a quien no puede es enviarlo a un botón que no existe.
+            printLine(leyendaDelQr(receipt.autofacturaAvailable))
             printLine()
             printQr(url)
             printLine()

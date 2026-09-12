@@ -15,7 +15,12 @@ import com.avoqado.pos.transactions.data.RefundItem
 import com.avoqado.pos.transactions.data.RefundRepository
 import com.avoqado.pos.transactions.data.TransactionRepository
 import com.avoqado.pos.transactions.data.model.AmountOperator
+import com.avoqado.pos.transactions.data.model.ResultadoDeReimpresion
+import com.avoqado.pos.transactions.data.model.ResultadoLigaRecibo
+import com.avoqado.pos.transactions.data.model.TonoDelAviso
 import com.avoqado.pos.transactions.data.model.Transaction
+import com.avoqado.pos.transactions.data.model.avisoDeReimpresion
+import com.avoqado.pos.transactions.data.model.tonoDeReimpresion
 import com.avoqado.pos.transactions.data.model.TransactionActiveFilter
 import com.avoqado.pos.transactions.data.model.TransactionFilters
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -28,6 +33,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import javax.inject.Inject
+import com.avoqado.pos.core.util.aCentavos
 
 // MARK: - Refund UI State
 
@@ -100,8 +106,9 @@ class TransactionsViewModel @Inject constructor(
     private val _isPrintingReceipt = MutableStateFlow(false)
     val isPrintingReceipt: StateFlow<Boolean> = _isPrintingReceipt.asStateFlow()
 
-    private val _printReceiptResult = MutableStateFlow<String?>(null)
-    val printReceiptResult: StateFlow<String?> = _printReceiptResult.asStateFlow()
+    // Mensaje + tono: la pantalla pinta por el TONO, nunca comparando el texto.
+    private val _printReceiptResult = MutableStateFlow<ResultadoDeReimpresion?>(null)
+    val printReceiptResult: StateFlow<ResultadoDeReimpresion?> = _printReceiptResult.asStateFlow()
 
     // Refund
     private val _showRefundSheet = MutableStateFlow(false)
@@ -318,15 +325,37 @@ class TransactionsViewModel @Inject constructor(
             _isPrintingReceipt.value = true
             _printReceiptResult.value = null
             try {
-                _printReceiptResult.value =
-                    when (val outcome = printerService.manualPrintReceipt(transaction.toReceiptData(venueName))) {
-                        is PrinterService.PrintOutcome.Printed -> "Recibo impreso"
-                        is PrinterService.PrintOutcome.OutOfPaper -> "La impresora no tiene papel"
-                        is PrinterService.PrintOutcome.Failed -> "No se pudo imprimir: ${outcome.reason}"
-                        is PrinterService.PrintOutcome.NoPrinter -> "No hay impresora de recibos configurada"
-                    }
+                // 🔴 La liga del recibo NO viaja en el historial: se pide aquí para poder dibujar
+                // el QR de facturación en la reimpresión. Tiene tope de 5 s y nunca lanza — si no
+                // se puede traer, el ticket sale igual, sólo que sin QR, y el aviso lo dice.
+                val liga = repository.fetchReceiptLink(transaction.id)
+                val ligaObtenida = (liga as? ResultadoLigaRecibo.Obtenida)?.liga
+
+                val outcome = printerService.manualPrintReceipt(
+                    transaction.toReceiptData(
+                        venueName = venueName,
+                        receiptUrl = ligaObtenida?.receiptUrl,
+                        autofacturaAvailable = ligaObtenida?.autofacturaAvailable ?: false,
+                    ),
+                )
+
+                val mensaje = when (outcome) {
+                    is PrinterService.PrintOutcome.Printed -> "Recibo impreso"
+                    is PrinterService.PrintOutcome.OutOfPaper -> "La impresora no tiene papel"
+                    is PrinterService.PrintOutcome.Failed -> "No se pudo imprimir: ${outcome.reason}"
+                    is PrinterService.PrintOutcome.NoPrinter -> "No hay impresora de recibos configurada"
+                }
+
+                val imprimio = outcome is PrinterService.PrintOutcome.Printed
+                _printReceiptResult.value = ResultadoDeReimpresion(
+                    mensaje = avisoDeReimpresion(mensajeDeImpresion = mensaje, imprimio = imprimio, liga = liga),
+                    tono = tonoDeReimpresion(imprimio = imprimio, liga = liga),
+                )
             } catch (e: Exception) {
-                _printReceiptResult.value = "Error al imprimir: ${e.message ?: "desconocido"}"
+                _printReceiptResult.value = ResultadoDeReimpresion(
+                    mensaje = "Error al imprimir: ${e.message ?: "desconocido"}",
+                    tono = TonoDelAviso.ERROR,
+                )
             } finally {
                 _isPrintingReceipt.value = false
             }
@@ -370,7 +399,7 @@ class TransactionsViewModel @Inject constructor(
             return
         }
 
-        val amountCents = (amountDouble * 100).toInt()
+        val amountCents = amountDouble.aCentavos()
 
         _refundState.value = RefundUiState.Loading
         viewModelScope.launch {
@@ -478,7 +507,11 @@ class TransactionsViewModel @Inject constructor(
 
 /** Maps a past sale to the printable receipt shape used by PrinterService.
  *  Amounts arrive in pesos (Double) and ReceiptData wants cents. */
-private fun Transaction.toReceiptData(venueName: String): ReceiptData {
+private fun Transaction.toReceiptData(
+    venueName: String,
+    receiptUrl: String? = null,
+    autofacturaAvailable: Boolean = false,
+): ReceiptData {
     fun cents(value: Double): Int = kotlin.math.round(value * 100).toInt()
 
     val receiptItems = if (items.isNotEmpty()) {
@@ -488,7 +521,7 @@ private fun Transaction.toReceiptData(venueName: String): ReceiptData {
                 quantity = item.quantity,
                 unitPrice = cents(item.unitPrice),
                 totalPrice = cents(item.amount),
-                modifiers = item.modifiers.map { it.name }.filter { it.isNotEmpty() }.ifEmpty { null },
+                modifiers = item.modifiers.mapNotNull { it.name }.filter { it.isNotEmpty() }.ifEmpty { null },
             )
         }
     } else {
@@ -511,5 +544,9 @@ private fun Transaction.toReceiptData(venueName: String): ReceiptData {
         // Print the SALE's timestamp, not "now" — this is a reprint of a past sale.
         date = parsedDateTime?.toInstant()?.let { java.util.Date.from(it) } ?: java.util.Date(),
         transactionId = referenceNumber ?: id,
+        // 🔴 El QR de facturación de la REIMPRESIÓN. Sin esto el ticket reimpreso sale sin QR,
+        // que es el defecto que reportó el cliente: el mismo ticket, impreso dos veces, distinto.
+        receiptUrl = receiptUrl,
+        autofacturaAvailable = autofacturaAvailable,
     )
 }

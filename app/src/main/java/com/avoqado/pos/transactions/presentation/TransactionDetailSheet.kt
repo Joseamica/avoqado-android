@@ -28,6 +28,8 @@ import com.avoqado.pos.designsystem.components.AvoqadoBrandLoader
 import com.avoqado.pos.designsystem.components.AvoqadoPhoneInput
 import com.avoqado.pos.designsystem.components.AvoqadoPillTextField
 import com.avoqado.pos.designsystem.components.AvoqadoSuccessToast
+import com.avoqado.pos.designsystem.theme.Warning
+import com.avoqado.pos.transactions.data.model.TonoDelAviso
 import com.avoqado.pos.designsystem.components.CircleBackButton
 import com.avoqado.pos.designsystem.components.Countries
 import com.avoqado.pos.designsystem.components.Country
@@ -345,11 +347,16 @@ private fun LoadedDetailView(
             if (isPrintingReceipt || printReceiptResult != null) {
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    text = if (isPrintingReceipt) "Imprimiendo recibo…" else printReceiptResult.orEmpty(),
+                    text = if (isPrintingReceipt) "Imprimiendo recibo…" else printReceiptResult?.mensaje.orEmpty(),
                     fontSize = metrics.smallSize,
+                    // 🔴 El color sale del TONO, nunca comparando el texto: comparar contra
+                    // "Recibo impreso" pintaba de rojo un ticket que SÍ salió cuando el aviso
+                    // añadía "— sin QR de facturación (sin conexión)" (QA Sunmi, 12-sep-2026).
+                    // Sin red es un estado normal: ámbar, nunca rojo.
                     color = when {
                         isPrintingReceipt -> MaterialTheme.colorScheme.onSurfaceVariant
-                        printReceiptResult == "Recibo impreso" -> Color(0xFF10B981)
+                        printReceiptResult?.tono == TonoDelAviso.EXITO -> Color(0xFF10B981)
+                        printReceiptResult?.tono == TonoDelAviso.AVISO -> Warning
                         else -> MaterialTheme.colorScheme.error
                     },
                     textAlign = TextAlign.Center,
@@ -740,7 +747,7 @@ private fun ItemsSection(transaction: Transaction) {
                     }
                     if (item.modifiers.isNotEmpty()) {
                         Text(
-                            text = item.modifiers.joinToString(", ") { it.name },
+                            text = item.modifiers.mapNotNull { it.name }.filter { it.isNotBlank() }.joinToString(", "),
                             fontSize = metrics.smallSize,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )

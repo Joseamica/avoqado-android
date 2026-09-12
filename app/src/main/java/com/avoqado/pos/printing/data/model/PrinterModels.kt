@@ -283,6 +283,13 @@ data class ReceiptData(
     /** URL del recibo digital para el QR (escanear → recibo, calificar, facturar). */
     val receiptUrl: String? = null,
     /**
+     * Si este ticket se puede autofacturar. Sólo decide la LEYENDA bajo el QR
+     * («…y factura» vs sólo el recibo): el QR se imprime igual en ambos casos.
+     * Prometer factura donde el negocio no la tiene prendida manda al cliente a
+     * un botón que no existe.
+     */
+    val autofacturaAvailable: Boolean = false,
+    /**
      * Código opaco del comprobante pagado que cada área escanea para entregar.
      * Sólo existe en ventas materializadas desde vales; los recibos normales quedan iguales.
      */
