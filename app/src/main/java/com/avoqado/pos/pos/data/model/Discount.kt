@@ -3,6 +3,8 @@ import com.avoqado.pos.core.util.formatMoney
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import com.avoqado.pos.core.util.aCentavos
+import kotlin.math.roundToInt
 
 enum class DiscountScope {
     ORDER,    // Applies to entire order subtotal
@@ -92,8 +94,10 @@ data class Discount(
 
     fun calculateDiscount(subtotalCents: Int): Int {
         return when (discountType) {
-            DiscountType.PERCENTAGE -> (subtotalCents * value / 100.0).toInt()
-            DiscountType.FIXED -> (value * 100).toInt().coerceAtMost(subtotalCents)
+            // Redondean las dos: truncar le daba al cliente un centavo MENOS de
+            // descuento del que el negocio configuró.
+            DiscountType.PERCENTAGE -> (subtotalCents * value / 100.0).roundToInt()
+            DiscountType.FIXED -> value.aCentavos().coerceAtMost(subtotalCents)
         }
     }
 }

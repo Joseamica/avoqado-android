@@ -345,15 +345,16 @@ class UpsellResolverTest {
     // tronido es el recordatorio de arreglarlo en avoqado-android Y avoqado-ios en
     // el MISMO cambio (regla de paridad del CLAUDE.md).
     @Test
-    fun `P1 ResolvedModifier priceInCents TRUNCA en vez de redondear — el server difiere en centavos feos`() {
-        // El peor caso medido: $8.20 cae DOS centésimas por debajo de lo que
-        // redondea el server (819¢ vs 820¢).
-        assertEquals(819, ResolvedModifier("g", "m", "Feo", 8.20).priceInCents)
-
-        // Resto de la tabla medida — el server redondea distinto en los cuatro casos:
-        assertEquals(434, ResolvedModifier("g", "m", "Feo", 4.35).priceInCents) // server: 435
-        assertEquals(114, ResolvedModifier("g", "m", "Feo", 1.15).priceInCents) // server: 115
-        assertEquals(28, ResolvedModifier("g", "m", "Feo", 0.29).priceInCents) // server: 29
+    fun `P1 ResolvedModifier priceInCents coincide con el server en los centavos feos`() {
+        // 🔴 Esta prueba FIJABA el defecto en vez de arreglarlo: afirmaba 819, 434, 114 y 28
+        // y su propio comentario decía «el server redondea distinto en los cuatro casos».
+        // Era correcta cuando se escribió —documentaba una divergencia medida— y dejó de
+        // serlo el 2026-09-11, cuando `Double.aCentavos()` puso al cliente a redondear como
+        // el servidor, el dashboard web e iOS. Los valores de abajo son los del SERVIDOR.
+        assertEquals(820, ResolvedModifier("g", "m", "Feo", 8.20).priceInCents)
+        assertEquals(435, ResolvedModifier("g", "m", "Feo", 4.35).priceInCents)
+        assertEquals(115, ResolvedModifier("g", "m", "Feo", 1.15).priceInCents)
+        assertEquals(29, ResolvedModifier("g", "m", "Feo", 0.29).priceInCents)
     }
 
     // ── modificadores obligatorios YA resueltos (spec 2026-08-16, B3) ───────────

@@ -4,6 +4,7 @@ import com.avoqado.pos.core.util.formatMoney
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonElement
+import com.avoqado.pos.core.util.aCentavos
 
 @Serializable
 data class Product(
@@ -66,7 +67,7 @@ data class Product(
     /** Insumos con los que ya no alcanza NI para una porción. */
     val insufficientIngredients: List<IngredientShortage>? = null,
 ) {
-    val priceInCents: Int get() = (priceValue * 100).toInt()
+    val priceInCents: Int get() = priceValue.aCentavos()
 
     /**
      * Agotado SOLO cuando el venue rastrea inventario de ESTE producto y el
@@ -169,7 +170,7 @@ data class Modifier(
     val isDefault: Boolean = false,
     val sortOrder: Int? = null,
 ) {
-    val priceInCents: Int get() = (price * 100).toInt()
+    val priceInCents: Int get() = price.aCentavos()
 }
 
 data class SelectedModifier(

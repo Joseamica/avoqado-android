@@ -1,6 +1,7 @@
 package com.avoqado.pos.pos.data.model
 
 import kotlinx.serialization.Serializable
+import com.avoqado.pos.core.util.aCentavos
 
 /**
  * Upsell "¿Algo más?" — la tabla de reglas que el POS cachea y resuelve LOCALMENTE.
@@ -81,7 +82,7 @@ data class ResolvedModifier(
     /** En PESOS, no centavos — igual que el resto de este DTO y que `Modifier.price`. */
     val price: Double,
 ) {
-    val priceInCents: Int get() = (price * 100).toInt()
+    val priceInCents: Int get() = price.aCentavos()
 }
 
 /** Las tres perillas por venue. */
