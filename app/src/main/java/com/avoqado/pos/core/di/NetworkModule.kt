@@ -34,6 +34,20 @@ object NetworkModule {
         ignoreUnknownKeys = true
         isLenient = true
         encodeDefaults = true
+        // 🔴 `explicitNulls` SE QUEDA EN true AQUÍ, Y ES UNA DECISIÓN, NO UN DESCUIDO.
+        //
+        // Este `Json` es el del converter compartido de Retrofit: arma los 36 `@Body` de
+        // `ApiService`. El 2026-09-12 se probó ponerle `explicitNulls = false` —el arreglo
+        // que sí corresponde al reembolso, ver `RefundRepository.jsonReembolsos`— y una
+        // auditoría adversarial (Codex gpt-6-astra, xhigh) demostró que ROMPE una señal viva:
+        // el servidor usa `PrintJob.error: null` como «borra el error viejo»
+        // (`print.mobile.service.ts:75`, con ese comentario textual) y `ReporteDeComandas`
+        // lo manda al recuperarse una comanda. Omitir la llave dejaba el fallo pegado y una
+        // comanda que SÍ salió seguía figurando como fallida.
+        //
+        // O sea: en este carril `null` y «llave ausente» NO son lo mismo, así que el arreglo
+        // va por cuerpo —el `Json` propio del reembolso— y no de golpe. Lo fija
+        // `NetworkJsonNullsTest`, que exige que el nulo siga viajando.
     }
 
     @Provides

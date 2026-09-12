@@ -6,6 +6,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -50,6 +51,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
@@ -64,6 +66,8 @@ import com.avoqado.pos.transactions.data.AssociatedRefundItem
 import com.avoqado.pos.transactions.data.RefundApiException
 import com.avoqado.pos.transactions.data.RefundRepository
 import com.avoqado.pos.transactions.data.model.RefundAmountCalculator
+import com.avoqado.pos.transactions.data.model.centavosDelImporte
+import com.avoqado.pos.transactions.data.model.tipRefundCentsParaEnvio
 import com.avoqado.pos.transactions.data.model.Transaction
 import com.avoqado.pos.transactions.data.model.TransactionItem
 import kotlinx.coroutines.launch
@@ -221,16 +225,61 @@ fun IssueRefundSheet(
         containerColor = MaterialTheme.colorScheme.surface,
     ) {
         com.avoqado.pos.designsystem.components.ImmersiveWindow()
+        val bandaScroll = rememberScrollState()
+        val pieScroll = rememberScrollState()
         // Three-band layout so footer (amount summary + Reembolsar) stays
         // visible on small tablets (≈9"): fixed header + scrollable middle
         // (weight=1f) + fixed footer. Also capped width for landscape.
+        //
+        // 🔴 EL `BoxWithConstraints` NO ES DECORATIVO: es lo ÚNICO que sabe cuánto alto
+        // queda DE VERDAD, porque lleva el `imePadding` encima y por tanto su `maxHeight`
+        // ya viene con el teclado descontado. Sin ese dato la hoja no puede reaccionar al
+        // teclado, y lo que pasaba es esto (medido en aparato el 2026-09-12, forzando
+        // 360×640 dp en el OrderPAD 3): al tocar el campo de importe, el selector de
+        // motivo, el resumen, la casilla «Incluir propina» y **los botones Cancelar y
+        // Reembolsar** quedaban debajo del teclado, y como el pie NO se desliza, no había
+        // forma de alcanzarlos sin cerrar el teclado — sin una sola señal de que existieran.
+        BoxWithConstraints(
+            modifier = Modifier
+                .fillMaxWidth()
+                // El teclado no tapa esta hoja: Material3 le fija ADJUST_NOTHING
+                // a su ventana, asi que el ajuste va en el contenido.
+                .imePadding(),
+        ) {
+        // El umbral sale de MEDIR la hoja en el aparato (OrderPAD 3 forzado, 2026-09-12),
+        // no de una corazonada:
+        //
+        //   encabezado + pestañas .................... 160 dp
+        //   pie (importe, motivo, resumen, botones) ... 365 dp   → 525 dp
+        //   + la casilla «Incluir propina» ............  64 dp   → 589 dp con propina
+        //
+        // Alto disponible con el teclado abierto: ~330 dp en una pantalla de 640 dp (el
+        // perfil del PAX A910S y el de un celular chico) y ~600 dp en un celular moderno
+        // de 891 dp. O sea: en el chico NO cabe por mucho, y en el moderno cabe por 11 dp
+        // cuando el cobro trae propina — cualquier ajuste de fuente por accesibilidad lo
+        // tira. Por eso el corte va en 640 y no en 560: cubrir sólo el caso extremo dejaba
+        // el caso común al filo.
+        //
+        // Se mide por ALTO DISPONIBLE y no por «¿hay teclado?» porque una pantalla corta
+        // en horizontal aprieta igual sin teclado ninguno. Y cuando NO aprieta el pie no
+        // lleva scroll: la hoja queda exactamente como estaba.
+        //
+        // 🔴 SÓLO EN LA PESTAÑA DE IMPORTE, y esto no es un detalle: la primera versión
+        // miraba únicamente el alto y una auditoría adversarial (Codex gpt-6-astra, xhigh)
+        // demostró que rompía el reembolso por ARTÍCULOS. En la banda no vive sólo el aviso
+        // —viven `ItemsBody` y el botón «Abrir en la terminal»—, así que ocultarla en esa
+        // pestaña dejaba al cajero con «Selecciona al menos un artículo» y ni un artículo que
+        // tocar, sin forma de recuperarlos. Bastaban 600 dp de alto, con el teclado CERRADO.
+        //
+        // En la pestaña de artículos el pie es corto (motivo, resumen y botones: ~200 dp), así
+        // que con el alto de cualquier aparato real cabe sin comprimir nada. La banda sólo
+        // cede su sitio donde es prescindible: en importe, donde su único contenido es un
+        // aviso que el pie ya repite palabra por palabra.
+        val apretado = tab == RefundTab.AMOUNT && maxHeight < 640.dp
         Column(
             modifier = Modifier
                 .fillMaxWidth()
                 .widthIn(max = 640.dp)
-                // El teclado no tapa esta hoja: Material3 le fija ADJUST_NOTHING
-                // a su ventana, asi que el ajuste va en el contenido.
-                .imePadding()
                 .heightIn(max = 720.dp)
                 .padding(horizontal = spacing.xl),
         ) {
@@ -279,11 +328,20 @@ fun IssueRefundSheet(
             // dibujado fuera de la pantalla y, como `canSubmit` exige motivo, el
             // botón "Reembolsar" jamás se encendía. La devolución era imposible y
             // nada en pantalla lo explicaba.
+            // 🔴 `fill = false`, no `true`. Con `fill = true` la banda se estiraba a
+            // TODO el alto sobrante aunque el contenido fuera corto: de ahí el hueco
+            // enorme entre la lista y el motivo que se veía en la tablet de Testarudo.
+            // 🔴 Cuando aprieta, la banda cede su sitio ENTERO en vez de quedarse en un
+            // hilo de píxeles: lo que hay dentro es un aviso informativo y la lista de
+            // artículos, y el aviso que de verdad importa —«esto no devuelve el dinero a
+            // la tarjeta»— se repite literal en el pie. Lo que NO puede desaparecer es el
+            // pie, que es donde se decide y se confirma el dinero.
+            if (!apretado) {
+            Box(modifier = Modifier.weight(1f, fill = false)) {
             Column(
                 modifier = Modifier
-                    .weight(1f, fill = true)
                     .fillMaxWidth()
-                    .verticalScroll(rememberScrollState()),
+                    .verticalScroll(bandaScroll),
                 verticalArrangement = Arrangement.spacedBy(spacing.md),
             ) {
             // 🔴 Un cobro con TARJETA no se devuelve desde aquí.
@@ -398,25 +456,82 @@ fun IssueRefundSheet(
                     },
                 )
 
-                RefundTab.AMOUNT -> AmountBody(
-                    amountStr = amountStr,
-                    onAmountChange = { amountStr = it },
-                    maxRefundable = maxRefundable,
-                    paymentTipAmount = paymentTipAmount,
-                    includeTip = includeTip,
-                    onIncludeTipChange = { includeTip = it },
+                // 🔴 La pestaña de IMPORTE no vive aquí: su campo y su casilla de propina
+                // son DINERO, y con el teclado abierto esta banda se encoge a nada. Se
+                // pintan en el pie fijo, junto al motivo y al total. Aquí sólo queda el
+                // aviso del cobro con tarjeta, que sí puede desplazarse.
+                RefundTab.AMOUNT -> Unit
+            }
+            }
+            // 🔴 Sin esta señal la banda MIENTE: una venta de 3 artículos enseñaba 2 y
+            // nada decía que hubiera más, así que el cajero reembolsa lo que alcanza a
+            // ver. Medido en la Sunmi el 2026-09-11.
+            if (bandaScroll.canScrollForward) {
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .height(spacing.xl)
+                        .background(
+                            Brush.verticalGradient(
+                                listOf(Color.Transparent, MaterialTheme.colorScheme.surface),
+                            ),
+                        ),
                 )
+            }
             }
             }
             // === FIN DE LA BANDA DESPLAZABLE ===
 
             // === PIE FIJO — siempre visible ===
+            //
+            // 🔴 «Siempre visible» dejó de ser cierto con el teclado abierto, así que aquí
+            // el pie gana su propio deslizamiento — y SÓLO cuando aprieta. Con espacio
+            // sobrado el modificador es `Modifier` vacío y la pantalla queda byte a byte
+            // como estaba; no se usan dos `weight` a la vez a propósito, porque repartir el
+            // sobrante entre banda y pie deja hueco muerto cuando uno de los dos es corto,
+            // que es justo el defecto que el founder vio en la tablet el 2026-09-11.
+            //
+            // La casilla «Incluir propina» sigue AQUÍ y no en la banda de artículos: para
+            // llegar al botón hay que pasar por ella, porque el motivo —que `canSubmit`
+            // exige— vive debajo. Deslizable no es lo mismo que escondido.
+            Column(
+                modifier = if (apretado) {
+                    Modifier
+                        .weight(1f)
+                        .verticalScroll(pieScroll)
+                } else {
+                    Modifier
+                },
+            ) {
             if (errorMsg != null) {
                 Text(
                     text = errorMsg!!,
                     color = MaterialTheme.colorScheme.error,
                     style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier.padding(top = spacing.sm),
+                )
+            }
+
+            // 🔴 La casilla vive en el PIE FIJO, no en la banda que se desliza: decide si
+            // la propina del mesero se devuelve, o sea que es DINERO. Con el teclado
+            // abierto la banda se encoge tanto que la casilla salía de la pantalla y el
+            // cajero confirmaba «incluir propina» sin poder verla (Sunmi, 2026-09-11).
+            if (tab == RefundTab.AMOUNT) {
+                AmountBody(
+                    amountStr = amountStr,
+                    onAmountChange = { amountStr = it },
+                    maxRefundable = maxRefundable,
+                    modifier = Modifier.padding(top = spacing.md),
+                )
+            }
+
+            if (tab == RefundTab.AMOUNT && paymentTipAmount > 0) {
+                FilaIncluirPropina(
+                    paymentTipAmount = paymentTipAmount,
+                    includeTip = includeTip,
+                    onIncludeTipChange = { includeTip = it },
+                    modifier = Modifier.padding(top = spacing.md),
                 )
             }
 
@@ -495,6 +610,26 @@ fun IssueRefundSheet(
                             style = MaterialTheme.typography.headlineSmall,
                             fontWeight = FontWeight.SemiBold,
                         )
+                        // 🔴 EL REPARTO SE DICE JUNTO AL BOTÓN, no sólo en la casilla.
+                        //
+                        // La casilla «Incluir propina» vive más arriba y, con el teclado
+                        // abierto en una pantalla corta, puede quedar fuera de vista en el
+                        // momento de confirmar — lo señaló una auditoría adversarial (Codex
+                        // gpt-6-astra, xhigh): que el cajero haya pasado por ella una vez no
+                        // garantiza que la esté viendo al pulsar. Esta línea viaja pegada al
+                        // importe y al botón, así que la decisión sobre el dinero del mesero
+                        // se lee siempre, sin depender de dónde quedó el scroll.
+                        if (tab == RefundTab.AMOUNT && paymentTipAmount > 0) {
+                            Text(
+                                text = if (includeTip) {
+                                    "Incluye la propina del mesero"
+                                } else {
+                                    "Sin tocar la propina del mesero"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                     Text(
                         text = "Disponible ${transaction.remainingRefundableDisplay}",
@@ -587,12 +722,11 @@ fun IssueRefundSheet(
                                 // Otherwise (checkbox ON or no tip) omit the
                                 // override and let the backend apply its
                                 // default proportional split.
-                                val tipOverride = if (paymentTipAmount > 0 && !includeTip) 0 else null
                                 refundRepository.issueAssociatedRefund(
                                     paymentId = transaction.id,
                                     reason = chosenReason.code,
-                                    amountCents = (parsedAmount * 100).toInt(),
-                                    tipRefundCents = tipOverride,
+                                    amountCents = centavosDelImporte(parsedAmount),
+                                    tipRefundCents = tipRefundCentsParaEnvio(paymentTipAmount, includeTip),
                                 )
                             }
 
@@ -636,6 +770,8 @@ fun IssueRefundSheet(
                     fullWidth = true,
                 )
             }
+            }
+        }
         }
     }
 }
@@ -662,8 +798,13 @@ private fun ItemsBody(
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
             )
+            // 🔴 El conteo es la única señal HONESTA de que hay más abajo: el degradado
+            // del borde es transparente→blanco sobre una lista que ya es blanca, así que
+            // no se ve. Sin esto, una venta de 3 artículos enseña 2 y el cajero reembolsa
+            // lo que alcanza a ver (medido en la Sunmi, 2026-09-11).
             Text(
-                text = "Máximo reembolsable: ${formatMoney(maxRefundable)}",
+                text = "${transaction.items.size} artículo${if (transaction.items.size == 1) "" else "s"} · " +
+                    "Máximo reembolsable: ${formatMoney(maxRefundable)}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -922,12 +1063,10 @@ private fun AmountBody(
     amountStr: String,
     onAmountChange: (String) -> Unit,
     maxRefundable: Double,
-    paymentTipAmount: Double,
-    includeTip: Boolean,
-    onIncludeTipChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val spacing = AvoqadoTheme.spacing
-    Column(verticalArrangement = Arrangement.spacedBy(spacing.sm)) {
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(spacing.sm)) {
         Text(
             text = "Selecciona el importe a reembolsar",
             style = MaterialTheme.typography.titleMedium,
@@ -960,44 +1099,6 @@ private fun AmountBody(
                 )
             },
         )
-        if (paymentTipAmount > 0) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
-                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
-                    .clickable { onIncludeTipChange(!includeTip) }
-                    .padding(horizontal = spacing.md, vertical = spacing.sm),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(spacing.sm),
-            ) {
-                Checkbox(
-                    checked = includeTip,
-                    onCheckedChange = { onIncludeTipChange(it) },
-                )
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = "Incluir propina en el reembolso",
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Medium,
-                    )
-                    Text(
-                        text = if (includeTip) {
-                            "Se reparte proporcional entre venta y propina del pago original."
-                        } else {
-                            "Solo se reembolsa el producto; la propina del mesero queda intacta."
-                        },
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Text(
-                    text = formatMoney(paymentTipAmount),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-        }
     }
 }
 
@@ -1055,5 +1156,57 @@ private fun formatRefundError(throwable: Throwable): String {
         400, 422 -> apiError.message.ifBlank { "Revisa los datos del reembolso" }
         in 500..599 -> "No se pudo emitir el reembolso. Intenta de nuevo."
         else -> throwable.message ?: "Error al emitir reembolso"
+    }
+}
+
+/**
+ * La casilla «Incluir propina», extraída para poder vivir en el PIE FIJO de la hoja.
+ * Marcada ⇒ el servidor reparte proporcional; desmarcada ⇒ sólo se devuelve la venta.
+ */
+@Composable
+private fun FilaIncluirPropina(
+    paymentTipAmount: Double,
+    includeTip: Boolean,
+    onIncludeTipChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val spacing = AvoqadoTheme.spacing
+    Box(modifier = modifier) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
+                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                .clickable { onIncludeTipChange(!includeTip) }
+                .padding(horizontal = spacing.md, vertical = spacing.sm),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(spacing.sm),
+        ) {
+            Checkbox(
+                checked = includeTip,
+                onCheckedChange = { onIncludeTipChange(it) },
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Text(
+                    text = "Incluir propina en el reembolso",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                )
+                Text(
+                    text = if (includeTip) {
+                        "Se reparte proporcional entre venta y propina del pago original."
+                    } else {
+                        "Solo se reembolsa el producto; la propina del mesero queda intacta."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Text(
+                text = formatMoney(paymentTipAmount),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }

@@ -63,7 +63,7 @@ data class RefundItem(
 )
 
 @Serializable
-private data class RefundRequest(
+internal data class RefundRequest(
     val amount: Double,
     val reason: String,
     val method: String = "CASH",
@@ -85,7 +85,7 @@ data class AssociatedRefundItem(
 )
 
 @Serializable
-private data class AssociatedRefundRequest(
+internal data class AssociatedRefundRequest(
     val amount: Int? = null, // cents
     val items: List<AssociatedRefundItem>? = null,
     val restockItemIds: List<String>? = null,
@@ -115,13 +115,38 @@ data class AssociatedRefundData(
     val status: String,
 )
 
+/**
+ * 🔴 `explicitNulls = false` NO ES COSMÉTICO: es la causa raíz del lado cliente del
+ * incidente de Testarudo del 2026-09-11 (18 respuestas 400 en 10 minutos, el cajero sin
+ * poder devolverle a nadie).
+ *
+ * Con `encodeDefaults = true` y el `explicitNulls` por defecto, kotlinx **emite la llave
+ * con `null`** para cada campo opcional que no aplica: un reembolso por importe viajaba
+ * con `"items":null` y uno por artículos con `"amount":null`. El servidor validaba con
+ * `if (x !== undefined && !valido(x))` y **en JSON no existe `undefined`**, así que el
+ * nulo explícito entraba al guard y reventaba. El dashboard nunca lo sufrió (manda un
+ * objeto plano) ni iOS (arma el diccionario con llaves condicionales) — sólo Android.
+ *
+ * `encodeDefaults = true` SE CONSERVA a propósito: `method = "CASH"` del reembolso no
+ * asociado tiene default y el servidor lo necesita para el cajón. Y `tipRefundCents = 0`
+ * sigue viajando porque 0 no es nulo — «devuelve sólo la venta, no toques la propina» y
+ * «reparte tú» son cosas distintas, y confundirlas es dinero del mesero.
+ *
+ * Al DECODIFICAR no cambia nada: toda propiedad nulable de este archivo tiene default
+ * `null`, así que «llave ausente» y «llave nula» ya significaban lo mismo. Lo fija
+ * `RefundRequestJsonTest`.
+ */
+internal val jsonReembolsos = Json {
+    ignoreUnknownKeys = true
+    encodeDefaults = true
+    explicitNulls = false
+}
+
 @Singleton
 class RefundRepository @Inject constructor(
     private val secureStorage: SecureStorage,
     private val client: OkHttpClient,
 ) {
-    private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
-
     /**
      * Issue an associated refund against an existing payment.
      * Supports either amount-based (`amountCents`) or item-based (`items`) refunds,
@@ -140,7 +165,7 @@ class RefundRepository @Inject constructor(
             ?: return Result.failure(Exception("No venue ID"))
 
         return try {
-            val body = json.encodeToString(
+            val body = jsonReembolsos.encodeToString(
                 AssociatedRefundRequest.serializer(),
                 AssociatedRefundRequest(
                     amount = amountCents,
@@ -164,7 +189,7 @@ class RefundRepository @Inject constructor(
 
             if (code in 200..299) {
                 val parsed = runCatching {
-                    json.decodeFromString<AssociatedRefundResponse>(responseBody)
+                    jsonReembolsos.decodeFromString<AssociatedRefundResponse>(responseBody)
                 }.getOrNull()
                 val data = parsed?.data
                 if (data != null) {
@@ -177,7 +202,7 @@ class RefundRepository @Inject constructor(
             } else {
                 Log.e(TAG, "❌ Associated refund failed: $code - $responseBody")
                 val message = runCatching {
-                    json.decodeFromString<AssociatedRefundResponse>(responseBody).message
+                    jsonReembolsos.decodeFromString<AssociatedRefundResponse>(responseBody).message
                 }.getOrNull() ?: "Error $code"
                 Result.failure(RefundApiException(code, message))
             }
@@ -206,7 +231,7 @@ class RefundRepository @Inject constructor(
             // Convert cents to dollars for the API
             val amountDollars = amountCents / 100.0
 
-            val requestBody = json.encodeToString(
+            val requestBody = jsonReembolsos.encodeToString(
                 RefundRequest.serializer(),
                 RefundRequest(
                     amount = amountDollars,
@@ -229,7 +254,7 @@ class RefundRepository @Inject constructor(
             if (responseCode in 200..299) {
                 val result = if (body.isNotEmpty()) {
                     try {
-                        json.decodeFromString<RefundResponse>(body)
+                        jsonReembolsos.decodeFromString<RefundResponse>(body)
                     } catch (_: Exception) {
                         RefundResponse(success = true)
                     }

@@ -163,10 +163,21 @@ data class TransactionRefund(
         }
 }
 
+/**
+ * 🔴 `name` es ANULABLE, y el default `""` no bastaba.
+ *
+ * En kotlinx.serialization un valor por defecto sólo cubre que la llave FALTE; un `null`
+ * explícito en un campo no anulable lanza y tumba la decodificación de la venta ENTERA.
+ * Medido en la Sunmi el 2026-09-11: el servidor mandó `"modifiers":[{"name":null}]`, la
+ * app no pudo abrir el detalle, y el cajero se quedó en «Selecciona una transacción» sin
+ * poder llegar siquiera al botón de reembolsar. Producción está limpia hoy (0 de 4 006
+ * modificadores con nombre nulo), pero el decodificador no puede ser más estricto que el
+ * contrato: un modificador sin nombre no puede costar la venta completa.
+ */
 @Serializable
 data class TransactionItemModifier(
     val id: String? = null,
-    val name: String = "",
+    val name: String? = null,
     val price: Double = 0.0,
 )
 
