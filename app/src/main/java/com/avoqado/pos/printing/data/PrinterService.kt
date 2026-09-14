@@ -28,6 +28,7 @@ import com.avoqado.pos.printing.data.model.PrinterRole
 import com.avoqado.pos.printing.data.model.PrinterStatus
 import com.avoqado.pos.printing.data.model.ReceiptData
 import com.avoqado.pos.printing.data.model.SavedPrinter
+import com.avoqado.pos.printing.receiptlayout.ReceiptLayoutInterpreter
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -556,12 +557,12 @@ class PrinterService @Inject constructor(
     // MARK: - Printing
 
     suspend fun printReceipt(receipt: ReceiptData, printer: SavedPrinter) {
+        // 🔴 SIEMPRE por `escposFor`: construir el ESCPOSPrinter a mano pierde el `FS .` de la
+        // integrada de Sunmi y el ticket sale en blanco.
         val escpos = escposFor(printer)
-        // Identidad del negocio (logo + encabezado fiscal) y firma Avoqado se
-        // resuelven AQUÍ — el embudo por el que pasan TODOS los recibos (mesas,
-        // cobro rápido, transacciones y auto-print) — no en cada ViewModel.
-        val data = escpos.generateReceipt(receiptBranding.decorate(receipt, printer.paperWidth))
-        sendData(data, printer)
+        val plan = receiptBranding.plan(receipt, printer.paperWidth)
+        val lines = ReceiptLayoutInterpreter.interpret(plan.blocks, plan.input, printer.paperWidth.charsPerLine)
+        sendData(escpos.renderReceipt(lines, plan.rasterFor), printer)
     }
 
     suspend fun printKitchenTicket(ticket: KitchenTicketData, printer: SavedPrinter) {

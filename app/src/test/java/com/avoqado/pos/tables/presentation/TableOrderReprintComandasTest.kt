@@ -7,6 +7,7 @@ import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.printing.data.ComandaPrinter
 import com.avoqado.pos.printing.data.PrinterService
 import com.avoqado.pos.printing.data.model.PrinterRole
+import com.avoqado.pos.printing.data.model.ReceiptData
 import com.avoqado.pos.printing.data.model.SavedPrinter
 import com.avoqado.pos.printing.routing.PrintConfig
 import com.avoqado.pos.printing.routing.PrintConfigRepository
@@ -20,6 +21,7 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.slot
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -395,5 +397,37 @@ class TableOrderReprintComandasTest {
         vm.reprintComandas()
 
         assertFalse("un fallo no puede dejar el botón bloqueado", vm.isReprinting.value)
+    }
+
+    // MARK: - I4 (revisión de conjunto, Fase 3 del diseñador de tickets): la pre-cuenta y la cortesía
+
+    private val impresoraRecibos = SavedPrinter(
+        id = "pr-recibo",
+        name = "Recibos",
+        connectionType = "wifi",
+        address = "192.168.1.60",
+        port = 9100,
+        roles = listOf(PrinterRole.RECEIPT.value),
+    )
+
+    /**
+     * iOS ya manda `isCortesia` en la pre-cuenta (`TableOrderViewModel.swift:1253-1275`); Android
+     * no lo mandaba, así que un artículo de cortesía imprimía su PRECIO en la pre-cuenta de la
+     * mesa mientras el iPad, para la MISMA cuenta, imprimía «CORTESÍA» (revisión de conjunto, I4).
+     */
+    @Test
+    fun `P1 la pre-cuenta marca el articulo de cortesia — antes imprimia su precio, distinto del iPad`() = runTest {
+        every { printerService.getDefaultPrinter(PrinterRole.RECEIPT) } returns impresoraRecibos
+        val impreso = slot<ReceiptData>()
+        coEvery { printerService.printReceipt(capture(impreso), any()) } returns Unit
+
+        val cortesia = linea("i-cortesia", "Café de cortesía").copy(isCortesia = true)
+        val vm = buildVm(items = listOf(cortesia))
+        vm.printPreBill()
+
+        assertTrue(
+            "la pre-cuenta debe marcar el artículo como cortesía, igual que la del iPad para la misma cuenta",
+            impreso.captured.items.single().isCortesia,
+        )
     }
 }

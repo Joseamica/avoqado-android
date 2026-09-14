@@ -296,7 +296,12 @@ data class ReceiptData(
     val areaDeliveryCode: String? = null,
     // Encabezado fiscal estilo SoftRestaurant (founder, 2026-09-01). Todos
     // opcionales: un venue sin emisor fiscal imprime el ticket de siempre.
-    // Los llena ReceiptBranding en PrinterService — los ViewModels no los tocan.
+    // 🔴 Comentario corregido (revisión de conjunto, M10): decía "Los llena ReceiptBranding
+    // en PrinterService", justo lo contrario de lo que pasa desde esta fase — ReceiptBranding
+    // ya NO los llena (arma el ReceiptInput directo desde ReceiptInfo/TpvSettingsRepository).
+    // Cero escritores en producción hoy (verificado por grep); `ReceiptInputMapper` los
+    // prefiere sobre el caché de settings sólo por si alguna pantalla los llega a poner, y
+    // por ahora sólo los llenan las pruebas (`ReceiptInputMapperTest`).
     /** Razón social del emisor fiscal ("TESTARUDO CAFE S.A.P.I. DE C.V."). */
     val venueLegalName: String? = null,
     /** RFC del emisor fiscal. */
@@ -307,6 +312,13 @@ data class ReceiptData(
     val venueLogoRaster: MonoRaster? = null,
     /** Isotipo de Avoqado para el pie "Powered by Avoqado". Null ⇒ solo el texto. */
     val poweredByAvoqadoRaster: MonoRaster? = null,
+    /** Marca de la tarjeta del cobro ("VISA"). Sólo cuando el pago fue con tarjeta y la terminal la devolvió. */
+    val cardBrand: String? = null,
+    /**
+     * Cuándo se REIMPRIME un ticket de una venta pasada. Null = impresión original. El ticket imprime
+     * «Reimpresión: …» con esta hora y conserva `date` (la de la venta).
+     */
+    val reprintedAt: Date? = null,
 ) {
     val isCashPayment: Boolean
         get() = paymentMethod == "Efectivo"

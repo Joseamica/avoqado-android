@@ -5,6 +5,14 @@ import com.avoqado.pos.printing.data.model.KitchenTicketData
 import com.avoqado.pos.printing.data.model.MonoRaster
 import com.avoqado.pos.printing.data.model.PaperWidth
 import com.avoqado.pos.printing.data.model.ReceiptData
+import com.avoqado.pos.core.util.VenueTimeZone
+import com.avoqado.pos.printing.receiptlayout.Align
+import com.avoqado.pos.printing.receiptlayout.CanonicalLayout
+import com.avoqado.pos.printing.receiptlayout.ImageRef
+import com.avoqado.pos.printing.receiptlayout.LogicalLine
+import com.avoqado.pos.printing.receiptlayout.ReceiptInputMapper
+import com.avoqado.pos.printing.receiptlayout.ReceiptLayoutInterpreter
+import com.avoqado.pos.printing.receiptlayout.ReceiptText
 import java.io.ByteArrayOutputStream
 import java.util.Locale
 
@@ -364,7 +372,9 @@ class ESCPOSPrinter(
      * 80 mm sin comerse el rollo.
      */
     fun printQr(data: String, moduleSize: Int = 7) {
-        val bytes = data.toByteArray(Charsets.ISO_8859_1)
+        // UTF-8, igual que avoqado-ios: los lectores de QR de los teléfonos leen UTF-8, y en Latin-1
+        // una «ñ» daba otros bytes y otra longitud, y un carácter fuera de Latin-1 se perdía.
+        val bytes = data.toByteArray(Charsets.UTF_8)
         // Modelo 2
         appendCommand(byteArrayOf(0x1D, 0x28, 0x6B, 0x04, 0x00, 0x31, 0x41, 0x32, 0x00))
         // Tamaño de módulo
@@ -549,164 +559,82 @@ class ESCPOSPrinter(
         printLine("$qtyPadded$namePadded$pricePadded")
     }
 
+    // MARK: - Ticket de venta desde líneas lógicas
+
+    /**
+     * Líneas lógicas del intérprete → bytes. Es la ÚNICA traducción a ESC/POS del ticket de venta.
+     * avoqado-ios `ESCPOSPrinter.renderReceipt` produce los MISMOS bytes y
+     * `ReceiptEscPosGoldenTest` lo prueba en los dos lados.
+     *
+     * `rasterFor(ref, widthPct)` entrega la imagen ya escalada; null = no hay imagen y no se escribe
+     * nada (el texto que acompaña a la imagen ya viene en las líneas).
+     */
+    fun renderReceipt(lines: List<LogicalLine>, rasterFor: (ImageRef, Int) -> MonoRaster?): ByteArray {
+        reset()
+        for (line in lines) {
+            when (line) {
+                is LogicalLine.Text -> {
+                    setAlignment(line.align.toTextAlignment())
+                    // `ESC ! 0x30` reescribe el modo completo (negritas incluidas): va ANTES de `ESC E 1`.
+                    if (line.double) setLargeText(true)
+                    if (line.bold) setBold(true)
+                    printLine(ReceiptText.force(line.text))
+                    if (line.bold) setBold(false)
+                    if (line.double) setLargeText(false)
+                }
+                // Ni el `ESC a` sale si el ráster no cabe: printRaster lo rechazaría y quedaría una
+                // alineación suelta que iOS no escribe (y el golden de bytes dejaría de coincidir).
+                is LogicalLine.Image -> rasterFor(line.ref, line.widthPct)
+                    ?.takeIf { it.widthDots <= paperWidth.dots }
+                    ?.let {
+                        setAlignment(line.align.toTextAlignment())
+                        printRaster(it)
+                    }
+                is LogicalLine.Qr -> {
+                    setAlignment(TextAlignment.CENTER)
+                    printQr(line.data)
+                }
+                is LogicalLine.Barcode -> {
+                    setAlignment(TextAlignment.CENTER)
+                    printBarcode(line.data)
+                }
+                is LogicalLine.Feed -> feedLines(line.lines)
+                LogicalLine.Cut -> cut()
+            }
+        }
+        return getData()
+    }
+
+    private fun Align.toTextAlignment(): TextAlignment = when (this) {
+        Align.LEFT -> TextAlignment.LEFT
+        Align.CENTER -> TextAlignment.CENTER
+        Align.RIGHT -> TextAlignment.RIGHT
+    }
+
     // MARK: - Receipt Generation
 
+    /**
+     * El ticket de venta con la receta CANÓNICA y sin caché de settings.
+     *
+     * 🔴 **NO se llama desde producción**, y por eso lleva `@VisibleForTesting`. Quien la use
+     * imprime (a) con un `ESCPOSPrinter` que quizá no traiga el `FS .` de la integrada de Sunmi
+     * —papel EN BLANCO— y (b) sin la receta ni el encabezado fiscal del negocio, porque pasa
+     * `info = null`. El camino real es `PrinterService.printReceipt`, que arma el plan con
+     * `ReceiptBranding` y llama a [renderReceipt]. Aquí sólo vive para las pruebas del intérprete
+     * y de la canónica.
+     */
+    @androidx.annotation.VisibleForTesting
     fun generateReceipt(receipt: ReceiptData): ByteArray {
-        reset()
-
-        // Header — logo del negocio + identidad fiscal, como el recibo de
-        // SoftRestaurant (founder, 2026-09-01). El nombre en TEXTO se imprime
-        // SIEMPRE, haya o no logo: si el ráster no cabe o no hay imagen
-        // cacheada, el ticket no se queda sin identidad. Cada línea fiscal es
-        // opcional — un venue sin emisor imprime el ticket de siempre.
-        setAlignment(TextAlignment.CENTER)
-        receipt.venueLogoRaster?.let { if (printRaster(it)) printLine() }
-        printTitle(receipt.venueName)
-
-        receipt.venueLegalName?.let { printLine(it) }
-        receipt.venueRfc?.let { printLine("RFC: $it") }
-        receipt.venueAddress?.let { printLine(it) }
-        // Lugar de expedición: en el CFDI ES el código postal fiscal — se
-        // imprime el CP, no una segunda dirección.
-        receipt.venueLugarExpedicion?.let { printLine("Lugar de expedición: CP $it") }
-        receipt.venuePhone?.let { printLine("Tel: $it") }
-
-        printLine()
-        printDivider()
-
-        // Order info
-        setAlignment(TextAlignment.LEFT)
-        printTwoColumns("Orden #:", receipt.orderNumber)
-        printTwoColumns("Fecha:", receipt.formattedDate)
-        receipt.cashierName?.let { printTwoColumns("Atendio:", it) }
-        printTwoColumns("Tipo:", receipt.orderType)
-
-        printDivider()
-
-        // Items header
-        setBold(true)
-        printThreeColumns("Cant", "Artículo", "Precio")
-        setBold(false)
-        printDivider()
-
-        // Items
-        for (item in receipt.items) {
-            // COMBOS (Fudo/Square/Toast) — el nombre del combo va en negritas como
-            // renglón con SU precio, y sus productos debajo, indentados y sin precio.
-            // Sin combos ninguna de las dos banderas se prende y el ticket sale
-            // byte a byte como siempre.
-            if (item.isComboHeader) setBold(true)
-            printThreeColumns(
-                if (item.isComboComponent) "" else "${item.quantity}",
-                if (item.isComboComponent) "  ${item.quantity}x ${item.name}" else item.name,
-                item.formattedPrice,
-            )
-            if (item.isComboHeader) setBold(false)
-            // Venta por peso: peso × precio/kg bajo el nombre (mismo estilo que los modificadores).
-            item.weightSummary?.let { printLine("  $it") }
-            item.areaSourceLabel?.let { printLine("  $it") }
-            item.modifiers?.forEach { modifier ->
-                printLine("  + $modifier")
-            }
-            item.note?.let { printLine("  Nota: $it") }
-        }
-
-        printDivider()
-
-        // Totals
-        setAlignment(TextAlignment.RIGHT)
-        printTwoColumns("Subtotal:", receipt.formattedAmount(receipt.subtotal))
-
-        receipt.discountAmount?.let {
-            printTwoColumns("Descuento:", "-${receipt.formattedAmount(it)}")
-        }
-
-        printTwoColumns("IVA:", receipt.formattedAmount(receipt.taxAmount))
-
-        receipt.tipAmount?.let {
-            printTwoColumns("Propina:", receipt.formattedAmount(it))
-        }
-
-        printDivider()
-        setBold(true)
-        setDoubleHeight(true)
-        printTwoColumns("TOTAL:", receipt.formattedAmount(receipt.total))
-        setDoubleHeight(false)
-        setBold(false)
-
-        // Payment info
-        receipt.paymentMethod?.let { method ->
-            printLine()
-            setAlignment(TextAlignment.LEFT)
-            printTwoColumns("Pago:", method)
-
-            receipt.cardLastFour?.let {
-                printTwoColumns("Tarjeta:", "**** $it")
-            }
-
-            if (receipt.isCashPayment) {
-                receipt.cashTendered?.let {
-                    printTwoColumns("Recibido:", receipt.formattedAmount(it))
-                }
-                receipt.changeAmount?.let {
-                    if (it > 0) {
-                        setBold(true)
-                        printTwoColumns("Cambio:", receipt.formattedAmount(it))
-                        setBold(false)
-                    }
-                }
-            }
-        }
-
-        // Comprobante pagado para entrega por área. El área puede escanearlo o,
-        // si el papel/pistola falla, teclear los 10 dígitos impresos debajo.
-        receipt.areaDeliveryCode?.takeIf { it.isNotBlank() }?.let { code ->
-            printLine()
-            printDoubleDivider()
-            setAlignment(TextAlignment.CENTER)
-            setBold(true)
-            printLine("ENTREGA POR ÁREA")
-            setBold(false)
-            printLine("Presenta este comprobante en el área")
-            printLine()
-            printBarcode(code)
-            printLine()
-            printTitle(code, bold = true)
-        }
-
-        // QR del recibo digital: escanear → recibo, calificar, facturar.
-        // Es lo que hace avoqado-tpv. Sin llave no se dibuja nada.
-        receipt.receiptUrl?.takeIf { it.isNotBlank() }?.let { url ->
-            printLine()
-            printDivider()
-            setAlignment(TextAlignment.CENTER)
-            // La leyenda sólo promete factura cuando el ticket SE PUEDE autofacturar:
-            // mandar a facturar a quien no puede es enviarlo a un botón que no existe.
-            printLine(leyendaDelQr(receipt.autofacturaAvailable))
-            printLine()
-            printQr(url)
-            printLine()
-        }
-
-        // Footer
-        printLine()
-        printDivider()
-        setAlignment(TextAlignment.CENTER)
-        printLine("Gracias por su compra!")
-        printLine()
-
-        receipt.transactionId?.let { printLine("ID: $it") }
-
-        // La firma de la plataforma (founder, 2026-09-01): el isotipo chico y
-        // "Powered by Avoqado" al final. El texto sale AUNQUE el ráster falte o
-        // no quepa — la firma no depende de que la imagen cargue.
-        printLine()
-        receipt.poweredByAvoqadoRaster?.let { if (printRaster(it)) printLine() }
-        printLine("Powered by Avoqado")
-
-        cut()
-
-        return getData()
+        val input = ReceiptInputMapper.map(
+            receipt = receipt,
+            info = null,
+            // D15: un logo que no cabe en el papel es lo mismo que no tener logo — sin hueco.
+            hasLogo = receipt.venueLogoRaster?.let { it.widthDots <= paperWidth.dots } == true,
+            timezone = VenueTimeZone.zoneId().id,
+            appVersion = null,
+        )
+        val lines = ReceiptLayoutInterpreter.interpret(CanonicalLayout.BLOCKS, input, paperWidth.charsPerLine)
+        return renderReceipt(lines) { ref, _ -> if (ref == ImageRef.LOGO) receipt.venueLogoRaster else receipt.poweredByAvoqadoRaster }
     }
 
     // MARK: - Kitchen Ticket Generation

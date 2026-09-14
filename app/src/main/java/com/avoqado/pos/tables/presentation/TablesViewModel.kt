@@ -576,7 +576,7 @@ class TablesViewModel @Inject constructor(
                 fun cents(v: Double) = round(v * 100).toInt()
                 val receipt = ReceiptData(
                     orderNumber = order.orderNumber,
-                    orderType = "Mesa ${table.number} — PRE-CUENTA",
+                    orderType = "Mesa ${table.number} - PRE-CUENTA",
                     items = order.items.map {
                         ReceiptItem(
                             name = it.productName,

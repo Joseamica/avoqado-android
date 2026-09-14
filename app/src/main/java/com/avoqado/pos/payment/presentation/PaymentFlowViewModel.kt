@@ -362,6 +362,9 @@ class PaymentFlowViewModel @Inject constructor(
         set(value) { savedStateHandle[KEY_UNDETERMINED_REQUEST] = value }
 
     private var lastPaymentId: String? = null
+    /** Marca y últimos 4 del cobro con tarjeta que devolvió la terminal. Van al ticket impreso. */
+    private var lastCardBrand: String? = null
+    private var lastCardLastFour: String? = null
     private var lastReceiptAccessKey: String? = null
     /** URL del recibo tal como la mandó el backend (dashboard). Ver `resolveReceiptUrl`. */
     private var lastReceiptUrl: String? = null
@@ -798,10 +801,20 @@ class PaymentFlowViewModel @Inject constructor(
         selectedTerminalId = null
         _canPrintOnTerminal.value = false
         lastPaymentId = null
+        lastCardBrand = null
+        lastCardLastFour = null
         lastReceiptAccessKey = null
         lastReceiptUrl = null
         lastAreaDeliveryCode = null
         lastCashTenderedCents = null
+        // 🔴 Sin esto, un cobro con TARJETA hereda el método manual/catálogo de la venta
+        // anterior (el ViewModel sobrevive a más de una venta — split, o dos ventas seguidas
+        // del mismo turno): `manualMethodLabel` seguía devolviendo "Transferencia"/"Uber Eats"
+        // y `buildReceiptSnapshot` imprimía ese texto en vez de "Tarjeta", perdiendo además la
+        // marca y los últimos 4 que sí trajo la terminal. Antes NO se limpiaban aquí pese a que
+        // el comentario de `manualMethod`/`selectedTender` afirmaba lo contrario.
+        manualMethod = null
+        selectedTender = null
         _onlineTerminals.value = emptyList()
 
         // Clear receipt sending state from previous payment
@@ -902,14 +915,16 @@ class PaymentFlowViewModel @Inject constructor(
     /** Cash preset tapped directly from payment method screen (iOS-style direct confirm) */
     /**
      * Cobro registrado a mano: el dinero NO pasó por Avoqado (terminal ajena,
-     * transferencia). null = efectivo. Se limpia con la sesión de cobro para
-     * que el siguiente cliente no herede el método del anterior.
+     * transferencia). null = efectivo. Se limpia en `startPaymentFlow()` para
+     * que la SIGUIENTE venta no herede el método de la anterior — un tiempo
+     * en que NO se limpiaba ahí hizo que un cobro con tarjeta imprimiera el
+     * método manual de la venta previa (y perdiera marca/últimos 4).
      */
     private var manualMethod: com.avoqado.pos.payment.domain.ManualPaymentMethod? = null
 
     /**
      * Tipo de pago del catálogo del negocio elegido para ESTE cobro ("Uber Eats").
-     * Se limpia igual que `manualMethod` para que el siguiente cliente no lo herede.
+     * Se limpia igual que `manualMethod`, en `startPaymentFlow()`, por la misma razón.
      */
     private var selectedTender: com.avoqado.pos.payment.domain.TenderTypeOption? = null
 
@@ -1496,6 +1511,12 @@ class PaymentFlowViewModel @Inject constructor(
                                     _attachedCustomerName.value = null
                                 }
                                 recordCashSale(total, null)
+                                // 🔴 D16: este camino (cobro rápido en efectivo) NUNCA pasa por
+                                // `createKDSOrderAndPrint`/`autoPrintAfterPayment`, así que sin
+                                // congelar `lastReceipt` AQUÍ, el primer toque de «Imprimir» en la
+                                // pantalla de éxito arma el recibo con la hora de ESE toque — no la
+                                // de la venta (revisión de conjunto, I2).
+                                lastReceipt = buildReceiptSnapshot(PaymentMethod.CASH, result.changeCents)
                                 _state.value = PaymentFlowState.Success(
                                     totalAmount = total,
                                     method = PaymentMethod.CASH,
@@ -1529,6 +1550,10 @@ class PaymentFlowViewModel @Inject constructor(
                                         )
                                     }
                                     recordCashSale(total, null)
+                                    // 🔴 Mismo hueco de D16 que arriba, camino encolado: sin esto
+                                    // el ticket de una venta rápida que se guardó offline también
+                                    // toma la hora de cuando alguien la imprima, no la de la venta.
+                                    lastReceipt = buildReceiptSnapshot(PaymentMethod.CASH, result.changeCents)
                                     _state.value = PaymentFlowState.Success(
                                         totalAmount = total,
                                         method = PaymentMethod.CASH,
@@ -1806,6 +1831,8 @@ class PaymentFlowViewModel @Inject constructor(
         lastPaymentId = charged.paymentId
         lastReceiptAccessKey = charged.receiptAccessKey
         lastReceiptUrl = charged.receiptUrl
+        lastCardBrand = charged.cardBrand
+        lastCardLastFour = charged.cardLastFour
         finishAreaTicketPayment()
         _state.value = PaymentFlowState.Success(
             totalAmount = total,
@@ -2632,12 +2659,20 @@ class PaymentFlowViewModel @Inject constructor(
             tipAmount = if (currentTipCents > 0) currentTipCents else null,
             discountAmount = if (receiptDiscount > 0) receiptDiscount else null,
             total = receiptTotal,
-            paymentMethod = manualMethod?.label ?: when (resolvedMethod) {
+            paymentMethod = manualMethodLabel ?: when (resolvedMethod) {
                 PaymentMethod.CASH -> "Efectivo"
                 PaymentMethod.CARD -> "Tarjeta"
                 null -> null
             },
+            cardLastFour = if (resolvedMethod == PaymentMethod.CARD && manualMethodLabel == null) lastCardLastFour else null,
+            cardBrand = if (resolvedMethod == PaymentMethod.CARD && manualMethodLabel == null) lastCardBrand else null,
             venueName = secureStorage.venueName ?: "Avoqado",
+            // 🔴 «Atendió: X» = el vendedor elegido en «Vendiendo» cuando lo hay, con
+            // respaldo a quien inició sesión — `cart.selectedStaffName` YA resuelve esa
+            // precedencia (`CartViewModel.defaultCartState`). Sin esto, el bloque `staff`
+            // de la receta imprimía vacío en Android aunque el diseñador lo ofreciera y el
+            // iPad SÍ lo mostrara para la misma venta (revisión de conjunto, I1).
+            cashierName = cart?.selectedStaffName,
             customerName = _attachedCustomerName.value,
             // 🔴 EL BILLETE REAL QUE ENTREGÓ EL CLIENTE, no una resta al revés.
             //
@@ -2651,7 +2686,7 @@ class PaymentFlowViewModel @Inject constructor(
             //     Recibido − Cambio = TOTAL
             // porque `finalChange` se calcula como `recibido − total cobrado`, y ese
             // mismo total cobrado es el que viaja en `Success.totalAmount`.
-            cashTendered = if (resolvedMethod == PaymentMethod.CASH && manualMethod == null) lastCashTenderedCents else null,
+            cashTendered = if (resolvedMethod == PaymentMethod.CASH && manualMethodLabel == null) lastCashTenderedCents else null,
             changeAmount = resolvedChange,
             transactionId = lastPaymentId,
             receiptUrl = receiptUrl,

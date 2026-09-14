@@ -46,6 +46,18 @@ class ReceiptInfoParsingTest {
     }
 
     @Test
+    fun `P1 un emisor malformado o un bloque desconocido no tumban el parseo de settings`() {
+        val body = """
+            {"success":true,"data":{"settings":null,
+             "receiptInfo":{"name":"X","fiscalEmisors":[{"legalName":null,"rfc":null}]},
+             "receiptLayout":{"schemaVersion":1,"revision":3,"blocks":[{"type":"hologram","x":1}]}}}
+        """.trimIndent()
+        val parsed = json.decodeFromString<VenueSettingsResponse>(body)
+        assertEquals(1, parsed.data?.receiptInfo?.fiscalEmisors?.size)
+        assertEquals(3, parsed.data?.receiptLayout?.revision)
+    }
+
+    @Test
     fun `addressLine compone direccion, ciudad, estado y CP en una linea`() {
         val info = ReceiptInfo(
             address = "Nápoles 47",

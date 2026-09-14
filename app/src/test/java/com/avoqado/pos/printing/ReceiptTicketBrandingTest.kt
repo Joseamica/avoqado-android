@@ -5,6 +5,7 @@ import com.avoqado.pos.printing.data.model.MonoRaster
 import com.avoqado.pos.printing.data.model.PaperWidth
 import com.avoqado.pos.printing.data.model.ReceiptData
 import com.avoqado.pos.printing.data.model.ReceiptItem
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
@@ -66,15 +67,15 @@ class ReceiptTicketBrandingTest {
         assertTrue(text.contains("Nápoles 47"))
         assertTrue(text.contains("Lugar de expedición: CP 06600"))
 
-        // El orden: nombre → razón social → RFC → dirección → lugar de expedición.
+        // El orden de la canónica: nombre → razón social → RFC → lugar de expedición → dirección.
         val name = text.indexOf("Testarudo Cafe")
         val legal = text.indexOf("TESTARUDO CAFE S.A.P.I.")
         val rfc = text.indexOf("RFC: ")
-        val addr = text.indexOf("Nápoles 47")
         val lugar = text.indexOf("Lugar de expedición")
-        assertTrue("orden del encabezado", name < legal && legal < rfc && rfc < addr && addr < lugar)
+        val addr = text.indexOf("Nápoles 47")
+        assertTrue("orden del encabezado", name < legal && legal < rfc && rfc < lugar && lugar < addr)
         // Y todo el encabezado va ANTES del primer renglón de la venta.
-        assertTrue(lugar < text.indexOf("Galleta"))
+        assertTrue(addr < text.indexOf("Galleta"))
     }
 
     @Test
@@ -94,7 +95,7 @@ class ReceiptTicketBrandingTest {
         val text = printedText(receipt())
         val firma = text.indexOf("Powered by Avoqado")
         assertTrue(firma >= 0)
-        assertTrue("va después del gracias", text.indexOf("Gracias por su compra!") < firma)
+        assertTrue("va después del gracias", text.indexOf("Gracias por su compra") < firma)
     }
 
     @Test
@@ -213,6 +214,17 @@ class ReceiptTicketBrandingTest {
         val lum = logoSobreFondo(bg = 235)
         for (y in 0 until 24) lum[y * 24] = 0
         assertEquals(MonoRaster.DEFAULT_WHITE_POINT, MonoRaster.autoWhitePoint(24, 24, lum))
+    }
+
+    @Test
+    fun `P2 un logo que no cabe en el papel no deja hueco - el ticket sale igual que sin logo`() {
+        // 58 mm = 384 puntos: un ráster de 400 lo rechaza la impresora.
+        val ancho = MonoRaster(widthDots = 400, heightDots = 1, bits = ByteArray(50))
+        val base = receipt()
+        assertArrayEquals(
+            ESCPOSPrinter(PaperWidth.MM58).generateReceipt(base),
+            ESCPOSPrinter(PaperWidth.MM58).generateReceipt(base.copy(venueLogoRaster = ancho)),
+        )
     }
 
     /** Busca `GS v 0 m xL xH yL yH` con las dimensiones dadas. */

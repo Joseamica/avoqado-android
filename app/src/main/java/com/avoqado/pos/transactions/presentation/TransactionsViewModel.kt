@@ -18,6 +18,7 @@ import com.avoqado.pos.transactions.data.model.AmountOperator
 import com.avoqado.pos.transactions.data.model.ResultadoDeReimpresion
 import com.avoqado.pos.transactions.data.model.ResultadoLigaRecibo
 import com.avoqado.pos.transactions.data.model.TonoDelAviso
+import com.avoqado.pos.transactions.data.model.PaymentMethodDisplay
 import com.avoqado.pos.transactions.data.model.Transaction
 import com.avoqado.pos.transactions.data.model.avisoDeReimpresion
 import com.avoqado.pos.transactions.data.model.tonoDeReimpresion
@@ -507,12 +508,18 @@ class TransactionsViewModel @Inject constructor(
 
 /** Maps a past sale to the printable receipt shape used by PrinterService.
  *  Amounts arrive in pesos (Double) and ReceiptData wants cents. */
-private fun Transaction.toReceiptData(
+internal fun Transaction.toReceiptData(
     venueName: String,
     receiptUrl: String? = null,
     autofacturaAvailable: Boolean = false,
+    reprintedAt: java.util.Date = java.util.Date(),
 ): ReceiptData {
     fun cents(value: Double): Int = kotlin.math.round(value * 100).toInt()
+
+    // Tarjeta: «Pago: Tarjeta» + «Tarjeta: VISA **** 4242». Antes la marca y el PAN iban pegados en
+    // la etiqueta del pago y el ticket los repetía.
+    val isCard = method == "CARD" || method == "CREDIT_CARD" || method == "DEBIT_CARD"
+    val lastFour = maskedPan?.takeIf { it.length >= 4 }?.takeLast(4)
 
     val receiptItems = if (items.isNotEmpty()) {
         items.map { item ->
@@ -537,7 +544,9 @@ private fun Transaction.toReceiptData(
         taxAmount = 0,
         tipAmount = if (tipAmount > 0) cents(tipAmount) else null,
         total = cents(totalAmount),
-        paymentMethod = methodDescription,
+        paymentMethod = if (isCard) PaymentMethodDisplay.label(method) else methodDescription,
+        cardLastFour = if (isCard) lastFour else null,
+        cardBrand = if (isCard) cardBrand else null,
         venueName = venueName,
         cashierName = staffName,
         customerName = customerName,
@@ -548,5 +557,6 @@ private fun Transaction.toReceiptData(
         // que es el defecto que reportó el cliente: el mismo ticket, impreso dos veces, distinto.
         receiptUrl = receiptUrl,
         autofacturaAvailable = autofacturaAvailable,
+        reprintedAt = reprintedAt,
     )
 }

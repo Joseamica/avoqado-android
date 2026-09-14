@@ -12,6 +12,9 @@ import com.avoqado.pos.customerdisplay.DisplayModePrefs
 import com.avoqado.pos.customerdisplay.DisplayModeRequestJournal
 import com.avoqado.pos.customerdisplay.DisplayModeRequestStore
 import com.avoqado.pos.customerdisplay.reconcileDisplayMode
+import com.avoqado.pos.printing.receiptlayout.ReceiptFiscalEmisor
+import com.avoqado.pos.printing.receiptlayout.ReceiptLegacyFiscal
+import com.avoqado.pos.printing.receiptlayout.ReceiptText
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -19,13 +22,17 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Provider
 import javax.inject.Singleton
@@ -77,6 +84,11 @@ data class ReceiptInfo(
     val legalName: String? = null,
     val rfc: String? = null,
     val lugarExpedicion: String? = null,
+    /** Todos los emisores del venue con sus merchants: el ticket elige el de la cuenta que cobró. */
+    val fiscalEmisors: List<ReceiptFiscalEmisor>? = null,
+    val principalEmisorId: String? = null,
+    /** Columnas legacy de Venue: la tercera fuente del RFC (spec § 5.6). */
+    val legacy: ReceiptLegacyFiscal? = null,
 ) {
     /**
      * "Nápoles 47, Cuauhtémoc, Ciudad de México, CP 06600" — una línea; la
@@ -87,30 +99,30 @@ data class ReceiptInfo(
      * Lomas de Chapultepec, Miguel Hidalgo, 11000 Ciudad de México, CDMX,
      * México"— y pegarle ciudad, estado y CP encima producía
      * "…México, Ciudad de México, Ciudad de México, CP 11000": tres renglones
-     * de rollo desperdiciados diciendo lo mismo. Se compara sin acentos ni
-     * mayúsculas porque el mismo dato viene escrito distinto en cada campo.
+     * de rollo desperdiciados diciendo lo mismo. La regla vive UNA vez, en el
+     * intérprete (`ReceiptText.addressLine`), para que papel y pantalla no puedan divergir.
      */
     val addressLine: String?
-        get() {
-            val partes = mutableListOf<String>()
-            fun agregar(valor: String?) {
-                val v = valor?.trim()?.takeIf { it.isNotEmpty() } ?: return
-                val yaEsta = partes.any { normalizar(it).contains(normalizar(v)) }
-                if (!yaEsta) partes += v
-            }
-            agregar(address)
-            agregar(city)
-            agregar(state)
-            zipCode?.trim()?.takeIf { it.isNotEmpty() }?.let { cp ->
-                if (partes.none { it.contains(cp) }) partes += "CP $cp"
-            }
-            return partes.takeIf { it.isNotEmpty() }?.joinToString(", ")
-        }
-
-    private fun normalizar(s: String): String =
-        java.text.Normalizer.normalize(s.lowercase(), java.text.Normalizer.Form.NFD)
-            .replace(Regex("\\p{Mn}+"), "")
+        get() = ReceiptText.addressLine(address, city, state, zipCode)
 }
+
+/**
+ * La receta del ticket tal como la manda el servidor (spec § 7.3). `blocks` se guarda CRUDO: el
+ * parser tolerante decide al imprimir qué entiende esta versión de la app.
+ */
+@Serializable
+data class ReceiptLayoutPayload(
+    val schemaVersion: Int = 1,
+    val revision: Int = 0,
+    val blocks: JsonElement? = null,
+)
+
+/** Encabezado y receta del ticket de UNA sucursal, guardados JUNTOS: se escriben y se leen en pareja. */
+@Serializable
+data class ReceiptTicketCache(
+    val info: ReceiptInfo? = null,
+    val layout: ReceiptLayoutPayload? = null,
+)
 
 @Serializable
 data class TpvSettings(
@@ -216,10 +228,127 @@ class TpvSettingsRepository internal constructor(
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
-    private val _receiptInfo = MutableStateFlow<ReceiptInfo?>(null)
+    private val receiptRequests = AtomicLong(0)
+    private val receiptTicketMutex = Mutex()
 
-    /** Encabezado del ticket impreso (cache-first: sobrevive arranques sin red). */
-    val receiptInfo: StateFlow<ReceiptInfo?> = _receiptInfo.asStateFlow()
+    /**
+     * Por sucursal y SÓLO en memoria (tras reiniciar el proceso, la primera respuesta manda): el número de
+     * la petición más nueva que escribió cada campo, y el de la respuesta BUENA más nueva, traiga o no
+     * campos del ticket.
+     */
+    private val receiptInfoSeq = mutableMapOf<String, Long>()
+    private val receiptLayoutSeq = mutableMapOf<String, Long>()
+    private val receiptOkSeq = mutableMapOf<String, Long>()
+
+    /**
+     * El ticket de [venueId]: la pareja guardada en el DISCO de esa sucursal, leída bajo el mismo candado
+     * que la escribe. El que imprime lo pide con la sucursal activa; no depende de que en este proceso ya
+     * haya corrido un refresh. Si el almacenamiento no se puede leer, sale con la canónica y lo que ya trae
+     * la venta: un disco que falla no puede impedir imprimir.
+     */
+    suspend fun receiptTicketFor(venueId: String): ReceiptTicketCache = receiptTicketMutex.withLock {
+        readReceiptTicket(venueId) ?: ReceiptTicketCache().also {
+            Log.w("📦", "Ticket de $venueId sin datos guardados legibles: sale la canónica")
+        }
+    }
+
+    /** null = el almacenamiento FALLÓ al leer (distinto de «no hay nada guardado»). */
+    private suspend fun readReceiptTicket(venueId: String): ReceiptTicketCache? {
+        val ticket = readStoredString(receiptTicketKey(venueId)) ?: return null
+        val legacy = readStoredString(receiptInfoKey(venueId)) ?: return null
+        return ticketFrom(mapOf(receiptTicketKey(venueId) to ticket.value, receiptInfoKey(venueId) to legacy.value), venueId)
+    }
+
+    /** Un valor leído del disco; `readStoredString` devuelve null si la LECTURA falló. */
+    private class StoredString(val value: String?)
+
+    private suspend fun readStoredString(key: String): StoredString? = try {
+        StoredString(preferencesDataStore.getString(key).first())
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Log.w("📦", "No se pudo leer $key: ${e.message}")
+        null
+    }
+
+    /**
+     * La pareja a partir de lo leído. La llave nueva manda (aunque traiga los dos campos vacíos: así una
+     * negación no resucita lo viejo); si no está o es ilegible, el encabezado de la llave de la versión
+     * anterior — el aparato recién actualizado no pierde su RFC en el primer ticket sin red.
+     */
+    private fun ticketFrom(values: Map<String, String?>, venueId: String): ReceiptTicketCache {
+        values[receiptTicketKey(venueId)]?.let { cached ->
+            runCatching { json.decodeFromString<ReceiptTicketCache>(cached) }
+                .onFailure { Log.w("📦", "Ticket guardado ilegible: ${it.message}") }
+                .getOrNull()
+                ?.let { return it }
+        }
+        val legacyInfo = values[receiptInfoKey(venueId)]?.let { cached ->
+            runCatching { json.decodeFromString<ReceiptInfo>(cached) }.getOrNull()
+        }
+        return ReceiptTicketCache(info = legacyInfo)
+    }
+
+    /**
+     * UNA transacción de DataStore: parte de lo que HAY en el disco —si no se puede leer, DataStore lanza y
+     * no se escribe nada—, aplica [change], guarda la pareja y retira la llave anterior. Devuelve si escribió.
+     */
+    private suspend fun writeReceiptTicket(venueId: String, change: (ReceiptTicketCache) -> ReceiptTicketCache): Boolean = try {
+        preferencesDataStore.updateStrings(listOf(receiptTicketKey(venueId), receiptInfoKey(venueId))) { current ->
+            val next = change(ticketFrom(current, venueId))
+            mapOf(
+                receiptTicketKey(venueId) to json.encodeToString(ReceiptTicketCache.serializer(), next),
+                receiptInfoKey(venueId) to null,
+            )
+        }
+        true
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Log.w("📦", "No se pudo escribir el ticket de $venueId: ${e.message}")
+        false
+    }
+
+    /**
+     * Aplica lo que trajo UNA respuesta BUENA de [venueId], campo por campo: se escribe sólo lo que vino y
+     * sólo si ninguna petición más nueva de esa sucursal ya escribió ese campo. Una respuesta sin nada no
+     * escribe nada, pero sí cuenta como respuesta buena (una negación más vieja ya no aplica). Devuelve `true`
+     * si el ENCABEZADO se aplicó (así el logo no se baja de una respuesta descartada).
+     */
+    private suspend fun applyReceiptResponse(venueId: String, seq: Long, info: ReceiptInfo?, layout: ReceiptLayoutPayload?): Boolean =
+        receiptTicketMutex.withLock {
+            receiptOkSeq[venueId] = maxOf(receiptOkSeq[venueId] ?: 0L, seq)
+            val applyInfo = info != null && seq > (receiptInfoSeq[venueId] ?: 0L)
+            val applyLayout = layout != null && seq > (receiptLayoutSeq[venueId] ?: 0L)
+            if (!applyInfo && !applyLayout) return@withLock false
+            val written = writeReceiptTicket(venueId) { stored ->
+                ReceiptTicketCache(
+                    info = if (applyInfo) info else stored.info,
+                    layout = if (applyLayout) layout else stored.layout,
+                )
+            }
+            if (written && applyInfo) receiptInfoSeq[venueId] = seq
+            if (written && applyLayout) receiptLayoutSeq[venueId] = seq
+            written && applyInfo
+        }
+
+    /**
+     * Una negación real del servidor (403 y compañía) vacía el ticket de [venueId] — pero SÓLO si es más
+     * nueva que toda respuesta buena de esa sucursal: si una petición posterior ya contestó bien, el aparato
+     * sí tiene acceso y esta negación es información vencida. Cuando aplica, vacía los dos campos (no hay
+     * nada que preservar: ninguna respuesta buena es más nueva) y ninguna respuesta más vieja puede volver a
+     * escribirlos.
+     */
+    private suspend fun invalidateReceiptTicket(venueId: String, seq: Long) {
+        receiptTicketMutex.withLock {
+            if (seq < (receiptOkSeq[venueId] ?: 0L)) return@withLock
+            receiptInfoSeq[venueId] = maxOf(receiptInfoSeq[venueId] ?: 0L, seq)
+            receiptLayoutSeq[venueId] = maxOf(receiptLayoutSeq[venueId] ?: 0L, seq)
+            // Si el disco falla aquí, lo guardado queda como estaba hasta la siguiente negación con red
+            // (declarado en D18, igual que el resto de settings de `clearPersistedSettings`).
+            writeReceiptTicket(venueId) { ReceiptTicketCache() }
+        }
+    }
 
     // Para la descarga del logo en segundo plano: no puede alargar el refresh
     // de settings (que la selección de venue espera) ni tumbar nada si falla.
@@ -251,6 +380,8 @@ class TpvSettingsRepository internal constructor(
     }
 
     suspend fun refreshSettingsForVenue(venueId: String) {
+        // El número de ESTA petición: el ticket sólo acepta de ella lo que ninguna más nueva ya escribió.
+        val receiptSeq = receiptRequests.incrementAndGet()
         _isLoading.value = true
         Log.d("📦", "Fetching settings for venue: $venueId")
         val localIncludeTaxOverride = loadIncludeTaxInTipBaseOverride(venueId)
@@ -259,9 +390,6 @@ class TpvSettingsRepository internal constructor(
             loadedVenueId = venueId
             _settings.value = applyIncludeTaxOverride(TpvSettings.DEFAULT, localIncludeTaxOverride)
             _terminalNavigation.value = TerminalNavigationSettings.DEFAULT
-            // El encabezado del ticket es POR VENUE: al cambiar de sucursal no
-            // puede quedarse el RFC de la anterior mientras llega el nuevo.
-            _receiptInfo.value = null
             hydrateLastKnownSettings(venueId, localIncludeTaxOverride)
         }
 
@@ -281,10 +409,13 @@ class TpvSettingsRepository internal constructor(
             }
             if (!response.isSuccessful) {
                 Log.e("📦", "❌ Failed to fetch settings: ${response.code}")
-                if (response.code in 400..499) {
+                // 408 (timeout) y 429 (límite de peticiones) son de la RED, no del permiso: borrar
+                // lo guardado ahí deja al siguiente arranque sin red sin receta y sin RFC.
+                if (response.code in 400..499 && response.code != 408 && response.code != 429) {
                     _settings.value = applyIncludeTaxOverride(TpvSettings.DEFAULT, localIncludeTaxOverride)
                     _terminalNavigation.value = TerminalNavigationSettings.DEFAULT
                     clearPersistedSettings(venueId)
+                    invalidateReceiptTicket(venueId, receiptSeq)
                 }
                 return
             }
@@ -338,15 +469,13 @@ class TpvSettingsRepository internal constructor(
             _managerPinOverrideEnabled.value = overrideEnabled
             secureStorage.managerPinOverrideEnabled = overrideEnabled
 
-            // Encabezado del ticket impreso. SÓLO en el camino exitoso, igual que
-            // el plan: un bache de red no borra la identidad fiscal ya conocida.
-            // Campo ausente (server viejo) ⇒ se conserva lo hidratado del cache.
-            result.data?.receiptInfo?.let { info ->
-                _receiptInfo.value = info
-                persistReceiptInfo(venueId, info)
-                // El logo se baja aparte y en segundo plano: la selección de
-                // venue no espera una imagen, y un fallo aquí no toca nada.
-                receiptLogoCache?.let { cache -> logoScope.launch { cache.refresh(venueId, info.logoUrl) } }
+            // Encabezado y receta del ticket: SÓLO en el camino exitoso y sólo lo que vino. Un campo
+            // ausente (el servidor no pudo resolverlo) conserva lo guardado.
+            val receiptInfo = result.data?.receiptInfo
+            val infoApplied = applyReceiptResponse(venueId, receiptSeq, receiptInfo, result.data?.receiptLayout)
+            // El logo se baja aparte y en segundo plano, y sólo si este encabezado es el vigente.
+            if (infoApplied && receiptInfo != null) {
+                receiptLogoCache?.let { cache -> logoScope.launch { cache.refresh(venueId, receiptInfo.logoUrl) } }
             }
 
             // Panel de promociones: es de VENUE, así que aplica HAYA o NO una
@@ -438,7 +567,6 @@ class TpvSettingsRepository internal constructor(
         // El switch es por venue: al soltar el cache no puede quedarse encendido
         // el de la sucursal anterior.
         _managerPinOverrideEnabled.value = false
-        _receiptInfo.value = null
     }
 
     private suspend fun hydrateLastKnownSettings(
@@ -462,21 +590,6 @@ class TpvSettingsRepository internal constructor(
                 }
                 .onFailure { Log.w("📦", "Cache de terminal inválido: ${it.message}") }
         }
-
-        preferencesDataStore.getString(receiptInfoKey(venueId)).first()?.let { cached ->
-            runCatching { json.decodeFromString<ReceiptInfo>(cached) }
-                .onSuccess { _receiptInfo.value = it }
-                .onFailure { Log.w("📦", "Cache de encabezado de ticket inválido: ${it.message}") }
-        }
-    }
-
-    private suspend fun persistReceiptInfo(venueId: String, info: ReceiptInfo) {
-        runCatching {
-            preferencesDataStore.setString(
-                receiptInfoKey(venueId),
-                json.encodeToString(ReceiptInfo.serializer(), info),
-            )
-        }.onFailure { Log.w("📦", "No se pudo guardar cache del encabezado de ticket: ${it.message}") }
     }
 
     private suspend fun persistTpvSettings(venueId: String, settings: TpvSettings) {
@@ -504,7 +617,6 @@ class TpvSettingsRepository internal constructor(
         runCatching {
             preferencesDataStore.removeString(tpvSettingsKey(venueId))
             preferencesDataStore.removeString(terminalNavigationKey(venueId))
-            preferencesDataStore.removeString(receiptInfoKey(venueId))
         }.onFailure { Log.w("📦", "No se pudo invalidar el cache de terminal: ${it.message}") }
     }
 
@@ -527,11 +639,14 @@ class TpvSettingsRepository internal constructor(
 
     private fun receiptInfoKey(venueId: String): String = "${KEY_RECEIPT_INFO_PREFIX}_$venueId"
 
+    private fun receiptTicketKey(venueId: String): String = "${KEY_RECEIPT_TICKET_PREFIX}_$venueId"
+
     companion object {
         private const val KEY_INCLUDE_TAX_IN_TIP_BASE_PREFIX = "include_tax_in_tip_base"
         private const val KEY_TPV_SETTINGS_PREFIX = "tpv_settings"
         private const val KEY_TERMINAL_NAVIGATION_PREFIX = "terminal_navigation"
         private const val KEY_RECEIPT_INFO_PREFIX = "receipt_info"
+        private const val KEY_RECEIPT_TICKET_PREFIX = "receipt_ticket"
         private const val GLOBAL_VENUE_KEY = "global"
     }
 }
@@ -565,6 +680,8 @@ internal data class VenueSettingsData(
      * sale sin encabezado fiscal, como hoy.
      */
     val receiptInfo: ReceiptInfo? = null,
+    /** La receta del ticket. Ausente (server viejo o fallo al resolverla) ⇒ se conserva la guardada. */
+    val receiptLayout: ReceiptLayoutPayload? = null,
 )
 
 @Serializable

@@ -25,6 +25,20 @@ class PreferencesDataStore @Inject constructor(
         dataStore.edit { it[stringPreferencesKey(key)] = value }
     }
 
+    /**
+     * Lee y reescribe llaves de texto en UNA transacción de DataStore: [transform] recibe lo que hay y
+     * devuelve qué escribir (null = borrar esa llave). Si el archivo no se puede leer, DataStore lanza y no se
+     * escribe nada: nadie fusiona contra un vacío que no leyó.
+     */
+    suspend fun updateStrings(keys: List<String>, transform: (Map<String, String?>) -> Map<String, String?>) {
+        dataStore.edit { prefs ->
+            val current = keys.associateWith { prefs[stringPreferencesKey(it)] }
+            for ((key, value) in transform(current)) {
+                if (value == null) prefs.remove(stringPreferencesKey(key)) else prefs[stringPreferencesKey(key)] = value
+            }
+        }
+    }
+
     fun getString(key: String): Flow<String?> =
         dataStore.data.map { it[stringPreferencesKey(key)] }
 

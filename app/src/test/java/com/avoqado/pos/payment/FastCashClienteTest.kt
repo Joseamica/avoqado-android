@@ -24,6 +24,7 @@ import com.avoqado.pos.printing.data.ComandaPrinter
 import com.avoqado.pos.printing.data.PrinterService
 import com.avoqado.pos.printing.data.ReintentoDeComanda
 import com.avoqado.pos.printing.data.ReporteDeComandas
+import com.avoqado.pos.printing.data.model.ReceiptData
 import com.avoqado.pos.printing.routing.PrintConfigRepository
 import com.avoqado.pos.tpvsettings.data.TpvSettings
 import com.avoqado.pos.tpvsettings.data.TpvSettingsRepository
@@ -31,6 +32,7 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.slot
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
@@ -227,5 +229,33 @@ class FastCashClienteTest {
 
         assertEquals("Juan Pérez", viewModel.attachedCustomerName.value)
         assertNull((viewModel.state.value as PaymentFlowState.Success).customerLinkWarning)
+    }
+
+    /**
+     * Arreglo final (I2, revisión de conjunto de la Fase 3): este camino (cobro rápido, sin
+     * productos) nunca pasa por `autoPrintAfterPayment`, así que `lastReceipt` se quedaba en
+     * null. El primer toque de «Imprimir» en la pantalla de éxito armaba el recibo con la hora
+     * de ESE toque — no la de la venta (D16 sin aplicar en esta ruta).
+     */
+    @Test
+    fun `P1 el cobro rapido imprime la hora de la venta, no la del toque de imprimir`() = runTest {
+        viewModel.startPaymentFlow(otroImporte())
+        viewModel.confirmCashCustom(10_000)
+        advanceUntilIdle()
+        val momentoDeLaVenta = java.util.Date()
+
+        Thread.sleep(300) // imprimir minutos después: un `Date()` al tocar sería otro
+
+        val impreso = slot<ReceiptData>()
+        coEvery { printerService.manualPrintReceipt(capture(impreso)) } returns PrinterService.PrintOutcome.Printed(1)
+        viewModel.reprintReceipt()
+        advanceUntilIdle()
+
+        val diferenciaMs = kotlin.math.abs(impreso.captured.date.time - momentoDeLaVenta.time)
+        assertTrue(
+            "el ticket debe llevar la hora de la VENTA, no la del toque de imprimir " +
+                "(diferencia=${diferenciaMs}ms, venta=$momentoDeLaVenta, impreso=${impreso.captured.date})",
+            diferenciaMs < 150,
+        )
     }
 }

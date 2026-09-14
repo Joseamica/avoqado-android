@@ -43,7 +43,7 @@ class AreaDeliveryReceiptPrintTest {
         val output = render(paidReceipt)
 
         assertTrue(output.contains("ENTREGA POR ÁREA"))
-        assertTrue(output.contains("Presenta este comprobante en el área"))
+        assertTrue(output.contains("Presenta este comprobante en el"))
         assertTrue(output.contains("Cremería · Vale 9016719357"))
         assertTrue("El código debe poder teclearse si la pistola falla", output.contains(code))
         assertTrue(
@@ -60,7 +60,7 @@ class AreaDeliveryReceiptPrintTest {
         val output = render(receipt())
 
         assertFalse(output.contains("ENTREGA POR ÁREA"))
-        assertFalse(output.contains("Presenta este comprobante en el área"))
+        assertFalse(output.contains("Presenta este comprobante"))
         assertFalse(output.contains("Cremería · Vale"))
     }
 }

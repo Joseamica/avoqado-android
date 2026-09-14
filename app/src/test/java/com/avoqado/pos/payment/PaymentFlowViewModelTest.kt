@@ -42,7 +42,9 @@ import com.avoqado.pos.printing.data.model.KitchenItem
 import com.avoqado.pos.printing.data.model.KitchenTicketData
 import com.avoqado.pos.printing.data.model.ReceiptData
 import com.avoqado.pos.printing.routing.PrintConfig
+import com.avoqado.pos.payment.domain.ManualPaymentChoice
 import com.avoqado.pos.payment.domain.ManualPaymentMethod
+import com.avoqado.pos.payment.domain.TenderTypeOption
 import com.avoqado.pos.printing.routing.PrintConfigRepository
 import com.avoqado.pos.printing.routing.StationInfo
 import com.avoqado.pos.printing.routing.TicketPlan
@@ -56,6 +58,7 @@ import io.mockk.slot
 import io.mockk.verify
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
@@ -1094,6 +1097,139 @@ class PaymentFlowViewModelTest {
             CartItem(id = "line-1", type = CartItemType.ProductItem("prod-1"), name = "Café", unitPrice = 1000),
         ),
     )
+
+    /** Cobra [cartConUnProducto] con lo que elija [elegir] y devuelve el recibo que llegó a la impresora. */
+    private fun TestScope.reciboDelCobro(elegir: () -> Unit): ReceiptData {
+        coEvery {
+            orderRepository.createOrder(any(), any(), any(), any(), any())
+        } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-recibo")))
+        // 🔴 Los OCHO argumentos: con seis, Kotlin rellena `manualMethod` y `tenderType` con su default
+        // (null) y el stub sólo atrapa el efectivo — la transferencia y el catálogo caerían al mock relajado.
+        coEvery {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any())
+        } returns Result.success(OrderRepository.CashPayResult(paymentId = "pay-recibo", receiptAccessKey = null))
+        val impreso = slot<ReceiptData>()
+        coEvery { printerService.autoPrintReceipt(capture(impreso)) } returns Unit
+        viewModel.startPaymentFlow(cartConUnProducto())
+        elegir()
+        advanceUntilIdle()
+        return impreso.captured
+    }
+
+    @Test
+    fun `efectivo imprime Efectivo con el billete recibido`() = runTest {
+        val recibo = reciboDelCobro { viewModel.confirmCashCustom(2000) }
+        assertEquals("Efectivo", recibo.paymentMethod)
+        assertEquals(2000, recibo.cashTendered)
+        assertEquals("pay-recibo", recibo.transactionId)
+    }
+
+    @Test
+    fun `un metodo manual fijo imprime su nombre y sin billete recibido`() = runTest {
+        val recibo = reciboDelCobro { viewModel.confirmManualChoice(ManualPaymentChoice.Fixed(ManualPaymentMethod.TRANSFER)) }
+        coVerify { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), ManualPaymentMethod.TRANSFER, null) }
+        assertEquals("Transferencia", recibo.paymentMethod)
+        assertNull(recibo.cashTendered)
+        assertEquals("pay-recibo", recibo.transactionId)
+    }
+
+    @Test
+    fun `P1 un metodo del catalogo del negocio imprime SU nombre - no Efectivo con Recibido`() = runTest {
+        val uber = TenderTypeOption(
+            id = "t-uber", revision = 1, name = "Uber Eats", isSystem = false,
+            baseMethod = "OTHER", captureTip = false, posSection = "PRIMARY", displayOrder = 1,
+        )
+        val recibo = reciboDelCobro { viewModel.confirmManualChoice(ManualPaymentChoice.Tender(uber)) }
+        coVerify { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), null, uber) }
+        assertEquals("Uber Eats", recibo.paymentMethod)
+        assertNull(recibo.cashTendered)
+        assertFalse(recibo.isCashPayment)
+        assertEquals("pay-recibo", recibo.transactionId)
+    }
+
+    /**
+     * Ronda de arreglo 1 (revisión de Task 10): un cobro con TARJETA heredaba el método
+     * manual/catálogo de la venta ANTERIOR porque `startPaymentFlow` nunca limpiaba
+     * `manualMethod`/`selectedTender` — el ViewModel sobrevive a más de una venta (split, o
+     * dos ventas seguidas del mismo turno). Cobra la venta 1 con un tipo del catálogo y,
+     * SIN volver a pasar por `confirmCashCustom`/`confirmManualChoice`, cobra la venta 2 con
+     * tarjeta: el ticket debe decir «Tarjeta» y conservar la marca y los últimos 4 que la
+     * terminal sí entregó — las dos mitades importan, la segunda es la consecuencia nueva
+     * que esta tarea introdujo al leer `lastCardBrand`/`lastCardLastFour` sólo cuando
+     * `manualMethodLabel == null`.
+     */
+    @Test
+    fun `P1 tarjeta despues de un metodo del catalogo NO hereda el metodo de la venta anterior`() = runTest {
+        // Venta 1: un tipo del catálogo, sin llegar a ella con `advanceUntilIdle` del helper
+        // (no importa su recibo, sólo que `manualMethod`/`selectedTender` quedaron puestos).
+        val uber = TenderTypeOption(
+            id = "t-uber", revision = 1, name = "Uber Eats", isSystem = false,
+            baseMethod = "OTHER", captureTip = false, posSection = "PRIMARY", displayOrder = 1,
+        )
+        reciboDelCobro { viewModel.confirmManualChoice(ManualPaymentChoice.Tender(uber)) }
+
+        // Venta 2, MISMO ViewModel: tarjeta directa, sin tocar `confirmCash*`/`confirmManualChoice`.
+        coEvery {
+            orderRepository.createOrder(any(), any(), any(), any(), any())
+        } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-tarjeta")))
+        coEvery {
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any(), any())
+        } returns TerminalPaymentResult.Success(paymentId = "pay-tarjeta", cardBrand = "VISA", cardLastFour = "4242")
+        val impreso = slot<ReceiptData>()
+        coEvery { printerService.autoPrintReceipt(capture(impreso)) } returns Unit
+
+        viewModel.startPaymentFlow(cartConUnProducto())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+
+        val recibo = impreso.captured
+        assertEquals("Tarjeta", recibo.paymentMethod)
+        assertEquals("VISA", recibo.cardBrand)
+        assertEquals("4242", recibo.cardLastFour)
+        assertNull(recibo.cashTendered)
+    }
+
+    /**
+     * Arreglo final (I1, revisión de conjunto de la Fase 3): «Atendió: X» = el vendedor
+     * elegido en «Vendiendo» cuando lo hay, con respaldo a quien inició sesión — decisión de
+     * producto ya tomada. Antes `buildReceiptSnapshot` no ponía `cashierName` en absoluto, así
+     * que el bloque `staff` de la receta salía vacío en Android para toda venta de mostrador,
+     * aunque el iPad SÍ lo imprimiera para la misma venta.
+     */
+    @Test
+    fun `P1 el ticket imprime a quien atendio - el vendedor elegido en Vendiendo`() = runTest {
+        coEvery {
+            orderRepository.createOrder(any(), any(), any(), any(), any())
+        } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-atendio")))
+        coEvery {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any())
+        } returns Result.success(OrderRepository.CashPayResult(paymentId = "pay-atendio", receiptAccessKey = null))
+        val impreso = slot<ReceiptData>()
+        coEvery { printerService.autoPrintReceipt(capture(impreso)) } returns Unit
+
+        val carritoConVendedor = CartState(
+            items = listOf(CartItem(id = "line-1", type = CartItemType.ProductItem("prod-1"), name = "Café", unitPrice = 1000)),
+            selectedStaffId = "staff-ana",
+            selectedStaffName = "Ana",
+        )
+        viewModel.startPaymentFlow(carritoConVendedor)
+        viewModel.confirmCashCustom(2000)
+        advanceUntilIdle()
+
+        assertEquals("Ana", impreso.captured.cashierName)
+    }
+
+    @Test
+    fun `P1 imprimir otra vez desde la pantalla de exito conserva la fecha de la venta`() = runTest {
+        val primero = reciboDelCobro { viewModel.confirmCashCustom(1000) }
+        val otraVez = slot<ReceiptData>()
+        coEvery { printerService.manualPrintReceipt(capture(otraVez)) } returns PrinterService.PrintOutcome.Printed(1)
+        Thread.sleep(5) // un `Date()` nuevo ya sería distinto
+        viewModel.reprintReceipt()
+        advanceUntilIdle()
+        assertEquals(primero.date, otraVez.captured.date)
+    }
 
     /**
      * Arranca el cobro en efectivo de [cartConUnProducto] — a propósito SIN `advanceUntilIdle()`,

@@ -1331,13 +1331,17 @@ class TableOrderViewModel @Inject constructor(
                 fun cents(v: Double) = round(v * 100).toInt()
                 val receipt = ReceiptData(
                     orderNumber = order.orderNumber,
-                    orderType = "Mesa ${session.tableNumber} — PRE-CUENTA",
+                    orderType = "Mesa ${session.tableNumber} - PRE-CUENTA",
                     items = order.items.map {
                         ReceiptItem(
                             name = it.productName ?: "Artículo",
                             quantity = it.quantity,
                             unitPrice = cents(it.unitPrice),
                             totalPrice = cents(it.total),
+                            // I4 (revisión de conjunto): sin esto, un artículo de cortesía
+                            // imprimía su precio en la pre-cuenta de Android mientras iOS ya
+                            // imprimía «CORTESÍA» para la MISMA cuenta.
+                            isCortesia = it.isCortesia,
                         )
                     },
                     subtotal = cents(order.total),
