@@ -97,6 +97,7 @@ fun PrinterConfigSheet(
     var autoPrintReceipts by remember { mutableStateOf(printer.autoPrintReceipts) }
     var autoPrintKitchenTickets by remember { mutableStateOf(printer.autoPrintKitchenTickets) }
     var autoOpenCashDrawer by remember { mutableStateOf(printer.autoOpenCashDrawer) }
+    var cashDrawerPin by remember { mutableIntStateOf(printer.cashDrawerPin) }
     var numberOfCopies by remember { mutableIntStateOf(printer.numberOfCopies) }
     var isPrinting by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
@@ -124,6 +125,7 @@ fun PrinterConfigSheet(
         autoPrintKitchenTickets = autoPrintKitchenTickets,
         autoOpenCashDrawer = autoOpenCashDrawer,
         numberOfCopies = numberOfCopies,
+        cashDrawerPin = cashDrawerPin,
     )
 
     fun saveChanges() {
@@ -391,6 +393,31 @@ fun PrinterConfigSheet(
                         },
                     )
                 }
+
+                // Conector del cajón. El 2 sirve para casi todos; el 5 es para el cajón que
+                // no abre con el 2. Se prueba con «Abrir cajón de dinero», más abajo.
+                Text("Conector del cajón", modifier = Modifier.padding(top = AvoqadoTheme.spacing.sm))
+                Text(
+                    "Si tu cajón no abre con el 2, elige el 5 y pruébalo con «Abrir cajón de dinero».",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+                val pines = listOf(2 to "2 (normal)", 5 to "5")
+                SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                    pines.forEachIndexed { index, (pin, etiqueta) ->
+                        SegmentedButton(
+                            selected = if (pin == 5) cashDrawerPin == 5 else cashDrawerPin != 5,
+                            onClick = {
+                                cashDrawerPin = pin
+                                saveChanges()
+                            },
+                            shape = SegmentedButtonDefaults.itemShape(index = index, count = pines.size),
+                        ) {
+                            Text(etiqueta)
+                        }
+                    }
+                }
             }
 
             // Copies
@@ -461,7 +488,7 @@ fun PrinterConfigSheet(
                     scope.launch {
                         try {
                             printerService.openCashDrawer(printerEditado())
-                            feedbackMessage = "Comando enviado al cajon"
+                            feedbackMessage = "Orden enviada al cajón"
                         } catch (e: Exception) {
                             feedbackMessage = "Error: ${e.message}"
                         }
@@ -471,7 +498,7 @@ fun PrinterConfigSheet(
             ) {
                 Icon(Icons.Filled.Print, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.xs))
-                Text("Abrir cajon de dinero")
+                Text("Abrir cajón de dinero")
             }
 
             // Feedback message
@@ -589,6 +616,7 @@ internal fun SavedPrinter.conEdiciones(
     autoPrintKitchenTickets: Boolean,
     autoOpenCashDrawer: Boolean,
     numberOfCopies: Int,
+    cashDrawerPin: Int = this.cashDrawerPin,
 ): SavedPrinter = copy(
     name = name,
     roles = roles,
@@ -598,4 +626,5 @@ internal fun SavedPrinter.conEdiciones(
     autoPrintKitchenTickets = autoPrintKitchenTickets,
     autoOpenCashDrawer = autoOpenCashDrawer,
     numberOfCopies = numberOfCopies,
+    cashDrawerPin = cashDrawerPin,
 )

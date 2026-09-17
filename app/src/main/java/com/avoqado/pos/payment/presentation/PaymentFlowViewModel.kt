@@ -1,5 +1,6 @@
 package com.avoqado.pos.payment.presentation
 
+import com.avoqado.pos.payment.domain.CajonDeDinero
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -1517,6 +1518,7 @@ class PaymentFlowViewModel @Inject constructor(
                                 // pantalla de éxito arma el recibo con la hora de ESE toque — no la
                                 // de la venta (revisión de conjunto, I2).
                                 lastReceipt = buildReceiptSnapshot(PaymentMethod.CASH, result.changeCents)
+                                abrirCajonSiCorresponde(PaymentMethod.CASH)
                                 _state.value = PaymentFlowState.Success(
                                     totalAmount = total,
                                     method = PaymentMethod.CASH,
@@ -1554,6 +1556,7 @@ class PaymentFlowViewModel @Inject constructor(
                                     // el ticket de una venta rápida que se guardó offline también
                                     // toma la hora de cuando alguien la imprima, no la de la venta.
                                     lastReceipt = buildReceiptSnapshot(PaymentMethod.CASH, result.changeCents)
+                                    abrirCajonSiCorresponde(PaymentMethod.CASH)
                                     _state.value = PaymentFlowState.Success(
                                         totalAmount = total,
                                         method = PaymentMethod.CASH,
@@ -2322,6 +2325,32 @@ class PaymentFlowViewModel @Inject constructor(
         autoPrintAfterPayment(method, changeCents)
     }
 
+    /**
+     * Cajón de dinero al cobrar en EFECTIVO (conducta estándar de POS), por la impresora de
+     * recibos y sólo si tiene «abrir cajón al cobrar» activado. La regla de cuándo vive en
+     * [CajonDeDinero]. Nunca rompe el cobro: el dinero ya se registró, un fallo del cajón
+     * sólo se loguea. Funciona igual sin red: el pulso sale del aparato.
+     */
+    private suspend fun abrirCajonDeDinero() {
+        runCatching {
+            val receiptPrinter = printerService.getDefaultPrinter(
+                com.avoqado.pos.printing.data.model.PrinterRole.RECEIPT,
+            )
+            if (receiptPrinter != null && receiptPrinter.autoOpenCashDrawer) {
+                printerService.openCashDrawer(receiptPrinter)
+            }
+        }.onFailure { Log.w("💰", "No se pudo abrir el cajón en venta de efectivo: ${it.message}") }
+    }
+
+    /**
+     * El cobro rápido en efectivo (importe tecleado, sin productos) NO pasa por
+     * [autoPrintAfterPayment]; sin esta llamada el cajón nunca se abría (Sunmi D3, 2026-09-17).
+     */
+    private fun abrirCajonSiCorresponde(method: PaymentMethod) {
+        if (!CajonDeDinero.debeAbrirse(method, manualMethod, selectedTender)) return
+        viewModelScope.launch { abrirCajonDeDinero() }
+    }
+
     private fun createKDSOrderIfNeeded() {
         val cart = cartState ?: return
         val realItems = cart.items.filter {
@@ -2380,6 +2409,10 @@ class PaymentFlowViewModel @Inject constructor(
 
     private fun autoPrintAfterPayment(method: PaymentMethod, changeCents: Int? = null) {
         val cart = cartState ?: return
+        // Se decide AQUÍ, no dentro de la corrutina: `startPaymentFlow` de la venta
+        // siguiente limpia `manualMethod`/`selectedTender` y la corrutina podría leerlos ya
+        // vacíos — una transferencia abriría el cajón.
+        val abrirCajon = CajonDeDinero.debeAbrirse(method, manualMethod, selectedTender)
 
         viewModelScope.launch {
             buildReceiptSnapshot(method, changeCents)?.let { receipt ->
@@ -2387,21 +2420,8 @@ class PaymentFlowViewModel @Inject constructor(
                 printerService.autoPrintReceipt(receipt)
             }
 
-            // Cajón de dinero: en EFECTIVO se abre SOLO (conducta estándar de POS)
-            // si la impresora de recibos tiene el auto-open activado. Va aquí —
-            // antes del return por carrito vacío — para que aplique también a un
-            // cobro en efectivo de monto personalizado (sin productos). Nunca
-            // rompe el cobro: cualquier fallo del cajón/impresora solo se loguea.
-            if (method == PaymentMethod.CASH) {
-                runCatching {
-                    val receiptPrinter = printerService.getDefaultPrinter(
-                        com.avoqado.pos.printing.data.model.PrinterRole.RECEIPT,
-                    )
-                    if (receiptPrinter != null && receiptPrinter.autoOpenCashDrawer) {
-                        printerService.openCashDrawer(receiptPrinter)
-                    }
-                }.onFailure { Log.w("💰", "No se pudo abrir el cajón en venta de efectivo: ${it.message}") }
-            }
+            // El cajón va DESPUÉS del ticket: los dos salen por la misma impresora.
+            if (abrirCajon) abrirCajonDeDinero()
 
             // 🔴 Sigue dentro de ESTE `viewModelScope.launch` — desligado del camino del cobro,
             // que a esta altura ya resolvió `_state` (ver `createKDSOrderAndPrint`, llamado

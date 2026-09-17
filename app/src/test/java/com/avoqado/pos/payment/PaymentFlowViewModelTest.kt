@@ -71,6 +71,8 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
+import com.avoqado.pos.printing.data.model.PrinterRole
+import com.avoqado.pos.printing.data.model.SavedPrinter
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class PaymentFlowViewModelTest {
@@ -1145,6 +1147,107 @@ class PaymentFlowViewModelTest {
         assertNull(recibo.cashTendered)
         assertFalse(recibo.isCashPayment)
         assertEquals("pay-recibo", recibo.transactionId)
+    }
+
+    // MARK: - Cajón de dinero (Sunmi D3 + NC010, 2026-09-17)
+
+    private fun conImpresoraDeTickets(autoOpenCashDrawer: Boolean = true): SavedPrinter {
+        val integrada = SavedPrinter(
+            name = "Impresora integrada",
+            connectionType = "internal",
+            address = "internal",
+            autoOpenCashDrawer = autoOpenCashDrawer,
+        )
+        every { printerService.getDefaultPrinter(PrinterRole.RECEIPT) } returns integrada
+        coEvery { printerService.openCashDrawer(any()) } returns Unit
+        return integrada
+    }
+
+    private fun cartConImporteTecleado() = CartState(
+        items = listOf(
+            CartItem(id = "custom-1", type = CartItemType.CustomAmount, name = "Importe personalizado", unitPrice = 1000),
+        ),
+    )
+
+    /** El defecto medido en la D3: el importe tecleado cobrado en efectivo no abría el cajón. */
+    @Test
+    fun `efectivo de un importe tecleado abre el cajon`() = runTest {
+        val integrada = conImpresoraDeTickets()
+
+        viewModel.startPaymentFlow(cartConImporteTecleado())
+        viewModel.confirmCashCustom(2000)
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value is PaymentFlowState.Success)
+        coVerify(exactly = 1) { printerService.openCashDrawer(integrada) }
+    }
+
+    /** Sin red el cajón también se abre: el pulso sale del aparato, no del servidor. */
+    @Test
+    fun `efectivo de un importe tecleado sin red abre el cajon`() = runTest {
+        val integrada = conImpresoraDeTickets()
+        coEvery {
+            orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), any(), any(), any())
+        } returns Result.failure(java.net.UnknownHostException("sin red"))
+
+        viewModel.startPaymentFlow(cartConImporteTecleado())
+        viewModel.confirmCashCustom(2000)
+        advanceUntilIdle()
+
+        val estado = viewModel.state.value
+        assertTrue(estado is PaymentFlowState.Success && estado.isQueued)
+        coVerify(exactly = 1) { printerService.openCashDrawer(integrada) }
+    }
+
+    @Test
+    fun `efectivo con productos abre el cajon`() = runTest {
+        val integrada = conImpresoraDeTickets()
+        reciboDelCobro { viewModel.confirmCashCustom(2000) }
+        coVerify(exactly = 1) { printerService.openCashDrawer(integrada) }
+    }
+
+    @Test
+    fun `un pago declarado como transferencia no abre el cajon`() = runTest {
+        conImpresoraDeTickets()
+        reciboDelCobro { viewModel.confirmManualChoice(ManualPaymentChoice.Fixed(ManualPaymentMethod.TRANSFER)) }
+        coVerify(exactly = 0) { printerService.openCashDrawer(any()) }
+    }
+
+    @Test
+    fun `un importe tecleado declarado como transferencia no abre el cajon`() = runTest {
+        conImpresoraDeTickets()
+        // Los OCHO argumentos: el stub de setup() sólo atrapa manualMethod = null.
+        coEvery {
+            orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), any(), any(), any())
+        } returns Result.success(OrderRepository.CashPayResult(paymentId = "fast-transfer", receiptAccessKey = null))
+        viewModel.startPaymentFlow(cartConImporteTecleado())
+        viewModel.confirmManualChoice(ManualPaymentChoice.Fixed(ManualPaymentMethod.TRANSFER))
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value is PaymentFlowState.Success)
+        coVerify(exactly = 0) { printerService.openCashDrawer(any()) }
+    }
+
+    @Test
+    fun `con el cajon automatico apagado el efectivo no lo abre`() = runTest {
+        conImpresoraDeTickets(autoOpenCashDrawer = false)
+        viewModel.startPaymentFlow(cartConImporteTecleado())
+        viewModel.confirmCashCustom(2000)
+        advanceUntilIdle()
+        coVerify(exactly = 0) { printerService.openCashDrawer(any()) }
+    }
+
+    /** Un cajón que falla nunca tumba un cobro que ya ocurrió. */
+    @Test
+    fun `si el cajon falla el cobro sigue siendo exitoso`() = runTest {
+        conImpresoraDeTickets()
+        coEvery { printerService.openCashDrawer(any()) } throws RuntimeException("impresora sin respuesta")
+
+        viewModel.startPaymentFlow(cartConImporteTecleado())
+        viewModel.confirmCashCustom(2000)
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value is PaymentFlowState.Success)
     }
 
     /**

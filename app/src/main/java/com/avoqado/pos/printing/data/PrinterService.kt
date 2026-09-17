@@ -608,7 +608,7 @@ class PrinterService @Inject constructor(
     suspend fun openCashDrawer(printer: SavedPrinter) {
         val escpos = escposFor(printer)
         escpos.reset()
-        escpos.openCashDrawer()
+        escpos.openCashDrawer(printer.cashDrawerPin)
         sendData(escpos.getData(), printer)
     }
 

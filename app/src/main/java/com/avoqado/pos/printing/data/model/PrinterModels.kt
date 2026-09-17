@@ -121,6 +121,14 @@ data class SavedPrinter(
     // estándar de POS). Prendido por default; se apaga desde la config de la
     // impresora de recibos. Solo aplica a la impresora con rol RECEIPT.
     val autoOpenCashDrawer: Boolean = true,
+    /**
+     * Pin del conector del cajón por el que sale el pulso: 2 (casi todos los cajones,
+     * incluida la Sunmi NC010) o 5. Un cajón cableado al 5 no abre con el 2. Nunca se
+     * mandan los dos: con dos cajones en «Y» se abrirían ambos. Cualquier otro valor se
+     * trata como 2 (ver [ESCPOSPrinter.openCashDrawer]). Default para que las impresoras
+     * ya guardadas se lean sin romperse.
+     */
+    val cashDrawerPin: Int = 2,
     val numberOfCopies: Int = 1,
     val dateAdded: Long = System.currentTimeMillis(),
     val lastConnected: Long? = null,
