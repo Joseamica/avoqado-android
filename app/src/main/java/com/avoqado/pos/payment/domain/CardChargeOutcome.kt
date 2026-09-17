@@ -274,6 +274,10 @@ object CardChargeDecision {
         when {
             probe.cancelDisposition == "ACTIVE" -> CardChargeOutcome.Undetermined("El cobro sigue activo. Confirma en la terminal. No vuelvas a pasar la tarjeta.")
             probe.status == "COMPLETED" -> CardChargeOutcome.Undetermined(UNDETERMINED_MESSAGE)
+            probe.status == "FAILED" && probe.outcomeEvidence == "NO_EVIDENCE_AFTER_WINDOW" ->
+                CardChargeOutcome.NotCharged("No se confirmó el cobro en 30 s. Puedes volver a cobrar. Si el banco lo aprueba tarde, se registra solo y te avisamos.")
+            probe.status == "FAILED" && probe.outcomeEvidence == "OPERATOR_RECONCILED" ->
+                CardChargeOutcome.NotCharged("La terminal confirmó que no se presentó tarjeta. Puedes volver a cobrar.")
             probe.status == "FAILED" -> CardChargeOutcome.NotCharged("El cobro fue rechazado. No se cobró la tarjeta.")
             probe.status == "CANCELLED" && probe.cancelDisposition == "ACCEPTED" -> CardChargeOutcome.NotCharged("El cobro se canceló. No se cobró la tarjeta.")
             // TIMED_OUT, UNKNOWN — y cualquier estado que este cliente no conozca todavía.

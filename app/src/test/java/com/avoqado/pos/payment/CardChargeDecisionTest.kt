@@ -113,6 +113,32 @@ class CardChargeDecisionTest {
         assertTrue((decision as ProbeDecision.Resolved).outcome is CardChargeOutcome.NotCharged)
     }
 
+    // Ventana de confirmación (16-sep): el servidor cierra como FAILED/NOT_CHARGED tanto lo que
+    // liberó por la ventana de 30 s (`NO_EVIDENCE_AFTER_WINDOW`) como lo que el cajero declaró en
+    // la terminal (`OPERATOR_RECONCILED`). Ninguno es un rechazo del banco: el TEXTO lo distingue.
+    // Las apps viejas siguen leyendo FAILED como «no se cobró» — ese contrato no se toca.
+
+    @Test
+    fun `FAILED con NO_EVIDENCE_AFTER_WINDOW es NotCharged y lo dice sin llamarlo rechazo`() {
+        val r = CardChargeDecision.decide(ChargeStatusProbe.Known(status = "FAILED", inProgress = false, outcome = "NOT_CHARGED", outcomeEvidence = "NO_EVIDENCE_AFTER_WINDOW"), isFinalAttempt = true)
+        val out = (r as ProbeDecision.Resolved).outcome as CardChargeOutcome.NotCharged
+        assertTrue(out.message, out.message.contains("No se confirmó el cobro en 30 s"))
+        assertFalse(out.message, out.message.contains("rechazado"))
+    }
+
+    @Test
+    fun `FAILED con OPERATOR_RECONCILED dice que la terminal confirmó que no hubo tarjeta`() {
+        val r = CardChargeDecision.decide(ChargeStatusProbe.Known(status = "FAILED", inProgress = false, outcome = "NOT_CHARGED", outcomeEvidence = "OPERATOR_RECONCILED"), isFinalAttempt = true)
+        val out = (r as ProbeDecision.Resolved).outcome as CardChargeOutcome.NotCharged
+        assertEquals("La terminal confirmó que no se presentó tarjeta. Puedes volver a cobrar.", out.message)
+    }
+
+    @Test
+    fun `FAILED sin evidencia sigue diciendo rechazado (contrato de siempre)`() {
+        val r = CardChargeDecision.decide(ChargeStatusProbe.Known(status = "FAILED", inProgress = false), isFinalAttempt = true)
+        assertEquals("El cobro fue rechazado. No se cobró la tarjeta.", ((r as ProbeDecision.Resolved).outcome as CardChargeOutcome.NotCharged).message)
+    }
+
     @Test
     fun `un 404 NO alcanza para declarar que no se cobro — queda indeterminado`() {
         // 🔴 Tentador y equivocado: "no existe la solicitud ⇒ nadie pasó una tarjeta".
