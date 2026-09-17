@@ -3,6 +3,7 @@ package com.avoqado.pos.printing
 import com.avoqado.pos.printing.data.ESCPOSPrinter
 import com.avoqado.pos.printing.data.model.PaperWidth
 import com.avoqado.pos.printing.data.model.SavedPrinter
+import com.avoqado.pos.printing.data.conUltimaConexion
 import com.avoqado.pos.printing.presentation.conEdiciones
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -24,13 +25,13 @@ class CajonConectorTest {
     }
 
     @Test
-    fun `pin 2 manda ESC p 0`() {
-        assertArrayEquals(byteArrayOf(0x1B, 0x70, 0x00, 0x19, 0xFA.toByte()), comando(2))
+    fun `pin 2 manda ESC p 0 con pulso de 100 ms`() {
+        assertArrayEquals(byteArrayOf(0x1B, 0x70, 0x00, 0x32, 0xFA.toByte()), comando(2))
     }
 
     @Test
     fun `pin 5 manda ESC p 1 con el mismo pulso`() {
-        assertArrayEquals(byteArrayOf(0x1B, 0x70, 0x01, 0x19, 0xFA.toByte()), comando(5))
+        assertArrayEquals(byteArrayOf(0x1B, 0x70, 0x01, 0x32, 0xFA.toByte()), comando(5))
     }
 
     @Test
@@ -72,5 +73,29 @@ class CajonConectorTest {
         )
         assertEquals(5, p.editar().cashDrawerPin)
         assertEquals(2, p.editar(pin = 2).cashDrawerPin)
+    }
+
+    /**
+     * Auditoría de Codex (H5): terminar de conectar guardaba la COPIA con la que empezó la
+     * conexión, y si mientras tanto el cajero eligió el conector 5, lo regresaba a 2 en silencio.
+     */
+    @Test
+    fun `terminar de conectar sólo toca lastConnected y conserva lo que se editó mientras tanto`() {
+        val alEmpezar = SavedPrinter(id = "p1", name = "Epson", connectionType = "wifi", address = "10.0.0.5")
+        val guardada = alEmpezar.copy(cashDrawerPin = 5, autoOpenCashDrawer = false)
+        val otra = SavedPrinter(id = "p2", name = "Cocina", connectionType = "wifi", address = "10.0.0.6")
+
+        val resultado = conUltimaConexion(listOf(guardada, otra), id = "p1", ahora = 1234L)
+
+        assertEquals(5, resultado[0].cashDrawerPin)
+        assertEquals(false, resultado[0].autoOpenCashDrawer)
+        assertEquals(1234L, resultado[0].lastConnected)
+        assertEquals(otra, resultado[1])
+    }
+
+    @Test
+    fun `terminar de conectar una impresora que ya no existe no cambia nada`() {
+        val otra = SavedPrinter(id = "p2", name = "Cocina", connectionType = "wifi", address = "10.0.0.6")
+        assertEquals(listOf(otra), conUltimaConexion(listOf(otra), id = "borrada", ahora = 1L))
     }
 }

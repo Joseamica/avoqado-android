@@ -23,6 +23,12 @@ data class TenderTypeOption(
     /** PRIMARY = primer nivel al cobrar; MORE = detrás de "Más". Espejo de Square. */
     val posSection: String,
     val displayOrder: Int,
+    /**
+     * ¿Cobrar con este tipo abre el cajón físico? Lo manda el server (`countsAsPhysicalCash`):
+     * un vale que se guarda en caja sí, Uber Eats no. SÓLO decide el pulso del cajón; nunca se
+     * devuelve al server. null = server viejo que aún no lo manda (ver [CajonDeDinero]).
+     */
+    val opensCashDrawer: Boolean? = null,
 )
 
 /**

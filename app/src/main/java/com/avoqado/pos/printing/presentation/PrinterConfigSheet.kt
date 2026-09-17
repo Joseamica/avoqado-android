@@ -398,7 +398,9 @@ fun PrinterConfigSheet(
                 // no abre con el 2. Se prueba con «Abrir cajón de dinero», más abajo.
                 Text("Conector del cajón", modifier = Modifier.padding(top = AvoqadoTheme.spacing.sm))
                 Text(
-                    "Si tu cajón no abre con el 2, elige el 5 y pruébalo con «Abrir cajón de dinero».",
+                    "Elige el conector que indica el cable de tu cajón; el 2 es el más común. " +
+                        "Si eliges el equivocado, el cajón no abre o puede abrirse otro cajón conectado. " +
+                        "Pruébalo con «Abrir cajón de dinero».",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

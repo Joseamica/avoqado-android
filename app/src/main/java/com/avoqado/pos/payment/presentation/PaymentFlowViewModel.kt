@@ -1518,7 +1518,7 @@ class PaymentFlowViewModel @Inject constructor(
                                 // pantalla de éxito arma el recibo con la hora de ESE toque — no la
                                 // de la venta (revisión de conjunto, I2).
                                 lastReceipt = buildReceiptSnapshot(PaymentMethod.CASH, result.changeCents)
-                                abrirCajonSiCorresponde(PaymentMethod.CASH)
+                                abrirCajonSiCorresponde(PaymentMethod.CASH, total)
                                 _state.value = PaymentFlowState.Success(
                                     totalAmount = total,
                                     method = PaymentMethod.CASH,
@@ -1556,7 +1556,7 @@ class PaymentFlowViewModel @Inject constructor(
                                     // el ticket de una venta rápida que se guardó offline también
                                     // toma la hora de cuando alguien la imprima, no la de la venta.
                                     lastReceipt = buildReceiptSnapshot(PaymentMethod.CASH, result.changeCents)
-                                    abrirCajonSiCorresponde(PaymentMethod.CASH)
+                                    abrirCajonSiCorresponde(PaymentMethod.CASH, total)
                                     _state.value = PaymentFlowState.Success(
                                         totalAmount = total,
                                         method = PaymentMethod.CASH,
@@ -2346,8 +2346,8 @@ class PaymentFlowViewModel @Inject constructor(
      * El cobro rápido en efectivo (importe tecleado, sin productos) NO pasa por
      * [autoPrintAfterPayment]; sin esta llamada el cajón nunca se abría (Sunmi D3, 2026-09-17).
      */
-    private fun abrirCajonSiCorresponde(method: PaymentMethod) {
-        if (!CajonDeDinero.debeAbrirse(method, manualMethod, selectedTender)) return
+    private fun abrirCajonSiCorresponde(method: PaymentMethod, montoCents: Int) {
+        if (!CajonDeDinero.debeAbrirse(method, manualMethod, selectedTender, montoCents)) return
         viewModelScope.launch { abrirCajonDeDinero() }
     }
 
@@ -2412,7 +2412,8 @@ class PaymentFlowViewModel @Inject constructor(
         // Se decide AQUÍ, no dentro de la corrutina: `startPaymentFlow` de la venta
         // siguiente limpia `manualMethod`/`selectedTender` y la corrutina podría leerlos ya
         // vacíos — una transferencia abriría el cajón.
-        val abrirCajon = CajonDeDinero.debeAbrirse(method, manualMethod, selectedTender)
+        val cobrado = (_state.value as? PaymentFlowState.Success)?.totalAmount ?: (currentBaseAmount() + currentTipCents)
+        val abrirCajon = CajonDeDinero.debeAbrirse(method, manualMethod, selectedTender, cobrado)
 
         viewModelScope.launch {
             buildReceiptSnapshot(method, changeCents)?.let { receipt ->

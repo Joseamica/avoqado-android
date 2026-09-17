@@ -609,7 +609,9 @@ class PrinterService @Inject constructor(
         val escpos = escposFor(printer)
         escpos.reset()
         escpos.openCashDrawer(printer.cashDrawerPin)
-        sendData(escpos.getData(), printer)
+        // El pulso no usa papel: una impresora sin rollo igual debe poder abrir el cajón
+        // (auditoría de Codex H6), sobre todo con el cliente esperando su cambio.
+        sendData(escpos.getData(), printer, requierePapel = false)
     }
 
     /**
@@ -619,7 +621,7 @@ class PrinterService @Inject constructor(
      */
     suspend fun sendPrintData(data: ByteArray, printer: SavedPrinter) = sendData(data, printer)
 
-    private suspend fun sendData(data: ByteArray, printer: SavedPrinter) {
+    private suspend fun sendData(data: ByteArray, printer: SavedPrinter, requierePapel: Boolean = true) {
         // Auto-connect if not connected, or if the cached socket is stale: the
         // status says "connected" but it was opened for a different endpoint
         // (e.g. the printer's IP was edited and the config was refetched) or the
@@ -643,7 +645,7 @@ class PrinterService @Inject constructor(
 
         try {
             when (printer.connectionTypeEnum) {
-                PrinterConnectionType.WIFI -> sendDataWiFi(data, printer)
+                PrinterConnectionType.WIFI -> sendDataWiFi(data, printer, requierePapel)
                 PrinterConnectionType.BLUETOOTH -> sendDataBluetooth(data, printer)
                 PrinterConnectionType.USB -> sendDataUsb(data, printer)
                 PrinterConnectionType.INTERNAL -> innerPrinter.printRaw(data)
@@ -681,7 +683,7 @@ class PrinterService @Inject constructor(
             PrinterConnectionType.INTERNAL -> !innerPrinter.isAvailable
         }
 
-    private suspend fun sendDataWiFi(data: ByteArray, printer: SavedPrinter) = withContext(Dispatchers.IO) {
+    private suspend fun sendDataWiFi(data: ByteArray, printer: SavedPrinter, requierePapel: Boolean = true) = withContext(Dispatchers.IO) {
         val socket = wifiConnections[printer.id] ?: throw PrinterException.NotConnected()
 
         // 🔴 Preguntar ANTES de escribir: el 9100 es fuego-y-olvido.
@@ -690,7 +692,7 @@ class PrinterService @Inject constructor(
         // consulta la app cantaba "Recibo impreso" y no salía nada. Encontrado en
         // la T3 con una EPSON TM-m30III el 2026-08-10: el cajero se queda sin
         // ticket y creyendo que sí se imprimió.
-        if (isOutOfPaper(socket)) throw PrinterException.OutOfPaper()
+        if (requierePapel && isOutOfPaper(socket)) throw PrinterException.OutOfPaper()
 
         val output: OutputStream = socket.getOutputStream()
         output.write(data)
@@ -1190,9 +1192,26 @@ class PrinterService @Inject constructor(
         _printerStatuses.value = statuses
     }
 
+    /**
+     * Sólo marca la hora sobre el registro GUARDADO: la conexión pudo empezar con una copia
+     * vieja y, mientras tanto, el cajero cambió el conector o el cajón automático. Guardar la
+     * copia entera los revertía en silencio (auditoría de Codex H5). Espejo de iOS.
+     */
     private fun updateLastConnected(printer: SavedPrinter) {
-        updatePrinter(printer.copy(lastConnected = System.currentTimeMillis()))
+        val list = conUltimaConexion(_savedPrinters.value, printer.id, System.currentTimeMillis())
+        if (list == _savedPrinters.value) return
+        _savedPrinters.value = list
+        storage.savePrinters(list)
     }
+}
+
+/**
+ * Las impresoras guardadas con SÓLO la hora de conexión actualizada en [id]; el resto del
+ * registro queda como está guardado. Si [id] ya no existe, la lista no cambia.
+ */
+internal fun conUltimaConexion(guardadas: List<SavedPrinter>, id: String, ahora: Long): List<SavedPrinter> {
+    if (guardadas.none { it.id == id }) return guardadas
+    return guardadas.map { if (it.id == id) it.copy(lastConnected = ahora) else it }
 }
 
 // MARK: - Storage

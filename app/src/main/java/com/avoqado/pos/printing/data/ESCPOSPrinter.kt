@@ -83,10 +83,11 @@ class ESCPOSPrinter(
         val PARTIAL_CUT = byteArrayOf(0x1D, 0x56, 0x01)
         val FULL_CUT = byteArrayOf(0x1D, 0x56, 0x00)
 
-        // Cajón: ESC p m t1 t2 — m = 0 → pin 2, m = 1 → pin 5; pulso 50 ms encendido
-        // (t1 = 25 × 2 ms) y 500 ms apagado (t2 = 250 × 2 ms). Abre la Sunmi NC010 (medido).
-        val OPEN_CASH_DRAWER = byteArrayOf(0x1B, 0x70, 0x00, 0x19, 0xFA.toByte())
-        val OPEN_CASH_DRAWER_PIN_5 = byteArrayOf(0x1B, 0x70, 0x01, 0x19, 0xFA.toByte())
+        // Cajón: ESC p m t1 t2 — m = 0 → pin 2, m = 1 → pin 5; pulso 100 ms encendido
+        // (t1 = 50 × 2 ms) y 500 ms apagado (t2 = 250 × 2 ms). 100 ms es el mínimo que pide la
+        // ficha de la Sunmi NC010 (100–300 ms); antes eran 50 ms (auditoría de Codex, 2026-09-17).
+        val OPEN_CASH_DRAWER = byteArrayOf(0x1B, 0x70, 0x00, 0x32, 0xFA.toByte())
+        val OPEN_CASH_DRAWER_PIN_5 = byteArrayOf(0x1B, 0x70, 0x01, 0x32, 0xFA.toByte())
 
         // Character set (Latin America)
         // ESC t 16 = Windows-1252 (no 858, como decía el comentario viejo).

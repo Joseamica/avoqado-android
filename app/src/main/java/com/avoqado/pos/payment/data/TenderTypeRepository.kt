@@ -131,6 +131,11 @@ class TenderTypeRepository @Inject constructor(
         captureTip = o.optBoolean("captureTip", true),
         posSection = o.optString("posSection", "MORE"),
         displayOrder = o.optInt("displayOrder", 0),
+        opensCashDrawer = if (o.has("opensCashDrawer") && !o.isNull("opensCashDrawer")) {
+            o.optBoolean("opensCashDrawer", false)
+        } else {
+            null
+        },
     )
 
     private companion object {
