@@ -32,6 +32,7 @@ import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import java.io.IOException
 import java.util.concurrent.atomic.AtomicLong
 import javax.inject.Inject
 import javax.inject.Provider
@@ -170,12 +171,38 @@ data class TerminalNavigationSettings(
     val canDeliverAreaTickets: Boolean = false,
     val fulfillmentAreaId: String? = null,
     val customerDisplayInverted: Boolean = false,
+    /** Ver `DeviceTerminalSettingsDto.configurableSettings`. */
+    val configurableSettings: List<String> = emptyList(),
 ) {
     companion object {
         const val STANDARD_POS = "STANDARD_POS"
         const val AREA_OPERATIONS = "AREA_OPERATIONS"
         val DEFAULT = TerminalNavigationSettings()
     }
+}
+
+/**
+ * Qué pasó al intentar guardar un ajuste en la ficha de este aparato.
+ *
+ * 🔴 Existe en vez de un `Boolean` porque la UI tiene que poder DECIR qué pasó: «sin conexión» y
+ * «no tienes permiso» exigen mensajes distintos, y un interruptor que se mueve solo porque el
+ * guardado falló es una mentira en pantalla (`.claude/rules/todo-funciona-sin-red.md`).
+ */
+sealed interface AjusteGuardado {
+    /** Guardado en el servidor y reflejado en la app. */
+    data object Ok : AjusteGuardado
+
+    /** No hubo red. El ajuste NO cambió: este carril es online-only a propósito. */
+    data object SinConexion : AjusteGuardado
+
+    /** El servidor rechazó por permisos (403). Hoy, por defecto, sólo el dueño puede. */
+    data object SinPermiso : AjusteGuardado
+
+    /** Nunca hemos sincronizado: no sabemos qué ficha es este aparato, así que no se escribe nada. */
+    data object SinFicha : AjusteGuardado
+
+    /** El servidor dijo no por otra razón (ajuste no soportado por el aparato, validación…). */
+    data class Rechazado(val codigo: Int) : AjusteGuardado
 }
 
 @Singleton
@@ -560,6 +587,65 @@ class TpvSettingsRepository internal constructor(
         _settings.update { it.copy(includeTaxInTipBase = value) }
     }
 
+    /**
+     * Guarda en la ficha de ESTE aparato un ajuste de las pantallas del cobro.
+     *
+     * Vive en el servidor, no en el aparato (decisión del founder, 2026-09-18): así sobrevive a
+     * reinstalar la app y el dashboard ve lo mismo. El precio, declarado: **sin red no se puede
+     * cambiar**, y el llamador tiene que decirlo — por eso esto devuelve `AjusteGuardado` y sólo
+     * mueve el estado visible cuando el servidor confirmó.
+     */
+    suspend fun guardarPantallasDelCobro(
+        showReviewScreen: Boolean? = null,
+        showTipScreen: Boolean? = null,
+        tipSuggestions: List<Int>? = null,
+    ): AjusteGuardado {
+        val venueId = secureStorage.venueId ?: return AjusteGuardado.SinFicha
+        val terminalId = _terminalNavigation.value.terminalId ?: return AjusteGuardado.SinFicha
+        val token = secureStorage.accessToken ?: return AjusteGuardado.SinPermiso
+
+        val cambios = buildMap<String, String> {
+            showReviewScreen?.let { put("showReviewScreen", it.toString()) }
+            showTipScreen?.let { put("showTipScreen", it.toString()) }
+            // El servidor valida el contenido (1 a 100, sin repetidos, máximo 6) y es la única
+            // autoridad: repetir esas reglas aquí sólo crearía una segunda versión que se desfasa.
+            tipSuggestions?.let { put("tipSuggestions", it.joinToString(",", "[", "]")) }
+        }
+        if (cambios.isEmpty()) return AjusteGuardado.Ok
+
+        val cuerpo = cambios.entries.joinToString(",", "{", "}") { "\"${it.key}\":${it.value}" }
+        val request = Request.Builder()
+            .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/terminals/$terminalId/settings")
+            .header("Authorization", "Bearer $token")
+            .patch(cuerpo.toRequestBody("application/json".toMediaType()))
+            .build()
+
+        val response = try {
+            withContext(Dispatchers.IO) { client.newCall(request).execute() }
+        } catch (error: IOException) {
+            Log.w("📦", "Sin red al guardar las pantallas del cobro: ${error.message}")
+            return AjusteGuardado.SinConexion
+        }
+
+        response.use {
+            if (!it.isSuccessful) {
+                Log.e("📦", "❌ El servidor rechazó el ajuste: ${it.code}")
+                return if (it.code == 401 || it.code == 403) AjusteGuardado.SinPermiso else AjusteGuardado.Rechazado(it.code)
+            }
+        }
+
+        // Sólo ahora: lo que se ve en pantalla es lo que el servidor ya guardó.
+        _settings.update { actuales ->
+            actuales.copy(
+                showReviewScreen = showReviewScreen ?: actuales.showReviewScreen,
+                showTipScreen = showTipScreen ?: actuales.showTipScreen,
+                tipSuggestions = tipSuggestions ?: actuales.tipSuggestions,
+            )
+        }
+        persistTpvSettings(venueId, _settings.value)
+        return AjusteGuardado.Ok
+    }
+
     fun clearCache() {
         loadedVenueId = null
         _settings.value = TpvSettings.DEFAULT
@@ -693,6 +779,13 @@ internal data class DeviceTerminalSettingsDto(
     val canDeliverAreaTickets: Boolean = false,
     val fulfillmentAreaId: String? = null,
     val customerDisplayInverted: Boolean = false,
+    /**
+     * Qué ajustes puede cambiar ESTE aparato desde Más > Configuración. La lista la manda el
+     * SERVIDOR (`device-capabilities.service.ts`) a propósito: si viviera aquí codificada, el día
+     * que un tipo de aparato gane o pierda un ajuste habría que publicar un APK. Ausente (server
+     * viejo) ⇒ vacía ⇒ no se ofrece nada, que es exactamente el comportamiento de hoy.
+     */
+    val configurableSettings: List<String> = emptyList(),
 )
 
 internal fun VenueSettingsData?.toTerminalNavigationSettings(): TerminalNavigationSettings {
@@ -705,6 +798,7 @@ internal fun VenueSettingsData?.toTerminalNavigationSettings(): TerminalNavigati
         canDeliverAreaTickets = terminal.canDeliverAreaTickets,
         fulfillmentAreaId = terminal.fulfillmentAreaId,
         customerDisplayInverted = terminal.customerDisplayInverted,
+        configurableSettings = terminal.configurableSettings,
     )
 }
 
