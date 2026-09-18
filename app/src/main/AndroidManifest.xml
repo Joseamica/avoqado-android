@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!--
       🔴 Desde Android 11 (targetSdk 30+) una app NO puede ver ni ligarse a un
@@ -10,6 +11,15 @@
     <queries>
         <package android:name="woyou.aidlservice.jiuiv5" />
     </queries>
+
+    <!--
+      🔴 Google Play: Firebase Analytics (entró con Crashlytics el 2026-09-07, 20dca6a) mete el
+      permiso del ID de publicidad. La app no muestra anuncios y Play Console lo declara así; con el
+      permiso, Play RECHAZA la versión al confirmar ("your declaration on Play Console says your app
+      doesn't use advertising ID") — pasó con la 2.18.4. Analytics y Crashlytics siguen sin él.
+    -->
+    <uses-permission android:name="com.google.android.gms.permission.AD_ID" tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_ADSERVICES_AD_ID" tools:node="remove" />
 
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.INTERNET" />
@@ -70,6 +80,12 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:theme="@style/Theme.Avoqado">
+
+        <!-- Sin ID de publicidad: Analytics no lo recolecta (ver el tools:node="remove" de arriba). -->
+        <meta-data
+            android:name="google_analytics_adid_collection_enabled"
+            android:value="false" />
+
 
         <activity
             android:name=".MainActivity"
