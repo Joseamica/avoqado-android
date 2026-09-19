@@ -87,6 +87,31 @@ object CancelacionDeCobro {
     const val BOTON_VOLVER_A_CONSULTAR = "Volver a consultar"
     const val BOTON_SALIR_PENDIENTE = "Salir (queda pendiente)"
     const val BOTON_CANCELAR_VENTA = "Cancelar la venta"
+
+    // ── La declaración del cajero: «ya revisé la terminal y no se cobró» (etapa 2, 19-sep).
+    //    🔴 Los MISMOS textos, cadena por cadena, que iOS: la divergencia `Atendio/Atendió` del
+    //    ticket nació de dos apps escribiendo por su cuenta lo que parecía lo mismo.
+    const val BOTON_DECLARAR_NO_COBRADO = "Ya revisé la terminal: no se cobró"
+    const val DECLARACION_TITULO = "Confirma que no se cobró"
+    const val DECLARACION_CONFIRMAR = "Sí, no se cobró"
+    const val DECLARACION_CANCELAR = "Mejor no"
+    const val DECLARACION_LISTO = "Listo, puedes cobrar"
+
+    /**
+     * 🔴 Online-only A PROPÓSITO, y por eso este texto NO dice «se guardó». El cajero afirma lo que
+     * ve AHORA en la pantalla de la terminal, y esa afirmación caduca: reproducida diez minutos
+     * después podría caer sobre una venta que entretanto sí se cobró.
+     */
+    const val DECLARACION_SIN_RED = "Necesitas conexión para confirmar esta declaración."
+
+    /** Sólo para una respuesta del servidor sin mensaje legible: el suyo SIEMPRE tiene prioridad. */
+    const val DECLARACION_RECHAZO_GENERICO =
+        "No se pudo declarar este cobro. Conserva el pendiente y consulta su resultado."
+
+    /** El cuerpo del diálogo lleva el monto para que nadie declare sobre el cobro equivocado. */
+    fun cuerpoDeLaDeclaracion(monto: String) =
+        "Estás declarando que miraste la pantalla de la terminal y el cobro de $monto no pasó. " +
+            "Tu nombre queda en el registro." 
     const val NO_SE_PUDO_GUARDAR = "No se pudo guardar la cancelación en este equipo. Inténtalo de nuevo."
     const val SE_COBRO_AL_FINAL = "La terminal sí cobró este pago: la venta queda pagada."
     const val RECHAZO_TERMINAL_NO_CONECTADA = "La terminal no está conectada. Este cobro NO se envió; no se cobró nada."

@@ -17,6 +17,8 @@ import com.avoqado.pos.payment.data.OrderRepository
 import com.avoqado.pos.payment.data.PaymentSyncService
 import com.avoqado.pos.payment.data.TerminalListResult
 import com.avoqado.pos.payment.data.TerminalPaymentResult
+import com.avoqado.pos.payment.data.ResultadoDeDeclaracion
+import com.avoqado.pos.payment.domain.CancelacionDeCobro
 import com.avoqado.pos.payment.data.TerminalPaymentService
 import com.avoqado.pos.payment.data.model.CreateOrderRequest
 import com.avoqado.pos.payment.data.model.CreateOrderResponse
@@ -1985,6 +1987,65 @@ class PaymentFlowViewModel @Inject constructor(
      */
     fun chargeAgainDespiteUndetermined() { /* Only authoritative recovery permits another charge. */ }
 
+    /**
+     * «Ya revisé la terminal: no se cobró». El cajero MIRÓ la pantalla del aparato y lo declara;
+     * el servidor libera la venta y la ranura de una sola vez.
+     *
+     * 🔴 Es la salida que faltaba el 18-sep: Testarudo estuvo 26 minutos sin poder cobrar y sólo
+     * se destrabó escribiendo SQL en el Postgres de producción. La protección hizo su trabajo
+     * —cero cobros dobles—; lo que no existía era una salida para el cajero.
+     *
+     * 🔴 Y NO cobra: libera. Quien decide si se vuelve a cobrar es el cajero, en la pantalla
+     * siguiente, como hasta hoy.
+     */
+    fun declararNoCobrado() {
+        // La llave durable manda, igual que en «Volver a consultar»: si el proceso murió,
+        // `undeterminedRequestId` viene vacío pero el cobro sigue sin resolverse en disco.
+        val requestId = undeterminedRequestId ?: terminalPaymentService.unresolvedRequestId ?: return
+        val total = currentBaseAmount() + currentTipCents
+        val fromPreviousSale = (_state.value as? PaymentFlowState.Undetermined)?.fromPreviousSale == true
+
+        // Se conserva el mensaje que ya estaba: `checking` es lo que indica que hay algo en vuelo, y
+        // escribir «Cancelando el cobro…» aquí sería falso — no se está cancelando nada.
+        val mensajeActual = (_state.value as? PaymentFlowState.Undetermined)?.message ?: CardChargeDecision.UNDETERMINED_MESSAGE
+        _state.value = PaymentFlowState.Undetermined(
+            totalAmount = total,
+            message = mensajeActual,
+            checking = true,
+            fromPreviousSale = fromPreviousSale,
+        )
+
+        viewModelScope.launch {
+            when (val r = terminalPaymentService.declararNoCobrado(requestId)) {
+                is ResultadoDeDeclaracion.Liberada -> {
+                    undeterminedRequestId = null
+                    // El MISMO desenlace que «consta que no se cobró»: el cajero decide si cobra.
+                    if (fromPreviousSale) {
+                        _previousChargeResolved.value = CancelacionDeCobro.DECLARACION_LISTO
+                    } else {
+                        _state.value = PaymentFlowState.SelectingTerminal(total)
+                        fetchTerminals()
+                    }
+                }
+                // El pendiente SE CONSERVA en los dos casos que siguen: nada se resolvió.
+                is ResultadoDeDeclaracion.Rechazada ->
+                    _state.value = PaymentFlowState.Undetermined(
+                        totalAmount = total,
+                        message = r.mensaje,
+                        checking = false,
+                        fromPreviousSale = fromPreviousSale,
+                    )
+                is ResultadoDeDeclaracion.SinConexion ->
+                    _state.value = PaymentFlowState.Undetermined(
+                        totalAmount = total,
+                        message = CancelacionDeCobro.DECLARACION_SIN_RED,
+                        checking = false,
+                        fromPreviousSale = fromPreviousSale,
+                    )
+            }
+        }
+    }
+
 
     // MARK: - Cancelar la venta (§C.4): el cobro primero, la orden sólo cuando conste
 
@@ -2941,9 +3002,20 @@ class PaymentFlowViewModel @Inject constructor(
         return total
     }
 
+    /**
+     * La base del porcentaje de propina va SIEMPRE sin IVA. Decision del founder, 2026-09-18.
+     *
+     * Antes esto lo decidia el ajuste `includeTaxInTipBase`, que se retiro por dos razones: era
+     * una convencion fiscal de EE.UU. —alla el impuesto se suma aparte y el cliente lo ve; aca el
+     * precio en pantalla ya lo incluye, y Fudo, el POS nativo de LatAm, ni siquiera ofrece esa
+     * opcion— y se guardaba solo en la memoria del aparato, asi que dos cajas del mismo negocio
+     * podian sugerir propinas distintas sin que el dashboard lo viera.
+     *
+     * 🔴 No volver a ramificar esto por un ajuste sin decidir antes DONDE vive: es dinero del
+     * personal, y un ajuste por aparato no puede gobernarlo. Candado en `PaymentFlowViewModelTest`.
+     */
     private fun computeTipPercentageBaseAmount(baseAmount: Int): Int {
         if (baseAmount <= 0) return 0
-        if (settings.includeTaxInTipBase) return baseAmount
         val cart = cartState ?: return baseAmount
         val taxComponent = estimateTaxComponentForTipBase(cart, baseAmount)
         return (baseAmount - taxComponent).coerceAtLeast(0)

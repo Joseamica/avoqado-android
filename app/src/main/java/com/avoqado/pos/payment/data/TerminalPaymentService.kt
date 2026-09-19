@@ -722,6 +722,74 @@ class TerminalPaymentService @Inject constructor(
         }
     }
 
+    /**
+     * La declaración del cajero: «ya revisé la terminal y ese cobro no pasó». El servidor libera
+     * la VENTA y la RANURA de la terminal de una sola vez — es la salida que faltaba el 18-sep,
+     * cuando Testarudo estuvo 26 minutos sin poder cobrar y hubo que escribir SQL en producción.
+     *
+     * 🔴 ONLINE-ONLY A PROPÓSITO: un fallo de red devuelve [ResultadoDeDeclaracion.SinConexion] y
+     * NO se encola nada. El cajero afirma lo que ve AHORA en la pantalla de la terminal, y esa
+     * afirmación CADUCA: reproducida diez minutos después caería sobre una venta que entretanto sí
+     * se cobró. Es la excepción declarada a `todo-funciona-sin-red.md`, no un olvido.
+     *
+     * 🔴 El `resolutionId` es DETERMINISTA por solicitud, no un UUID nuevo por intento: si la
+     * respuesta se pierde y el cajero vuelve a tocar, el servidor reconoce la MISMA declaración y
+     * la retransmite en vez de contestar `RESOLUTION_CONFLICT`.
+     *
+     * 🔴 El mensaje de un rechazo viaja tal cual desde el servidor: cada código tiene el suyo
+     * («tiene señales de haber pasado», «sigue en curso», «no tienes permiso»…) y uno local
+     * mentiría en los otros casos.
+     */
+    suspend fun declararNoCobrado(requestId: String): ResultadoDeDeclaracion {
+        val venueId = secureStorage.venueId ?: return ResultadoDeDeclaracion.SinConexion
+        val token = secureStorage.accessToken ?: return ResultadoDeDeclaracion.SinConexion
+
+        return try {
+            val cuerpo = json.encodeToString(
+                DeclaracionSinCobroDto.serializer(),
+                DeclaracionSinCobroDto(resolutionId = resolutionIdDe(requestId)),
+            ).toRequestBody("application/json".toMediaType())
+
+            val request = Request.Builder()
+                .url("$baseUrl/mobile/venues/$venueId/terminal-payment/$requestId/release")
+                .header("Authorization", "Bearer $token")
+                .header(com.avoqado.pos.core.data.network.ForbiddenInterceptor.LOCAL_ERROR_HEADER, "1")
+                .post(cuerpo)
+                .build()
+
+            val (code, body) = withContext(Dispatchers.IO) {
+                statusClient.newCall(request).execute().use { it.code to (it.body?.string() ?: "") }
+            }
+            val dto = runCatching { json.decodeFromString(RespuestaDeDeclaracionDto.serializer(), body) }.getOrNull()
+            Log.d("💳", "Declaracion no-cobrado: $code (released=${dto?.released}, code=${dto?.code})")
+
+            if (code in 200..299 && dto?.released == true) {
+                // El desenlace CONSTA para esta identidad: el servidor dice que no se cobró. Es la
+                // única condición bajo la que se suelta la llave durable.
+                clearMatching(requestId)
+                ResultadoDeDeclaracion.Liberada
+            } else {
+                ResultadoDeDeclaracion.Rechazada(
+                    mensaje = dto?.message?.takeIf { it.isNotBlank() } ?: CancelacionDeCobro.DECLARACION_RECHAZO_GENERICO,
+                    code = dto?.code,
+                )
+            }
+        } catch (e: Exception) {
+            if (e is kotlinx.coroutines.CancellationException) throw e
+            Log.e("💳", "Declaracion no-cobrado error: ${e.message}")
+            // 🔴 Aquí NO se encola. Ver el porqué arriba.
+            ResultadoDeDeclaracion.SinConexion
+        }
+    }
+
+    /**
+     * El id de la declaración, derivado del propio cobro: el MISMO en cada reintento.
+     * `nameUUIDFromBytes` da un UUID válido (v3) y determinista, que es justo lo que pide el
+     * servidor (`z.string().uuid()`) para poder reconocer un reenvío.
+     */
+    private fun resolutionIdDe(requestId: String): String =
+        UUID.nameUUIDFromBytes("uncharged:$requestId".toByteArray()).toString()
+
     /** Cancela el cobro que sigue vivo en este aparato, si lo hay. */
     suspend fun cancelCurrentPayment(): RespuestaDeCancelacion? {
         val intento = intentoEnVuelo() ?: return null
@@ -908,6 +976,37 @@ sealed class TerminalPaymentResult {
      */
     data class Undetermined(val message: String, val requestId: String, val inherited: Boolean = false) : TerminalPaymentResult()
 }
+
+/**
+ * El desenlace de la declaración del cajero, ya traducido a lo que la pantalla necesita decidir.
+ * Son TRES y no dos: «no se pudo hablar con el servidor» NO es lo mismo que «el servidor dijo que
+ * no» — el primero se reintenta, el segundo conserva el pendiente y explica por qué.
+ */
+sealed class ResultadoDeDeclaracion {
+    /** El servidor liberó la venta y la ranura: se puede volver a cobrar. */
+    object Liberada : ResultadoDeDeclaracion()
+
+    /** El servidor la RECHAZÓ. [mensaje] viene de él, nunca de aquí. */
+    data class Rechazada(val mensaje: String, val code: String?) : ResultadoDeDeclaracion()
+
+    /** No se pudo hablar con el servidor. La declaración NO se guarda: se pide de nuevo. */
+    object SinConexion : ResultadoDeDeclaracion()
+}
+
+@Serializable
+private data class DeclaracionSinCobroDto(
+    val resolutionId: String,
+    val statement: String = "UNCHARGED_VERIFIED",
+    val statementVersion: Int = 1,
+)
+
+@Serializable
+private data class RespuestaDeDeclaracionDto(
+    val success: Boolean? = null,
+    val released: Boolean? = null,
+    val code: String? = null,
+    val message: String? = null,
+)
 
 sealed class TerminalListResult {
     data class Success(val terminals: List<OnlineTerminal>) : TerminalListResult()

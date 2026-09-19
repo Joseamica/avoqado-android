@@ -1,5 +1,7 @@
 package com.avoqado.pos.payment.presentation
 
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -668,8 +670,16 @@ fun PaymentUndeterminedView(
     onCancelarVenta: (() -> Unit)? = null,
     /** El cobro sin confirmar quedó de otra venta: confirmarlo no paga la actual. */
     fromPreviousSale: Boolean = false,
+    /**
+     * «Ya revisé la terminal: no se cobró». `null` ⇒ el botón no se ofrece y la pantalla es
+     * exactamente la de siempre (un APK nuevo contra un servidor que todavía no lo soporta).
+     */
+    onDeclararNoCobrado: (() -> Unit)? = null,
+    /** El monto del cobro, para que el diálogo diga sobre CUÁL se está declarando. */
+    montoDelCobro: String = "",
 ) {
     var showLeaveWarning by remember { mutableStateOf(false) }
+    var pedirConfirmacionDeclaracion by remember { mutableStateOf(false) }
 
     // 🔴 Sin esto, un "atrás" desmonta la pantalla y toda la ceremonia de la advertencia
     // desaparece en silencio. La llave vive en disco, así que salir NO pierde el cobro —
@@ -720,6 +730,21 @@ fun PaymentUndeterminedView(
             isLoading = isChecking,
         )
 
+        // 🔴 La salida que faltaba: el cajero MIRA la terminal y lo declara. No cobra — libera.
+        // Va en segundo plano visual (contorno ámbar, no botón primario) porque la acción
+        // recomendada sigue siendo consultar: preguntar nunca se equivoca.
+        if (onDeclararNoCobrado != null) {
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+            OutlinedButton(
+                onClick = { pedirConfirmacionDeclaracion = true },
+                enabled = !isChecking,
+                border = BorderStroke(1.5.dp, Warning),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(CancelacionDeCobro.BOTON_DECLARAR_NO_COBRADO, color = Warning)
+            }
+        }
+
         Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
 
         // 🔴 Dos salidas DISTINTAS, y confundirlas es lo que dejaba órdenes huérfanas: salir no
@@ -732,6 +757,41 @@ fun PaymentUndeterminedView(
             TextButton(onClick = onCancelarVenta, enabled = !isChecking) {
                 Text(CancelacionDeCobro.BOTON_CANCELAR_VENTA)
             }
+        }
+    }
+
+    // Declarar mueve el estado de una venta, así que nunca en un solo toque: se repite con
+    // todas sus letras QUÉ se está afirmando y que queda firmado con su nombre.
+    if (pedirConfirmacionDeclaracion && onDeclararNoCobrado != null) {
+        AvoqadoDialog(
+            title = CancelacionDeCobro.DECLARACION_TITULO,
+            description = CancelacionDeCobro.cuerpoDeLaDeclaracion(montoDelCobro),
+            onDismiss = { pedirConfirmacionDeclaracion = false },
+            actionButton = {
+                // Los dos botones en la MISMA ranura: `AvoqadoDialog` no tiene una secundaria, y
+                // «Mejor no» tiene que estar a la vista — la X de la esquina no es una salida
+                // evidente cuando lo que se pide es confirmar algo sobre dinero.
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    PrimaryButton(
+                        text = CancelacionDeCobro.DECLARACION_CONFIRMAR,
+                        onClick = {
+                            pedirConfirmacionDeclaracion = false
+                            onDeclararNoCobrado()
+                        },
+                        fullWidth = true,
+                    )
+                    TextButton(onClick = { pedirConfirmacionDeclaracion = false }) {
+                        Text(CancelacionDeCobro.DECLARACION_CANCELAR)
+                    }
+                }
+            },
+        ) {
+            Icon(
+                imageVector = Icons.Filled.HelpOutline,
+                contentDescription = null,
+                tint = Warning,
+                modifier = Modifier.size(24.dp),
+            )
         }
     }
 

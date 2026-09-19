@@ -1,5 +1,7 @@
 package com.avoqado.pos.payment
 
+import com.avoqado.pos.payment.domain.CancelacionDeCobro
+import com.avoqado.pos.payment.data.ResultadoDeDeclaracion
 import com.avoqado.pos.MainDispatcherRule
 import com.avoqado.pos.payment.domain.CardChargeDecision
 import com.avoqado.pos.printing.data.ResultadoLegado
@@ -1892,8 +1894,20 @@ class PaymentFlowViewModelTest {
         assertEquals(1000, viewModel.currentTipPercentageBaseCents())
     }
 
+    /**
+     * P1 · La base de la propina NUNCA lleva IVA — decision del founder, 2026-09-18.
+     *
+     * El ajuste `includeTaxInTipBase` se retiro: era una convencion fiscal de EE.UU. (alla el
+     * impuesto se suma aparte y el cliente lo ve), no de Mexico, donde el precio en pantalla ya
+     * lo incluye. Fudo, el POS nativo de LatAm, ni siquiera ofrece esa opcion. Ademas se guardaba
+     * solo en la memoria del aparato: dos cajas del mismo negocio podian sugerir propinas
+     * distintas y el dashboard no lo veia.
+     *
+     * Esta prueba es el candado: aunque llegue un ajuste viejo en `true` —de un cache en disco de
+     * una version anterior, o del servidor algun dia— la base se calcula SIN IVA.
+     */
     @Test
-    fun `tip percentage base includes tax when includeTaxInTipBase is enabled`() {
+    fun `P1 la base de propina excluye el IVA aunque venga el ajuste viejo encendido`() {
         every {
             tpvSettingsRepository.getCurrentSettings()
         } returns TpvSettings(
@@ -1916,7 +1930,7 @@ class PaymentFlowViewModelTest {
 
         viewModel.startPaymentFlow(cart)
 
-        assertEquals(1160, viewModel.currentTipPercentageBaseCents())
+        assertEquals(1000, viewModel.currentTipPercentageBaseCents())
     }
 
     @Test
@@ -2311,4 +2325,98 @@ class PaymentFlowViewModelTest {
         viewModel.startPaymentFlow(cart)
         assertNull(viewModel.attachedCustomerName.value)
     }
+    // ══════════════════════════════════════════════════════════════════════════════════════
+    // La declaración del cajero: «ya revisé la terminal: no se cobró» (etapa 2, 19-sep).
+    //
+    // 🔴 Es ONLINE-ONLY A PROPÓSITO, y ése es el corazón de estas pruebas. Una declaración
+    // encolada y reproducida tarde caería sobre una venta que entretanto SÍ se cobró: el cajero
+    // afirma lo que ve AHORA en la pantalla de la terminal, y esa afirmación caduca. Por eso sin
+    // red no se guarda nada y se pide de nuevo.
+    // ══════════════════════════════════════════════════════════════════════════════════════
+
+    /** Deja al ViewModel exactamente en «Cobro sin confirmar», que es donde vive el botón. */
+    private suspend fun TestScope.enCobroSinConfirmar(requestId: String = "req-1") {
+        stubOrderCreation()
+        coEvery {
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any())
+        } returns TerminalPaymentResult.Undetermined("No pudimos confirmar el cobro.", requestId)
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+        assertTrue("montaje: debe quedar en Undetermined", viewModel.state.value is PaymentFlowState.Undetermined)
+    }
+
+    @Test
+    fun `declarar no cobrado libera la venta y deja volver a cobrar`() = runTest {
+        enCobroSinConfirmar()
+        coEvery { terminalPaymentService.declararNoCobrado("req-1") } returns ResultadoDeDeclaracion.Liberada
+
+        viewModel.declararNoCobrado()
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { terminalPaymentService.declararNoCobrado("req-1") }
+        // Ya no hay cobro sin confirmar: el cajero puede cobrar otra vez, que es todo el punto.
+        assertTrue(
+            "tras liberar se vuelve a elegir terminal, no se queda en la pantalla honesta",
+            viewModel.state.value is PaymentFlowState.SelectingTerminal,
+        )
+    }
+
+    @Test
+    fun `sin conexion la declaracion NO se encola y se pide de nuevo`() = runTest {
+        enCobroSinConfirmar()
+        coEvery { terminalPaymentService.declararNoCobrado("req-1") } returns ResultadoDeDeclaracion.SinConexion
+
+        viewModel.declararNoCobrado()
+        advanceUntilIdle()
+
+        // 🔴 El cobro sin confirmar SIGUE ahí. Una declaración reproducida tarde podría caer sobre
+        // una venta que entretanto sí se cobró: es online-only a propósito.
+        val estado = viewModel.state.value
+        assertTrue("el cobro sin confirmar NO se resuelve sin red", estado is PaymentFlowState.Undetermined)
+        assertEquals(CancelacionDeCobro.DECLARACION_SIN_RED, (estado as PaymentFlowState.Undetermined).message)
+    }
+
+    @Test
+    fun `un rechazo por evidencia positiva NO libera y muestra el mensaje del SERVIDOR`() = runTest {
+        enCobroSinConfirmar()
+        val delServidor = "Este cobro sí tiene señales de haber pasado. No lo declares: consulta su resultado."
+        coEvery { terminalPaymentService.declararNoCobrado("req-1") } returns
+            ResultadoDeDeclaracion.Rechazada(mensaje = delServidor, code = "POSITIVE_EVIDENCE_EXISTS")
+
+        viewModel.declararNoCobrado()
+        advanceUntilIdle()
+
+        val estado = viewModel.state.value
+        assertTrue("un rechazo conserva el pendiente", estado is PaymentFlowState.Undetermined)
+        // 🔴 El texto lo escribe el SERVIDOR: cada código tiene el suyo y uno local mentiría.
+        assertEquals(delServidor, (estado as PaymentFlowState.Undetermined).message)
+    }
+
+    @Test
+    fun `sin llave del cobro NO se declara nada`() = runTest {
+        // Nadie tiene un cobro sin confirmar: declarar aquí escribiría sobre una solicitud ajena.
+        every { terminalPaymentService.unresolvedRequestId } returns null
+
+        viewModel.declararNoCobrado()
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) { terminalPaymentService.declararNoCobrado(any()) }
+    }
+
+    @Test
+    fun `la declaracion no dispara ningun cobro`() = runTest {
+        enCobroSinConfirmar()
+        coEvery { terminalPaymentService.declararNoCobrado("req-1") } returns ResultadoDeDeclaracion.Liberada
+
+        viewModel.declararNoCobrado()
+        advanceUntilIdle()
+
+        // 🔴 La regla que gobierna TODA esta pantalla: declarar libera, nunca cobra.
+        coVerify(exactly = 1) {
+            terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any())
+        }
+    }
+
 }

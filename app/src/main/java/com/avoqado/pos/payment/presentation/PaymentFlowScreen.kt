@@ -15,6 +15,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.avoqado.pos.core.util.formatMoneyFromCents
 import com.avoqado.pos.customers.data.model.Customer
 import com.avoqado.pos.designsystem.components.AvoqadoWarningToast
 import com.avoqado.pos.customers.presentation.CreateCustomerView
@@ -356,6 +357,11 @@ fun PaymentFlowScreen(
                     // El cobro sin confirmar de OTRA venta no se cancela desde aquí: su orden no
                     // la creó este flujo.
                     onCancelarVenta = { viewModel.cancelarVenta() }.takeIf { !currentState.fromPreviousSale },
+                    // 🔴 Se ofrece TAMBIÉN cuando el pendiente es de otra venta: ése es justamente
+                    // el caso que dejó a Testarudo 26 minutos sin cobrar el 18-sep — una solicitud
+                    // vieja reteniendo la ranura de la terminal.
+                    onDeclararNoCobrado = { viewModel.declararNoCobrado() },
+                    montoDelCobro = formatMoneyFromCents(currentState.totalAmount),
                 )
             }
         }
