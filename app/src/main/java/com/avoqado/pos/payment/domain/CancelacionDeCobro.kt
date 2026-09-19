@@ -104,14 +104,27 @@ object CancelacionDeCobro {
      */
     const val DECLARACION_SIN_RED = "Necesitas conexión para confirmar esta declaración."
 
+    /** La sesión venció y se renovó sola; la declaración NO se reenvió a propósito. */
+    const val DECLARACION_SESION_RENOVADA =
+        "Tu sesión se renovó. Vuelve a confirmar que no se cobró."
+
     /** Sólo para una respuesta del servidor sin mensaje legible: el suyo SIEMPRE tiene prioridad. */
     const val DECLARACION_RECHAZO_GENERICO =
         "No se pudo declarar este cobro. Conserva el pendiente y consulta su resultado."
 
-    /** El cuerpo del diálogo lleva el monto para que nadie declare sobre el cobro equivocado. */
-    fun cuerpoDeLaDeclaracion(monto: String) =
-        "Estás declarando que miraste la pantalla de la terminal y el cobro de $monto no pasó. " +
-            "Tu nombre queda en el registro." 
+    /**
+     * El cuerpo del diálogo lleva el monto DEL COBRO PENDIENTE, para que nadie declare sobre el
+     * cobro equivocado. 🔴 Vacío ⇒ se dice «ese cobro»: un importe inventado —el del carrito, por
+     * ejemplo— haría que el cajero firmara una afirmación falsa (P1 de Codex, 19-sep).
+     */
+    fun cuerpoDeLaDeclaracion(monto: String?) =
+        if (monto.isNullOrBlank()) {
+            "Estás declarando que miraste la pantalla de la terminal y ese cobro no pasó. " +
+                "Tu nombre queda en el registro."
+        } else {
+            "Estás declarando que miraste la pantalla de la terminal y el cobro de $monto no pasó. " +
+                "Tu nombre queda en el registro."
+        }
     const val NO_SE_PUDO_GUARDAR = "No se pudo guardar la cancelación en este equipo. Inténtalo de nuevo."
     const val SE_COBRO_AL_FINAL = "La terminal sí cobró este pago: la venta queda pagada."
     const val RECHAZO_TERMINAL_NO_CONECTADA = "La terminal no está conectada. Este cobro NO se envió; no se cobró nada."

@@ -675,8 +675,11 @@ fun PaymentUndeterminedView(
      * exactamente la de siempre (un APK nuevo contra un servidor que todavía no lo soporta).
      */
     onDeclararNoCobrado: (() -> Unit)? = null,
-    /** El monto del cobro, para que el diálogo diga sobre CUÁL se está declarando. */
-    montoDelCobro: String = "",
+    /**
+     * El monto DEL COBRO PENDIENTE (no el de la venta en curso), para que el diálogo diga sobre
+     * cuál se está declarando. `null` cuando no consta: el texto dice «ese cobro».
+     */
+    montoDelCobro: String? = null,
 ) {
     var showLeaveWarning by remember { mutableStateOf(false) }
     var pedirConfirmacionDeclaracion by remember { mutableStateOf(false) }

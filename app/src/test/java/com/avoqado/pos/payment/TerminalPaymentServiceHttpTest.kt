@@ -2,6 +2,7 @@ package com.avoqado.pos.payment
 
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ForbiddenInterceptor
+import com.avoqado.pos.payment.data.ResultadoDeDeclaracion
 import com.avoqado.pos.payment.data.TerminalPaymentResult
 import com.avoqado.pos.payment.data.TerminalPaymentService
 import com.avoqado.pos.payment.domain.ChargeStatusProbe
@@ -540,4 +541,71 @@ class TerminalPaymentServiceHttpTest {
 
         assertNull(server.takeRequest().getHeader(ForbiddenInterceptor.BACKGROUND_HEADER))
     }
+    // ══════════════════════════════════════════════════════════════════════════════════════
+    // La declaración del cajero, contra un SERVIDOR REAL. Las del ViewModel sustituyen el
+    // servicio entero, así que no ven nada de esto — crítica de Codex que resultó exacta: un
+    // sabotaje sobre el mapeo del 401 no tumbaba ninguna prueba.
+    // ══════════════════════════════════════════════════════════════════════════════════════
+
+    @Test
+    fun `una declaracion aceptada libera y suelta la llave`() = runBlocking {
+        pendingKey = "req-1"
+        enqueue(200, """{"success":true,"released":true,"status":"FAILED"}""")
+
+        val r = service.declararNoCobrado("req-1")
+
+        assertEquals(ResultadoDeDeclaracion.Liberada, r)
+        assertNull("la llave se suelta sólo cuando el servidor lo acredita", pendingKey)
+        val pedido = server.takeRequest()
+        assertEquals("POST", pedido.method)
+        assertTrue(pedido.path!!.endsWith("/terminal-payment/req-1/release"))
+        // 🔴 P1 de Codex: la petición prohíbe el reenvío automático tras refrescar la sesión.
+        assertEquals("1", pedido.getHeader("X-No-Auto-Retry"))
+    }
+
+    @Test
+    fun `una sesion vencida NO se disfraza de falta de conexion`() = runBlocking {
+        // 🔴 P1 de Codex: el transporte refrescaba y REENVIABA el POST solo. Ahora la sesión se
+        // renueva pero la declaración no se repite — y el 401 tiene su propio desenlace, porque
+        // decir «sin conexión» sería falso: la red funcionó.
+        pendingKey = "req-1"
+        enqueue(401, """{"message":"Token expirado"}""")
+
+        val r = service.declararNoCobrado("req-1")
+
+        assertEquals(ResultadoDeDeclaracion.SesionRenovada, r)
+        assertEquals("la llave se conserva: nada se resolvió", "req-1", pendingKey)
+    }
+
+    @Test
+    fun `un rechazo del servidor conserva el pendiente y su mensaje`() = runBlocking {
+        pendingKey = "req-1"
+        enqueue(409, """{"success":false,"released":false,"code":"POSITIVE_EVIDENCE_EXISTS","message":"Este cobro sí tiene señales de haber pasado."}""")
+
+        val r = service.declararNoCobrado("req-1")
+
+        assertEquals(
+            ResultadoDeDeclaracion.Rechazada("Este cobro sí tiene señales de haber pasado.", "POSITIVE_EVIDENCE_EXISTS"),
+            r,
+        )
+        assertEquals("un rechazo NO suelta la llave", "req-1", pendingKey)
+    }
+
+    @Test
+    fun `tras declarar, un desenlace indeterminado viejo NO vuelve a armar la llave`() = runBlocking {
+        // 🔴 P2 de Codex: el POST original seguía vivo; declarar soltaba la llave y aquel resultado
+        // viejo (UNKNOWN) la re-armaba ⇒ la venta siguiente volvía a bloquearse por el cobro que se
+        // acababa de liberar.
+        pendingKey = "req-1"
+        enqueue(200, """{"released":true}""")
+        service.declararNoCobrado("req-1")
+        assertNull(pendingKey)
+
+        // Llega el resultado viejo e intenta re-armar.
+        assertTrue(service.armarLlaveSiLibre("req-1"))
+
+        assertNull("lo declarado no vuelve a la llave", pendingKey)
+        assertTrue(service.yaDeclaradoSinCobro("req-1"))
+    }
+
 }

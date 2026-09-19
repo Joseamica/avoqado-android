@@ -101,6 +101,22 @@ class TokenRefreshAuthenticator @Inject constructor(
         data class Rejected(val httpCode: Int) : RefreshOutcome()
     }
 
+    /**
+     * Marca una petición que NO se puede reenviar sola tras refrescar la sesión.
+     *
+     * 🔴 P1 de la auditoría de Codex (19-sep). Existe para la declaración del cajero «ya revisé la
+     * terminal: no se cobró», que es una AFIRMACIÓN HUMANA sobre lo que alguien está viendo en ese
+     * momento — y por eso el producto la definió online-only, sin cola y sin reintentos. Reenviarla
+     * sola al refrescar el token la convierte en lo que se prohibió: una afirmación que se aplica
+     * sin que nadie la vuelva a hacer.
+     *
+     * La sesión SÍ se refresca (echar al cajero a media venta sería peor); lo que no se hace es
+     * repetir la petición. El llamador recibe el 401 y le pide al cajero que confirme otra vez.
+     */
+    companion object {
+        const val NO_AUTO_RETRY_HEADER = "X-No-Auto-Retry"
+    }
+
     override fun authenticate(route: Route?, response: Response): Request? {
         val requestPath = response.request.url.encodedPath
 
@@ -158,7 +174,7 @@ class TokenRefreshAuthenticator @Inject constructor(
                 // El líder ya notificó (o el wait venció, caso extremo): si
                 // dejó éxito, reintentamos con SU token nuevo. Si dejó fallo
                 // de red o rechazo, no reintentamos — nada nuevo que probar.
-                return buildRetry(response, lastRefreshOutcome)
+                return if (noReenviar(response)) null else buildRetry(response, lastRefreshOutcome)
             }
             isRefreshing = true
         }
@@ -197,7 +213,7 @@ class TokenRefreshAuthenticator @Inject constructor(
                     refreshToken = outcome.refreshToken,
                 )
                 Log.d("🔐", "Token refreshed successfully")
-                buildRetry(response, outcome)
+                if (noReenviar(response)) null else buildRetry(response, outcome)
             }
             RefreshOutcome.NetworkFailure -> {
                 // offline-first-y-hub-lan.md §2.3: un fallo de RED se
@@ -227,6 +243,10 @@ class TokenRefreshAuthenticator @Inject constructor(
             }
         }
     }
+
+    /** ¿Esta petición prohíbe el reenvío automático? Ver [NO_AUTO_RETRY_HEADER]. */
+    private fun noReenviar(response: Response): Boolean =
+        response.request.header(NO_AUTO_RETRY_HEADER) != null
 
     private fun buildRetry(response: Response, outcome: RefreshOutcome?): Request? {
         val success = outcome as? RefreshOutcome.Success ?: return null

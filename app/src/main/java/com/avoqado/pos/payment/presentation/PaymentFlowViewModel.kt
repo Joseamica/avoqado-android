@@ -1,5 +1,6 @@
 package com.avoqado.pos.payment.presentation
 
+import com.avoqado.pos.payment.data.model.ObjetivoDeLaDeclaracion
 import com.avoqado.pos.payment.domain.CajonDeDinero
 import android.util.Log
 import androidx.lifecycle.ViewModel
@@ -1998,12 +1999,33 @@ class PaymentFlowViewModel @Inject constructor(
      * 🔴 Y NO cobra: libera. Quien decide si se vuelve a cobrar es el cajero, en la pantalla
      * siguiente, como hasta hoy.
      */
+    /**
+     * Lo que se va a declarar, CONGELADO desde el contexto durable del cobro pendiente — nunca del
+     * carrito que el cajero tiene enfrente.
+     *
+     * 🔴 P1 de la auditoría de Codex (19-sep): con un pendiente de $100 y una venta nueva de $500,
+     * el diálogo afirmaba «el cobro de $500 no pasó» mientras la declaración iba sobre el de $100.
+     * El cajero FIRMA CON SU NOMBRE esa afirmación; el importe tiene que ser el del cobro que
+     * libera. Y si no consta, `montoCentavos` es `null`: el diálogo dice «ese cobro», no uno falso.
+     */
+    fun objetivoDeLaDeclaracion(): ObjetivoDeLaDeclaracion? {
+        val requestId = undeterminedRequestId ?: terminalPaymentService.unresolvedRequestId ?: return null
+        val contexto = terminalPaymentService.contextoDe(requestId)
+        val monto = contexto?.amountCents?.let { it + (contexto.tipCents ?: 0) }
+        return ObjetivoDeLaDeclaracion(requestId = requestId, venueId = contexto?.venueId, montoCentavos = monto)
+    }
+
     fun declararNoCobrado() {
-        // La llave durable manda, igual que en «Volver a consultar»: si el proceso murió,
-        // `undeterminedRequestId` viene vacío pero el cobro sigue sin resolverse en disco.
-        val requestId = undeterminedRequestId ?: terminalPaymentService.unresolvedRequestId ?: return
+        // El objetivo se congela ANTES de tocar nada: es el mismo que vio el cajero en el diálogo.
+        val objetivo = objetivoDeLaDeclaracion() ?: return
+        val requestId = objetivo.requestId
         val total = currentBaseAmount() + currentTipCents
         val fromPreviousSale = (_state.value as? PaymentFlowState.Undetermined)?.fromPreviousSale == true
+        // 🔴 P2 de Codex: si el flujo se reinicia (rotación) mientras la declaración va en vuelo, la
+        // respuesta vieja NO puede gobernar la pantalla nueva — ponía `SelectingTerminal` sobre un
+        // flujo sin método de pago y el cajero acababa en «Método de pago no seleccionado». Misma
+        // guarda que ya usa `reconcileThenOffer`.
+        val generacion = paymentGeneration
 
         // Se conserva el mensaje que ya estaba: `checking` es lo que indica que hay algo en vuelo, y
         // escribir «Cancelando el cobro…» aquí sería falso — no se está cancelando nada.
@@ -2016,7 +2038,9 @@ class PaymentFlowViewModel @Inject constructor(
         )
 
         viewModelScope.launch {
-            when (val r = terminalPaymentService.declararNoCobrado(requestId)) {
+            val r = terminalPaymentService.declararNoCobrado(requestId, objetivo.venueId)
+            if (generacion != paymentGeneration) return@launch
+            when (r) {
                 is ResultadoDeDeclaracion.Liberada -> {
                     undeterminedRequestId = null
                     // El MISMO desenlace que «consta que no se cobró»: el cajero decide si cobra.
@@ -2032,6 +2056,13 @@ class PaymentFlowViewModel @Inject constructor(
                     _state.value = PaymentFlowState.Undetermined(
                         totalAmount = total,
                         message = r.mensaje,
+                        checking = false,
+                        fromPreviousSale = fromPreviousSale,
+                    )
+                is ResultadoDeDeclaracion.SesionRenovada ->
+                    _state.value = PaymentFlowState.Undetermined(
+                        totalAmount = total,
+                        message = CancelacionDeCobro.DECLARACION_SESION_RENOVADA,
                         checking = false,
                         fromPreviousSale = fromPreviousSale,
                     )

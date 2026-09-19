@@ -183,6 +183,8 @@ class TerminalPaymentService @Inject constructor(
      *   dinero encima, así que jamás se pisa (misma regla que [CardChargeDecision.unresolvedKeyAfterStaleResult]).
      */
     fun armarLlaveSiLibre(requestId: String): Boolean = synchronized(attemptLock) {
+        // Ya declarado sin cobro: su desenlace consta, no vuelve a la llave (P2 Codex).
+        if (yaDeclaradoSinCobro(requestId)) return true
         val armada = unresolvedRequestId
         if (armada != null && armada != requestId) return false
         if (armada == null) unresolvedRequestId = requestId
@@ -207,6 +209,24 @@ class TerminalPaymentService @Inject constructor(
 
     /** Compatibilidad con callers antiguos: una advertencia no resuelve el dinero. */
     fun forgetUnresolvedCharge() { /* Financial uncertainty cannot be dismissed. */ }
+
+    /**
+     * Cobros que el CAJERO ya declaró como no cobrados y el servidor acreditó. Su desenlace CONSTA:
+     * ninguna consulta anterior puede volver a ponerlos como pendientes.
+     *
+     * 🔴 P2 de la auditoría de Codex (19-sep): con el POST original todavía vivo, la secuencia
+     * «declarar → llega el desenlace viejo que dice UNKNOWN» re-armaba la llave y la siguiente
+     * venta volvía a bloquearse por el cobro que se acababa de liberar. El cajero quedaba en el
+     * mismo callejón del que esta función existe para sacarlo.
+     *
+     * 🔑 NO tapa las señales POSITIVAS: un `Success` tardío sigue mandando (ver
+     * `CardChargeDecision.unresolvedKeyAfterStaleResult`). Lo único que se bloquea es volver a
+     * declarar INCIERTO algo cuyo desenlace ya consta.
+     */
+    private val declaradosSinCobro = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
+    /** ¿Este cobro ya lo declaró el cajero y el servidor lo acreditó? */
+    fun yaDeclaradoSinCobro(requestId: String): Boolean = declaradosSinCobro.contains(requestId)
 
     private fun clearMatching(requestId: String) {
         if (unresolvedRequestId == requestId) unresolvedRequestId = null
@@ -660,7 +680,12 @@ class TerminalPaymentService @Inject constructor(
         }
         is CardChargeOutcome.Undetermined -> {
             // Sigue sin saberse: se conserva el requestId para poder volver a preguntar.
-            if (unresolvedRequestId == null || unresolvedRequestId == requestId) unresolvedRequestId = requestId
+            if (yaDeclaradoSinCobro(requestId)) {
+                // Su desenlace ya consta por la declaración del cajero: no se re-arma (P2 Codex).
+                Log.i("💳", "🧾 Desenlace indeterminado IGNORADO: $requestId ya se declaró sin cobro")
+            } else if (unresolvedRequestId == null || unresolvedRequestId == requestId) {
+                unresolvedRequestId = requestId
+            }
             Log.w("💳", "❓ Desenlace indeterminado — el cajero debe revisar la terminal")
             TerminalPaymentResult.Undetermined(message, requestId)
         }
@@ -740,8 +765,13 @@ class TerminalPaymentService @Inject constructor(
      * («tiene señales de haber pasado», «sigue en curso», «no tienes permiso»…) y uno local
      * mentiría en los otros casos.
      */
-    suspend fun declararNoCobrado(requestId: String): ResultadoDeDeclaracion {
-        val venueId = secureStorage.venueId ?: return ResultadoDeDeclaracion.SinConexion
+    suspend fun declararNoCobrado(requestId: String, venueId: String? = null): ResultadoDeDeclaracion {
+        // 🔴 Codex (etapa 2, P2-5): el venue del COBRO, no el de la SESIÓN. Un usuario con acceso a
+        // dos sucursales que deja un pendiente en A y cambia a B mandaría `/venues/B/…/requestA/`,
+        // el servidor rechazaría —con razón, es una fila ajena— y el pendiente quedaría
+        // irrecuperable. La llave es durable y sobrevive al cambio de venue; el contexto también.
+        val venueId = venueId ?: contextoDe(requestId)?.venueId ?: secureStorage.venueId
+            ?: return ResultadoDeDeclaracion.SinConexion
         val token = secureStorage.accessToken ?: return ResultadoDeDeclaracion.SinConexion
 
         return try {
@@ -754,6 +784,11 @@ class TerminalPaymentService @Inject constructor(
                 .url("$baseUrl/mobile/venues/$venueId/terminal-payment/$requestId/release")
                 .header("Authorization", "Bearer $token")
                 .header(com.avoqado.pos.core.data.network.ForbiddenInterceptor.LOCAL_ERROR_HEADER, "1")
+                // 🔴 P1 de Codex (19-sep): con el access vencido, el Authenticator refrescaba la
+                // sesión y REENVIABA este POST solo. Una afirmación humana que el producto definió
+                // online-only no se puede repetir sin que nadie la vuelva a hacer. La sesión se
+                // refresca igual; lo que no se hace es reenviar.
+                .header(com.avoqado.pos.core.data.network.TokenRefreshAuthenticator.NO_AUTO_RETRY_HEADER, "1")
                 .post(cuerpo)
                 .build()
 
@@ -763,9 +798,15 @@ class TerminalPaymentService @Inject constructor(
             val dto = runCatching { json.decodeFromString(RespuestaDeDeclaracionDto.serializer(), body) }.getOrNull()
             Log.d("💳", "Declaracion no-cobrado: $code (released=${dto?.released}, code=${dto?.code})")
 
+            // La sesión venció y NO se reenvió (a propósito): el cajero vuelve a confirmar, con la
+            // sesión ya renovada. Decir «sin conexión» aquí sería falso — la red funcionó.
+            if (code == 401) return ResultadoDeDeclaracion.SesionRenovada
+
             if (code in 200..299 && dto?.released == true) {
                 // El desenlace CONSTA para esta identidad: el servidor dice que no se cobró. Es la
-                // única condición bajo la que se suelta la llave durable.
+                // única condición bajo la que se suelta la llave durable. Y se RECUERDA, para que
+                // una consulta anterior que siga en vuelo no la vuelva a poner (P2 de Codex).
+                declaradosSinCobro.add(requestId)
                 clearMatching(requestId)
                 ResultadoDeDeclaracion.Liberada
             } else {
@@ -991,6 +1032,12 @@ sealed class ResultadoDeDeclaracion {
 
     /** No se pudo hablar con el servidor. La declaración NO se guarda: se pide de nuevo. */
     object SinConexion : ResultadoDeDeclaracion()
+
+    /**
+     * La sesión estaba vencida. Se renovó, pero la declaración NO se reenvió sola: la vuelve a
+     * hacer el cajero. Es distinto de [SinConexion] — la red funcionó — y por eso tiene su texto.
+     */
+    object SesionRenovada : ResultadoDeDeclaracion()
 }
 
 @Serializable

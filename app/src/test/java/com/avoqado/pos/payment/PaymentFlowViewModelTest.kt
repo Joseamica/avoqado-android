@@ -1,5 +1,7 @@
 package com.avoqado.pos.payment
 
+import com.avoqado.pos.payment.data.model.ObjetivoDeLaDeclaracion
+import com.avoqado.pos.payment.data.ContextoDeCobro
 import com.avoqado.pos.payment.domain.CancelacionDeCobro
 import com.avoqado.pos.payment.data.ResultadoDeDeclaracion
 import com.avoqado.pos.MainDispatcherRule
@@ -68,6 +70,7 @@ import kotlinx.coroutines.test.runCurrent
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -2417,6 +2420,132 @@ class PaymentFlowViewModelTest {
         coVerify(exactly = 1) {
             terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any())
         }
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════════════
+    // Ronda de Codex sobre la etapa 2 (19-sep). El OBJETIVO de la declaración se congela desde
+    // el contexto durable del COBRO PENDIENTE, no del carrito que el cajero tiene enfrente.
+    //
+    // 🔴 P1 de Codex: queda pendiente A por $100, se abre una venta B por $500, y el diálogo
+    // afirmaba «el cobro de $500 no pasó» mientras la declaración iba sobre A. El cajero FIRMA
+    // CON SU NOMBRE una afirmación sobre el importe equivocado.
+    // ══════════════════════════════════════════════════════════════════════════════════════
+
+    @Test
+    fun `el objetivo declara el importe del COBRO PENDIENTE, no el de la venta nueva`() = runTest {
+        // El pendiente A: $100.00 + $5.00 de propina. La venta nueva que se teclea: $500.00.
+        every { terminalPaymentService.unresolvedRequestId } returns "req-viejo"
+        every { terminalPaymentService.contextoDe("req-viejo") } returns ContextoDeCobro(
+            requestId = "req-viejo", venueId = "venue-del-cobro", terminalId = "t9",
+            orderId = null, amountCents = 10_000, tipCents = 500,
+        )
+        stubOrderCreation()
+        viewModel.startPaymentFlow(cardCart())
+        advanceUntilIdle()
+
+        val objetivo = viewModel.objetivoDeLaDeclaracion()
+        assertEquals("req-viejo", objetivo?.requestId)
+        assertEquals(10_500, objetivo?.montoCentavos)
+        assertEquals("venue-del-cobro", objetivo?.venueId)
+    }
+
+    @Test
+    fun `sin contexto del cobro el objetivo NO inventa un importe`() = runTest {
+        every { terminalPaymentService.unresolvedRequestId } returns "req-sin-contexto"
+        every { terminalPaymentService.contextoDe("req-sin-contexto") } returns null
+        stubOrderCreation()
+        viewModel.startPaymentFlow(cardCart())
+        advanceUntilIdle()
+
+        val objetivo = viewModel.objetivoDeLaDeclaracion()
+        assertEquals("req-sin-contexto", objetivo?.requestId)
+        // 🔴 `null`, NO el total del carrito: un importe inventado es peor que ninguno.
+        assertNull(objetivo?.montoCentavos)
+        assertNull(objetivo?.venueId)
+    }
+
+    @Test
+    fun `la declaracion viaja al venue del COBRO, no al de la sesion`() = runTest {
+        every { terminalPaymentService.unresolvedRequestId } returns "req-viejo"
+        every { terminalPaymentService.contextoDe("req-viejo") } returns ContextoDeCobro(
+            requestId = "req-viejo", venueId = "venue-del-cobro", terminalId = "t9",
+            orderId = null, amountCents = 10_000, tipCents = 500,
+        )
+        coEvery { terminalPaymentService.declararNoCobrado(any(), any()) } returns ResultadoDeDeclaracion.Liberada
+        stubOrderCreation()
+        viewModel.startPaymentFlow(cardCart())
+        advanceUntilIdle()
+
+        viewModel.declararNoCobrado()
+        advanceUntilIdle()
+
+        // 🔴 Un usuario con acceso a dos sucursales que cambia de venue dejaría el pendiente
+        // irrecuperable: el servidor rechaza liberar una fila ajena, y con razón.
+        coVerify(exactly = 1) { terminalPaymentService.declararNoCobrado("req-viejo", "venue-del-cobro") }
+    }
+
+    @Test
+    fun `una respuesta de declaracion NO pisa un flujo que ya se reinicio`() = runTest {
+        // 🔴 P2 de Codex: declarar → rotar la pantalla antes de la respuesta → `startPaymentFlow`
+        // limpia método y orden → llegaba el `Liberada` viejo y ponía SelectingTerminal sobre un
+        // flujo que ya no tenía método: «Método de pago no seleccionado» al elegir terminal.
+        enCobroSinConfirmar()
+        val puerta = CompletableDeferred<ResultadoDeDeclaracion>()
+        coEvery { terminalPaymentService.declararNoCobrado(any(), any()) } coAnswers { puerta.await() }
+
+        viewModel.declararNoCobrado()
+        runCurrent()
+        // La rotación: el flujo arranca de nuevo y la generación avanza.
+        every { terminalPaymentService.unresolvedRequestId } returns null
+        viewModel.startPaymentFlow(cardCart())
+        advanceUntilIdle()
+        val estadoTrasReiniciar = viewModel.state.value
+
+        puerta.complete(ResultadoDeDeclaracion.Liberada)
+        advanceUntilIdle()
+
+        assertEquals(
+            "la respuesta vieja no puede gobernar la pantalla nueva",
+            estadoTrasReiniciar::class,
+            viewModel.state.value::class,
+        )
+    }
+
+    @Test
+    fun `una sesion vencida NO se disfraza de falta de conexion`() = runTest {
+        // 🔴 P1 de Codex: el transporte refrescaba el token y REENVIABA la declaración sola. Ahora
+        // la sesión se renueva pero el POST no se repite: se le pide al cajero que confirme otra
+        // vez. Decir «sin conexión» sería falso — la red funcionó.
+        enCobroSinConfirmar()
+        coEvery { terminalPaymentService.declararNoCobrado(any(), any()) } returns ResultadoDeDeclaracion.SesionRenovada
+
+        viewModel.declararNoCobrado()
+        advanceUntilIdle()
+
+        val estado = viewModel.state.value
+        assertTrue(estado is PaymentFlowState.Undetermined)
+        assertEquals(CancelacionDeCobro.DECLARACION_SESION_RENOVADA, (estado as PaymentFlowState.Undetermined).message)
+        assertNotEquals(CancelacionDeCobro.DECLARACION_SIN_RED, estado.message)
+    }
+
+    @Test
+    fun `tras declarar, un desenlace indeterminado viejo NO vuelve a bloquear la siguiente venta`() = runTest {
+        // 🔴 P2 de Codex: el POST original seguía vivo; el cajero declaraba, la llave se soltaba, y
+        // llegaba aquel resultado diciendo UNKNOWN → re-armaba la llave → la venta siguiente volvía
+        // a bloquearse por el cobro recién liberado. El cajero de vuelta al callejón sin salida.
+        //
+        // La regla vive en el SERVICIO (es quien posee la llave), así que se comprueba ahí: una vez
+        // declarado, `armarLlaveSiLibre` no lo vuelve a poner.
+        enCobroSinConfirmar()
+        coEvery { terminalPaymentService.declararNoCobrado(any(), any()) } returns ResultadoDeDeclaracion.Liberada
+        every { terminalPaymentService.yaDeclaradoSinCobro("req-1") } returns true
+
+        viewModel.declararNoCobrado()
+        advanceUntilIdle()
+
+        // Lo declarado queda marcado: es lo que impide que una consulta anterior lo reponga.
+        assertTrue(terminalPaymentService.yaDeclaradoSinCobro("req-1"))
+        assertTrue(viewModel.state.value is PaymentFlowState.SelectingTerminal)
     }
 
 }

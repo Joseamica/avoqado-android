@@ -15,6 +15,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.avoqado.pos.payment.data.model.ObjetivoDeLaDeclaracion
 import com.avoqado.pos.core.util.formatMoneyFromCents
 import com.avoqado.pos.customers.data.model.Customer
 import com.avoqado.pos.designsystem.components.AvoqadoWarningToast
@@ -361,7 +362,10 @@ fun PaymentFlowScreen(
                     // el caso que dejó a Testarudo 26 minutos sin cobrar el 18-sep — una solicitud
                     // vieja reteniendo la ranura de la terminal.
                     onDeclararNoCobrado = { viewModel.declararNoCobrado() },
-                    montoDelCobro = formatMoneyFromCents(currentState.totalAmount),
+                    // 🔴 El importe sale del OBJETIVO (el contexto durable del cobro pendiente),
+                    // NUNCA de `currentState.totalAmount` — ése es el de la venta en curso, que con
+                    // un pendiente de otra venta es un importe distinto. P1 de Codex (19-sep).
+                    montoDelCobro = viewModel.objetivoDeLaDeclaracion()?.montoCentavos?.let { formatMoneyFromCents(it) },
                 )
             }
         }

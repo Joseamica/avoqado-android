@@ -298,3 +298,14 @@ data class OrderPromotionData(
     val discountCents: Int? = null,
     val needsReview: Boolean = false,
 )
+
+/**
+ * Lo que el cajero va a declarar: la identidad del cobro pendiente, su venue y su importe, todo
+ * congelado ANTES de enseñar el diálogo. `montoCentavos` es `null` cuando no consta — y entonces
+ * el diálogo NO inventa uno.
+ */
+data class ObjetivoDeLaDeclaracion(
+    val requestId: String,
+    val venueId: String?,
+    val montoCentavos: Int?,
+)
