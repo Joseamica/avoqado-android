@@ -10,6 +10,8 @@ import com.avoqado.pos.inventory.data.local.InventoryTransferEntity
 import com.avoqado.pos.inventory.data.local.PurchaseOrderDao
 import com.avoqado.pos.inventory.data.local.PurchaseOrderEntity
 import com.avoqado.pos.reservations.data.PendingReservationActionDao
+import com.avoqado.pos.inventory.waste.data.PendingWasteDao
+import com.avoqado.pos.inventory.waste.data.PendingWasteEntity
 import com.avoqado.pos.inventory.waste.data.WasteCatalogDao
 import com.avoqado.pos.inventory.waste.data.WasteCatalogEntity
 import com.avoqado.pos.reservations.data.PendingReservationActionEntity
@@ -28,8 +30,10 @@ import com.avoqado.pos.reservations.data.PendingReservationActionEntity
         SyncIntentEntity::class,
         // v11 — catálogo de artículos para declarar merma, por sucursal
         WasteCatalogEntity::class,
+        // v12 — la cola durable de mermas por subir (folio = llave)
+        PendingWasteEntity::class,
     ],
-    version = 11,
+    version = 12,
     exportSchema = true,
 )
 abstract class AvoqadoDatabase : RoomDatabase() {
@@ -41,4 +45,5 @@ abstract class AvoqadoDatabase : RoomDatabase() {
     abstract fun cachedPayloadDao(): CachedPayloadDao
     abstract fun syncIntentDao(): SyncIntentDao
     abstract fun wasteCatalogDao(): WasteCatalogDao
+    abstract fun pendingWasteDao(): PendingWasteDao
 }

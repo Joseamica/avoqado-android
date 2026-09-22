@@ -2,6 +2,7 @@ package com.avoqado.pos.core.data.local.database
 
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
+import com.avoqado.pos.inventory.waste.data.PendingWasteSql
 import com.avoqado.pos.inventory.waste.data.WasteSql
 
 object AvoqadoDatabaseMigrations {
@@ -217,6 +218,22 @@ object AvoqadoDatabaseMigrations {
     val MIGRATION_10_11 = object : Migration(10, 11) {
         override fun migrate(database: SupportSQLiteDatabase) {
             database.execSQL(WasteSql.CREAR_TABLA_CATALOGO)
+        }
+    }
+
+    /**
+     * v12 — la cola durable de mermas por subir, con el folio como llave.
+     *
+     * Aditiva: una tabla nueva, nada que migrar. La merma se escribe aquí ANTES de tocar la red
+     * (`todo-funciona-sin-red.md`, pregunta 2), así que un proceso que muere entre el toque y el
+     * POST no pierde nada. NO usa `sync_intents`: ese outbox es FIFO de órdenes (spec §5).
+     *
+     * 🔴 El `CREATE TABLE` sale de [PendingWasteSql], la MISMA constante que ejecuta
+     * `PendingWasteSqlTest`, y `WasteMigracionTest` la compara contra el esquema que Room exporta.
+     */
+    val MIGRATION_11_12 = object : Migration(11, 12) {
+        override fun migrate(database: SupportSQLiteDatabase) {
+            database.execSQL(PendingWasteSql.CREAR_TABLA)
         }
     }
 }
