@@ -2,6 +2,7 @@ package com.avoqado.pos.core.data.local.database
 
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
+import com.avoqado.pos.inventory.waste.data.WasteSql
 
 object AvoqadoDatabaseMigrations {
     // v1 only persisted pending payments. v2 added cash drawer offline state.
@@ -199,6 +200,23 @@ object AvoqadoDatabaseMigrations {
     val MIGRATION_9_10 = object : Migration(9, 10) {
         override fun migrate(database: SupportSQLiteDatabase) {
             database.execSQL("ALTER TABLE `pending_payments` ADD COLUMN `customerId` TEXT")
+        }
+    }
+
+    /**
+     * v11 — el catálogo de artículos que se pueden declarar como merma, por sucursal.
+     *
+     * Aditiva: una tabla nueva, nada que migrar. Hoy el inventario de la app vive EN
+     * MEMORIA, así que sin esto buscar un artículo para declarar una merma sería
+     * online-only — lo contrario de lo que pide `todo-funciona-sin-red.md`.
+     *
+     * 🔴 El `CREATE TABLE` sale de [WasteSql], la MISMA constante que ejecuta
+     * `WasteCatalogSqlTest` contra SQLite de verdad: no hay dos cadenas que se puedan
+     * desincronizar.
+     */
+    val MIGRATION_10_11 = object : Migration(10, 11) {
+        override fun migrate(database: SupportSQLiteDatabase) {
+            database.execSQL(WasteSql.CREAR_TABLA_CATALOGO)
         }
     }
 }

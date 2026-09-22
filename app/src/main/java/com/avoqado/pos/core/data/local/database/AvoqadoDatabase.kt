@@ -10,6 +10,8 @@ import com.avoqado.pos.inventory.data.local.InventoryTransferEntity
 import com.avoqado.pos.inventory.data.local.PurchaseOrderDao
 import com.avoqado.pos.inventory.data.local.PurchaseOrderEntity
 import com.avoqado.pos.reservations.data.PendingReservationActionDao
+import com.avoqado.pos.inventory.waste.data.WasteCatalogDao
+import com.avoqado.pos.inventory.waste.data.WasteCatalogEntity
 import com.avoqado.pos.reservations.data.PendingReservationActionEntity
 
 @Database(
@@ -24,8 +26,10 @@ import com.avoqado.pos.reservations.data.PendingReservationActionEntity
         CachedPayloadEntity::class,
         // v6 — offline-first Corte B: outbox de intents (comandas/mesas offline)
         SyncIntentEntity::class,
+        // v11 — catálogo de artículos para declarar merma, por sucursal
+        WasteCatalogEntity::class,
     ],
-    version = 10,
+    version = 11,
     exportSchema = true,
 )
 abstract class AvoqadoDatabase : RoomDatabase() {
@@ -36,4 +40,5 @@ abstract class AvoqadoDatabase : RoomDatabase() {
     abstract fun pendingReservationActionDao(): PendingReservationActionDao
     abstract fun cachedPayloadDao(): CachedPayloadDao
     abstract fun syncIntentDao(): SyncIntentDao
+    abstract fun wasteCatalogDao(): WasteCatalogDao
 }
