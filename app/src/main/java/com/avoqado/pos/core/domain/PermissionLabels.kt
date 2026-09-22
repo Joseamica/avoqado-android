@@ -191,6 +191,7 @@ object PermissionLabels {
         "inventory:update" to "editar el inventario",
         "inventory:delete" to "borrar un insumo",
         "inventory:adjust" to "ajustar existencias",
+        "inventory:log-waste" to "registrar merma",
         "inventory:org-manage" to "manejar el inventario de todas las sucursales",
         "inventory-transfers:read" to "ver los traspasos entre sucursales",
         "inventory-transfers:request" to "pedir un traspaso a otra sucursal",

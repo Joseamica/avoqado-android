@@ -83,6 +83,24 @@ class RoleManager @Inject constructor(
         get() = role in MANAGER_UP
 
     /**
+     * Registrar merma — espejo EXACTO de `inventory:log-waste`.
+     *
+     * 🔴 SIN respaldo por rol, a propósito (spec §5): con la lista de permisos
+     * vacía queda APAGADO. Es un permiso NUEVO y limitado que el dueño enciende
+     * (de fábrica: WAITER, CASHIER, MANAGER), y adivinarlo por rol prometería una
+     * autorización que el server no dio — el mismo defecto que dejó pasar un
+     * reembolso sin PIN en la D3 el 2026-08-17. Aquí el error cae del lado de
+     * negar de más, que es el lado seguro.
+     *
+     * 🔴 NO cuelga de `canAccessInventory`: ese gate es por ROL (MANAGER_UP) y
+     * dejaría fuera al mesero y al cajero, que es justo a quienes el server SÍ
+     * les da este permiso. Tampoco cuelga de `inventory:adjust`: son permisos
+     * distintos y el server los separa a propósito (spec D1).
+     */
+    val canLogWaste: Boolean
+        get() = hasVenuePermission("inventory:log-waste")
+
+    /**
      * Transactions: CASHIER, MANAGER, ADMIN, OWNER, SUPERADMIN
      *
      * ⚠️ DIVERGE (E3): el server da `payments:read` también a WAITER y VIEWER, o
