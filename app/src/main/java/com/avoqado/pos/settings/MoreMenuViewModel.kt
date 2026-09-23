@@ -97,6 +97,10 @@ class MoreMenuViewModel @Inject constructor(
     val hasMultipleVenues: Boolean
         get() = secureStorage.venuesList.size > 1
 
+    /** Para armar los atajos al panel web: sin él no se puede saber a qué negocio llevar. */
+    val venueSlug: String?
+        get() = secureStorage.venueSlug
+
     val canCreateProducts: Boolean
         get() = roleManager.canCreateProducts
 

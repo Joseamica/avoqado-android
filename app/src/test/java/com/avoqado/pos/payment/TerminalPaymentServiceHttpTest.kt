@@ -564,6 +564,98 @@ class TerminalPaymentServiceHttpTest {
     }
 
     @Test
+    fun `tras declarar, rearmar con un resultado INDETERMINADO viejo NO repone la llave`() = runBlocking {
+        // 🔴 P2 de Codex (20-sep): mi cierre anterior puso la guarda en `armarLlaveSiLibre`, pero la
+        // ruta REAL del callback obsoleto es `rearmUnresolvedCharge`, que escribía la llave directo.
+        // Flujo A vivo → otro flujo declara A y libera → llega `Undetermined(A)` al flujo viejo → la
+        // siguiente venta volvía a mostrar el pendiente que se acababa de liberar.
+        pendingKey = "req-1"
+        enqueue(200, """{"released":true}""")
+        service.declararNoCobrado("req-1")
+        assertNull(pendingKey)
+
+        service.rearmUnresolvedCharge("req-1")
+
+        assertNull("lo declarado no vuelve a la llave por la ruta obsoleta", pendingKey)
+    }
+
+    @Test
+    fun `pero un EXITO tardio SI repone la llave — hay dinero y alguien tiene que enterarse`() = runBlocking {
+        // 🔴 El otro lado de la misma regla, y es el que protege el dinero: si el cobro SÍ pasó, la
+        // declaración del cajero no puede silenciarlo. Se repone para que la próxima venta lo muestre.
+        pendingKey = "req-1"
+        enqueue(200, """{"released":true}""")
+        service.declararNoCobrado("req-1")
+        assertNull(pendingKey)
+
+        service.rearmUnresolvedCharge("req-1", aunSiFueDeclarado = true)
+
+        assertEquals("un éxito tardío manda sobre la declaración", "req-1", pendingKey)
+    }
+
+    @Test
+    fun `la declaracion SOBREVIVE a una conexion reciclada que el servidor ya cerro`() = runBlocking {
+        // 🔴 MEDIDO EN UNA SUNMI D3 (21-sep), y es el defecto que este test existe para impedir.
+        // Ayer puse el cuerpo en «un solo envío» y apagué `retryOnConnectionFailure` para que OkHttp
+        // no pudiera reenviar la declaración ante un 408/503. Con eso, en una red NORMAL el POST
+        // moría con `unexpected end of stream` y NUNCA llegaba al servidor (0 registros), mientras
+        // la pantalla culpaba a la red: «Necesitas conexión». El servidor manda `Keep-Alive:
+        // timeout=5`; entre dos toques del cajero pasan más de 5 s, así que reusar una conexión ya
+        // cerrada es el caso NORMAL.
+        //
+        // Reintento de CONEXIÓN ≠ reenvío por RESPUESTA: aquí el servidor no recibió nada, así que
+        // repetir es seguro SIEMPRE. Contra el reenvío protege la idempotencia del servidor
+        // (`resolutionId` determinista + dedup por `bodyHash`), no romper la reconexión.
+        pendingKey = "req-1"
+        // La PRIMERA petición deja una conexión en el pool y el servidor la cierra al terminar —
+        // igual que su `Keep-Alive: timeout=5` en producción.
+        server.enqueue(
+            MockResponse().setResponseCode(200).setBody("""{"status":"unknown"}""")
+                .setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.DISCONNECT_AT_END),
+        )
+        service.resolveOutcome("req-0")
+        // Y ahora la declaración: reusa esa conexión ya muerta. Un cliente sano reconecta y llega.
+        enqueue(200, """{"released":true}""")
+
+        val r = service.declararNoCobrado("req-1")
+
+        assertEquals("con la conexión rancia, reconecta y la declaración LLEGA", ResultadoDeDeclaracion.Liberada, r)
+        assertNull("y al liberarse suelta la llave", pendingKey)
+    }
+
+    @Test
+    fun `P1 un ganador NEGATIVO cacheado NO puede tapar un cobro acreditado del POST`() {
+        // 🔴 P1 de Codex (21-sep), hermano del de iOS: el ganador cacheado se consultaba ANTES de leer
+        // la respuesta. Mientras el POST viajaba, una consulta concurrente podía ver la fila ya
+        // declarada y guardar un `Error` — y entonces un POST que vuelve con `success` + `paymentId` se
+        // descartaba sin decodificarlo. El dinero se perdía ANTES de llegar a `staleOutcome`.
+        //
+        // La carrera se reproduce donde ocurre: el ganador se siembra MIENTRAS el POST está en vuelo,
+        // desde el propio dispatcher, con el `requestId` que el servicio acaba de generar.
+        @Suppress("UNCHECKED_CAST")
+        val cache = TerminalPaymentService::class.java.getDeclaredField("recoveredPosts")
+            .apply { isAccessible = true }
+            .get(service) as MutableMap<String, TerminalPaymentResult>
+        val lock = TerminalPaymentService::class.java.getDeclaredField("attemptLock").apply { isAccessible = true }.get(service)
+        server.dispatcher = object : okhttp3.mockwebserver.Dispatcher() {
+            override fun dispatch(request: okhttp3.mockwebserver.RecordedRequest): MockResponse {
+                val cuerpo = request.body.readUtf8()
+                val rid = Regex("\"requestId\"\\s*:\\s*\"([^\"]+)\"").find(cuerpo)?.groupValues?.get(1) ?: ""
+                synchronized(lock) {
+                    cache[rid] = TerminalPaymentResult.Error("El cobro se canceló. No se cobró la tarjeta.", requestId = rid)
+                }
+                return MockResponse().setResponseCode(200)
+                    .setBody("""{"status":"success","requestId":"$rid","paymentId":"pay-real","transactionId":"tx-1"}""")
+            }
+        }
+
+        val r = runBlocking { service.sendPaymentToTerminal("t1", 1000) }
+
+        assertTrue("el cobro CONSTA: no lo tapa una declaración cacheada (fue $r)", r is TerminalPaymentResult.Success)
+        assertEquals("pay-real", (r as TerminalPaymentResult.Success).paymentId)
+    }
+
+    @Test
     fun `una sesion vencida NO se disfraza de falta de conexion`() = runBlocking {
         // 🔴 P1 de Codex: el transporte refrescaba y REENVIABA el POST solo. Ahora la sesión se
         // renueva pero la declaración no se repite — y el 401 tiene su propio desenlace, porque

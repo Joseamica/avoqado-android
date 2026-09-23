@@ -380,6 +380,10 @@ class PaymentFlowCancelacionDurableTest {
         every { terminalPaymentService.unresolvedRequestId } returns "req-vieja"
         viewModel.startPaymentFlow(cardCart())
         advanceUntilIdle()
+        // 🔴 La puerta del pendiente ya no es arrancar la venta —el efectivo dejó de bloquearse
+        // (founder, 21-sep)—: es elegir TARJETA, lo único que puede duplicar el cargo.
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
         assertTrue((viewModel.state.value as PaymentFlowState.Undetermined).fromPreviousSale)
 
         viewModel.cancelarVenta()

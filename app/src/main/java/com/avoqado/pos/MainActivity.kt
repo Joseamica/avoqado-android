@@ -1,6 +1,7 @@
 package com.avoqado.pos
 
 import android.animation.ValueAnimator
+import android.annotation.SuppressLint
 import android.os.Bundle
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -139,6 +140,11 @@ class MainActivity : FragmentActivity() {
      * la tecla se corta aquí para que no ensucie lo que el cajero tenía con foco; si no,
      * sigue su camino normal. Sin lector conectado nunca toma nada.
      */
+    // dispatchKeyEvent es un callback público de Activity. Lint hereda el @RestrictTo de
+    // androidx.core.app.ComponentActivity a través de FragmentActivity; la excepción queda
+    // sólo aquí. Conservar super mantiene el despacho compatible de las teclas no consumidas.
+    // https://developer.android.com/reference/android/app/Activity#dispatchKeyEvent(android.view.KeyEvent)
+    @SuppressLint("RestrictedApi")
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (lectorHid.procesar(event)) return true
         return super.dispatchKeyEvent(event)

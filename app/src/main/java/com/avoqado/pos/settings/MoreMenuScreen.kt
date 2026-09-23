@@ -28,6 +28,7 @@ import androidx.compose.foundation.verticalScroll
 // así que las dos apps dejan de sentirse distintas. Los `AutoMirrored` son los
 // que el propio Material marca como tales — la variante `filled`/no-mirrored de
 // ReceiptLong, FactCheck y HelpOutline está deprecada.
+import android.content.Intent
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.FactCheck
 import androidx.compose.material.icons.automirrored.outlined.HelpOutline
@@ -39,7 +40,6 @@ import androidx.compose.material.icons.outlined.BarChart
 // `building.2` que iOS ya usa para Sucursal.
 import androidx.compose.material.icons.outlined.Business
 import androidx.compose.material.icons.outlined.CalendarMonth
-import androidx.compose.material.icons.outlined.Checklist
 import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.GridView
@@ -50,6 +50,7 @@ import androidx.compose.material.icons.outlined.KeyboardArrowDown
 import androidx.compose.material.icons.outlined.LocalFireDepartment
 import androidx.compose.material.icons.outlined.LocalOffer
 import androidx.compose.material.icons.outlined.Lock
+import androidx.compose.material.icons.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Monitor
 import androidx.compose.material.icons.outlined.Payments
 import androidx.compose.material.icons.outlined.People
@@ -58,6 +59,7 @@ import androidx.compose.material.icons.outlined.Print
 import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material.icons.outlined.RequestQuote
 import androidx.compose.material.icons.outlined.Schedule
+import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -72,6 +74,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -80,13 +83,13 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.core.net.toUri
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
-import com.avoqado.pos.addons.presentation.AddonsScreen
 import com.avoqado.pos.areatickets.presentation.AreaTicketDeliveryScreen
 import com.avoqado.pos.articles.presentation.ArticlesScreen
 import com.avoqado.pos.auth.presentation.VenueSwitcherSheet
@@ -96,6 +99,11 @@ import com.avoqado.pos.customers.presentation.CustomersScreen
 import com.avoqado.pos.designsystem.components.TierBadge
 import com.avoqado.pos.designsystem.theme.AvoqadoAdaptiveSizeClass
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
+import com.avoqado.pos.settings.domain.EnElPanelWeb
+import com.avoqado.pos.settings.domain.GrupoDelPanel
+import com.avoqado.pos.settings.domain.PreferenciasDelMenu
+import com.avoqado.pos.settings.presentation.CustomizeMenuSheet
+import com.avoqado.pos.settings.domain.RepartoDeGrupos
 import com.avoqado.pos.estimates.presentation.EstimatesScreen
 import com.avoqado.pos.kds.presentation.KDSScreen
 import com.avoqado.pos.orders.presentation.OrdersScreen
@@ -107,7 +115,6 @@ import com.avoqado.pos.settings.presentation.ChangeModeSheet
 import com.avoqado.pos.settings.presentation.posModeIcon
 import com.avoqado.pos.settings.presentation.CustomerDisplaySheet
 import com.avoqado.pos.settings.presentation.ScreenPinningSheet
-import com.avoqado.pos.settings.presentation.CustomizeMenuSheet
 import com.avoqado.pos.settings.presentation.SetupWizardScreen
 import com.avoqado.pos.settings.presentation.SupportScreen
 import com.avoqado.pos.designsystem.components.SwitchUserSheet
@@ -133,8 +140,6 @@ fun MoreMenuScreen(
     var showVenueSwitcher by remember { mutableStateOf(false) }
     var showTimeClock by remember { mutableStateOf(false) }
     var showPrinter by remember { mutableStateOf(false) }
-    var showPermissions by remember { mutableStateOf(false) }
-    var showPinSettings by remember { mutableStateOf(false) }
     var showSwitchUser by remember { mutableStateOf(false) }
     var showArticles by remember { mutableStateOf(false) }
     var showCustomers by remember { mutableStateOf(false) }
@@ -148,22 +153,20 @@ fun MoreMenuScreen(
     var showEndOfDay by remember { mutableStateOf(false) }
     var showEstimates by remember { mutableStateOf(false) }
     var showSetupWizard by remember { mutableStateOf(false) }
-    var showCustomizeMenu by remember { mutableStateOf(false) }
     var showSupport by remember { mutableStateOf(false) }
     var showChangeMode by remember { mutableStateOf(false) }
-    var showAddons by remember { mutableStateOf(false) }
     var showKDS by remember { mutableStateOf(false) }
     var showCustomerDisplay by remember { mutableStateOf(false) }
     var showAreaTicketDelivery by remember { mutableStateOf(false) }
     var showScreenPinning by remember { mutableStateOf(false) }
+    var showSettingsHub by remember { mutableStateOf(false) }
+    var showCustomizeMenu by remember { mutableStateOf(false) }
     val screenPinned by viewModel.screenPinningManager.enabled.collectAsState()
     val customerDisplayDetected by viewModel.customerDisplayState.isPresenting.collectAsState()
     val closeAllOverlays = {
         showVenueSwitcher = false
         showTimeClock = false
         showPrinter = false
-        showPermissions = false
-        showPinSettings = false
         showArticles = false
         showCustomers = false
         showReports = false
@@ -173,10 +176,10 @@ fun MoreMenuScreen(
         showEndOfDay = false
         showEstimates = false
         showSetupWizard = false
+        showSettingsHub = false
         showCustomizeMenu = false
         showSupport = false
         showChangeMode = false
-        showAddons = false
         showAreaTicketDelivery = false
         showKDS = false
         showCustomerDisplay = false
@@ -206,6 +209,28 @@ fun MoreMenuScreen(
         (!adaptive.isPortrait || configuration.screenWidthDp <= 900)
     val isSmallTablet = configuration.screenWidthDp >= 600 && lowDensityTabletFallback
     val denseMenu = adaptive.isAggressiveCompact
+
+    // «Personalizar menú» ya no es decorativo: lo que el comerciante esconda aquí desaparece de
+    // verdad del menú. Se lee en cada recomposición para que el cambio se vea al cerrar la hoja.
+    val contextoDelMenu = LocalContext.current
+    // 🔴 `SharedPreferences` no avisa cuando cambia, así que el menú no se entera solo de lo que
+    // acaba de guardar la hoja de personalizar: sin esto hay que reiniciar la app para ver el
+    // cambio (medido en una Sunmi OrderPAD 3 el 2026-09-18). Este contador sube al cerrarla y
+    // fuerza la relectura.
+    var revisionDelMenu by remember { mutableIntStateOf(0) }
+    val visible: (String) -> Boolean = { clave ->
+        @Suppress("UNUSED_EXPRESSION") revisionDelMenu
+        PreferenciasDelMenu.visible(contextoDelMenu, clave)
+    }
+
+    // Cuántas columnas de grupos caben. Se calcula aquí arriba porque el ANCHO del contenedor
+    // depende de ello: con el tope fijo de 600 dp, tres columnas quedaban en ~190 dp cada una y
+    // el texto se partía a media palabra («Presupuest/os»).
+    val columnasDelMenu = when (adaptive.sizeClass) {
+        AvoqadoAdaptiveSizeClass.Expanded -> 3
+        AvoqadoAdaptiveSizeClass.Medium -> 2
+        AvoqadoAdaptiveSizeClass.Compact -> 1
+    }
     val screenPadding = when {
         denseMenu -> AvoqadoTheme.spacing.sm
         isSmallTablet -> AvoqadoTheme.spacing.md
@@ -234,7 +259,7 @@ fun MoreMenuScreen(
     // la fila se estira ~2000px y el chevron acaba a media pantalla del texto.
     Column(
         modifier = Modifier
-            .widthIn(max = MoreMenuContentMaxWidth)
+            .widthIn(max = RepartoDeGrupos.anchoMaximoDp(columnasDelMenu).dp)
             .fillMaxWidth()
             .padding(screenPadding),
     ) {
@@ -459,17 +484,26 @@ fun MoreMenuScreen(
         // se queda sin filas no pinta encabezado ni tarjeta vacía, y cada fila
         // sabe si es la última — el divisor no se dibuja al ras del borde.
         // El orden y los nombres de grupo se espejan en iOS (`MainTabView.swift`).
-        val operacion = buildList {
-            if (viewModel.canAccessReports) {
-                add(
-                    MenuEntry(
-                        icon = Icons.Outlined.BarChart,
-                        label = "Informes",
-                        onClick = { showReports = true },
-                    ),
-                )
-            }
-            add(
+        // 🔴 Reagrupado el 2026-09-18 por el trabajo de orden del menú.
+        //
+        // Antes eran 24 entradas en Operación / Catálogo / Ajustes / Hardware, donde «Ajustes»
+        // se había vuelto cajón de sastre: convivían Permisos, PIN, Propinas, Personalizar menú,
+        // Complementos y Atención al cliente. Ahora los grupos se llaman por el TRABAJO que
+        // hace quien los abre, y lo que no es trabajo diario bajó a la pantalla de Ajustes.
+        //
+        // 🔴 Lo que se RETIRÓ, y por qué (no volver a agregarlo sin que funcione):
+        //   · `Permisos` y `Configuración PIN` abrían un aviso de «estará disponible
+        //     próximamente». Un renglón con chevron que no lleva a ningún lado.
+        //   · `Complementos` ofrecía activar 8 funciones —4 de pago— escribiendo un booleano
+        //     en las preferencias del aparato que ningún otro archivo lee, sin consultar el
+        //     plan ni el servidor. El sistema real de activación es Module/VenueModule.
+        //   · `Personalizar menú` guardaba 11 preferencias que tampoco consume nadie.
+        // El módulo `addons/` y `CustomizeMenuSheet` siguen en el repo: sólo se les quitó la
+        // puerta, para no borrar trabajo que quizá se conecte después.
+        //
+        // El orden y los nombres de grupo se espejan en iOS (`MainTabView.swift`).
+        val ventasYClientes = buildList {
+            if (visible(PreferenciasDelMenu.PEDIDOS)) add(
                 MenuEntry(
                     icon = Icons.AutoMirrored.Outlined.ReceiptLong,
                     label = "Pedidos",
@@ -480,39 +514,32 @@ fun MoreMenuScreen(
                     },
                 ),
             )
-            add(
+            if (viewModel.canCreateProducts && visible(PreferenciasDelMenu.ARTICULOS)) {
+                add(
+                    MenuEntry(
+                        icon = Icons.Outlined.LocalOffer,
+                        label = "Artículos",
+                        onClick = { showArticles = true },
+                    ),
+                )
+            }
+            if (visible(PreferenciasDelMenu.CLIENTES)) add(
                 MenuEntry(
-                    icon = Icons.Outlined.QrCodeScanner,
-                    label = "Entregas por área",
-                    subtitle = "Revisar papel o escanear comprobante pagado",
-                    onClick = { showAreaTicketDelivery = true },
+                    icon = Icons.Outlined.People,
+                    label = "Clientes",
+                    onClick = { showCustomers = true },
                 ),
             )
-            if (viewModel.canAccessKDS) {
-                add(
-                    MenuEntry(
-                        icon = Icons.Outlined.LocalFireDepartment,
-                        label = "Pantalla de cocina",
-                        onClick = { showKDS = true },
-                    ),
-                )
-            }
-            if (viewModel.canManageCashDrawer) {
-                add(
-                    MenuEntry(
-                        icon = Icons.Outlined.Payments,
-                        label = "Caja",
-                        onClick = { showCashDrawer = true },
-                    ),
-                )
-                add(
-                    MenuEntry(
-                        icon = Icons.AutoMirrored.Outlined.FactCheck,
-                        label = "Cierre del día",
-                        onClick = { showEndOfDay = true },
-                    ),
-                )
-            }
+            if (visible(PreferenciasDelMenu.PRESUPUESTOS)) add(
+                MenuEntry(
+                    icon = Icons.Outlined.RequestQuote,
+                    label = "Presupuestos",
+                    onClick = { showEstimates = true },
+                ),
+            )
+        }
+
+        val agenda = buildList {
             if (viewModel.reservationsEnabled) {
                 add(
                     MenuEntry(
@@ -533,12 +560,14 @@ fun MoreMenuScreen(
                     )
                 }
             } else {
-                // Visible teaser: the entry stays discoverable with a tier badge
-                // when the plan lacks RESERVATIONS; tapping opens the Pro upsell.
+                // Teaser visible: la entrada se queda descubrible con el badge del tier cuando
+                // el plan no trae RESERVATIONS, y al tocarla abre el upsell. Se llama
+                // «Reservaciones» y no «Activar reservas» a propósito: el nombre del destino no
+                // debe cambiar al contratarlo, o quien ya aprendió dónde estaba lo pierde.
                 add(
                     MenuEntry(
                         icon = Icons.Outlined.CalendarMonth,
-                        label = "Activar reservas",
+                        label = "Reservaciones",
                         subtitle = if (viewModel.reservationsRequireUpgrade) {
                             "Incluido en el Plan ${viewModel.reservationsTierLabel}"
                         } else {
@@ -553,7 +582,35 @@ fun MoreMenuScreen(
                     ),
                 )
             }
-            add(
+        }
+
+        val controlDiario = buildList {
+            if (viewModel.canManageCashDrawer && visible(PreferenciasDelMenu.CAJA)) {
+                add(
+                    MenuEntry(
+                        icon = Icons.Outlined.Payments,
+                        label = "Caja",
+                        onClick = { showCashDrawer = true },
+                    ),
+                )
+                add(
+                    MenuEntry(
+                        icon = Icons.AutoMirrored.Outlined.FactCheck,
+                        label = "Cierre del día",
+                        onClick = { showEndOfDay = true },
+                    ),
+                )
+            }
+            if (viewModel.canAccessReports && visible(PreferenciasDelMenu.INFORMES)) {
+                add(
+                    MenuEntry(
+                        icon = Icons.Outlined.BarChart,
+                        label = "Informes",
+                        onClick = { showReports = true },
+                    ),
+                )
+            }
+            if (visible(PreferenciasDelMenu.RELOJ_CHECADOR)) add(
                 MenuEntry(
                     icon = Icons.Outlined.Schedule,
                     label = "Reloj checador",
@@ -562,89 +619,74 @@ fun MoreMenuScreen(
             )
         }
 
-        val catalogo = buildList {
-            if (viewModel.canCreateProducts) {
+        // Este grupo sólo lo ve el aparato que hace ese trabajo: en el iPhone de mostrador de
+        // una cafetería no pinta nada, porque `canAccessKDS` y las entregas por área se filtran.
+        val preparacionYEntrega = buildList {
+            if (viewModel.canAccessKDS && visible(PreferenciasDelMenu.PANTALLA_DE_COCINA)) {
                 add(
                     MenuEntry(
-                        icon = Icons.Outlined.LocalOffer,
-                        label = "Artículos",
-                        onClick = { showArticles = true },
+                        icon = Icons.Outlined.LocalFireDepartment,
+                        label = "Pantalla de cocina",
+                        onClick = { showKDS = true },
                     ),
                 )
             }
             add(
                 MenuEntry(
-                    icon = Icons.Outlined.People,
-                    label = "Clientes",
-                    onClick = { showCustomers = true },
-                ),
-            )
-            add(
-                MenuEntry(
-                    icon = Icons.Outlined.RequestQuote,
-                    label = "Presupuestos",
-                    onClick = { showEstimates = true },
+                    icon = Icons.Outlined.QrCodeScanner,
+                    label = "Entregas por área",
+                    subtitle = "Revisar papel o escanear comprobante pagado",
+                    onClick = { showAreaTicketDelivery = true },
                 ),
             )
         }
 
-        val ajustes = listOf(
+        val sistema = listOf(
             MenuEntry(
-                icon = Icons.Outlined.AdminPanelSettings,
-                label = "Permisos",
-                onClick = { showPermissions = true },
-            ),
-            MenuEntry(
-                icon = Icons.Outlined.Key,
-                label = "Configuración PIN",
-                onClick = { showPinSettings = true },
-            ),
-            MenuEntry(
-                icon = Icons.Outlined.Checklist,
-                label = "Configuración",
-                onClick = { showSetupWizard = true },
-            ),
-            MenuEntry(
-                icon = Icons.Outlined.GridView,
-                label = "Personalizar menú",
-                onClick = { showCustomizeMenu = true },
-            ),
-            MenuEntry(
-                icon = Icons.Outlined.Extension,
-                label = "Complementos",
-                onClick = { showAddons = true },
+                icon = Icons.Outlined.Tune,
+                label = "Ajustes",
+                subtitle = "Cobro · Hardware · Este aparato",
+                onClick = { showSettingsHub = true },
             ),
             MenuEntry(
                 icon = Icons.AutoMirrored.Outlined.HelpOutline,
                 label = "Atención al cliente",
                 onClick = { showSupport = true },
             ),
-        )
+        ).filter { it.label != "Atención al cliente" || visible(PreferenciasDelMenu.ATENCION_AL_CLIENTE) }
 
-        val hardware = listOf(
-            MenuEntry(
-                icon = Icons.Outlined.Print,
-                label = "Impresora",
-                onClick = { showPrinter = true },
-            ),
-            MenuEntry(
-                icon = Icons.Outlined.Lock,
-                label = "Esconder barras de Android",
-                subtitle = if (screenPinned) "Activado - no se puede salir de la app" else "Salir de la app",
-                onClick = { showScreenPinning = true },
-            ),
-            MenuEntry(
-                icon = Icons.Outlined.Monitor,
-                label = "Pantalla del cliente",
-                subtitle = if (customerDisplayDetected) "Detectada" else "No detectada",
-                onClick = { showCustomerDisplay = true },
-            ),
-        )
+        // El menú era UNA tira en todos los anchos: en una tablet de 1920 px eso dejaba más de la
+        // mitad de la pantalla en blanco y obligaba a tres arrastres para llegar al final. Ahora
+        // el ancho decide cuántas columnas caben, y `RepartoDeGrupos` conserva el orden de lectura
+        // para que nadie pierda dónde estaba una función al cambiar de aparato.
+        val grupos = listOf<Pair<String?, List<MenuEntry>>>(
+            "Ventas y clientes" to ventasYClientes,
+            "Agenda" to agenda,
+            "Control diario" to controlDiario,
+            "Preparación y entrega" to preparacionYEntrega,
+            null to sistema,
+        ).filter { it.second.isNotEmpty() }
 
-        MenuSection(title = "Operación", entries = operacion, dense = denseMenu)
-        MenuSection(title = "Catálogo", entries = catalogo, dense = denseMenu)
-        MenuSection(title = "Ajustes", entries = ajustes, dense = denseMenu)
-        MenuSection(title = "Hardware", entries = hardware, dense = denseMenu)
+        if (columnasDelMenu <= 1 || grupos.size <= 1) {
+            grupos.forEach { (titulo, entradas) ->
+                MenuSection(title = titulo, entries = entradas, dense = denseMenu)
+            }
+        } else {
+            val reparto = RepartoDeGrupos.repartir(grupos.map { it.second.size }, columnasDelMenu)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.lg),
+            ) {
+                reparto.forEach { indicesDeLaColumna ->
+                    Column(modifier = Modifier.weight(1f)) {
+                        indicesDeLaColumna.forEach { indice ->
+                            val (titulo, entradas) = grupos[indice]
+                            MenuSection(title = titulo, entries = entradas, dense = denseMenu)
+                        }
+                    }
+                }
+            }
+        }
 
         Spacer(modifier = Modifier.height(sectionGap))
 
@@ -886,33 +928,64 @@ fun MoreMenuScreen(
         }
     }
 
-    // Addons Fullscreen Overlay
-    if (showAddons) {
-        val overlayInteraction = remember { MutableInteractionSource() }
-        BoxWithConstraints(
-            modifier = Modifier
-                .fillMaxSize()
-                .zIndex(10f)
-                .background(MaterialTheme.colorScheme.surface)
-                .clickable(
-                    interactionSource = overlayInteraction,
-                    indication = null,
-                    onClick = {},
-                ),
-        ) {
-            val isTablet = maxWidth >= 600.dp
-            AddonsScreen(
-                isTablet = isTablet,
-                addonsManager = viewModel.addonsManager,
-                onDismiss = { showAddons = false },
-            )
-        }
-    }
     } // end Box
 
-    // Customize Menu Sheet
+    if (showSettingsHub) {
+        SettingsHubSheet(
+            dense = denseMenu,
+            customerDisplayDetected = customerDisplayDetected,
+            screenPinned = screenPinned,
+            onOpenTips = {
+                showSettingsHub = false
+                showSetupWizard = true
+            },
+            onOpenPrinter = {
+                showSettingsHub = false
+                showPrinter = true
+            },
+            onOpenCustomerDisplay = {
+                showSettingsHub = false
+                showCustomerDisplay = true
+            },
+            onOpenScreenPinning = {
+                showSettingsHub = false
+                showScreenPinning = true
+            },
+            onOpenCustomizeMenu = {
+                showSettingsHub = false
+                showCustomizeMenu = true
+            },
+            enlacesDe = { grupo ->
+                EnElPanelWeb.entries
+                    .filter { it.grupo == grupo }
+                    .filter { viewModel.canCreateProducts || !it.soloAdministradores }
+                    .mapNotNull { destino ->
+                        val url = destino.url(viewModel.venueSlug) ?: return@mapNotNull null
+                        MenuEntry(
+                            icon = Icons.Outlined.OpenInNew,
+                            label = destino.etiqueta,
+                            subtitle = destino.subtitulo + " · en el panel web",
+                            onClick = {
+                                showSettingsHub = false
+                                runCatching {
+                                    contextoDelMenu.startActivity(Intent(Intent.ACTION_VIEW, url.toUri()))
+                                }
+                            },
+                        )
+                    }
+            },
+            onDismiss = { showSettingsHub = false },
+        )
+    }
+
     if (showCustomizeMenu) {
-        CustomizeMenuSheet(onDismiss = { showCustomizeMenu = false })
+        CustomizeMenuSheet(
+            onDismiss = {
+                showCustomizeMenu = false
+                // Relee lo que la hoja acaba de guardar: sin esto el menú se queda como estaba.
+                revisionDelMenu++
+            },
+        )
     }
 
     if (showAreaTicketDelivery) {
@@ -970,15 +1043,6 @@ fun MoreMenuScreen(
         )
     }
 
-    // Permissions Placeholder Sheet
-    if (showPermissions) {
-        PlaceholderSheet(
-            title = "Permisos",
-            message = "La gestión de permisos estará disponible próximamente.",
-            onDismiss = { showPermissions = false },
-        )
-    }
-
     // Cambiar de usuario con PIN
     if (showSwitchUser) {
         SwitchUserSheet(
@@ -994,15 +1058,6 @@ fun MoreMenuScreen(
                 onTabsShouldRefresh()
             },
             onDismiss = { showSwitchUser = false },
-        )
-    }
-
-    // PIN Settings Placeholder Sheet
-    if (showPinSettings) {
-        PlaceholderSheet(
-            title = "Configuración PIN",
-            message = "La configuración de PIN estará disponible próximamente.",
-            onDismiss = { showPinSettings = false },
         )
     }
 
@@ -1396,14 +1451,16 @@ private data class MenuEntry(
 
 @Composable
 private fun MenuSection(
-    title: String,
+    title: String?,
     entries: List<MenuEntry>,
     dense: Boolean,
 ) {
     // Un grupo sin filas no deja encabezado colgado ni tarjeta hueca.
     if (entries.isEmpty()) return
 
-    SectionHeader(title = title, dense = dense)
+    // `title = null` es el grupo de cierre (Ajustes y Atención al cliente): son destinos que
+    // no pertenecen a ningún trabajo del piso, así que no merecen un encabezado propio.
+    if (title != null) SectionHeader(title = title, dense = dense)
     Card(
         modifier = Modifier.fillMaxWidth(),
         shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.lg),
@@ -1512,5 +1569,146 @@ private fun MenuRow(
     }
     if (showDivider) {
         HorizontalDivider(modifier = Modifier.padding(start = dividerInset))
+    }
+}
+
+// MARK: - Ajustes
+//
+// La puerta única a lo que NO es trabajo diario. Nació el 2026-09-18 para vaciar el cajón de
+// sastre en que se había convertido la sección «Ajustes» del menú: ahí convivían Propinas con
+// Permisos, Complementos y Atención al cliente.
+//
+// 🔴 Cada renglón abre una pantalla que YA existe. Esta hoja agrupa; no configura nada por su
+// cuenta, y no debe crecer con interruptores propios: un ajuste vive donde vive su pantalla.
+// Cuando se construyan Seguridad (PIN, permisos) y Plan y funciones, entran aquí como grupos.
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SettingsHubSheet(
+    dense: Boolean,
+    customerDisplayDetected: Boolean,
+    screenPinned: Boolean,
+    onOpenTips: () -> Unit,
+    onOpenPrinter: () -> Unit,
+    onOpenCustomerDisplay: () -> Unit,
+    onOpenScreenPinning: () -> Unit,
+    onOpenCustomizeMenu: () -> Unit,
+    enlacesDe: (GrupoDelPanel) -> List<MenuEntry>,
+    onDismiss: () -> Unit,
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+    ) {
+        com.avoqado.pos.designsystem.components.ImmersiveWindow()
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(
+                    start = AvoqadoTheme.spacing.lg,
+                    end = AvoqadoTheme.spacing.lg,
+                    bottom = AvoqadoTheme.spacing.xxl,
+                ),
+        ) {
+            Text(
+                text = "Ajustes",
+                style = MaterialTheme.typography.headlineMedium,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Text(
+                text = "Lo que se configura una vez y no se toca durante el turno.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
+
+            // 🔴 Lo del aparato y lo del panel web van MEZCLADOS, bajo el mismo tema.
+            //
+            // La primera versión apartaba los enlaces en una pantalla «Configurar en el panel
+            // web» con los 22 juntos: otro cajón de sastre, justo lo que se le había criticado a
+            // «Complementos» esa mañana. Quien buscaba la impresora veía «Impresora» y no se
+            // enteraba de que las estaciones de impresión vivían en otra pantalla.
+            //
+            // Las filas con `abreElNavegador = true` llevan la flecha ↗ y avisan a dónde van,
+            // porque el navegador puede pedir sesión.
+            MenuSection(
+                title = GrupoDelPanel.COBRO.titulo,
+                dense = dense,
+                entries = listOf(
+                    MenuEntry(
+                        icon = Icons.Outlined.Payments,
+                        label = "Propinas",
+                        subtitle = "Sobre qué base se calcula el porcentaje",
+                        onClick = onOpenTips,
+                    ),
+                ) + enlacesDe(GrupoDelPanel.COBRO),
+            )
+
+            MenuSection(
+                title = GrupoDelPanel.CATALOGO.titulo,
+                dense = dense,
+                entries = enlacesDe(GrupoDelPanel.CATALOGO),
+            )
+
+            MenuSection(
+                title = GrupoDelPanel.PERSONAL.titulo,
+                dense = dense,
+                entries = enlacesDe(GrupoDelPanel.PERSONAL),
+            )
+
+            MenuSection(
+                title = GrupoDelPanel.OPERACION.titulo,
+                dense = dense,
+                entries = listOf(
+                    MenuEntry(
+                        icon = Icons.Outlined.Print,
+                        label = "Impresora",
+                        onClick = onOpenPrinter,
+                    ),
+                    MenuEntry(
+                        icon = Icons.Outlined.Monitor,
+                        label = "Pantalla del cliente",
+                        subtitle = if (customerDisplayDetected) "Detectada" else "No detectada",
+                        onClick = onOpenCustomerDisplay,
+                    ),
+                ) + enlacesDe(GrupoDelPanel.OPERACION),
+            )
+
+            MenuSection(
+                title = GrupoDelPanel.NEGOCIO.titulo,
+                dense = dense,
+                entries = enlacesDe(GrupoDelPanel.NEGOCIO),
+            )
+
+            MenuSection(
+                title = "Este aparato",
+                dense = dense,
+                entries = listOf(
+                    MenuEntry(
+                        icon = Icons.Outlined.GridView,
+                        label = "Personalizar menú",
+                        subtitle = "Qué opciones aparecen en Más",
+                        onClick = onOpenCustomizeMenu,
+                    ),
+                    MenuEntry(
+                        icon = Icons.Outlined.Lock,
+                        label = "Esconder barras de Android",
+                        subtitle = if (screenPinned) {
+                            "Activado - no se puede salir de la app"
+                        } else {
+                            "Salir de la app"
+                        },
+                        onClick = onOpenScreenPinning,
+                    ),
+                ),
+            )
+
+            MenuSection(
+                title = GrupoDelPanel.PLAN.titulo,
+                dense = dense,
+                entries = enlacesDe(GrupoDelPanel.PLAN),
+            )
+        }
     }
 }

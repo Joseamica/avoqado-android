@@ -844,17 +844,20 @@ class PaymentFlowViewModel @Inject constructor(
         // vive en disco, así que sobrevive al cambio de pestaña y a la muerte del proceso —
         // que es justo cuando la pantalla de advertencia se evaporaba y el siguiente "Cobrar"
         // arrancaba limpio. Se resuelve ESE antes de ofrecer uno nuevo.
-        val pending = terminalPaymentService.unresolvedRequestId
-        if (pending != null) {
-            val fromPreviousSale = pending != undeterminedRequestId
-            _state.value = PaymentFlowState.Undetermined(
-                totalAmount = amount,
-                message = if (fromPreviousSale) PREVIOUS_CHARGE_MESSAGE else CardChargeDecision.UNDETERMINED_MESSAGE,
-                fromPreviousSale = fromPreviousSale,
-            )
-            return
-        }
-
+        // 🔴 FOUNDER, 21-sep, viéndolo en la D3: «lo que no quiero es que bloquee las siguientes
+        // ventas, o que el cajero se queje porque no puede vender». Esto CORTABA el flujo entero —
+        // `return` antes de `enterInitialState`—, así que un cobro con tarjeta sin resolver dejaba
+        // al negocio sin poder cobrar NI EN EFECTIVO. Medido en el aparato: al tocar «Cobrar» se
+        // saltaba la pantalla de métodos de pago y no había forma de llegar al efectivo.
+        //
+        // El alcance era demasiado ancho. Un cargo de TARJETA incierto no se puede duplicar
+        // cobrando en efectivo ni registrando «ya pagó de otra forma»: son instrumentos distintos.
+        // Lo único que de verdad choca es volver a mandar ESTA venta a una terminal, y eso se
+        // sigue bloqueando (abajo, al elegir TARJETA).
+        //
+        // 🔑 Aquí NO se guarda copia de la llave pendiente: la rama de TARJETA la lee VIVA, para
+        // que resolverla a media venta («Volver a consultar») desbloquee de inmediato en vez de
+        // obligar al cajero a salir y empezar otra. Medido en la D3 el 21-sep.
         enterInitialState(amount)
     }
 
@@ -909,6 +912,26 @@ class PaymentFlowViewModel @Inject constructor(
                 _state.value = PaymentFlowState.CollectingCashAmount(total)
             }
             PaymentMethod.CARD -> {
+                // 🔴 AQUÍ sí manda el pendiente: mandar otra venta a una terminal con un cargo sin
+                // resolver es el camino del cobro doble. Se resuelve ÉSE antes de ofrecer otro.
+                //
+                // 🔴 SE LEE LA LLAVE VIVA, NUNCA una copia guardada al arrancar la venta. Medido en
+                // una Sunmi D3 el 21-sep: con la copia, el cajero resolvía el pendiente con «Volver a
+                // consultar» —la llave quedaba libre, comprobado en el servidor: `CANCELLED` con
+                // `cancelDisposition=ACCEPTED` y sin `Payment`— y al elegir TARJETA **volvía a
+                // bloquearse**, porque la copia seguía en memoria. Sólo se destrababa saliendo de la
+                // venta y empezando otra. O sea: la guarda sobrevivía a su propia causa, que es el
+                // mismo defecto que este trabajo vino a cerrar.
+                val pendiente = terminalPaymentService.unresolvedRequestId
+                if (pendiente != null) {
+                    val deOtraVenta = pendiente != undeterminedRequestId
+                    _state.value = PaymentFlowState.Undetermined(
+                        totalAmount = total,
+                        message = if (deOtraVenta) PREVIOUS_CHARGE_MESSAGE else CardChargeDecision.UNDETERMINED_MESSAGE,
+                        fromPreviousSale = deOtraVenta,
+                    )
+                    return
+                }
                 // Fetch online terminals and show terminal selection
                 _state.value = PaymentFlowState.SelectingTerminal(total)
                 fetchTerminals()
@@ -1877,21 +1900,31 @@ class PaymentFlowViewModel @Inject constructor(
         // 🔴 La cancelación durable pudo resolver ESTE cobro mientras su POST seguía en vuelo. Si
         // ya consta que no se cobró —o si esta pantalla ya aplicó el cobro que sí ocurrió—, el
         // resultado tardío no puede volver a armar la llave: dejaría a la venta siguiente pidiendo
-        // resolver un cobro que ya está resuelto.
+        // resolver un cobro que ya está resuelto. La excepción, y es de dinero: un resultado que
+        // trae paymentId ACREDITADO manda sobre el veredicto — ver `staleOutcome`.
         val conocido = requestId?.let { cancelacionDeCobro.desenlaceConocido(it) }
-        val outcome = when {
-            conocido is com.avoqado.pos.payment.domain.DesenlaceDeCancelacion.NoSeCobro ->
-                CardChargeOutcome.NotCharged("La cancelación ya se resolvió: no se cobró.")
-            conocido is com.avoqado.pos.payment.domain.DesenlaceDeCancelacion.SeCobro && requestId == cobroAplicadoTrasCancelar ->
-                CardChargeOutcome.NotCharged("El cobro ya se aplicó a la venta.")
-            else -> outcomeDelResultado
-        }
+        val outcome = CardChargeDecision.staleOutcome(
+            resultado = outcomeDelResultado,
+            verdictoNoSeCobro = conocido is com.avoqado.pos.payment.domain.DesenlaceDeCancelacion.NoSeCobro,
+            cobroYaAplicadoAEstaVenta =
+                conocido is com.avoqado.pos.payment.domain.DesenlaceDeCancelacion.SeCobro &&
+                    requestId == cobroAplicadoTrasCancelar,
+        )
         val pending = CardChargeDecision.unresolvedKeyAfterStaleResult(
             outcome = outcome,
             requestId = requestId,
             armedKey = terminalPaymentService.unresolvedRequestId,
         )
-        terminalPaymentService.rearmUnresolvedCharge(pending)
+        // 🔴 P2 de Codex (20-sep): un ÉXITO tardío manda sobre una declaración ya aceptada — si el cobro
+        // sí pasó, la afirmación del cajero no puede silenciarlo. Cualquier otro desenlace obsoleto NO
+        // repone una llave que la declaración soltó.
+        //
+        // 🔴 Y el indulto es POR SOLICITUD: sólo vale si la llave que se repone es la MISMA de la que
+        // habla la evidencia. Cuando la ranura la gobierna OTRA solicitud (`armedKey` distinto), el
+        // éxito de ÉSTA no dice nada de AQUÉLLA — reponerla resucitaría un cobro que el cajero ya
+        // declaró y resolvió, y volvería a pedirle que lo resuelva.
+        val cobroProbadoDeEstaLlave = outcome is CardChargeOutcome.Charged && pending != null && pending == requestId
+        terminalPaymentService.rearmUnresolvedCharge(pending, aunSiFueDeclarado = cobroProbadoDeEstaLlave)
         // Esta pantalla ya no gobierna ese cobro: la llave durable manda, y al no coincidir
         // con ésta la próxima venta lo tratará como "cobro anterior" (no paga la venta nueva).
         if (pending != null) {
@@ -2058,6 +2091,7 @@ class PaymentFlowViewModel @Inject constructor(
                         message = r.mensaje,
                         checking = false,
                         fromPreviousSale = fromPreviousSale,
+                        declaracionRechazada = true,
                     )
                 is ResultadoDeDeclaracion.SesionRenovada ->
                     _state.value = PaymentFlowState.Undetermined(

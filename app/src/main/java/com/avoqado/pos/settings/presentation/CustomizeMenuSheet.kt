@@ -25,6 +25,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
+import com.avoqado.pos.settings.domain.PreferenciasDelMenu
 
 // MARK: - Menu Item Definition
 
@@ -34,21 +35,13 @@ data class MenuItemConfig(
     val defaultEnabled: Boolean = true,
 )
 
-private val menuItems = listOf(
-    MenuItemConfig("menu_timeclock", "Reloj checador"),
-    MenuItemConfig("menu_reports", "Informes"),
-    MenuItemConfig("menu_orders", "Pedidos"),
-    MenuItemConfig("menu_cashdrawer", "Caja"),
-    MenuItemConfig("menu_articles", "Artículos"),
-    MenuItemConfig("menu_customers", "Clientes"),
-    MenuItemConfig("menu_estimates", "Presupuestos"),
-    MenuItemConfig("menu_permissions", "Permisos"),
-    MenuItemConfig("menu_pin_settings", "Configuración PIN"),
-    MenuItemConfig("menu_printer", "Impresora"),
-    MenuItemConfig("menu_addons", "Complementos"),
-)
+// 🔴 Una sola fuente de claves y etiquetas: `PreferenciasDelMenu`, que es lo que el menú LEE.
+// Antes esta hoja tenía su propia lista, con nombres que no coincidían con iOS
+// (`menu_cashdrawer` contra `cash_drawer`) y que además ningún archivo consultaba.
+private val menuItems: List<MenuItemConfig> =
+    PreferenciasDelMenu.configurables.map { (clave, etiqueta) -> MenuItemConfig(clave, etiqueta) }
 
-private const val PREFS_NAME = "avoqado_menu_prefs"
+private const val PREFS_NAME = PreferenciasDelMenu.PREFS
 
 // MARK: - Customize Menu Sheet
 
@@ -88,7 +81,7 @@ fun CustomizeMenuSheet(
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
 
             Text(
-                text = "Elige que opciones aparecen en el menu principal",
+                text = "Elige qué opciones aparecen en el menú principal de este aparato",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

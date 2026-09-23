@@ -378,7 +378,9 @@ class PaymentFlowViewModelTest {
 
         // La referencia queda armada en la llave DURABLE: la próxima venta se topa con ella
         // y el cajero puede resolverla desde "Cobro sin confirmar".
-        verify { terminalPaymentService.rearmUnresolvedCharge("req-1") }
+        // 🔴 `aunSiFueDeclarado = true`: el cobro SÍ pasó. Un éxito tardío manda sobre una
+        // declaración ya aceptada — si no, la app silenciaría dinero real (P2 de Codex, 20-sep).
+        verify { terminalPaymentService.rearmUnresolvedCharge("req-1", aunSiFueDeclarado = true) }
         // Pero NO se secuestra la pantalla de la que el cajero ya se fue.
         assertFalse(
             "cancelar significa que la pantalla no se toca",
@@ -400,7 +402,8 @@ class PaymentFlowViewModelTest {
         viewModel.cancel()
         advanceUntilIdle()
 
-        verify { terminalPaymentService.rearmUnresolvedCharge("req-1") }
+        // Sigue sin saberse: NO se pisa una declaración aceptada con un desenlace incierto.
+        verify { terminalPaymentService.rearmUnresolvedCharge("req-1", aunSiFueDeclarado = false) }
     }
 
     @Test
@@ -445,7 +448,8 @@ class PaymentFlowViewModelTest {
         viewModel.cancel()
         advanceUntilIdle()
 
-        verify { terminalPaymentService.rearmUnresolvedCharge("req-nuevo") }
+        // Desenlace incierto: no repone una llave que una declaración pudo haber soltado.
+        verify { terminalPaymentService.rearmUnresolvedCharge("req-nuevo", aunSiFueDeclarado = false) }
     }
 
     @Test
@@ -549,22 +553,32 @@ class PaymentFlowViewModelTest {
     }
 
     @Test
-    fun `un cobro sin resolver BLOQUEA la siguiente venta hasta resolverlo`() = runTest {
-        // 🔴 El agujero que hacía inútil toda la ceremonia: el cajero ve "Cobro sin confirmar",
-        // se va a Transacciones a comprobar si el pago entró, vuelve y cobra — pantalla nueva,
-        // cero advertencia, segundo cargo. La llave vive en DISCO justo para esto.
+    fun `un cobro sin resolver BLOQUEA la siguiente venta CON TARJETA, nunca el efectivo`() = runTest {
+        // 🔴 El agujero que esta prueba cierra: el cajero ve "Cobro sin confirmar", se va a
+        // Transacciones a comprobar si el pago entró, vuelve y cobra — pantalla nueva, cero
+        // advertencia, SEGUNDO CARGO. La llave vive en DISCO justo para eso, y sigue vigente.
+        //
+        // 🔴 Lo que cambió el 21-sep (founder, viéndolo en la D3): antes esto cortaba la venta
+        // ENTERA y el negocio no podía cobrar ni en efectivo. Un cargo de tarjeta no se duplica
+        // con efectivo: son instrumentos distintos. Se bloquea lo que de verdad puede duplicarlo.
         stubOrderCreation()
         every { terminalPaymentService.unresolvedRequestId } returns "req-1"
 
         viewModel.startPaymentFlow(cardCart())
         advanceUntilIdle()
 
-        val state = viewModel.state.value
-        assertTrue("la venta nueva debe toparse con el cobro pendiente", state is PaymentFlowState.Undetermined)
-        assertTrue(
-            "debe declararse que viene de otra venta",
-            (state as PaymentFlowState.Undetermined).fromPreviousSale,
+        // La caja NO se cierra: se puede llegar a elegir cómo cobrar.
+        assertFalse(
+            "el pendiente no puede dejar al negocio sin vender (fue ${viewModel.state.value})",
+            viewModel.state.value is PaymentFlowState.Undetermined,
         )
+
+        // Pero mandar ESTA venta a una terminal sí obliga a resolver el cobro anterior.
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
+        val state = viewModel.state.value
+        assertTrue("con TARJETA sí se topa con el cobro pendiente", state is PaymentFlowState.Undetermined)
+        assertTrue("debe declararse que viene de otra venta", (state as PaymentFlowState.Undetermined).fromPreviousSale)
         // Y nadie cobró nada por el camino.
         coVerify(exactly = 0) {
             terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any())
@@ -582,6 +596,10 @@ class PaymentFlowViewModelTest {
         } returns TerminalPaymentResult.Success(paymentId = "pay-vieja")
 
         viewModel.startPaymentFlow(cardCart())
+        advanceUntilIdle()
+        // 🔴 La puerta del pendiente ya no es arrancar la venta —el efectivo dejó de bloquearse
+        // (founder, 21-sep)—: es elegir TARJETA, que es lo único que puede duplicar el cargo.
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
         advanceUntilIdle()
         viewModel.recheckCardCharge()
         advanceUntilIdle()
@@ -631,7 +649,9 @@ class PaymentFlowViewModelTest {
         val realService = TerminalPaymentService(secureStorage, okhttp3.OkHttpClient())
         realService.baseUrl = server.url("/api/v1").toString().trimEnd('/')
         every { terminalPaymentService.unresolvedRequestId } answers { realService.unresolvedRequestId }
-        every { terminalPaymentService.rearmUnresolvedCharge(any()) } answers { realService.rearmUnresolvedCharge(firstArg()) }
+        every { terminalPaymentService.rearmUnresolvedCharge(any(), any()) } answers {
+            realService.rearmUnresolvedCharge(firstArg(), secondArg())
+        }
         // El cobro en vuelo lo conoce el servicio REAL: es a quien apunta «Cancelar».
         every { terminalPaymentService.intentoEnVuelo() } answers { realService.intentoEnVuelo() }
         coEvery { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any()) } coAnswers {
@@ -646,7 +666,11 @@ class PaymentFlowViewModelTest {
             assertTrue(postStarted.await(5, java.util.concurrent.TimeUnit.SECONDS))
             viewModel.cancel()
             viewModel.startPaymentFlow(cardCart().copy(items = cardCart().items.map { it.copy(id = "B", unitPrice = 9900) }))
-            viewModel.recheckCardCharge()
+            // 🔴 La puerta del pendiente ya no es arrancar la venta —el efectivo dejó de bloquearse
+        // (founder, 21-sep)—: es elegir TARJETA, que es lo único que puede duplicar el cargo.
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
+        viewModel.recheckCardCharge()
             runCurrent()
             assertTrue(getStarted.await(5, java.util.concurrent.TimeUnit.SECONDS))
             releasePost.countDown()
@@ -695,6 +719,10 @@ class PaymentFlowViewModelTest {
         coEvery { terminalPaymentService.resolveOutcome("pending") } coAnswers { result.await() }
         viewModel.startPaymentFlow(cardCart())
         advanceUntilIdle()
+        // 🔴 La puerta del pendiente ya no es arrancar la venta —el efectivo dejó de bloquearse
+        // (founder, 21-sep)—: es elegir TARJETA, que es lo único que puede duplicar el cargo.
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
         viewModel.recheckCardCharge()
         viewModel.recheckCardCharge()
         advanceTimeBy(1)
@@ -713,6 +741,10 @@ class PaymentFlowViewModelTest {
         advanceUntilIdle()
         viewModel.cancel()
         viewModel.startPaymentFlow(cardCart().copy(items = cardCart().items.map { it.copy(id = "other-line", unitPrice = 9900) }))
+        advanceUntilIdle()
+        // 🔴 La puerta del pendiente ya no es arrancar la venta —el efectivo dejó de bloquearse
+        // (founder, 21-sep)—: es elegir TARJETA, que es lo único que puede duplicar el cargo.
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
         advanceUntilIdle()
         assertTrue((viewModel.state.value as PaymentFlowState.Undetermined).fromPreviousSale)
         viewModel.recheckCardCharge()
@@ -741,7 +773,8 @@ class PaymentFlowViewModelTest {
         advanceUntilIdle()
         assertEquals(stateBeforeResult, viewModel.state.value)
         assertFalse(viewModel.state.value is PaymentFlowState.Success)
-        verify { terminalPaymentService.rearmUnresolvedCharge("req-1") }
+        // El cobro se aplicó: el dinero manda sobre la declaración.
+        verify { terminalPaymentService.rearmUnresolvedCharge("req-1", aunSiFueDeclarado = true) }
     }
 
     @Test
@@ -750,6 +783,10 @@ class PaymentFlowViewModelTest {
         val instruction = "El cobro sigue activo. Confirma en la terminal antes de intentar otro cobro."
         coEvery { terminalPaymentService.resolveOutcome("old-request") } returns TerminalPaymentResult.Undetermined(instruction, "old-request")
         viewModel.startPaymentFlow(cardCart())
+        advanceUntilIdle()
+        // 🔴 La puerta del pendiente ya no es arrancar la venta —el efectivo dejó de bloquearse
+        // (founder, 21-sep)—: es elegir TARJETA, que es lo único que puede duplicar el cargo.
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
         advanceUntilIdle()
         viewModel.recheckCardCharge()
         advanceUntilIdle()
@@ -764,6 +801,10 @@ class PaymentFlowViewModelTest {
         coEvery { terminalPaymentService.resolveOutcome("old-request") } returns
             TerminalPaymentResult.Undetermined(CardChargeDecision.UNDETERMINED_MESSAGE, "old-request")
         viewModel.startPaymentFlow(cardCart())
+        advanceUntilIdle()
+        // 🔴 La puerta del pendiente ya no es arrancar la venta —el efectivo dejó de bloquearse
+        // (founder, 21-sep)—: es elegir TARJETA, que es lo único que puede duplicar el cargo.
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
         advanceUntilIdle()
         viewModel.recheckCardCharge()
         advanceUntilIdle()
@@ -2548,4 +2589,70 @@ class PaymentFlowViewModelTest {
         assertTrue(viewModel.state.value is PaymentFlowState.SelectingTerminal)
     }
 
+    // --- Un cobro pendiente NO puede dejar al negocio sin vender (founder, 21-sep) ---
+
+    @Test
+    fun `P1 con un cobro de tarjeta pendiente el EFECTIVO sigue disponible`() = runTest {
+        // 🔴 MEDIDO EN LA D3: `startPaymentFlow` cortaba con `return` y se saltaba la pantalla de
+        // métodos de pago, así que un cargo de tarjeta sin resolver dejaba al negocio sin poder
+        // cobrar NI EN EFECTIVO. Un cargo de tarjeta no se duplica cobrando en efectivo: son
+        // instrumentos distintos. Lo único que choca es mandar otra venta a la TERMINAL.
+        every { terminalPaymentService.unresolvedRequestId } returns "req-viejo"
+
+        viewModel.startPaymentFlow(cardCart())
+        advanceUntilIdle()
+
+        assertFalse(
+            "con un pendiente de OTRA venta, la caja NO se cierra (fue ${viewModel.state.value})",
+            viewModel.state.value is PaymentFlowState.Undetermined,
+        )
+
+        // Y no basta con "no bloquea": el efectivo tiene que llegar a cobrar de verdad.
+        viewModel.selectPaymentMethod(PaymentMethod.CASH)
+        advanceUntilIdle()
+        assertTrue(
+            "el efectivo debe seguir cobrando (fue ${viewModel.state.value})",
+            viewModel.state.value is PaymentFlowState.CollectingCashAmount,
+        )
+    }
+
+    @Test
+    fun `P1 resolver el pendiente a media venta desbloquea la TARJETA sin salir`() = runTest {
+        // 🔴 MEDIDO EN LA D3 (21-sep): el cajero resolvía el cobro pendiente con «Volver a
+        // consultar» —la llave quedaba libre de verdad, el servidor decía CANCELLED/ACCEPTED sin
+        // Payment— y al elegir TARJETA volvía a bloquearse, porque el ViewModel guardaba una COPIA
+        // de la llave al arrancar la venta. Sólo se destrababa saliendo y empezando otra: la guarda
+        // sobrevivía a su propia causa.
+        every { terminalPaymentService.unresolvedRequestId } returns "req-viejo"
+
+        viewModel.startPaymentFlow(cardCart())
+        advanceUntilIdle()
+
+        // Se resuelve el pendiente MIENTRAS la venta sigue abierta.
+        every { terminalPaymentService.unresolvedRequestId } returns null
+
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
+
+        val estado = viewModel.state.value
+        assertFalse(
+            "resuelto el pendiente, la TARJETA debe abrirse sin salir de la venta (fue $estado)",
+            estado is PaymentFlowState.Undetermined,
+        )
+    }
+
+    @Test
+    fun `P1 pero mandar esa venta a la TERMINAL sigue bloqueado`() = runTest {
+        // El control que protege el dinero: lo que sí puede duplicar un cargo es otro cargo.
+        every { terminalPaymentService.unresolvedRequestId } returns "req-viejo"
+
+        viewModel.startPaymentFlow(cardCart())
+        advanceUntilIdle()
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
+
+        val estado = viewModel.state.value
+        assertTrue("elegir TARJETA con un pendiente obliga a resolverlo (fue $estado)", estado is PaymentFlowState.Undetermined)
+        assertTrue("y se dice que es de la venta anterior", (estado as PaymentFlowState.Undetermined).fromPreviousSale)
+    }
 }

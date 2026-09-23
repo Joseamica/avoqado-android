@@ -143,6 +143,31 @@ class TerminalPaymentService @Inject constructor(
     }
 
     /**
+     * El cliente de la DECLARACIÓN del cajero.
+     *
+     * 🔴 MEDIDO EN UNA SUNMI D3 (21-sep) y revertido el mismo día: este cliente llegó a apagar
+     * `retryOnConnectionFailure` y a mandar el cuerpo en un solo envío, para que OkHttp no pudiera
+     * reenviar la declaración. **Eso dejaba el botón inservible en una red normal.** Son dos cosas
+     * distintas que se parecen:
+     *
+     *  · **reintento de CONEXIÓN** — el socket keep-alive ya estaba cerrado, el servidor NO recibió
+     *    nada. Repetir es seguro SIEMPRE, y es lo que hace OkHttp solo.
+     *  · **reenvío por RESPUESTA** — el servidor contestó (408, 503 `Retry-After: 0`), o sea que sí
+     *    recibió la declaración. Repetir ahí es lo que hay que cuidar.
+     *
+     * Al apagar el primero, el POST moría con `unexpected end of stream` y **nunca llegaba al
+     * servidor** (0 registros), mientras la pantalla culpaba a la red: «Necesitas conexión». El
+     * servidor manda `Keep-Alive: timeout=5` y entre dos toques del cajero pasan más de 5 s, así que
+     * la conexión rancia es el caso NORMAL, no el raro.
+     *
+     * Contra el reenvío la protección es la IDEMPOTENCIA, que ya existe y está probada: la
+     * declaración viaja con un `resolutionId` determinista y el servidor deduplica por `bodyHash`
+     * (replay idempotente). Repetir la MISMA declaración devuelve la MISMA resolución sin re-auditar
+     * ni reescribir — o la rechaza si entretanto apareció evidencia de cobro.
+     */
+    private val clienteDeLaDeclaracion by lazy { statusClient }
+
+    /**
      * Contexto guardado del cobro (la llave durable), si corresponde a ESA solicitud.
      *
      * Es lo que permite cancelar desde «Cobro sin confirmar» o desde «Error», cuando el POST ya
@@ -251,7 +276,19 @@ class TerminalPaymentService @Inject constructor(
      * cajero YA canceló, la venta se quedaba sin nadie que supiera del cargo. Quién decide qué
      * llave queda es [CardChargeDecision.unresolvedKeyAfterStaleResult]; aquí sólo se escribe.
      */
-    fun rearmUnresolvedCharge(requestId: String?) {
+    fun rearmUnresolvedCharge(requestId: String?, aunSiFueDeclarado: Boolean = false) {
+        // 🔴 P2 de Codex (20-sep): ésta es la ruta REAL del resultado obsoleto, y no tenía la guarda —
+        // la puse en `armarLlaveSiLibre`, por donde ese callback no pasa. Un `Undetermined` viejo
+        // reponía la llave que la declaración acababa de soltar, y la venta siguiente volvía a
+        // bloquearse por el cobro recién liberado: el callejón sin salida otra vez.
+        //
+        // 🔴 Pero NO se bloquea a ciegas: un ÉXITO tardío manda sobre la declaración. Si el cobro sí
+        // pasó, la afirmación del cajero no puede silenciarlo — la llave se repone para que la próxima
+        // venta lo muestre y alguien busque esa venta para dar el recibo. Por eso hay bandera.
+        if (requestId != null && !aunSiFueDeclarado && yaDeclaradoSinCobro(requestId)) {
+            Log.i("💳", "🧾 Rearmado IGNORADO: $requestId ya se declaró sin cobro (resultado obsoleto)")
+            return
+        }
         unresolvedRequestId = requestId
     }
 
@@ -413,12 +450,20 @@ class TerminalPaymentService @Inject constructor(
             }
 
             clearCurrent(requestId)
-            recoveredPost(requestId)?.let { return it }
 
+            // 🔴 P1 de Codex (21-sep), el hermano del de iOS: el ganador cacheado se consultaba AQUÍ,
+            // ANTES de leer la respuesta. Mientras este POST viajaba, una consulta concurrente pudo ver
+            // la fila ya declarada y guardar un `Error` en `recoveredPosts` — y entonces un POST que
+            // vuelve con `success` + `paymentId` se descartaba antes de decodificarlo. El dinero se
+            // perdía ANTES de llegar a `staleOutcome`, así que aquel arreglo no alcanzaba.
+            //
+            // La regla es la misma en las dos apps: el ganador manda sobre la DUDA, nunca sobre un
+            // cobro ACREDITADO. Por eso se consulta en cada rama que no sea ese éxito.
             when (responseCode) {
                 in 200..299 -> {
                     val response = json.decodeFromString(TerminalPaymentResponse.serializer(), body)
                     if (response.status != "success" || response.paymentId.isNullOrBlank() || (response.requestId != null && response.requestId != requestId)) {
+                        recoveredPost(requestId)?.let { return it }
                         return resolveOutcome(requestId, fromPost = true)
                     }
                     clearMatching(requestId)
@@ -435,13 +480,25 @@ class TerminalPaymentService @Inject constructor(
                         // API → todo ticket salía con el QR viejo, sin facturación.
                         receiptUrl = response.receipt?.receiptUrl,
                         requestId = requestId,
-                    ).also { result ->
+                    ).let { result ->
                         synchronized(attemptLock) {
-                            if (requestId in recoveryFlights) recoveredPosts[requestId] = result
+                            // 🔴 P2 de Codex (21-sep), espejo de iOS: si el ganador cacheado YA es este
+                            // MISMO cobro, se devuelve ÉL —con su `alreadyRecovered`—, no el recién
+                            // decodificado. Si no, el consumidor vuelve a armar una llave ya resuelta.
+                            val ganador = recoveredPosts[requestId]
+                            if (ganador is TerminalPaymentResult.Success && ganador.paymentId == result.paymentId) {
+                                return@let ganador.copy(alreadyRecovered = true)
+                            }
+                            // Un ganador CONTRARIO queda sustituido: nadie puede taparlo después.
+                            if (requestId in recoveryFlights || recoveredPosts.containsKey(requestId)) {
+                                recoveredPosts[requestId] = result
+                            }
+                            result
                         }
                     }
                 }
                 else -> {
+                    recoveredPost(requestId)?.let { return it }
                     // 🔴 Un fallo de TRANSPORTE (5xx, 408) no es un fallo de COBRO: la terminal
                     // pudo haber cobrado y sólo se perdió el aviso. Fue exactamente el 503 de
                     // ngrok reiniciando el backend lo que produjo el doble cobro del 2026-08-10.
@@ -656,7 +713,12 @@ class TerminalPaymentService @Inject constructor(
             CardChargeDecision.exhausted()
         }
         return synchronized(attemptLock) {
-            recoveredPosts[requestId] ?: (resolved ?: CardChargeDecision.exhausted()).toResult(requestId)
+            // 🔴 Misma regla que en el POST (Codex, 21-sep): el ganador cacheado manda sobre la duda,
+            // NUNCA sobre un cobro acreditado. Si esta consulta acaba de confirmar que el dinero salió,
+            // una declaración de «no se cobró» guardada antes no puede taparlo.
+            val desenlace = resolved ?: CardChargeDecision.exhausted()
+            if (desenlace is CardChargeOutcome.Charged) desenlace.toResult(requestId)
+            else recoveredPosts[requestId] ?: desenlace.toResult(requestId)
         }
     }
 
@@ -793,7 +855,7 @@ class TerminalPaymentService @Inject constructor(
                 .build()
 
             val (code, body) = withContext(Dispatchers.IO) {
-                statusClient.newCall(request).execute().use { it.code to (it.body?.string() ?: "") }
+                clienteDeLaDeclaracion.newCall(request).execute().use { it.code to (it.body?.string() ?: "") }
             }
             val dto = runCatching { json.decodeFromString(RespuestaDeDeclaracionDto.serializer(), body) }.getOrNull()
             Log.d("💳", "Declaracion no-cobrado: $code (released=${dto?.released}, code=${dto?.code})")
@@ -1238,6 +1300,12 @@ data class TerminalPaymentStatusDto(
     val reconciliationRequired: Boolean? = null,
     val orderId: String? = null,
     val terminalId: String? = null,
+    /**
+     * El texto que escribio el SERVIDOR (hoy solo con `BANK_DECLINED`): trae el motivo del banco ya
+     * traducido a nuestras palabras. Sin mapearlo aqui, la rama que lo prefiere en `CardChargeOutcome`
+     * seria CODIGO MUERTO — que es exactamente el defecto que Codex encontro el 21-sep en el servidor.
+     */
+    val errorMessage: String? = null,
 ) {
     fun aProbe(): ChargeStatusProbe.Known = ChargeStatusProbe.Known(
         status = status,
@@ -1251,6 +1319,7 @@ data class TerminalPaymentStatusDto(
         reconciliationRequired = reconciliationRequired,
         orderId = orderId,
         terminalId = terminalId,
+        errorMessage = errorMessage,
     )
 }
 

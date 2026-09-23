@@ -72,4 +72,62 @@ class RefundSubmitRulesTest {
         assertNull(tipRefundCentsParaEnvio(paymentTipAmount = 0.0, includeTip = false))
         assertNull(tipRefundCentsParaEnvio(paymentTipAmount = 0.0, includeTip = true))
     }
+
+    // ── El TOPE depende de si la propina viaja ───────────────────────────────────────
+    //
+    // Testarudo, 17-sep-2026: cobro CASH de $200 + $20. El cajero desmarcó «Incluir
+    // propina» y dejó el importe en $220 (el máximo que la hoja mostraba INCLUÍA la
+    // propina). La app mandó `amount: 22000, tipRefundCents: 0` y el servidor rechazó,
+    // con razón, «Sale portion of refund (22000) exceeds original sale amount (20000)».
+    // Cinco 400 seguidos; el reembolso salió 4.7 h después por otro camino.
+
+    @Test
+    fun `con la propina incluida el tope es todo lo disponible`() {
+        assertEquals(220.0, topeReembolsable(remainingRefundable = 220.0, remainingRefundableSale = 200.0, paymentTipAmount = 20.0, includeTip = true), 0.0)
+    }
+
+    @Test
+    fun `sin la propina el tope es la venta restante que manda el servidor`() {
+        assertEquals(200.0, topeReembolsable(remainingRefundable = 220.0, remainingRefundableSale = 200.0, paymentTipAmount = 20.0, includeTip = false), 0.0)
+    }
+
+    @Test
+    fun `con devoluciones previas manda la venta restante del servidor, no una resta local`() {
+        // $200 + $20; ya se devolvieron $50 de venta + $5 de propina ⇒ disponible $165, venta restante $150.
+        assertEquals(150.0, topeReembolsable(remainingRefundable = 165.0, remainingRefundableSale = 150.0, paymentTipAmount = 20.0, includeTip = false), 0.0)
+    }
+
+    @Test
+    fun `sin la propina y con un servidor viejo (sin saldo por componente) el tope es lo disponible menos la propina`() {
+        assertEquals(200.0, topeReembolsable(remainingRefundable = 220.0, remainingRefundableSale = null, paymentTipAmount = 20.0, includeTip = false), 0.0)
+    }
+
+    @Test
+    fun `el tope nunca baja de cero`() {
+        assertEquals(0.0, topeReembolsable(remainingRefundable = 15.0, remainingRefundableSale = null, paymentTipAmount = 20.0, includeTip = false), 0.0)
+    }
+
+    @Test
+    fun `un cobro sin propina tiene el mismo tope marque lo que marque`() {
+        assertEquals(80.0, topeReembolsable(remainingRefundable = 80.0, remainingRefundableSale = 80.0, paymentTipAmount = 0.0, includeTip = false), 0.0)
+        assertEquals(80.0, topeReembolsable(remainingRefundable = 80.0, remainingRefundableSale = null, paymentTipAmount = 0.0, includeTip = true), 0.0)
+    }
+
+    // ── Al bajar el tope, el importe escrito se recorta; lo que cabe no se toca ──────
+    //
+    // Codex (20-sep-2026): «quien escribió $50 sin propina quiere devolver $50» — no se
+    // resta la propina de cualquier importe manual; sólo se recorta lo que ya no cabe.
+
+    @Test
+    fun `un importe por encima del nuevo tope se recorta al tope`() {
+        assertEquals("200.00", importeAjustadoAlTope(amountStr = "220", tope = 200.0))
+        assertEquals("200.00", importeAjustadoAlTope(amountStr = "220,00", tope = 200.0))
+    }
+
+    @Test
+    fun `un importe que cabe no se toca ni se reformatea`() {
+        assertEquals("50", importeAjustadoAlTope(amountStr = "50", tope = 200.0))
+        assertEquals("", importeAjustadoAlTope(amountStr = "", tope = 200.0))
+        assertEquals("abc", importeAjustadoAlTope(amountStr = "abc", tope = 200.0))
+    }
 }
