@@ -51,7 +51,7 @@ object TextosMerma {
     const val EN_ESPERA = "Espera su turno para subir."
     const val SE_REINTENTARA = "No se pudo subir todavía; se reintentará sola."
     const val SUBIENDO = "Se está subiendo."
-    const val NO_SE_PUDO_REGISTRAR = "No se pudo registrar: revísala en «Mermas por subir»."
+    const val NO_SE_PUDO_REGISTRAR = "No se pudo registrar «{articulo}»: revísala en «Mermas por subir»."
     const val ESTADO_DESCARTADA = "Descartada."
     const val ESTADO_APLICADA = "Sí se había registrado."
     const val CAPTURADA_POR_OTRA = "La capturó otra persona."

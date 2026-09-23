@@ -21,6 +21,8 @@ import io.mockk.mockk
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 
@@ -97,6 +99,22 @@ class PendingWasteViewModelTest {
 
         assertEquals(listOf("a"), cajero.filas.value.map { it.folio })
         assertEquals(listOf("a", "b"), gerente.filas.value.map { it.folio })
+    }
+
+    /**
+     * 🔴 Codex r2: con la lista abierta, una fila que estaba saliendo y el servidor mandó a revisión seguía
+     * diciendo «Se está subiendo», con «Descartar» apagado, hasta salir y volver a entrar. La lista se
+     * entera sola de cada cambio de la cola.
+     */
+    @Test
+    fun `la lista se actualiza sola mientras esta abierta`() = runTest {
+        cola.encolar(fila(estado = EstadoMerma.SENDING))
+        val vm = vmDe().apply { cargar() }
+        assertFalse(vm.filas.value.single().sePuedeDescartar)
+
+        cola.marcar(FOLIO, EstadoMerma.NEEDS_REVIEW, "ITEM_NOT_FOUND", 0L)
+
+        assertTrue(vm.filas.value.single().sePuedeDescartar)
     }
 
     /** El contador de «Más» cuenta con la MISMA regla que la lista, y lo cerrado ya no está por subir. */

@@ -14,6 +14,7 @@ import com.avoqado.pos.inventory.waste.domain.WasteReason
 import com.avoqado.pos.inventory.waste.presentation.AvisoDeMerma
 import com.avoqado.pos.inventory.waste.presentation.EntradaDeMerma
 import com.avoqado.pos.inventory.waste.presentation.LogWasteViewModel
+import com.avoqado.pos.inventory.waste.presentation.debePublicarseElAviso
 import com.avoqado.pos.inventory.waste.presentation.entradaDeMerma
 import io.mockk.every
 import io.mockk.mockk
@@ -193,10 +194,22 @@ class LogWasteViewModelTest {
         vm.confirmar().join()
 
         assertEquals(
-            AvisoDeMerma("Merma guardada", "No se pudo registrar: revísala en «Mermas por subir»."),
+            AvisoDeMerma("Merma guardada", "No se pudo registrar «Aguacate»: revísala en «Mermas por subir»."),
             vm.estado.value.aviso,
         )
         assertEquals(EstadoMerma.NEEDS_REVIEW, cola.todas().single().estado)
+    }
+
+    /**
+     * 🔴 Codex r2: se confirman A y B seguidas y cada una espera su desenlace; el aviso de A (más vieja) podía
+     * llegar al final y tapar el rechazo de B. Regla: sólo se publica el aviso de la ÚLTIMA captura, salvo un
+     * rechazo, que se publica siempre (y nombra el artículo, porque puede no ser el último).
+     */
+    @Test
+    fun `solo el aviso de la ultima captura se publica, salvo un rechazo`() {
+        assertTrue(debePublicarseElAviso(turno = 2, ultimo = 2, esRechazo = false))
+        assertFalse(debePublicarseElAviso(turno = 1, ultimo = 2, esRechazo = false))
+        assertTrue(debePublicarseElAviso(turno = 1, ultimo = 2, esRechazo = true))
     }
 
     /** Con red pero sin respuesta a tiempo: está en el aparato y va en camino, y así se dice. */

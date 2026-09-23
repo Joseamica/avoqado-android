@@ -320,16 +320,33 @@ class WasteSyncCoordinator @Inject constructor(
         val fallo = WasteApi.leerFallo(respuesta.body)
         val codigo = if (sinConfirmar) SIN_CONFIRMACION else fallo.code
         val desenlace = clasificarRespuestaDeMerma(if (sinConfirmar) 0 else respuesta.code, codigo, fallo.featureCode)
-        val lapida = if (desenlace == WasteOutcome.Anulada) lapidaDe(fila) else null
+        val lapida = if (desenlace == WasteOutcome.Anulada) lapidaDe(fila) else Lapida(null, reintentar = false)
         return sinCancelar {
             when (desenlace) {
                 WasteOutcome.Sincronizada -> {
                     dao.borrarSincronizada(folio)
                     true
                 }
-                WasteOutcome.Anulada -> {
-                    dao.cerrar(folio, EstadoMerma.VOIDED, lapida?.porStaffId, lapida?.cuando ?: reloj())
-                    true
+                WasteOutcome.Anulada -> when {
+                    // 🔴 Codex r2: si la lápida no se pudo LEER, cerrar ahora perdía para siempre quién la
+                    // anuló y cuándo. La fila se queda; el siguiente drenado recibe otra vez `WASTE_VOIDED`.
+                    lapida.reintentar && secureStorage.userId != fila.staffId -> {
+                        dao.devolver(folio)
+                        false
+                    }
+                    lapida.reintentar -> {
+                        dao.marcar(
+                            folio,
+                            EstadoMerma.PENDING,
+                            "WASTE_VOIDED",
+                            reloj() + esperaAntesDeReintentar(fila.intentos + 1),
+                        )
+                        false
+                    }
+                    else -> {
+                        dao.cerrar(folio, EstadoMerma.VOIDED, lapida.anulada?.porStaffId, lapida.anulada?.cuando ?: reloj())
+                        true
+                    }
                 }
                 WasteOutcome.BloqueoDePlan -> {
                     dao.marcar(folio, EstadoMerma.PLAN_BLOCKED, fallo.featureCode, reloj() + ESPERA_DE_PLAN)
@@ -357,13 +374,21 @@ class WasteSyncCoordinator @Inject constructor(
     /**
      * 🔴 Codex r1: el gerente anula, el servidor crea la lápida y la respuesta se pierde; al reenviar, el
      * drenado recibe `WASTE_VOIDED`. Se le pide la lápida al `void` —idempotente: devuelve la autoría
-     * CANÓNICA aunque la pida otro— para guardar quién la anuló y cuándo. Si no se puede, se cierra igual
-     * (el 409 es definitivo), sin autor.
+     * CANÓNICA aunque la pida otro— para guardar quién la anuló y cuándo. Si no se pudo LEER (red, 5xx, un
+     * portal), se vuelve a preguntar; sólo un «no» definitivo (p. ej. 403, sin permiso) cierra sin autor.
      */
-    private suspend fun lapidaDe(fila: PendingWasteEntity): Anulacion.Anulada? {
+    private suspend fun lapidaDe(fila: PendingWasteEntity): Lapida {
         val respuesta = transporte.anular(fila, fila.staffId)
-        return (if (respuesta.code in 200..299) WasteApi.leerAnulacion(respuesta.body) else null) as? Anulacion.Anulada
+        val anulacion = if (respuesta.code in 200..299) WasteApi.leerAnulacion(respuesta.body) else null
+        if (anulacion != null) return Lapida(anulacion as? Anulacion.Anulada, reintentar = false)
+        val fallo = WasteApi.leerFallo(respuesta.body)
+        val reintentar = respuesta.code in 200..299 ||
+            clasificarRespuestaDeMerma(respuesta.code, fallo.code, fallo.featureCode) == WasteOutcome.Reintentable
+        return Lapida(null, reintentar)
     }
+
+    /** La lápida del servidor, o `reintentar` si no se supo. */
+    private class Lapida(val anulada: Anulacion.Anulada?, val reintentar: Boolean)
 
     private suspend fun <T> sinCancelar(bloque: suspend () -> T): T = withContext(NonCancellable) { bloque() }
 }

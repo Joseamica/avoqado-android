@@ -4,7 +4,8 @@ import com.avoqado.pos.inventory.waste.data.PendingWasteDao
 import com.avoqado.pos.inventory.waste.data.PendingWasteEntity
 import com.avoqado.pos.inventory.waste.data.PendingWasteSql
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.map
 import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.PreparedStatement
@@ -31,6 +32,9 @@ class ColaDeMermaSobreSqlite : PendingWasteDao {
 
     private val parametro = Regex(":([A-Za-z]+)")
 
+    /** Sube con cada escritura: los flujos vuelven a leer, como los `Flow` de Room ante un cambio de la tabla. */
+    private val version = MutableStateFlow(0)
+
     private fun preparar(sql: String, valores: Map<String, Any?>): PreparedStatement {
         val nombres = parametro.findAll(sql).map { it.groupValues[1] }.toList()
         val st = db.prepareStatement(parametro.replace(sql, "?"))
@@ -43,7 +47,7 @@ class ColaDeMermaSobreSqlite : PendingWasteDao {
     private fun <T> conBase(bloque: () -> T): T = bloque()
 
     private fun actualizar(sql: String, vararg valores: Pair<String, Any?>): Int =
-        conBase { preparar(sql, valores.toMap()).use { it.executeUpdate() } }
+        conBase { preparar(sql, valores.toMap()).use { it.executeUpdate() } }.also { if (it > 0) version.value++ }
 
     private fun filas(sql: String, vararg valores: Pair<String, Any?>): List<PendingWasteEntity> =
         conBase {
@@ -97,7 +101,7 @@ class ColaDeMermaSobreSqlite : PendingWasteDao {
             ).forEachIndexed { i, v -> st.setObject(i + 1, v) }
             st.executeUpdate().toLong()
         }
-    }
+    }.also { if (it > 0) version.value++ }
 
     override suspend fun candidato(ahora: Long, staffId: String): String? = conBase {
         preparar(PendingWasteSql.CANDIDATO, mapOf("ahora" to ahora, "staffId" to staffId)).use { st ->
@@ -128,10 +132,10 @@ class ColaDeMermaSobreSqlite : PendingWasteDao {
     override suspend fun sanarSending(): Int = actualizar(PendingWasteSql.SANAR_SENDING)
 
     override fun delVenue(venueId: String): Flow<List<PendingWasteEntity>> =
-        flow { emit(filas(PendingWasteSql.DEL_VENUE, "venueId" to venueId)) }
+        version.map { filas(PendingWasteSql.DEL_VENUE, "venueId" to venueId) }
 
     override fun cuenta(venueId: String): Flow<Int> =
-        flow { emit(entero(PendingWasteSql.CUENTA_VIVAS, "venueId" to venueId)) }
+        version.map { entero(PendingWasteSql.CUENTA_VIVAS, "venueId" to venueId) }
 
     override suspend fun todas(): List<PendingWasteEntity> = filas(PendingWasteSql.TODAS)
 }

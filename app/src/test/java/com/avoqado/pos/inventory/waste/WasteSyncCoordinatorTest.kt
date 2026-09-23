@@ -204,7 +204,10 @@ class WasteSyncCoordinatorTest {
     @Test
     fun `un 409 WASTE_VOIDED deja la fila anulada y no la reenvia`() = runTest {
         cola.encolar(fila())
-        val transporte = TransporteFalso(respuesta = { RespuestaHttp(409, """{"code":"WASTE_VOIDED"}""") })
+        val transporte = TransporteFalso(respuesta = { RespuestaHttp(409, """{"code":"WASTE_VOIDED"}""") }).apply {
+            // Un desenlace DEFINITIVO del `void` (sin permiso): se cierra aunque no se sepa el autor.
+            respuestaDeAnulacion = RespuestaHttp(403, """{"code":"WASTE_PERMISSION_DENIED"}""")
+        }
         val motor = motor(transporte)
 
         motor.drenarAhora()
@@ -428,6 +431,37 @@ class WasteSyncCoordinatorTest {
         assertEquals("gerente-1", f.cerradaPorStaffId)
         assertEquals(Instant.parse("2026-09-22T18:00:00.000Z").toEpochMilli(), f.cerradaEn)
         assertEquals(listOf(YO), transporte.anuladasPor)
+    }
+
+    /**
+     * 🔴 Codex r2: si la lápida no se pudo LEER (red, 5xx), la merma se cerraba para siempre sin autor ni
+     * hora: nadie volvía a preguntar. Ahora la fila se queda y el siguiente drenado lo intenta de nuevo —
+     * el servidor contesta otra vez `WASTE_VOIDED` y esta vez sí se recupera la autoría.
+     */
+    @Test
+    fun `si la lapida no se pudo leer, la anulacion se reintenta en vez de cerrarse sin autor`() = runTest {
+        cola.encolar(fila())
+        val transporte = TransporteFalso(respuesta = { RespuestaHttp(409, """{"code":"WASTE_VOIDED"}""") }).apply {
+            respuestaDeAnulacion = RespuestaHttp(503, "")
+        }
+        val motor = motor(transporte)
+
+        motor.drenarAhora()
+
+        val pendiente = cola.todas().single()
+        assertEquals(EstadoMerma.PENDING, pendiente.estado)
+        assertEquals("WASTE_VOIDED", pendiente.ultimoCodigo)
+
+        transporte.respuestaDeAnulacion = RespuestaHttp(
+            200,
+            """{"outcome":"VOIDED","voidedByStaffId":"gerente-1","voidedAt":"2026-09-22T18:00:00.000Z"}""",
+        )
+        testScheduler.advanceTimeBy(3_600_000)
+        motor.drenarAhora()
+
+        val cerrada = cola.todas().single()
+        assertEquals(EstadoMerma.VOIDED, cerrada.estado)
+        assertEquals("gerente-1", cerrada.cerradaPorStaffId)
     }
 
     // MARK: - Al cerrar sesión

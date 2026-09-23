@@ -85,6 +85,13 @@ fun entradaDeMerma(puedeRegistrar: Boolean, bloqueadaPorPlan: Boolean): EntradaD
  * antes de tocar la red y la sube el motor). Nada de lo que se ve aquí es una existencia: el
  * catálogo del servidor ni siquiera las manda, así que no hay nada que mover de forma optimista.
  */
+/**
+ * 🔴 Codex r2: dos capturas seguidas esperan su desenlace a la vez, y el aviso de la vieja podía llegar al
+ * final y tapar el de la nueva. Sólo se publica el aviso de la ÚLTIMA captura, salvo un rechazo, que se
+ * publica siempre (y nombra el artículo, porque puede no ser el último). Espejo de iOS.
+ */
+fun debePublicarseElAviso(turno: Long, ultimo: Long, esRechazo: Boolean): Boolean = esRechazo || turno == ultimo
+
 @HiltViewModel
 class LogWasteViewModel @Inject constructor(
     private val catalogo: CatalogoDeMerma,
@@ -166,34 +173,46 @@ class LogWasteViewModel @Inject constructor(
      * Un doble toque en «Confirmar» registra UNA merma, no dos. El candado cubre sólo el registro: la
      * espera del desenlace corre fuera de él, con el formulario ya limpio para la siguiente.
      */
+    /** El turno de cada captura: decide qué aviso se publica (`debePublicarseElAviso`). */
+    private val turnos = java.util.concurrent.atomic.AtomicLong(0)
+
     fun confirmar(): Job = viewModelScope.launch {
         if (!registrando.compareAndSet(false, true)) return@launch
         val registrada = try {
             registrarLoCapturado()
         } finally {
             registrando.set(false)
-        }
-        registrada?.let { (venueId, folio) -> _estado.update { e -> e.copy(aviso = avisoTrasRegistrar(venueId, folio)) } }
+        } ?: return@launch
+        val turno = turnos.incrementAndGet()
+        // La espera va FUERA de `update`: dentro, un cambio del formulario la volvería a correr.
+        val (aviso, esRechazo) = avisoTrasRegistrar(registrada)
+        if (debePublicarseElAviso(turno, turnos.get(), esRechazo)) _estado.update { it.copy(aviso = aviso) }
     }
+
+    /** Lo que se registró: la sucursal, el folio y el nombre del artículo (lo necesita el aviso de rechazo). */
+    private data class Registrada(val venueId: String, val folio: String, val articulo: String)
 
     /**
      * 🔴 Codex r1: «¡Merma registrada!» es una afirmación sobre el SERVIDOR, no sobre el aparato. Sin red o
      * sin plan se dice al momento cuándo subirá; con red se espera (poco) a que el servidor conteste, y si la
      * rechaza se DICE dónde verla — nunca un «registrada» que después resulta falso.
      */
-    private suspend fun avisoTrasRegistrar(venueId: String, folio: String): AvisoDeMerma = when {
-        bloqueo.estaBloqueado(venueId) -> AvisoDeMerma(TextosMerma.GUARDADA, TextosMerma.SE_SUBIRA_SIN_PLAN)
-        !hayRed() -> AvisoDeMerma(TextosMerma.GUARDADA, TextosMerma.SE_SUBIRA_SIN_RED)
-        else -> when (runCatching { motor.esperarSubida(folio) }.getOrDefault(SubidaDeMerma.EN_CAMINO)) {
-            SubidaDeMerma.SUBIO -> AvisoDeMerma(TextosMerma.REGISTRADA)
-            SubidaDeMerma.EN_REVISION -> AvisoDeMerma(TextosMerma.GUARDADA, TextosMerma.NO_SE_PUDO_REGISTRAR)
-            SubidaDeMerma.BLOQUEADA -> AvisoDeMerma(TextosMerma.GUARDADA, TextosMerma.SE_SUBIRA_SIN_PLAN)
-            SubidaDeMerma.EN_CAMINO -> AvisoDeMerma(TextosMerma.GUARDADA, TextosMerma.SUBIENDO)
+    private suspend fun avisoTrasRegistrar(r: Registrada): Pair<AvisoDeMerma, Boolean> = when {
+        bloqueo.estaBloqueado(r.venueId) -> AvisoDeMerma(TextosMerma.GUARDADA, TextosMerma.SE_SUBIRA_SIN_PLAN) to false
+        !hayRed() -> AvisoDeMerma(TextosMerma.GUARDADA, TextosMerma.SE_SUBIRA_SIN_RED) to false
+        else -> when (runCatching { motor.esperarSubida(r.folio) }.getOrDefault(SubidaDeMerma.EN_CAMINO)) {
+            SubidaDeMerma.SUBIO -> AvisoDeMerma(TextosMerma.REGISTRADA) to false
+            SubidaDeMerma.EN_REVISION -> AvisoDeMerma(
+                TextosMerma.GUARDADA,
+                TextosMerma.NO_SE_PUDO_REGISTRAR.replace("{articulo}", r.articulo),
+            ) to true
+            SubidaDeMerma.BLOQUEADA -> AvisoDeMerma(TextosMerma.GUARDADA, TextosMerma.SE_SUBIRA_SIN_PLAN) to false
+            SubidaDeMerma.EN_CAMINO -> AvisoDeMerma(TextosMerma.GUARDADA, TextosMerma.SUBIENDO) to false
         }
     }
 
-    /** Escribe la merma y deja el formulario listo. Devuelve (venue, folio), o `null` si no se registró. */
-    private suspend fun registrarLoCapturado(): Pair<String, String>? {
+    /** Escribe la merma y deja el formulario listo. `null` si no se registró. */
+    private suspend fun registrarLoCapturado(): Registrada? {
         val e = _estado.value
         val articulo = e.articulo ?: return null
         val motivo = e.motivo ?: return null
@@ -226,7 +245,7 @@ class LogWasteViewModel @Inject constructor(
                         enviando = false,
                     )
                 }
-                venueId to folio
+                Registrada(venueId, folio, articulo.name)
             },
             onFailure = { fallo ->
                 _estado.update { it.copy(enviando = false, error = fallo.message) }

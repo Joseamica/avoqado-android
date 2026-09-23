@@ -17,7 +17,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -92,22 +91,35 @@ class PendingWasteViewModel @Inject constructor(
     private val _aviso = MutableStateFlow<AvisoDeDescarte?>(null)
     val aviso: StateFlow<AvisoDeDescarte?> = _aviso.asStateFlow()
 
-    fun cargar(): Job = viewModelScope.launch { _filas.value = leer() }
+    private var observacion: Job? = null
+
+    /**
+     * 🔴 Codex r2: la lista OBSERVA la cola mientras está abierta. Leerla una sola vez dejaba una fila que el
+     * servidor mandó a revisión diciendo «Se está subiendo», con «Descartar» apagado, hasta volver a entrar.
+     */
+    fun cargar(): Job {
+        observacion?.cancel()
+        return viewModelScope.launch {
+            val venueId = secureStorage.venueId ?: run {
+                _filas.value = emptyList()
+                return@launch
+            }
+            dao.delVenue(venueId).collect { _filas.value = aFilas(it) }
+        }.also { observacion = it }
+    }
 
     /** 🔴 Descartar EXIGE red (spec §4.3): lo decide el motor, que le pregunta al servidor. */
     fun descartar(folio: String): Job = viewModelScope.launch {
         _aviso.value = avisoDeDescarte(motor.descartar(folio))
-        _filas.value = leer()
     }
 
     fun avisoVisto() {
         _aviso.value = null
     }
 
-    private suspend fun leer(): List<FilaPorSubir> {
-        val venueId = secureStorage.venueId ?: return emptyList()
+    private fun aFilas(todas: List<PendingWasteEntity>): List<FilaPorSubir> {
         val yo = secureStorage.userId
-        return mermasVisibles(dao.delVenue(venueId).first(), yo, roleManager.veMermasDeTodos).map { fila ->
+        return mermasVisibles(todas, yo, roleManager.veMermasDeTodos).map { fila ->
             FilaPorSubir(
                 folio = fila.idempotencyKey,
                 articulo = fila.itemName,
