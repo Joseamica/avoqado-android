@@ -58,10 +58,12 @@ import com.avoqado.pos.inventory.waste.domain.etiquetaDeUnidad
 @Composable
 fun LogWasteScreen(
     onDismiss: () -> Unit,
+    /** Desde la ficha de un artículo en Inventario: llega con ese artículo ya elegido. */
+    preseleccion: ArticuloPreseleccionado? = null,
     viewModel: LogWasteViewModel = hiltViewModel(),
 ) {
     val estado by viewModel.estado.collectAsState()
-    LaunchedEffect(Unit) { viewModel.alAbrir() }
+    LaunchedEffect(Unit) { viewModel.alAbrir(preseleccion) }
     DisposableEffect(Unit) { onDispose { viewModel.formularioCerrado() } }
     BackHandler(onBack = onDismiss)
 

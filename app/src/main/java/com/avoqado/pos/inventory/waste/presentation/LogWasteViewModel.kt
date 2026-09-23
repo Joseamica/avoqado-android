@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.util.ConnectivityMonitor
+import com.avoqado.pos.inventory.data.model.StockItem
 import com.avoqado.pos.inventory.waste.data.BloqueoDeMermaPorPlan
 import com.avoqado.pos.inventory.waste.data.CatalogoDeMerma
 import com.avoqado.pos.inventory.waste.data.WasteCatalogEntity
@@ -96,6 +97,19 @@ fun entradaDeMerma(puedeRegistrar: Boolean, bloqueadaPorPlan: Boolean): EntradaD
  */
 fun debePublicarseElAviso(turno: Long, ultimo: Long): Boolean = turno == ultimo
 
+/** El artículo con el que se abre el formulario desde Inventario (su tipo y su id, como en el catálogo). */
+data class ArticuloPreseleccionado(val itemType: String, val itemId: String)
+
+/**
+ * Desde Inventario: el tipo sale de la lista de la que vino el artículo (productos o insumos). Un producto de
+ * receta no tiene existencia propia y no admite merma en esta versión (spec D2): no se ofrece el botón.
+ */
+fun preseleccionDesdeInventario(item: StockItem, esInsumo: Boolean): ArticuloPreseleccionado? = when {
+    esInsumo -> ArticuloPreseleccionado("RAW_MATERIAL", item.id)
+    !item.isCountable -> null
+    else -> ArticuloPreseleccionado("PRODUCT", item.id)
+}
+
 /**
  * 🔴 Codex r3: lo que el servidor RECHAZÓ no es un aviso pasajero (y menos el verde de éxito): es un letrero
  * fijo que junta todas y sólo se va cuando el cajero lo ve. Así ni el éxito de la captura siguiente ni el
@@ -143,14 +157,26 @@ class LogWasteViewModel @Inject constructor(
      * por el plan y baja el catálogo. También es el «Actualizar» del aviso de plan: la petición
      * que puede levantarlo está siempre disponible.
      */
-    fun alAbrir(): Job = viewModelScope.launch {
+    fun alAbrir(preseleccion: ArticuloPreseleccionado? = null): Job = viewModelScope.launch {
         val venueId = secureStorage.venueId ?: return@launch
         cargar(venueId, recienBajado = false)
+        preseleccionar(preseleccion)
         if (!hayRed()) return@launch
         bloqueo.revalidar(venueId)
         if (!bloqueo.estaBloqueado(venueId) && catalogo.refrescarCatalogo(venueId, reloj())) {
             cargar(venueId, recienBajado = true)
+            preseleccionar(preseleccion)
         }
+    }
+
+    /**
+     * Entrar desde la ficha de un artículo en Inventario: se elige ESE artículo si el catálogo lo trae. Nunca pisa
+     * lo que el cajero ya eligió (el catálogo recién bajado llega después de que él pudo tocar otro).
+     */
+    private fun preseleccionar(preseleccion: ArticuloPreseleccionado?) {
+        if (preseleccion == null || _estado.value.articulo != null) return
+        enMemoria.firstOrNull { it.itemType == preseleccion.itemType && it.itemId == preseleccion.itemId }
+            ?.let(::elegirArticulo)
     }
 
     fun buscar(texto: String) = _estado.update {

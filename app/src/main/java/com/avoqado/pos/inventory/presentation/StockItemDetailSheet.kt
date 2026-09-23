@@ -25,8 +25,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.avoqado.pos.designsystem.components.ImmersiveWindow
+import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.inventory.data.model.StockItem
+import com.avoqado.pos.inventory.waste.domain.TextosMerma
 
 /**
  * Detalle de un artículo tocado en Inventario → Descripción general.
@@ -37,6 +39,8 @@ import com.avoqado.pos.inventory.data.model.StockItem
 fun StockItemDetailSheet(
     item: StockItem,
     onDismiss: () -> Unit,
+    /** «Registrar merma» con ESTE artículo ya elegido; null = sin permiso o el artículo no admite merma. */
+    onRegistrarMerma: (() -> Unit)? = null,
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
         ImmersiveWindow()
@@ -115,6 +119,10 @@ fun StockItemDetailSheet(
                     else -> "Existencia propia"
                 },
             )
+            onRegistrarMerma?.let { registrar ->
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xl))
+                PrimaryButton(text = TextosMerma.TITULO, onClick = registrar, fullWidth = true)
+            }
         }
     }
 }

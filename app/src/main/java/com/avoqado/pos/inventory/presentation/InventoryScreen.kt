@@ -80,6 +80,9 @@ import com.avoqado.pos.inventory.presentation.purchaseorders.PurchaseOrdersView
 import com.avoqado.pos.inventory.presentation.transfers.TransferDetailView
 import com.avoqado.pos.inventory.presentation.transfers.TransfersView
 import com.avoqado.pos.inventory.presentation.traslados.InterVenueTransfersView
+import com.avoqado.pos.inventory.waste.domain.TextosMerma
+import com.avoqado.pos.inventory.waste.presentation.LogWasteScreen
+import com.avoqado.pos.inventory.waste.presentation.preseleccionDesdeInventario
 import com.avoqado.pos.scale.ScaleCaptureViewModel
 import com.avoqado.pos.scale.ScaleUsageContext
 import com.avoqado.pos.scale.configuredProfileFor
@@ -198,6 +201,13 @@ fun InventoryScreen(
         return
     }
 
+    // «Registrar merma» desde Inventario (founder, 23-sep): el MISMO formulario que en «Más», a pantalla completa.
+    val mermaDesdeInventario by viewModel.mermaDesdeInventario.collectAsState()
+    mermaDesdeInventario?.let { merma ->
+        LogWasteScreen(onDismiss = { viewModel.cerrarMerma() }, preseleccion = merma.preseleccion)
+        return
+    }
+
     Box(modifier = Modifier.fillMaxSize()) {
         if (isTablet) {
             TabletInventoryLayout(
@@ -239,9 +249,16 @@ fun InventoryScreen(
     // Detalle de artículo tocado en la Descripción general
     val selectedStockItem by viewModel.selectedStockItem.collectAsState()
     selectedStockItem?.let { item ->
+        val rawMaterials by viewModel.countableRawMaterials.collectAsState()
+        val preseleccion = preseleccionDesdeInventario(item, esInsumo = rawMaterials.any { it.id == item.id })
         StockItemDetailSheet(
             item = item,
             onDismiss = { viewModel.selectStockItem(null) },
+            onRegistrarMerma = if (viewModel.canLogWaste && preseleccion != null) {
+                { viewModel.abrirMerma(preseleccion) }
+            } else {
+                null
+            },
         )
     }
 }
@@ -563,6 +580,7 @@ private fun SectionContent(
                     onSearchChange = { viewModel.updateSearch(it) },
                     onSortChange = { viewModel.updateSort(it) },
                     onItemTap = { viewModel.selectStockItem(it) },
+                    onRegistrarMerma = if (viewModel.canLogWaste) ({ viewModel.abrirMerma(null) }) else null,
                 )
             }
             InventorySection.COUNTS -> {
@@ -640,6 +658,8 @@ private fun StockOverviewContent(
     onSearchChange: (String) -> Unit,
     onSortChange: (StockSortOption) -> Unit,
     onItemTap: (StockItem) -> Unit = {},
+    /** null = sin permiso: el botón no aparece (la entrada de «Más» es la que explica a quién pedirlo). */
+    onRegistrarMerma: (() -> Unit)? = null,
 ) {
     var showSortSheet by remember { mutableStateOf(false) }
     val context = LocalContext.current
@@ -672,6 +692,24 @@ private fun StockOverviewContent(
                 placeholder = "Buscar por nombre, SKU o GTIN",
                 modifier = Modifier.weight(1f),
             )
+
+            onRegistrarMerma?.let { registrar ->
+                Box(
+                    modifier = Modifier
+                        .height(44.dp)
+                        .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
+                        .background(MaterialTheme.colorScheme.surfaceVariant)
+                        .clickable(onClick = registrar)
+                        .padding(horizontal = AvoqadoTheme.spacing.md),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        text = TextosMerma.TITULO,
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                }
+            }
 
             // Print labels button
             Box(
@@ -773,7 +811,8 @@ private fun StockOverviewContent(
                         item(key = "encabezado-insumos") { StockSectionHeader("Insumos") }
                     }
                     items(sortedRawMaterials, key = { "insumo-${it.id}" }) { item ->
-                        StockItemRow(item = item)
+                        // Founder, 23-sep: tocar un insumo no hacía nada (la fila nacía sin `onTap`). iOS sí lo abría.
+                        StockItemRow(item = item, onTap = { onItemTap(item) })
                         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                     }
                 }

@@ -4,6 +4,7 @@ import com.avoqado.pos.MainDispatcherRule
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.inventory.data.RespuestaHttp
+import com.avoqado.pos.inventory.data.model.StockItem
 import com.avoqado.pos.inventory.waste.data.BloqueoDeMermaPorPlan
 import com.avoqado.pos.inventory.waste.data.EstadoMerma
 import com.avoqado.pos.inventory.waste.data.PendingWasteEntity
@@ -11,7 +12,9 @@ import com.avoqado.pos.inventory.waste.data.TransporteDeMerma
 import com.avoqado.pos.inventory.waste.data.WasteCatalogEntity
 import com.avoqado.pos.inventory.waste.data.WasteSyncCoordinator
 import com.avoqado.pos.inventory.waste.domain.WasteReason
+import com.avoqado.pos.inventory.waste.presentation.ArticuloPreseleccionado
 import com.avoqado.pos.inventory.waste.presentation.AvisoDeMerma
+import com.avoqado.pos.inventory.waste.presentation.preseleccionDesdeInventario
 import com.avoqado.pos.inventory.waste.presentation.EntradaDeMerma
 import com.avoqado.pos.inventory.waste.presentation.LogWasteViewModel
 import com.avoqado.pos.inventory.waste.presentation.debePublicarseElAviso
@@ -497,6 +500,79 @@ class LogWasteViewModelTest {
         assertFalse(vm.estado.value.bloqueadaPorPlan)
         assertEquals(1, catalogo.refrescos)
         assertNull(vm.estado.value.antiguedadDelCatalogo)
+    }
+
+    // MARK: - Entrar desde Inventario (founder, 23-sep: «es parte de inventario»)
+
+    /** Desde la ficha de un artículo en Inventario, el formulario llega con ESE artículo ya elegido. */
+    @Test
+    fun `al abrir desde la ficha de un articulo, llega con ese articulo elegido`() = runTest {
+        val vm = vm()
+
+        vm.alAbrir(ArticuloPreseleccionado("RAW_MATERIAL", "rm-1")).join()
+
+        assertEquals("rm-1", vm.estado.value.articulo?.itemId)
+    }
+
+    /** Si el artículo no admite merma (no está en el catálogo), no se elige nada: el cajero busca. */
+    @Test
+    fun `si el articulo de la ficha no esta en el catalogo, no se elige nada`() = runTest {
+        val vm = vm()
+
+        vm.alAbrir(ArticuloPreseleccionado("PRODUCT", "p-receta")).join()
+
+        assertNull(vm.estado.value.articulo)
+    }
+
+    /** Si el catálogo del aparato aún no lo trae pero el recién bajado sí, se elige al bajarlo. */
+    @Test
+    fun `si solo el catalogo recien bajado lo trae, se elige al bajarlo`() = runTest {
+        catalogo.porVenue = emptyMap()
+        catalogo.alRefrescar = { venueId, ahora -> catalogo.porVenue = mapOf(venueId to listOf(articulo(actualizadoEn = ahora))) }
+        val vm = vm()
+
+        vm.alAbrir(ArticuloPreseleccionado("RAW_MATERIAL", "rm-1")).join()
+
+        assertEquals("rm-1", vm.estado.value.articulo?.itemId)
+    }
+
+    /** «Actualizar» (el aviso de plan llama a `alAbrir` sin artículo) no le cambia al cajero lo que ya eligió. */
+    @Test
+    fun `actualizar no cambia el articulo que ya se eligio`() = runTest {
+        val leche = WasteCatalogEntity(VENUE, "PRODUCT", "p-leche", "Leche", "LEC-01", "UNIT", AHORA)
+        catalogo.porVenue = mapOf(VENUE to listOf(articulo(), leche))
+        val vm = vm()
+        vm.alAbrir(ArticuloPreseleccionado("RAW_MATERIAL", "rm-1")).join()
+        vm.elegirArticulo(leche)
+
+        vm.alAbrir().join()
+
+        assertEquals("p-leche", vm.estado.value.articulo?.itemId)
+    }
+
+    /** Si el cajero elige otro artículo MIENTRAS baja el catálogo, el catálogo recién bajado no se lo cambia. */
+    @Test
+    fun `el catalogo recien bajado no pisa lo que el cajero eligio mientras bajaba`() = runTest {
+        val leche = WasteCatalogEntity(VENUE, "PRODUCT", "p-leche", "Leche", "LEC-01", "UNIT", AHORA)
+        catalogo.porVenue = mapOf(VENUE to listOf(articulo(), leche))
+        val vm = vm()
+        catalogo.alRefrescar = { _, _ -> vm.elegirArticulo(leche) }
+
+        vm.alAbrir(ArticuloPreseleccionado("RAW_MATERIAL", "rm-1")).join()
+
+        assertEquals("p-leche", vm.estado.value.articulo?.itemId)
+    }
+
+    /** El tipo sale de la lista de la que vino el artículo; los de receta no admiten merma (spec D2). */
+    @Test
+    fun `desde inventario se sabe si es insumo o producto, y el de receta no ofrece merma`() {
+        val insumo = StockItem(id = "rm-1", name = "Aceite")
+        val producto = StockItem(id = "p-1", name = "Agua", inventoryMethod = "QUANTITY")
+        val deReceta = StockItem(id = "p-2", name = "Hamburguesa", inventoryMethod = "RECIPE")
+
+        assertEquals(ArticuloPreseleccionado("RAW_MATERIAL", "rm-1"), preseleccionDesdeInventario(insumo, esInsumo = true))
+        assertEquals(ArticuloPreseleccionado("PRODUCT", "p-1"), preseleccionDesdeInventario(producto, esInsumo = false))
+        assertNull(preseleccionDesdeInventario(deReceta, esInsumo = false))
     }
 
     /** Con el plan bloqueado no se intenta bajar el catálogo: el servidor contestaría otro 403. */

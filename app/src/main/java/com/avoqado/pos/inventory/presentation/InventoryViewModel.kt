@@ -4,6 +4,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import android.util.Log
 import com.avoqado.pos.areatickets.data.ScaleIntegrationSettings
+import com.avoqado.pos.core.domain.RoleManager
 import com.avoqado.pos.inventory.data.CreatePOItemRequest
 import com.avoqado.pos.inventory.data.CreateTransferItemRequest
 import com.avoqado.pos.inventory.data.BorradorDeConteo
@@ -30,6 +31,7 @@ import com.avoqado.pos.inventory.domain.StockRefresher
 import com.avoqado.pos.core.domain.PlanManager
 import com.avoqado.pos.core.domain.refresh.RefreshGateFactory
 import com.avoqado.pos.core.util.ConnectivityMonitor
+import com.avoqado.pos.inventory.waste.presentation.ArticuloPreseleccionado
 import com.avoqado.pos.scale.ScaleSettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -52,6 +54,9 @@ private const val ERROR_GUARDADO_LOCAL =
 private const val SCALE_FEATURE_CODE = "SCALE_INTEGRATION"
 
 // MARK: - Sidebar sections (matching Square inventory screenshot)
+
+/** El formulario de merma abierto desde Inventario; `preseleccion` = el artículo de la ficha, o ninguno. */
+data class MermaDesdeInventario(val preseleccion: ArticuloPreseleccionado?)
 
 enum class InventorySection(val label: String) {
     OVERVIEW("Descripción general"),
@@ -93,6 +98,8 @@ class InventoryViewModel @Inject constructor(
     private val connectivityMonitor: ConnectivityMonitor,
     /** null sólo conserva constructores JVM anteriores; Hilt siempre entrega el singleton. */
     private val inventoryCountSyncCoordinator: InventoryCountSyncCoordinator? = null,
+    /** null sólo en pruebas JVM viejas; Hilt siempre lo entrega. Decide «Registrar merma» por PERMISO. */
+    private val roleManager: RoleManager? = null,
 ) : ViewModel() {
 
     private val gate = refreshGateFactory.create(viewModelScope)
@@ -221,6 +228,28 @@ class InventoryViewModel @Inject constructor(
     // Detalle de un artículo tocado en la Descripción general.
     private val _selectedStockItem = MutableStateFlow<StockItem?>(null)
     val selectedStockItem: StateFlow<StockItem?> = _selectedStockItem.asStateFlow()
+
+    /** Spec §5: «Registrar merma» se decide por PERMISO, igual que la entrada de «Más». */
+    val canLogWaste: Boolean
+        get() = roleManager?.canLogWaste == true
+
+    private val _mermaDesdeInventario = MutableStateFlow<MermaDesdeInventario?>(null)
+
+    /** Si trae algo, el formulario de merma está abierto a pantalla completa sobre Inventario. */
+    val mermaDesdeInventario: StateFlow<MermaDesdeInventario?> = _mermaDesdeInventario.asStateFlow()
+
+    fun abrirMerma(preseleccion: ArticuloPreseleccionado?) {
+        _selectedStockItem.value = null
+        _mermaDesdeInventario.value = MermaDesdeInventario(preseleccion)
+    }
+
+    fun cerrarMerma() {
+        _mermaDesdeInventario.value = null
+        // La merma cambió existencias: la lista se vuelve a pedir ya, sin esperar el TTL del auto-refresco
+        // (founder, 23-sep: se veía 96 cuando el servidor ya decía 94). Si la merma aún no subió (sin red),
+        // la lista sigue con lo del servidor, que es lo honesto.
+        viewModelScope.launch { gate.run(workInProgress = ::workInProgress, manual = true, block = ::refreshNow) }
+    }
 
     fun selectStockItem(item: StockItem?) {
         _selectedStockItem.value = item

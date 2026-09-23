@@ -97,6 +97,22 @@ class InventoryViewModelRefreshTest {
         coVerify(exactly = 0) { repository.fetchRawMaterials() }
     }
 
+    /**
+     * Founder, 23-sep: registrar una merma desde Inventario y volver a la lista dejaba la existencia vieja (96
+     * cuando el servidor ya decía 94). Al cerrar el formulario se vuelve a pedir, aunque no haya pasado el TTL.
+     */
+    @Test
+    fun `al cerrar la merma se vuelve a pedir la lista aunque no haya pasado el TTL`() = runTest(scheduler) {
+        val vm = buildViewModel()
+        vm.autoRefresh()
+        vm.abrirMerma(null)
+        now += 10.seconds
+
+        vm.cerrarMerma()
+
+        coVerify(exactly = 2) { repository.fetchStockOverview() }
+    }
+
     @Test
     fun `el gesto despacha por la seccion activa`() = runTest(scheduler) {
         val vm = buildViewModel()
