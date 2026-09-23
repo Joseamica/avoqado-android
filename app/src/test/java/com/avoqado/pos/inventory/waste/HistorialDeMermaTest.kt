@@ -71,6 +71,7 @@ class HistorialDeMermaTest {
         assertTrue(pagina.todos)
         assertEquals(31, pagina.total)
         assertEquals(1, pagina.page)
+        assertEquals(30, pagina.pageSize)
         val f = pagina.folios.single()
         assertEquals("Leche", f.name)
         assertEquals("Contaminado", f.reasonLabel)
@@ -160,8 +161,8 @@ class HistorialDeMermaTest {
 
     @Test
     fun `cargar mas agrega la siguiente pagina y se apaga al llegar al total`() = runTest {
-        fuente.respuestas += ResultadoDeHistorial.Pagina(PaginaDeHistorial(false, listOf(folio("a")), total = 2, page = 1))
-        fuente.respuestas += ResultadoDeHistorial.Pagina(PaginaDeHistorial(false, listOf(folio("b")), total = 2, page = 2))
+        fuente.respuestas += ResultadoDeHistorial.Pagina(PaginaDeHistorial(false, listOf(folio("a")), total = 2, page = 1, pageSize = 1))
+        fuente.respuestas += ResultadoDeHistorial.Pagina(PaginaDeHistorial(false, listOf(folio("b")), total = 2, page = 2, pageSize = 1))
         val v = vm()
         v.cargar().join()
         assertTrue(v.estado.value.hayMas)
@@ -176,6 +177,22 @@ class HistorialDeMermaTest {
     fun `sin saber el alcance el titulo no presume ninguno`() = runTest {
         fuente.respuestas += ResultadoDeHistorial.SinRed
         assertEquals(TextosMerma.HISTORIAL_TITULO, vm().also { it.cargar().join() }.estado.value.titulo)
+    }
+
+    /**
+     * Codex (historial, P2): con 30 cargados otro aparato registra una más; la página 2 trae un repetido y la
+     * última (total 32). Contando filas ÚNICAS quedaban 31 de 32 y «Cargar más» no se apagaba nunca.
+     */
+    @Test
+    fun `una merma nueva a media lectura no deja cargar mas encendido para siempre`() = runTest {
+        val primera = (1..30).map { folio("f$it") }
+        fuente.respuestas += ResultadoDeHistorial.Pagina(PaginaDeHistorial(false, primera, total = 31, page = 1))
+        fuente.respuestas += ResultadoDeHistorial.Pagina(PaginaDeHistorial(false, listOf(folio("f30"), folio("f31")), total = 32, page = 2))
+        val v = vm()
+        v.cargar().join()
+        v.cargarMas().join()
+        assertEquals(31, v.estado.value.filas.size)
+        assertFalse(v.estado.value.hayMas)
     }
 
     /** 🔴 Sin red NO es un error: se dice en palabras del cajero y lo ya cargado se conserva. */

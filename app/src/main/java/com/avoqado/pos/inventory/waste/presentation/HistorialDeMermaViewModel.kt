@@ -7,6 +7,7 @@ import com.avoqado.pos.core.util.VenueDateTimeFormatter
 import com.avoqado.pos.inventory.waste.data.FolioDeHistorial
 import com.avoqado.pos.inventory.waste.data.HistorialDeMerma
 import com.avoqado.pos.inventory.waste.data.ResultadoDeHistorial
+import com.avoqado.pos.inventory.waste.data.WasteApi
 import com.avoqado.pos.inventory.waste.domain.TextosMerma
 import com.avoqado.pos.inventory.waste.domain.etiquetaDeUnidad
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -56,8 +57,15 @@ data class EstadoDeHistorial(
     /** Sin red, sin plan o fallo: en palabras del cajero. Lo ya cargado se conserva. */
     val aviso: String? = null,
     val cargado: Boolean = false,
+    /** La última página que contestó el servidor, y su tamaño. */
+    val pagina: Int = 0,
+    val tamanoDePagina: Int = WasteApi.TAMANO_DE_PAGINA_DEL_HISTORIAL,
 ) {
-    val hayMas: Boolean get() = filas.size < total
+    /**
+     * Por páginas PEDIDAS, no por filas únicas (Codex, P2): si otro aparato registra una merma a media lectura, la
+     * página siguiente trae un repetido y contar filas dejaba «Cargar más» encendido para siempre.
+     */
+    val hayMas: Boolean get() = pagina * tamanoDePagina < total
 }
 
 /**
@@ -102,6 +110,8 @@ class HistorialDeMermaViewModel @Inject constructor(
                         titulo = if (resultado.pagina.todos) TextosMerma.MERMAS_DEL_NEGOCIO else TextosMerma.MIS_MERMAS,
                         filas = if (numero == 1) nuevas else (actual.filas + nuevas).distinctBy { it.id },
                         total = resultado.pagina.total,
+                        pagina = resultado.pagina.page,
+                        tamanoDePagina = resultado.pagina.pageSize,
                         cargando = false,
                         cargado = true,
                     )

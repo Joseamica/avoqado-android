@@ -108,6 +108,7 @@ object WasteApi {
                 folios = folios,
                 total = raiz.getValue("total").jsonPrimitive.int,
                 page = raiz.getValue("page").jsonPrimitive.int,
+                pageSize = raiz.getValue("pageSize").jsonPrimitive.int,
             )
         }.getOrNull()
     }

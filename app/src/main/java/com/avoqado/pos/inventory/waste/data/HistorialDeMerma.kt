@@ -17,7 +17,14 @@ data class FolioDeHistorial(
 )
 
 /** `todos` = el servidor dijo `scope: ALL` (gerente). Cualquier otra cosa es «sólo lo mío». */
-data class PaginaDeHistorial(val todos: Boolean, val folios: List<FolioDeHistorial>, val total: Int, val page: Int)
+data class PaginaDeHistorial(
+    val todos: Boolean,
+    val folios: List<FolioDeHistorial>,
+    val total: Int,
+    val page: Int,
+    /** El tamaño que USÓ el servidor (puede recortar lo pedido): decide si queda otra página. */
+    val pageSize: Int = WasteApi.TAMANO_DE_PAGINA_DEL_HISTORIAL,
+)
 
 /** Online-only a propósito (spec 2026-09-23): sin red se DICE, no se inventa. */
 sealed interface ResultadoDeHistorial {
