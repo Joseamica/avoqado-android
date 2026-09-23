@@ -19,6 +19,8 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -226,6 +228,16 @@ class WasteSyncCoordinator @Inject constructor(
             throw cancelada
         }
     }
+
+    /**
+     * 🔴 Codex r4: el desenlace DEFINITIVO de un folio — subió o se rechazó —, sin plazo. Escucha la cola
+     * (cada cambio de la tabla), no la sondea: mientras la fila espera no gasta nada, y se acaba sola al
+     * cancelarse quien la pidió.
+     */
+    suspend fun esperarDesenlaceFinal(venueId: String, folio: String): SubidaDeMerma =
+        dao.delVenue(venueId)
+            .map { filas -> desenlaceVisible(filas.firstOrNull { it.idempotencyKey == folio }) }
+            .first { it == SubidaDeMerma.SUBIO || it == SubidaDeMerma.EN_REVISION }!!
 
     /**
      * Espera, con un plazo, a saber qué pasó con una merma recién registrada. Es lo que permite que la

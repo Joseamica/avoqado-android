@@ -201,11 +201,25 @@ class LogWasteViewModel @Inject constructor(
         } ?: return@launch
         val turno = turnos.incrementAndGet()
         // La espera va FUERA de `update`: dentro, un cambio del formulario la volvería a correr.
-        val aviso = avisoTrasRegistrar(registrada)
+        val (aviso, definitivo) = avisoTrasRegistrar(registrada)
         when {
-            aviso == null -> _estado.update { it.copy(rechazos = (it.rechazos + registrada.articulo).distinct()) }
+            aviso == null -> anotarRechazo(registrada.articulo)
             debePublicarseElAviso(turno, turnos.get()) -> _estado.update { it.copy(aviso = aviso, avisoId = turno) }
         }
+        if (!definitivo) seguirHastaElDesenlace(registrada)
+    }
+
+    private fun anotarRechazo(articulo: String) =
+        _estado.update { it.copy(rechazos = (it.rechazos + articulo).distinct()) }
+
+    /**
+     * 🔴 Codex r4: tras el aviso provisional («Se está subiendo», sin red, sin plan) la captura se sigue
+     * hasta su desenlace mientras la pantalla esté abierta: un rechazo que llega después también va al
+     * letrero. Aparte del `confirmar` para no retenerlo; se cancela solo al cerrar la pantalla.
+     */
+    private fun seguirHastaElDesenlace(r: Registrada) = viewModelScope.launch {
+        val final = runCatching { motor.esperarDesenlaceFinal(r.venueId, r.folio) }.getOrNull()
+        if (final == SubidaDeMerma.EN_REVISION) anotarRechazo(r.articulo)
     }
 
     /** Lo que se registró: la sucursal, el folio y el nombre del artículo (lo necesita el aviso de rechazo). */
@@ -216,15 +230,18 @@ class LogWasteViewModel @Inject constructor(
      * sin plan se dice al momento cuándo subirá; con red se espera (poco) a que el servidor conteste, y si la
      * rechaza se DICE dónde verla — nunca un «registrada» que después resulta falso.
      */
-    /** El aviso pasajero de esta captura, o `null` si el servidor la rechazó (eso va al letrero fijo). */
-    private suspend fun avisoTrasRegistrar(r: Registrada): AvisoDeMerma? = when {
-        bloqueo.estaBloqueado(r.venueId) -> AvisoDeMerma(TextosMerma.GUARDADA, TextosMerma.SE_SUBIRA_SIN_PLAN)
-        !hayRed() -> AvisoDeMerma(TextosMerma.GUARDADA, TextosMerma.SE_SUBIRA_SIN_RED)
+    /**
+     * El aviso pasajero de esta captura (`null` si el servidor la rechazó: eso va al letrero fijo) y si
+     * ya es el desenlace definitivo; si no lo es, la captura se sigue (`seguirHastaElDesenlace`).
+     */
+    private suspend fun avisoTrasRegistrar(r: Registrada): Pair<AvisoDeMerma?, Boolean> = when {
+        bloqueo.estaBloqueado(r.venueId) -> AvisoDeMerma(TextosMerma.GUARDADA, TextosMerma.SE_SUBIRA_SIN_PLAN) to false
+        !hayRed() -> AvisoDeMerma(TextosMerma.GUARDADA, TextosMerma.SE_SUBIRA_SIN_RED) to false
         else -> when (runCatching { motor.esperarSubida(r.folio) }.getOrDefault(SubidaDeMerma.EN_CAMINO)) {
-            SubidaDeMerma.SUBIO -> AvisoDeMerma(TextosMerma.REGISTRADA)
-            SubidaDeMerma.EN_REVISION -> null
-            SubidaDeMerma.BLOQUEADA -> AvisoDeMerma(TextosMerma.GUARDADA, TextosMerma.SE_SUBIRA_SIN_PLAN)
-            SubidaDeMerma.EN_CAMINO -> AvisoDeMerma(TextosMerma.GUARDADA, TextosMerma.SUBIENDO)
+            SubidaDeMerma.SUBIO -> AvisoDeMerma(TextosMerma.REGISTRADA) to true
+            SubidaDeMerma.EN_REVISION -> null to true
+            SubidaDeMerma.BLOQUEADA -> AvisoDeMerma(TextosMerma.GUARDADA, TextosMerma.SE_SUBIRA_SIN_PLAN) to false
+            SubidaDeMerma.EN_CAMINO -> AvisoDeMerma(TextosMerma.GUARDADA, TextosMerma.SUBIENDO) to false
         }
     }
 

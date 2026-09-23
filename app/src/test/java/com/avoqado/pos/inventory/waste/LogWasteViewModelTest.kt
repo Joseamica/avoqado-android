@@ -20,7 +20,9 @@ import com.avoqado.pos.inventory.waste.presentation.entradaDeMerma
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -74,8 +76,12 @@ class LogWasteViewModelTest {
     private var respuestaDelServidor = RespuestaHttp(201, """{"reportId":"r1","declared":"3","deducted":"3","unrecorded":"0"}""")
     /** Si trae algo, se contesta en orden (una por envío); si no, `respuestaDelServidor`. */
     private val respuestas = ArrayDeque<RespuestaHttp>()
+    private var retrasoDelServidor = 0L
     private val transporte = object : TransporteDeMerma {
-        override suspend fun enviar(fila: PendingWasteEntity) = respuestas.removeFirstOrNull() ?: respuestaDelServidor
+        override suspend fun enviar(fila: PendingWasteEntity): RespuestaHttp {
+            if (retrasoDelServidor > 0) delay(retrasoDelServidor)
+            return respuestas.removeFirstOrNull() ?: respuestaDelServidor
+        }
         override suspend fun anular(fila: PendingWasteEntity, porStaffId: String) = RespuestaHttp(0, "")
     }
     private val bloqueo = BloqueoDeMermaPorPlan(almacen, red, catalogo)
@@ -224,6 +230,29 @@ class LogWasteViewModelTest {
 
         vm.rechazosVistos()
         assertEquals(emptyList<String>(), vm.estado.value.rechazos)
+    }
+
+    /**
+     * 🔴 Codex r4: el servidor tardó más que la espera del aviso (3 s): el cajero ya vio «Se está subiendo» y,
+     * al llegar el rechazo, el letrero seguía vacío aunque siguiera en la pantalla. La captura se sigue hasta su
+     * desenlace mientras la pantalla esté abierta.
+     */
+    @Test
+    fun `un rechazo que llega despues del aviso tambien va al letrero`() = runTest {
+        retrasoDelServidor = 4_000
+        respuestaDelServidor = RespuestaHttp(422, """{"code":"UNIT_MISMATCH"}""")
+        motor.start(backgroundScope)
+        runCurrent()
+        val vm = vm()
+        vm.capturar()
+
+        vm.confirmar().join()
+        assertEquals(AvisoDeMerma("Merma guardada", "Se está subiendo."), vm.estado.value.aviso)
+        assertEquals(emptyList<String>(), vm.estado.value.rechazos)
+
+        advanceTimeBy(10_000)
+
+        assertEquals(listOf("Aguacate"), vm.estado.value.rechazos)
     }
 
     /** El texto del letrero: uno o varios, en buen español. */
