@@ -40,6 +40,15 @@ class WasteOutcomeTest {
     }
 
     /** 401: se refresca la sesión y se reintenta. La fila NUNCA se pierde. */
+    /**
+     * 🔴 Codex r1: un 408 (se agotó la espera) dice lo mismo que la red caída — nada del negocio. En
+     * revisión, una merma válida quedaba trabada hasta que alguien la descartara y recapturara.
+     */
+    @Test
+    fun `408 se reintenta`() {
+        assertEquals(WasteOutcome.Reintentable, clasificarRespuestaDeMerma(408, null, null))
+    }
+
     @Test
     fun `401 se reintenta`() {
         assertEquals(WasteOutcome.Reintentable, clasificarRespuestaDeMerma(401, null, null))

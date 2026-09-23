@@ -44,9 +44,11 @@ class PendingWasteViewModelTest {
         var respuestaDeAnulacion =
             RespuestaHttp(200, """{"outcome":"VOIDED","voidedByStaffId":"gerente-1","voidedAt":"2026-09-22T18:00:00.000Z"}""")
         var anulaciones = 0
+        val anuladasPor = mutableListOf<String>()
         override suspend fun enviar(fila: PendingWasteEntity) = RespuestaHttp(201, "{}")
-        override suspend fun anular(fila: PendingWasteEntity): RespuestaHttp {
+        override suspend fun anular(fila: PendingWasteEntity, porStaffId: String): RespuestaHttp {
             anulaciones++
+            anuladasPor += porStaffId
             return respuestaDeAnulacion
         }
     }
@@ -142,6 +144,22 @@ class PendingWasteViewModelTest {
         assertEquals(EstadoMerma.VOIDED, f.estado)
         assertEquals("gerente-1", f.cerradaPorStaffId)
         assertEquals("Merma descartada", vm.aviso.value?.texto)
+    }
+
+    /**
+     * 🔴 Codex r1: la lápida guardaba la hora del APARATO. La que cuenta es la del servidor
+     * (`voidedAt`), la misma que verá el dashboard. Y el `void` sale con la credencial de quien lo
+     * pidió: es su nombre el que queda en la lápida.
+     */
+    @Test
+    fun `descartar guarda la hora del servidor y sale con la credencial de quien lo pide`() = runTest {
+        cola.encolar(fila())
+        val vm = vmDe(staffId = "gerente-1", esGerente = true)
+
+        vm.descartar(FOLIO)
+
+        assertEquals(java.time.Instant.parse("2026-09-22T18:00:00.000Z").toEpochMilli(), cola.todas().single().cerradaEn)
+        assertEquals(listOf("gerente-1"), servidor.anuladasPor)
     }
 
     /**

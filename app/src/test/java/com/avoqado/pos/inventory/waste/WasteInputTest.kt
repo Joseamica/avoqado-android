@@ -61,7 +61,26 @@ class WasteInputTest {
     fun `una cantidad valida pasa tal cual`() {
         assertEquals("3", normalizarCantidad("3"))
         assertEquals("0.001", normalizarCantidad("0.001"))
-        assertEquals("999999999.999", normalizarCantidad("999999999.999"))
+        assertEquals("999999.999", normalizarCantidad("999999.999"))
+        // El servidor cuenta los decimales SIN los ceros de la derecha: 1.2000 tiene uno.
+        assertEquals("1.2000", normalizarCantidad("1.2000"))
+        assertEquals("0.0010", normalizarCantidad("0,0010"))
+    }
+
+    /**
+     * 🔴 Los topes del POS (servidor, `prepareWaste`): 0.001 – 999 999.999, hasta 3 decimales y
+     * 40 caracteres. Lo que se pase se guardaría en la cola y moriría con 422 `QUANTITY_TOO_LARGE`:
+     * el cajero sólo podría descartarla y volver a capturarla. El 999 999 999.999 es el tope
+     * legacy del DASHBOARD, no el del POS.
+     */
+    @Test
+    fun `lo que el servidor no acepta desde el POS se rechaza aqui`() {
+        assertNull(normalizarCantidad("1,2345"))
+        assertNull(normalizarCantidad("0,0001"))
+        assertNull(normalizarCantidad("1000000"))
+        assertNull(normalizarCantidad("999999.9991"))
+        assertNull(normalizarCantidad("999999999.999"))
+        assertNull(normalizarCantidad("1." + "0".repeat(39)))
     }
 
     // MARK: - Nota

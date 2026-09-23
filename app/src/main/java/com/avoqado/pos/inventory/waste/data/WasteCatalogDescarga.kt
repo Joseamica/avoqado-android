@@ -14,8 +14,18 @@ interface CatalogoDestino {
     suspend fun reemplazar(venueId: String, items: List<WasteCatalogItem>, actualizadoEn: Long)
 }
 
-/** Tope de páginas: una red de seguridad contra un servidor que nunca termina de avanzar. */
-private const val TOPE_DE_PAGINAS = 60
+/**
+ * Las páginas que exige el total que declaró el servidor, más una de holgura por si el catálogo crece a
+ * media descarga. Es la red contra un servidor que manda menos de lo que declara.
+ *
+ * 🔴 Codex r1: el tope era FIJO (60 páginas = 12 000 artículos) y una sucursal más grande nunca tenía
+ * catálogo — bajaba 12 000, abortaba sin escribir y repetía lo mismo al reabrir. El servidor no tiene
+ * tope de total: la descarga llega a donde el total declarado diga.
+ */
+private fun paginasNecesarias(total: Int, pageSize: Int): Int {
+    val porPagina = maxOf(pageSize, 1).toLong()
+    return ((maxOf(total, 0) + porPagina - 1) / porPagina + 1).coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
+}
 
 /**
  * Baja el catálogo entero y lo entrega de una sola vez.
@@ -43,9 +53,11 @@ suspend fun descargarCatalogo(
 ): Boolean {
     val acumulado = mutableListOf<WasteCatalogItem>()
     var page = 1
+    var tope = 1 // lo fija la primera página, con lo que el servidor declara
 
-    while (page <= TOPE_DE_PAGINAS) {
+    while (page <= tope) {
         val pagina = pedirPagina(page) ?: return false
+        if (page == 1) tope = paginasNecesarias(pagina.total, pagina.pageSize)
         acumulado += pagina.items
 
         // Ya se cubrió el total que el servidor declaró: listo.

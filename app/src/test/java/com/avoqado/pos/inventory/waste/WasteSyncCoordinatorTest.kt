@@ -5,6 +5,7 @@ import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.inventory.data.RespuestaHttp
 import com.avoqado.pos.inventory.waste.data.BloqueoDeMermaPorPlan
 import com.avoqado.pos.inventory.waste.data.EstadoMerma
+import com.avoqado.pos.inventory.waste.data.PendingWasteDao
 import com.avoqado.pos.inventory.waste.data.PendingWasteEntity
 import com.avoqado.pos.inventory.waste.data.TransporteDeMerma
 import com.avoqado.pos.inventory.waste.data.WasteCatalogItem
@@ -26,6 +27,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.time.Instant
 import java.time.ZoneId
 
 /**
@@ -69,7 +71,30 @@ class WasteSyncCoordinatorTest {
             }
         }
 
-        override suspend fun anular(fila: PendingWasteEntity) = RespuestaHttp(0, "")
+        var respuestaDeAnulacion = RespuestaHttp(0, "")
+        val anuladasPor = mutableListOf<String>()
+        override suspend fun anular(fila: PendingWasteEntity, porStaffId: String): RespuestaHttp {
+            anuladasPor += porStaffId
+            return respuestaDeAnulacion
+        }
+    }
+
+    /**
+     * La MISMA cola, pero la escritura indicada tarda: es lo que tarda Room cuando la base está
+     * ocupada. Sirve para que un plazo venza justo a media escritura (Codex r1).
+     */
+    private class ColaLenta(
+        private val base: ColaDeMermaSobreSqlite,
+        private val alReclamar: Long = 0L,
+        private val alMarcar: Long = 0L,
+    ) : PendingWasteDao by base {
+        override suspend fun reclamar(ahora: Long, staffId: String): PendingWasteEntity? =
+            base.reclamar(ahora, staffId).also { if (alReclamar > 0) delay(alReclamar) }
+
+        override suspend fun marcar(folio: String, estado: String, codigo: String?, proximoIntentoEn: Long): Int {
+            if (alMarcar > 0) delay(alMarcar)
+            return base.marcar(folio, estado, codigo, proximoIntentoEn)
+        }
     }
 
     private val cola = ColaDeMermaSobreSqlite()
@@ -84,13 +109,16 @@ class WasteSyncCoordinatorTest {
         CatalogoDeMermaFalso(),
     )
 
-    private fun TestScope.motor(transporte: TransporteDeMerma = TransporteFalso()): WasteSyncCoordinator {
+    private fun TestScope.motor(
+        transporte: TransporteDeMerma = TransporteFalso(),
+        dao: PendingWasteDao = cola,
+    ): WasteSyncCoordinator {
         val almacen = mockk<SecureStorage> { every { userId } answers { sesion } }
         val red = mockk<ConnectivityMonitor> {
             every { isConnected } returns MutableStateFlow(true)
             every { isServerReachable } returns MutableStateFlow(true)
         }
-        return WasteSyncCoordinator(cola, transporte, almacen, red, bloqueo).apply {
+        return WasteSyncCoordinator(dao, transporte, almacen, red, bloqueo).apply {
             reloj = { currentTime }
             zona = ZoneId.of("America/Mexico_City")
         }
@@ -303,6 +331,103 @@ class WasteSyncCoordinatorTest {
 
         assertEquals(1, transporte.maxEnVuelo)
         assertEquals(listOf("a", "b"), transporte.foliosEnviados)
+    }
+
+    // MARK: - Lo que Codex r1 encontró en el drenado
+
+    /**
+     * 🔴 Codex r1 (P1): un 200 que NO es del contrato —un portal cautivo, un proxy— borraba la única
+     * copia de la merma sin que existiera en el servidor. Sin `reportId` la fila se queda, con su
+     * folio, y se reintenta; si sí había llegado, el servidor deduplica.
+     */
+    @Test
+    fun `un 2xx sin la confirmacion del contrato no borra la merma`() = runTest {
+        cola.encolar(fila())
+        val transporte = TransporteFalso(respuesta = { RespuestaHttp(200, "<html>Bienvenido al WiFi</html>") })
+
+        motor(transporte).drenarAhora()
+
+        val f = cola.todas().single()
+        assertEquals(EstadoMerma.PENDING, f.estado)
+        assertEquals(FOLIO, f.idempotencyKey)
+        assertEquals("SIN_CONFIRMACION", f.ultimoCodigo)
+        assertEquals(1, f.intentos)
+    }
+
+    /**
+     * 🔴 Codex r1 (P1): si la sesión cambia MIENTRAS la fila viaja y el envío no se confirma (la
+     * credencial de la otra persona lo frenó en la red), esa falla es del relevo, no de la merma: la
+     * fila vuelve a esperar a su dueño sin contarse como intento.
+     */
+    @Test
+    fun `si la sesion cambia durante el envio y no se confirma, la fila vuelve sin contar intento`() = runTest {
+        cola.encolar(fila())
+        val transporte = TransporteFalso(
+            alEnviar = { sesion = "persona-B" },
+            respuesta = { RespuestaHttp(0, "la credencial no es la de quien registró la merma") },
+        )
+
+        motor(transporte).drenarAhora()
+
+        val f = cola.todas().single()
+        assertEquals(EstadoMerma.PENDING, f.estado)
+        assertEquals(YO, f.staffId)
+        assertEquals(0, f.intentos)
+    }
+
+    /**
+     * 🔴 Codex r1: si el plazo del cierre de sesión vence mientras se ESCRIBE el desenlace (la base
+     * tarda), la fila se quedaba en `SENDING` — sin subir y sin poderse descartar — hasta reiniciar
+     * la app. El desenlace se escribe entero aunque el plazo haya vencido.
+     */
+    @Test
+    fun `si el plazo vence mientras se escribe el desenlace, la fila no se queda en SENDING`() = runTest {
+        cola.encolar(fila())
+        val transporte = TransporteFalso(respuesta = { RespuestaHttp(503, "") }, retrasoMs = 4_990)
+
+        motor(transporte, ColaLenta(cola, alMarcar = 100)).vaciarAntesDeCerrarSesion(staffId = YO, plazoMs = 5_000)
+
+        val f = cola.todas().single()
+        assertEquals(EstadoMerma.PENDING, f.estado)
+        assertEquals(1, f.intentos)
+    }
+
+    /** Lo mismo al RECLAMAR: si el plazo vence al regresar del reclamo, la fila vuelve a la cola. */
+    @Test
+    fun `si el plazo vence justo al reclamar, la fila vuelve a la cola`() = runTest {
+        cola.encolar(fila())
+        val transporte = TransporteFalso()
+
+        motor(transporte, ColaLenta(cola, alReclamar = 100)).vaciarAntesDeCerrarSesion(staffId = YO, plazoMs = 50)
+
+        val f = cola.todas().single()
+        assertEquals(EstadoMerma.PENDING, f.estado)
+        assertEquals(0, f.intentos)
+    }
+
+    /**
+     * 🔴 Codex r1: el gerente anula, el servidor crea la lápida y la respuesta se pierde; la fila
+     * vuelve a la cola y el drenado recibe `WASTE_VOIDED`. Se cerraba SIN autor. Ahora se le pide la
+     * lápida al `void` (idempotente: devuelve la autoría canónica aunque la pida otro) y se guarda
+     * quién la anuló y CUÁNDO, con la hora del servidor.
+     */
+    @Test
+    fun `un 409 WASTE_VOIDED recupera de la lapida quien la anulo y cuando`() = runTest {
+        cola.encolar(fila())
+        val transporte = TransporteFalso(respuesta = { RespuestaHttp(409, """{"code":"WASTE_VOIDED"}""") }).apply {
+            respuestaDeAnulacion = RespuestaHttp(
+                200,
+                """{"outcome":"VOIDED","voidedByStaffId":"gerente-1","voidedAt":"2026-09-22T18:00:00.000Z"}""",
+            )
+        }
+
+        motor(transporte).drenarAhora()
+
+        val f = cola.todas().single()
+        assertEquals(EstadoMerma.VOIDED, f.estado)
+        assertEquals("gerente-1", f.cerradaPorStaffId)
+        assertEquals(Instant.parse("2026-09-22T18:00:00.000Z").toEpochMilli(), f.cerradaEn)
+        assertEquals(listOf(YO), transporte.anuladasPor)
     }
 
     // MARK: - Al cerrar sesión

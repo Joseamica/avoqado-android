@@ -20,6 +20,7 @@ import io.mockk.mockk
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -64,10 +65,14 @@ class LogWasteViewModelTest {
     }
     private val catalogo = CatalogoDeMermaFalso().apply { porVenue = mapOf(VENUE to listOf(articulo())) }
 
-    /** Nadie arranca el drenado en estas pruebas: la fila se queda en disco, que es lo que se mira. */
+    /**
+     * El servidor. El drenado sólo corre en las pruebas que arrancan el motor; en las demás la fila
+     * se queda en disco, que es lo que se mira.
+     */
+    private var respuestaDelServidor = RespuestaHttp(201, """{"reportId":"r1","declared":"3","deducted":"3","unrecorded":"0"}""")
     private val transporte = object : TransporteDeMerma {
-        override suspend fun enviar(fila: PendingWasteEntity) = RespuestaHttp(201, "{}")
-        override suspend fun anular(fila: PendingWasteEntity) = RespuestaHttp(0, "")
+        override suspend fun enviar(fila: PendingWasteEntity) = respuestaDelServidor
+        override suspend fun anular(fila: PendingWasteEntity, porStaffId: String) = RespuestaHttp(0, "")
     }
     private val bloqueo = BloqueoDeMermaPorPlan(almacen, red, catalogo)
     private val motor = WasteSyncCoordinator(cola, transporte, almacen, red, bloqueo).apply { reloj = { AHORA } }
@@ -154,15 +159,55 @@ class LogWasteViewModelTest {
         assertEquals(1, cola.todas().size)
     }
 
-    /** Con red y el plan en regla, el aviso es el del spec. */
+    /**
+     * Con red y el plan en regla, el aviso es el del spec — pero SÓLO cuando el servidor lo confirmó
+     * (Codex r1): «registrada» es una afirmación sobre el servidor, no sobre el aparato.
+     */
     @Test
     fun `con red el aviso es el del spec`() = runTest {
+        motor.start(backgroundScope)
+        runCurrent()
         val vm = vm()
         vm.capturar()
 
-        vm.confirmar()
+        vm.confirmar().join()
 
         assertEquals(AvisoDeMerma("¡Merma registrada!"), vm.estado.value.aviso)
+        assertEquals(0, cola.todas().size)
+        motor.stop()
+    }
+
+    /**
+     * 🔴 Codex r1: con red, el artículo borrado o la unidad cambiada hacen que el servidor la
+     * rechace. Antes el cajero ya había visto «¡Merma registrada!» y nada lo corregía. Ahora se
+     * espera el desenlace, y si queda en revisión se DICE, con dónde verla.
+     */
+    @Test
+    fun `con red, si el servidor la rechaza, el aviso no dice registrada`() = runTest {
+        respuestaDelServidor = RespuestaHttp(422, """{"code":"UNIT_MISMATCH"}""")
+        motor.start(backgroundScope)
+        runCurrent()
+        val vm = vm()
+        vm.capturar()
+
+        vm.confirmar().join()
+
+        assertEquals(
+            AvisoDeMerma("Merma guardada", "No se pudo registrar: revísala en «Mermas por subir»."),
+            vm.estado.value.aviso,
+        )
+        assertEquals(EstadoMerma.NEEDS_REVIEW, cola.todas().single().estado)
+    }
+
+    /** Con red pero sin respuesta a tiempo: está en el aparato y va en camino, y así se dice. */
+    @Test
+    fun `con red pero sin respuesta a tiempo, dice que se esta subiendo`() = runTest {
+        val vm = vm()
+        vm.capturar()
+
+        vm.confirmar().join()
+
+        assertEquals(AvisoDeMerma("Merma guardada", "Se está subiendo."), vm.estado.value.aviso)
         assertEquals(EstadoMerma.PENDING, cola.todas().single().estado)
     }
 
@@ -209,7 +254,7 @@ class LogWasteViewModelTest {
         vm.capturar(motivo = WasteReason.OTHER)
         vm.escribirNota("se cayó")
 
-        vm.confirmar()
+        vm.confirmar().join()
 
         val e = vm.estado.value
         assertNull(e.articulo)

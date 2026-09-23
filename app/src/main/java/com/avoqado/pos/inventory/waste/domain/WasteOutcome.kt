@@ -38,8 +38,8 @@ fun clasificarRespuestaDeMerma(http: Int, code: String?, featureCode: String?): 
 
     code == "WASTE_RETRYABLE_CONFLICT" -> WasteOutcome.Reintentable
 
-    // Sin respuesta, servidor caído, saturado, o sesión por refrescar.
-    http == 0 || http >= 500 || http == 429 || http == 401 -> WasteOutcome.Reintentable
+    // Sin respuesta, servidor caído, saturado, se agotó la espera (408), o sesión por refrescar.
+    http == 0 || http >= 500 || http == 429 || http == 408 || http == 401 -> WasteOutcome.Reintentable
 
     // El plan se distingue por `featureCode`: los middlewares compartidos de la
     // plataforma no mandan `code`.

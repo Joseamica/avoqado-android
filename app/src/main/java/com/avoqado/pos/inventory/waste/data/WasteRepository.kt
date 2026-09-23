@@ -4,15 +4,28 @@ import com.avoqado.pos.BuildConfig
 import com.avoqado.pos.core.data.network.ApiConstants
 import com.avoqado.pos.core.data.network.ForbiddenInterceptor
 import com.avoqado.pos.inventory.data.RespuestaHttp
+import com.avoqado.pos.payment.data.OrderRepository
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
 import java.io.IOException
 import javax.inject.Inject
 import javax.inject.Singleton
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+
+/** Con quién DEBE salir una petición de merma: viaja pegado a la petición (tag de OkHttp). */
+private data class AutorEsperado(val staffId: String)
+
+/** La credencial que iba a salir no es la de quien registró (o anula) la merma: la petición no sale. */
+class CredencialAjena : IOException("La credencial no es la de quien registró la merma")
 
 /**
  * Lo que la pantalla de captura y el bloqueo de plan necesitan del catálogo: lo guardado (sirve
@@ -44,6 +57,26 @@ class WasteRepository @Inject constructor(
     private val tipoJson = "application/json; charset=utf-8".toMediaType()
 
     /**
+     * 🔴 Codex r1 (P1) — el servidor registra la merma a nombre de quien firma el TOKEN. El motor comprueba
+     * «sesión == autor de la fila» ANTES de la petición, y entre esa comprobación y la red cabe un relevo
+     * por PIN; además un 401 se reenvía con el token que haya al refrescar. Por eso se comprueba AQUÍ, en
+     * un interceptor de RED: corre en CADA salida —incluido el reenvío de `TokenRefreshAuthenticator`— y
+     * mira la credencial que de verdad viaja. Si no es de quien debe, la petición no sale.
+     */
+    private val clienteDeMerma: OkHttpClient by lazy {
+        client.newBuilder()
+            .addNetworkInterceptor { chain ->
+                val pedida = chain.request()
+                val esperado = pedida.tag(AutorEsperado::class.java)?.staffId
+                if (esperado == null || WasteApi.autorDelToken(pedida.header("Authorization")) != esperado) {
+                    throw CredencialAjena()
+                }
+                chain.proceed(pedida)
+            }
+            .build()
+    }
+
+    /**
      * 🔴 La URL se arma con el venue DE LA FILA, nunca con el activo (Review Focus 3): una merma
      * capturada en el Centro no puede registrarse en la Sucursal Sur porque el aparato cambió de
      * sucursal antes de subirla.
@@ -51,27 +84,68 @@ class WasteRepository @Inject constructor(
      * Sin transporte devuelve `0` (no revienta): el motor lo lee como «reintentar».
      */
     override suspend fun enviar(fila: PendingWasteEntity): RespuestaHttp =
-        publicar(WasteApi.urlDeMerma(venueBaseUrl(fila.venueId)), WasteApi.cuerpoDeMerma(fila))
+        publicar(WasteApi.urlDeMerma(venueBaseUrl(fila.venueId)), WasteApi.cuerpoDeMerma(fila), autor = fila.staffId)
 
     /**
      * El `void` del folio (spec §4.3), al venue DE LA FILA. También de segundo plano: la ruta no pasa
      * por `checkPermission`, así que su 403 no se puede autorizar con el PIN de un gerente, y abrir el
      * teclado prometería algo que el servidor no hace.
      */
-    override suspend fun anular(fila: PendingWasteEntity): RespuestaHttp =
-        publicar(WasteApi.urlDeAnulacion(venueBaseUrl(fila.venueId)), WasteApi.cuerpoDeAnulacion(fila.idempotencyKey))
+    override suspend fun anular(fila: PendingWasteEntity, porStaffId: String): RespuestaHttp =
+        publicar(
+            WasteApi.urlDeAnulacion(venueBaseUrl(fila.venueId)),
+            WasteApi.cuerpoDeAnulacion(fila.idempotencyKey),
+            autor = porStaffId,
+        )
 
-    private suspend fun publicar(url: String, cuerpo: String): RespuestaHttp = withContext(Dispatchers.IO) {
+    private suspend fun publicar(url: String, cuerpo: String, autor: String): RespuestaHttp {
         val request = Request.Builder()
             .url(url)
             .header(ForbiddenInterceptor.BACKGROUND_HEADER, "1")
+            .tag(AutorEsperado::class.java, AutorEsperado(autor))
             .post(cuerpo.toRequestBody(tipoJson))
             .build()
-        try {
-            client.newCall(request).execute().use { RespuestaHttp(it.code, it.body?.string().orEmpty()) }
+        return try {
+            clienteDeMerma.newCall(request).respuesta()
         } catch (e: IOException) {
             RespuestaHttp(0, e.message.orEmpty())
         }
+    }
+
+    /**
+     * 🔴 Codex r1: `execute()` bloqueaba el hilo y no se enteraba de que la corrutina ya se había cancelado
+     * — el plazo de 5 s del cierre de sesión esperaba igual los 30 s del timeout de lectura. Aquí la
+     * cancelación CORTA la llamada (`Call.cancel()`), también a media lectura del cuerpo.
+     *
+     * Un 4xx que no viene de nuestra API (proxy, portal cautivo, Cloudflare, 408) se lee como 503: no dice
+     * nada de la merma. Misma regla que los cobros (`OrderRepository.isTransient4xx`) y que iOS
+     * (`APIClient.isFromIntermediary`).
+     */
+    private suspend fun Call.respuesta(): RespuestaHttp = suspendCancellableCoroutine { cont ->
+        cont.invokeOnCancellation { cancel() }
+        enqueue(
+            object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    cont.resumeWithException(e)
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    val leida = try {
+                        response.use {
+                            val body = it.body?.string().orEmpty()
+                            val deIntermediario = OrderRepository.isTransient4xx(
+                                it.code, it.header("Content-Type"), it.header("ngrok-error-code"), body,
+                            )
+                            if (deIntermediario) RespuestaHttp(503, "") else RespuestaHttp(it.code, body)
+                        }
+                    } catch (e: IOException) {
+                        cont.resumeWithException(e)
+                        return
+                    }
+                    cont.resume(leida)
+                }
+            },
+        )
     }
 
     /**

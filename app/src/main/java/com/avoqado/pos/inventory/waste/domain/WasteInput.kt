@@ -9,6 +9,14 @@ import java.time.format.DateTimeFormatter
 private val DECIMAL_SIMPLE = Regex("""^\d+(\.\d+)?$""")
 
 /**
+ * Los topes del POS en el servidor (`prepareWaste`): hasta 999 999.999, con hasta 3 decimales, y un
+ * texto de hasta 40 caracteres. El 999 999 999.999 es del DASHBOARD, no del POS.
+ */
+private const val TOPE_DE_ENTEROS = 6
+private const val TOPE_DE_DECIMALES = 3
+private const val TOPE_DE_LARGO = 40
+
+/**
  * Tope del servidor para `note`, medido como lo mide él: `z.string().max(280)` cuenta el
  * `length` de JavaScript, o sea unidades UTF-16 — las mismas que cuenta `String.length` aquí.
  */
@@ -28,10 +36,16 @@ private val FORMATO_CON_ZONA = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:s
  */
 fun normalizarCantidad(texto: String): String? {
     val limpio = texto.trim().replace(',', '.')
-    if (!DECIMAL_SIMPLE.matches(limpio)) return null
+    if (limpio.length > TOPE_DE_LARGO || !DECIMAL_SIMPLE.matches(limpio)) return null
     // Un decimal simple es > 0 si y sólo si trae algún dígito distinto de cero.
     // Mismo razonamiento que el esquema del servidor: no hace falta convertirlo.
     if (limpio.none { it in '1'..'9' }) return null
+    // 🔴 Codex r1: se cuenta como el servidor (`Decimal`), sin ceros a la izquierda en la parte entera
+    // ni a la derecha en la decimal — «1.2000» tiene UN decimal y «0999999» cabe. Lo que se pase moriría
+    // con 422 `QUANTITY_TOO_LARGE` sobre una fila ya escrita. Con un tope así, el mínimo (0.001) sale solo.
+    val enteros = limpio.substringBefore('.').trimStart('0')
+    val decimales = limpio.substringAfter('.', "").trimEnd('0')
+    if (enteros.length > TOPE_DE_ENTEROS || decimales.length > TOPE_DE_DECIMALES) return null
     return limpio
 }
 

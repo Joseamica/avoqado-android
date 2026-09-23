@@ -34,11 +34,33 @@ import javax.inject.Singleton
 /** Lo que el motor necesita de la red: mandar o anular UNA fila y traer la respuesta cruda. */
 interface TransporteDeMerma {
     suspend fun enviar(fila: PendingWasteEntity): RespuestaHttp
-    suspend fun anular(fila: PendingWasteEntity): RespuestaHttp
+    suspend fun anular(fila: PendingWasteEntity, porStaffId: String): RespuestaHttp
 }
 
 /** Cómo terminó un intento de descartar una merma de la cola. */
 enum class DesenlaceDeDescarte { ANULADA, YA_APLICADA, SIN_RED, EN_CAMINO, SIN_PERMISO, FALLO }
+
+/** Qué pasó con una merma recién registrada, visto desde el aparato (es lo que decide el aviso). */
+enum class SubidaDeMerma { SUBIO, EN_REVISION, BLOQUEADA, EN_CAMINO }
+
+/** Código con el que se anota un 2xx que no trae la confirmación del contrato (`reportId`). */
+const val SIN_CONFIRMACION = "SIN_CONFIRMACION"
+
+/** Cuánto espera la pantalla la respuesta del servidor antes de decir «se está subiendo». */
+const val PLAZO_DE_CONFIRMACION = 3_000L
+private const val SONDEO = 100L
+
+/**
+ * El desenlace de una fila que ya se puede anunciar, o `null` si todavía no se sabe. Sin fila = subió:
+ * la ÚNICA forma de salir de la cola es un registro CONFIRMADO (`WasteApi.confirmaRegistro`).
+ */
+internal fun desenlaceVisible(fila: PendingWasteEntity?): SubidaDeMerma? = when {
+    fila == null || fila.estado == EstadoMerma.APPLIED -> SubidaDeMerma.SUBIO
+    fila.estado == EstadoMerma.NEEDS_REVIEW || fila.estado == EstadoMerma.VOIDED -> SubidaDeMerma.EN_REVISION
+    fila.estado == EstadoMerma.PLAN_BLOCKED -> SubidaDeMerma.BLOQUEADA
+    fila.intentos > 0 -> SubidaDeMerma.EN_CAMINO
+    else -> null
+}
 
 /** La merma no se puede registrar así: el servidor la rechazaría con un 422 permanente. */
 class EntradaDeMermaInvalida(mensaje: String) : IllegalArgumentException(mensaje)
@@ -169,32 +191,56 @@ class WasteSyncCoordinator @Inject constructor(
         if (!connectivityMonitor.isConnected.value || !connectivityMonitor.isServerReachable.value) {
             return DesenlaceDeDescarte.SIN_RED
         }
+        // La lápida lleva el nombre de quien la pide: el `void` sale con SU credencial.
+        val quien = secureStorage.userId?.takeIf { it.isNotBlank() } ?: return DesenlaceDeDescarte.FALLO
         // El drenado nunca toma una fila en revisión: ésa no necesita reclamarse.
         val reclamada = fila.estado != EstadoMerma.NEEDS_REVIEW
-        if (reclamada && dao.reclamarFolio(folio) == 0) return DesenlaceDeDescarte.EN_CAMINO
-        val respuesta = try {
-            transporte.anular(fila)
+        var tomada = false
+        try {
+            if (reclamada) {
+                sinCancelar { tomada = dao.reclamarFolio(folio) == 1 }
+                if (!tomada) return DesenlaceDeDescarte.EN_CAMINO
+            }
+            val respuesta = transporte.anular(fila, quien)
+            val anulacion = if (respuesta.code in 200..299) WasteApi.leerAnulacion(respuesta.body) else null
+            return sinCancelar {
+                when (anulacion) {
+                    is Anulacion.Anulada -> {
+                        // 🔴 Codex r1: la hora de la lápida es la del SERVIDOR (la que verá el dashboard).
+                        dao.cerrar(folio, EstadoMerma.VOIDED, anulacion.porStaffId, anulacion.cuando ?: reloj())
+                        DesenlaceDeDescarte.ANULADA
+                    }
+                    Anulacion.YaAplicada -> {
+                        dao.cerrar(folio, EstadoMerma.APPLIED, porStaffId = null, cuando = reloj())
+                        DesenlaceDeDescarte.YA_APLICADA
+                    }
+                    null -> {
+                        // No se supo o no se pudo: la fila vuelve a la cola tal cual, con su folio.
+                        if (reclamada) dao.devolver(folio)
+                        if (respuesta.code == 403) DesenlaceDeDescarte.SIN_PERMISO else DesenlaceDeDescarte.FALLO
+                    }
+                }
+            }
         } catch (cancelada: CancellationException) {
-            if (reclamada) withContext(NonCancellable) { dao.devolver(folio) }
+            if (tomada) sinCancelar { dao.devolver(folio) }
             throw cancelada
         }
-        val anulacion = if (respuesta.code in 200..299) WasteApi.leerAnulacion(respuesta.body) else null
-        return when (anulacion) {
-            is Anulacion.Anulada -> {
-                dao.cerrar(folio, EstadoMerma.VOIDED, anulacion.porStaffId, reloj())
-                DesenlaceDeDescarte.ANULADA
-            }
-            Anulacion.YaAplicada -> {
-                dao.cerrar(folio, EstadoMerma.APPLIED, porStaffId = null, cuando = reloj())
-                DesenlaceDeDescarte.YA_APLICADA
-            }
-            null -> {
-                // No se supo o no se pudo: la fila vuelve a la cola tal cual, con su folio.
-                if (reclamada) dao.devolver(folio)
-                if (respuesta.code == 403) DesenlaceDeDescarte.SIN_PERMISO else DesenlaceDeDescarte.FALLO
-            }
-        }
     }
+
+    /**
+     * Espera, con un plazo, a saber qué pasó con una merma recién registrada. Es lo que permite que la
+     * pantalla diga «¡Merma registrada!» SÓLO cuando el servidor la confirmó (Codex r1). Si el plazo vence
+     * sin desenlace, la fila sigue su camino y se dice que se está subiendo.
+     */
+    suspend fun esperarSubida(folio: String, plazoMs: Long = PLAZO_DE_CONFIRMACION): SubidaDeMerma =
+        withTimeoutOrNull(plazoMs) {
+            var visto = desenlaceVisible(dao.porFolio(folio))
+            while (visto == null) {
+                delay(SONDEO)
+                visto = desenlaceVisible(dao.porFolio(folio))
+            }
+            visto
+        } ?: SubidaDeMerma.EN_CAMINO
 
     /**
      * Arranca el motor de la sesión: primero devuelve a la cola lo que quedó en `SENDING` (el proceso
@@ -227,50 +273,97 @@ class WasteSyncCoordinator @Inject constructor(
         trabajo = null
     }
 
+    /**
+     * 🔴 Codex r1: el reclamo y el desenlace se escriben ENTEROS aunque el plazo del cierre de sesión venza
+     * a media escritura; si no, la fila se quedaba en `SENDING` —sin subir y sin poderse descartar— hasta
+     * reiniciar la app. Lo único cancelable es la red, y si se cancela, la fila vuelve a la cola.
+     */
     private suspend fun drenar(staffId: String?) {
         if (staffId.isNullOrBlank()) return
         while (true) {
             currentCoroutineContext().ensureActive()
-            val fila = dao.reclamar(reloj(), staffId) ?: return
-            // 🔴 Spec §5: cada envío se ata a la sesión EN EL MOMENTO de la petición. El servidor toma
-            // el autor del token; si el usuario cambió a media vuelta (el relevo por PIN no espera a
-            // que el drenado termine), esta fila saldría a nombre de quien no la registró. Vuelve a la
-            // cola, sin contarse como intento, y espera a su dueño.
-            if (secureStorage.userId != fila.staffId) {
-                dao.devolver(fila.idempotencyKey)
-                return
-            }
-            val respuesta = try {
-                transporte.enviar(fila)
+            var reclamada: PendingWasteEntity? = null
+            try {
+                sinCancelar { reclamada = dao.reclamar(reloj(), staffId) }
+                val fila = reclamada ?: return
+                // Si el plazo venció mientras se reclamaba, no se manda: vuelve a la cola (el `catch`).
+                currentCoroutineContext().ensureActive()
+                if (!enviarUna(fila)) return
             } catch (cancelada: CancellationException) {
-                // El envío se abandonó (p. ej. el plazo del cierre de sesión): la fila no puede
-                // quedarse en SENDING, que sólo se sana al reiniciar la app. Vuelve a la cola con
-                // su folio; si el POST sí llegó, el servidor deduplica el reenvío.
-                withContext(NonCancellable) { dao.devolver(fila.idempotencyKey) }
+                reclamada?.let { fila -> sinCancelar { dao.devolver(fila.idempotencyKey) } }
                 throw cancelada
             }
-            val fallo = WasteApi.leerFallo(respuesta.body)
-            when (val desenlace = clasificarRespuestaDeMerma(respuesta.code, fallo.code, fallo.featureCode)) {
-                WasteOutcome.Sincronizada -> dao.borrarSincronizada(fila.idempotencyKey)
-                WasteOutcome.Anulada ->
-                    dao.cerrar(fila.idempotencyKey, EstadoMerma.VOIDED, porStaffId = null, cuando = reloj())
-                WasteOutcome.BloqueoDePlan -> {
-                    dao.marcar(fila.idempotencyKey, EstadoMerma.PLAN_BLOCKED, fallo.featureCode, reloj() + ESPERA_DE_PLAN)
-                    bloqueo.bloquear(fila.venueId)
+        }
+    }
+
+    /** Manda UNA fila ya reclamada y escribe su desenlace. `false` = el drenado se detiene aquí. */
+    private suspend fun enviarUna(fila: PendingWasteEntity): Boolean {
+        val folio = fila.idempotencyKey
+        // 🔴 Spec §5: cada envío se ata a la sesión EN EL MOMENTO de la petición. El servidor toma el autor
+        // del token; si el usuario cambió a media vuelta (el relevo por PIN no espera a que el drenado
+        // termine), esta fila saldría a nombre de quien no la registró. Vuelve a la cola, sin contarse como
+        // intento, y espera a su dueño.
+        if (secureStorage.userId != fila.staffId) {
+            sinCancelar { dao.devolver(folio) }
+            return false
+        }
+        val respuesta = transporte.enviar(fila)
+        val confirmada = respuesta.code in 200..299 && WasteApi.confirmaRegistro(respuesta.body)
+        // 🔴 Codex r1 (P1): si la sesión cambió MIENTRAS viajaba y no se confirmó, la falla es del relevo (la
+        // red frenó la credencial ajena), no de la merma: vuelve a esperar a su dueño sin contar intento.
+        if (!confirmada && secureStorage.userId != fila.staffId) {
+            sinCancelar { dao.devolver(folio) }
+            return false
+        }
+        // 🔴 Codex r1 (P1): un 2xx sin `reportId` (portal cautivo, proxy) NO confirma: se lee como sin red.
+        val sinConfirmar = respuesta.code in 200..299 && !confirmada
+        val fallo = WasteApi.leerFallo(respuesta.body)
+        val codigo = if (sinConfirmar) SIN_CONFIRMACION else fallo.code
+        val desenlace = clasificarRespuestaDeMerma(if (sinConfirmar) 0 else respuesta.code, codigo, fallo.featureCode)
+        val lapida = if (desenlace == WasteOutcome.Anulada) lapidaDe(fila) else null
+        return sinCancelar {
+            when (desenlace) {
+                WasteOutcome.Sincronizada -> {
+                    dao.borrarSincronizada(folio)
+                    true
                 }
-                is WasteOutcome.NecesitaRevision ->
-                    dao.marcar(fila.idempotencyKey, EstadoMerma.NEEDS_REVIEW, desenlace.motivo, 0L)
+                WasteOutcome.Anulada -> {
+                    dao.cerrar(folio, EstadoMerma.VOIDED, lapida?.porStaffId, lapida?.cuando ?: reloj())
+                    true
+                }
+                WasteOutcome.BloqueoDePlan -> {
+                    dao.marcar(folio, EstadoMerma.PLAN_BLOCKED, fallo.featureCode, reloj() + ESPERA_DE_PLAN)
+                    bloqueo.bloquear(fila.venueId)
+                    true
+                }
+                is WasteOutcome.NecesitaRevision -> {
+                    dao.marcar(folio, EstadoMerma.NEEDS_REVIEW, desenlace.motivo, 0L)
+                    true
+                }
                 WasteOutcome.Reintentable -> {
                     dao.marcar(
-                        fila.idempotencyKey,
+                        folio,
                         EstadoMerma.PENDING,
-                        fallo.code ?: "HTTP ${respuesta.code}",
+                        codigo ?: "HTTP ${respuesta.code}",
                         reloj() + esperaAntesDeReintentar(fila.intentos + 1),
                     )
                     // Sin red o con el servidor caído, las demás también fallarían: se espera.
-                    return
+                    false
                 }
             }
         }
     }
+
+    /**
+     * 🔴 Codex r1: el gerente anula, el servidor crea la lápida y la respuesta se pierde; al reenviar, el
+     * drenado recibe `WASTE_VOIDED`. Se le pide la lápida al `void` —idempotente: devuelve la autoría
+     * CANÓNICA aunque la pida otro— para guardar quién la anuló y cuándo. Si no se puede, se cierra igual
+     * (el 409 es definitivo), sin autor.
+     */
+    private suspend fun lapidaDe(fila: PendingWasteEntity): Anulacion.Anulada? {
+        val respuesta = transporte.anular(fila, fila.staffId)
+        return (if (respuesta.code in 200..299) WasteApi.leerAnulacion(respuesta.body) else null) as? Anulacion.Anulada
+    }
+
+    private suspend fun <T> sinCancelar(bloque: suspend () -> T): T = withContext(NonCancellable) { bloque() }
 }

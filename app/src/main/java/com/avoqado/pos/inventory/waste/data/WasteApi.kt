@@ -9,14 +9,19 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import java.time.Instant
+import java.util.Base64
 
 /** `code` y `featureCode` de un cuerpo de error, tal cual. Los decide `clasificarRespuestaDeMerma`. */
 data class FalloDeMerma(val code: String?, val featureCode: String?)
 
 /** Lo que el servidor contestó a un `void` (spec §4.3). */
 sealed interface Anulacion {
-    /** El folio quedó anulado; `porStaffId` es quien lo anuló (la autoría canónica del servidor). */
-    data class Anulada(val porStaffId: String?) : Anulacion
+    /**
+     * El folio quedó anulado. `porStaffId` y `cuando` son la autoría CANÓNICA del servidor (quién creó la
+     * lápida y a qué hora, en milisegundos); `null` si no vino o no se entendió.
+     */
+    data class Anulada(val porStaffId: String?, val cuando: Long?) : Anulacion
 
     /** El folio SÍ se había registrado: no se anuló nada. */
     data object YaAplicada : Anulacion
@@ -112,10 +117,38 @@ object WasteApi {
     fun leerAnulacion(body: String): Anulacion? {
         val raiz = runCatching { Json.parseToJsonElement(body).jsonObject }.getOrNull() ?: return null
         return when (raiz.texto("outcome")) {
-            "VOIDED" -> Anulacion.Anulada(raiz.texto("voidedByStaffId"))
+            "VOIDED" -> Anulacion.Anulada(
+                raiz.texto("voidedByStaffId"),
+                raiz.texto("voidedAt")?.let { runCatching { Instant.parse(it).toEpochMilli() }.getOrNull() },
+            )
             "ALREADY_APPLIED" -> Anulacion.YaAplicada
             else -> null
         }
+    }
+
+    /**
+     * ¿Este cuerpo confirma que la merma quedó registrada?
+     *
+     * 🔴 Codex r1 (P1): un 200 de un portal cautivo o de un proxy borraba la ÚNICA copia de la merma. El
+     * servidor contesta SIEMPRE con `reportId` —al crear y al recuperar un folio ya aplicado—; sin él, un
+     * 2xx no confirma nada y la fila se queda para reintentarse con el mismo folio.
+     */
+    fun confirmaRegistro(body: String): Boolean =
+        runCatching { Json.parseToJsonElement(body).jsonObject }.getOrNull()?.texto("reportId").isNullOrEmpty().not()
+
+    /**
+     * De quién es la credencial que viaja: el `sub` del JWT (= Staff.id, `jwt.service.ts`). Sólo se LEE —
+     * el aparato no verifica firmas—; `null` si no hay credencial o no se entiende.
+     *
+     * 🔴 Codex r1 (P1): el servidor registra la merma a nombre de quien firma el TOKEN, no de quien la
+     * capturó. Compararlos exige saber de quién es el token que sale de verdad.
+     */
+    fun autorDelToken(autorizacion: String?): String? {
+        val partes = autorizacion?.trim()?.removePrefix("Bearer ")?.trim()?.split('.') ?: return null
+        if (partes.size != 3) return null
+        val carga = runCatching { String(Base64.getUrlDecoder().decode(partes[1]), Charsets.UTF_8) }.getOrNull()
+            ?: return null
+        return runCatching { Json.parseToJsonElement(carga).jsonObject }.getOrNull()?.texto("sub")?.takeIf { it.isNotEmpty() }
     }
 
     /** Un `null` de JSON y una llave ausente se leen igual: no hay texto. */

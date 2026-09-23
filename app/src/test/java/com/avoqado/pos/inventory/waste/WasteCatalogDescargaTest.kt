@@ -111,7 +111,48 @@ class WasteCatalogDescargaTest {
 
         assertFalse(ok)
         assertEquals(0, destino.escrituras)
-        assertTrue("pidió $pedidas páginas: no se detuvo", pedidas <= 60)
+        assertEquals("una página vacía corta en seco", 1, pedidas)
+    }
+
+    /**
+     * 🔴 Un servidor que manda MENOS de lo que declara en cada página (una por página contra
+     * un total de 450) tampoco puede tenerla pidiendo 450 páginas: el tope sale del total y
+     * del pageSize que el propio servidor declaró en la primera página (⌈450/200⌉ + 1 = 4).
+     */
+    @Test
+    fun `se detiene si el servidor avanza menos de lo que declara`() = runTest {
+        var pedidas = 0
+        val destino = DestinoFalso()
+
+        val ok = descargarCatalogo(venueId = "v1", destino = destino, ahora = 0L) { page ->
+            pedidas++
+            pagina(1, total = 450, page = page, pageSize = 200, desde = page)
+        }
+
+        assertFalse(ok)
+        assertEquals(0, destino.escrituras)
+        assertTrue("pidió $pedidas páginas: no se detuvo", pedidas <= 4)
+    }
+
+    /**
+     * 🔴 Codex r1: un tope FIJO de 60 páginas dejaba sin catálogo a una sucursal de 12 001
+     * artículos — bajaba 12 000, abortaba sin escribir y repetía lo mismo al reabrir. El servidor
+     * no tiene tope de total: la descarga llega a donde el total declarado diga.
+     */
+    @Test
+    fun `un catalogo de 12001 articulos se baja entero`() = runTest {
+        var pedidas = 0
+        val destino = DestinoFalso()
+
+        val ok = descargarCatalogo(venueId = "v1", destino = destino, ahora = 0L) { page ->
+            pedidas++
+            val desde = (page - 1) * 200
+            pagina(minOf(200, 12_001 - desde), total = 12_001, page = page, pageSize = 200, desde = desde)
+        }
+
+        assertTrue(ok)
+        assertEquals(61, pedidas)
+        assertEquals(12_001, destino.ultimoLote?.size)
     }
 
     /** Un catálogo vacío es un desenlace legítimo: se escribe, y queda vacío. */

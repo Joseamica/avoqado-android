@@ -4,8 +4,23 @@ import com.avoqado.pos.inventory.waste.data.Anulacion
 import com.avoqado.pos.inventory.waste.data.FalloDeMerma
 import com.avoqado.pos.inventory.waste.data.WasteApi
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.time.Instant
+import java.util.Base64
+
+/**
+ * Un JWT con la forma del del servidor (`sub` = Staff.id, `jwt.service.ts`): cabecera, carga y una
+ * firma cualquiera — el aparato nunca verifica la firma, sólo lee de quién es.
+ */
+fun tokenDe(staffId: String): String {
+    val b64 = Base64.getUrlEncoder().withoutPadding()
+    val cabecera = b64.encodeToString("""{"alg":"HS256","typ":"JWT"}""".toByteArray())
+    val carga = b64.encodeToString("""{"sub":"$staffId","venueId":"venue-centro","role":"CASHIER"}""".toByteArray())
+    return "$cabecera.$carga.firma"
+}
 
 /**
  * `GET /mobile/venues/:venueId/inventory/waste-items` — la ruta y el lector de la respuesta.
@@ -129,11 +144,63 @@ class WasteApiTest {
     @Test
     fun `se leen los dos desenlaces de la anulacion y nada mas`() {
         assertEquals(
-            Anulacion.Anulada("gerente-1"),
+            Anulacion.Anulada("gerente-1", Instant.parse("2026-09-22T18:00:00.000Z").toEpochMilli()),
             WasteApi.leerAnulacion("""{"outcome":"VOIDED","voidedByStaffId":"gerente-1","voidedAt":"2026-09-22T18:00:00.000Z"}"""),
         )
         assertEquals(Anulacion.YaAplicada, WasteApi.leerAnulacion("""{"outcome":"ALREADY_APPLIED","report":{"declared":"3"}}"""))
         assertNull(WasteApi.leerAnulacion("""{"outcome":"OTRA_COSA"}"""))
         assertNull(WasteApi.leerAnulacion("<html>502</html>"))
+    }
+
+    /**
+     * 🔴 Codex r1: la lápida se guardaba con la hora del APARATO. La canónica es la del servidor
+     * (`voidedAt`); sólo si no viene, o no se entiende, se cae a la del aparato.
+     */
+    @Test
+    fun `una anulacion sin hora o con hora ilegible no inventa una`() {
+        assertEquals(Anulacion.Anulada("gerente-1", null), WasteApi.leerAnulacion("""{"outcome":"VOIDED","voidedByStaffId":"gerente-1"}"""))
+        assertEquals(
+            Anulacion.Anulada("gerente-1", null),
+            WasteApi.leerAnulacion("""{"outcome":"VOIDED","voidedByStaffId":"gerente-1","voidedAt":"ayer"}"""),
+        )
+    }
+
+    // MARK: - Confirmación del registro
+
+    /**
+     * 🔴 Codex r1 (P1): un 200 de un portal cautivo o de un proxy borraba la ÚNICA copia de la merma.
+     * El servidor contesta SIEMPRE con `reportId` —al crear y al recuperar el folio—; sin él, un 2xx
+     * no confirma nada.
+     */
+    @Test
+    fun `solo un cuerpo con reportId confirma el registro`() {
+        assertTrue(WasteApi.confirmaRegistro("""{"reportId":"r1","declared":"3","deducted":"3","unrecorded":"0"}"""))
+        assertFalse(WasteApi.confirmaRegistro("{}"))
+        assertFalse(WasteApi.confirmaRegistro("""{"reportId":""}"""))
+        assertFalse(WasteApi.confirmaRegistro("""{"reportId":null}"""))
+        assertFalse(WasteApi.confirmaRegistro("<html>Bienvenido al WiFi de la plaza</html>"))
+        assertFalse(WasteApi.confirmaRegistro(""))
+    }
+
+    // MARK: - De quién es la credencial
+
+    /**
+     * 🔴 Codex r1 (P1): la merma sale a nombre de quien firma el TOKEN, no de quien la capturó. Para
+     * compararlos hay que saber de quién es la credencial que de verdad viaja: el `sub` del JWT.
+     */
+    @Test
+    fun `el autor de una credencial es el sub de su token`() {
+        assertEquals("yo", WasteApi.autorDelToken("Bearer ${tokenDe("yo")}"))
+        assertEquals("persona-B", WasteApi.autorDelToken("Bearer ${tokenDe("persona-B")}"))
+    }
+
+    @Test
+    fun `una credencial ausente o ilegible no tiene autor`() {
+        assertNull(WasteApi.autorDelToken(null))
+        assertNull(WasteApi.autorDelToken(""))
+        assertNull(WasteApi.autorDelToken("Bearer no-es-un-jwt"))
+        assertNull(WasteApi.autorDelToken("Bearer a.%%%.c"))
+        val sinSub = Base64.getUrlEncoder().withoutPadding().encodeToString("""{"role":"CASHIER"}""".toByteArray())
+        assertNull(WasteApi.autorDelToken("Bearer x.$sinSub.y"))
     }
 }

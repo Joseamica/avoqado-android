@@ -6,10 +6,15 @@ import com.avoqado.pos.inventory.waste.data.PendingWasteEntity
 import com.avoqado.pos.inventory.waste.data.WasteCatalogDao
 import com.avoqado.pos.inventory.waste.data.WasteCatalogEntity
 import com.avoqado.pos.inventory.waste.data.WasteRepository
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withTimeoutOrNull
+import okhttp3.Call
+import okhttp3.EventListener
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.SocketPolicy
 import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -19,6 +24,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * El transporte de la merma contra un servidor HTTP DE VERDAD (MockWebServer): la URL, la marca
@@ -30,6 +36,17 @@ class WasteRepositoryTest {
     private val server = MockWebServer()
     private lateinit var repo: WasteRepository
     private val catalogo = CatalogoFalso()
+
+    /** El token que pondría `AuthInterceptor`: el de la sesión vigente del aparato. */
+    private var tokenDeLaSesion = tokenDe("yo")
+
+    /** Como el cliente de la app: una capa que pone la credencial de la sesión en cada petición. */
+    private fun clienteConSesion(lectura: Long = 1) = OkHttpClient.Builder()
+        .connectTimeout(1, TimeUnit.SECONDS)
+        .readTimeout(lectura, TimeUnit.SECONDS)
+        .addInterceptor { chain ->
+            chain.proceed(chain.request().newBuilder().header("Authorization", "Bearer $tokenDeLaSesion").build())
+        }
 
     /** Sólo lo que usa el refresco del catálogo: el reemplazo atómico por venue. */
     private class CatalogoFalso : WasteCatalogDao {
@@ -46,11 +63,7 @@ class WasteRepositoryTest {
     fun arrancar() {
         server.start()
         System.setProperty("avoqado.test.baseUrl", server.url("/api/v1").toString().trimEnd('/'))
-        val client = OkHttpClient.Builder()
-            .connectTimeout(1, TimeUnit.SECONDS)
-            .readTimeout(1, TimeUnit.SECONDS)
-            .build()
-        repo = WasteRepository(client, catalogo)
+        repo = WasteRepository(clienteConSesion().build(), catalogo)
     }
 
     @After
@@ -163,7 +176,7 @@ class WasteRepositoryTest {
     fun `la anulacion viaja al venue de la fila con solo el folio, en segundo plano`() = runTest {
         server.enqueue(MockResponse().setResponseCode(200).setBody("""{"outcome":"VOIDED"}"""))
 
-        val respuesta = repo.anular(fila(venueId = "venue-sur"))
+        val respuesta = repo.anular(fila(venueId = "venue-sur"), porStaffId = "yo")
 
         val pedido = server.takeRequest()
         assertEquals(200, respuesta.code)
@@ -171,6 +184,127 @@ class WasteRepositoryTest {
         assertEquals("POST", pedido.method)
         assertEquals("1", pedido.getHeader(ForbiddenInterceptor.BACKGROUND_HEADER))
         assertEquals("""{"idempotencyKey":"3f9c2c1e-5b7a-4c1d-9e8f-0a1b2c3d4e5f"}""", pedido.body.readUtf8())
+    }
+
+    // MARK: - La credencial con la que sale (Codex r1, P1)
+
+    /**
+     * 🔴 El servidor registra la merma a nombre de quien firma el TOKEN. Si entre la comprobación del
+     * motor y el envío terminó un relevo por PIN, la credencial ya es de otra persona: la merma NO
+     * sale — ni una sola petición llega al servidor.
+     */
+    @Test
+    fun `con la credencial de otra persona la merma no sale`() = runTest {
+        tokenDeLaSesion = tokenDe("persona-B")
+        server.enqueue(MockResponse().setResponseCode(201).setBody("""{"reportId":"r1"}"""))
+
+        val respuesta = repo.enviar(fila())
+
+        assertEquals(0, respuesta.code)
+        assertEquals(0, server.requestCount)
+    }
+
+    /**
+     * 🔴 El segundo camino de Codex: el POST de A recibe 401 DESPUÉS del relevo, el refresco usa la
+     * sesión de B y el reenvío saldría firmado por B. La comprobación corre en CADA salida a la red,
+     * incluido el reenvío tras refrescar: el primer intento llega, el reenvío no.
+     */
+    @Test
+    fun `si el refresco trae la credencial de otra persona, el reenvio no sale`() = runTest {
+        val cliente = clienteConSesion()
+            .authenticator { _, respuesta ->
+                respuesta.request.newBuilder().header("Authorization", "Bearer ${tokenDe("persona-B")}").build()
+            }
+            .build()
+        server.enqueue(MockResponse().setResponseCode(401))
+        server.enqueue(MockResponse().setResponseCode(201).setBody("""{"reportId":"r1"}"""))
+
+        val respuesta = WasteRepository(cliente, catalogo).enviar(fila())
+
+        assertEquals(0, respuesta.code)
+        assertEquals(1, server.requestCount)
+    }
+
+    /** Control: si el refresco renueva la credencial de la MISMA persona, el reenvío sí sale. */
+    @Test
+    fun `si el refresco renueva la credencial de la misma persona, el reenvio sale`() = runTest {
+        val cliente = clienteConSesion()
+            .authenticator { _, respuesta ->
+                respuesta.request.newBuilder().header("Authorization", "Bearer ${tokenDe("yo")}").build()
+            }
+            .build()
+        server.enqueue(MockResponse().setResponseCode(401))
+        server.enqueue(MockResponse().setResponseCode(201).setBody("""{"reportId":"r1"}"""))
+
+        val respuesta = WasteRepository(cliente, catalogo).enviar(fila())
+
+        assertEquals(201, respuesta.code)
+        assertEquals(2, server.requestCount)
+    }
+
+    /** El `void` también sale con la credencial de quien lo pide: la lápida lleva su nombre. */
+    @Test
+    fun `la anulacion no sale con la credencial de otra persona`() = runTest {
+        tokenDeLaSesion = tokenDe("persona-B")
+
+        val respuesta = repo.anular(fila(), porStaffId = "gerente-1")
+
+        assertEquals(0, respuesta.code)
+        assertEquals(0, server.requestCount)
+    }
+
+    // MARK: - Lo que no viene de nuestra API (Codex r1)
+
+    /**
+     * 🔴 Un 403 o un 408 de un proxy, un portal cautivo o Cloudflare no dicen nada de la merma. Se
+     * leen como «servidor no disponible» (503), igual que iOS (`APIClient.isFromIntermediary`) y que
+     * los cobros de esta app (`OrderRepository.isTransient4xx`): se reintentan, no van a revisión.
+     */
+    @Test
+    fun `un 4xx de un intermediario se lee como servidor no disponible`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(403).setHeader("Content-Type", "text/html").setBody("<html>WAF</html>"))
+        // OkHttp reintenta un 408 UNA vez por su cuenta (`RetryAndFollowUpInterceptor`): llegan dos.
+        server.enqueue(MockResponse().setResponseCode(408))
+        server.enqueue(MockResponse().setResponseCode(408))
+
+        assertEquals(503, repo.enviar(fila()).code)
+        assertEquals(503, repo.enviar(fila()).code)
+    }
+
+    /** Control: el 403 de NUESTRA API (JSON) sigue siendo un 403 — es falta de permiso de verdad. */
+    @Test
+    fun `un 403 de nuestra API sigue siendo un 403`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(403).setBody("""{"error":"Forbidden","required":"inventory:log-waste"}"""))
+
+        assertEquals(403, repo.enviar(fila()).code)
+    }
+
+    // MARK: - El plazo corta la petición de verdad (Codex r1)
+
+    /**
+     * 🔴 El plazo de 5 s del cierre de sesión cancelaba la ESPERA, pero la petición seguía bloqueada
+     * hasta el `readTimeout` de OkHttp (30 s): la persona no podía salir. Un servidor que acepta la
+     * conexión y nunca contesta; el plazo tiene que cortar la llamada misma.
+     */
+    @Test
+    fun `al vencer el plazo la peticion se corta, no espera al timeout de lectura`() = runBlocking {
+        server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE))
+        val cancelada = AtomicBoolean(false)
+        val cliente = clienteConSesion(lectura = 30)
+            .eventListener(object : EventListener() {
+                override fun canceled(call: Call) = cancelada.set(true)
+            })
+            .build()
+        val lento = WasteRepository(cliente, catalogo)
+        val inicio = System.nanoTime()
+
+        val respuesta = withTimeoutOrNull(300) { lento.enviar(fila()) }
+
+        val ms = (System.nanoTime() - inicio) / 1_000_000
+        assertNull(respuesta)
+        assertTrue("tardó $ms ms en soltar", ms < 5_000)
+        // Y la llamada misma se cortó: no se queda viva en segundo plano hasta el timeout de lectura.
+        assertTrue("la llamada siguió viva", cancelada.get())
     }
 
     /** El refresco baja todas las páginas y reemplaza el catálogo de ESA sucursal de una vez. */

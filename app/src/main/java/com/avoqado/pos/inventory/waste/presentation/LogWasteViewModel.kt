@@ -8,6 +8,7 @@ import com.avoqado.pos.inventory.waste.data.BloqueoDeMermaPorPlan
 import com.avoqado.pos.inventory.waste.data.CatalogoDeMerma
 import com.avoqado.pos.inventory.waste.data.WasteCatalogEntity
 import com.avoqado.pos.inventory.waste.data.WasteCatalogItem
+import com.avoqado.pos.inventory.waste.data.SubidaDeMerma
 import com.avoqado.pos.inventory.waste.data.WasteSyncCoordinator
 import com.avoqado.pos.inventory.waste.data.buscarEnCatalogo
 import com.avoqado.pos.inventory.waste.domain.TOPE_DE_NOTA
@@ -161,28 +162,49 @@ class LogWasteViewModel @Inject constructor(
 
     fun avisoVisto() = _estado.update { it.copy(aviso = null) }
 
-    /** Un doble toque en «Confirmar» registra UNA merma, no dos. */
+    /**
+     * Un doble toque en «Confirmar» registra UNA merma, no dos. El candado cubre sólo el registro: la
+     * espera del desenlace corre fuera de él, con el formulario ya limpio para la siguiente.
+     */
     fun confirmar(): Job = viewModelScope.launch {
         if (!registrando.compareAndSet(false, true)) return@launch
-        try {
+        val registrada = try {
             registrarLoCapturado()
         } finally {
             registrando.set(false)
         }
+        registrada?.let { (venueId, folio) -> _estado.update { e -> e.copy(aviso = avisoTrasRegistrar(venueId, folio)) } }
     }
 
-    private suspend fun registrarLoCapturado() {
+    /**
+     * 🔴 Codex r1: «¡Merma registrada!» es una afirmación sobre el SERVIDOR, no sobre el aparato. Sin red o
+     * sin plan se dice al momento cuándo subirá; con red se espera (poco) a que el servidor conteste, y si la
+     * rechaza se DICE dónde verla — nunca un «registrada» que después resulta falso.
+     */
+    private suspend fun avisoTrasRegistrar(venueId: String, folio: String): AvisoDeMerma = when {
+        bloqueo.estaBloqueado(venueId) -> AvisoDeMerma(TextosMerma.GUARDADA, TextosMerma.SE_SUBIRA_SIN_PLAN)
+        !hayRed() -> AvisoDeMerma(TextosMerma.GUARDADA, TextosMerma.SE_SUBIRA_SIN_RED)
+        else -> when (runCatching { motor.esperarSubida(folio) }.getOrDefault(SubidaDeMerma.EN_CAMINO)) {
+            SubidaDeMerma.SUBIO -> AvisoDeMerma(TextosMerma.REGISTRADA)
+            SubidaDeMerma.EN_REVISION -> AvisoDeMerma(TextosMerma.GUARDADA, TextosMerma.NO_SE_PUDO_REGISTRAR)
+            SubidaDeMerma.BLOQUEADA -> AvisoDeMerma(TextosMerma.GUARDADA, TextosMerma.SE_SUBIRA_SIN_PLAN)
+            SubidaDeMerma.EN_CAMINO -> AvisoDeMerma(TextosMerma.GUARDADA, TextosMerma.SUBIENDO)
+        }
+    }
+
+    /** Escribe la merma y deja el formulario listo. Devuelve (venue, folio), o `null` si no se registró. */
+    private suspend fun registrarLoCapturado(): Pair<String, String>? {
         val e = _estado.value
-        val articulo = e.articulo ?: return
-        val motivo = e.motivo ?: return
+        val articulo = e.articulo ?: return null
+        val motivo = e.motivo ?: return null
         val venueId = secureStorage.venueId
         val staffId = secureStorage.userId
         if (venueId.isNullOrBlank() || staffId.isNullOrBlank()) {
             _estado.update { it.copy(confirmacion = null, error = TextosMerma.SIN_SESION) }
-            return
+            return null
         }
         _estado.update { it.copy(confirmacion = null, enviando = true, error = null) }
-        motor.registrar(
+        return motor.registrar(
             venueId = venueId,
             staffId = staffId,
             item = WasteCatalogItem(articulo.itemType, articulo.itemId, articulo.name, articulo.sku, articulo.unit),
@@ -190,15 +212,9 @@ class LogWasteViewModel @Inject constructor(
             motivo = motivo,
             nota = e.nota,
         ).fold(
-            onSuccess = {
-                // La fila ya está en disco. Lo que cambia es cuándo va a subir, y eso se DICE:
-                // sin red o sin plan no es un error, pero tampoco es «registrada» todavía.
-                val aviso = when {
-                    bloqueo.estaBloqueado(venueId) -> AvisoDeMerma(TextosMerma.GUARDADA, TextosMerma.SE_SUBIRA_SIN_PLAN)
-                    !hayRed() -> AvisoDeMerma(TextosMerma.GUARDADA, TextosMerma.SE_SUBIRA_SIN_RED)
-                    else -> AvisoDeMerma(TextosMerma.REGISTRADA)
-                }
-                // Lista para la siguiente: al final del día se registran varias seguidas.
+            onSuccess = { folio ->
+                // La fila ya está en disco. Lista para la siguiente: al final del día se registran varias
+                // seguidas. El aviso llega después (`avisoTrasRegistrar`): cuándo sube se DICE.
                 _estado.update {
                     it.copy(
                         busqueda = "",
@@ -208,11 +224,14 @@ class LogWasteViewModel @Inject constructor(
                         motivo = null,
                         nota = "",
                         enviando = false,
-                        aviso = aviso,
                     )
                 }
+                venueId to folio
             },
-            onFailure = { fallo -> _estado.update { it.copy(enviando = false, error = fallo.message) } },
+            onFailure = { fallo ->
+                _estado.update { it.copy(enviando = false, error = fallo.message) }
+                null
+            },
         )
     }
 
