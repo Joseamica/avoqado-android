@@ -75,6 +75,43 @@ object WasteApi {
         }.getOrNull()
     }
 
+    /** Páginas cortas: el historial se lee de arriba hacia abajo y se pide «Cargar más». */
+    const val TAMANO_DE_PAGINA_DEL_HISTORIAL = 30
+
+    fun urlDeHistorial(venueBase: String, page: Int): String =
+        "$venueBase/inventory/waste-reports?page=$page&pageSize=$TAMANO_DE_PAGINA_DEL_HISTORIAL"
+
+    /**
+     * `{ scope, items: [...], total, page, pageSize }` → la página, o `null` si no tiene esa forma. El
+     * alcance que no se entiende se lee como «sólo lo mío»: nunca se presume la vista del gerente.
+     */
+    fun parsearHistorial(body: String): PaginaDeHistorial? {
+        val raiz = runCatching { Json.parseToJsonElement(body).jsonObject }.getOrNull() ?: return null
+        return runCatching {
+            val folios = raiz.getValue("items").jsonArray.map { elemento ->
+                val o = elemento.jsonObject
+                FolioDeHistorial(
+                    id = o.texto("id") ?: return null,
+                    name = o.texto("name").orEmpty(),
+                    unit = o.texto("unit").orEmpty(),
+                    reasonCode = o.texto("reasonCode").orEmpty(),
+                    reasonLabel = o.texto("reasonLabel"),
+                    declared = o.texto("declaredQuantity") ?: o.texto("deductedQuantity") ?: return null,
+                    unrecorded = o.texto("unrecordedQuantity") ?: "0",
+                    note = o.texto("note"),
+                    createdAt = o.texto("createdAt").orEmpty(),
+                    reportedByName = o.texto("reportedByName"),
+                )
+            }
+            PaginaDeHistorial(
+                todos = raiz.texto("scope") == "ALL",
+                folios = folios,
+                total = raiz.getValue("total").jsonPrimitive.int,
+                page = raiz.getValue("page").jsonPrimitive.int,
+            )
+        }.getOrNull()
+    }
+
     /** `…/mobile/venues/{venueId}/inventory/waste`, con el venue DE LA FILA (Review Focus 3). */
     fun urlDeMerma(venueBase: String): String = "$venueBase/inventory/waste"
 

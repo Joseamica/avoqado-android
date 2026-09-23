@@ -74,6 +74,21 @@ object TextosMerma {
     const val DESCARTAR_SIN_PERMISO = "No tienes permiso para descartar mermas. Pídeselo a tu gerente."
     const val DESCARTAR_FALLO = "No se pudo descartar. Intenta de nuevo."
 
+    const val HISTORIAL = "Ver historial"
+    const val HISTORIAL_TITULO = "Historial de mermas"
+    const val MIS_MERMAS = "Mis mermas"
+    const val MERMAS_DEL_NEGOCIO = "Mermas del negocio"
+    const val SIN_HISTORIAL = "Todavía no hay mermas registradas."
+    const val HISTORIAL_SIN_RED =
+        "Sin conexión. El historial necesita internet; lo que registraste sin red está en «Mermas por subir»."
+    const val HISTORIAL_SIN_PLAN = "El historial de mermas está incluido en el Plan Premium."
+    const val HISTORIAL_FALLO = "No se pudo cargar el historial. Intenta de nuevo."
+    const val REINTENTAR = "Reintentar"
+    const val CARGAR_MAS = "Cargar más"
+    const val MOSTRANDO = "{n} de {total}"
+    const val REGISTRO_DE = "Registró: {nombre}"
+    const val SIN_EXISTENCIA = "{cantidad} sin existencia"
+
     /** La unidad del catálogo (el enum del servidor) → lo que lee el cajero. */
     val UNIDADES: Map<String, String> = mapOf(
         "KILOGRAM" to "kg",

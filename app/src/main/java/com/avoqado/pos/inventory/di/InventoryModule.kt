@@ -5,6 +5,7 @@ import com.avoqado.pos.inventory.data.BorradorDeConteoStore
 import com.avoqado.pos.inventory.data.InventoryCountTransport
 import com.avoqado.pos.inventory.data.InventoryRepository
 import com.avoqado.pos.inventory.waste.data.CatalogoDeMerma
+import com.avoqado.pos.inventory.waste.data.HistorialDeMerma
 import com.avoqado.pos.inventory.waste.data.TransporteDeMerma
 import com.avoqado.pos.inventory.waste.data.WasteRepository
 import dagger.Binds
@@ -26,4 +27,7 @@ abstract class InventoryModule {
 
     @Binds
     abstract fun catalogoDeMerma(impl: WasteRepository): CatalogoDeMerma
+
+    @Binds
+    abstract fun historialDeMerma(impl: WasteRepository): HistorialDeMerma
 }

@@ -52,7 +52,7 @@ interface CatalogoDeMerma {
 class WasteRepository @Inject constructor(
     private val client: OkHttpClient,
     private val catalogoDao: WasteCatalogDao,
-) : TransporteDeMerma, CatalogoDeMerma {
+) : TransporteDeMerma, CatalogoDeMerma, HistorialDeMerma {
 
     private val tipoJson = "application/json; charset=utf-8".toMediaType()
 
@@ -192,6 +192,30 @@ class WasteRepository @Inject constructor(
             }
         } catch (e: IOException) {
             null
+        }
+    }
+
+    /**
+     * Una página del historial. De segundo plano: es una lectura, y un 403 no debe abrir el teclado del PIN
+     * del gerente — el alcance lo decide el servidor con los permisos PROPIOS de quien pregunta.
+     */
+    override suspend fun historial(venueId: String, page: Int): ResultadoDeHistorial = withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+            .url(WasteApi.urlDeHistorial(venueBaseUrl(venueId), page))
+            .header(ForbiddenInterceptor.BACKGROUND_HEADER, "1")
+            .build()
+        try {
+            client.newCall(request).execute().use { r ->
+                val body = r.body?.string().orEmpty()
+                when {
+                    r.isSuccessful -> WasteApi.parsearHistorial(body)?.let { ResultadoDeHistorial.Pagina(it) }
+                        ?: ResultadoDeHistorial.Fallo
+                    r.code == 403 && WasteApi.leerFallo(body).featureCode != null -> ResultadoDeHistorial.SinPlan
+                    else -> ResultadoDeHistorial.Fallo
+                }
+            }
+        } catch (e: IOException) {
+            ResultadoDeHistorial.SinRed
         }
     }
 

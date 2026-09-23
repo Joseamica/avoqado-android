@@ -1,8 +1,11 @@
 package com.avoqado.pos.inventory.waste.presentation
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -30,6 +33,10 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -71,7 +78,11 @@ fun LogWasteScreen(
     LaunchedEffect(idApertura) { viewModel.abrirFormulario(idApertura, preseleccion) }
     DisposableEffect(Unit) { onDispose { viewModel.formularioCerrado() } }
     BackHandler(onBack = onDismiss)
+    // El historial se pinta ENCIMA: salir de la composición del formulario llamaría `formularioCerrado()`
+    // y silenciaría el aviso de una merma recién confirmada.
+    var verHistorial by rememberSaveable { mutableStateOf(false) }
 
+    Box(Modifier.fillMaxSize()) {
     Scaffold(
         contentWindowInsets = WindowInsets(0),
         topBar = {
@@ -107,6 +118,8 @@ fun LogWasteScreen(
             estado.error?.let { error ->
                 Text(error, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error)
             }
+
+            TextButton(onClick = { verHistorial = true }) { Text(TextosMerma.HISTORIAL) }
 
             Seccion(TextosMerma.ARTICULO)
             val articulo = estado.articulo
@@ -170,6 +183,17 @@ fun LogWasteScreen(
             }
             Spacer(Modifier.height(AvoqadoTheme.spacing.xxl))
         }
+    }
+    if (verHistorial) {
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.surface)
+                .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = {}),
+        ) {
+            HistorialDeMermaScreen(onDismiss = { verHistorial = false })
+        }
+    }
     }
 
     estado.confirmacion?.let { texto ->
