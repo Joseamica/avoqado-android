@@ -143,15 +143,10 @@ class LogWasteViewModel @Inject constructor(
      * por el plan y baja el catálogo. También es el «Actualizar» del aviso de plan: la petición
      * que puede levantarlo está siempre disponible.
      */
-    fun alAbrir(): Job {
-        abierto = true
-        return viewModelScope.launch { refrescarAlAbrir() }
-    }
-
-    private suspend fun refrescarAlAbrir() {
-        val venueId = secureStorage.venueId ?: return
+    fun alAbrir(): Job = viewModelScope.launch {
+        val venueId = secureStorage.venueId ?: return@launch
         cargar(venueId, recienBajado = false)
-        if (!hayRed()) return
+        if (!hayRed()) return@launch
         bloqueo.revalidar(venueId)
         if (!bloqueo.estaBloqueado(venueId) && catalogo.refrescarCatalogo(venueId, reloj())) {
             cargar(venueId, recienBajado = true)
@@ -196,7 +191,7 @@ class LogWasteViewModel @Inject constructor(
      * pantalla cerrada ya no se guarda para cuando se reabra (el cajero lo ve en «Mermas por subir»).
      */
     fun formularioCerrado() {
-        abierto = false
+        apertura++
         val vivos = seguimientos.toList()
         seguimientos.clear()
         vivos.forEach { it.cancel() }
@@ -205,8 +200,13 @@ class LogWasteViewModel @Inject constructor(
     /** Los seguimientos vivos (`seguirHastaElDesenlace`); se cancelan al cerrar el formulario. */
     private val seguimientos = mutableListOf<Job>()
 
-    /** Si el formulario está a la vista: una espera que termina con él cerrado no publica ni sigue nada. */
-    private var abierto = true
+    /**
+     * Cada cierre del formulario la cambia. Una espera que termina en OTRA apertura — cerrado, o cerrado y
+     * reabierto (Codex r6: entre medio el cajero pudo descartar esa merma) — no publica ni sigue nada. Abrir no la
+     * cambia: toda reapertura viene después de un cierre, y el «Actualizar» del aviso de plan (que llama a
+     * `alAbrir`) no debe tragarse el aviso de la captura en curso.
+     */
+    private var apertura = 0L
 
     /**
      * Un doble toque en «Confirmar» registra UNA merma, no dos. El candado cubre sólo el registro: la
@@ -217,6 +217,7 @@ class LogWasteViewModel @Inject constructor(
 
     fun confirmar(): Job = viewModelScope.launch {
         if (!registrando.compareAndSet(false, true)) return@launch
+        val miApertura = apertura
         val registrada = try {
             registrarLoCapturado()
         } finally {
@@ -225,7 +226,7 @@ class LogWasteViewModel @Inject constructor(
         val turno = turnos.incrementAndGet()
         // La espera va FUERA de `update`: dentro, un cambio del formulario la volvería a correr.
         val (aviso, definitivo) = avisoTrasRegistrar(registrada)
-        if (!abierto) return@launch
+        if (apertura != miApertura) return@launch
         when {
             aviso == null -> anotarRechazo(registrada.articulo)
             debePublicarseElAviso(turno, turnos.get()) -> _estado.update { it.copy(aviso = aviso, avisoId = turno) }

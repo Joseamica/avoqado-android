@@ -297,6 +297,51 @@ class LogWasteViewModelTest {
         assertEquals(emptyList<String>(), vm.estado.value.rechazos)
     }
 
+    /**
+     * 🔴 Codex r6: cerrar y REABRIR dentro de la espera. La espera de la apertura anterior no publica ni arranca
+     * seguimiento en la nueva: entre medio el cajero pudo descartar esa merma en «Mermas por subir».
+     */
+    @Test
+    fun `al reabrir durante la espera, la captura de la apertura anterior no se sigue`() = runTest {
+        retrasoDelServidor = 4_000
+        respuestaDelServidor = RespuestaHttp(422, """{"code":"UNIT_MISMATCH"}""")
+        motor.start(backgroundScope)
+        runCurrent()
+        val vm = vm()
+        vm.capturar()
+
+        val confirmacion = vm.confirmar()
+        advanceTimeBy(1_000)
+        vm.formularioCerrado()
+        vm.alAbrir()
+        confirmacion.join()
+        advanceTimeBy(10_000)
+
+        assertEquals(EstadoMerma.NEEDS_REVIEW, cola.todas().single().estado)
+        assertNull(vm.estado.value.aviso)
+        assertEquals(emptyList<String>(), vm.estado.value.rechazos)
+    }
+
+    /**
+     * Y «Actualizar» del aviso de plan (llama a `alAbrir`) con el formulario abierto NO es otra apertura: el aviso
+     * de la captura en curso sí llega.
+     */
+    @Test
+    fun `actualizar durante la espera no se traga el aviso`() = runTest {
+        retrasoDelServidor = 4_000
+        motor.start(backgroundScope)
+        runCurrent()
+        val vm = vm()
+        vm.capturar()
+
+        val confirmacion = vm.confirmar()
+        advanceTimeBy(1_000)
+        vm.alAbrir()
+        confirmacion.join()
+
+        assertEquals(AvisoDeMerma("Merma guardada", "Se está subiendo."), vm.estado.value.aviso)
+    }
+
     /** El texto del letrero: uno o varios, en buen español. */
     @Test
     fun `el letrero de rechazos dice cuales, en singular o plural`() {
