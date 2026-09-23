@@ -49,6 +49,7 @@ import com.avoqado.pos.designsystem.components.AvoqadoSuccessToast
 import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.components.SearchPillField
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
+import com.avoqado.pos.inventory.presentation.AvisoDeImpresion
 import com.avoqado.pos.inventory.waste.data.WasteCatalogEntity
 import com.avoqado.pos.inventory.waste.domain.TextosMerma
 import com.avoqado.pos.inventory.waste.domain.WasteReason
@@ -120,6 +121,21 @@ fun LogWasteScreen(
             }
 
             TextButton(onClick = { verHistorial = true }) { Text(TextosMerma.HISTORIAL) }
+
+            // El comprobante para firmar: lo pide el cajero, nunca sale solo.
+            estado.ultima?.let { ultima ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    TextoSecundario(
+                        TextosMerma.ULTIMA_MERMA
+                            .replace("{cantidad}", "${ultima.cantidad} ${etiquetaDeUnidad(ultima.unit)}")
+                            .replace("{articulo}", ultima.articulo),
+                    )
+                    Spacer(Modifier.weight(1f))
+                    TextButton(onClick = { viewModel.imprimirComprobante() }, enabled = !estado.imprimiendo) {
+                        Text(TextosMerma.IMPRIMIR_COMPROBANTE)
+                    }
+                }
+            }
 
             Seccion(TextosMerma.ARTICULO)
             val articulo = estado.articulo
@@ -212,6 +228,8 @@ fun LogWasteScreen(
             },
         ) {}
     }
+
+    AvisoDeImpresion(estado.avisoDeImpresion, onDismiss = viewModel::avisoDeImpresionVisto)
 
     estado.aviso?.let { aviso ->
         val id = estado.avisoId

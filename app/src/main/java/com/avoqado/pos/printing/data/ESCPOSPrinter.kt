@@ -929,6 +929,35 @@ class ESCPOSPrinter(
         return getData()
     }
 
+    /** Comprobante de merma, para firmar (espejo de iOS). Sin red dice «PENDIENTE DE SUBIR». */
+    fun generateWasteReceipt(c: ComprobanteDeMerma): ByteArray {
+        reset()
+        setAlignment(TextAlignment.CENTER)
+        c.negocio?.let { printLine(it) }
+        printTitle("COMPROBANTE DE MERMA", bold = true)
+        printLine("Folio ${c.folio}")
+        printLine(c.fecha)
+        if (c.pendiente) {
+            setBold(true)
+            printLine("PENDIENTE DE SUBIR")
+            setBold(false)
+        }
+        setAlignment(TextAlignment.LEFT)
+        c.registro?.let { printLine("Registró: $it") }
+        printDoubleDivider()
+        printLine("Artículo: ${c.articulo}")
+        printLine("Cantidad: ${c.cantidad}")
+        printLine("Motivo: ${c.motivo}")
+        c.nota?.let { printLine("Nota: $it") }
+        printDoubleDivider()
+        feedLines(2)
+        printLine("Registró: ____________________")
+        feedLines(2)
+        printLine("Revisó: ______________________")
+        cut()
+        return getData()
+    }
+
     // MARK: - Test Print
 
     fun generateTestPrint(): ByteArray {

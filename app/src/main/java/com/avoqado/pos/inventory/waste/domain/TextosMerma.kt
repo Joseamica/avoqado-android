@@ -89,6 +89,14 @@ object TextosMerma {
     const val REGISTRO_DE = "Registró: {nombre}"
     const val SIN_EXISTENCIA = "{cantidad} sin existencia"
 
+    const val ULTIMA_MERMA = "Última merma: {cantidad} de {articulo}"
+    const val IMPRIMIR_COMPROBANTE = "Imprimir comprobante"
+    const val COMPROBANTE_IMPRESO = "¡Comprobante impreso!"
+    const val COMPROBANTE_NO_REGISTRADA = "Esta merma no se registró: revísala en «Mermas por subir»."
+    const val SIN_IMPRESORA = "No hay impresora configurada. Ve a Más › Impresora para agregar una."
+    const val SIN_PAPEL = "La impresora no tiene papel. Cambia el rollo y vuelve a imprimir."
+    const val NO_SE_PUDO_IMPRIMIR = "No se pudo imprimir: {motivo}"
+
     /** La unidad del catálogo (el enum del servidor) → lo que lee el cajero. */
     val UNIDADES: Map<String, String> = mapOf(
         "KILOGRAM" to "kg",

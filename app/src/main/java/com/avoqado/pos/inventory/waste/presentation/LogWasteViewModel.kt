@@ -4,6 +4,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.util.ConnectivityMonitor
+import com.avoqado.pos.core.util.VenueDateTimeFormatter
+import com.avoqado.pos.inventory.presentation.PriceLabelViewModel.AvisoImpresion
 import com.avoqado.pos.inventory.data.model.StockItem
 import com.avoqado.pos.inventory.waste.data.BloqueoDeMermaPorPlan
 import com.avoqado.pos.inventory.waste.data.CatalogoDeMerma
@@ -19,6 +21,9 @@ import com.avoqado.pos.inventory.waste.domain.antiguedadDelCatalogo
 import com.avoqado.pos.inventory.waste.domain.normalizarCantidad
 import com.avoqado.pos.inventory.waste.domain.recortarNota
 import com.avoqado.pos.inventory.waste.domain.textoDeConfirmacion
+import com.avoqado.pos.printing.data.ComprobanteDeMerma
+import com.avoqado.pos.printing.data.MermaRegistrada
+import com.avoqado.pos.printing.data.PrinterService
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -54,6 +59,10 @@ data class EstadoDeCaptura(
     /** Lo que el servidor rechazó: letrero fijo hasta que el cajero lo ve (`rechazosVistos`). */
     val rechazos: List<String> = emptyList(),
     val error: String? = null,
+    /** La última merma de esta apertura: de ella sale el comprobante impreso (nunca automático). */
+    val ultima: MermaRegistrada? = null,
+    val imprimiendo: Boolean = false,
+    val avisoDeImpresion: AvisoImpresion? = null,
 ) {
     /**
      * Sin artículo, sin una cantidad que el servidor acepte o sin motivo, no se puede. «Otro»
@@ -127,6 +136,8 @@ class LogWasteViewModel @Inject constructor(
     private val bloqueo: BloqueoDeMermaPorPlan,
     private val secureStorage: SecureStorage,
     private val red: ConnectivityMonitor,
+    private val impresora: PrinterService,
+    private val horaDelNegocio: VenueDateTimeFormatter,
 ) : ViewModel() {
 
     /** Inyectable para las pruebas: la antigüedad del catálogo se mide contra este reloj. */
@@ -181,6 +192,8 @@ class LogWasteViewModel @Inject constructor(
                 confirmacion = null,
                 error = null,
                 aviso = null,
+                ultima = null,
+                avisoDeImpresion = null,
             )
         }
         return alAbrir().also { carga = it }
@@ -378,6 +391,17 @@ class LogWasteViewModel @Inject constructor(
                         motivo = null,
                         nota = "",
                         enviando = false,
+                        ultima = MermaRegistrada(
+                            folio = folio,
+                            articulo = articulo.name,
+                            cantidad = normalizarCantidad(e.cantidad) ?: e.cantidad,
+                            unit = articulo.unit,
+                            motivo = motivo.etiqueta,
+                            nota = recortarNota(e.nota).takeIf { n -> n.isNotEmpty() },
+                            registro = listOfNotNull(secureStorage.userFirstName, secureStorage.userLastName)
+                                .joinToString(" ").trim().takeIf { n -> n.isNotEmpty() },
+                            creadaEn = reloj(),
+                        ),
                     )
                 }
                 Registrada(venueId, folio, articulo.name)
@@ -403,6 +427,39 @@ class LogWasteViewModel @Inject constructor(
             )
         }
     }
+
+    /**
+     * El comprobante de la última merma, para firmar. Lo pide el cajero (nunca automático). Pregunta a la
+     * cola AHORA si ya subió: sin red dice «Pendiente de subir», y una que el servidor rechazó no se imprime.
+     */
+    fun imprimirComprobante(): Job? {
+        val m = _estado.value.ultima ?: return null
+        if (_estado.value.imprimiendo) return null
+        _estado.update { it.copy(imprimiendo = true, avisoDeImpresion = null) }
+        return viewModelScope.launch {
+            val subida = motor.subida(m.folio)
+            val aviso = if (subida == SubidaDeMerma.EN_REVISION) {
+                AvisoImpresion.Error(TextosMerma.COMPROBANTE_NO_REGISTRADA)
+            } else {
+                val c = ComprobanteDeMerma.desde(
+                    m,
+                    negocio = secureStorage.venueDisplayName,
+                    fecha = horaDelNegocio.formatDateTime(m.creadaEn),
+                    pendiente = subida != SubidaDeMerma.SUBIO,
+                )
+                when (val r = impresora.printWasteReceipt(c)) {
+                    is PrinterService.PrintOutcome.Printed -> AvisoImpresion.Hecho(TextosMerma.COMPROBANTE_IMPRESO, "Folio ${c.folio}")
+                    PrinterService.PrintOutcome.NoPrinter -> AvisoImpresion.Error(TextosMerma.SIN_IMPRESORA)
+                    PrinterService.PrintOutcome.OutOfPaper -> AvisoImpresion.Error(TextosMerma.SIN_PAPEL)
+                    is PrinterService.PrintOutcome.Failed ->
+                        AvisoImpresion.Error(TextosMerma.NO_SE_PUDO_IMPRIMIR.replace("{motivo}", r.reason))
+                }
+            }
+            _estado.update { it.copy(imprimiendo = false, avisoDeImpresion = aviso) }
+        }
+    }
+
+    fun avisoDeImpresionVisto() = _estado.update { it.copy(avisoDeImpresion = null) }
 
     private fun hayRed(): Boolean = red.isConnected.value && red.isServerReachable.value
 

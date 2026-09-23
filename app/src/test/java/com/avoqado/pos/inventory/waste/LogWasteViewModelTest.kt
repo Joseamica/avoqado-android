@@ -20,6 +20,13 @@ import com.avoqado.pos.inventory.waste.presentation.LogWasteViewModel
 import com.avoqado.pos.inventory.waste.presentation.debePublicarseElAviso
 import com.avoqado.pos.inventory.waste.presentation.textoDeRechazos
 import com.avoqado.pos.inventory.waste.presentation.entradaDeMerma
+import com.avoqado.pos.core.util.VenueDateTimeFormatter
+import com.avoqado.pos.inventory.presentation.PriceLabelViewModel.AvisoImpresion
+import com.avoqado.pos.inventory.waste.domain.TextosMerma
+import com.avoqado.pos.printing.data.ComprobanteDeMerma
+import com.avoqado.pos.printing.data.PrinterService
+import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.CompletableDeferred
@@ -65,7 +72,17 @@ class LogWasteViewModelTest {
         every { userId } returns YO
         every { venuesConMermaBloqueada } answers { enDisco }
         every { venuesConMermaBloqueada = any() } answers { enDisco = firstArg() }
+        every { userFirstName } returns "Ana"
+        every { userLastName } returns "Pérez"
+        every { venueDisplayName } returns "Testarudo"
     }
+    /** La impresora de recibos: apunta cada comprobante que le llega. */
+    private val impresos = mutableListOf<ComprobanteDeMerma>()
+    private var desenlaceDeImpresion: PrinterService.PrintOutcome = PrinterService.PrintOutcome.Printed(1)
+    private val impresora = mockk<PrinterService> {
+        coEvery { printWasteReceipt(any()) } answers { impresos += firstArg<ComprobanteDeMerma>(); desenlaceDeImpresion }
+    }
+    private val formato = mockk<VenueDateTimeFormatter> { every { formatDateTime(any<Long>()) } returns "23/09/2026 09:30" }
     private val red = mockk<ConnectivityMonitor> {
         every { isConnected } returns conexion
         every { isServerReachable } returns servidor
@@ -94,7 +111,7 @@ class LogWasteViewModelTest {
     private var aperturas = 0L
     private fun sigApertura() = ++aperturas
 
-    private fun vm() = LogWasteViewModel(catalogo, motor, bloqueo, almacen, red).apply { reloj = { AHORA } }
+    private fun vm() = LogWasteViewModel(catalogo, motor, bloqueo, almacen, red, impresora, formato).apply { reloj = { AHORA } }
 
     private fun LogWasteViewModel.capturar(cantidad: String = "3", motivo: WasteReason = WasteReason.SPOILED) {
         elegirArticulo(articulo())
@@ -402,6 +419,87 @@ class LogWasteViewModelTest {
 
         assertEquals(AvisoDeMerma("Merma guardada", "Se está subiendo."), vm.estado.value.aviso)
         assertEquals(EstadoMerma.PENDING, cola.todas().single().estado)
+    }
+
+    // MARK: - Comprobante impreso (nunca automático)
+
+    /** Registrar NO imprime: el comprobante lo pide el cajero. Lo que sale es lo capturado, con quién y a qué hora del negocio. */
+    @Test
+    fun `tras registrar se puede imprimir el comprobante, y registrar no imprime solo`() = runTest {
+        motor.start(backgroundScope)
+        runCurrent()
+        val vm = vm()
+        vm.capturar(cantidad = "2,5")
+        vm.confirmar().join()
+        coVerify(exactly = 0) { impresora.printWasteReceipt(any()) }
+
+        val ultima = vm.estado.value.ultima!!
+        assertEquals("Aguacate", ultima.articulo)
+        assertEquals("2.5", ultima.cantidad)
+        assertEquals("Ana Pérez", ultima.registro)
+        vm.imprimirComprobante()!!.join()
+
+        val c = impresos.single()
+        assertEquals("Testarudo", c.negocio)
+        assertEquals("2.5 kg", c.cantidad)
+        assertEquals("Se echó a perder", c.motivo)
+        assertEquals("23/09/2026 09:30", c.fecha)
+        assertFalse(c.pendiente)
+        assertEquals(AvisoImpresion.Hecho(TextosMerma.COMPROBANTE_IMPRESO, "Folio ${c.folio}"), vm.estado.value.avisoDeImpresion)
+        motor.stop()
+    }
+
+    /** 🔴 Guardada sin red: el papel no puede afirmar que ya está en el sistema. */
+    @Test
+    fun `sin red el comprobante dice pendiente de subir`() = runTest {
+        conexion.value = false
+        val vm = vm()
+        vm.capturar()
+        vm.confirmar()
+        vm.imprimirComprobante()!!.join()
+        assertTrue(impresos.single().pendiente)
+    }
+
+    /** Lo que el servidor rechazó NO se registró: no hay comprobante que firmar. */
+    @Test
+    fun `una merma rechazada no se imprime y se dice por que`() = runTest {
+        respuestaDelServidor = RespuestaHttp(422, """{"code":"UNIT_MISMATCH"}""")
+        motor.start(backgroundScope)
+        runCurrent()
+        val vm = vm()
+        vm.capturar()
+        vm.confirmar().join()
+        vm.imprimirComprobante()!!.join()
+        assertTrue(impresos.isEmpty())
+        assertEquals(AvisoImpresion.Error(TextosMerma.COMPROBANTE_NO_REGISTRADA), vm.estado.value.avisoDeImpresion)
+    }
+
+    @Test
+    fun `sin impresora o sin papel se dice que hacer`() = runTest {
+        conexion.value = false
+        val vm = vm()
+        vm.capturar()
+        vm.confirmar()
+        desenlaceDeImpresion = PrinterService.PrintOutcome.NoPrinter
+        vm.imprimirComprobante()!!.join()
+        assertEquals(AvisoImpresion.Error(TextosMerma.SIN_IMPRESORA), vm.estado.value.avisoDeImpresion)
+        desenlaceDeImpresion = PrinterService.PrintOutcome.OutOfPaper
+        vm.imprimirComprobante()!!.join()
+        assertEquals(AvisoImpresion.Error(TextosMerma.SIN_PAPEL), vm.estado.value.avisoDeImpresion)
+    }
+
+    /** Una apertura nueva del formulario es otra captura: no ofrece el comprobante de la anterior. */
+    @Test
+    fun `al abrir de nuevo el formulario se olvida la ultima merma`() = runTest {
+        conexion.value = false
+        val vm = vm()
+        vm.abrirFormulario(sigApertura(), null).join()
+        vm.capturar()
+        vm.confirmar()
+        assertTrue(vm.estado.value.ultima != null)
+        vm.abrirFormulario(sigApertura(), null).join()
+        assertNull(vm.estado.value.ultima)
+        assertNull(vm.imprimirComprobante())
     }
 
     /** Sin red, la merma ya está en disco y la pantalla lo DICE — no pinta un error. */

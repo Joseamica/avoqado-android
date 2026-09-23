@@ -244,6 +244,13 @@ class WasteSyncCoordinator @Inject constructor(
      * pantalla diga «¡Merma registrada!» SÓLO cuando el servidor la confirmó (Codex r1). Si el plazo vence
      * sin desenlace, la fila sigue su camino y se dice que se está subiendo.
      */
+    /**
+     * Dónde va una merma AHORA, sin esperar: la usa el comprobante impreso. `null` = todavía en la cola. Si la
+     * cola no se puede leer, se dice «en la cola»: nunca se afirma que subió sin saberlo.
+     */
+    suspend fun subida(folio: String): SubidaDeMerma? =
+        runCatching { desenlaceVisible(dao.porFolio(folio)) }.getOrNull()
+
     suspend fun esperarSubida(folio: String, plazoMs: Long = PLAZO_DE_CONFIRMACION): SubidaDeMerma =
         withTimeoutOrNull(plazoMs) {
             var visto = desenlaceVisible(dao.porFolio(folio))
