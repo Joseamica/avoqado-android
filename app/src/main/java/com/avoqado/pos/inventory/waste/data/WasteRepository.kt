@@ -15,6 +15,19 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
+ * Lo que la pantalla de captura y el bloqueo de plan necesitan del catálogo: lo guardado (sirve
+ * sin red), bajarlo de nuevo, y preguntarle al servidor si el plan incluye la merma.
+ */
+interface CatalogoDeMerma {
+    suspend fun catalogo(venueId: String): List<WasteCatalogEntity>
+    suspend fun catalogoActualizadoEn(venueId: String): Long?
+    suspend fun refrescarCatalogo(venueId: String, ahora: Long): Boolean
+
+    /** `true` = el plan la incluye · `false` = 403 con `featureCode` · `null` = no se supo. */
+    suspend fun consultarPlan(venueId: String): Boolean?
+}
+
+/**
  * La red de la merma: manda UNA fila y baja el catálogo. No decide nada — el desenlace lo decide
  * [WasteSyncCoordinator] con `clasificarRespuestaDeMerma`.
  *
@@ -26,7 +39,7 @@ import javax.inject.Singleton
 class WasteRepository @Inject constructor(
     private val client: OkHttpClient,
     private val catalogoDao: WasteCatalogDao,
-) : TransporteDeMerma {
+) : TransporteDeMerma, CatalogoDeMerma {
 
     private val tipoJson = "application/json; charset=utf-8".toMediaType()
 
@@ -54,7 +67,7 @@ class WasteRepository @Inject constructor(
      * Baja el catálogo entero de la sucursal y lo reemplaza de una sola vez; si una página falla, el
      * catálogo anterior sigue intacto (`descargarCatalogo`). `true` si quedó el nuevo.
      */
-    suspend fun refrescarCatalogo(venueId: String, ahora: Long = System.currentTimeMillis()): Boolean {
+    override suspend fun refrescarCatalogo(venueId: String, ahora: Long): Boolean {
         val destino = object : CatalogoDestino {
             override suspend fun reemplazar(venueId: String, items: List<WasteCatalogItem>, actualizadoEn: Long) {
                 catalogoDao.reemplazarCatalogo(
@@ -69,10 +82,33 @@ class WasteRepository @Inject constructor(
     }
 
     /** El catálogo guardado de la sucursal, para buscar sin red (`buscarEnCatalogo`). */
-    suspend fun catalogo(venueId: String): List<WasteCatalogEntity> = catalogoDao.catalogoDelVenue(venueId)
+    override suspend fun catalogo(venueId: String): List<WasteCatalogEntity> = catalogoDao.catalogoDelVenue(venueId)
 
     /** Cuándo se bajó; `null` = nunca. Es lo que permite decir «catálogo de hace N h». */
-    suspend fun catalogoActualizadoEn(venueId: String): Long? = catalogoDao.actualizadoEn(venueId)
+    override suspend fun catalogoActualizadoEn(venueId: String): Long? = catalogoDao.actualizadoEn(venueId)
+
+    /**
+     * ¿El plan de esta sucursal incluye la merma? Se le pregunta por UN artículo del catálogo, que
+     * pasa por el MISMO candado de plan que registrar. Sólo un 403 con `featureCode` es «no»: un
+     * 403 de permiso, un 5xx o la falta de red no dicen nada del plan.
+     */
+    override suspend fun consultarPlan(venueId: String): Boolean? = withContext(Dispatchers.IO) {
+        val request = Request.Builder()
+            .url(WasteApi.urlDeArticulos(venueBaseUrl(venueId), page = 1, pageSize = 1))
+            .header(ForbiddenInterceptor.BACKGROUND_HEADER, "1")
+            .build()
+        try {
+            client.newCall(request).execute().use { r ->
+                when {
+                    r.isSuccessful -> true
+                    r.code == 403 && WasteApi.leerFallo(r.body?.string().orEmpty()).featureCode != null -> false
+                    else -> null
+                }
+            }
+        } catch (e: IOException) {
+            null
+        }
+    }
 
     private suspend fun pedirPagina(venueId: String, page: Int): PaginaDeCatalogo? = withContext(Dispatchers.IO) {
         val request = Request.Builder()

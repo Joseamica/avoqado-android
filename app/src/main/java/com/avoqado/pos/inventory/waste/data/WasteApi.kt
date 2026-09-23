@@ -27,8 +27,8 @@ object WasteApi {
     const val TAMANO_DE_PAGINA = 200
 
     /** @param venueBase `…/api/v1/mobile/venues/{venueId}`, la misma base del resto del inventario. */
-    fun urlDeArticulos(venueBase: String, page: Int): String =
-        "$venueBase/inventory/waste-items?page=$page&pageSize=$TAMANO_DE_PAGINA"
+    fun urlDeArticulos(venueBase: String, page: Int, pageSize: Int = TAMANO_DE_PAGINA): String =
+        "$venueBase/inventory/waste-items?page=$page&pageSize=$pageSize"
 
     /**
      * `{ items: [{ itemType, itemId, name, sku, unit }], total, page, pageSize }` → la página, o

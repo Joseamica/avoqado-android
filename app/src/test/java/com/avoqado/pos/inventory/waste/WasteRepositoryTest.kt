@@ -14,6 +14,7 @@ import org.json.JSONObject
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -119,6 +120,42 @@ class WasteRepositoryTest {
     fun `sin red devuelve 0, no revienta`() = runTest {
         server.shutdown()
         assertEquals(0, repo.enviar(fila()).code)
+    }
+
+    /**
+     * Preguntar por el plan cuesta UN artículo del catálogo, que pasa por el MISMO candado de plan
+     * que registrar. En segundo plano: un 403 de permiso no puede abrir el PIN del gerente.
+     */
+    @Test
+    fun `consultar el plan pide un solo articulo, en segundo plano, a la sucursal pedida`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"items":[],"total":0,"page":1,"pageSize":1}"""))
+
+        assertEquals(true, repo.consultarPlan("venue-centro"))
+
+        val req = server.takeRequest()
+        assertEquals("/api/v1/mobile/venues/venue-centro/inventory/waste-items?page=1&pageSize=1", req.path)
+        assertEquals("1", req.getHeader(ForbiddenInterceptor.BACKGROUND_HEADER))
+    }
+
+    /** El 403 del candado de plan trae `featureCode`: eso, y sólo eso, es «sin plan». */
+    @Test
+    fun `un 403 con featureCode es falta de plan`() = runTest {
+        server.enqueue(
+            MockResponse().setResponseCode(403).setBody("""{"error":"Forbidden","featureCode":"INVENTORY_TRACKING"}"""),
+        )
+        assertEquals(false, repo.consultarPlan("venue-centro"))
+    }
+
+    /** Un 403 de permiso o la falta de red no dicen nada del plan: no se levanta ni se pone nada. */
+    @Test
+    fun `un 403 de permiso o sin red no dicen nada del plan`() = runTest {
+        server.enqueue(
+            MockResponse().setResponseCode(403).setBody("""{"error":"Forbidden","required":"inventory:log-waste"}"""),
+        )
+        assertNull(repo.consultarPlan("venue-centro"))
+
+        server.shutdown()
+        assertNull(repo.consultarPlan("venue-centro"))
     }
 
     /** El refresco baja todas las páginas y reemplaza el catálogo de ESA sucursal de una vez. */

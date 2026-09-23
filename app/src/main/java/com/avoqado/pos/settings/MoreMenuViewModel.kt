@@ -48,6 +48,7 @@ class MoreMenuViewModel @Inject constructor(
     private val paymentSyncService: PaymentSyncService,
     private val syncOutbox: SyncOutbox,
     private val wasteSyncCoordinator: com.avoqado.pos.inventory.waste.data.WasteSyncCoordinator,
+    private val bloqueoDeMerma: com.avoqado.pos.inventory.waste.data.BloqueoDeMermaPorPlan,
 ) : ViewModel() {
 
     private val _venueName = MutableStateFlow(secureStorage.venueName ?: "Sin establecimiento")
@@ -124,6 +125,24 @@ class MoreMenuViewModel @Inject constructor(
      */
     val canSeeMyClass: Boolean
         get() = reservationsEnabled && roleManager.hasVenuePermission("class-sessions:read-assigned")
+
+    /** Spec §5: «Registrar merma» se decide por PERMISO, con el nombre exacto del servidor. */
+    val canLogWaste: Boolean
+        get() = roleManager.canLogWaste
+
+    /** Las sucursales donde el servidor dijo que la merma no está en el plan. */
+    val mermaBloqueada: StateFlow<Set<String>>
+        get() = bloqueoDeMerma.venues
+
+    /**
+     * 🔴 Spec §5: cada vez que se abre «Más» con red, el bloqueo de plan se le vuelve a preguntar al
+     * servidor. Sólo si hay uno: no cuesta una petición cada vez que alguien abre el menú.
+     */
+    fun revalidarMerma() {
+        val venueId = secureStorage.venueId ?: return
+        if (!canLogWaste || !bloqueoDeMerma.estaBloqueado(venueId)) return
+        viewModelScope.launch { bloqueoDeMerma.revalidar(venueId) }
+    }
 
     /** True → show the Pro tier badge on the "Activar reservas" entry (visible teaser). */
     val reservationsRequireUpgrade: Boolean

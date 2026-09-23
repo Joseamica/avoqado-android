@@ -76,6 +76,7 @@ class WasteSyncCoordinator @Inject constructor(
     private val transporte: TransporteDeMerma,
     private val secureStorage: SecureStorage,
     private val connectivityMonitor: ConnectivityMonitor,
+    private val bloqueo: BloqueoDeMermaPorPlan,
 ) {
     /** Inyectable para las pruebas: la espera entre reintentos corre sobre este reloj. */
     internal var reloj: () -> Long = System::currentTimeMillis
@@ -205,8 +206,10 @@ class WasteSyncCoordinator @Inject constructor(
                 WasteOutcome.Sincronizada -> dao.borrarSincronizada(fila.idempotencyKey)
                 WasteOutcome.Anulada ->
                     dao.cerrar(fila.idempotencyKey, EstadoMerma.VOIDED, porStaffId = null, cuando = reloj())
-                WasteOutcome.BloqueoDePlan ->
+                WasteOutcome.BloqueoDePlan -> {
                     dao.marcar(fila.idempotencyKey, EstadoMerma.PLAN_BLOCKED, fallo.featureCode, reloj() + ESPERA_DE_PLAN)
+                    bloqueo.bloquear(fila.venueId)
+                }
                 is WasteOutcome.NecesitaRevision ->
                     dao.marcar(fila.idempotencyKey, EstadoMerma.NEEDS_REVIEW, desenlace.motivo, 0L)
                 WasteOutcome.Reintentable -> {

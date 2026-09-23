@@ -60,3 +60,28 @@ fun recortarNota(texto: String): String {
  */
 fun fechaDelAparato(ahora: Instant, zona: ZoneId): String =
     ahora.atZone(zona).format(FORMATO_CON_ZONA)
+
+/** Una unidad que la tabla no conoce se muestra tal cual, en minúsculas: nunca se inventa otra. */
+fun etiquetaDeUnidad(unit: String): String = TextosMerma.UNIDADES[unit.uppercase()] ?: unit.lowercase()
+
+/**
+ * 🔴 Spec §5: la confirmación SIEMPRE dice cuánto y de qué, con la unidad — «Vas a registrar
+ * 3 kg de Aguacate como merma». Una merma no se deshace desde el POS.
+ */
+fun textoDeConfirmacion(cantidad: String, unit: String, articulo: String): String =
+    TextosMerma.CONFIRMACION
+        .replace("{cantidad}", "$cantidad ${etiquetaDeUnidad(unit)}")
+        .replace("{articulo}", articulo)
+
+/**
+ * «Catálogo de hace N h»: lo que el cajero necesita saber cuando busca sin red. Un reloj que
+ * va atrás (el catálogo «del futuro») se lee como recién bajado, nunca como un número negativo.
+ */
+fun antiguedadDelCatalogo(ahora: Long, actualizadoEn: Long): String {
+    val minutos = maxOf(0L, (ahora - actualizadoEn) / 60_000L)
+    return when {
+        minutos < 60 -> TextosMerma.HACE_MINUTOS.replace("{n}", "$minutos")
+        minutos < 48 * 60 -> TextosMerma.HACE_HORAS.replace("{n}", "${minutos / 60}")
+        else -> TextosMerma.HACE_DIAS.replace("{n}", "${minutos / (24 * 60)}")
+    }
+}

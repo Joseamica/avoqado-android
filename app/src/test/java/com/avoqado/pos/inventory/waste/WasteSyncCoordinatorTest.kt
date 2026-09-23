@@ -3,6 +3,7 @@ package com.avoqado.pos.inventory.waste
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.inventory.data.RespuestaHttp
+import com.avoqado.pos.inventory.waste.data.BloqueoDeMermaPorPlan
 import com.avoqado.pos.inventory.waste.data.EstadoMerma
 import com.avoqado.pos.inventory.waste.data.PendingWasteEntity
 import com.avoqado.pos.inventory.waste.data.TransporteDeMerma
@@ -21,6 +22,7 @@ import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -70,6 +72,15 @@ class WasteSyncCoordinatorTest {
 
     private val cola = ColaDeMermaSobreSqlite()
     private var sesion: String? = YO
+    private var bloqueadas: Set<String> = emptySet()
+    private val bloqueo = BloqueoDeMermaPorPlan(
+        mockk {
+            every { venuesConMermaBloqueada } answers { bloqueadas }
+            every { venuesConMermaBloqueada = any() } answers { bloqueadas = firstArg() }
+        },
+        mockk(),
+        CatalogoDeMermaFalso(),
+    )
 
     private fun TestScope.motor(transporte: TransporteDeMerma = TransporteFalso()): WasteSyncCoordinator {
         val almacen = mockk<SecureStorage> { every { userId } answers { sesion } }
@@ -77,7 +88,7 @@ class WasteSyncCoordinatorTest {
             every { isConnected } returns MutableStateFlow(true)
             every { isServerReachable } returns MutableStateFlow(true)
         }
-        return WasteSyncCoordinator(cola, transporte, almacen, red).apply {
+        return WasteSyncCoordinator(cola, transporte, almacen, red, bloqueo).apply {
             reloj = { currentTime }
             zona = ZoneId.of("America/Mexico_City")
         }
@@ -350,6 +361,40 @@ class WasteSyncCoordinatorTest {
         assertEquals(listOf(FOLIO), transporte.foliosEnviados)
         assertNull(cola.todas().singleOrNull())
         motor.stop()
+    }
+
+    // MARK: - Bloqueo de plan
+
+    /**
+     * Un 403 de plan marca la sucursal DE LA FILA: es lo que hace que «Más» y la pantalla digan
+     * «Incluido en el Plan Premium». No marca la sucursal activa.
+     */
+    @Test
+    fun `un 403 de plan marca como bloqueada la sucursal de la fila`() = runTest {
+        cola.encolar(fila(venueId = "venue-sur"))
+        val transporte = TransporteFalso(
+            respuesta = { RespuestaHttp(403, """{"error":"Forbidden","featureCode":"INVENTORY_TRACKING"}""") },
+        )
+
+        motor(transporte).drenarAhora()
+
+        assertTrue(bloqueo.estaBloqueado("venue-sur"))
+        assertFalse(bloqueo.estaBloqueado(VENUE))
+    }
+
+    /**
+     * 🔴 Un 201 NO levanta el bloqueo: el servidor recupera un folio ya aplicado ANTES del candado
+     * de plan, así que ese 201 no prueba que el plan esté activo. Sólo lo levanta preguntarle.
+     */
+    @Test
+    fun `un 201 no levanta el bloqueo de plan`() = runTest {
+        bloqueo.bloquear(VENUE)
+        cola.encolar(fila())
+
+        motor().drenarAhora()
+
+        assertEquals(0, cola.todas().size)
+        assertTrue(bloqueo.estaBloqueado(VENUE))
     }
 
     /** La espera entre reintentos crece y tiene tope: ni ráfaga ni silencio de horas. */

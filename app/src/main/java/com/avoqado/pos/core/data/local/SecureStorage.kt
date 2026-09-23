@@ -182,6 +182,14 @@ class SecureStorage @Inject constructor(
         get() = prefs.getString(KEY_PLAN_TIER, null)
         set(value) = prefs.edit().putString(KEY_PLAN_TIER, value).apply()
 
+    /**
+     * Sucursales donde el servidor contestó que la merma no está en el plan (403 con `featureCode`).
+     * Lo escribe y lo lee `BloqueoDeMermaPorPlan`; no se borra al cerrar sesión.
+     */
+    var venuesConMermaBloqueada: Set<String>
+        get() = prefs.getStringSet(KEY_WASTE_PLAN_BLOCKED, emptySet())?.toSet() ?: emptySet()
+        set(value) { prefs.edit().putStringSet(KEY_WASTE_PLAN_BLOCKED, value).apply() }
+
     /** Exempt venues (grandfathered legacy / demo) bypass all plan gates. */
     var planExempt: Boolean
         get() = prefs.getBoolean(KEY_PLAN_EXEMPT, false)
@@ -537,6 +545,7 @@ class SecureStorage @Inject constructor(
         private const val KEY_PENDING_AREA_TICKET_PRINT_VENUE_ID = "pendingAreaTicketPrintVenueId"
         private const val KEY_PLAN_TIER = "planTier"
         private const val KEY_PLAN_EXEMPT = "planExempt"
+        private const val KEY_WASTE_PLAN_BLOCKED = "wastePlanBlockedVenues"
         private const val KEY_MANAGER_PIN_OVERRIDE_ENABLED = "managerPinOverrideEnabled"
         private const val KEY_VENUE_PERMISSIONS = "venuePermissions"
         private const val KEY_ACCESS_TOKEN = "accessToken"

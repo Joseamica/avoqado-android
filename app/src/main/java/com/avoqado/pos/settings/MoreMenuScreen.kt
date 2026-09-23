@@ -41,6 +41,7 @@ import androidx.compose.material.icons.outlined.Business
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.Checklist
 import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.GridView
 import androidx.compose.material.icons.outlined.Groups
@@ -77,6 +78,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
@@ -97,6 +99,9 @@ import com.avoqado.pos.designsystem.components.TierBadge
 import com.avoqado.pos.designsystem.theme.AvoqadoAdaptiveSizeClass
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.estimates.presentation.EstimatesScreen
+import com.avoqado.pos.inventory.waste.domain.TextosMerma
+import com.avoqado.pos.inventory.waste.presentation.LogWasteScreen
+import com.avoqado.pos.inventory.waste.presentation.entradaDeMerma
 import com.avoqado.pos.kds.presentation.KDSScreen
 import com.avoqado.pos.orders.presentation.OrdersScreen
 import com.avoqado.pos.orders.presentation.OPEN_ORDERS_STATUS_FILTER
@@ -138,6 +143,7 @@ fun MoreMenuScreen(
     var showSwitchUser by remember { mutableStateOf(false) }
     var showArticles by remember { mutableStateOf(false) }
     var showCustomers by remember { mutableStateOf(false) }
+    var showLogWaste by remember { mutableStateOf(false) }
     var showReports by remember { mutableStateOf(false) }
     var showOrders by remember { mutableStateOf(false) }
     // Task 7b: filtro con el que arranca la lista de Pedidos al abrirla.
@@ -158,6 +164,9 @@ fun MoreMenuScreen(
     var showScreenPinning by remember { mutableStateOf(false) }
     val screenPinned by viewModel.screenPinningManager.enabled.collectAsState()
     val customerDisplayDetected by viewModel.customerDisplayState.isPresenting.collectAsState()
+    val mermaBloqueada by viewModel.mermaBloqueada.collectAsState()
+    // Spec §5: el bloqueo de plan de la merma se le vuelve a preguntar al servidor al abrir «Más».
+    LaunchedEffect(Unit) { viewModel.revalidarMerma() }
     val closeAllOverlays = {
         showVenueSwitcher = false
         showTimeClock = false
@@ -166,6 +175,7 @@ fun MoreMenuScreen(
         showPinSettings = false
         showArticles = false
         showCustomers = false
+        showLogWaste = false
         showReports = false
         showOrders = false
         ordersInitialStatusFilter = null
@@ -560,6 +570,22 @@ fun MoreMenuScreen(
                     onClick = { showTimeClock = true },
                 ),
             )
+            // Spec §5: por PERMISO. Sin él se ve apagada y dice a quién pedírselo; con el plan
+            // bloqueado sigue encendida y dice qué plan la incluye. Mismo lugar y textos en iOS.
+            val merma = entradaDeMerma(
+                puedeRegistrar = viewModel.canLogWaste,
+                bloqueadaPorPlan = viewModel.currentVenueId?.let { it in mermaBloqueada } == true,
+            )
+            add(
+                MenuEntry(
+                    icon = Icons.Outlined.DeleteSweep,
+                    label = TextosMerma.TITULO,
+                    subtitle = merma.subtitulo,
+                    tierBadgeLabel = merma.insignia,
+                    enabled = merma.habilitada,
+                    onClick = { showLogWaste = true },
+                ),
+            )
         }
 
         val catalogo = buildList {
@@ -684,6 +710,24 @@ fun MoreMenuScreen(
                 isTablet = isTablet,
                 onDismiss = { showArticles = false },
             )
+        }
+    }
+
+    // Registrar merma — pantalla completa, como Artículos y Clientes.
+    if (showLogWaste) {
+        val overlayInteraction = remember { MutableInteractionSource() }
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .zIndex(10f)
+                .background(MaterialTheme.colorScheme.surface)
+                .clickable(
+                    interactionSource = overlayInteraction,
+                    indication = null,
+                    onClick = {},
+                ),
+        ) {
+            LogWasteScreen(onDismiss = { showLogWaste = false })
         }
     }
 
@@ -1392,6 +1436,8 @@ private data class MenuEntry(
     val onClick: () -> Unit,
     val subtitle: String? = null,
     val tierBadgeLabel: String? = null,
+    /** Apagada se VE y se explica en el subtítulo: nunca desaparece en silencio. */
+    val enabled: Boolean = true,
 )
 
 @Composable
@@ -1461,7 +1507,8 @@ private fun MenuRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable(onClick = entry.onClick)
+            .clickable(enabled = entry.enabled, onClick = entry.onClick)
+            .alpha(if (entry.enabled) 1f else 0.5f)
             .padding(horizontal = horizontalPadding, vertical = verticalPadding),
         verticalAlignment = Alignment.CenterVertically,
     ) {

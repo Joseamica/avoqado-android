@@ -22,6 +22,9 @@ import java.sql.ResultSet
  */
 class ColaDeMermaSobreSqlite : PendingWasteDao {
 
+    /** Se corre ANTES de escribir: una prueba puede detener aquí la escritura, como Room, que suspende. */
+    var antesDeEncolar: suspend () -> Unit = {}
+
     private val db: Connection = DriverManager.getConnection("jdbc:sqlite::memory:").apply {
         createStatement().use { it.executeUpdate(PendingWasteSql.CREAR_TABLA) }
     }
@@ -74,7 +77,12 @@ class ColaDeMermaSobreSqlite : PendingWasteDao {
         cerradaEn = getObject("cerradaEn")?.let { (it as Number).toLong() },
     )
 
-    override suspend fun encolar(fila: PendingWasteEntity): Long = conBase {
+    override suspend fun encolar(fila: PendingWasteEntity): Long {
+        antesDeEncolar()
+        return escribir(fila)
+    }
+
+    private fun escribir(fila: PendingWasteEntity): Long = conBase {
         db.prepareStatement(
             "INSERT OR IGNORE INTO pending_waste (idempotencyKey, venueId, staffId, itemType, itemId, " +
                 "itemName, unit, quantity, reasonCode, note, clientOccurredAt, estado, intentos, ultimoCodigo, " +
