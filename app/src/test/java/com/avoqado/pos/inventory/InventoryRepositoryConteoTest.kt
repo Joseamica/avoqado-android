@@ -8,6 +8,8 @@ import com.avoqado.pos.inventory.data.SIN_VENUE
 import com.avoqado.pos.inventory.data.model.StockCountItem
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
@@ -51,6 +53,39 @@ class InventoryRepositoryConteoTest {
     fun tearDown() {
         System.clearProperty("avoqado.test.baseUrl")
         server.shutdown()
+    }
+
+    /**
+     * 🔴 Codex r10: una consulta VIEJA (p. ej. la recuperación de insumos al abrir un conteo) que llega DESPUÉS de la
+     * más reciente pisaba la lista: tras una merma se veía 94 y la vieja la regresaba a 96. Gana la última pedida.
+     */
+    @Test
+    fun `una consulta vieja de insumos que llega tarde no pisa la mas reciente`() = runBlocking {
+        fun insumos(enMano: Int) = """{"success":true,"rawMaterials":[{"id":"rm-1","name":"Aceite","onHand":$enMano}]}"""
+        server.enqueue(MockResponse().setBody(insumos(96)).setBodyDelay(600, TimeUnit.MILLISECONDS))
+        server.enqueue(MockResponse().setBody(insumos(94)))
+
+        val vieja = async(Dispatchers.Default) { repo.fetchRawMaterials() }
+        server.takeRequest(2, TimeUnit.SECONDS)
+        repo.fetchRawMaterials()
+        vieja.await()
+
+        assertEquals(94.0, repo.countableRawMaterials.value.single().onHand, 0.0)
+    }
+
+    /** Lo mismo con las existencias de productos. */
+    @Test
+    fun `una consulta vieja de existencias que llega tarde no pisa la mas reciente`() = runBlocking {
+        fun existencias(enMano: Int) = """{"success":true,"items":[{"id":"p-1","name":"Agua","onHand":$enMano}]}"""
+        server.enqueue(MockResponse().setBody(existencias(96)).setBodyDelay(600, TimeUnit.MILLISECONDS))
+        server.enqueue(MockResponse().setBody(existencias(94)))
+
+        val vieja = async(Dispatchers.Default) { repo.fetchStockOverview() }
+        server.takeRequest(2, TimeUnit.SECONDS)
+        repo.fetchStockOverview()
+        vieja.await()
+
+        assertEquals(94.0, repo.stockItems.value.single().onHand, 0.0)
     }
 
     @Test

@@ -238,8 +238,18 @@ class InventoryRepository @Inject constructor(
 
     // MARK: - Stock Overview
 
+    /**
+     * 🔴 Codex r10: las existencias y los insumos se piden por más de un camino (refrescos, la recuperación al abrir un
+     * conteo), y una respuesta VIEJA que llegaba tarde pisaba la más reciente: tras una merma se veía 94 y la vieja la
+     * regresaba a 96. Sólo se aplica la respuesta de la ÚLTIMA consulta pedida de cada lista; las superadas se
+     * descartan sin contar como fallo. Espejo de iOS.
+     */
+    private val ultimaConsultaDeExistencias = java.util.concurrent.atomic.AtomicLong(0)
+    private val ultimaConsultaDeInsumos = java.util.concurrent.atomic.AtomicLong(0)
+
     suspend fun fetchStockOverview(): Result<Unit> {
         val base = venueBaseUrl() ?: return Result.failure(IllegalStateException("Sin venue activo"))
+        val estaConsulta = ultimaConsultaDeExistencias.incrementAndGet()
         // Refresh de fondo silencioso: sin skeleton encima de datos buenos (spec refresco §6).
         _isLoading.value = _stockItems.value.isEmpty()
 
@@ -252,6 +262,7 @@ class InventoryRepository @Inject constructor(
                 val response = client.newCall(request).execute()
                 response.code to (response.body?.string() ?: "")
             }
+            if (estaConsulta != ultimaConsultaDeExistencias.get()) return Result.success(Unit)
             if (responseCode in 200..299 && body.isNotEmpty()) {
                 val result = json.decodeFromString<StockOverviewResponse>(body)
                 _stockItems.value = result.items
@@ -263,10 +274,12 @@ class InventoryRepository @Inject constructor(
                 Result.failure(Exception("Stock overview HTTP $responseCode"))
             }
         } catch (e: Exception) {
+            if (estaConsulta != ultimaConsultaDeExistencias.get()) return Result.success(Unit)
             Log.e("📦", "❌ Stock overview fetch error: ${e.message}")
             Result.failure(e)
         } finally {
-            _isLoading.value = false
+            // Sólo la consulta vigente apaga el cargador: una superada no lo quita mientras la nueva sigue en camino.
+            if (estaConsulta == ultimaConsultaDeExistencias.get()) _isLoading.value = false
         }
     }
 
@@ -294,12 +307,14 @@ class InventoryRepository @Inject constructor(
 
     suspend fun fetchRawMaterials(): Result<Unit> {
         val base = venueBaseUrl() ?: return Result.failure(IllegalStateException("Sin venue activo"))
+        val estaConsulta = ultimaConsultaDeInsumos.incrementAndGet()
         return try {
             val request = Request.Builder().url("$base/inventory/raw-materials").build()
             val (code, body) = withContext(Dispatchers.IO) {
                 val response = client.newCall(request).execute()
                 response.code to (response.body?.string() ?: "")
             }
+            if (estaConsulta != ultimaConsultaDeInsumos.get()) return Result.success(Unit)
             if (code in 200..299 && body.isNotEmpty()) {
                 val result = json.decodeFromString<RawMaterialsResponse>(body)
                 _countableRawMaterials.value = result.rawMaterials.map {
@@ -317,6 +332,7 @@ class InventoryRepository @Inject constructor(
                 Result.failure(Exception("Raw materials HTTP $code"))
             }
         } catch (e: Exception) {
+            if (estaConsulta != ultimaConsultaDeInsumos.get()) return Result.success(Unit)
             Log.e("📦", "❌ Raw materials fetch error: ${e.message}")
             Result.failure(e)
         }
