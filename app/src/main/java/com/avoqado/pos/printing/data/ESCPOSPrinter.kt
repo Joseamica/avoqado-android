@@ -896,6 +896,39 @@ class ESCPOSPrinter(
         return getData()
     }
 
+    // MARK: - Count Receipt
+
+    /** Comprobante de un conteo completado, con renglones para firmar. Ver [ComprobanteDeConteo]. */
+    fun generateCountReceipt(c: ComprobanteDeConteo): ByteArray {
+        reset()
+        setAlignment(TextAlignment.CENTER)
+        c.negocio?.let { printLine(it) }
+        printTitle("COMPROBANTE DE CONTEO", bold = true)
+        printLine("${c.tipo} · Folio ${c.folio}")
+        printLine(c.fecha)
+        setAlignment(TextAlignment.LEFT)
+        c.conto?.let { printLine("Contó: $it") }
+        c.nota?.let { printLine("Nota: $it") }
+        printDoubleDivider()
+        printTwoColumns("Artículo", "Diferencia")
+        printDivider()
+        for (r in c.renglones) {
+            printTwoColumns(r.nombre, r.diferencia)
+            printLine("  Esperado ${r.esperado} · Contado ${r.contado}")
+        }
+        printDivider()
+        printLine("Contados: ${c.renglones.size} de ${c.total}")
+        printLine("Con diferencia: ${c.renglones.count { !it.cuadra }}")
+        if (c.sinContar > 0) printLine("Sin contar: ${c.sinContar}")
+        printDoubleDivider()
+        feedLines(2)
+        printLine("Contó: ______________________")
+        feedLines(2)
+        printLine("Revisó: _____________________")
+        cut()
+        return getData()
+    }
+
     // MARK: - Test Print
 
     fun generateTestPrint(): ByteArray {

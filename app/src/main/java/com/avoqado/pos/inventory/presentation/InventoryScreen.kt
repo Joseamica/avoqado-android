@@ -647,7 +647,7 @@ private fun StockOverviewContent(
     var showPriceLabels by remember { mutableStateOf(false) }
     var showPrintMenu by remember { mutableStateOf(false) }
     val impresion: PriceLabelViewModel = hiltViewModel()
-    val avisoLista by impresion.avisoLista.collectAsState()
+    val avisoImpresion by impresion.aviso.collectAsState()
 
     // La búsqueda y el orden se aplican IGUAL a productos e insumos: buscar
     // "champiñón" tiene que encontrarlo esté donde esté.
@@ -817,18 +817,7 @@ private fun StockOverviewContent(
         PriceLabelSheet(onDismiss = { showPriceLabels = false })
     }
 
-    when (val aviso = avisoLista) {
-        is PriceLabelViewModel.AvisoLista.Impresa -> AvoqadoSuccessToast(
-            message = "¡Lista impresa!",
-            subtitle = if (aviso.articulos == 1) "1 artículo" else "${aviso.articulos} artículos",
-            onDismiss = { impresion.limpiarAvisoLista() },
-        )
-        is PriceLabelViewModel.AvisoLista.Error -> AvoqadoErrorToast(
-            message = aviso.mensaje,
-            onDismiss = { impresion.limpiarAvisoLista() },
-        )
-        null -> Unit
-    }
+    AvisoDeImpresion(avisoImpresion) { impresion.limpiarAvisoImpresion() }
 }
 
 /** Encabezado de grupo dentro de la descripción general ("Productos"/"Insumos"). */
@@ -1201,4 +1190,15 @@ private fun fechaCortaInv(iso: String?): String? {
             .withZone(com.avoqado.pos.core.util.VenueTimeZone.zoneId())
             .format(instante)
     }.getOrNull()
+}
+
+/** Toast de lo que salió (o no) por la impresora desde Inventario. */
+@Composable
+internal fun AvisoDeImpresion(aviso: PriceLabelViewModel.AvisoImpresion?, onDismiss: () -> Unit) {
+    when (aviso) {
+        is PriceLabelViewModel.AvisoImpresion.Hecho ->
+            AvoqadoSuccessToast(message = aviso.titulo, subtitle = aviso.subtitulo, onDismiss = onDismiss)
+        is PriceLabelViewModel.AvisoImpresion.Error -> AvoqadoErrorToast(message = aviso.mensaje, onDismiss = onDismiss)
+        null -> Unit
+    }
 }

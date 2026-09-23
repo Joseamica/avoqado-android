@@ -817,11 +817,18 @@ class PrinterService @Inject constructor(
     }
 
     /** «Lista de inventario» (gratis): a la impresora de recibos, con la integrada de respaldo. */
-    suspend fun printInventoryList(lista: ListaDeInventario): PrintOutcome {
+    suspend fun printInventoryList(lista: ListaDeInventario): PrintOutcome =
+        imprimirEnRecibos { it.generateInventoryList(lista) }
+
+    /** Comprobante de un conteo completado: a la impresora de recibos. */
+    suspend fun printCountReceipt(comprobante: ComprobanteDeConteo): PrintOutcome =
+        imprimirEnRecibos { it.generateCountReceipt(comprobante) }
+
+    private suspend fun imprimirEnRecibos(armar: (ESCPOSPrinter) -> ByteArray): PrintOutcome {
         val printer = getDefaultPrinterWithHardwareFallback(PrinterRole.RECEIPT)
             ?: return PrintOutcome.NoPrinter
         return try {
-            sendData(escposFor(printer).generateInventoryList(lista), printer)
+            sendData(armar(escposFor(printer)), printer)
             PrintOutcome.Printed(1)
         } catch (e: PrinterException.OutOfPaper) {
             PrintOutcome.OutOfPaper

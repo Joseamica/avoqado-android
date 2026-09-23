@@ -43,6 +43,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.hilt.navigation.compose.hiltViewModel
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Success
 import com.avoqado.pos.inventory.data.model.StockCount
@@ -62,6 +63,9 @@ fun StockCountDetailView(
     val estadoDelDetalle by viewModel.estadoDelDetalle.collectAsState()
     val detalleNoActualizado by viewModel.detalleNoActualizado.collectAsState()
     val puedeContinuar by viewModel.puedeContinuarDetalle.collectAsState()
+    val impresion: PriceLabelViewModel = hiltViewModel()
+    val avisoImpresion by impresion.aviso.collectAsState()
+    AvisoDeImpresion(avisoImpresion) { impresion.limpiarAvisoImpresion() }
 
     // Entrada + cada regreso desde background. El ViewModel deduplica un ON_RESUME repetido y
     // descarta respuestas de una selección o sucursal anteriores.
@@ -125,6 +129,12 @@ fun StockCountDetailView(
             if (puedeContinuar) {
                 TextButton(onClick = { viewModel.resumeCount(count) }) {
                     Text("Continuar conteo")
+                }
+            } else if (count.status == "COMPLETED") {
+                // Comprobante para firmar (quién contó y quién revisa). Sale del detalle ya
+                // cargado, así que sin red imprime igual.
+                TextButton(onClick = { impresion.imprimirComprobante(count) }) {
+                    Text("Imprimir")
                 }
             } else {
                 // Hueco simétrico para que el título siga centrado.

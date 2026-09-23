@@ -4,9 +4,12 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.domain.PlanManager
+import com.avoqado.pos.core.util.VenueDateTimeFormatter
+import com.avoqado.pos.inventory.data.model.StockCount
 import com.avoqado.pos.inventory.data.model.StockItem
 import com.avoqado.pos.pos.data.ProductsRepository
 import com.avoqado.pos.pos.data.model.Product
+import com.avoqado.pos.printing.data.ComprobanteDeConteo
 import com.avoqado.pos.printing.data.EtiquetaDePrecio
 import com.avoqado.pos.printing.data.ListaDeInventario
 import com.avoqado.pos.printing.data.PrinterService
@@ -15,14 +18,13 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import java.time.LocalDateTime
-import java.time.format.DateTimeFormatter
 import javax.inject.Inject
 
 // MARK: - Impresión desde Inventario — espejo de `PriceLabelView` en iOS
 //
 // Dos cosas salen del botón de impresora de Inventario: las etiquetas de precio (PRO
-// `PRICE_LABELS`) y la «Lista de inventario» (gratis, founder 2026-09-23).
+// `PRICE_LABELS`) y la «Lista de inventario» (gratis, founder 2026-09-23). Y el detalle de un
+// conteo completado imprime su comprobante para firmar.
 
 /**
  * Sin red funciona igual: el catálogo sale del espejo en disco de [ProductsRepository] y la
@@ -34,6 +36,7 @@ class PriceLabelViewModel @Inject constructor(
     private val printerService: PrinterService,
     private val secureStorage: SecureStorage,
     private val planManager: PlanManager,
+    private val horaDelNegocio: VenueDateTimeFormatter,
 ) : ViewModel() {
 
     val products: StateFlow<List<Product>> = productsRepository.products
@@ -106,19 +109,47 @@ class PriceLabelViewModel @Inject constructor(
         }
     }
 
-    // MARK: - Lista de inventario (gratis)
+    // MARK: - Lista de inventario y comprobante de conteo
 
-    /** Desenlace de imprimir la lista, para el toast de Inventario. */
-    sealed interface AvisoLista {
-        data class Impresa(val articulos: Int) : AvisoLista
-        data class Error(val mensaje: String) : AvisoLista
+    /** Desenlace de imprimir la lista o un comprobante, para el toast de Inventario. */
+    sealed interface AvisoImpresion {
+        data class Hecho(val titulo: String, val subtitulo: String?) : AvisoImpresion
+        data class Error(val mensaje: String) : AvisoImpresion
     }
 
-    private val _avisoLista = MutableStateFlow<AvisoLista?>(null)
-    val avisoLista: StateFlow<AvisoLista?> = _avisoLista.asStateFlow()
+    private val _aviso = MutableStateFlow<AvisoImpresion?>(null)
+    val aviso: StateFlow<AvisoImpresion?> = _aviso.asStateFlow()
 
-    fun limpiarAvisoLista() {
-        _avisoLista.value = null
+    fun limpiarAvisoImpresion() {
+        _aviso.value = null
+    }
+
+    private fun mandar(hecho: AvisoImpresion.Hecho, imprimir: suspend () -> PrinterService.PrintOutcome) {
+        if (_imprimiendo.value) return
+        _imprimiendo.value = true
+        viewModelScope.launch {
+            _aviso.value = when (val r = imprimir()) {
+                is PrinterService.PrintOutcome.Printed -> hecho
+                PrinterService.PrintOutcome.NoPrinter ->
+                    AvisoImpresion.Error("No hay impresora configurada. Ve a Más › Impresora para agregar una.")
+                PrinterService.PrintOutcome.OutOfPaper ->
+                    AvisoImpresion.Error("La impresora no tiene papel. Cambia el rollo y vuelve a imprimir.")
+                is PrinterService.PrintOutcome.Failed -> AvisoImpresion.Error("No se pudo imprimir: ${r.reason}")
+            }
+            _imprimiendo.value = false
+        }
+    }
+
+    /** Comprobante de un conteo COMPLETADO, para firmar. Sale del detalle ya cargado: sin red, igual. */
+    fun imprimirComprobante(conteo: StockCount) {
+        val comprobante = ComprobanteDeConteo.desde(
+            conteo,
+            negocio = secureStorage.venueDisplayName,
+            fecha = horaDelNegocio.formatDateTime(conteo.completedAt ?: conteo.createdAt),
+        )
+        mandar(AvisoImpresion.Hecho("¡Comprobante impreso!", "Folio ${comprobante.folio}")) {
+            printerService.printCountReceipt(comprobante)
+        }
     }
 
     /**
@@ -126,12 +157,11 @@ class PriceLabelViewModel @Inject constructor(
      * existencias que este equipo bajó por última vez: sin red, las que ya tenía.
      */
     fun imprimirLista(productos: List<StockItem>, insumos: List<StockItem>) {
-        if (_imprimiendo.value) return
         fun renglones(items: List<StockItem>) =
             items.map { ListaDeInventario.Renglon(it.name, it.currentQuantityDisplay, it.sku) }
         val lista = ListaDeInventario(
             negocio = secureStorage.venueDisplayName,
-            fecha = LocalDateTime.now().format(DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm")),
+            fecha = horaDelNegocio.formatDateTime(System.currentTimeMillis()),
             secciones = listOf(
                 ListaDeInventario.Seccion("Productos", renglones(productos)),
                 ListaDeInventario.Seccion("Insumos", renglones(insumos)),
@@ -139,20 +169,11 @@ class PriceLabelViewModel @Inject constructor(
         )
         val total = productos.size + insumos.size
         if (total == 0) {
-            _avisoLista.value = AvisoLista.Error("No hay existencias cargadas en este equipo. Conéctate a internet para bajarlas.")
+            _aviso.value = AvisoImpresion.Error("No hay existencias cargadas en este equipo. Conéctate a internet para bajarlas.")
             return
         }
-        _imprimiendo.value = true
-        viewModelScope.launch {
-            _avisoLista.value = when (val r = printerService.printInventoryList(lista)) {
-                is PrinterService.PrintOutcome.Printed -> AvisoLista.Impresa(total)
-                PrinterService.PrintOutcome.NoPrinter ->
-                    AvisoLista.Error("No hay impresora configurada. Ve a Más › Impresora para agregar una.")
-                PrinterService.PrintOutcome.OutOfPaper ->
-                    AvisoLista.Error("La impresora no tiene papel. Cambia el rollo y vuelve a imprimir.")
-                is PrinterService.PrintOutcome.Failed -> AvisoLista.Error("No se pudo imprimir: ${r.reason}")
-            }
-            _imprimiendo.value = false
+        mandar(AvisoImpresion.Hecho("¡Lista impresa!", if (total == 1) "1 artículo" else "$total artículos")) {
+            printerService.printInventoryList(lista)
         }
     }
 
