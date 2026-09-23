@@ -15,6 +15,7 @@ import com.avoqado.pos.inventory.waste.presentation.AvisoDeMerma
 import com.avoqado.pos.inventory.waste.presentation.EntradaDeMerma
 import com.avoqado.pos.inventory.waste.presentation.LogWasteViewModel
 import com.avoqado.pos.inventory.waste.presentation.debePublicarseElAviso
+import com.avoqado.pos.inventory.waste.presentation.textoDeRechazos
 import com.avoqado.pos.inventory.waste.presentation.entradaDeMerma
 import io.mockk.every
 import io.mockk.mockk
@@ -71,8 +72,10 @@ class LogWasteViewModelTest {
      * se queda en disco, que es lo que se mira.
      */
     private var respuestaDelServidor = RespuestaHttp(201, """{"reportId":"r1","declared":"3","deducted":"3","unrecorded":"0"}""")
+    /** Si trae algo, se contesta en orden (una por envío); si no, `respuestaDelServidor`. */
+    private val respuestas = ArrayDeque<RespuestaHttp>()
     private val transporte = object : TransporteDeMerma {
-        override suspend fun enviar(fila: PendingWasteEntity) = respuestaDelServidor
+        override suspend fun enviar(fila: PendingWasteEntity) = respuestas.removeFirstOrNull() ?: respuestaDelServidor
         override suspend fun anular(fila: PendingWasteEntity, porStaffId: String) = RespuestaHttp(0, "")
     }
     private val bloqueo = BloqueoDeMermaPorPlan(almacen, red, catalogo)
@@ -193,23 +196,77 @@ class LogWasteViewModelTest {
 
         vm.confirmar().join()
 
-        assertEquals(
-            AvisoDeMerma("Merma guardada", "No se pudo registrar «Aguacate»: revísala en «Mermas por subir»."),
-            vm.estado.value.aviso,
-        )
+        // 🔴 Codex r3: un rechazo NO es un aviso pasajero (y menos el verde de éxito): queda fijo en la pantalla.
+        assertNull(vm.estado.value.aviso)
+        assertEquals(listOf("Aguacate"), vm.estado.value.rechazos)
         assertEquals(EstadoMerma.NEEDS_REVIEW, cola.todas().single().estado)
     }
 
     /**
-     * 🔴 Codex r2: se confirman A y B seguidas y cada una espera su desenlace; el aviso de A (más vieja) podía
-     * llegar al final y tapar el rechazo de B. Regla: sólo se publica el aviso de la ÚLTIMA captura, salvo un
-     * rechazo, que se publica siempre (y nombra el artículo, porque puede no ser el último).
+     * 🔴 Codex r3: un rechazo publicado podía taparlo, antes del siguiente dibujo, el éxito de la captura
+     * siguiente — o borrarlo el temporizador del aviso anterior. El rechazo vive aparte, fijo, hasta que el
+     * cajero lo ve; un éxito posterior no lo toca.
      */
     @Test
-    fun `solo el aviso de la ultima captura se publica, salvo un rechazo`() {
-        assertTrue(debePublicarseElAviso(turno = 2, ultimo = 2, esRechazo = false))
-        assertFalse(debePublicarseElAviso(turno = 1, ultimo = 2, esRechazo = false))
-        assertTrue(debePublicarseElAviso(turno = 1, ultimo = 2, esRechazo = true))
+    fun `un rechazo queda fijo aunque despues llegue un exito, y solo se va al verlo`() = runTest {
+        respuestas += RespuestaHttp(422, """{"code":"UNIT_MISMATCH"}""")
+        motor.start(backgroundScope)
+        runCurrent()
+        val vm = vm()
+
+        vm.capturar()
+        vm.confirmar().join()
+        vm.capturar()
+        vm.confirmar().join()
+
+        assertEquals(listOf("Aguacate"), vm.estado.value.rechazos)
+        assertEquals(AvisoDeMerma("¡Merma registrada!"), vm.estado.value.aviso)
+
+        vm.rechazosVistos()
+        assertEquals(emptyList<String>(), vm.estado.value.rechazos)
+    }
+
+    /** El texto del letrero: uno o varios, en buen español. */
+    @Test
+    fun `el letrero de rechazos dice cuales, en singular o plural`() {
+        assertEquals(
+            "No se pudo registrar «Aguacate»: revísala en «Mermas por subir».",
+            textoDeRechazos(listOf("Aguacate")),
+        )
+        assertEquals(
+            "No se pudieron registrar «Aguacate», «Leche»: revísalas en «Mermas por subir».",
+            textoDeRechazos(listOf("Aguacate", "Leche")),
+        )
+    }
+
+    /**
+     * 🔴 Codex r3: el temporizador de un aviso viejo cerraba el nuevo. Cada aviso trae su identidad y sólo
+     * lo cierra el que lo abrió.
+     */
+    @Test
+    fun `el aviso solo lo cierra el que lo abrio`() = runTest {
+        conexion.value = false
+        val vm = vm()
+        vm.capturar()
+        vm.confirmar().join()
+        val abierto = vm.estado.value.avisoId
+
+        vm.avisoVisto(abierto - 1)
+        assertEquals(AvisoDeMerma("Merma guardada", "Se subirá al recuperar la conexión."), vm.estado.value.aviso)
+
+        vm.avisoVisto(abierto)
+        assertNull(vm.estado.value.aviso)
+    }
+
+    /**
+     * 🔴 Codex r2: se confirman A y B seguidas y cada una espera su desenlace; el aviso de A (más vieja) podía
+     * llegar al final y tapar el de B. Sólo se publica el aviso de la ÚLTIMA captura (los rechazos no van por
+     * aquí: tienen su letrero fijo).
+     */
+    @Test
+    fun `solo el aviso de la ultima captura se publica`() {
+        assertTrue(debePublicarseElAviso(turno = 2, ultimo = 2))
+        assertFalse(debePublicarseElAviso(turno = 1, ultimo = 2))
     }
 
     /** Con red pero sin respuesta a tiempo: está en el aparato y va en camino, y así se dice. */

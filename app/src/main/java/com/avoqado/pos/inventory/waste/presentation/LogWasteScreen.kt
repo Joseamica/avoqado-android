@@ -28,6 +28,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
@@ -85,6 +86,9 @@ fun LogWasteScreen(
         ) {
             Spacer(Modifier.height(AvoqadoTheme.spacing.xs))
 
+            if (estado.rechazos.isNotEmpty()) {
+                LetreroDeRechazos(estado.rechazos, onVisto = viewModel::rechazosVistos)
+            }
             if (estado.bloqueadaPorPlan) {
                 AvisoDePlan(onActualizar = { viewModel.alAbrir() })
             }
@@ -177,7 +181,11 @@ fun LogWasteScreen(
     }
 
     estado.aviso?.let { aviso ->
-        AvoqadoSuccessToast(message = aviso.titulo, subtitle = aviso.detalle, onDismiss = viewModel::avisoVisto)
+        val id = estado.avisoId
+        // `key`: un aviso NUEVO es otro toast, con su propio temporizador; el del viejo no lo cierra.
+        key(id) {
+            AvoqadoSuccessToast(message = aviso.titulo, subtitle = aviso.detalle, onDismiss = { viewModel.avisoVisto(id) })
+        }
     }
 }
 
@@ -189,6 +197,24 @@ private fun Seccion(titulo: String) {
 @Composable
 private fun TextoSecundario(texto: String) {
     Text(texto, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+}
+
+/** Lo que el servidor rechazó, fijo hasta que el cajero lo ve: la fila espera en «Mermas por subir». */
+@Composable
+private fun LetreroDeRechazos(rechazos: List<String>, onVisto: () -> Unit) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+        shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.lg),
+    ) {
+        Column(Modifier.padding(AvoqadoTheme.spacing.md)) {
+            Text(
+                textoDeRechazos(rechazos),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onErrorContainer,
+            )
+            TextButton(onClick = onVisto) { Text(TextosMerma.ENTENDIDO) }
+        }
+    }
 }
 
 /** Apagado se VE y se EXPLICA, con la salida a la mano: «Actualizar» vuelve a preguntar. */

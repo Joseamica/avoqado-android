@@ -48,6 +48,10 @@ data class EstadoDeCaptura(
     val confirmacion: String? = null,
     val enviando: Boolean = false,
     val aviso: AvisoDeMerma? = null,
+    /** La identidad del aviso: sólo lo cierra el que lo abrió (el temporizador de uno viejo no toca el nuevo). */
+    val avisoId: Long = 0,
+    /** Lo que el servidor rechazó: letrero fijo hasta que el cajero lo ve (`rechazosVistos`). */
+    val rechazos: List<String> = emptyList(),
     val error: String? = null,
 ) {
     /**
@@ -87,10 +91,20 @@ fun entradaDeMerma(puedeRegistrar: Boolean, bloqueadaPorPlan: Boolean): EntradaD
  */
 /**
  * 🔴 Codex r2: dos capturas seguidas esperan su desenlace a la vez, y el aviso de la vieja podía llegar al
- * final y tapar el de la nueva. Sólo se publica el aviso de la ÚLTIMA captura, salvo un rechazo, que se
- * publica siempre (y nombra el artículo, porque puede no ser el último). Espejo de iOS.
+ * final y tapar el de la nueva. Sólo se publica el aviso de la ÚLTIMA captura. Los rechazos no pasan por
+ * aquí: tienen su letrero fijo (`EstadoDeCaptura.rechazos`). Espejo de iOS.
  */
-fun debePublicarseElAviso(turno: Long, ultimo: Long, esRechazo: Boolean): Boolean = esRechazo || turno == ultimo
+fun debePublicarseElAviso(turno: Long, ultimo: Long): Boolean = turno == ultimo
+
+/**
+ * 🔴 Codex r3: lo que el servidor RECHAZÓ no es un aviso pasajero (y menos el verde de éxito): es un letrero
+ * fijo que junta todas y sólo se va cuando el cajero lo ve. Así ni el éxito de la captura siguiente ni el
+ * temporizador de un aviso viejo pueden taparlo. Uno o varios, en buen español. Espejo de iOS.
+ */
+fun textoDeRechazos(articulos: List<String>): String {
+    val plantilla = if (articulos.size == 1) TextosMerma.NO_SE_PUDO_REGISTRAR else TextosMerma.NO_SE_PUDIERON_REGISTRAR
+    return plantilla.replace("{articulos}", articulos.joinToString(", ") { "«$it»" })
+}
 
 @HiltViewModel
 class LogWasteViewModel @Inject constructor(
@@ -167,7 +181,9 @@ class LogWasteViewModel @Inject constructor(
 
     fun cancelarConfirmacion() = _estado.update { it.copy(confirmacion = null) }
 
-    fun avisoVisto() = _estado.update { it.copy(aviso = null) }
+    fun avisoVisto(id: Long) = _estado.update { if (it.avisoId == id) it.copy(aviso = null) else it }
+
+    fun rechazosVistos() = _estado.update { it.copy(rechazos = emptyList()) }
 
     /**
      * Un doble toque en «Confirmar» registra UNA merma, no dos. El candado cubre sólo el registro: la
@@ -185,8 +201,11 @@ class LogWasteViewModel @Inject constructor(
         } ?: return@launch
         val turno = turnos.incrementAndGet()
         // La espera va FUERA de `update`: dentro, un cambio del formulario la volvería a correr.
-        val (aviso, esRechazo) = avisoTrasRegistrar(registrada)
-        if (debePublicarseElAviso(turno, turnos.get(), esRechazo)) _estado.update { it.copy(aviso = aviso) }
+        val aviso = avisoTrasRegistrar(registrada)
+        when {
+            aviso == null -> _estado.update { it.copy(rechazos = (it.rechazos + registrada.articulo).distinct()) }
+            debePublicarseElAviso(turno, turnos.get()) -> _estado.update { it.copy(aviso = aviso, avisoId = turno) }
+        }
     }
 
     /** Lo que se registró: la sucursal, el folio y el nombre del artículo (lo necesita el aviso de rechazo). */
@@ -197,17 +216,15 @@ class LogWasteViewModel @Inject constructor(
      * sin plan se dice al momento cuándo subirá; con red se espera (poco) a que el servidor conteste, y si la
      * rechaza se DICE dónde verla — nunca un «registrada» que después resulta falso.
      */
-    private suspend fun avisoTrasRegistrar(r: Registrada): Pair<AvisoDeMerma, Boolean> = when {
-        bloqueo.estaBloqueado(r.venueId) -> AvisoDeMerma(TextosMerma.GUARDADA, TextosMerma.SE_SUBIRA_SIN_PLAN) to false
-        !hayRed() -> AvisoDeMerma(TextosMerma.GUARDADA, TextosMerma.SE_SUBIRA_SIN_RED) to false
+    /** El aviso pasajero de esta captura, o `null` si el servidor la rechazó (eso va al letrero fijo). */
+    private suspend fun avisoTrasRegistrar(r: Registrada): AvisoDeMerma? = when {
+        bloqueo.estaBloqueado(r.venueId) -> AvisoDeMerma(TextosMerma.GUARDADA, TextosMerma.SE_SUBIRA_SIN_PLAN)
+        !hayRed() -> AvisoDeMerma(TextosMerma.GUARDADA, TextosMerma.SE_SUBIRA_SIN_RED)
         else -> when (runCatching { motor.esperarSubida(r.folio) }.getOrDefault(SubidaDeMerma.EN_CAMINO)) {
-            SubidaDeMerma.SUBIO -> AvisoDeMerma(TextosMerma.REGISTRADA) to false
-            SubidaDeMerma.EN_REVISION -> AvisoDeMerma(
-                TextosMerma.GUARDADA,
-                TextosMerma.NO_SE_PUDO_REGISTRAR.replace("{articulo}", r.articulo),
-            ) to true
-            SubidaDeMerma.BLOQUEADA -> AvisoDeMerma(TextosMerma.GUARDADA, TextosMerma.SE_SUBIRA_SIN_PLAN) to false
-            SubidaDeMerma.EN_CAMINO -> AvisoDeMerma(TextosMerma.GUARDADA, TextosMerma.SUBIENDO) to false
+            SubidaDeMerma.SUBIO -> AvisoDeMerma(TextosMerma.REGISTRADA)
+            SubidaDeMerma.EN_REVISION -> null
+            SubidaDeMerma.BLOQUEADA -> AvisoDeMerma(TextosMerma.GUARDADA, TextosMerma.SE_SUBIRA_SIN_PLAN)
+            SubidaDeMerma.EN_CAMINO -> AvisoDeMerma(TextosMerma.GUARDADA, TextosMerma.SUBIENDO)
         }
     }
 
