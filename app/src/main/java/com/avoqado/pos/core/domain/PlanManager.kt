@@ -83,6 +83,9 @@ class PlanManager @Inject constructor(
             "ADVANCED_REPORTS" to PlanTier.PRO,
             "AREA_TICKETS" to PlanTier.PRO,
             "VARIABLE_WEIGHT_BARCODE" to PlanTier.PRO,
+            // Etiquetas de precio para el anaquel (2026-09-23). Sin endpoint: se imprime en la
+            // impresora del local, así que el candado vive sólo en el cliente. Espejo en iOS.
+            "PRICE_LABELS" to PlanTier.PRO,
             "INVENTORY_TRACKING" to PlanTier.PREMIUM,
             "CFDI" to PlanTier.PREMIUM,
             "SCALE_INTEGRATION" to PlanTier.PREMIUM,

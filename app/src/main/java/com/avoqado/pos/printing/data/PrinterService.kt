@@ -797,6 +797,46 @@ class PrinterService @Inject constructor(
         data class Failed(val reason: String) : PrintOutcome
     }
 
+    /**
+     * Etiquetas de precio (PRO `PRICE_LABELS`). Va a la impresora con rol «Etiquetas» si el
+     * negocio configuró una; si no, a la de recibos (con la integrada como respaldo). Una sola
+     * impresora: dos copias de cada etiqueta en dos impresoras no le sirven a nadie.
+     */
+    suspend fun printPriceLabels(etiquetas: List<EtiquetaDePrecio>): PrintOutcome {
+        val printer = getDefaultPrinter(PrinterRole.LABEL)
+            ?: getDefaultPrinterWithHardwareFallback(PrinterRole.RECEIPT)
+            ?: return PrintOutcome.NoPrinter
+        return try {
+            sendData(escposFor(printer).generatePriceLabels(etiquetas), printer)
+            PrintOutcome.Printed(1)
+        } catch (e: PrinterException.OutOfPaper) {
+            PrintOutcome.OutOfPaper
+        } catch (e: Exception) {
+            PrintOutcome.Failed(e.message ?: "Error al imprimir")
+        }
+    }
+
+    /** «Lista de inventario» (gratis): a la impresora de recibos, con la integrada de respaldo. */
+    suspend fun printInventoryList(lista: ListaDeInventario): PrintOutcome =
+        imprimirEnRecibos { it.generateInventoryList(lista) }
+
+    /** Comprobante de un conteo completado: a la impresora de recibos. */
+    suspend fun printCountReceipt(comprobante: ComprobanteDeConteo): PrintOutcome =
+        imprimirEnRecibos { it.generateCountReceipt(comprobante) }
+
+    private suspend fun imprimirEnRecibos(armar: (ESCPOSPrinter) -> ByteArray): PrintOutcome {
+        val printer = getDefaultPrinterWithHardwareFallback(PrinterRole.RECEIPT)
+            ?: return PrintOutcome.NoPrinter
+        return try {
+            sendData(armar(escposFor(printer)), printer)
+            PrintOutcome.Printed(1)
+        } catch (e: PrinterException.OutOfPaper) {
+            PrintOutcome.OutOfPaper
+        } catch (e: Exception) {
+            PrintOutcome.Failed(e.message ?: "Error al imprimir")
+        }
+    }
+
     suspend fun manualPrintReceipt(receipt: ReceiptData): PrintOutcome {
         val configured = getPrinters(PrinterRole.RECEIPT)
         val eligible = if (configured.isNotEmpty()) {

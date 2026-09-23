@@ -1,6 +1,5 @@
 package com.avoqado.pos.inventory.presentation
 
-import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.lifecycle.compose.LifecycleResumeEffect
@@ -48,6 +47,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import com.avoqado.pos.designsystem.components.AvoqadoErrorToast
+import com.avoqado.pos.designsystem.components.AvoqadoSuccessToast
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.DropdownMenu
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -57,7 +60,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -677,7 +679,10 @@ private fun StockOverviewContent(
     onRegistrarMerma: (() -> Unit)? = null,
 ) {
     var showSortSheet by remember { mutableStateOf(false) }
-    val context = LocalContext.current
+    var showPriceLabels by remember { mutableStateOf(false) }
+    var showPrintMenu by remember { mutableStateOf(false) }
+    val impresion: PriceLabelViewModel = hiltViewModel()
+    val avisoImpresion by impresion.aviso.collectAsState()
 
     // La búsqueda y el orden se aplican IGUAL a productos e insumos: buscar
     // "champiñón" tiene que encontrarlo esté donde esté.
@@ -710,28 +715,43 @@ private fun StockOverviewContent(
 
             onRegistrarMerma?.let { BotonRegistrarMerma(onClick = it) }
 
-            // Print labels button
+            // Botón de impresora: etiquetas de precio (PRO `PRICE_LABELS`, como Square en
+            // Inventario → Stock overview → Print labels) o la lista completa (gratis).
             Box(
                 modifier = Modifier
                     .size(44.dp)
                     .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
                     .background(MaterialTheme.colorScheme.surfaceVariant)
-                    .clickable {
-                        Toast
-                            .makeText(
-                                context,
-                                "Impresión no disponible",
-                                Toast.LENGTH_SHORT,
-                            )
-                            .show()
-                    },
+                    .clickable { showPrintMenu = true },
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
                     Icons.Filled.Print,
-                    contentDescription = "Imprimir etiquetas",
+                    contentDescription = "Imprimir",
                     tint = MaterialTheme.colorScheme.onSurface,
                 )
+                DropdownMenu(expanded = showPrintMenu, onDismissRequest = { showPrintMenu = false }) {
+                    DropdownMenuItem(
+                        text = {
+                            Text(if (impresion.locked) "Etiquetas de precio · ${impresion.tierLabel}" else "Etiquetas de precio")
+                        },
+                        onClick = {
+                            showPrintMenu = false
+                            showPriceLabels = true
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Lista de inventario") },
+                        onClick = {
+                            showPrintMenu = false
+                            // La relación COMPLETA, no lo que filtra la búsqueda.
+                            impresion.imprimirLista(
+                                items.filtrarYOrdenar("", sortOption),
+                                rawMaterials.filtrarYOrdenar("", sortOption),
+                            )
+                        },
+                    )
+                }
             }
 
             // Sort button (matching iOS: systemGray6 square)
@@ -830,6 +850,12 @@ private fun StockOverviewContent(
             onDismiss = { showSortSheet = false },
         )
     }
+
+    if (showPriceLabels) {
+        PriceLabelSheet(onDismiss = { showPriceLabels = false })
+    }
+
+    AvisoDeImpresion(avisoImpresion) { impresion.limpiarAvisoImpresion() }
 }
 
 /** Encabezado de grupo dentro de la descripción general ("Productos"/"Insumos"). */
@@ -1221,5 +1247,16 @@ private fun BotonRegistrarMerma(onClick: () -> Unit) {
             style = MaterialTheme.typography.labelLarge,
             color = MaterialTheme.colorScheme.onSurface,
         )
+    }
+}
+
+/** Toast de lo que salió (o no) por la impresora desde Inventario. */
+@Composable
+internal fun AvisoDeImpresion(aviso: PriceLabelViewModel.AvisoImpresion?, onDismiss: () -> Unit) {
+    when (aviso) {
+        is PriceLabelViewModel.AvisoImpresion.Hecho ->
+            AvoqadoSuccessToast(message = aviso.titulo, subtitle = aviso.subtitulo, onDismiss = onDismiss)
+        is PriceLabelViewModel.AvisoImpresion.Error -> AvoqadoErrorToast(message = aviso.mensaje, onDismiss = onDismiss)
+        null -> Unit
     }
 }
