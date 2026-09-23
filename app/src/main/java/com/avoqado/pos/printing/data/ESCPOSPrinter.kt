@@ -865,6 +865,37 @@ class ESCPOSPrinter(
         return getData()
     }
 
+    // MARK: - Inventory List
+
+    /** «Lista de inventario»: toda la relación de existencias en UNA tira, por sección. */
+    fun generateInventoryList(lista: ListaDeInventario): ByteArray {
+        reset()
+        setAlignment(TextAlignment.CENTER)
+        lista.negocio?.let { printLine(it) }
+        printTitle("INVENTARIO", bold = true)
+        printLine(lista.fecha)
+        printDoubleDivider()
+        setAlignment(TextAlignment.LEFT)
+        val secciones = lista.secciones.filter { it.renglones.isNotEmpty() }
+        for (seccion in secciones) {
+            setBold(true)
+            printLine("${seccion.titulo} (${seccion.renglones.size})")
+            setBold(false)
+            printDivider()
+            for (r in seccion.renglones) {
+                printTwoColumns(r.nombre, r.existencia)
+                r.sku?.takeIf { it.isNotBlank() }?.let { printLine("  SKU: $it") }
+            }
+            printLine()
+        }
+        printDoubleDivider()
+        setAlignment(TextAlignment.CENTER)
+        val total = secciones.sumOf { it.renglones.size }
+        printLine("Total: $total ${if (total == 1) "artículo" else "artículos"}")
+        cut()
+        return getData()
+    }
+
     // MARK: - Test Print
 
     fun generateTestPrint(): ByteArray {

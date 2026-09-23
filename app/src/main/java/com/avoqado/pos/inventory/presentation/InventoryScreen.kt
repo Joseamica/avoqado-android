@@ -47,6 +47,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
+import com.avoqado.pos.designsystem.components.AvoqadoErrorToast
+import com.avoqado.pos.designsystem.components.AvoqadoSuccessToast
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.DropdownMenu
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -641,6 +645,9 @@ private fun StockOverviewContent(
 ) {
     var showSortSheet by remember { mutableStateOf(false) }
     var showPriceLabels by remember { mutableStateOf(false) }
+    var showPrintMenu by remember { mutableStateOf(false) }
+    val impresion: PriceLabelViewModel = hiltViewModel()
+    val avisoLista by impresion.avisoLista.collectAsState()
 
     // La búsqueda y el orden se aplican IGUAL a productos e insumos: buscar
     // "champiñón" tiene que encontrarlo esté donde esté.
@@ -671,21 +678,43 @@ private fun StockOverviewContent(
                 modifier = Modifier.weight(1f),
             )
 
-            // Print labels button — etiquetas de precio (PRO `PRICE_LABELS`), como Square
-            // en Inventario → Stock overview → Print labels.
+            // Botón de impresora: etiquetas de precio (PRO `PRICE_LABELS`, como Square en
+            // Inventario → Stock overview → Print labels) o la lista completa (gratis).
             Box(
                 modifier = Modifier
                     .size(44.dp)
                     .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
                     .background(MaterialTheme.colorScheme.surfaceVariant)
-                    .clickable { showPriceLabels = true },
+                    .clickable { showPrintMenu = true },
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
                     Icons.Filled.Print,
-                    contentDescription = "Imprimir etiquetas",
+                    contentDescription = "Imprimir",
                     tint = MaterialTheme.colorScheme.onSurface,
                 )
+                DropdownMenu(expanded = showPrintMenu, onDismissRequest = { showPrintMenu = false }) {
+                    DropdownMenuItem(
+                        text = {
+                            Text(if (impresion.locked) "Etiquetas de precio · ${impresion.tierLabel}" else "Etiquetas de precio")
+                        },
+                        onClick = {
+                            showPrintMenu = false
+                            showPriceLabels = true
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Lista de inventario") },
+                        onClick = {
+                            showPrintMenu = false
+                            // La relación COMPLETA, no lo que filtra la búsqueda.
+                            impresion.imprimirLista(
+                                items.filtrarYOrdenar("", sortOption),
+                                rawMaterials.filtrarYOrdenar("", sortOption),
+                            )
+                        },
+                    )
+                }
             }
 
             // Sort button (matching iOS: systemGray6 square)
@@ -786,6 +815,19 @@ private fun StockOverviewContent(
 
     if (showPriceLabels) {
         PriceLabelSheet(onDismiss = { showPriceLabels = false })
+    }
+
+    when (val aviso = avisoLista) {
+        is PriceLabelViewModel.AvisoLista.Impresa -> AvoqadoSuccessToast(
+            message = "¡Lista impresa!",
+            subtitle = if (aviso.articulos == 1) "1 artículo" else "${aviso.articulos} artículos",
+            onDismiss = { impresion.limpiarAvisoLista() },
+        )
+        is PriceLabelViewModel.AvisoLista.Error -> AvoqadoErrorToast(
+            message = aviso.mensaje,
+            onDismiss = { impresion.limpiarAvisoLista() },
+        )
+        null -> Unit
     }
 }
 

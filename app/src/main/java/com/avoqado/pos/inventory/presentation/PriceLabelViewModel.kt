@@ -4,18 +4,25 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.domain.PlanManager
+import com.avoqado.pos.inventory.data.model.StockItem
 import com.avoqado.pos.pos.data.ProductsRepository
 import com.avoqado.pos.pos.data.model.Product
 import com.avoqado.pos.printing.data.EtiquetaDePrecio
+import com.avoqado.pos.printing.data.ListaDeInventario
 import com.avoqado.pos.printing.data.PrinterService
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
 import javax.inject.Inject
 
-// MARK: - Etiquetas de precio (PRO `PRICE_LABELS`) — espejo de `PriceLabelView` en iOS
+// MARK: - Impresión desde Inventario — espejo de `PriceLabelView` en iOS
+//
+// Dos cosas salen del botón de impresora de Inventario: las etiquetas de precio (PRO
+// `PRICE_LABELS`) y la «Lista de inventario» (gratis, founder 2026-09-23).
 
 /**
  * Sin red funciona igual: el catálogo sale del espejo en disco de [ProductsRepository] y la
@@ -94,6 +101,56 @@ class PriceLabelViewModel @Inject constructor(
                     _error.value = "La impresora no tiene papel. Cambia el rollo y vuelve a imprimir."
                 is PrinterService.PrintOutcome.Failed ->
                     _error.value = "No se pudo imprimir: ${r.reason}"
+            }
+            _imprimiendo.value = false
+        }
+    }
+
+    // MARK: - Lista de inventario (gratis)
+
+    /** Desenlace de imprimir la lista, para el toast de Inventario. */
+    sealed interface AvisoLista {
+        data class Impresa(val articulos: Int) : AvisoLista
+        data class Error(val mensaje: String) : AvisoLista
+    }
+
+    private val _avisoLista = MutableStateFlow<AvisoLista?>(null)
+    val avisoLista: StateFlow<AvisoLista?> = _avisoLista.asStateFlow()
+
+    fun limpiarAvisoLista() {
+        _avisoLista.value = null
+    }
+
+    /**
+     * Imprime la relación COMPLETA (no la búsqueda de la pantalla), en el orden elegido. Son las
+     * existencias que este equipo bajó por última vez: sin red, las que ya tenía.
+     */
+    fun imprimirLista(productos: List<StockItem>, insumos: List<StockItem>) {
+        if (_imprimiendo.value) return
+        fun renglones(items: List<StockItem>) =
+            items.map { ListaDeInventario.Renglon(it.name, it.currentQuantityDisplay, it.sku) }
+        val lista = ListaDeInventario(
+            negocio = secureStorage.venueDisplayName,
+            fecha = LocalDateTime.now().format(DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm")),
+            secciones = listOf(
+                ListaDeInventario.Seccion("Productos", renglones(productos)),
+                ListaDeInventario.Seccion("Insumos", renglones(insumos)),
+            ),
+        )
+        val total = productos.size + insumos.size
+        if (total == 0) {
+            _avisoLista.value = AvisoLista.Error("No hay existencias cargadas en este equipo. Conéctate a internet para bajarlas.")
+            return
+        }
+        _imprimiendo.value = true
+        viewModelScope.launch {
+            _avisoLista.value = when (val r = printerService.printInventoryList(lista)) {
+                is PrinterService.PrintOutcome.Printed -> AvisoLista.Impresa(total)
+                PrinterService.PrintOutcome.NoPrinter ->
+                    AvisoLista.Error("No hay impresora configurada. Ve a Más › Impresora para agregar una.")
+                PrinterService.PrintOutcome.OutOfPaper ->
+                    AvisoLista.Error("La impresora no tiene papel. Cambia el rollo y vuelve a imprimir.")
+                is PrinterService.PrintOutcome.Failed -> AvisoLista.Error("No se pudo imprimir: ${r.reason}")
             }
             _imprimiendo.value = false
         }
