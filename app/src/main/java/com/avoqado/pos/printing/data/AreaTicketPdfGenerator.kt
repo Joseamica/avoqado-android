@@ -187,7 +187,7 @@ class AreaTicketPdfGenerator @Inject constructor() {
     ) {
         val format = when (symbology) {
             BarcodeSymbology.CODE39 -> BarcodeFormat.CODE_39
-            BarcodeSymbology.CODE128_C -> BarcodeFormat.CODE_128
+            BarcodeSymbology.CODE128_C, BarcodeSymbology.CODE128_B -> BarcodeFormat.CODE_128
         }
         val matrix = MultiFormatWriter().encode(
             code,

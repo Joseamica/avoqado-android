@@ -797,6 +797,25 @@ class PrinterService @Inject constructor(
         data class Failed(val reason: String) : PrintOutcome
     }
 
+    /**
+     * Etiquetas de precio (PRO `PRICE_LABELS`). Va a la impresora con rol «Etiquetas» si el
+     * negocio configuró una; si no, a la de recibos (con la integrada como respaldo). Una sola
+     * impresora: dos copias de cada etiqueta en dos impresoras no le sirven a nadie.
+     */
+    suspend fun printPriceLabels(etiquetas: List<EtiquetaDePrecio>): PrintOutcome {
+        val printer = getDefaultPrinter(PrinterRole.LABEL)
+            ?: getDefaultPrinterWithHardwareFallback(PrinterRole.RECEIPT)
+            ?: return PrintOutcome.NoPrinter
+        return try {
+            sendData(escposFor(printer).generatePriceLabels(etiquetas), printer)
+            PrintOutcome.Printed(1)
+        } catch (e: PrinterException.OutOfPaper) {
+            PrintOutcome.OutOfPaper
+        } catch (e: Exception) {
+            PrintOutcome.Failed(e.message ?: "Error al imprimir")
+        }
+    }
+
     suspend fun manualPrintReceipt(receipt: ReceiptData): PrintOutcome {
         val configured = getPrinters(PrinterRole.RECEIPT)
         val eligible = if (configured.isNotEmpty()) {

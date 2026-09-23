@@ -174,6 +174,7 @@ class ESCPOSPrinter(
         fun barcodeWidthInModules(data: String, symbology: BarcodeSymbology): Int {
             val symbolModules = when (symbology) {
                 BarcodeSymbology.CODE128_C -> 11 * (1 + data.length / 2 + 1) + 13
+                BarcodeSymbology.CODE128_B -> 11 * (1 + data.length + 1) + 13
                 BarcodeSymbology.CODE39 -> {
                     val perChar = 6 + 3 * CODE39_WIDE_RATIO
                     (data.length + 2) * (perChar + 1) - 1
@@ -233,6 +234,15 @@ class ESCPOSPrinter(
                     // `{C` (0x7B 0x43) selecciona el modo C. Cada par viaja como
                     // el BYTE CRUDO 0..99, no como texto: "00" es 0x00.
                     byteArrayOf(0x7B, 0x43) + pairs
+                }
+
+                BarcodeSymbology.CODE128_B -> {
+                    // ASCII imprimible, uno por símbolo. `{` se rechaza: en `GS k` abre un
+                    // cambio de conjunto, y mandarlo crudo imprimiría un código que escanea
+                    // OTRA cosa — mejor caer a texto.
+                    if (data.length + 2 > 255) return null
+                    if (!data.all { it in ' '..'~' && it != '{' }) return null
+                    byteArrayOf(0x7B, 0x42) + data.toByteArray(Charsets.US_ASCII)
                 }
 
                 BarcodeSymbology.CODE39 -> {
@@ -431,6 +441,12 @@ class ESCPOSPrinter(
          * hardware el 2026-07-28.
          */
         CODE128_C(73),
+
+        /**
+         * CODE128 en **modo B**: ASCII imprimible, uno por símbolo. Es el que usa la etiqueta de
+         * precio cuando el SKU trae letras (`CAF-01`), donde el modo C no puede.
+         */
+        CODE128_B(73),
 
         /**
          * CODE39 — la simbología de su sistema actual (los asteriscos del texto
@@ -817,6 +833,35 @@ class ESCPOSPrinter(
         printDoubleDivider()
         cut()
 
+        return getData()
+    }
+
+    // MARK: - Price Labels
+
+    /**
+     * Etiquetas de precio para el anaquel (PRO `PRICE_LABELS`). Una por copia, cada una con su
+     * corte, para que se desprendan sueltas.
+     *
+     * El código va en CODE128-C si es numérico par (más compacto), si no en CODE128-B; si ninguno
+     * lo puede dibujar se imprime como TEXTO: una etiqueta sin barras todavía se teclea, una sin
+     * código no.
+     */
+    fun generatePriceLabels(etiquetas: List<EtiquetaDePrecio>): ByteArray {
+        reset()
+        for (etiqueta in etiquetas) repeat(etiqueta.copias.coerceAtLeast(0)) {
+            setAlignment(TextAlignment.CENTER)
+            etiqueta.negocio?.let { printLine(it) }
+            setBold(true)
+            printLine(etiqueta.nombre)
+            setBold(false)
+            printTitle(etiqueta.precio, bold = true)
+            etiqueta.codigo?.let { codigo ->
+                val dibujado = printBarcode(codigo, BarcodeSymbology.CODE128_C, heightDots = 100) ||
+                    printBarcode(codigo, BarcodeSymbology.CODE128_B, heightDots = 100)
+                if (!dibujado) printLine(codigo)
+            }
+            cut()
+        }
         return getData()
     }
 

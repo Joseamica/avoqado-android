@@ -1,6 +1,5 @@
 package com.avoqado.pos.inventory.presentation
 
-import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.lifecycle.compose.LifecycleResumeEffect
@@ -57,7 +56,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -642,7 +640,7 @@ private fun StockOverviewContent(
     onItemTap: (StockItem) -> Unit = {},
 ) {
     var showSortSheet by remember { mutableStateOf(false) }
-    val context = LocalContext.current
+    var showPriceLabels by remember { mutableStateOf(false) }
 
     // La búsqueda y el orden se aplican IGUAL a productos e insumos: buscar
     // "champiñón" tiene que encontrarlo esté donde esté.
@@ -673,21 +671,14 @@ private fun StockOverviewContent(
                 modifier = Modifier.weight(1f),
             )
 
-            // Print labels button
+            // Print labels button — etiquetas de precio (PRO `PRICE_LABELS`), como Square
+            // en Inventario → Stock overview → Print labels.
             Box(
                 modifier = Modifier
                     .size(44.dp)
                     .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
                     .background(MaterialTheme.colorScheme.surfaceVariant)
-                    .clickable {
-                        Toast
-                            .makeText(
-                                context,
-                                "Impresión no disponible",
-                                Toast.LENGTH_SHORT,
-                            )
-                            .show()
-                    },
+                    .clickable { showPriceLabels = true },
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
@@ -791,6 +782,10 @@ private fun StockOverviewContent(
             },
             onDismiss = { showSortSheet = false },
         )
+    }
+
+    if (showPriceLabels) {
+        PriceLabelSheet(onDismiss = { showPriceLabels = false })
     }
 }
 
