@@ -157,33 +157,73 @@ class LogWasteViewModel @Inject constructor(
      * por el plan y baja el catálogo. También es el «Actualizar» del aviso de plan: la petición
      * que puede levantarlo está siempre disponible.
      */
-    fun alAbrir(preseleccion: ArticuloPreseleccionado? = null): Job = viewModelScope.launch {
+    /**
+     * Cada vez que el formulario se ABRE (desde «Más», desde Inventario o desde la ficha de un artículo).
+     *
+     * 🔴 Codex r8: el ViewModel de Inventario vive con su pestaña, no con el formulario, así que abrirlo desde OTRO
+     * artículo traía la captura abandonada del anterior — y registrarla mermaba el equivocado. Cada apertura empieza
+     * limpia. El letrero de rechazos NO se toca: sólo se va cuando el cajero lo ve.
+     */
+    fun abrirFormulario(preseleccion: ArticuloPreseleccionado?): Job {
+        carga?.cancel()
+        preseleccionPendiente = preseleccion
+        _estado.update {
+            it.copy(
+                busqueda = "",
+                resultados = buscarEnCatalogo(enMemoria, "", LIMITE),
+                articulo = null,
+                cantidad = "",
+                motivo = null,
+                nota = "",
+                confirmacion = null,
+                error = null,
+                aviso = null,
+            )
+        }
+        return alAbrir().also { carga = it }
+    }
+
+    /**
+     * Al abrir: primero lo que hay en disco (sirve sin red); con red, le pregunta al servidor por el plan y baja el
+     * catálogo. También es el «Actualizar» del aviso de plan: la petición que puede levantarlo está siempre disponible.
+     */
+    fun alAbrir(): Job = viewModelScope.launch {
         val venueId = secureStorage.venueId ?: return@launch
         cargar(venueId, recienBajado = false)
-        preseleccionar(preseleccion)
+        preseleccionar()
         if (!hayRed()) return@launch
         bloqueo.revalidar(venueId)
         if (!bloqueo.estaBloqueado(venueId) && catalogo.refrescarCatalogo(venueId, reloj())) {
             cargar(venueId, recienBajado = true)
-            preseleccionar(preseleccion)
+            preseleccionar()
         }
     }
 
+    /** La carga de la apertura en curso: una apertura nueva cancela la de la anterior. */
+    private var carga: Job? = null
+
     /**
-     * Entrar desde la ficha de un artículo en Inventario: se elige ESE artículo si el catálogo lo trae. Nunca pisa
-     * lo que el cajero ya eligió (el catálogo recién bajado llega después de que él pudo tocar otro).
+     * El artículo de la ficha, mientras no se haya aplicado. Se aplica UNA vez (🔴 Codex r8: «Cambiar» mientras bajaba
+     * el catálogo se deshacía) y se cancela en cuanto el cajero elige otro.
      */
-    private fun preseleccionar(preseleccion: ArticuloPreseleccionado?) {
-        if (preseleccion == null || _estado.value.articulo != null) return
-        enMemoria.firstOrNull { it.itemType == preseleccion.itemType && it.itemId == preseleccion.itemId }
-            ?.let(::elegirArticulo)
+    private var preseleccionPendiente: ArticuloPreseleccionado? = null
+
+    private fun preseleccionar() {
+        val pendiente = preseleccionPendiente ?: return
+        val articulo = enMemoria.firstOrNull { it.itemType == pendiente.itemType && it.itemId == pendiente.itemId }
+            ?: return
+        preseleccionPendiente = null
+        _estado.update { it.copy(articulo = articulo, error = null) }
     }
 
     fun buscar(texto: String) = _estado.update {
         it.copy(busqueda = texto, resultados = buscarEnCatalogo(enMemoria, texto, LIMITE))
     }
 
-    fun elegirArticulo(articulo: WasteCatalogEntity) = _estado.update { it.copy(articulo = articulo, error = null) }
+    fun elegirArticulo(articulo: WasteCatalogEntity) {
+        preseleccionPendiente = null
+        _estado.update { it.copy(articulo = articulo, error = null) }
+    }
 
     fun quitarArticulo() = _estado.update { it.copy(articulo = null) }
 

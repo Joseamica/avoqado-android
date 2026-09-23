@@ -457,6 +457,17 @@ private fun InventorySectionContentOrLoading(
                 contentAlignment = Alignment.Center,
             ) {
                 AvoqadoBrandLoader(size = 72.dp)
+                // 🔴 Codex r8: con WiFi sin internet las existencias tardan hasta el timeout, y la merma no las
+                // necesita (su catálogo vive en el aparato): el botón se queda a la vista mientras cargan.
+                if (selectedSection == InventorySection.OVERVIEW && viewModel.canLogWaste) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.sm),
+                    ) {
+                        BotonRegistrarMerma(onClick = { viewModel.abrirMerma(null) })
+                    }
+                }
             }
         }
         else -> {
@@ -693,23 +704,7 @@ private fun StockOverviewContent(
                 modifier = Modifier.weight(1f),
             )
 
-            onRegistrarMerma?.let { registrar ->
-                Box(
-                    modifier = Modifier
-                        .height(44.dp)
-                        .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
-                        .background(MaterialTheme.colorScheme.surfaceVariant)
-                        .clickable(onClick = registrar)
-                        .padding(horizontal = AvoqadoTheme.spacing.md),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        text = TextosMerma.TITULO,
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-                }
-            }
+            onRegistrarMerma?.let { BotonRegistrarMerma(onClick = it) }
 
             // Print labels button
             Box(
@@ -1203,4 +1198,24 @@ private fun fechaCortaInv(iso: String?): String? {
             .withZone(com.avoqado.pos.core.util.VenueTimeZone.zoneId())
             .format(instante)
     }.getOrNull()
+}
+
+/** «Registrar merma» junto al buscador de Inventario (y durante la carga, que la merma no necesita). */
+@Composable
+private fun BotonRegistrarMerma(onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .height(44.dp)
+            .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .clickable(onClick = onClick)
+            .padding(horizontal = AvoqadoTheme.spacing.md),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            text = TextosMerma.TITULO,
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurface,
+        )
+    }
 }

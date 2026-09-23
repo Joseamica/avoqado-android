@@ -16,11 +16,13 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.TestCoroutineScheduler
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
+import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 import kotlin.time.Duration
@@ -111,6 +113,30 @@ class InventoryViewModelRefreshTest {
         vm.cerrarMerma()
 
         coVerify(exactly = 2) { repository.fetchStockOverview() }
+    }
+
+    /**
+     * 🔴 Codex r8: si al cerrar ya venía en camino una consulta VIEJA (empezada antes de la merma), el refresco se
+     * le unía y la lista quedaba con la existencia anterior. Se pide otra, que empieza después de la merma.
+     */
+    @Test
+    fun `al cerrar la merma con una consulta vieja en camino se pide otra despues`() = runTest(scheduler) {
+        val vm = buildViewModel()
+        val vieja = CompletableDeferred<Unit>()
+        var llamadas = 0
+        coEvery { repository.fetchStockOverview() } coAnswers {
+            llamadas++
+            if (llamadas == 1) vieja.await()
+            Result.success(Unit)
+        }
+        vm.autoRefresh()
+        vm.abrirMerma(null)
+
+        vm.cerrarMerma()
+        vieja.complete(Unit)
+        scheduler.advanceUntilIdle()
+
+        assertEquals(2, llamadas)
     }
 
     @Test

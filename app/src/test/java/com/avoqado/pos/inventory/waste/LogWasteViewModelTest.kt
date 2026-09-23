@@ -509,7 +509,7 @@ class LogWasteViewModelTest {
     fun `al abrir desde la ficha de un articulo, llega con ese articulo elegido`() = runTest {
         val vm = vm()
 
-        vm.alAbrir(ArticuloPreseleccionado("RAW_MATERIAL", "rm-1")).join()
+        vm.abrirFormulario(ArticuloPreseleccionado("RAW_MATERIAL", "rm-1")).join()
 
         assertEquals("rm-1", vm.estado.value.articulo?.itemId)
     }
@@ -519,7 +519,7 @@ class LogWasteViewModelTest {
     fun `si el articulo de la ficha no esta en el catalogo, no se elige nada`() = runTest {
         val vm = vm()
 
-        vm.alAbrir(ArticuloPreseleccionado("PRODUCT", "p-receta")).join()
+        vm.abrirFormulario(ArticuloPreseleccionado("PRODUCT", "p-receta")).join()
 
         assertNull(vm.estado.value.articulo)
     }
@@ -531,7 +531,7 @@ class LogWasteViewModelTest {
         catalogo.alRefrescar = { venueId, ahora -> catalogo.porVenue = mapOf(venueId to listOf(articulo(actualizadoEn = ahora))) }
         val vm = vm()
 
-        vm.alAbrir(ArticuloPreseleccionado("RAW_MATERIAL", "rm-1")).join()
+        vm.abrirFormulario(ArticuloPreseleccionado("RAW_MATERIAL", "rm-1")).join()
 
         assertEquals("rm-1", vm.estado.value.articulo?.itemId)
     }
@@ -542,7 +542,7 @@ class LogWasteViewModelTest {
         val leche = WasteCatalogEntity(VENUE, "PRODUCT", "p-leche", "Leche", "LEC-01", "UNIT", AHORA)
         catalogo.porVenue = mapOf(VENUE to listOf(articulo(), leche))
         val vm = vm()
-        vm.alAbrir(ArticuloPreseleccionado("RAW_MATERIAL", "rm-1")).join()
+        vm.abrirFormulario(ArticuloPreseleccionado("RAW_MATERIAL", "rm-1")).join()
         vm.elegirArticulo(leche)
 
         vm.alAbrir().join()
@@ -558,7 +558,60 @@ class LogWasteViewModelTest {
         val vm = vm()
         catalogo.alRefrescar = { _, _ -> vm.elegirArticulo(leche) }
 
-        vm.alAbrir(ArticuloPreseleccionado("RAW_MATERIAL", "rm-1")).join()
+        vm.abrirFormulario(ArticuloPreseleccionado("RAW_MATERIAL", "rm-1")).join()
+
+        assertEquals("p-leche", vm.estado.value.articulo?.itemId)
+    }
+
+    /**
+     * 🔴 Codex r8: el formulario de Inventario reusa su ViewModel. Abrirlo desde OTRO artículo traía la captura
+     * abandonada del anterior (y registrarla mermaba el equivocado). Cada apertura empieza limpia.
+     */
+    @Test
+    fun `al abrir desde otro articulo no se arrastra la captura abandonada`() = runTest {
+        val leche = WasteCatalogEntity(VENUE, "PRODUCT", "p-leche", "Leche", "LEC-01", "UNIT", AHORA)
+        catalogo.porVenue = mapOf(VENUE to listOf(articulo(), leche))
+        val vm = vm()
+        vm.abrirFormulario(ArticuloPreseleccionado("RAW_MATERIAL", "rm-1")).join()
+        vm.escribirCantidad("3")
+        vm.elegirMotivo(WasteReason.SPOILED)
+        vm.escribirNota("se cayó")
+        vm.formularioCerrado()
+
+        vm.abrirFormulario(ArticuloPreseleccionado("PRODUCT", "p-leche")).join()
+
+        assertEquals("p-leche", vm.estado.value.articulo?.itemId)
+        assertEquals("", vm.estado.value.cantidad)
+        assertNull(vm.estado.value.motivo)
+        assertEquals("", vm.estado.value.nota)
+    }
+
+    /** 🔴 Codex r8: «Cambiar» mientras baja el catálogo no se deshace: la preselección se aplica UNA vez. */
+    @Test
+    fun `cambiar mientras baja el catalogo no vuelve a elegir el articulo de la ficha`() = runTest {
+        val vm = vm()
+        catalogo.alRefrescar = { _, _ -> vm.quitarArticulo() }
+
+        vm.abrirFormulario(ArticuloPreseleccionado("RAW_MATERIAL", "rm-1")).join()
+
+        assertNull(vm.estado.value.articulo)
+    }
+
+    /**
+     * Si el artículo de la ficha aún no está en el catálogo del aparato y el cajero elige OTRO antes de que baje,
+     * la descarga no le cambia su elección.
+     */
+    @Test
+    fun `elegir otro antes de que baje el catalogo cancela el articulo de la ficha`() = runTest {
+        val leche = WasteCatalogEntity(VENUE, "PRODUCT", "p-leche", "Leche", "LEC-01", "UNIT", AHORA)
+        catalogo.porVenue = mapOf(VENUE to listOf(leche))
+        val vm = vm()
+        catalogo.alRefrescar = { venueId, _ ->
+            vm.elegirArticulo(leche)
+            catalogo.porVenue = mapOf(venueId to listOf(articulo(), leche))
+        }
+
+        vm.abrirFormulario(ArticuloPreseleccionado("RAW_MATERIAL", "rm-1")).join()
 
         assertEquals("p-leche", vm.estado.value.articulo?.itemId)
     }

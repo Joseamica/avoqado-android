@@ -63,7 +63,7 @@ fun LogWasteScreen(
     viewModel: LogWasteViewModel = hiltViewModel(),
 ) {
     val estado by viewModel.estado.collectAsState()
-    LaunchedEffect(Unit) { viewModel.alAbrir(preseleccion) }
+    LaunchedEffect(Unit) { viewModel.abrirFormulario(preseleccion) }
     DisposableEffect(Unit) { onDispose { viewModel.formularioCerrado() } }
     BackHandler(onBack = onDismiss)
 

@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import android.util.Log
 import com.avoqado.pos.areatickets.data.ScaleIntegrationSettings
 import com.avoqado.pos.core.domain.RoleManager
+import com.avoqado.pos.core.domain.refresh.RefreshOutcome
 import com.avoqado.pos.inventory.data.CreatePOItemRequest
 import com.avoqado.pos.inventory.data.CreateTransferItemRequest
 import com.avoqado.pos.inventory.data.BorradorDeConteo
@@ -248,7 +249,14 @@ class InventoryViewModel @Inject constructor(
         // La merma cambió existencias: la lista se vuelve a pedir ya, sin esperar el TTL del auto-refresco
         // (founder, 23-sep: se veía 96 cuando el servidor ya decía 94). Si la merma aún no subió (sin red),
         // la lista sigue con lo del servidor, que es lo honesto.
-        viewModelScope.launch { gate.run(workInProgress = ::workInProgress, manual = true, block = ::refreshNow) }
+        // 🔴 Codex r8: si ya venía en camino una consulta VIEJA (empezada antes de la merma), el refresco se le une y
+        // la lista queda con la existencia anterior: se pide otra, que empieza después.
+        viewModelScope.launch {
+            val salida = gate.run(workInProgress = ::workInProgress, manual = true, block = ::refreshNow)
+            if (salida == RefreshOutcome.Joined) {
+                gate.run(workInProgress = ::workInProgress, manual = true, block = ::refreshNow)
+            }
+        }
     }
 
     fun selectStockItem(item: StockItem?) {
