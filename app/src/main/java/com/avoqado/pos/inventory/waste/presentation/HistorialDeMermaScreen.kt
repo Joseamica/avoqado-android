@@ -69,6 +69,14 @@ fun HistorialDeMermaScreen(
                 item(key = "vacio") { Secundario(TextosMerma.SIN_HISTORIAL) }
             }
             items(estado.filas, key = { it.id }) { Renglon(it) }
+            if (estado.desactualizada) {
+                item(key = "cambio") {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Secundario(TextosMerma.HISTORIAL_CAMBIO)
+                        TextButton(onClick = { viewModel.cargar() }) { Text(TextosMerma.ACTUALIZAR) }
+                    }
+                }
+            }
             if (estado.filas.isNotEmpty()) {
                 item(key = "pie") {
                     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {

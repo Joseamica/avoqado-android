@@ -62,6 +62,9 @@ data class EstadoDeHistorial(
     val siguiente: String? = null,
 ) {
     val hayMas: Boolean get() = siguiente != null
+
+    /** Leída entera pero no cuadra con el total vigente: llegó o se fue un folio a media lectura (Codex, r3). */
+    val desactualizada: Boolean get() = cargado && siguiente == null && filas.size != total
 }
 
 /**

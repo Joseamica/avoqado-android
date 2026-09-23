@@ -304,7 +304,7 @@ class LogWasteViewModel @Inject constructor(
         if (!registrando.compareAndSet(false, true)) return@launch
         val miApertura = apertura
         val registrada = try {
-            registrarLoCapturado()
+            registrarLoCapturado(miApertura)
         } finally {
             registrando.set(false)
         } ?: return@launch
@@ -360,7 +360,7 @@ class LogWasteViewModel @Inject constructor(
     }
 
     /** Escribe la merma y deja el formulario listo. `null` si no se registró. */
-    private suspend fun registrarLoCapturado(): Registrada? {
+    private suspend fun registrarLoCapturado(miApertura: Long): Registrada? {
         val e = _estado.value
         val articulo = e.articulo ?: return null
         val motivo = e.motivo ?: return null
@@ -380,6 +380,12 @@ class LogWasteViewModel @Inject constructor(
             nota = e.nota,
         ).fold(
             onSuccess = { folio ->
+                // 🔴 Codex (r3): si mientras se escribía el cajero cerró y abrió el formulario, esta merma ya no es
+                // de la pantalla que se ve: no revive como «Última merma» ni borra lo elegido. Sigue en la cola.
+                if (apertura != miApertura) {
+                    _estado.update { it.copy(enviando = false) }
+                    return@fold Registrada(venueId, folio, articulo.name)
+                }
                 // La fila ya está en disco. Lista para la siguiente: al final del día se registran varias
                 // seguidas. El aviso llega después (`avisoTrasRegistrar`): cuándo sube se DICE.
                 _estado.update {
@@ -407,7 +413,7 @@ class LogWasteViewModel @Inject constructor(
                 Registrada(venueId, folio, articulo.name)
             },
             onFailure = { fallo ->
-                _estado.update { it.copy(enviando = false, error = fallo.message) }
+                _estado.update { if (apertura == miApertura) it.copy(enviando = false, error = fallo.message) else it.copy(enviando = false) }
                 null
             },
         )

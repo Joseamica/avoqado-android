@@ -199,6 +199,21 @@ class HistorialDeMermaTest {
         assertEquals(listOf("venue-centro" to null, "venue-centro" to "c1", "venue-centro" to null), fuente.pedidas)
     }
 
+    /**
+     * Codex (r3, P2): al terminar de leer, si lo mostrado no cuadra con el total vigente (llegó o se fue un folio a
+     * media lectura) se DICE y se ofrece actualizar, en vez de quedarse en «31 de 32» sin salida.
+     */
+    @Test
+    fun `si la lista cambio mientras se leia se dice y se puede actualizar`() = runTest {
+        fuente.respuestas += ResultadoDeHistorial.Pagina(PaginaDeHistorial(false, listOf(folio("a")), total = 2, nextCursor = "c1"))
+        fuente.respuestas += ResultadoDeHistorial.Pagina(PaginaDeHistorial(false, listOf(folio("b")), total = 3))
+        val v = vm()
+        v.cargar().join()
+        assertFalse(v.estado.value.desactualizada)
+        v.cargarMas().join()
+        assertTrue(v.estado.value.desactualizada)
+    }
+
     /** 🔴 Sin red NO es un error: se dice en palabras del cajero y lo ya cargado se conserva. */
     @Test
     fun `sin red lo dice y conserva lo cargado`() = runTest {

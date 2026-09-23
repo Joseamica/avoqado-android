@@ -488,6 +488,33 @@ class LogWasteViewModelTest {
         assertEquals(AvisoImpresion.Error(TextosMerma.SIN_PAPEL), vm.estado.value.avisoDeImpresion)
     }
 
+    /**
+     * Codex (r3, P2): la escritura de A tarda; el cajero cierra y abre para B. Al terminar, A no puede volver a
+     * aparecer como «Última merma» ni borrar lo que ya eligió para B. La merma de A sí queda en la cola.
+     */
+    @Test
+    fun `una escritura tardia no revive la ultima merma en la apertura nueva`() = runTest {
+        conexion.value = false
+        val puerta = CompletableDeferred<Unit>()
+        cola.antesDeEncolar = { puerta.await() }
+        val vm = vm()
+        vm.abrirFormulario(sigApertura(), null).join()
+        vm.capturar()
+        val registro = vm.confirmar()
+        runCurrent()
+        vm.formularioCerrado()
+        vm.abrirFormulario(sigApertura(), null).join()
+        vm.elegirArticulo(articulo("Leche"))
+
+        puerta.complete(Unit)
+        registro.join()
+
+        assertNull(vm.estado.value.ultima)
+        assertEquals("Leche", vm.estado.value.articulo?.name)
+        assertFalse(vm.estado.value.enviando)
+        assertEquals(1, cola.todas().size)
+    }
+
     /** Una apertura nueva del formulario es otra captura: no ofrece el comprobante de la anterior. */
     @Test
     fun `al abrir de nuevo el formulario se olvida la ultima merma`() = runTest {
