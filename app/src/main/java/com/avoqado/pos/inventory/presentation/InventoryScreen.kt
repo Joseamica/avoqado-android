@@ -204,7 +204,11 @@ fun InventoryScreen(
     // «Registrar merma» desde Inventario (founder, 23-sep): el MISMO formulario que en «Más», a pantalla completa.
     val mermaDesdeInventario by viewModel.mermaDesdeInventario.collectAsState()
     mermaDesdeInventario?.let { merma ->
-        LogWasteScreen(onDismiss = { viewModel.cerrarMerma() }, preseleccion = merma.preseleccion)
+        LogWasteScreen(
+            onDismiss = { viewModel.cerrarMerma() },
+            idApertura = merma.id,
+            preseleccion = merma.preseleccion,
+        )
         return
     }
 

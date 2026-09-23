@@ -56,8 +56,11 @@ private const val SCALE_FEATURE_CODE = "SCALE_INTEGRATION"
 
 // MARK: - Sidebar sections (matching Square inventory screenshot)
 
-/** El formulario de merma abierto desde Inventario; `preseleccion` = el artículo de la ficha, o ninguno. */
-data class MermaDesdeInventario(val preseleccion: ArticuloPreseleccionado?)
+/**
+ * El formulario de merma abierto desde Inventario; `preseleccion` = el artículo de la ficha, o ninguno. `id` identifica
+ * ESTA apertura: vive en el ViewModel, así que sobrevive al giro y al cambio de pestaña sin reabrir (Codex r9).
+ */
+data class MermaDesdeInventario(val id: Long, val preseleccion: ArticuloPreseleccionado?)
 
 enum class InventorySection(val label: String) {
     OVERVIEW("Descripción general"),
@@ -235,13 +238,14 @@ class InventoryViewModel @Inject constructor(
         get() = roleManager?.canLogWaste == true
 
     private val _mermaDesdeInventario = MutableStateFlow<MermaDesdeInventario?>(null)
+    private var aperturasDeMerma = 0L
 
     /** Si trae algo, el formulario de merma está abierto a pantalla completa sobre Inventario. */
     val mermaDesdeInventario: StateFlow<MermaDesdeInventario?> = _mermaDesdeInventario.asStateFlow()
 
     fun abrirMerma(preseleccion: ArticuloPreseleccionado?) {
         _selectedStockItem.value = null
-        _mermaDesdeInventario.value = MermaDesdeInventario(preseleccion)
+        _mermaDesdeInventario.value = MermaDesdeInventario(++aperturasDeMerma, preseleccion)
     }
 
     fun cerrarMerma() {

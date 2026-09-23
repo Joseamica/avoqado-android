@@ -58,12 +58,17 @@ import com.avoqado.pos.inventory.waste.domain.etiquetaDeUnidad
 @Composable
 fun LogWasteScreen(
     onDismiss: () -> Unit,
+    /**
+     * Qué apertura es ésta. Volver a MOSTRAR la misma (girar, regresar de otra pestaña) no la abre de nuevo: la
+     * captura en curso se conserva (🔴 Codex r9). Quien abre el formulario da un número nuevo cada vez.
+     */
+    idApertura: Long,
     /** Desde la ficha de un artículo en Inventario: llega con ese artículo ya elegido. */
     preseleccion: ArticuloPreseleccionado? = null,
     viewModel: LogWasteViewModel = hiltViewModel(),
 ) {
     val estado by viewModel.estado.collectAsState()
-    LaunchedEffect(Unit) { viewModel.abrirFormulario(preseleccion) }
+    LaunchedEffect(idApertura) { viewModel.abrirFormulario(idApertura, preseleccion) }
     DisposableEffect(Unit) { onDispose { viewModel.formularioCerrado() } }
     BackHandler(onBack = onDismiss)
 

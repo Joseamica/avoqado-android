@@ -744,7 +744,9 @@ fun MoreMenuScreen(
                     onClick = {},
                 ),
         ) {
-            LogWasteScreen(onDismiss = { showLogWaste = false })
+            // Una apertura nueva cada vez que se muestra (este estado no sobrevive a salir de «Más»).
+            val idApertura = remember { System.nanoTime() }
+            LogWasteScreen(onDismiss = { showLogWaste = false }, idApertura = idApertura)
         }
     }
 

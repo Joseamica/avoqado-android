@@ -164,7 +164,10 @@ class LogWasteViewModel @Inject constructor(
      * artículo traía la captura abandonada del anterior — y registrarla mermaba el equivocado. Cada apertura empieza
      * limpia. El letrero de rechazos NO se toca: sólo se va cuando el cajero lo ve.
      */
-    fun abrirFormulario(preseleccion: ArticuloPreseleccionado?): Job {
+    fun abrirFormulario(idApertura: Long, preseleccion: ArticuloPreseleccionado?): Job {
+        // 🔴 Codex r9: volver a MOSTRAR la misma apertura (girar, regresar de otra pestaña) no la abre de nuevo.
+        if (idApertura == aperturaMostrada) return alAbrir()
+        aperturaMostrada = idApertura
         carga?.cancel()
         preseleccionPendiente = preseleccion
         _estado.update {
@@ -201,6 +204,9 @@ class LogWasteViewModel @Inject constructor(
 
     /** La carga de la apertura en curso: una apertura nueva cancela la de la anterior. */
     private var carga: Job? = null
+
+    /** La apertura que está en pantalla (la da quien abre el formulario). */
+    private var aperturaMostrada: Long? = null
 
     /**
      * El artículo de la ficha, mientras no se haya aplicado. Se aplica UNA vez (🔴 Codex r8: «Cambiar» mientras bajaba

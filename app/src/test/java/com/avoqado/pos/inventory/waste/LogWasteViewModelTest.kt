@@ -90,6 +90,10 @@ class LogWasteViewModelTest {
     private val bloqueo = BloqueoDeMermaPorPlan(almacen, red, catalogo)
     private val motor = WasteSyncCoordinator(cola, transporte, almacen, red, bloqueo).apply { reloj = { AHORA } }
 
+    /** Cada apertura explícita del formulario tiene su número (como lo da la pantalla que lo abre). */
+    private var aperturas = 0L
+    private fun sigApertura() = ++aperturas
+
     private fun vm() = LogWasteViewModel(catalogo, motor, bloqueo, almacen, red).apply { reloj = { AHORA } }
 
     private fun LogWasteViewModel.capturar(cantidad: String = "3", motivo: WasteReason = WasteReason.SPOILED) {
@@ -509,7 +513,7 @@ class LogWasteViewModelTest {
     fun `al abrir desde la ficha de un articulo, llega con ese articulo elegido`() = runTest {
         val vm = vm()
 
-        vm.abrirFormulario(ArticuloPreseleccionado("RAW_MATERIAL", "rm-1")).join()
+        vm.abrirFormulario(sigApertura(), ArticuloPreseleccionado("RAW_MATERIAL", "rm-1")).join()
 
         assertEquals("rm-1", vm.estado.value.articulo?.itemId)
     }
@@ -519,7 +523,7 @@ class LogWasteViewModelTest {
     fun `si el articulo de la ficha no esta en el catalogo, no se elige nada`() = runTest {
         val vm = vm()
 
-        vm.abrirFormulario(ArticuloPreseleccionado("PRODUCT", "p-receta")).join()
+        vm.abrirFormulario(sigApertura(), ArticuloPreseleccionado("PRODUCT", "p-receta")).join()
 
         assertNull(vm.estado.value.articulo)
     }
@@ -531,7 +535,7 @@ class LogWasteViewModelTest {
         catalogo.alRefrescar = { venueId, ahora -> catalogo.porVenue = mapOf(venueId to listOf(articulo(actualizadoEn = ahora))) }
         val vm = vm()
 
-        vm.abrirFormulario(ArticuloPreseleccionado("RAW_MATERIAL", "rm-1")).join()
+        vm.abrirFormulario(sigApertura(), ArticuloPreseleccionado("RAW_MATERIAL", "rm-1")).join()
 
         assertEquals("rm-1", vm.estado.value.articulo?.itemId)
     }
@@ -542,7 +546,7 @@ class LogWasteViewModelTest {
         val leche = WasteCatalogEntity(VENUE, "PRODUCT", "p-leche", "Leche", "LEC-01", "UNIT", AHORA)
         catalogo.porVenue = mapOf(VENUE to listOf(articulo(), leche))
         val vm = vm()
-        vm.abrirFormulario(ArticuloPreseleccionado("RAW_MATERIAL", "rm-1")).join()
+        vm.abrirFormulario(sigApertura(), ArticuloPreseleccionado("RAW_MATERIAL", "rm-1")).join()
         vm.elegirArticulo(leche)
 
         vm.alAbrir().join()
@@ -558,7 +562,7 @@ class LogWasteViewModelTest {
         val vm = vm()
         catalogo.alRefrescar = { _, _ -> vm.elegirArticulo(leche) }
 
-        vm.abrirFormulario(ArticuloPreseleccionado("RAW_MATERIAL", "rm-1")).join()
+        vm.abrirFormulario(sigApertura(), ArticuloPreseleccionado("RAW_MATERIAL", "rm-1")).join()
 
         assertEquals("p-leche", vm.estado.value.articulo?.itemId)
     }
@@ -572,13 +576,13 @@ class LogWasteViewModelTest {
         val leche = WasteCatalogEntity(VENUE, "PRODUCT", "p-leche", "Leche", "LEC-01", "UNIT", AHORA)
         catalogo.porVenue = mapOf(VENUE to listOf(articulo(), leche))
         val vm = vm()
-        vm.abrirFormulario(ArticuloPreseleccionado("RAW_MATERIAL", "rm-1")).join()
+        vm.abrirFormulario(sigApertura(), ArticuloPreseleccionado("RAW_MATERIAL", "rm-1")).join()
         vm.escribirCantidad("3")
         vm.elegirMotivo(WasteReason.SPOILED)
         vm.escribirNota("se cayó")
         vm.formularioCerrado()
 
-        vm.abrirFormulario(ArticuloPreseleccionado("PRODUCT", "p-leche")).join()
+        vm.abrirFormulario(sigApertura(), ArticuloPreseleccionado("PRODUCT", "p-leche")).join()
 
         assertEquals("p-leche", vm.estado.value.articulo?.itemId)
         assertEquals("", vm.estado.value.cantidad)
@@ -592,7 +596,7 @@ class LogWasteViewModelTest {
         val vm = vm()
         catalogo.alRefrescar = { _, _ -> vm.quitarArticulo() }
 
-        vm.abrirFormulario(ArticuloPreseleccionado("RAW_MATERIAL", "rm-1")).join()
+        vm.abrirFormulario(sigApertura(), ArticuloPreseleccionado("RAW_MATERIAL", "rm-1")).join()
 
         assertNull(vm.estado.value.articulo)
     }
@@ -611,9 +615,30 @@ class LogWasteViewModelTest {
             catalogo.porVenue = mapOf(venueId to listOf(articulo(), leche))
         }
 
-        vm.abrirFormulario(ArticuloPreseleccionado("RAW_MATERIAL", "rm-1")).join()
+        vm.abrirFormulario(sigApertura(), ArticuloPreseleccionado("RAW_MATERIAL", "rm-1")).join()
 
         assertEquals("p-leche", vm.estado.value.articulo?.itemId)
+    }
+
+    /**
+     * 🔴 Codex r9: volver a MOSTRAR la misma apertura (girar la tablet, ir a otra pestaña y regresar con el formulario
+     * abierto) no es abrirlo de nuevo: la captura en curso se conserva.
+     */
+    @Test
+    fun `volver a mostrar la misma apertura conserva la captura en curso`() = runTest {
+        val leche = WasteCatalogEntity(VENUE, "PRODUCT", "p-leche", "Leche", "LEC-01", "UNIT", AHORA)
+        catalogo.porVenue = mapOf(VENUE to listOf(articulo(), leche))
+        val vm = vm()
+        vm.abrirFormulario(7L, ArticuloPreseleccionado("RAW_MATERIAL", "rm-1")).join()
+        vm.elegirArticulo(leche)
+        vm.escribirCantidad("3")
+        vm.elegirMotivo(WasteReason.SPOILED)
+
+        vm.abrirFormulario(7L, ArticuloPreseleccionado("RAW_MATERIAL", "rm-1")).join()
+
+        assertEquals("p-leche", vm.estado.value.articulo?.itemId)
+        assertEquals("3", vm.estado.value.cantidad)
+        assertEquals(WasteReason.SPOILED, vm.estado.value.motivo)
     }
 
     /** El tipo sale de la lista de la que vino el artículo; los de receta no admiten merma (spec D2). */
