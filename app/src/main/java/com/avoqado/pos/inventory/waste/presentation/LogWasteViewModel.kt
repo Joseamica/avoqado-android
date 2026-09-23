@@ -143,10 +143,15 @@ class LogWasteViewModel @Inject constructor(
      * por el plan y baja el catálogo. También es el «Actualizar» del aviso de plan: la petición
      * que puede levantarlo está siempre disponible.
      */
-    fun alAbrir(): Job = viewModelScope.launch {
-        val venueId = secureStorage.venueId ?: return@launch
+    fun alAbrir(): Job {
+        abierto = true
+        return viewModelScope.launch { refrescarAlAbrir() }
+    }
+
+    private suspend fun refrescarAlAbrir() {
+        val venueId = secureStorage.venueId ?: return
         cargar(venueId, recienBajado = false)
-        if (!hayRed()) return@launch
+        if (!hayRed()) return
         bloqueo.revalidar(venueId)
         if (!bloqueo.estaBloqueado(venueId) && catalogo.refrescarCatalogo(venueId, reloj())) {
             cargar(venueId, recienBajado = true)
@@ -186,6 +191,24 @@ class LogWasteViewModel @Inject constructor(
     fun rechazosVistos() = _estado.update { it.copy(rechazos = emptyList()) }
 
     /**
+     * 🔴 Codex r5: este ViewModel vive con el menú «Más», no con el formulario, así que cerrar la pantalla no
+     * cancela nada por sí solo. Al cerrarla se deja de seguir las capturas: un desenlace que llega con la
+     * pantalla cerrada ya no se guarda para cuando se reabra (el cajero lo ve en «Mermas por subir»).
+     */
+    fun formularioCerrado() {
+        abierto = false
+        val vivos = seguimientos.toList()
+        seguimientos.clear()
+        vivos.forEach { it.cancel() }
+    }
+
+    /** Los seguimientos vivos (`seguirHastaElDesenlace`); se cancelan al cerrar el formulario. */
+    private val seguimientos = mutableListOf<Job>()
+
+    /** Si el formulario está a la vista: una espera que termina con él cerrado no publica ni sigue nada. */
+    private var abierto = true
+
+    /**
      * Un doble toque en «Confirmar» registra UNA merma, no dos. El candado cubre sólo el registro: la
      * espera del desenlace corre fuera de él, con el formulario ya limpio para la siguiente.
      */
@@ -202,6 +225,7 @@ class LogWasteViewModel @Inject constructor(
         val turno = turnos.incrementAndGet()
         // La espera va FUERA de `update`: dentro, un cambio del formulario la volvería a correr.
         val (aviso, definitivo) = avisoTrasRegistrar(registrada)
+        if (!abierto) return@launch
         when {
             aviso == null -> anotarRechazo(registrada.articulo)
             debePublicarseElAviso(turno, turnos.get()) -> _estado.update { it.copy(aviso = aviso, avisoId = turno) }
@@ -217,9 +241,13 @@ class LogWasteViewModel @Inject constructor(
      * hasta su desenlace mientras la pantalla esté abierta: un rechazo que llega después también va al
      * letrero. Aparte del `confirmar` para no retenerlo; se cancela solo al cerrar la pantalla.
      */
-    private fun seguirHastaElDesenlace(r: Registrada) = viewModelScope.launch {
-        val final = runCatching { motor.esperarDesenlaceFinal(r.venueId, r.folio) }.getOrNull()
-        if (final == SubidaDeMerma.EN_REVISION) anotarRechazo(r.articulo)
+    private fun seguirHastaElDesenlace(r: Registrada) {
+        val seguimiento = viewModelScope.launch {
+            val final = runCatching { motor.esperarDesenlaceFinal(r.venueId, r.folio) }.getOrNull()
+            if (final == SubidaDeMerma.EN_REVISION) anotarRechazo(r.articulo)
+        }
+        seguimientos.removeAll { it.isCompleted }
+        seguimientos += seguimiento
     }
 
     /** Lo que se registró: la sucursal, el folio y el nombre del artículo (lo necesita el aviso de rechazo). */

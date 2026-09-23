@@ -255,6 +255,48 @@ class LogWasteViewModelTest {
         assertEquals(listOf("Aguacate"), vm.estado.value.rechazos)
     }
 
+    /**
+     * 🔴 Codex r5: el ViewModel vive con el menú «Más», no con el formulario. Al cerrar el formulario el
+     * seguimiento se acaba: un desenlace que llega con la pantalla cerrada no se guarda para cuando se reabra.
+     */
+    @Test
+    fun `al cerrar el formulario se deja de seguir la captura`() = runTest {
+        retrasoDelServidor = 4_000
+        respuestaDelServidor = RespuestaHttp(422, """{"code":"UNIT_MISMATCH"}""")
+        motor.start(backgroundScope)
+        runCurrent()
+        val vm = vm()
+        vm.capturar()
+
+        vm.confirmar().join()
+        vm.formularioCerrado()
+        advanceTimeBy(10_000)
+
+        assertEquals(EstadoMerma.NEEDS_REVIEW, cola.todas().single().estado)
+        assertEquals(emptyList<String>(), vm.estado.value.rechazos)
+    }
+
+    /** Y si se cierra DURANTE la espera del aviso: nada arranca ni se publica después del cierre. */
+    @Test
+    fun `al cerrar el formulario durante la espera no queda nada para cuando se reabra`() = runTest {
+        retrasoDelServidor = 4_000
+        respuestaDelServidor = RespuestaHttp(422, """{"code":"UNIT_MISMATCH"}""")
+        motor.start(backgroundScope)
+        runCurrent()
+        val vm = vm()
+        vm.capturar()
+
+        val confirmacion = vm.confirmar()
+        advanceTimeBy(1_000)
+        vm.formularioCerrado()
+        confirmacion.join()
+        advanceTimeBy(10_000)
+
+        assertEquals(EstadoMerma.NEEDS_REVIEW, cola.todas().single().estado)
+        assertNull(vm.estado.value.aviso)
+        assertEquals(emptyList<String>(), vm.estado.value.rechazos)
+    }
+
     /** El texto del letrero: uno o varios, en buen español. */
     @Test
     fun `el letrero de rechazos dice cuales, en singular o plural`() {
