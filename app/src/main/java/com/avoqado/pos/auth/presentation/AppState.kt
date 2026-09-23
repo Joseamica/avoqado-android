@@ -58,6 +58,13 @@ class AppState @Inject constructor(
     lateinit var deviceCapabilitySyncCoordinator:
         com.avoqado.pos.customerdisplay.DeviceCapabilitySyncCoordinator
 
+    /**
+     * El motor de la merma. Por miembro, igual que [deviceCapabilitySyncCoordinator], para no romper
+     * a quien construye este ViewModel a mano en las pruebas de JVM.
+     */
+    @Inject
+    lateinit var wasteSyncCoordinator: com.avoqado.pos.inventory.waste.data.WasteSyncCoordinator
+
     private fun notifyDeviceSessionChanged() {
         if (::deviceCapabilitySyncCoordinator.isInitialized) {
             deviceCapabilitySyncCoordinator.onSessionChanged()
@@ -72,12 +79,15 @@ class AppState @Inject constructor(
         val venue = secureStorage.venueId
         if (inventorySyncRunning && inventorySyncVenue == venue) return
         inventoryCountSyncCoordinator.start(viewModelScope)
+        // La merma vive con la sesión, como el conteo: su motor arranca y para con ella.
+        if (::wasteSyncCoordinator.isInitialized) wasteSyncCoordinator.start(viewModelScope)
         inventorySyncRunning = true
         inventorySyncVenue = venue
     }
 
     private fun stopInventorySync() {
         inventoryCountSyncCoordinator.stop()
+        if (::wasteSyncCoordinator.isInitialized) wasteSyncCoordinator.stop()
         inventorySyncRunning = false
         inventorySyncVenue = null
     }
@@ -317,6 +327,11 @@ class AppState @Inject constructor(
                 return@launch
             }
 
+            // Spec §5: lo PROPIO se intenta subir antes de soltar el token (que el servidor usa como
+            // autor), con un plazo corto. Sin red no retiene el cierre: se queda, con su dueño.
+            if (::wasteSyncCoordinator.isInitialized) {
+                wasteSyncCoordinator.vaciarAntesDeCerrarSesion(secureStorage.userId)
+            }
             paymentSyncService.stop()
             stopInventorySync()
             syncOutbox.stop()

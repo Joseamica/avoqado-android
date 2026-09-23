@@ -115,6 +115,13 @@ internal object PendingWasteSql {
     const val BORRAR_SINCRONIZADA: String =
         "DELETE FROM pending_waste WHERE idempotencyKey = :folio AND estado = 'SENDING'"
 
+    /**
+     * Regresa a la cola una fila que iba en camino SIN contarla como intento: el envío no salió (la
+     * sesión cambió a media vuelta) o se canceló antes de contestar. Sólo toca lo que va en camino.
+     */
+    const val DEVOLVER: String =
+        "UPDATE pending_waste SET estado = 'PENDING' WHERE idempotencyKey = :folio AND estado = 'SENDING'"
+
     /** Al arrancar: lo que quedó en camino tiene desenlace desconocido y vuelve a la cola, con su folio. */
     const val SANAR_SENDING: String =
         "UPDATE pending_waste SET estado = 'PENDING' WHERE estado = 'SENDING'"
@@ -167,6 +174,9 @@ interface PendingWasteDao {
     /** Sólo el 201 del drenado: la merma ya vive en el servidor. */
     @Query(PendingWasteSql.BORRAR_SINCRONIZADA)
     suspend fun borrarSincronizada(folio: String): Int
+
+    @Query(PendingWasteSql.DEVOLVER)
+    suspend fun devolver(folio: String): Int
 
     @Query(PendingWasteSql.SANAR_SENDING)
     suspend fun sanarSending(): Int

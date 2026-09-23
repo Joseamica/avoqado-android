@@ -47,6 +47,7 @@ class MoreMenuViewModel @Inject constructor(
     val venueSwitchState: com.avoqado.pos.settings.domain.VenueSwitchState,
     private val paymentSyncService: PaymentSyncService,
     private val syncOutbox: SyncOutbox,
+    private val wasteSyncCoordinator: com.avoqado.pos.inventory.waste.data.WasteSyncCoordinator,
 ) : ViewModel() {
 
     private val _venueName = MutableStateFlow(secureStorage.venueName ?: "Sin establecimiento")
@@ -204,6 +205,10 @@ class MoreMenuViewModel @Inject constructor(
             )
         }
 
+        // Spec §5: la merma sube con la sesión de quien la capturó. El relevo mata el token de la
+        // persona que sale, así que lo suyo se intenta subir ANTES, con un plazo corto; lo que no
+        // alcance se queda con su dueño. No bloquea el cambio (a diferencia de las ventas).
+        wasteSyncCoordinator.vaciarAntesDeCerrarSesion(secureStorage.userId)
         val result = authRepository.switchUser(pin)
         if (result is SwitchUserResult.Success) {
             // Lo mismo que hace `switchVenue`: sin recargar estos dos, la app seguiría pintando el

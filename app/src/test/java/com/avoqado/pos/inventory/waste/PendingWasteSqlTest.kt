@@ -245,6 +245,25 @@ class PendingWasteSqlTest {
         assertEquals(5_000L, (f["proximoIntentoEn"] as Number).toLong())
     }
 
+    /**
+     * Devolver regresa a la cola una fila que iba en camino SIN contarla como intento (el envío no
+     * salió: la sesión cambió, o se canceló antes de contestar). Y sólo toca lo que va en camino:
+     * una fila ya cerrada no se reabre.
+     */
+    @Test
+    fun `devolver regresa a la cola lo que iba en camino, sin contarlo como intento`() {
+        insertar(FOLIO)
+        reclamarFolio(FOLIO)
+
+        assertEquals(1, actualizar(PendingWasteSql.DEVOLVER, "folio" to FOLIO))
+        val f = fila(FOLIO)!!
+        assertEquals(EstadoMerma.PENDING, f["estado"])
+        assertEquals(0L, (f["intentos"] as Number).toLong())
+
+        insertar("anulada", estado = EstadoMerma.VOIDED)
+        assertEquals(0, actualizar(PendingWasteSql.DEVOLVER, "folio" to "anulada"))
+    }
+
     /** El 201: la merma ya vive en el servidor y la fila que se estaba mandando se va. */
     @Test
     fun `el 201 borra la fila que se estaba mandando`() {

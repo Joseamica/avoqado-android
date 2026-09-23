@@ -8,6 +8,8 @@ import com.avoqado.pos.core.data.local.database.AvoqadoDatabaseMigrations
 import com.avoqado.pos.core.data.local.database.PendingPaymentDao
 import com.avoqado.pos.inventory.data.local.InventoryTransferDao
 import com.avoqado.pos.inventory.data.local.PurchaseOrderDao
+import com.avoqado.pos.inventory.waste.data.PendingWasteDao
+import com.avoqado.pos.inventory.waste.data.WasteCatalogDao
 import com.avoqado.pos.reservations.data.PendingReservationActionDao
 import dagger.Module
 import dagger.Provides
@@ -46,6 +48,12 @@ object DatabaseModule {
     fun providePendingPaymentDao(database: AvoqadoDatabase): PendingPaymentDao {
         return database.pendingPaymentDao()
     }
+
+    @Provides
+    fun provideWasteCatalogDao(database: AvoqadoDatabase): WasteCatalogDao = database.wasteCatalogDao()
+
+    @Provides
+    fun providePendingWasteDao(database: AvoqadoDatabase): PendingWasteDao = database.pendingWasteDao()
 
     @Provides
     fun provideCashDrawerDao(database: AvoqadoDatabase): CashDrawerDao {

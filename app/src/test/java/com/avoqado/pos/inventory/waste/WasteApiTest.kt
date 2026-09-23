@@ -1,5 +1,6 @@
 package com.avoqado.pos.inventory.waste
 
+import com.avoqado.pos.inventory.waste.data.FalloDeMerma
 import com.avoqado.pos.inventory.waste.data.WasteApi
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -90,5 +91,27 @@ class WasteApiTest {
                "total":1,"page":1,"pageSize":200,"otroCampo":true}""",
         )
         assertEquals(1, pagina?.items?.size)
+    }
+
+    // MARK: - Leer un error
+
+    /**
+     * El desenlace se decide por el `code` del servicio y por el `featureCode` del candado de plan
+     * (que NO trae `code`: lo pone un middleware compartido de la plataforma). Se leen tal cual.
+     */
+    @Test
+    fun `un error se lee por su code y su featureCode, sin interpretarlo`() {
+        assertEquals(FalloDeMerma("WASTE_VOIDED", null), WasteApi.leerFallo("""{"code":"WASTE_VOIDED","message":"x"}"""))
+        assertEquals(
+            FalloDeMerma(null, "INVENTORY_TRACKING"),
+            WasteApi.leerFallo("""{"error":"Forbidden","featureCode":"INVENTORY_TRACKING"}"""),
+        )
+    }
+
+    /** Un 502 de un proxy trae HTML, o nada: no revienta, simplemente no hay código. */
+    @Test
+    fun `un cuerpo que no es JSON no revienta`() {
+        assertEquals(FalloDeMerma(null, null), WasteApi.leerFallo("<html>502 Bad Gateway</html>"))
+        assertEquals(FalloDeMerma(null, null), WasteApi.leerFallo(""))
     }
 }
