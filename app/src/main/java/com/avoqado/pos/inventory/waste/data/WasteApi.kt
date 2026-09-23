@@ -13,6 +13,15 @@ import kotlinx.serialization.json.put
 /** `code` y `featureCode` de un cuerpo de error, tal cual. Los decide `clasificarRespuestaDeMerma`. */
 data class FalloDeMerma(val code: String?, val featureCode: String?)
 
+/** Lo que el servidor contestó a un `void` (spec §4.3). */
+sealed interface Anulacion {
+    /** El folio quedó anulado; `porStaffId` es quien lo anuló (la autoría canónica del servidor). */
+    data class Anulada(val porStaffId: String?) : Anulacion
+
+    /** El folio SÍ se había registrado: no se anuló nada. */
+    data object YaAplicada : Anulacion
+}
+
 /**
  * Las rutas `/mobile/venues/:venueId/inventory/waste*` — la forma de las peticiones y de las
  * respuestas, sin tocar la red. Quien envía es el repositorio (con el `OkHttpClient` que ya
@@ -88,6 +97,25 @@ object WasteApi {
         val raiz = runCatching { Json.parseToJsonElement(body).jsonObject }.getOrNull()
             ?: return FalloDeMerma(null, null)
         return FalloDeMerma(raiz.texto("code"), raiz.texto("featureCode"))
+    }
+
+    /** `…/mobile/venues/{venueId}/inventory/waste/void`, con el venue DE LA FILA. */
+    fun urlDeAnulacion(venueBase: String): String = "$venueBase/inventory/waste/void"
+
+    /** Sólo el folio: la ruta no acepta nada más. */
+    fun cuerpoDeAnulacion(folio: String): String = buildJsonObject { put("idempotencyKey", folio) }.toString()
+
+    /**
+     * `{ outcome: "VOIDED", voidedByStaffId, voidedAt }` o `{ outcome: "ALREADY_APPLIED", report? }`.
+     * `null` si el cuerpo no tiene esa forma: el motor lo trata como un fallo y la fila se queda.
+     */
+    fun leerAnulacion(body: String): Anulacion? {
+        val raiz = runCatching { Json.parseToJsonElement(body).jsonObject }.getOrNull() ?: return null
+        return when (raiz.texto("outcome")) {
+            "VOIDED" -> Anulacion.Anulada(raiz.texto("voidedByStaffId"))
+            "ALREADY_APPLIED" -> Anulacion.YaAplicada
+            else -> null
+        }
     }
 
     /** Un `null` de JSON y una llave ausente se leen igual: no hay texto. */

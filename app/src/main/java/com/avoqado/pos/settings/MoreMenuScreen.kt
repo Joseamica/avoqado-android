@@ -41,6 +41,7 @@ import androidx.compose.material.icons.outlined.Business
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.Checklist
 import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.material.icons.outlined.CloudUpload
 import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.Extension
 import androidx.compose.material.icons.outlined.GridView
@@ -101,6 +102,7 @@ import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.estimates.presentation.EstimatesScreen
 import com.avoqado.pos.inventory.waste.domain.TextosMerma
 import com.avoqado.pos.inventory.waste.presentation.LogWasteScreen
+import com.avoqado.pos.inventory.waste.presentation.PendingWasteScreen
 import com.avoqado.pos.inventory.waste.presentation.entradaDeMerma
 import com.avoqado.pos.kds.presentation.KDSScreen
 import com.avoqado.pos.orders.presentation.OrdersScreen
@@ -144,6 +146,7 @@ fun MoreMenuScreen(
     var showArticles by remember { mutableStateOf(false) }
     var showCustomers by remember { mutableStateOf(false) }
     var showLogWaste by remember { mutableStateOf(false) }
+    var showPendingWaste by remember { mutableStateOf(false) }
     var showReports by remember { mutableStateOf(false) }
     var showOrders by remember { mutableStateOf(false) }
     // Task 7b: filtro con el que arranca la lista de Pedidos al abrirla.
@@ -167,6 +170,8 @@ fun MoreMenuScreen(
     val mermaBloqueada by viewModel.mermaBloqueada.collectAsState()
     // Spec §5: el bloqueo de plan de la merma se le vuelve a preguntar al servidor al abrir «Más».
     LaunchedEffect(Unit) { viewModel.revalidarMerma() }
+    val mermasPorSubir by viewModel.mermasPorSubir.collectAsState()
+    LaunchedEffect(venueName) { viewModel.seguirMermasPorSubir() }
     val closeAllOverlays = {
         showVenueSwitcher = false
         showTimeClock = false
@@ -176,6 +181,7 @@ fun MoreMenuScreen(
         showArticles = false
         showCustomers = false
         showLogWaste = false
+        showPendingWaste = false
         showReports = false
         showOrders = false
         ordersInitialStatusFilter = null
@@ -586,6 +592,17 @@ fun MoreMenuScreen(
                     onClick = { showLogWaste = true },
                 ),
             )
+            // Sólo cuando hay algo: lo que la cola todavía guarda en este aparato (spec §5).
+            if (mermasPorSubir > 0) {
+                add(
+                    MenuEntry(
+                        icon = Icons.Outlined.CloudUpload,
+                        label = TextosMerma.POR_SUBIR_TITULO,
+                        subtitle = TextosMerma.POR_SUBIR_CONTADOR.replace("{n}", mermasPorSubir.toString()),
+                        onClick = { showPendingWaste = true },
+                    ),
+                )
+            }
         }
 
         val catalogo = buildList {
@@ -728,6 +745,24 @@ fun MoreMenuScreen(
                 ),
         ) {
             LogWasteScreen(onDismiss = { showLogWaste = false })
+        }
+    }
+
+    // Mermas por subir — pantalla completa, igual que Registrar merma.
+    if (showPendingWaste) {
+        val overlayInteraction = remember { MutableInteractionSource() }
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .zIndex(10f)
+                .background(MaterialTheme.colorScheme.surface)
+                .clickable(
+                    interactionSource = overlayInteraction,
+                    indication = null,
+                    onClick = {},
+                ),
+        ) {
+            PendingWasteScreen(onDismiss = { showPendingWaste = false })
         }
     }
 

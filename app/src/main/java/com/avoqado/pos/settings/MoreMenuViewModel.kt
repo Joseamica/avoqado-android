@@ -49,6 +49,7 @@ class MoreMenuViewModel @Inject constructor(
     private val syncOutbox: SyncOutbox,
     private val wasteSyncCoordinator: com.avoqado.pos.inventory.waste.data.WasteSyncCoordinator,
     private val bloqueoDeMerma: com.avoqado.pos.inventory.waste.data.BloqueoDeMermaPorPlan,
+    private val pendingWasteDao: com.avoqado.pos.inventory.waste.data.PendingWasteDao,
 ) : ViewModel() {
 
     private val _venueName = MutableStateFlow(secureStorage.venueName ?: "Sin establecimiento")
@@ -142,6 +143,27 @@ class MoreMenuViewModel @Inject constructor(
         val venueId = secureStorage.venueId ?: return
         if (!canLogWaste || !bloqueoDeMerma.estaBloqueado(venueId)) return
         viewModelScope.launch { bloqueoDeMerma.revalidar(venueId) }
+    }
+
+    private val _mermasPorSubir = MutableStateFlow(0)
+
+    /** Lo que la persona ve en «Mermas por subir» y todavía espera algo. Con 0, la entrada no aparece. */
+    val mermasPorSubir: StateFlow<Int> = _mermasPorSubir.asStateFlow()
+    private var cuentaDeMermas: kotlinx.coroutines.Job? = null
+
+    /** Sigue la cola de la sucursal ACTIVA; se vuelve a llamar si la sucursal cambia. */
+    fun seguirMermasPorSubir() {
+        val venueId = secureStorage.venueId ?: return
+        cuentaDeMermas?.cancel()
+        cuentaDeMermas = viewModelScope.launch {
+            pendingWasteDao.delVenue(venueId).collect { filas ->
+                _mermasPorSubir.value = com.avoqado.pos.inventory.waste.presentation.porSubir(
+                    com.avoqado.pos.inventory.waste.presentation.mermasVisibles(
+                        filas, secureStorage.userId, roleManager.veMermasDeTodos,
+                    ),
+                )
+            }
+        }
     }
 
     /** True → show the Pro tier badge on the "Activar reservas" entry (visible teaser). */

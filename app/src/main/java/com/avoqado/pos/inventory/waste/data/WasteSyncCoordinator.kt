@@ -31,10 +31,14 @@ import java.util.UUID
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/** Lo que el motor necesita de la red: mandar UNA fila y traer la respuesta cruda. */
+/** Lo que el motor necesita de la red: mandar o anular UNA fila y traer la respuesta cruda. */
 interface TransporteDeMerma {
     suspend fun enviar(fila: PendingWasteEntity): RespuestaHttp
+    suspend fun anular(fila: PendingWasteEntity): RespuestaHttp
 }
+
+/** Cómo terminó un intento de descartar una merma de la cola. */
+enum class DesenlaceDeDescarte { ANULADA, YA_APLICADA, SIN_RED, EN_CAMINO, SIN_PERMISO, FALLO }
 
 /** La merma no se puede registrar así: el servidor la rechazaría con un 422 permanente. */
 class EntradaDeMermaInvalida(mensaje: String) : IllegalArgumentException(mensaje)
@@ -146,6 +150,50 @@ class WasteSyncCoordinator @Inject constructor(
     suspend fun vaciarAntesDeCerrarSesion(staffId: String?, plazoMs: Long = PLAZO_AL_CERRAR_SESION) {
         if (staffId.isNullOrBlank()) return
         withTimeoutOrNull(plazoMs) { candado.withLock { drenar(staffId) } }
+    }
+
+    /**
+     * Descartar una merma de la cola = anular su folio en el servidor (spec §4.3).
+     *
+     * 🔴 EXIGE red: si el POST sí había llegado, borrarla sólo aquí dejaría registrada una merma que el
+     * negocio cree descartada. Sólo el servidor sabe.
+     *
+     * Envío y descarte se excluyen por el ESTADO de la fila (spec §5), con el MISMO reclamo atómico del
+     * drenado: la que va en camino no se toca, y la que se está descartando no sale.
+     */
+    suspend fun descartar(folio: String): DesenlaceDeDescarte {
+        // La única forma de salir de la cola es el 201 del drenado: si ya no está, se registró.
+        val fila = dao.porFolio(folio) ?: return DesenlaceDeDescarte.YA_APLICADA
+        if (fila.estado == EstadoMerma.VOIDED) return DesenlaceDeDescarte.ANULADA
+        if (fila.estado == EstadoMerma.APPLIED) return DesenlaceDeDescarte.YA_APLICADA
+        if (!connectivityMonitor.isConnected.value || !connectivityMonitor.isServerReachable.value) {
+            return DesenlaceDeDescarte.SIN_RED
+        }
+        // El drenado nunca toma una fila en revisión: ésa no necesita reclamarse.
+        val reclamada = fila.estado != EstadoMerma.NEEDS_REVIEW
+        if (reclamada && dao.reclamarFolio(folio) == 0) return DesenlaceDeDescarte.EN_CAMINO
+        val respuesta = try {
+            transporte.anular(fila)
+        } catch (cancelada: CancellationException) {
+            if (reclamada) withContext(NonCancellable) { dao.devolver(folio) }
+            throw cancelada
+        }
+        val anulacion = if (respuesta.code in 200..299) WasteApi.leerAnulacion(respuesta.body) else null
+        return when (anulacion) {
+            is Anulacion.Anulada -> {
+                dao.cerrar(folio, EstadoMerma.VOIDED, anulacion.porStaffId, reloj())
+                DesenlaceDeDescarte.ANULADA
+            }
+            Anulacion.YaAplicada -> {
+                dao.cerrar(folio, EstadoMerma.APPLIED, porStaffId = null, cuando = reloj())
+                DesenlaceDeDescarte.YA_APLICADA
+            }
+            null -> {
+                // No se supo o no se pudo: la fila vuelve a la cola tal cual, con su folio.
+                if (reclamada) dao.devolver(folio)
+                if (respuesta.code == 403) DesenlaceDeDescarte.SIN_PERMISO else DesenlaceDeDescarte.FALLO
+            }
+        }
     }
 
     /**

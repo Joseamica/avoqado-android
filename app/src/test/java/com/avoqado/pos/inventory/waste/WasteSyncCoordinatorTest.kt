@@ -68,6 +68,8 @@ class WasteSyncCoordinatorTest {
                 enVuelo--
             }
         }
+
+        override suspend fun anular(fila: PendingWasteEntity) = RespuestaHttp(0, "")
     }
 
     private val cola = ColaDeMermaSobreSqlite()

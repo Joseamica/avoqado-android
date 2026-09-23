@@ -158,6 +158,21 @@ class WasteRepositoryTest {
         assertNull(repo.consultarPlan("venue-centro"))
     }
 
+    /** La anulación va al venue DE LA FILA, con sólo el folio, y de segundo plano: su 403 no admite PIN. */
+    @Test
+    fun `la anulacion viaja al venue de la fila con solo el folio, en segundo plano`() = runTest {
+        server.enqueue(MockResponse().setResponseCode(200).setBody("""{"outcome":"VOIDED"}"""))
+
+        val respuesta = repo.anular(fila(venueId = "venue-sur"))
+
+        val pedido = server.takeRequest()
+        assertEquals(200, respuesta.code)
+        assertEquals("/api/v1/mobile/venues/venue-sur/inventory/waste/void", pedido.path)
+        assertEquals("POST", pedido.method)
+        assertEquals("1", pedido.getHeader(ForbiddenInterceptor.BACKGROUND_HEADER))
+        assertEquals("""{"idempotencyKey":"3f9c2c1e-5b7a-4c1d-9e8f-0a1b2c3d4e5f"}""", pedido.body.readUtf8())
+    }
+
     /** El refresco baja todas las páginas y reemplaza el catálogo de ESA sucursal de una vez. */
     @Test
     fun `refrescar el catalogo baja todas las paginas y lo reemplaza`() = runTest {

@@ -67,6 +67,7 @@ class LogWasteViewModelTest {
     /** Nadie arranca el drenado en estas pruebas: la fila se queda en disco, que es lo que se mira. */
     private val transporte = object : TransporteDeMerma {
         override suspend fun enviar(fila: PendingWasteEntity) = RespuestaHttp(201, "{}")
+        override suspend fun anular(fila: PendingWasteEntity) = RespuestaHttp(0, "")
     }
     private val bloqueo = BloqueoDeMermaPorPlan(almacen, red, catalogo)
     private val motor = WasteSyncCoordinator(cola, transporte, almacen, red, bloqueo).apply { reloj = { AHORA } }

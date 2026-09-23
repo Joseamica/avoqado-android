@@ -50,11 +50,22 @@ class WasteRepository @Inject constructor(
      *
      * Sin transporte devuelve `0` (no revienta): el motor lo lee como «reintentar».
      */
-    override suspend fun enviar(fila: PendingWasteEntity): RespuestaHttp = withContext(Dispatchers.IO) {
+    override suspend fun enviar(fila: PendingWasteEntity): RespuestaHttp =
+        publicar(WasteApi.urlDeMerma(venueBaseUrl(fila.venueId)), WasteApi.cuerpoDeMerma(fila))
+
+    /**
+     * El `void` del folio (spec §4.3), al venue DE LA FILA. También de segundo plano: la ruta no pasa
+     * por `checkPermission`, así que su 403 no se puede autorizar con el PIN de un gerente, y abrir el
+     * teclado prometería algo que el servidor no hace.
+     */
+    override suspend fun anular(fila: PendingWasteEntity): RespuestaHttp =
+        publicar(WasteApi.urlDeAnulacion(venueBaseUrl(fila.venueId)), WasteApi.cuerpoDeAnulacion(fila.idempotencyKey))
+
+    private suspend fun publicar(url: String, cuerpo: String): RespuestaHttp = withContext(Dispatchers.IO) {
         val request = Request.Builder()
-            .url(WasteApi.urlDeMerma(venueBaseUrl(fila.venueId)))
+            .url(url)
             .header(ForbiddenInterceptor.BACKGROUND_HEADER, "1")
-            .post(WasteApi.cuerpoDeMerma(fila).toRequestBody(tipoJson))
+            .post(cuerpo.toRequestBody(tipoJson))
             .build()
         try {
             client.newCall(request).execute().use { RespuestaHttp(it.code, it.body?.string().orEmpty()) }

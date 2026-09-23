@@ -1,5 +1,6 @@
 package com.avoqado.pos.inventory.waste
 
+import com.avoqado.pos.inventory.waste.data.Anulacion
 import com.avoqado.pos.inventory.waste.data.FalloDeMerma
 import com.avoqado.pos.inventory.waste.data.WasteApi
 import org.junit.Assert.assertEquals
@@ -113,5 +114,26 @@ class WasteApiTest {
     fun `un cuerpo que no es JSON no revienta`() {
         assertEquals(FalloDeMerma(null, null), WasteApi.leerFallo("<html>502 Bad Gateway</html>"))
         assertEquals(FalloDeMerma(null, null), WasteApi.leerFallo(""))
+    }
+
+    // MARK: - Anular
+
+    /** La ruta `void` lleva SÓLO el folio: el servidor rechaza cualquier campo de más. */
+    @Test
+    fun `la anulacion lleva solo el folio`() {
+        assertEquals("""{"idempotencyKey":"f-1"}""", WasteApi.cuerpoDeAnulacion("f-1"))
+        assertEquals("https://x/mobile/venues/v1/inventory/waste/void", WasteApi.urlDeAnulacion("https://x/mobile/venues/v1"))
+    }
+
+    /** Los dos desenlaces del contrato, con la autoría canónica; cualquier otra forma no es un desenlace. */
+    @Test
+    fun `se leen los dos desenlaces de la anulacion y nada mas`() {
+        assertEquals(
+            Anulacion.Anulada("gerente-1"),
+            WasteApi.leerAnulacion("""{"outcome":"VOIDED","voidedByStaffId":"gerente-1","voidedAt":"2026-09-22T18:00:00.000Z"}"""),
+        )
+        assertEquals(Anulacion.YaAplicada, WasteApi.leerAnulacion("""{"outcome":"ALREADY_APPLIED","report":{"declared":"3"}}"""))
+        assertNull(WasteApi.leerAnulacion("""{"outcome":"OTRA_COSA"}"""))
+        assertNull(WasteApi.leerAnulacion("<html>502</html>"))
     }
 }

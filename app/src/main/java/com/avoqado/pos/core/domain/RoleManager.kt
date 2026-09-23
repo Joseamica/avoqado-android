@@ -100,6 +100,10 @@ class RoleManager @Inject constructor(
     val canLogWaste: Boolean
         get() = hasVenuePermission("inventory:log-waste")
 
+    /** «Mermas por subir»: cada quien ve lo suyo; MANAGER+ ve lo de todos en el aparato (spec §5). */
+    val veMermasDeTodos: Boolean
+        get() = role in MANAGER_UP
+
     /**
      * Transactions: CASHIER, MANAGER, ADMIN, OWNER, SUPERADMIN
      *

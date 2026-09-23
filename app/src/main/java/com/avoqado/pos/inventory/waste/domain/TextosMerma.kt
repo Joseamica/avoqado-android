@@ -45,6 +45,32 @@ object TextosMerma {
     const val HACE_HORAS = "Catálogo de hace {n} h"
     const val HACE_DIAS = "Catálogo de hace {n} días"
 
+    const val POR_SUBIR_TITULO = "Mermas por subir"
+    const val POR_SUBIR_CONTADOR = "{n} por subir"
+    const val SIN_PENDIENTES = "No hay mermas por subir."
+    const val EN_ESPERA = "Espera su turno para subir."
+    const val SE_REINTENTARA = "No se pudo subir todavía; se reintentará sola."
+    const val SUBIENDO = "Se está subiendo."
+    const val ESTADO_DESCARTADA = "Descartada."
+    const val ESTADO_APLICADA = "Sí se había registrado."
+    const val CAPTURADA_POR_OTRA = "La capturó otra persona."
+    const val REVISION_UNIDAD = "La unidad del artículo cambió. Descártala y captúrala de nuevo."
+    const val REVISION_ARTICULO = "El artículo ya no existe. Descártala."
+    const val REVISION_FOLIO = "El servidor ya tiene otra merma con este folio. Descártala y captúrala de nuevo."
+    const val REVISION_CANTIDAD = "La cantidad es demasiado grande. Descártala y captúrala de nuevo."
+    const val REVISION_PERMISO = "Ya no tienes permiso para registrar mermas. Pídeselo a tu gerente."
+    const val REVISION_OTRA = "El servidor no la aceptó. Descártala y captúrala de nuevo."
+
+    const val DESCARTAR = "Descartar"
+    const val DESCARTAR_TITULO = "¿Descartar esta merma?"
+    const val DESCARTAR_CONFIRMACION = "{cantidad} de {articulo} no se registrará. Si ya se había registrado, te lo diremos."
+    const val DESCARTADA = "Merma descartada"
+    const val YA_APLICADA = "Esta merma sí se había registrado. No la vuelvas a capturar."
+    const val DESCARTAR_SIN_RED = "Necesitas conexión para descartar una merma."
+    const val DESCARTAR_EN_CAMINO = "Esta merma se está subiendo. Espera un momento."
+    const val DESCARTAR_SIN_PERMISO = "No tienes permiso para descartar mermas. Pídeselo a tu gerente."
+    const val DESCARTAR_FALLO = "No se pudo descartar. Intenta de nuevo."
+
     /** La unidad del catálogo (el enum del servidor) → lo que lee el cajero. */
     val UNIDADES: Map<String, String> = mapOf(
         "KILOGRAM" to "kg",
