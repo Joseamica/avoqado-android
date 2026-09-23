@@ -42,7 +42,7 @@ class HistorialDeMermaTest {
         {"scope":"ALL","items":[{"id":"rep1","itemType":"RAW_MATERIAL","name":"Leche","sku":"LEC-1","unit":"LITER",
         "reasonCode":"CONTAMINATED","reasonLabel":"Contaminado","declaredQuantity":"2","deductedQuantity":"1.5",
         "unrecordedQuantity":"0.5","note":null,"createdAt":"2026-09-23T15:00:00.000Z","reportedByName":"Ana Pérez"}],
-        "total":31,"page":1,"pageSize":30}
+        "total":31,"page":1,"pageSize":30,"nextCursor":"c-siguiente"}
     """.trimIndent()
 
     private fun folio(
@@ -58,10 +58,14 @@ class HistorialDeMermaTest {
     )
 
     @Test
-    fun `la ruta pide paginas de 30 al venue`() {
+    fun `la ruta pide paginas de 30 al venue, con el cursor tal cual`() {
         assertEquals(
-            "https://x/api/v1/mobile/venues/v1/inventory/waste-reports?page=2&pageSize=30",
-            WasteApi.urlDeHistorial("https://x/api/v1/mobile/venues/v1", page = 2),
+            "https://x/api/v1/mobile/venues/v1/inventory/waste-reports?pageSize=30",
+            WasteApi.urlDeHistorial("https://x/api/v1/mobile/venues/v1", cursor = null),
+        )
+        assertEquals(
+            "https://x/api/v1/mobile/venues/v1/inventory/waste-reports?pageSize=30&cursor=a%2Bb",
+            WasteApi.urlDeHistorial("https://x/api/v1/mobile/venues/v1", cursor = "a+b"),
         )
     }
 
@@ -70,8 +74,7 @@ class HistorialDeMermaTest {
         val pagina = WasteApi.parsearHistorial(cuerpo)!!
         assertTrue(pagina.todos)
         assertEquals(31, pagina.total)
-        assertEquals(1, pagina.page)
-        assertEquals(30, pagina.pageSize)
+        assertEquals("c-siguiente", pagina.nextCursor)
         val f = pagina.folios.single()
         assertEquals("Leche", f.name)
         assertEquals("Contaminado", f.reasonLabel)
@@ -134,9 +137,9 @@ class HistorialDeMermaTest {
 
     private class FuenteFalsa : HistorialDeMerma {
         val respuestas = ArrayDeque<ResultadoDeHistorial>()
-        val pedidas = mutableListOf<Pair<String, Int>>()
-        override suspend fun historial(venueId: String, page: Int): ResultadoDeHistorial {
-            pedidas += venueId to page
+        val pedidas = mutableListOf<Pair<String, String?>>()
+        override suspend fun historial(venueId: String, cursor: String?): ResultadoDeHistorial {
+            pedidas += venueId to cursor
             return respuestas.removeFirst()
         }
     }
@@ -150,26 +153,26 @@ class HistorialDeMermaTest {
 
     @Test
     fun `el titulo sale del alcance que decide el servidor`() = runTest {
-        fuente.respuestas += ResultadoDeHistorial.Pagina(PaginaDeHistorial(todos = false, folios = listOf(folio()), total = 1, page = 1))
+        fuente.respuestas += ResultadoDeHistorial.Pagina(PaginaDeHistorial(todos = false, folios = listOf(folio()), total = 1))
         val v = vm().also { it.cargar().join() }
         assertEquals(TextosMerma.MIS_MERMAS, v.estado.value.titulo)
 
-        fuente.respuestas += ResultadoDeHistorial.Pagina(PaginaDeHistorial(todos = true, folios = listOf(folio()), total = 1, page = 1))
+        fuente.respuestas += ResultadoDeHistorial.Pagina(PaginaDeHistorial(todos = true, folios = listOf(folio()), total = 1))
         val g = vm().also { it.cargar().join() }
         assertEquals(TextosMerma.MERMAS_DEL_NEGOCIO, g.estado.value.titulo)
     }
 
     @Test
     fun `cargar mas agrega la siguiente pagina y se apaga al llegar al total`() = runTest {
-        fuente.respuestas += ResultadoDeHistorial.Pagina(PaginaDeHistorial(false, listOf(folio("a")), total = 2, page = 1, pageSize = 1))
-        fuente.respuestas += ResultadoDeHistorial.Pagina(PaginaDeHistorial(false, listOf(folio("b")), total = 2, page = 2, pageSize = 1))
+        fuente.respuestas += ResultadoDeHistorial.Pagina(PaginaDeHistorial(false, listOf(folio("a")), total = 2, nextCursor = "c1"))
+        fuente.respuestas += ResultadoDeHistorial.Pagina(PaginaDeHistorial(false, listOf(folio("b")), total = 2, nextCursor = null))
         val v = vm()
         v.cargar().join()
         assertTrue(v.estado.value.hayMas)
         v.cargarMas().join()
         assertEquals(listOf("a", "b"), v.estado.value.filas.map { it.id })
         assertFalse(v.estado.value.hayMas)
-        assertEquals(listOf("venue-centro" to 1, "venue-centro" to 2), fuente.pedidas)
+        assertEquals(listOf("venue-centro" to null, "venue-centro" to "c1"), fuente.pedidas)
     }
 
     /** 🔴 Visto en la D3: sin red, el dueño leía «Mis mermas». Mientras el servidor no diga el alcance, el título es neutro. */
@@ -180,25 +183,26 @@ class HistorialDeMermaTest {
     }
 
     /**
-     * Codex (historial, P2): con 30 cargados otro aparato registra una más; la página 2 trae un repetido y la
-     * última (total 32). Contando filas ÚNICAS quedaban 31 de 32 y «Cargar más» no se apagaba nunca.
+     * Codex (historial, r2 P2): a media lectura le quitan `inventory:adjust`; la página siguiente viene como «mías»
+     * pero es de OTRO conjunto. Mezclarla dejaba ajenas bajo «Mis mermas» y se saltaba las propias: se empieza de nuevo.
      */
     @Test
-    fun `una merma nueva a media lectura no deja cargar mas encendido para siempre`() = runTest {
-        val primera = (1..30).map { folio("f$it") }
-        fuente.respuestas += ResultadoDeHistorial.Pagina(PaginaDeHistorial(false, primera, total = 31, page = 1))
-        fuente.respuestas += ResultadoDeHistorial.Pagina(PaginaDeHistorial(false, listOf(folio("f30"), folio("f31")), total = 32, page = 2))
+    fun `si el alcance cambia a media lectura la lista vuelve a empezar`() = runTest {
+        fuente.respuestas += ResultadoDeHistorial.Pagina(PaginaDeHistorial(true, listOf(folio("ajena")), total = 3, nextCursor = "c1"))
+        fuente.respuestas += ResultadoDeHistorial.Pagina(PaginaDeHistorial(false, listOf(folio("mia-vieja")), total = 2))
+        fuente.respuestas += ResultadoDeHistorial.Pagina(PaginaDeHistorial(false, listOf(folio("mia-nueva"), folio("mia-vieja")), total = 2))
         val v = vm()
         v.cargar().join()
         v.cargarMas().join()
-        assertEquals(31, v.estado.value.filas.size)
-        assertFalse(v.estado.value.hayMas)
+        assertEquals(listOf("mia-nueva", "mia-vieja"), v.estado.value.filas.map { it.id })
+        assertEquals(TextosMerma.MIS_MERMAS, v.estado.value.titulo)
+        assertEquals(listOf("venue-centro" to null, "venue-centro" to "c1", "venue-centro" to null), fuente.pedidas)
     }
 
     /** 🔴 Sin red NO es un error: se dice en palabras del cajero y lo ya cargado se conserva. */
     @Test
     fun `sin red lo dice y conserva lo cargado`() = runTest {
-        fuente.respuestas += ResultadoDeHistorial.Pagina(PaginaDeHistorial(false, listOf(folio("a")), total = 2, page = 1))
+        fuente.respuestas += ResultadoDeHistorial.Pagina(PaginaDeHistorial(false, listOf(folio("a")), total = 2, nextCursor = "c1"))
         fuente.respuestas += ResultadoDeHistorial.SinRed
         val v = vm()
         v.cargar().join()
@@ -239,16 +243,16 @@ class HistorialDeMermaTest {
     @Test
     fun `el repositorio distingue pagina, sin plan, fallo y sin red`() = conServidor { server, repo ->
         server.enqueue(MockResponse().setResponseCode(200).setBody(cuerpo))
-        assertTrue(repo.historial("venue-centro", 1) is ResultadoDeHistorial.Pagina)
-        assertEquals("/api/v1/mobile/venues/venue-centro/inventory/waste-reports?page=1&pageSize=30", server.takeRequest().path)
+        assertTrue(repo.historial("venue-centro", null) is ResultadoDeHistorial.Pagina)
+        assertEquals("/api/v1/mobile/venues/venue-centro/inventory/waste-reports?pageSize=30", server.takeRequest().path)
 
         server.enqueue(MockResponse().setResponseCode(403).setBody("""{"featureCode":"INVENTORY_TRACKING"}"""))
-        assertEquals(ResultadoDeHistorial.SinPlan, repo.historial("venue-centro", 1))
+        assertEquals(ResultadoDeHistorial.SinPlan, repo.historial("venue-centro", null))
 
         server.enqueue(MockResponse().setResponseCode(500).setBody("{}"))
-        assertEquals(ResultadoDeHistorial.Fallo, repo.historial("venue-centro", 1))
+        assertEquals(ResultadoDeHistorial.Fallo, repo.historial("venue-centro", null))
 
         server.shutdown()
-        assertEquals(ResultadoDeHistorial.SinRed, repo.historial("venue-centro", 1))
+        assertEquals(ResultadoDeHistorial.SinRed, repo.historial("venue-centro", null))
     }
 }

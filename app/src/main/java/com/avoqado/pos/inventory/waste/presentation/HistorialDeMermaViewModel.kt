@@ -7,7 +7,6 @@ import com.avoqado.pos.core.util.VenueDateTimeFormatter
 import com.avoqado.pos.inventory.waste.data.FolioDeHistorial
 import com.avoqado.pos.inventory.waste.data.HistorialDeMerma
 import com.avoqado.pos.inventory.waste.data.ResultadoDeHistorial
-import com.avoqado.pos.inventory.waste.data.WasteApi
 import com.avoqado.pos.inventory.waste.domain.TextosMerma
 import com.avoqado.pos.inventory.waste.domain.etiquetaDeUnidad
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -57,15 +56,12 @@ data class EstadoDeHistorial(
     /** Sin red, sin plan o fallo: en palabras del cajero. Lo ya cargado se conserva. */
     val aviso: String? = null,
     val cargado: Boolean = false,
-    /** La última página que contestó el servidor, y su tamaño. */
-    val pagina: Int = 0,
-    val tamanoDePagina: Int = WasteApi.TAMANO_DE_PAGINA_DEL_HISTORIAL,
+    /** Con qué alcance se armó la lista: si cambia a media lectura, se vuelve a empezar (Codex, P2). */
+    val todos: Boolean? = null,
+    /** La marca para pedir la siguiente página; `null` = ya no hay más. */
+    val siguiente: String? = null,
 ) {
-    /**
-     * Por páginas PEDIDAS, no por filas únicas (Codex, P2): si otro aparato registra una merma a media lectura, la
-     * página siguiente trae un repetido y contar filas dejaba «Cargar más» encendido para siempre.
-     */
-    val hayMas: Boolean get() = pagina * tamanoDePagina < total
+    val hayMas: Boolean get() = siguiente != null
 }
 
 /**
@@ -82,44 +78,51 @@ class HistorialDeMermaViewModel @Inject constructor(
     private val _estado = MutableStateFlow(EstadoDeHistorial())
     val estado: StateFlow<EstadoDeHistorial> = _estado.asStateFlow()
 
-    private var pagina = 0
     private var carga: Job? = null
 
     fun cargar(): Job {
         carga?.cancel()
-        pagina = 0
         _estado.value = EstadoDeHistorial(cargando = true)
-        return pedir(1).also { carga = it }
+        return pedir(null).also { carga = it }
     }
 
     fun cargarMas(): Job {
-        if (_estado.value.cargando) return carga ?: Job().also { it.complete() }
-        return pedir(pagina + 1).also { carga = it }
+        val actual = _estado.value
+        if (actual.cargando || actual.siguiente == null) return carga ?: Job().also { it.complete() }
+        return pedir(actual.siguiente).also { carga = it }
     }
 
-    private fun pedir(numero: Int): Job = viewModelScope.launch {
+    private fun pedir(cursor: String?): Job = viewModelScope.launch {
         _estado.update { it.copy(cargando = true, aviso = null) }
-        val venueId = secureStorage.venueId
-        val resultado = if (venueId == null) ResultadoDeHistorial.Fallo else fuente.historial(venueId, numero)
-        _estado.update { actual ->
-            when (resultado) {
-                is ResultadoDeHistorial.Pagina -> {
-                    pagina = resultado.pagina.page
-                    val nuevas = resultado.pagina.folios.map { filaDeHistorial(it, resultado.pagina.todos, formato::formatShort) }
-                    actual.copy(
-                        titulo = if (resultado.pagina.todos) TextosMerma.MERMAS_DEL_NEGOCIO else TextosMerma.MIS_MERMAS,
-                        filas = if (numero == 1) nuevas else (actual.filas + nuevas).distinctBy { it.id },
-                        total = resultado.pagina.total,
-                        pagina = resultado.pagina.page,
-                        tamanoDePagina = resultado.pagina.pageSize,
-                        cargando = false,
-                        cargado = true,
-                    )
-                }
-                ResultadoDeHistorial.SinRed -> actual.copy(cargando = false, aviso = TextosMerma.HISTORIAL_SIN_RED)
-                ResultadoDeHistorial.SinPlan -> actual.copy(cargando = false, aviso = TextosMerma.HISTORIAL_SIN_PLAN)
-                ResultadoDeHistorial.Fallo -> actual.copy(cargando = false, aviso = TextosMerma.HISTORIAL_FALLO)
+        val venueId = secureStorage.venueId ?: return@launch aplicar(ResultadoDeHistorial.Fallo, primera = cursor == null)
+        val resultado = fuente.historial(venueId, cursor)
+        // 🔴 Codex (P2): si el alcance cambió a media lectura (le quitaron `inventory:adjust`), la página siguiente es de
+        // OTRO conjunto: mezclarla dejaría ajenas en «Mis mermas» y se saltaría las propias. Se empieza de nuevo.
+        if (cursor != null && resultado is ResultadoDeHistorial.Pagina && resultado.pagina.todos != _estado.value.todos) {
+            _estado.value = EstadoDeHistorial(cargando = true)
+            return@launch aplicar(fuente.historial(venueId, null), primera = true)
+        }
+        aplicar(resultado, primera = cursor == null)
+    }
+
+    private fun aplicar(resultado: ResultadoDeHistorial, primera: Boolean) = _estado.update { actual ->
+        when (resultado) {
+            is ResultadoDeHistorial.Pagina -> {
+                val p = resultado.pagina
+                val nuevas = p.folios.map { filaDeHistorial(it, p.todos, formato::formatShort) }
+                actual.copy(
+                    titulo = if (p.todos) TextosMerma.MERMAS_DEL_NEGOCIO else TextosMerma.MIS_MERMAS,
+                    filas = if (primera) nuevas else (actual.filas + nuevas).distinctBy { it.id },
+                    total = p.total,
+                    todos = p.todos,
+                    siguiente = p.nextCursor,
+                    cargando = false,
+                    cargado = true,
+                )
             }
+            ResultadoDeHistorial.SinRed -> actual.copy(cargando = false, aviso = TextosMerma.HISTORIAL_SIN_RED)
+            ResultadoDeHistorial.SinPlan -> actual.copy(cargando = false, aviso = TextosMerma.HISTORIAL_SIN_PLAN)
+            ResultadoDeHistorial.Fallo -> actual.copy(cargando = false, aviso = TextosMerma.HISTORIAL_FALLO)
         }
     }
 }

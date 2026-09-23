@@ -199,9 +199,9 @@ class WasteRepository @Inject constructor(
      * Una página del historial. De segundo plano: es una lectura, y un 403 no debe abrir el teclado del PIN
      * del gerente — el alcance lo decide el servidor con los permisos PROPIOS de quien pregunta.
      */
-    override suspend fun historial(venueId: String, page: Int): ResultadoDeHistorial = withContext(Dispatchers.IO) {
+    override suspend fun historial(venueId: String, cursor: String?): ResultadoDeHistorial = withContext(Dispatchers.IO) {
         val request = Request.Builder()
-            .url(WasteApi.urlDeHistorial(venueBaseUrl(venueId), page))
+            .url(WasteApi.urlDeHistorial(venueBaseUrl(venueId), cursor))
             .header(ForbiddenInterceptor.BACKGROUND_HEADER, "1")
             .build()
         try {

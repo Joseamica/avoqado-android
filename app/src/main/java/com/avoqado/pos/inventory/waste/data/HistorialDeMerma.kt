@@ -21,9 +21,8 @@ data class PaginaDeHistorial(
     val todos: Boolean,
     val folios: List<FolioDeHistorial>,
     val total: Int,
-    val page: Int,
-    /** El tamaño que USÓ el servidor (puede recortar lo pedido): decide si queda otra página. */
-    val pageSize: Int = WasteApi.TAMANO_DE_PAGINA_DEL_HISTORIAL,
+    /** La marca para pedir «los anteriores a éstos»; `null` = ya no hay más (Codex, P2: nada de números de página). */
+    val nextCursor: String? = null,
 )
 
 /** Online-only a propósito (spec 2026-09-23): sin red se DICE, no se inventa. */
@@ -35,5 +34,5 @@ sealed interface ResultadoDeHistorial {
 }
 
 fun interface HistorialDeMerma {
-    suspend fun historial(venueId: String, page: Int): ResultadoDeHistorial
+    suspend fun historial(venueId: String, cursor: String?): ResultadoDeHistorial
 }

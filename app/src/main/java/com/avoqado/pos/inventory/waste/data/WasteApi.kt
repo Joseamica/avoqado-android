@@ -78,8 +78,10 @@ object WasteApi {
     /** Páginas cortas: el historial se lee de arriba hacia abajo y se pide «Cargar más». */
     const val TAMANO_DE_PAGINA_DEL_HISTORIAL = 30
 
-    fun urlDeHistorial(venueBase: String, page: Int): String =
-        "$venueBase/inventory/waste-reports?page=$page&pageSize=$TAMANO_DE_PAGINA_DEL_HISTORIAL"
+    /** La primera página sin cursor; las siguientes con el `nextCursor` que mandó el servidor, tal cual. */
+    fun urlDeHistorial(venueBase: String, cursor: String?): String =
+        "$venueBase/inventory/waste-reports?pageSize=$TAMANO_DE_PAGINA_DEL_HISTORIAL" +
+            (cursor?.let { "&cursor=" + java.net.URLEncoder.encode(it, "UTF-8") } ?: "")
 
     /**
      * `{ scope, items: [...], total, page, pageSize }` → la página, o `null` si no tiene esa forma. El
@@ -107,8 +109,7 @@ object WasteApi {
                 todos = raiz.texto("scope") == "ALL",
                 folios = folios,
                 total = raiz.getValue("total").jsonPrimitive.int,
-                page = raiz.getValue("page").jsonPrimitive.int,
-                pageSize = raiz.getValue("pageSize").jsonPrimitive.int,
+                nextCursor = raiz.texto("nextCursor"),
             )
         }.getOrNull()
     }
