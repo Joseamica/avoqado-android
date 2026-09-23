@@ -5,6 +5,7 @@ import com.avoqado.pos.inventory.waste.domain.normalizarCantidad
 import com.avoqado.pos.inventory.waste.domain.recortarNota
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.time.Instant
 import java.time.OffsetDateTime
@@ -66,12 +67,11 @@ class WasteInputTest {
     // MARK: - Nota
 
     /**
-     * 🔴 El tope del servidor es 280 CARACTERES. Un emoji es 1 carácter y 4 bytes:
-     * contar bytes rechazaría notas legítimas, y no contar dejaría pasar un 422
-     * permanente sobre una fila ya escrita.
+     * 🔴 El tope del servidor es 280, y lo mide como lo mide JavaScript (`z.string().max(280)`):
+     * en unidades UTF-16. Pasarse deja un 422 PERMANENTE sobre una fila ya escrita.
      */
     @Test
-    fun `la nota se recorta a 280 caracteres, contando emojis como uno`() {
+    fun `la nota se recorta al tope del servidor`() {
         assertEquals(280, recortarNota("x".repeat(400)).length)
         assertEquals("hola", recortarNota("hola"))
         assertEquals("", recortarNota("   "))
@@ -79,9 +79,21 @@ class WasteInputTest {
 
     /** Un emoji ocupa 4 bytes; si se contaran bytes, 100 emojis ya pasarían el tope. */
     @Test
-    fun `cien emojis caben porque son cien caracteres, no cuatrocientos bytes`() {
-        val nota = "🥑".repeat(100) // 🥑 ×100
+    fun `cien emojis caben, porque el servidor no cuenta bytes`() {
+        val nota = "🥑".repeat(100) // 🥑 ×100 = 200 unidades UTF-16
         assertEquals(nota, recortarNota(nota))
+    }
+
+    /**
+     * 🔴 Cada emoji son DOS unidades para el servidor. Contar grafemas dejaría pasar 150 emojis
+     * (300 unidades, 422 permanente); cortar a ciegas en 280 dejaría medio emoji al final. Se
+     * corta en el último carácter entero que cabe: 1 + 139 × 2 = 279.
+     */
+    @Test
+    fun `una nota con emojis se corta en lo que cuenta el servidor, sin partir un emoji`() {
+        val recortada = recortarNota("a" + "🥑".repeat(150))
+        assertEquals("a" + "🥑".repeat(139), recortada)
+        assertTrue(recortada.length <= 280)
     }
 
     // MARK: - Fecha del aparato

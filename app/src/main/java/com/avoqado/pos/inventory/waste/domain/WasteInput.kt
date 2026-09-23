@@ -1,5 +1,6 @@
 package com.avoqado.pos.inventory.waste.domain
 
+import java.text.BreakIterator
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
@@ -7,7 +8,10 @@ import java.time.format.DateTimeFormatter
 /** El formato exacto que exige el servidor para `quantity` cuando viaja como texto. */
 private val DECIMAL_SIMPLE = Regex("""^\d+(\.\d+)?$""")
 
-/** Tope del servidor para `note`, en CARACTERES. */
+/**
+ * Tope del servidor para `note`, medido como lo mide él: `z.string().max(280)` cuenta el
+ * `length` de JavaScript, o sea unidades UTF-16 — las mismas que cuenta `String.length` aquí.
+ */
 const val TOPE_DE_NOTA = 280
 
 private val FORMATO_CON_ZONA = DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ssxxx")
@@ -32,12 +36,20 @@ fun normalizarCantidad(texto: String): String? {
 }
 
 /**
- * Recorta la nota al tope del servidor contando CARACTERES, no bytes.
+ * Recorta la nota al tope del servidor, contando lo que cuenta ÉL (unidades UTF-16) y sin
+ * partir nunca un carácter.
  *
- * 🔴 Un emoji es 1 carácter y 4 bytes. Contar bytes rechazaría notas legítimas de
- * 70 emojis; no contar dejaría pasar un 422 permanente sobre una fila ya escrita.
+ * 🔴 Contar bytes rechazaría notas legítimas; contar grafemas dejaría pasar una nota de 150
+ * emojis (300 unidades) que el servidor rechaza con un 422 PERMANENTE sobre una fila ya
+ * escrita. Y cortar a ciegas en 280 puede dejar medio emoji (un surrogate suelto). Por eso se
+ * corta en la última frontera de carácter que cabe.
  */
-fun recortarNota(texto: String): String = texto.trim().take(TOPE_DE_NOTA)
+fun recortarNota(texto: String): String {
+    val limpio = texto.trim()
+    if (limpio.length <= TOPE_DE_NOTA) return limpio
+    val caracteres = BreakIterator.getCharacterInstance().apply { setText(limpio) }
+    return limpio.substring(0, caracteres.preceding(TOPE_DE_NOTA + 1))
+}
 
 /**
  * `clientOccurredAt`: el reloj del aparato, informativo, nunca decide nada.
