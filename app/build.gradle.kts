@@ -41,7 +41,19 @@ check(debugBaseUrl != releaseBaseUrl) {
 // mande la URL ya armada en `digitalReceipt.receiptUrl`. Espeja el FRONTEND_URL
 // del backend (avoqado-server/render.yaml).
 val releaseDashboardUrl = "https://dashboard.avoqado.io"
-val defaultDebugDashboardUrl = "https://develop.avoqado-web-dashboard.pages.dev"
+// 🔴 El debug apunta al dashboard de PRODUCCIÓN a propósito (2026-09-18).
+//
+// Antes el default era `https://develop.avoqado-web-dashboard.pages.dev`, un dominio que **no
+// resuelve** — medido ese día con `host` desde la Mac y visto en una Sunmi: Chrome abría con
+// `DNS_PROBE_FINISHED_NXDOMAIN`. Nadie lo había notado porque esta constante sólo se usaba como
+// respaldo del QR del ticket, y el servidor normalmente manda la URL ya armada.
+//
+// Al añadir el directorio «Configurar en el panel web» (22 enlaces al dashboard) la constante
+// pasó a usarse de verdad, y cada enlace caía en esa pantalla de error. No existe un dashboard de
+// desarrollo al que mandar a nadie, y el negocio que el founder mira desde el APK dev es el REAL,
+// así que producción es el destino correcto. Quien tenga uno propio lo pasa con
+// `-Pavoqado.devDashboardUrl=...`, que sigue funcionando igual.
+val defaultDebugDashboardUrl = releaseDashboardUrl
 val debugDashboardUrl = configValue("avoqado.devDashboardUrl", defaultDebugDashboardUrl).trim()
 
 android {

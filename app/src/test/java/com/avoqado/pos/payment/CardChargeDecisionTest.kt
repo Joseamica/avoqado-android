@@ -2,6 +2,7 @@ package com.avoqado.pos.payment
 
 import com.avoqado.pos.payment.domain.CardChargeDecision
 import com.avoqado.pos.payment.domain.CardChargeOutcome
+import com.avoqado.pos.payment.data.TerminalPaymentStatusDto
 import com.avoqado.pos.payment.domain.ChargeStatusProbe
 import com.avoqado.pos.payment.domain.ChargeWaitEnding
 import com.avoqado.pos.payment.domain.CreationRejection
@@ -131,6 +132,57 @@ class CardChargeDecisionTest {
         val r = CardChargeDecision.decide(ChargeStatusProbe.Known(status = "FAILED", inProgress = false, outcome = "NOT_CHARGED", outcomeEvidence = "OPERATOR_RECONCILED"), isFinalAttempt = true)
         val out = (r as ProbeDecision.Resolved).outcome as CardChargeOutcome.NotCharged
         assertEquals("La terminal confirmó que no se presentó tarjeta. Puedes volver a cobrar.", out.message)
+    }
+
+    // 🔴 21-sep-2026: el webhook del procesador (AngelPay y Blumon) ya trae los RECHAZOS del banco — 187 en
+    // 30 días, medidos en producción — y ahora el servidor los usa para soltar la venta y la ranura solo. La
+    // fila cierra con evidencia `PROCESSOR_DECLINED`, y al cajero le falta saber lo único accionable: que
+    // puede volver a cobrar. El genérico de abajo no se toca: es el contrato de siempre.
+    @Test
+    fun `FAILED con PROCESSOR_DECLINED dice que el banco rechazo y que SI puede volver a cobrar`() {
+        val r = CardChargeDecision.decide(ChargeStatusProbe.Known(status = "FAILED", inProgress = false, outcome = "NOT_CHARGED", outcomeEvidence = "PROCESSOR_DECLINED"), isFinalAttempt = true)
+        val out = (r as ProbeDecision.Resolved).outcome as CardChargeOutcome.NotCharged
+        assertTrue(out.message, out.message.contains("banco"))
+        assertTrue(out.message, out.message.contains("volver a cobrar"))
+    }
+
+    @Test
+    fun `FAILED con PROCESSOR_DECLINED PREFIERE el mensaje del servidor, que trae el motivo del banco`() {
+        // 🔴 El servidor traduce el código del banco a nuestras palabras («51 FONDOS INSUFICIENTES» →
+        // «No tiene fondos suficientes») porque es lo único accionable para el cajero. Si el POS pinta su
+        // genérico, ese motivo NO llega a la pantalla y todo el trabajo del servidor se pierde aquí.
+        val r = CardChargeDecision.decide(
+            ChargeStatusProbe.Known(
+                status = "FAILED", inProgress = false, outcome = "NOT_CHARGED", outcomeEvidence = "PROCESSOR_DECLINED",
+                errorMessage = "El banco rechazó este cobro. No tiene fondos suficientes. No se cobró nada: puedes volver a cobrar.",
+            ),
+            isFinalAttempt = true,
+        )
+        val out = (r as ProbeDecision.Resolved).outcome as CardChargeOutcome.NotCharged
+        assertTrue(out.message, out.message.contains("fondos suficientes"))
+    }
+
+    @Test
+    fun `FAILED con PROCESSOR_DECLINED y SIN mensaje del servidor cae al texto propio (server viejo)`() {
+        val r = CardChargeDecision.decide(
+            ChargeStatusProbe.Known(status = "FAILED", inProgress = false, outcome = "NOT_CHARGED", outcomeEvidence = "PROCESSOR_DECLINED"),
+            isFinalAttempt = true,
+        )
+        val out = (r as ProbeDecision.Resolved).outcome as CardChargeOutcome.NotCharged
+        assertTrue(out.message, out.message.contains("banco"))
+        assertTrue(out.message, out.message.contains("volver a cobrar"))
+    }
+
+    @Test
+    fun `el JSON del servidor llega hasta el mensaje - sin el mapeo la rama seria codigo muerto`() {
+        // La leccion del 21-sep: probar la funcion no es probar el camino. Este test recorre el puente
+        // completo: JSON del servidor -> DTO -> probe -> decision -> texto que ve el cajero.
+        val json = "{\"status\":\"FAILED\",\"inProgress\":false,\"outcome\":\"NOT_CHARGED\",\"outcomeEvidence\":\"PROCESSOR_DECLINED\",\"failureCode\":\"BANK_DECLINED\",\"errorMessage\":\"El banco rechazo este cobro. No tiene fondos suficientes. No se cobro nada: puedes volver a cobrar.\"}"
+        val dto = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+            .decodeFromString(TerminalPaymentStatusDto.serializer(), json)
+        val r = CardChargeDecision.decide(dto.aProbe(), isFinalAttempt = true)
+        val out = (r as ProbeDecision.Resolved).outcome as CardChargeOutcome.NotCharged
+        assertTrue(out.message, out.message.contains("fondos suficientes"))
     }
 
     @Test
@@ -514,5 +566,48 @@ class CardChargeDecisionTest {
         )
         assertTrue(message, message.contains("La terminal X está ocupada procesando otro cobro"))
         assertTrue(message, message.contains("NO se envió"))
+    }
+
+    // --- Resultado TARDÍO cruzado con el veredicto que ya se supo (P1 de Codex, 20-sep) ---
+
+    @Test
+    fun `un veredicto de no se cobro NO puede tapar un cobro acreditado`() {
+        // 🔴 El defecto: el POST volvía con un paymentId REAL y el veredicto lo convertía en
+        // «no se cobró» ⇒ la llave se soltaba, la venta quedaba impaga y el cajero pasaba la
+        // tarjeta otra vez. El paymentId lo emite el servidor: si llega, el dinero salió.
+        val r = CardChargeDecision.staleOutcome(
+            resultado = CardChargeOutcome.Charged("pay-real"),
+            verdictoNoSeCobro = true,
+            cobroYaAplicadoAEstaVenta = false,
+        )
+        assertEquals(CardChargeOutcome.Charged("pay-real"), r)
+    }
+
+    @Test
+    fun `el veredicto SI tapa la duda`() {
+        // La contraparte: sin evidencia de cobro, lo que consta manda sobre el «no sé».
+        val r = CardChargeDecision.staleOutcome(
+            resultado = CardChargeOutcome.Undetermined("no se pudo preguntar"),
+            verdictoNoSeCobro = true,
+            cobroYaAplicadoAEstaVenta = false,
+        )
+        assertEquals(CardChargeOutcome.NotCharged(CardChargeDecision.CANCEL_ALREADY_RESOLVED_MESSAGE), r)
+    }
+
+    @Test
+    fun `un cobro YA aplicado a esta venta no vuelve a pedir que lo resuelvan`() {
+        // Aquí no hay dinero fuera de vista: ya está registrado en ESTA venta.
+        val r = CardChargeDecision.staleOutcome(
+            resultado = CardChargeOutcome.Charged("pay-ya-aplicado"),
+            verdictoNoSeCobro = false,
+            cobroYaAplicadoAEstaVenta = true,
+        )
+        assertEquals(CardChargeOutcome.NotCharged(CardChargeDecision.CHARGE_ALREADY_APPLIED_MESSAGE), r)
+    }
+
+    @Test
+    fun `sin veredicto el resultado pasa tal cual`() {
+        val duda = CardChargeOutcome.Undetermined("sigue sin saberse")
+        assertEquals(duda, CardChargeDecision.staleOutcome(duda, verdictoNoSeCobro = false, cobroYaAplicadoAEstaVenta = false))
     }
 }

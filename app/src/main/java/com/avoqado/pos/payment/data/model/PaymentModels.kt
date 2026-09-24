@@ -81,6 +81,15 @@ sealed class PaymentFlowState {
         val message: String,
         val checking: Boolean = false,
         val fromPreviousSale: Boolean = false,
+        /**
+         * El servidor RECHAZÓ la declaración del cajero y éste es su motivo.
+         *
+         * 🔴 Founder, 21-sep, tocando la D3: «le pongo *ya revisé la terminal* y no pasa nada». Sí
+         * pasaba —la petición salía y el servidor contestaba 409— pero la respuesta llega en ~65 ms y
+         * el mensaje nuevo se parece al anterior, así que la pantalla se veía idéntica y el botón
+         * parecía muerto. Con esto el motivo se pinta en ámbar: se ve que algo contestó.
+         */
+        val declaracionRechazada: Boolean = false,
     ) : PaymentFlowState()
 
     /**

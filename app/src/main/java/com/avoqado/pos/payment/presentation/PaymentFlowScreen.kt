@@ -352,6 +352,7 @@ fun PaymentFlowScreen(
                     message = currentState.message,
                     isChecking = currentState.checking,
                     fromPreviousSale = currentState.fromPreviousSale,
+                    declaracionRechazada = currentState.declaracionRechazada,
                     onRecheck = { viewModel.recheckCardCharge() },
                     onChargeAgain = { viewModel.chargeAgainDespiteUndetermined() },
                     onSalir = { viewModel.salirDejandoPendiente() },

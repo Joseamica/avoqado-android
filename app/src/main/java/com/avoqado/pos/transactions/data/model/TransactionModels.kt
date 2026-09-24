@@ -54,6 +54,12 @@ data class Transaction(
     val items: List<TransactionItem> = emptyList(),
     val refunds: List<TransactionRefund> = emptyList(),
     val remainingRefundable: Double = 0.0,
+    /**
+     * Saldo POR COMPONENTE, ya descontadas las devoluciones previas (servidor, aditivo,
+     * 21-sep-2026). `null` = servidor anterior: la hoja cae a «disponible − propina».
+     */
+    val remainingRefundableSale: Double? = null,
+    val remainingRefundableTip: Double? = null,
     val customerName: String? = null,
     val createdAt: String? = null,
     val staffName: String? = null,
@@ -144,6 +150,9 @@ data class TransactionItem(
 data class TransactionRefund(
     val id: String,
     val amount: Double = 0.0,
+    /** Reparto del reembolso (servidor, aditivo, 21-sep-2026); `null` en servidores anteriores. */
+    val saleAmount: Double? = null,
+    val tipAmount: Double? = null,
     val reason: String? = null,
     val createdAt: String? = null,
     val status: String = "COMPLETED",

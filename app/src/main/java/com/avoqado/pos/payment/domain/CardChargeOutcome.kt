@@ -28,6 +28,13 @@ sealed class ChargeStatusProbe {
         /** Crudo, sólo diagnóstico. La única decisión que lo mira es la lápida de admisión `REJECTED_*`. */
         val failureCode: String? = null,
         val reconciliationRequired: Boolean? = null,
+        /**
+         * 🔴 El texto que ESCRIBIÓ EL SERVIDOR, cuando lo manda. Hoy sólo viene con `PROCESSOR_DECLINED`:
+         * el servidor traduce el código del banco a nuestras palabras («51 FONDOS INSUFICIENTES» → «No tiene
+         * fondos suficientes»), y ese motivo es lo único accionable para el cajero. Opcional a propósito: un
+         * servidor que no lo mande deja que el POS use su texto de siempre.
+         */
+        val errorMessage: String? = null,
         /** La orden del cobro según el servidor: completa una intención de cancelar que no la conocía. */
         val orderId: String? = null,
         val terminalId: String? = null,
@@ -118,6 +125,36 @@ object CardChargeDecision {
     /** El texto que ve el cajero cuando nadie sabe si se cobró. Ni éxito ni fracaso. */
     const val UNDETERMINED_MESSAGE =
         "Estamos confirmando el cobro. No vuelvas a pasar la tarjeta."
+
+    /** Lo que se le dice al resultado tardío cuando la cancelación ya se resolvió sin cargo. */
+    const val CANCEL_ALREADY_RESOLVED_MESSAGE = "La cancelación ya se resolvió: no se cobró."
+
+    /** Lo que se le dice cuando ese cobro YA quedó aplicado a esta misma venta. */
+    const val CHARGE_ALREADY_APPLIED_MESSAGE = "El cobro ya se aplicó a la venta."
+
+    /**
+     * El desenlace que gobierna un resultado TARDÍO del POST, cruzado con lo que ya se supo de esa
+     * cancelación en este proceso.
+     *
+     * 🔴 Un veredicto de «no se cobró» tapa la DUDA, nunca un cobro ACREDITADO. El `paymentId` lo
+     * emite el servidor al registrar el Payment: si llega, el dinero salió, y el veredicto sólo
+     * significa que se emitió antes de que ese registro existiera. Taparlo dejaría la venta impaga
+     * con el cargo encima y al cajero pasando la tarjeta otra vez — el doble cobro es el límite
+     * duro del founder, y pesa más que una venta marcada de más (que el arqueo sí ve).
+     *
+     * La excepción es que ese cobro YA esté aplicado a ESTA venta: ahí no hay dinero perdido de
+     * vista, y re-armar la llave sólo obligaría al cajero a resolver algo que ya está resuelto.
+     */
+    fun staleOutcome(
+        resultado: CardChargeOutcome,
+        verdictoNoSeCobro: Boolean,
+        cobroYaAplicadoAEstaVenta: Boolean,
+    ): CardChargeOutcome = when {
+        cobroYaAplicadoAEstaVenta -> CardChargeOutcome.NotCharged(CHARGE_ALREADY_APPLIED_MESSAGE)
+        resultado is CardChargeOutcome.Charged -> resultado
+        verdictoNoSeCobro -> CardChargeOutcome.NotCharged(CANCEL_ALREADY_RESOLVED_MESSAGE)
+        else -> resultado
+    }
 
     /**
      * Plazo máximo que el POS espera el resultado de la terminal antes de cortar la espera
@@ -278,6 +315,16 @@ object CardChargeDecision {
                 CardChargeOutcome.NotCharged("No se confirmó el cobro en 30 s. Puedes volver a cobrar. Si el banco lo aprueba tarde, se registra solo y te avisamos.")
             probe.status == "FAILED" && probe.outcomeEvidence == "OPERATOR_RECONCILED" ->
                 CardChargeOutcome.NotCharged("La terminal confirmó que no se presentó tarjeta. Puedes volver a cobrar.")
+            // 🔴 El banco lo rechazó y el SERVIDOR lo supo por el webhook del procesador (AngelPay o Blumon),
+            // sin que nadie declarara nada. Lo único accionable para el cajero es que PUEDE volver a cobrar:
+            // el genérico de abajo lo deja sin saberlo y ahí es donde vuelve a pasar la tarjeta con miedo.
+            probe.status == "FAILED" && probe.outcomeEvidence == "PROCESSOR_DECLINED" ->
+                // 🔴 El mensaje del SERVIDOR gana: trae el motivo del banco traducido a nuestras palabras. El
+                // texto de abajo es el respaldo para un servidor que todavía no lo manda.
+                CardChargeOutcome.NotCharged(
+                    probe.errorMessage?.takeIf { it.isNotBlank() }
+                        ?: "El banco rechazó el cobro. No se cobró la tarjeta: puedes volver a cobrar.",
+                )
             probe.status == "FAILED" -> CardChargeOutcome.NotCharged("El cobro fue rechazado. No se cobró la tarjeta.")
             probe.status == "CANCELLED" && probe.cancelDisposition == "ACCEPTED" -> CardChargeOutcome.NotCharged("El cobro se canceló. No se cobró la tarjeta.")
             // TIMED_OUT, UNKNOWN — y cualquier estado que este cliente no conozca todavía.

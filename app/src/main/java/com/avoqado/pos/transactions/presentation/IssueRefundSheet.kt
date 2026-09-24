@@ -67,7 +67,9 @@ import com.avoqado.pos.transactions.data.RefundApiException
 import com.avoqado.pos.transactions.data.RefundRepository
 import com.avoqado.pos.transactions.data.model.RefundAmountCalculator
 import com.avoqado.pos.transactions.data.model.centavosDelImporte
+import com.avoqado.pos.transactions.data.model.importeAjustadoAlTope
 import com.avoqado.pos.transactions.data.model.tipRefundCentsParaEnvio
+import com.avoqado.pos.transactions.data.model.topeReembolsable
 import com.avoqado.pos.transactions.data.model.Transaction
 import com.avoqado.pos.transactions.data.model.TransactionItem
 import kotlinx.coroutines.launch
@@ -193,9 +195,23 @@ fun IssueRefundSheet(
     }
 
     val amountToRefund = if (tab == RefundTab.ITEMS) itemsAmount else parsedAmount
+    // 🔴 El tope depende de si la propina viaja. Con la casilla desmarcada la app manda
+    // `tipRefundCents = 0` y el servidor lee el importe ENTERO como venta: ofrecer el
+    // disponible con propina ($220 sobre una venta de $200) terminaba en 400 (Testarudo,
+    // 17-sep-2026). Los artículos siempre son venta, nunca propina.
+    val topeActual = if (tab == RefundTab.ITEMS) {
+        transaction.remainingRefundableSale ?: maxRefundable
+    } else {
+        topeReembolsable(
+            remainingRefundable = maxRefundable,
+            remainingRefundableSale = transaction.remainingRefundableSale,
+            paymentTipAmount = paymentTipAmount,
+            includeTip = includeTip,
+        )
+    }
     val canSubmit = reason != null &&
         amountToRefund > 0 &&
-        amountToRefund <= maxRefundable + 0.001 &&
+        amountToRefund <= topeActual + 0.001 &&
         !submitting
 
     if (terminalesParaElegir.isNotEmpty()) {
@@ -431,7 +447,7 @@ fun IssueRefundSheet(
                     refundQty = refundQtyByItem,
                     restockIds = restockItemIds,
                     selectedAmount = itemsAmount,
-                    maxRefundable = maxRefundable,
+                    maxRefundable = topeActual,
                     onToggle = { id ->
                         selectedItemIds = if (selectedItemIds.contains(id)) {
                             restockItemIds = restockItemIds - id
@@ -521,7 +537,7 @@ fun IssueRefundSheet(
                 AmountBody(
                     amountStr = amountStr,
                     onAmountChange = { amountStr = it },
-                    maxRefundable = maxRefundable,
+                    maxRefundable = topeActual,
                     modifier = Modifier.padding(top = spacing.md),
                 )
             }
@@ -530,7 +546,19 @@ fun IssueRefundSheet(
                 FilaIncluirPropina(
                     paymentTipAmount = paymentTipAmount,
                     includeTip = includeTip,
-                    onIncludeTipChange = { includeTip = it },
+                    onIncludeTipChange = { marcada ->
+                        includeTip = marcada
+                        // Al bajar el tope, lo escrito que ya no cabe se recorta; lo que cabe no se toca.
+                        amountStr = importeAjustadoAlTope(
+                            amountStr = amountStr,
+                            tope = topeReembolsable(
+                                remainingRefundable = maxRefundable,
+                                remainingRefundableSale = transaction.remainingRefundableSale,
+                                paymentTipAmount = paymentTipAmount,
+                                includeTip = marcada,
+                            ),
+                        )
+                    },
                     modifier = Modifier.padding(top = spacing.md),
                 )
             }
@@ -632,7 +660,7 @@ fun IssueRefundSheet(
                         }
                     }
                     Text(
-                        text = "Disponible ${transaction.remainingRefundableDisplay}",
+                        text = "Disponible ${formatMoney(topeActual)}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -649,8 +677,8 @@ fun IssueRefundSheet(
                 } else {
                     "Escribe el importe a reembolsar."
                 }
-                amountToRefund > maxRefundable + 0.001 ->
-                    "El importe supera lo disponible (${transaction.remainingRefundableDisplay})."
+                amountToRefund > topeActual + 0.001 ->
+                    "El importe supera lo disponible (${formatMoney(topeActual)})."
                 reason == null -> "Elige el motivo del reembolso."
                 else -> null
             }

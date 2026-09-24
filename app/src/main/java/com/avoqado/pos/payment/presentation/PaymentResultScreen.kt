@@ -670,6 +670,8 @@ fun PaymentUndeterminedView(
     onCancelarVenta: (() -> Unit)? = null,
     /** El cobro sin confirmar quedó de otra venta: confirmarlo no paga la actual. */
     fromPreviousSale: Boolean = false,
+    /** El servidor rechazó la declaración: su motivo se pinta en ÁMBAR para que se vea que contestó. */
+    declaracionRechazada: Boolean = false,
     /**
      * «Ya revisé la terminal: no se cobró». `null` ⇒ el botón no se ofrece y la pantalla es
      * exactamente la de siempre (un APK nuevo contra un servidor que todavía no lo soporta).
@@ -718,7 +720,9 @@ fun PaymentUndeterminedView(
         Text(
             text = message,
             style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            // 🔴 El motivo de un RECHAZO va en ámbar: con el gris de siempre, la pantalla quedaba
+            // idéntica tras tocar el botón y parecía que no había pasado nada (founder, 21-sep).
+            color = if (declaracionRechazada) Warning else MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
             modifier = Modifier.widthIn(max = 400.dp),
         )
@@ -742,7 +746,10 @@ fun PaymentUndeterminedView(
                 onClick = { pedirConfirmacionDeclaracion = true },
                 enabled = !isChecking,
                 border = BorderStroke(1.5.dp, Warning),
-                modifier = Modifier.fillMaxWidth(),
+                // 🔴 Nada de `fillMaxWidth()`: en una tablet de 1920 px dejaba una píldora de lado a
+                // lado con el texto diminuto en el centro (founder, 21-sep, viéndolo en la D3). Se acota
+                // igual que el mensaje de arriba para que la columna quede alineada.
+                modifier = Modifier.widthIn(max = 400.dp),
             ) {
                 Text(CancelacionDeCobro.BOTON_DECLARAR_NO_COBRADO, color = Warning)
             }
