@@ -76,6 +76,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -145,7 +146,8 @@ fun MoreMenuScreen(
     var showSwitchUser by remember { mutableStateOf(false) }
     var showArticles by remember { mutableStateOf(false) }
     var showCustomers by remember { mutableStateOf(false) }
-    var showLogWaste by remember { mutableStateOf(false) }
+    // Guardable: girar la tablet recrea la Activity y cerraba el formulario (y con él «Imprimir comprobante»). Codex r5.
+    var showLogWaste by rememberSaveable { mutableStateOf(false) }
     var showPendingWaste by remember { mutableStateOf(false) }
     var showReports by remember { mutableStateOf(false) }
     var showOrders by remember { mutableStateOf(false) }
@@ -745,7 +747,7 @@ fun MoreMenuScreen(
                 ),
         ) {
             // Una apertura nueva cada vez que se muestra (este estado no sobrevive a salir de «Más»).
-            val idApertura = remember { System.nanoTime() }
+            val idApertura = rememberSaveable { System.nanoTime() }
             LogWasteScreen(onDismiss = { showLogWaste = false }, idApertura = idApertura)
         }
     }

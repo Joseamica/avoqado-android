@@ -86,6 +86,9 @@ fun HistorialDeMermaScreen(
                         )
                         if (estado.hayMas && !estado.cargando) {
                             TextButton(onClick = { viewModel.cargarMas() }) { Text(TextosMerma.CARGAR_MAS) }
+                        } else if (!estado.cargando && !estado.desactualizada) {
+                            // Siempre a la mano (Codex r5): una alta y una baja a media lectura dejan el total cuadrado.
+                            TextButton(onClick = { viewModel.cargar() }) { Text(TextosMerma.ACTUALIZAR) }
                         }
                     }
                 }

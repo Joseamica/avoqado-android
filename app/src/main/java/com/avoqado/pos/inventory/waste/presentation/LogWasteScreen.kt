@@ -208,6 +208,12 @@ fun LogWasteScreen(
                 .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null, onClick = {}),
         ) {
             HistorialDeMermaScreen(onDismiss = { verHistorial = false })
+            // Un rechazo que llega con el historial abierto se ve también aquí (Codex r5), no sólo al volver.
+            if (estado.rechazos.isNotEmpty()) {
+                Box(Modifier.align(Alignment.BottomCenter).padding(AvoqadoTheme.spacing.lg)) {
+                    LetreroDeRechazos(estado.rechazos, onVisto = viewModel::rechazosVistos)
+                }
+            }
         }
     }
     }
