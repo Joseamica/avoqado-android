@@ -66,7 +66,13 @@ fun HistorialDeMermaScreen(
                 }
             }
             if (estado.cargado && estado.filas.isEmpty() && estado.aviso == null) {
-                item(key = "vacio") { Secundario(TextosMerma.SIN_HISTORIAL) }
+                item(key = "vacio") {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Secundario(TextosMerma.SIN_HISTORIAL)
+                        // Codex r6: una merma recién registrada puede llegar después de esta lectura.
+                        TextButton(onClick = { viewModel.cargar() }) { Text(TextosMerma.ACTUALIZAR) }
+                    }
+                }
             }
             items(estado.filas, key = { it.id }) { Renglon(it) }
             if (estado.desactualizada) {
