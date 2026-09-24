@@ -97,3 +97,4 @@ graphify-out/
 # Artefactos locales de herramientas (no es código)
 .claude/worktrees/
 .gbrain-source
+.context/codex-session-id
