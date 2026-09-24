@@ -515,6 +515,33 @@ class LogWasteViewModelTest {
         assertEquals(1, cola.todas().size)
     }
 
+    /**
+     * Codex (r4, P2): girar la tablet mientras se guarda desmonta y vuelve a montar el MISMO formulario (mismo
+     * idApertura). Al terminar, la captura se consume como siempre; si se quedara llena, el cajero la registraría otra vez.
+     */
+    @Test
+    fun `girar durante el guardado no deja la merma lista para registrarse otra vez`() = runTest {
+        conexion.value = false
+        val puerta = CompletableDeferred<Unit>()
+        cola.antesDeEncolar = { puerta.await() }
+        val vm = vm()
+        val id = sigApertura()
+        vm.abrirFormulario(id, null).join()
+        vm.capturar()
+        val registro = vm.confirmar()
+        runCurrent()
+        vm.formularioCerrado()
+        vm.abrirFormulario(id, null).join()
+
+        puerta.complete(Unit)
+        registro.join()
+
+        assertNull(vm.estado.value.articulo)
+        assertFalse(vm.estado.value.puedeConfirmar)
+        assertEquals("Aguacate", vm.estado.value.ultima?.articulo)
+        assertEquals(1, cola.todas().size)
+    }
+
     /** Una apertura nueva del formulario es otra captura: no ofrece el comprobante de la anterior. */
     @Test
     fun `al abrir de nuevo el formulario se olvida la ultima merma`() = runTest {

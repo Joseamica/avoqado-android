@@ -304,7 +304,7 @@ class LogWasteViewModel @Inject constructor(
         if (!registrando.compareAndSet(false, true)) return@launch
         val miApertura = apertura
         val registrada = try {
-            registrarLoCapturado(miApertura)
+            registrarLoCapturado(aperturaMostrada)
         } finally {
             registrando.set(false)
         } ?: return@launch
@@ -360,7 +360,8 @@ class LogWasteViewModel @Inject constructor(
     }
 
     /** Escribe la merma y deja el formulario listo. `null` si no se registró. */
-    private suspend fun registrarLoCapturado(miApertura: Long): Registrada? {
+    /** @param deLaApertura la apertura EXPLÍCITA (`idApertura`) en que se capturó: girar la tablet no la cambia. */
+    private suspend fun registrarLoCapturado(deLaApertura: Long?): Registrada? {
         val e = _estado.value
         val articulo = e.articulo ?: return null
         val motivo = e.motivo ?: return null
@@ -380,9 +381,11 @@ class LogWasteViewModel @Inject constructor(
             nota = e.nota,
         ).fold(
             onSuccess = { folio ->
-                // 🔴 Codex (r3): si mientras se escribía el cajero cerró y abrió el formulario, esta merma ya no es
-                // de la pantalla que se ve: no revive como «Última merma» ni borra lo elegido. Sigue en la cola.
-                if (apertura != miApertura) {
+                // 🔴 Codex (r3): si mientras se escribía el cajero cerró y abrió OTRA vez el formulario, esta merma ya no
+                // es de la pantalla que se ve: no revive como «Última merma» ni borra lo elegido. Sigue en la cola.
+                // 🔴 Codex (r4): se compara el `idApertura`, NO el contador `apertura`, que también sube al girar la
+                // tablet: con él, girar dejaba la captura llena y lista para registrarse dos veces.
+                if (aperturaMostrada != deLaApertura) {
                     _estado.update { it.copy(enviando = false) }
                     return@fold Registrada(venueId, folio, articulo.name)
                 }
@@ -413,7 +416,7 @@ class LogWasteViewModel @Inject constructor(
                 Registrada(venueId, folio, articulo.name)
             },
             onFailure = { fallo ->
-                _estado.update { if (apertura == miApertura) it.copy(enviando = false, error = fallo.message) else it.copy(enviando = false) }
+                _estado.update { if (aperturaMostrada == deLaApertura) it.copy(enviando = false, error = fallo.message) else it.copy(enviando = false) }
                 null
             },
         )
