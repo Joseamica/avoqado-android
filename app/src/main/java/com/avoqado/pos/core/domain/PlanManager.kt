@@ -74,8 +74,8 @@ class PlanManager @Inject constructor(
 
     companion object {
         // Mirror of the backend feature→tier map by EXACT code name.
-        // PRO: RESERVATIONS, PROMOTIONS, REFERRAL_PROGRAM, ADVANCED_REPORTS.
-        // PREMIUM: INVENTORY_TRACKING, CFDI.
+        // Todo código que la app consulte con hasFeature() TIENE que estar aquí: uno ausente
+        // se permite en cualquier plan. PlanManagerTest barre el código fuente y lo exige.
         val FEATURE_REQUIRED_TIER: Map<String, PlanTier> = mapOf(
             "RESERVATIONS" to PlanTier.PRO,
             "PROMOTIONS" to PlanTier.PRO,
@@ -86,9 +86,17 @@ class PlanManager @Inject constructor(
             // Etiquetas de precio para el anaquel (2026-09-23). Sin endpoint: se imprime en la
             // impresora del local, así que el candado vive sólo en el cliente. Espejo en iOS.
             "PRICE_LABELS" to PlanTier.PRO,
+            // Plano de mesas (2026-09-27). Faltaba aquí y el default-allow lo regalaba a FREE;
+            // el server sí lo cobra en sus rutas (`checkFeatureAccess('TABLE_SERVICE')`).
+            "TABLE_SERVICE" to PlanTier.PRO,
             "INVENTORY_TRACKING" to PlanTier.PREMIUM,
             "CFDI" to PlanTier.PREMIUM,
             "SCALE_INTEGRATION" to PlanTier.PREMIUM,
+            // Hub LAN sin internet (2026-09-27). PREMIUM_ONLY_CODES en el server, pero no tiene
+            // ruta allá: este mapa es su ÚNICO candado. Faltaba y se regalaba en todo plan.
+            // ⚠️ Una venta suelta (VenueFeature propia) de un código Premium a un venue Pro NO
+            // llega al POS: el payload móvil sólo trae tier + exempt. Hoy no existe ninguna.
+            "OFFLINE_LAN_HUB" to PlanTier.PREMIUM,
         )
     }
 }
