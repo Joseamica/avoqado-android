@@ -13,8 +13,11 @@ demoras evitables no es acortar esa ventana ni tratar su vencimiento como fallo 
 
 Invariantes de este lado, ya construidos y con prueba — no los debilites:
 
-- La llave durable (`SecureStorage.pendingCardChargeRequestId`) se escribe ANTES del POST y sólo se
-  suelta cuando el desenlace CONSTA para ese mismo `requestId`. **Cancelar no es «no se cobró».**
+- La lista durable de pendientes (`PendientesDeTarjeta`; hereda la llave única vieja
+  `pendingCardChargeRequestId` al actualizar) se escribe ANTES del POST y cada entrada sólo sale cuando su
+  desenlace CONSTA para ese mismo `requestId`. Si SÍ pasó, se avisa 10 min (o hasta «Entendido» o la
+  adopción de su propio flujo) y un positivo gana a cualquier negativo tardío (founder, 26-sep: «ninguna
+  duda apaga la terminal»; la misma venta espera, las demás avisan). **Cancelar no es «no se cobró».**
 - Un `409 TERMINAL_BUSY` al CREAR cuya `blockingRequest.requestId` es de OTRA solicitud no es un
   cobro incierto (T15): se suelta la llave y se dice «Terminal ocupada: otro cobro de $X hace N min».
   Eso acredita que ESA solicitud nueva no se creó; **no resuelve el cobro del bloqueador**. Si nombra a

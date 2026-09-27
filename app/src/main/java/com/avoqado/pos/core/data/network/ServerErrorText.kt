@@ -153,12 +153,16 @@ object ServerErrorText {
         return humanize(mensaje, fallback)
     }
 
-    /** Espejo de iOS: distinguir sin-red de fallo real, sin tener la excepción. */
+    /**
+     * Espejo de iOS: distinguir sin-red de fallo real, sin tener la excepción. N6 (Codex r2): es sin red un fallo de
+     * TRANSPORTE — el socket (conexión rechazada, sin ruta, cortada), el host, el tiempo agotado sin respuesta o el apretón
+     * TLS. Una respuesta del servidor no lo es aunque se corte su cuerpo: quien llama conserva su estado HTTP.
+     */
     fun isOffline(error: Throwable?): Boolean = when (error) {
         is java.net.UnknownHostException,
-        is java.net.ConnectException,
-        is java.net.NoRouteToHostException,
+        is java.net.SocketException, // ConnectException, NoRouteToHostException, «Connection reset»
         is java.io.InterruptedIOException,
+        is javax.net.ssl.SSLException,
         -> true
         else -> false
     }

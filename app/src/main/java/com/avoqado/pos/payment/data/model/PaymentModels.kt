@@ -21,7 +21,11 @@ sealed class PaymentFlowState {
     data class CollectingRating(val amount: Int) : PaymentFlowState()
     data class CollectingTip(val amount: Int, val rating: Int?) : PaymentFlowState()
     data class Confirming(val amount: Int, val tip: Int, val rating: Int?) : PaymentFlowState()
-    data class SelectingTerminal(val totalAmount: Int) : PaymentFlowState()
+    /**
+     * @param sinLista lo que se pinta en lugar de la lista cuando no cargó, con «Reintentar»: sin red (B7b-5, sin rojo), el
+     *   error del servidor (N6) o que no hay terminales conectadas (paridad con iOS). El aviso de otras ventas sigue arriba.
+     */
+    data class SelectingTerminal(val totalAmount: Int, val sinLista: String? = null) : PaymentFlowState()
     data class Processing(val totalAmount: Int) : PaymentFlowState()
     data class SentToTerminal(val totalAmount: Int) : PaymentFlowState()
     data class Success(
@@ -72,9 +76,9 @@ sealed class PaymentFlowState {
      * tras una advertencia explícita del riesgo.
      *
      * @param checking true mientras se re-consulta el estado (deshabilita las acciones).
-     * @param fromPreviousSale el cobro sin resolver quedó de OTRA venta (la llave sobrevivió en
-     *   disco a un cambio de pestaña o a la muerte del proceso). Confirmarlo NO paga la venta
-     *   actual: sólo suelta el bloqueo para poder cobrar ésta.
+     * @param fromPreviousSale NO adoptado: sólo revisión. El cobro sin resolver es de OTRA venta (abierto con
+     *   «Revisar» desde el aviso de la selección de terminal) o de ESTA orden pero no lo mandó este flujo (lo
+     *   encontró en la lista). Confirmarlo NUNCA paga la venta actual.
      */
     data class Undetermined(
         val totalAmount: Int,

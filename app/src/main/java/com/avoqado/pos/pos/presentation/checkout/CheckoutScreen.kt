@@ -307,7 +307,7 @@ fun CheckoutScreen(
     var amountCents by remember { mutableIntStateOf(0) }
     // `rememberSaveable`: con `remember` a secas, cambiar de pestaña desmontaba el flujo de
     // cobro y la pantalla "Cobro sin confirmar" desaparecía sin dejar rastro. La llave del
-    // cobro vive en disco (ver SecureStorage.pendingCardChargeRequestId), pero además la
+    // cobro vive en disco (ver SecureStorage.pendingCardChargesJson), pero además la
     // pantalla debe seguir ahí al volver.
     var showPaymentFlow by rememberSaveable { mutableStateOf(false) }
     // Desenlace de un cobro que quedó pendiente de OTRA venta. Vive aquí —y no en el flujo
@@ -1350,11 +1350,18 @@ fun CheckoutScreen(
         AvoqadoDialog(
             title = "Cobro anterior resuelto",
             description = "$message. Búscala en Ventas si necesitas dar el recibo.",
-            onDismiss = { previousChargeNotice = null },
+            // Ronda 2 (founder): cerrarlo con la X también lo reconoce — nunca un lazo que exija «Entendido» para cobrar.
+            onDismiss = {
+                previousChargeNotice = null
+                paymentFlowViewModel.reconocerCobroAnteriorResuelto()
+            },
             actionButton = {
                 PrimaryButton(
                     text = "Entendido",
-                    onClick = { previousChargeNotice = null },
+                    onClick = {
+                        previousChargeNotice = null
+                        paymentFlowViewModel.reconocerCobroAnteriorResuelto()
+                    },
                     fullWidth = true,
                 )
             },

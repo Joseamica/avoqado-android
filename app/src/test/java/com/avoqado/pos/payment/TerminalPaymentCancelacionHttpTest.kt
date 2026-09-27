@@ -1,11 +1,15 @@
 package com.avoqado.pos.payment
 
+import com.avoqado.pos.MainDispatcherRule
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ForbiddenInterceptor
+import com.avoqado.pos.payment.data.CancelacionDeCobroHttp
+import com.avoqado.pos.payment.data.ResultadoDeDeclaracion
 import com.avoqado.pos.payment.data.TerminalPaymentResult
 import com.avoqado.pos.payment.data.TerminalPaymentService
 import com.avoqado.pos.payment.domain.CancelacionDeCobro
 import com.avoqado.pos.payment.domain.ChargeStatusProbe
+import com.avoqado.pos.payment.domain.PendientesDeTarjeta
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.async
@@ -22,6 +26,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
+import org.junit.Rule
 import org.junit.Test
 
 /**
@@ -36,11 +41,17 @@ import org.junit.Test
  */
 class TerminalPaymentCancelacionHttpTest {
 
+    // El transporte real pasa por el hilo principal (`Dispatchers.Main.immediate`); aquí lo sustituye uno de prueba.
+    @get:Rule
+    val mainDispatcherRule = MainDispatcherRule()
+
     private lateinit var server: MockWebServer
     private lateinit var service: TerminalPaymentService
     private val secureStorage = mockk<SecureStorage>(relaxed = true)
-    private var pendingKey: String? = null
-    private var contexto: String? = null
+
+    // La lista durable de verdad vive en disco; aquí se emula con una variable, con la MISMA lógica pura de producción.
+    private var pendientes: String? = null
+    private fun idsPendientes() = PendientesDeTarjeta.leer(pendientes).map { it.requestId }
 
     @Before
     fun setUp() {
@@ -48,17 +59,15 @@ class TerminalPaymentCancelacionHttpTest {
         server.start()
         every { secureStorage.venueId } returns "venue-1"
         every { secureStorage.accessToken } returns "token-1"
-        every { secureStorage.pendingCardChargeRequestId } answers { pendingKey }
-        every { secureStorage.pendingCardChargeRequestId = any() } answers { pendingKey = firstArg() }
-        every { secureStorage.pendingCardChargeContext } answers { contexto }
-        every { secureStorage.persistPendingCardCharge(any(), any()) } answers {
-            if (pendingKey != null) {
-                false
-            } else {
-                pendingKey = firstArg()
-                contexto = secondArg()
-                true
-            }
+        every { secureStorage.pendingCardChargesJson } answers { pendientes }
+        every { secureStorage.persistPendingCardCharge(any(), any(), any()) } answers {
+            pendientes = PendientesDeTarjeta.agregar(pendientes, firstArg(), secondArg(), thirdArg()); true
+        }
+        every { secureStorage.persistCobroQueSiPaso(any(), any(), any(), any()) } answers {
+            pendientes = PendientesDeTarjeta.agregar(pendientes, firstArg(), secondArg(), thirdArg(), cobrado = true, cobradoEn = arg(3)); true
+        }
+        every { secureStorage.removePendingCardCharge(any()) } answers {
+            pendientes = PendientesDeTarjeta.quitar(pendientes, firstArg())
         }
         service = TerminalPaymentService(secureStorage, OkHttpClient())
         service.baseUrl = server.url("/api/v1").toString().trimEnd('/')
@@ -157,7 +166,7 @@ class TerminalPaymentCancelacionHttpTest {
 
         val resultado = cobrando.await()
         assertTrue("$resultado", resultado is TerminalPaymentResult.Undetermined)
-        assertEquals(enVuelo.requestId, pendingKey)
+        assertEquals(listOf(enVuelo.requestId), idsPendientes())
     }
 
     // MARK: - Rechazos de admisión correlacionados (H.5)
@@ -178,7 +187,7 @@ class TerminalPaymentCancelacionHttpTest {
         assertEquals(CancelacionDeCobro.RECHAZO_CUENTA_CANCELADA, error.message)
         assertTrue(error.noSeCreo)
         assertNotNull(error.requestId)
-        assertNull("consta que no se creó: la llave se suelta", pendingKey)
+        assertTrue("consta que no se creó: la entrada se suelta", idsPendientes().isEmpty())
         assertEquals("no hay nada que consultar", 1, server.requestCount)
     }
 
@@ -192,7 +201,7 @@ class TerminalPaymentCancelacionHttpTest {
             "ORDER_NOT_FOUND" to CancelacionDeCobro.RECHAZO_CUENTA_INEXISTENTE,
         )
         for ((code, texto) in casos) {
-            pendingKey = null
+            pendientes = null
             server.dispatcher = object : Dispatcher() {
                 override fun dispatch(request: RecordedRequest): MockResponse {
                     if (request.method == "GET") return MockResponse().setResponseCode(404)
@@ -202,7 +211,7 @@ class TerminalPaymentCancelacionHttpTest {
             }
             val resultado = cobrar()
             assertEquals(code, texto, (resultado as TerminalPaymentResult.Error).message)
-            assertNull(code, pendingKey)
+            assertTrue(code, idsPendientes().isEmpty())
         }
     }
 
@@ -214,7 +223,7 @@ class TerminalPaymentCancelacionHttpTest {
         val resultado = cobrar()
 
         assertTrue("$resultado", resultado is TerminalPaymentResult.Undetermined)
-        assertEquals((resultado as TerminalPaymentResult.Undetermined).requestId, pendingKey)
+        assertEquals(listOf((resultado as TerminalPaymentResult.Undetermined).requestId), idsPendientes())
     }
 
     // MARK: - 503 de admisión: se reintenta con el MISMO requestId
@@ -240,7 +249,9 @@ class TerminalPaymentCancelacionHttpTest {
         assertTrue("$resultado", resultado is TerminalPaymentResult.Success)
         assertEquals(2, ids.size)
         assertEquals("el reintento NO estrena identidad", ids[0], ids[1])
-        assertNull(pendingKey)
+        // N1 (Codex r2): el éxito ya no borra la entrada: la MARCA hasta que el flujo la adopte. Ya no es una duda.
+        assertTrue(service.unresolvedRequestIds.isEmpty())
+        assertEquals(listOf(true), PendientesDeTarjeta.leer(pendientes).map { it.cobrado })
     }
 
     @Test
@@ -256,7 +267,7 @@ class TerminalPaymentCancelacionHttpTest {
         val resultado = cobrar()
 
         assertTrue("$resultado", resultado is TerminalPaymentResult.Undetermined)
-        assertEquals((resultado as TerminalPaymentResult.Undetermined).requestId, pendingKey)
+        assertEquals(listOf((resultado as TerminalPaymentResult.Undetermined).requestId), idsPendientes())
     }
 
     // MARK: - El estado durable trae el desenlace canónico
@@ -319,6 +330,7 @@ class TerminalPaymentCancelacionHttpTest {
         assertEquals("order-77", ctx.orderId)
         assertEquals(2500, ctx.amountCents)
         assertEquals(100, ctx.tipCents)
+        assertNotNull("la antigüedad del cobro viaja con él (el aviso dice «hace N min»)", ctx.desdeMillis)
         assertNull("el contexto de OTRA solicitud no se confunde", service.contextoDe("otra-solicitud"))
     }
 
@@ -326,22 +338,94 @@ class TerminalPaymentCancelacionHttpTest {
 
     @Test
     fun `P1 soltar la llave solo aplica a la propia solicitud`() {
-        pendingKey = "req-1"
+        pendientes = PendientesDeTarjeta.agregar(null, "req-1", null, "{}")
         service.soltarLlaveSiEs("otra")
-        assertEquals("req-1", pendingKey)
+        assertEquals(listOf("req-1"), idsPendientes())
         service.soltarLlaveSiEs("req-1")
-        assertNull(pendingKey)
+        assertTrue(idsPendientes().isEmpty())
     }
 
     @Test
-    fun `P1 armar la llave no pisa la de otro cobro`() {
-        pendingKey = "req-otro"
-        assertEquals(false, service.armarLlaveSiLibre("req-1"))
-        assertEquals("req-otro", pendingKey)
+    fun `P1 armar un cobro conserva la entrada de los demas`() {
+        // 🔴 Founder, 25-sep: ya no hay «la ranura» que otro cobro ocupe. Cada cobro conserva su entrada.
+        pendientes = PendientesDeTarjeta.agregar(null, "req-otro", null, "{}")
+        assertEquals(true, service.armarLlave("req-1"))
+        assertEquals(listOf("req-otro", "req-1"), idsPendientes())
+        assertEquals("volver a armar la MISMA es idempotente", true, service.armarLlave("req-1"))
+        assertEquals(listOf("req-otro", "req-1"), idsPendientes())
+    }
 
-        pendingKey = null
-        assertEquals(true, service.armarLlaveSiLibre("req-1"))
-        assertEquals("req-1", pendingKey)
-        assertEquals("volver a armar la MISMA es idempotente", true, service.armarLlaveSiLibre("req-1"))
+    @Test
+    fun `P1 el cobro PROBADO de una cancelacion vuelve a la lista aunque el cajero lo hubiera declarado`() = runBlocking {
+        // 🔴 Revisión de B2 (Minor 3), hermano del éxito tardío: `armarLlave` salta un cobro declarado «no se cobró», así
+        // que el SeCobro PROBADO del coordinador se tragaba y la lista durable nunca lo tenía. El transporte REAL lo
+        // entrega como dinero: manda sobre la declaración y vuelve con SU venta.
+        pendientes = PendientesDeTarjeta.agregar(null, "req-1", "order-1", """{"requestId":"req-1","orderId":"order-1"}""")
+        server.enqueue(MockResponse().setBody("""{"released":true}"""))
+        assertEquals(ResultadoDeDeclaracion.Liberada, service.declararNoCobrado("req-1"))
+        assertTrue(idsPendientes().isEmpty())
+
+        val entregado = CancelacionDeCobroHttp(service, mockk(relaxed = true)).entregarCobro("req-1", "pay-1")
+
+        assertTrue(entregado)
+        assertEquals(listOf("req-1"), idsPendientes())
+        // H2 (26-sep): vuelve MARCADO como cobrado — ya no es una duda, pero sigue en disco hasta su «Entendido».
+        assertTrue("y la venta siguiente lo VE, como un cobro que SÍ pasó", service.pendientesDeOtrasVentas(null).single().cobrado)
+        assertEquals("con SU venta", "req-1", service.pendienteDeLaVenta("order-1"))
+    }
+
+    // MARK: - Ronda 2 (Codex r2): el positivo gana en todos lados
+
+    private fun contexto(id: String, orden: String) =
+        JSONObject().put("requestId", id).put("orderId", orden).put("amountCents", 1500).put("tipCents", 0)
+            .put("creadoEn", System.currentTimeMillis()).toString()
+
+    @Test
+    fun `N2 un cobro que un negativo independiente retiro vuelve CONFIRMADO si despues consta que SI paso`() = runBlocking {
+        // Codex r2 (N2): una revisión consulta A; mientras, la declaración del cajero (o la cancelación) lo retira como «no se
+        // cobró»; después la consulta prueba que SÍ pasó. La ausencia se leía como «Entendido»: el cobro desaparecía del aviso
+        // y de la protección de su venta. Ausencia no es reconocimiento.
+        pendientes = PendientesDeTarjeta.agregar(null, "A", "orden-a", contexto("A", "orden-a"))
+        server.enqueue(MockResponse().setBody("""{"released":true}"""))
+        assertEquals(ResultadoDeDeclaracion.Liberada, service.declararNoCobrado("A")) // la declaración real
+        pendientes = PendientesDeTarjeta.agregar(pendientes, "B", "orden-b", contexto("B", "orden-b"))
+        CancelacionDeCobroHttp(service, mockk(relaxed = true)).soltarLlaveSiEs("B") // la cancelación real («no se cobró»)
+        assertTrue("montaje: los dos negativos los retiraron", idsPendientes().isEmpty())
+
+        for (id in listOf("A", "B")) {
+            server.enqueue(MockResponse().setBody("""{"status":"COMPLETED","inProgress":false,"paymentId":"pay-$id"}"""))
+            assertTrue(service.resolveOutcome(id) is TerminalPaymentResult.Success)
+        }
+
+        assertEquals("vuelven al aviso, confirmados", listOf("B" to true, "A" to true),
+            service.pendientesDeOtrasVentas("orden-z").map { it.requestId to it.cobrado })
+        assertEquals("y vuelven a proteger su venta", "A", service.pendienteDeLaVenta("orden-a"))
+        assertEquals("B", service.pendienteDeLaVenta("orden-b"))
+    }
+
+    @Test
+    fun `N2 lo que ESTE proceso ya reconocio o adopto no lo revive un positivo tardio`() = runBlocking {
+        pendientes = PendientesDeTarjeta.agregar(null, "A", "orden-a", contexto("A", "orden-a"), cobrado = true, cobradoEn = System.currentTimeMillis())
+        service.reconocerCobro("A") // «Entendido», o la adopción del flujo que lo mandó
+        server.enqueue(MockResponse().setBody("""{"status":"COMPLETED","inProgress":false,"paymentId":"pay-a"}"""))
+
+        assertTrue(service.resolveOutcome("A") is TerminalPaymentResult.Success)
+
+        assertTrue(idsPendientes().isEmpty())
+    }
+
+    @Test
+    fun `N3 un negativo posterior no oculta un cobro ya confirmado - con la declaracion y la cancelacion reales`() = runBlocking {
+        // Codex r2 (N3): A ya consta como cobrado y llega un negativo anterior que seguía en vuelo. La declaración le ponía la
+        // marca de «no cobrado» y la lista la escondía del aviso y de la protección de su venta.
+        pendientes = PendientesDeTarjeta.agregar(null, "A", "orden-a", contexto("A", "orden-a"), cobrado = true, cobradoEn = System.currentTimeMillis())
+
+        server.enqueue(MockResponse().setBody("""{"released":true}"""))
+        service.declararNoCobrado("A")
+        CancelacionDeCobroHttp(service, mockk(relaxed = true)).soltarLlaveSiEs("A")
+
+        assertEquals(listOf("A"), idsPendientes())
+        assertTrue("sigue en el aviso, confirmado", service.pendientesDeOtrasVentas("orden-z").single().cobrado)
+        assertEquals("y sigue protegiendo su venta", "A", service.pendienteDeLaVenta("orden-a"))
     }
 }

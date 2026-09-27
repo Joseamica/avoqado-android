@@ -260,8 +260,41 @@ class CancelacionDeCobroCoordinatorTest {
         c.procesar("req-1")
 
         assertEquals("req-1", transporte.llave)
+        assertEquals("el reintento entrega el MISMO cobro probado", "req-1" to "pay-1", transporte.entregas.last())
         assertTrue(store.todas().isEmpty())
         assertTrue(transporte.llamadasBorrar.isEmpty())
+    }
+
+    @Test
+    fun `P1 el cobro PROBADO se entrega como dinero, con su paymentId`() = runTest {
+        // 🔴 Revisión de B2 (Minor 3): la entrega pasaba por `armarLlave`, que salta un cobro que el cajero ya declaró
+        // «no se cobró» — el SeCobro PROBADO del servidor no llegaba nunca a la lista durable. Ahora viaja como cobro
+        // probado, con su paymentId, y el servicio lo hace mandar sobre la declaración (misma regla que el éxito tardío).
+        val transporte = CancelacionTransportFalso().apply {
+            programarEstados(ChargeStatusProbe.Known("COMPLETED", false, paymentId = "pay-1"))
+        }
+        val c = coordinador(transporte)
+        c.registrar(intencion())
+
+        c.procesar("req-1")
+
+        assertEquals(listOf("req-1" to "pay-1"), transporte.entregas)
+    }
+
+    @Test
+    fun `P1 una duda NUNCA se entrega como cobro probado`() = runTest {
+        // Sólo el SeCobro (evidencia canónica de dinero) pasa por encima de una declaración. Ni un estado incierto ni
+        // la falta de red.
+        val transporte = CancelacionTransportFalso().apply { programarEstados(ChargeStatusProbe.Known("UNKNOWN", false)) }
+        val c = coordinador(transporte)
+        c.registrar(intencion())
+
+        c.procesar("req-1")
+        transporte.programarEstados(ChargeStatusProbe.Unreachable)
+        c.procesar("req-1")
+
+        assertTrue("una duda no es dinero: ${transporte.entregas}", transporte.entregas.isEmpty())
+        assertTrue("y la intención sigue viva", store.todas().isNotEmpty())
     }
 
     // MARK: - Reenvío del cancel

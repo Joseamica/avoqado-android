@@ -8,7 +8,9 @@ import com.avoqado.pos.payment.domain.CardChargeDecision
 import com.avoqado.pos.payment.domain.CardChargeOutcome
 import com.avoqado.pos.payment.domain.ChargeStatusProbe
 import com.avoqado.pos.payment.domain.ChargeWaitEnding
+import com.avoqado.pos.payment.domain.CobroPendiente
 import com.avoqado.pos.payment.domain.CreationRejection
+import com.avoqado.pos.payment.domain.PendientesDeTarjeta
 import com.avoqado.pos.payment.domain.ProbeDecision
 import com.avoqado.pos.printing.data.model.ReceiptData
 import kotlinx.coroutines.Dispatchers
@@ -71,6 +73,14 @@ class TerminalPaymentService @Inject constructor(
     /** Seam de pruebas: apuntar a un MockWebServer. En producción es [ApiConstants.BASE_URL]. */
     @androidx.annotation.VisibleForTesting
     internal var baseUrl: String = ApiConstants.BASE_URL
+
+    /**
+     * Seam de pruebas: dónde corre cada llamada HTTP. En producción, [Dispatchers.IO]. Las pruebas de pantalla con el
+     * servicio REAL lo cambian por uno que corre en el hilo de la prueba: con el reloj virtual de `runTest`, un salto a
+     * otro hilo deja vencer el tope de 35 s de la re-consulta antes de que llegue la respuesta.
+     */
+    @androidx.annotation.VisibleForTesting
+    internal var io: kotlinx.coroutines.CoroutineDispatcher = Dispatchers.IO
 
     private companion object {
         /**
@@ -168,23 +178,30 @@ class TerminalPaymentService @Inject constructor(
     private val clienteDeLaDeclaracion by lazy { statusClient }
 
     /**
-     * Contexto guardado del cobro (la llave durable), si corresponde a ESA solicitud.
+     * Contexto guardado del cobro (su entrada en la lista durable), si corresponde a ESA solicitud.
      *
      * Es lo que permite cancelar desde «Cobro sin confirmar» o desde «Error», cuando el POST ya
      * terminó y el servicio no conserva nada en memoria: terminal, venue y orden salen del disco.
+     * Una entrada ya soltada se sigue encontrando en [soltados], como la llave vieja dejaba su
+     * contexto en disco al soltarse.
      */
-    fun contextoDe(requestId: String): ContextoDeCobro? {
-        val crudo = secureStorage.pendingCardChargeContext ?: return null
-        val datos = runCatching { JSONObject(crudo) }.getOrNull() ?: return null
-        if (datos.optString("requestId") != requestId) return null
+    fun contextoDe(requestId: String): ContextoDeCobro? =
+        (pendientes().firstOrNull { it.requestId == requestId } ?: soltado(requestId))?.let(::contextoDeEntrada)
+
+    private fun contextoDeEntrada(entrada: CobroPendiente): ContextoDeCobro? {
+        val datos = runCatching { JSONObject(entrada.contexto) }.getOrNull() ?: return null
+        if (datos.optString("requestId") != entrada.requestId) return null
         fun texto(llave: String): String? = datos.optString(llave).takeIf { it.isNotBlank() }
         return ContextoDeCobro(
-            requestId = requestId,
+            requestId = entrada.requestId,
             venueId = texto("venueId"),
             terminalId = texto("terminalId"),
             orderId = texto("orderId"),
             amountCents = if (datos.has("amountCents")) datos.optInt("amountCents") else null,
             tipCents = if (datos.has("tipCents")) datos.optInt("tipCents") else null,
+            // Ronda 2: la ventana de 10 min arranca en el cobro (`creadoEn`); si no consta, en cuándo se CONFIRMÓ.
+            desdeMillis = if (datos.has("creadoEn")) datos.optLong("creadoEn") else entrada.cobradoEn,
+            cobrado = entrada.cobrado,
         )
     }
 
@@ -198,39 +215,211 @@ class TerminalPaymentService @Inject constructor(
         cancelRequestedFor = requestId
     }
 
-    /** Suelta la llave durable SÓLO si es la de esta solicitud. */
-    fun soltarLlaveSiEs(requestId: String) = clearMatching(requestId)
-
     /**
-     * Deja este cobro cargado en la llave durable, para que la próxima venta lo muestre.
+     * Suelta la entrada durable de ESTA solicitud y sólo la suya; su contexto se recuerda en [soltados].
      *
-     * @return `false` si la llave la tiene OTRO cobro vivo — ése es más nuevo y todavía puede tener
-     *   dinero encima, así que jamás se pisa (misma regla que [CardChargeDecision.unresolvedKeyAfterStaleResult]).
+     * 🔴 H2 (26-sep): un cobro que SÍ pasó no lo suelta un «no se cobró» posterior — el dinero probado manda, jamás al revés.
+     * Sale con el «Entendido» de ESE cobro, cuando el flujo que lo mandó lo aplica como su pago ([reconocerCobro]) o al vencer
+     * su ventana de 10 min.
      */
-    fun armarLlaveSiLibre(requestId: String): Boolean = synchronized(attemptLock) {
-        // Ya declarado sin cobro: su desenlace consta, no vuelve a la llave (P2 Codex).
-        if (yaDeclaradoSinCobro(requestId)) return true
-        val armada = unresolvedRequestId
-        if (armada != null && armada != requestId) return false
-        if (armada == null) unresolvedRequestId = requestId
-        true
+    fun soltarLlaveSiEs(requestId: String) {
+        synchronized(attemptLock) {
+            val entrada = pendientes().firstOrNull { it.requestId == requestId } ?: return
+            if (entrada.cobrado) return
+            synchronized(soltados) { soltados[requestId] = entrada }
+            secureStorage.removePendingCardCharge(requestId)
+        }
     }
 
     /**
-     * `requestId` del cobro con tarjeta que quedó SIN resolver. Es la llave para volver a
-     * preguntarle al server cómo terminó, en vez de cobrar otra vez a ciegas.
+     * H2: el cobro SALE de la lista durable, esté marcado o no: por el «Entendido» de ESE cobro, o porque el flujo que lo
+     * mandó lo aplica como SU pago (pantalla de éxito). Si no, un «SÍ pasó» dura su ventana de 10 min y se purga solo.
+     */
+    fun reconocerCobro(requestId: String) {
+        synchronized(attemptLock) {
+            reconocidos += requestId
+            pendientes().firstOrNull { it.requestId == requestId }?.let(::quitar)
+        }
+    }
+
+    /**
+     * N2 (Codex r2): lo que ESTE proceso reconoció, adoptó o purgó por vencido. Sólo eso impide que un positivo tardío
+     * vuelva a poner el cobro: una entrada AUSENTE por un negativo independiente (declaración, cancelación) no es «Entendido».
+     * ponytail: sólo en memoria — tras reiniciar, un positivo tardío puede repetir un «SÍ pasó» ya visto (avisa de más, dura
+     * su ventana).
+     */
+    private val reconocidos = mutableSetOf<String>()
+
+    /** N4 (Codex r2): marcas «SÍ pasó» que el disco no aceptó. Siguen a la vista (en memoria) y la lectura siguiente las reintenta. */
+    private val marcasSinGuardar = mutableMapOf<String, CobroPendiente>()
+
+    private fun quitar(entrada: CobroPendiente) {
+        reconocidos += entrada.requestId
+        marcasSinGuardar.remove(entrada.requestId)
+        synchronized(soltados) { soltados[entrada.requestId] = entrada }
+        secureStorage.removePendingCardCharge(entrada.requestId)
+    }
+
+    /**
+     * H2: consta que ese cobro SÍ pasó: se MARCA (no se borra), también si ya no estaba — N2: ausencia no es «Entendido»;
+     * sólo lo reconocido/adoptado/purgado por ESTE proceso ([reconocidos]) no vuelve.
      *
-     * 🔴 **Vive en DISCO** (`SecureStorage`), no en memoria. La pantalla "Cobro sin confirmar"
+     * @return `false` si el disco no aceptó la marca: N4 la conserva en memoria y la reintenta en la lectura siguiente.
+     */
+    private fun marcarCobrado(requestId: String): Boolean = synchronized(attemptLock) {
+        if (requestId.isBlank()) return true
+        val entrada = pendientes().firstOrNull { it.requestId == requestId } // la lectura ya reintentó las marcas pendientes (N4)
+        if (requestId in marcasSinGuardar) return false
+        if (entrada?.cobrado == true || (entrada == null && requestId in reconocidos)) return true
+        val previo = entrada ?: soltado(requestId)
+        guardarMarca(
+            CobroPendiente(
+                requestId,
+                previo?.orderId,
+                previo?.contexto ?: JSONObject().put("requestId", requestId).toString(),
+                cobrado = true,
+                cobradoEn = System.currentTimeMillis(),
+            ),
+        )
+    }
+
+    private fun guardarMarca(marca: CobroPendiente): Boolean =
+        secureStorage.persistCobroQueSiPaso(marca.requestId, marca.orderId, marca.contexto, marca.cobradoEn ?: System.currentTimeMillis())
+            .also { guardada ->
+                if (guardada) {
+                    marcasSinGuardar.remove(marca.requestId)
+                } else {
+                    marcasSinGuardar[marca.requestId] = marca
+                    Log.e("💳", "❌ No se pudo marcar en disco que el cobro ${marca.requestId} SÍ pasó: se conserva en memoria y se reintenta")
+                }
+            }
+
+    /**
+     * Deja este cobro en la lista durable, para que la próxima venta lo muestre. Cada cobro conserva
+     * su entrada (25-sep): ya no hay «ranura ocupada por otro cobro» que obligue a esperar.
+     *
+     * @return `false` sólo si el disco no aceptó la escritura: quien llama conserva su aviso y lo
+     *   reintenta (la llave vieja, en ese caso, reventaba con un `check`).
+     */
+    fun armarLlave(requestId: String): Boolean = synchronized(attemptLock) {
+        // Ya declarado sin cobro: su desenlace consta, no vuelve a la lista (P2 Codex). Y una llave EN BLANCO no es una
+        // referencia: el GET del estado iría sin id y la venta siguiente cargaría un aviso que nadie puede resolver.
+        if (requestId.isBlank() || yaDeclaradoSinCobro(requestId) || requestId in reconocidos) return true
+        if (pendientes().any { it.requestId == requestId }) return true
+        // Se re-arma con SU contexto (orden, importe, venue) si este proceso lo soltó antes: sin él, la misma venta ya no
+        // reconocería el cobro como suyo y no esperaría.
+        val previo = soltado(requestId)
+        secureStorage.persistPendingCardCharge(
+            requestId,
+            previo?.orderId,
+            previo?.contexto ?: JSONObject().put("requestId", requestId).toString(),
+        ).also { if (!it) Log.e("💳", "❌ No se pudo guardar el cobro pendiente $requestId en disco") }
+    }
+
+    /**
+     * Los cobros con tarjeta que quedaron SIN resolver, sin los que el cajero ya declaró sin cobro ni los que ya constan
+     * como cobrados (ésos siguen en disco su ventana de 10 min, pero su desenlace ya consta).
+     * Son la llave para volver a preguntarle al server cómo terminaron, en vez de cobrar otra vez a ciegas.
+     *
+     * 🔴 **Viven en DISCO** (`SecureStorage`), no en memoria. La pantalla "Cobro sin confirmar"
      * no basta: el cajero que la ve se va a Transacciones a comprobar si el pago entró, y ese
      * solo cambio de pestaña —o la muerte del proceso— evaporaba toda la ceremonia de la
-     * advertencia. Con la llave en disco, el siguiente "Cobrar" la encuentra y obliga a
-     * resolver el cobro viejo antes de ofrecer uno nuevo.
-     *
-     * Se limpia SÓLO cuando el desenlace consta para la misma identidad.
+     * advertencia. Se limpian SÓLO cuando el desenlace consta para la misma identidad.
      */
-    var unresolvedRequestId: String?
-        get() = secureStorage.pendingCardChargeRequestId
-        private set(value) { secureStorage.pendingCardChargeRequestId = value }
+    val unresolvedRequestIds: List<String> get() = vigentes().filterNot { it.cobrado }.map { it.requestId }
+
+    /**
+     * El cobro pendiente de ESTA venta, si lo hay. 🔴 Founder, 25-sep: sólo la MISMA venta espera. Sin orden (cobro rápido)
+     * no hay venta que cercar: `null`, y el aviso de la pantalla cubre el resto. Incluye uno que ya consta que SÍ pasó
+     * ([yaCobrado]): la misma venta no se vuelve a mandar a la terminal en silencio.
+     */
+    fun pendienteDeLaVenta(orderId: String?): String? {
+        val orden = orderId?.takeIf { it.isNotBlank() } ?: return null
+        return vigentes().lastOrNull { it.orderId == orden }?.requestId
+    }
+
+    /**
+     * Los pendientes de las DEMÁS ventas, el más nuevo primero, para avisar sin frenar. Una entrada cuyo contexto no se
+     * pudo leer sale igual, con lo que se sabe: nada se descarta en silencio. Los que ya constan como cobrados salen
+     * marcados: toda venta nueva los sigue recibiendo durante su ventana de 10 min (o hasta su «Entendido»).
+     */
+    fun pendientesDeOtrasVentas(orderId: String?): List<ContextoDeCobro> {
+        val orden = orderId?.takeIf { it.isNotBlank() }
+        return vigentes().filter { orden == null || it.orderId != orden }
+            .map {
+                contextoDeEntrada(it)
+                    ?: ContextoDeCobro(
+                        it.requestId, venueId = null, terminalId = null, orderId = it.orderId, desdeMillis = it.cobradoEn, cobrado = it.cobrado,
+                    )
+            }
+            .reversed()
+    }
+
+    /** H2: ¿consta que este cobro SÍ pasó (sigue en la lista, marcado, esperando su «Entendido»)? */
+    fun yaCobrado(requestId: String): Boolean = pendientes().any { it.requestId == requestId && it.cobrado }
+
+    /** H6: el turno en que la revisión de fondo consultó cada pendiente por última vez. */
+    private val revisadoEn = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val turnoDeRevision = java.util.concurrent.atomic.AtomicLong()
+
+    /**
+     * H6 (Codex, 26-sep): hasta [cuantos] pendientes para la revisión de fondo — los consultados hace más tiempo primero
+     * (nunca = primero; empate, el más nuevo, como antes). Tomaba siempre los 3 más nuevos, y el 4º no tenía turno mientras
+     * ésos siguieran en duda: su «SÍ pasó» podía no llegar nunca.
+     * ponytail: memoria del singleton — un reinicio la olvida (todos vuelven a «nunca») y crece un renglón por cobro
+     * consultado; persistirla en la lista sólo si alguna vez importa entre reinicios.
+     */
+    fun loteDeRevision(pendientes: List<ContextoDeCobro>, cuantos: Int = 3): List<ContextoDeCobro> {
+        val lote = pendientes.sortedBy { revisadoEn[it.requestId] ?: 0L }.take(cuantos)
+        val turno = turnoDeRevision.incrementAndGet()
+        lote.forEach { revisadoEn[it.requestId] = turno }
+        return lote
+    }
+
+    /**
+     * La lista durable, más las marcas que el disco todavía no aceptó (N4), que esta misma lectura reintenta.
+     * 🔴 Un texto que no decodifica se lee como vacío, pero se DICE (nunca su contenido).
+     */
+    private fun pendientes(): List<CobroPendiente> = synchronized(attemptLock) {
+        marcasSinGuardar.values.toList().forEach(::guardarMarca)
+        val crudo = secureStorage.pendingCardChargesJson
+        val enDisco = PendientesDeTarjeta.leer(crudo).also {
+            if (it.isEmpty() && crudo != null && crudo != "[]") {
+                Log.w("💳", "⚠️ No se pudo leer la lista de cobros pendientes (${crudo.length} caracteres): se trata como vacía")
+            }
+        }
+        if (marcasSinGuardar.isEmpty()) return enDisco
+        enDisco.map { marcasSinGuardar[it.requestId] ?: it } + marcasSinGuardar.values.filter { m -> enDisco.none { it.requestId == m.requestId } }
+    }
+
+    /**
+     * Los que cuentan: sin las dudas que el cajero declaró sin cobro. N3 (Codex r2): un cobro que ya consta como cobrado no lo
+     * esconde ningún negativo. Founder (26-sep): un «SÍ pasó» dura 10 min desde el cobro, como las dudas — al vencer se PURGA
+     * del disco (nunca pegajoso). Una duda nunca se purga: sigue frenando su venta.
+     */
+    private fun vigentes(): List<CobroPendiente> = synchronized(attemptLock) {
+        val ahora = System.currentTimeMillis()
+        pendientes().filter { entrada ->
+            when {
+                !entrada.cobrado -> !yaDeclaradoSinCobro(entrada.requestId)
+                ahora - (contextoDeEntrada(entrada)?.desdeMillis ?: entrada.cobradoEn ?: 0L) <
+                    com.avoqado.pos.payment.presentation.PaymentFlowViewModel.VENTANA_AVISO_MS -> true
+                else -> { quitar(entrada); false }
+            }
+        }
+    }
+
+    /**
+     * Las entradas que este proceso soltó, con su contexto. La llave vieja dejaba el contexto en disco al soltarse; la lista
+     * lo borra junto con la entrada, y dos caminos lo siguen necesitando DESPUÉS: el éxito tardío que se re-arma (el cobro
+     * sí pasó tras cancelar) y cancelar desde «Error».
+     * ponytail: sólo en memoria y tope de 20; un reinicio lo olvida — esos dos caminos viven en el mismo proceso.
+     */
+    private val soltados = object : LinkedHashMap<String, CobroPendiente>() {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, CobroPendiente>?) = size > PendientesDeTarjeta.TOPE
+    }
+
+    private fun soltado(requestId: String): CobroPendiente? = synchronized(soltados) { soltados[requestId] }
 
     /** Compatibilidad con callers antiguos: una advertencia no resuelve el dinero. */
     fun forgetUnresolvedCharge() { /* Financial uncertainty cannot be dismissed. */ }
@@ -245,17 +434,15 @@ class TerminalPaymentService @Inject constructor(
      * mismo callejón del que esta función existe para sacarlo.
      *
      * 🔑 NO tapa las señales POSITIVAS: un `Success` tardío sigue mandando (ver
-     * `CardChargeDecision.unresolvedKeyAfterStaleResult`). Lo único que se bloquea es volver a
-     * declarar INCIERTO algo cuyo desenlace ya consta.
+     * [aplicarDesenlaceTardio]). Lo único que se bloquea es volver a declarar INCIERTO algo cuyo
+     * desenlace ya consta.
      */
     private val declaradosSinCobro = java.util.Collections.synchronizedSet(mutableSetOf<String>())
 
     /** ¿Este cobro ya lo declaró el cajero y el servidor lo acreditó? */
     fun yaDeclaradoSinCobro(requestId: String): Boolean = declaradosSinCobro.contains(requestId)
 
-    private fun clearMatching(requestId: String) {
-        if (unresolvedRequestId == requestId) unresolvedRequestId = null
-    }
+    private fun clearMatching(requestId: String) = soltarLlaveSiEs(requestId)
 
     /**
      * `requestId` para el que el cajero pidió cancelar. Lo lee el hilo del cobro, que sigue en
@@ -270,27 +457,43 @@ class TerminalPaymentService @Inject constructor(
     private var cancelRequestedFor: String? = null
 
     /**
-     * Vuelve a poner (o suelta, con `null`) la llave durable tras un desenlace que llegó TARDE.
+     * El desenlace de un cobro llegó TARDE (el cajero ya canceló y se fue de esa pantalla): lo deja
+     * pendiente o lo suelta. Decide SÓLO sobre ESE cobro — desde el 25-sep hay varios pendientes a la
+     * vez y un rezagado nunca toca la entrada de otro.
      *
-     * Existe porque el éxito limpia la llave al llegar, y si ese éxito era de un cobro que el
-     * cajero YA canceló, la venta se quedaba sin nadie que supiera del cargo. Quién decide qué
-     * llave queda es [CardChargeDecision.unresolvedKeyAfterStaleResult]; aquí sólo se escribe.
+     * Existe porque el éxito suelta la entrada al llegar, y si ese éxito era de un cobro que el
+     * cajero YA canceló, la venta se quedaba sin nadie que supiera del cargo.
+     *
+     * @param aunSiFueDeclarado el desenlace PRUEBA dinero de este mismo cobro: manda sobre una
+     *   declaración de «no se cobró» ya aceptada.
+     * @return `true` si la lista refleja el desenlace; `false` sólo si el disco no aceptó la escritura.
+     *   Si hubo una cancelación registrada, su intención durable (que con dinero probado pasa a
+     *   SE_COBRO y reintenta) es el respaldo que lo vuelve a entregar.
      */
-    fun rearmUnresolvedCharge(requestId: String?, aunSiFueDeclarado: Boolean = false) {
-        // 🔴 P2 de Codex (20-sep): ésta es la ruta REAL del resultado obsoleto, y no tenía la guarda —
-        // la puse en `armarLlaveSiLibre`, por donde ese callback no pasa. Un `Undetermined` viejo
-        // reponía la llave que la declaración acababa de soltar, y la venta siguiente volvía a
-        // bloquearse por el cobro recién liberado: el callejón sin salida otra vez.
-        //
-        // 🔴 Pero NO se bloquea a ciegas: un ÉXITO tardío manda sobre la declaración. Si el cobro sí
-        // pasó, la afirmación del cajero no puede silenciarlo — la llave se repone para que la próxima
-        // venta lo muestre y alguien busque esa venta para dar el recibo. Por eso hay bandera.
-        if (requestId != null && !aunSiFueDeclarado && yaDeclaradoSinCobro(requestId)) {
-            Log.i("💳", "🧾 Rearmado IGNORADO: $requestId ya se declaró sin cobro (resultado obsoleto)")
-            return
+    fun aplicarDesenlaceTardio(requestId: String, outcome: CardChargeOutcome, aunSiFueDeclarado: Boolean = false): Boolean =
+        // Bajo el mismo candado que la declaración: «olvidarla + re-armar» y «recordarla + soltar» son
+        // atómicos entre sí. No decide cuál afirmación del servidor gana; sólo quita la carrera propia.
+        synchronized(attemptLock) {
+            // 🔴 P2 de Codex (20-sep): ésta es la ruta REAL del resultado obsoleto. Un `Undetermined` viejo
+            // reponía la entrada que la declaración acababa de soltar, y la venta siguiente volvía a
+            // bloquearse por el cobro recién liberado: el callejón sin salida otra vez.
+            if (!aunSiFueDeclarado && yaDeclaradoSinCobro(requestId)) {
+                Log.i("💳", "🧾 Desenlace tardío IGNORADO: $requestId ya se declaró sin cobro (resultado obsoleto)")
+                return true
+            }
+            if (outcome is CardChargeOutcome.Charged) {
+                // 🔴 Pero un ÉXITO tardío manda sobre la declaración: si el cobro sí pasó, la afirmación del
+                // cajero no puede silenciarlo. Sin olvidarla, la lista lo escondería — dinero real sin que
+                // nadie busque esa venta para dar el recibo. Y vuelve MARCADO (H2): dura su ventana de 10 min o hasta «Entendido».
+                if (aunSiFueDeclarado) declaradosSinCobro.remove(requestId)
+                marcarCobrado(requestId)
+            } else if (CardChargeDecision.quedaPendienteTrasDesenlaceTardio(outcome)) {
+                armarLlave(requestId)
+            } else {
+                soltarLlaveSiEs(requestId)
+                true
+            }
         }
-        unresolvedRequestId = requestId
-    }
 
     /**
      * GET /mobile/venues/{venueId}/terminals/online
@@ -321,9 +524,11 @@ class TerminalPaymentService @Inject constructor(
                 .get()
                 .build()
 
-            val (responseCode, body) = withContext(Dispatchers.IO) {
-                val response = client.newCall(request).execute()
-                response.code to (response.body?.string() ?: "")
+            val (responseCode, body) = withContext(io) {
+                client.newCall(request).execute().use { response ->
+                    // N6 (Codex r2): llegaron las cabeceras, el servidor SÍ contestó: su estado se conserva aunque el cuerpo se corte.
+                    response.code to (try { response.body?.string() } catch (_: java.io.IOException) { null } ?: "")
+                }
             }
 
             if (responseCode in 200..299) {
@@ -336,7 +541,8 @@ class TerminalPaymentService @Inject constructor(
             }
         } catch (e: Exception) {
             Log.e("💳", "Error fetching terminals: ${e.message}")
-            TerminalListResult.Error("Error de conexión")
+            // B7b-5: sin red NO es un error: el flujo lo dice como estado normal y ofrece «Reintentar».
+            TerminalListResult.Error("Error de conexión", sinRed = com.avoqado.pos.core.data.network.ServerErrorText.isOffline(e))
         }
     }
 
@@ -358,7 +564,9 @@ class TerminalPaymentService @Inject constructor(
          */
         customerId: String? = null,
     ): TerminalPaymentResult {
-        unresolvedRequestId?.let { return TerminalPaymentResult.Undetermined(CardChargeDecision.UNDETERMINED_MESSAGE, it, inherited = true) }
+        // 🔴 Founder, 25-sep: sólo espera la MISMA venta. El pendiente de OTRA venta ya no frena este cobro
+        // (la pantalla lo avisa); al de esta venta, sí: consultar y declarar, como siempre.
+        pendienteDeLaVenta(orderId)?.let { return TerminalPaymentResult.Undetermined(CardChargeDecision.UNDETERMINED_MESSAGE, it, inherited = true) }
         val venueId = secureStorage.venueId ?: return TerminalPaymentResult.Error("No venue selected")
         val token = secureStorage.accessToken ?: return TerminalPaymentResult.Error("Not authenticated")
 
@@ -368,11 +576,14 @@ class TerminalPaymentService @Inject constructor(
         val context = JSONObject().put("requestId", requestId).put("venueId", venueId)
             .put("terminalId", terminalId).put("orderId", orderId)
             .put("amountCents", amountCents).put("tipCents", tipCents)
-        if (!secureStorage.persistPendingCardCharge(requestId, context.toString())) {
-            return unresolvedRequestId?.let { TerminalPaymentResult.Undetermined(CardChargeDecision.UNDETERMINED_MESSAGE, it, inherited = true) }
-                ?: TerminalPaymentResult.Error("No se pudo guardar el intento. No se envió el cobro.")
-        }
+            .put("creadoEn", System.currentTimeMillis())
         synchronized(attemptLock) {
+            // Otra vez BAJO EL CANDADO, junto con la escritura: dos «Cobrar» de la misma venta a la vez no
+            // salen los dos. La llave única lo impedía con su «ya hay llave»; la lista acepta varias.
+            pendienteDeLaVenta(orderId)?.let { return TerminalPaymentResult.Undetermined(CardChargeDecision.UNDETERMINED_MESSAGE, it, inherited = true) }
+            if (!secureStorage.persistPendingCardCharge(requestId, orderId, context.toString())) {
+                return TerminalPaymentResult.Error("No se pudo guardar el intento. No se envió el cobro.")
+            }
             activePosts.add(requestId)
             currentRequestId = requestId
             currentVenueId = venueId
@@ -413,7 +624,7 @@ class TerminalPaymentService @Inject constructor(
             // Tope de reloj de pared sobre la espera. Sin esto, un aviso que NUNCA llega
             // (terminal apagada, sin batería, cancelada desde su propia pantalla) deja al
             // cajero en "Procesando pago…" para siempre, sin salida y con fila enfrente.
-            suspend fun enviar(): Pair<Int, String> = withContext(Dispatchers.IO) {
+            suspend fun enviar(): Pair<Int, String> = withContext(io) {
                 val call = client.newCall(request)
                 val watchdog = launch {
                     delay(CardChargeDecision.WAIT_CEILING_MS)
@@ -466,7 +677,9 @@ class TerminalPaymentService @Inject constructor(
                         recoveredPost(requestId)?.let { return it }
                         return resolveOutcome(requestId, fromPost = true)
                     }
-                    clearMatching(requestId)
+                    // N1 (Codex r2): se MARCA, no se borra. La quita la adopción del flujo que lo mandó (`applyCardCharged`) o
+                    // «Entendido»; borrarla antes de devolver el resultado perdía el aviso si el flujo ya no estaba o el proceso moría.
+                    marcarCobrado(requestId)
                     Log.d("💳", "✅ Terminal payment success: ${response.status}")
                     TerminalPaymentResult.Success(
                         transactionId = response.transactionId,
@@ -549,7 +762,12 @@ class TerminalPaymentService @Inject constructor(
                         )
                     ) {
                         Log.e("💳", "⏳ Desenlace no consta ($responseCode): se consulta el estado durable")
-                        resolveOutcome(requestId, fromPost = true)
+                        // H8: el motivo de la terminal que NO inició el cobro sólo viaja aquí (el GET no lo trae). Es sólo
+                        // texto: el desenlace lo sigue decidiendo el estado durable.
+                        val mensajeDeLaTerminal = rejectionDto
+                            ?.takeIf { it.outcomeEvidence == CardChargeDecision.EVIDENCIA_SIN_AUTORIZACION }
+                            ?.errorMessage
+                        resolveOutcome(requestId, fromPost = true, mensajeDeLaTerminal = mensajeDeLaTerminal)
                     } else {
                         Log.e("💳", "❌ Terminal payment failed: $responseCode - $body")
                         clearMatching(requestId)
@@ -627,7 +845,7 @@ class TerminalPaymentService @Inject constructor(
                 .get()
                 .build()
 
-            val (responseCode, body) = withContext(Dispatchers.IO) {
+            val (responseCode, body) = withContext(io) {
                 val response = statusClient.newCall(request).execute()
                 response.code to (response.body?.string() ?: "")
             }
@@ -664,7 +882,7 @@ class TerminalPaymentService @Inject constructor(
      */
     suspend fun resolveOutcome(requestId: String): TerminalPaymentResult = resolveOutcome(requestId, fromPost = false)
 
-    private suspend fun resolveOutcome(requestId: String, fromPost: Boolean): TerminalPaymentResult {
+    private suspend fun resolveOutcome(requestId: String, fromPost: Boolean, mensajeDeLaTerminal: String? = null): TerminalPaymentResult {
         val (flight, owner) = synchronized(attemptLock) {
             val selected = recoveryFlights[requestId]?.let { it to false } ?: RecoveryFlight().let {
                 recoveryFlights[requestId] = it
@@ -673,11 +891,20 @@ class TerminalPaymentService @Inject constructor(
             if (!fromPost) selected.first.hasRecoveryConsumer = true
             selected
         }
-        fun forConsumer(result: TerminalPaymentResult): TerminalPaymentResult =
-            if (fromPost && flight.hasRecoveryConsumer && result is TerminalPaymentResult.Success) result.copy(alreadyRecovered = true) else result
+        fun forConsumer(consultado: TerminalPaymentResult): TerminalPaymentResult {
+            // R3-1 (Codex r3): un cobro que YA consta como cobrado —otro canal lo marcó, en disco o en memoria (N4)— no lo niega
+            // la respuesta de esta consulta, aunque haya salido antes que la marca: gana el positivo vigente, para quien abrió la
+            // consulta y para quien se unió a ella («Revisar»). También sobre un «no se sabe».
+            val result = if (consultado !is TerminalPaymentResult.Success && yaCobrado(requestId)) {
+                TerminalPaymentResult.Success(requestId = requestId)
+            } else {
+                consultado
+            }
+            return if (fromPost && flight.hasRecoveryConsumer && result is TerminalPaymentResult.Success) result.copy(alreadyRecovered = true) else result
+        }
         if (!owner) return forConsumer(flight.result.await())
         try {
-            val result = resolveOutcomeOnce(requestId)
+            val result = resolveOutcomeOnce(requestId, mensajeDeLaTerminal)
             synchronized(attemptLock) {
                 if (requestId in activePosts && result !is TerminalPaymentResult.Undetermined) recoveredPosts[requestId] = result
             }
@@ -694,7 +921,7 @@ class TerminalPaymentService @Inject constructor(
         }
     }
 
-    private suspend fun resolveOutcomeOnce(requestId: String): TerminalPaymentResult {
+    private suspend fun resolveOutcomeOnce(requestId: String, mensajeDeLaTerminal: String?): TerminalPaymentResult {
         // Tope de reloj de pared también AQUÍ: `statusClient` acota cada llamada, pero un
         // "Consultando…" que nunca termina es el mismo pecado que el "Procesando pago…" eterno.
         val resolved = kotlinx.coroutines.withTimeoutOrNull(RECONCILE_CEILING_MS) {
@@ -704,7 +931,7 @@ class TerminalPaymentService @Inject constructor(
                 if (attempt > 0) delay(if (attempt == 1) 500L else 2000L)
 
                 val probe = getPaymentStatus(requestId)
-                when (val decision = CardChargeDecision.decide(probe, isFinalAttempt = attempt == attempts - 1)) {
+                when (val decision = CardChargeDecision.decide(probe, isFinalAttempt = attempt == attempts - 1, mensajeDeLaTerminal)) {
                     is ProbeDecision.Resolved -> return@withTimeoutOrNull decision.outcome
                     ProbeDecision.KeepPolling -> Unit // seguir preguntando
                 }
@@ -725,8 +952,9 @@ class TerminalPaymentService @Inject constructor(
     /** El desenlace, traducido al resultado que consume el flujo de pago. */
     private fun CardChargeOutcome.toResult(requestId: String): TerminalPaymentResult = when (this) {
         is CardChargeOutcome.Charged -> {
-            // Consta que se cobró: el desenlace ya no está pendiente.
-            clearMatching(requestId)
+            // Consta que se cobró (H2): la entrada se MARCA, no se borra. Sale con el «Entendido» de ESE cobro o cuando el
+            // flujo que lo mandó lo aplica como su pago; una consulta de fondo no revive lo que alguien ya reconoció.
+            marcarCobrado(requestId)
             Log.d("💳", "✅ Cobro confirmado por estado durable (paymentId=$paymentId)")
             TerminalPaymentResult.Success(paymentId = paymentId, requestId = requestId).also {
                 if (requestId in activePosts) recoveredPosts[requestId] = it
@@ -745,8 +973,9 @@ class TerminalPaymentService @Inject constructor(
             if (yaDeclaradoSinCobro(requestId)) {
                 // Su desenlace ya consta por la declaración del cajero: no se re-arma (P2 Codex).
                 Log.i("💳", "🧾 Desenlace indeterminado IGNORADO: $requestId ya se declaró sin cobro")
-            } else if (unresolvedRequestId == null || unresolvedRequestId == requestId) {
-                unresolvedRequestId = requestId
+            } else {
+                // Cada cobro conserva su entrada (25-sep): ya no hay otro cobro que le gane «la ranura».
+                armarLlave(requestId)
             }
             Log.w("💳", "❓ Desenlace indeterminado — el cajero debe revisar la terminal")
             TerminalPaymentResult.Undetermined(message, requestId)
@@ -788,7 +1017,7 @@ class TerminalPaymentService @Inject constructor(
                 .post(cancelBody)
                 .build()
 
-            val (code, body) = withContext(Dispatchers.IO) {
+            val (code, body) = withContext(io) {
                 statusClient.newCall(request).execute().use { it.code to (it.body?.string() ?: "") }
             }
             val dto = runCatching { json.decodeFromString(CancelPaymentResponseDto.serializer(), body) }.getOrNull()
@@ -854,7 +1083,7 @@ class TerminalPaymentService @Inject constructor(
                 .post(cuerpo)
                 .build()
 
-            val (code, body) = withContext(Dispatchers.IO) {
+            val (code, body) = withContext(io) {
                 clienteDeLaDeclaracion.newCall(request).execute().use { it.code to (it.body?.string() ?: "") }
             }
             val dto = runCatching { json.decodeFromString(RespuestaDeDeclaracionDto.serializer(), body) }.getOrNull()
@@ -867,9 +1096,13 @@ class TerminalPaymentService @Inject constructor(
             if (code in 200..299 && dto?.released == true) {
                 // El desenlace CONSTA para esta identidad: el servidor dice que no se cobró. Es la
                 // única condición bajo la que se suelta la llave durable. Y se RECUERDA, para que
-                // una consulta anterior que siga en vuelo no la vuelva a poner (P2 de Codex).
-                declaradosSinCobro.add(requestId)
-                clearMatching(requestId)
+                // una consulta anterior que siga en vuelo no la vuelva a poner (P2 de Codex). Bajo el
+                // candado de `aplicarDesenlaceTardio`: «recordar + soltar» no se intercala con un re-armado.
+                synchronized(attemptLock) {
+                    // N3 (Codex r2): un cobro que ya consta como cobrado no lo marca ningún negativo.
+                    if (!yaCobrado(requestId)) declaradosSinCobro.add(requestId)
+                    clearMatching(requestId)
+                }
                 ResultadoDeDeclaracion.Liberada
             } else {
                 ResultadoDeDeclaracion.Rechazada(
@@ -961,7 +1194,7 @@ class TerminalPaymentService @Inject constructor(
                 .post(bodyJson)
                 .build()
 
-            val (code, body) = withContext(Dispatchers.IO) {
+            val (code, body) = withContext(io) {
                 val response = client.newCall(request).execute()
                 response.code to (response.body?.string() ?: "")
             }
@@ -1015,7 +1248,7 @@ class TerminalPaymentService @Inject constructor(
                 .post(bodyJson)
                 .build()
 
-            val (code, body) = withContext(Dispatchers.IO) {
+            val (code, body) = withContext(io) {
                 val response = client.newCall(request).execute()
                 response.code to (response.body?.string() ?: "")
             }
@@ -1119,7 +1352,7 @@ private data class RespuestaDeDeclaracionDto(
 
 sealed class TerminalListResult {
     data class Success(val terminals: List<OnlineTerminal>) : TerminalListResult()
-    data class Error(val message: String) : TerminalListResult()
+    data class Error(val message: String, val sinRed: Boolean = false) : TerminalListResult()
 }
 
 // MARK: - Request/Response models
@@ -1177,7 +1410,7 @@ data class IntentoDeCobroEnVuelo(
     val venueId: String,
 )
 
-/** El contexto con el que salió un cobro, releído de la llave durable. */
+/** El contexto con el que salió un cobro, releído de la lista durable. */
 data class ContextoDeCobro(
     val requestId: String,
     val venueId: String?,
@@ -1185,6 +1418,10 @@ data class ContextoDeCobro(
     val orderId: String?,
     val amountCents: Int? = null,
     val tipCents: Int? = null,
+    /** Cuándo salió (`creadoEn` del contexto). `null` en los cobros guardados antes del 25-sep. */
+    val desdeMillis: Long? = null,
+    /** H2: consta que SÍ pasó: no se vuelve a consultar y dura 10 min desde el cobro (o hasta su «Entendido»). */
+    val cobrado: Boolean = false,
 )
 
 /**
@@ -1243,6 +1480,8 @@ data class TerminalPaymentRejectionDto(
     val code: String? = null,
     val message: String? = null,
     val errorMessage: String? = null,
+    /** H8: `PRE_AUTHORIZATION` = la terminal NO inició el cobro; su `errorMessage` es el motivo que se le dice al cajero. */
+    val outcomeEvidence: String? = null,
     val blockingRequest: BlockingRequestDto? = null,
     /**
      * Datos del rechazo. `details.requestId` es la CORRELACIÓN: sin ella, un rechazo de admisión

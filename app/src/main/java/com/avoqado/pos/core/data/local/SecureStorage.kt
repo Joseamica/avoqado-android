@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import com.avoqado.pos.payment.domain.PendientesDeTarjeta
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -87,27 +88,6 @@ class SecureStorage @Inject constructor(
     var reservationsEnabled: Boolean
         get() = prefs.getBoolean(KEY_RESERVATIONS_ENABLED, false)
         set(value) { prefs.edit().putBoolean(KEY_RESERVATIONS_ENABLED, value).apply() }
-
-    /**
-     * `requestId` de un cobro con TARJETA cuyo desenlace NO consta.
-     *
-     * 🔴 Vive en disco a propósito: es lo único que impide un segundo cargo cuando la app
-     * muere, el cajero cambia de pestaña, o se va a Transacciones a ver si el pago entró —
-     * que es justo lo que hace la gente frente a la pantalla "Cobro sin confirmar". En RAM
-     * esa ceremonia se evapora y el siguiente "Cobrar" arranca limpio, sin advertencia.
-     *
-     * Se escribe al enviar el cobro y se borra SÓLO cuando el desenlace consta (cobró o no
-     * cobró), siempre que corresponda a la misma identidad.
-     * **NO se limpia en `clearSession`**: un cobro sin confirmar no deja de existir porque
-     * alguien cierre sesión o cambie de venue.
-     */
-    var pendingCardChargeRequestId: String?
-        get() = prefs.getString(KEY_PENDING_CARD_CHARGE, null)
-        set(value) {
-            prefs.edit().apply {
-                if (value == null) remove(KEY_PENDING_CARD_CHARGE) else putString(KEY_PENDING_CARD_CHARGE, value)
-            }.commit().also { check(it) { "No se pudo guardar el cobro pendiente" } }
-        }
 
     /**
      * Vales por área (AREA_TICKETS) — opt-in POR VENUE, apagado por defecto.
@@ -258,16 +238,73 @@ class SecureStorage @Inject constructor(
         get() = prefs.getString(KEY_REFRESH_TOKEN, null)
         set(value) = prefs.edit().putString(KEY_REFRESH_TOKEN, value).apply()
 
-    /** Payment-only synchronous journal: no network authorization before a checked commit. */
-    @Synchronized
-    fun persistPendingCardCharge(requestId: String, contextJson: String): Boolean {
-        if (pendingCardChargeRequestId != null) return false
-        return prefs.edit().putString(KEY_PENDING_CARD_CHARGE, requestId)
-            .putString("pendingCardChargeContext", contextJson).commit()
+    /**
+     * Los cobros con TARJETA cuyo desenlace NO consta (ver [PendientesDeTarjeta]): VARIOS a la vez desde el 25-sep.
+     *
+     * 🔴 Viven en disco a propósito: son lo único que impide un segundo cargo cuando la app
+     * muere, el cajero cambia de pestaña, o se va a Transacciones a ver si el pago entró —
+     * que es justo lo que hace la gente frente a la pantalla "Cobro sin confirmar". En RAM
+     * esa ceremonia se evapora y el siguiente "Cobrar" arranca limpio, sin advertencia.
+     *
+     * Cada cobro se escribe ANTES del POST y se borra SÓLO cuando su desenlace consta (cobró o no
+     * cobró), siempre que corresponda a la misma identidad.
+     * **NO se limpia en `clearSession`**: un cobro sin confirmar no deja de existir porque
+     * alguien cierre sesión o cambie de venue.
+     *
+     * La primera lectura migra la llave ÚNICA de versiones anteriores; si la migración no pudo escribirse, se lee igual
+     * desde la llave vieja (nunca se pierde). `@Synchronized` como las escrituras: una lectura que migra en paralelo a
+     * [persistPendingCardCharge] escribiría su lista vieja ENCIMA de la que ya trae el cobro nuevo, y ese pendiente se
+     * perdería.
+     */
+    val pendingCardChargesJson: String?
+        @Synchronized get() = prefs.getString(KEY_PENDING_CARD_CHARGES, null) ?: migrarLlaveUnica()
+
+    /**
+     * 🔴 La llave única vieja sólo se LEE aquí, una vez, para pasarla a la lista. Nadie la vuelve a escribir: con la lista
+     * ya creada, un escritor que siguiera en la llave vieja escondería su pendiente y la venta siguiente cobraría sin freno.
+     */
+    private fun migrarLlaveUnica(): String? {
+        val migrada = PendientesDeTarjeta.desdeLlaveUnica(
+            prefs.getString(KEY_PENDING_CARD_CHARGE, null),
+            prefs.getString(KEY_PENDING_CARD_CHARGE_CONTEXT, null),
+        ) ?: return null
+        // Si la escritura falla, la llave vieja no se borró en disco: se vuelve a migrar en la siguiente lectura.
+        prefs.edit().putString(KEY_PENDING_CARD_CHARGES, migrada)
+            .remove(KEY_PENDING_CARD_CHARGE).remove(KEY_PENDING_CARD_CHARGE_CONTEXT).commit()
+        return migrada
     }
 
-    val pendingCardChargeContext: String?
-        get() = prefs.getString("pendingCardChargeContext", null)
+    /** Payment-only synchronous journal: no network authorization before a checked commit. */
+    @Synchronized
+    fun persistPendingCardCharge(requestId: String, orderId: String?, contextJson: String): Boolean =
+        escribirPendientes { PendientesDeTarjeta.agregar(it, requestId, orderId, contextJson) }
+
+    /**
+     * H2 (26-sep): un cobro que SÍ pasó se MARCA en su lugar (o vuelve, marcado, si este proceso lo había soltado) y se queda
+     * hasta el «Entendido» de ESE cobro: la venta siguiente, o reabrir la app, ya no lo callan.
+     */
+    @Synchronized
+    fun persistCobroQueSiPaso(requestId: String, orderId: String?, contextJson: String, cobradoEn: Long): Boolean =
+        escribirPendientes { PendientesDeTarjeta.agregar(it, requestId, orderId, contextJson, cobrado = true, cobradoEn = cobradoEn) }
+
+    @Synchronized
+    fun removePendingCardCharge(requestId: String) {
+        escribirPendientes { PendientesDeTarjeta.quitar(it, requestId) }
+    }
+
+    /**
+     * La lista nueva, en UN commit. M-10: si la que había no se pudo leer, en ese MISMO commit se guarda tal cual en
+     * [KEY_PENDING_CARD_CHARGES_ILEGIBLE] — antes se leía como vacía y la escritura siguiente la borraba de verdad.
+     */
+    private fun escribirPendientes(nueva: (String?) -> String): Boolean {
+        val crudo = pendingCardChargesJson
+        val editor = prefs.edit().putString(KEY_PENDING_CARD_CHARGES, nueva(crudo))
+        PendientesDeTarjeta.ilegible(crudo)?.let {
+            android.util.Log.w("💳", "⚠️ La lista de cobros pendientes no se pudo leer (${it.length} caracteres): se respalda antes de escribir encima")
+            editor.putString(KEY_PENDING_CARD_CHARGES_ILEGIBLE, it)
+        }
+        return editor.commit()
+    }
 
     // MARK: - Biometric Data (NOT cleared on logout)
 
@@ -533,7 +570,12 @@ class SecureStorage @Inject constructor(
         private const val KEY_VENUE_SLUG = "venueSlug"
         private const val KEY_VENUE_TIMEZONE = "venueTimezone"
         private const val KEY_VENUE_MODE = "venueMode"
+        /** La llave ÚNICA de antes del 25-sep y su contexto: sólo los lee [migrarLlaveUnica]. */
         private const val KEY_PENDING_CARD_CHARGE = "pendingCardChargeRequestId"
+        private const val KEY_PENDING_CARD_CHARGE_CONTEXT = "pendingCardChargeContext"
+        private const val KEY_PENDING_CARD_CHARGES = "pendingCardCharges"
+        /** M-10: el último blob de la lista que no se pudo leer, tal cual, para conciliar. No lo borra `clearSession`. */
+        private const val KEY_PENDING_CARD_CHARGES_ILEGIBLE = "pendingCardChargesIlegible"
         private const val KEY_RESERVATIONS_ENABLED = "reservationsEnabled"
         private const val KEY_AREA_TICKETS_ENABLED = "areaTicketsEnabled"
         private const val KEY_AREA_TICKET_CHECKOUT_ID = "areaTicketCheckoutId"

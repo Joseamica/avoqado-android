@@ -35,8 +35,12 @@ interface CancelacionDeCobroTransport {
     /** Suelta la llave durable del cobro SÓLO si es la de esta solicitud. */
     suspend fun soltarLlaveSiEs(requestId: String)
 
-    /** Deja el cobro cargado en la llave durable para que la próxima venta lo muestre. */
-    suspend fun armarLlaveSiLibre(requestId: String): Boolean
+    /**
+     * Deja un cobro PROBADO (el servidor lo registró) en la lista durable para que la próxima venta lo muestre, aunque
+     * el cajero lo hubiera declarado «no se cobró»: el dinero manda sobre la declaración. Sólo para [DesenlaceDeCancelacion.SeCobro].
+     * @return `false` si no se pudo dejar ahora: la intención se conserva y se reintenta.
+     */
+    suspend fun entregarCobro(requestId: String, paymentId: String?): Boolean
 }
 
 /** Lo que la pantalla necesita saber de una cancelación. */
@@ -302,15 +306,15 @@ class CancelacionDeCobroCoordinator internal constructor(
     }
 
     /**
-     * El cobro sí ocurrió: se entrega a la llave durable, que es lo que hace que la próxima venta
-     * lo muestre aunque nadie estuviera mirando. Si la llave la tiene OTRO cobro vivo, el aviso se
-     * conserva en disco hasta poder entregarlo — nada se descarta en silencio.
+     * El cobro sí ocurrió: se entrega a la lista durable, que es lo que hace que la próxima venta
+     * lo muestre aunque nadie estuviera mirando. Si no se pudo entregar (el disco no escribió), el
+     * aviso se conserva hasta poder entregarlo — nada se descarta en silencio.
      */
     private suspend fun entregarElCobro(intencion: IntencionDeCancelarCobro, paymentId: String?): EstadoDeCancelacion {
         val requestId = intencion.requestId
         if (requestId != null) {
             desenlaces[requestId] = DesenlaceDeCancelacion.SeCobro(paymentId)
-            val entregado = transporte.armarLlaveSiLibre(requestId)
+            val entregado = transporte.entregarCobro(requestId, paymentId)
             if (!entregado) {
                 guardar(
                     intencion.copy(

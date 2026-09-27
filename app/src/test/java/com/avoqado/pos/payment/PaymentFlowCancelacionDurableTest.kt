@@ -26,6 +26,8 @@ import com.avoqado.pos.payment.data.model.OrderData
 import com.avoqado.pos.payment.data.model.PaymentFlowState
 import com.avoqado.pos.payment.data.model.PaymentMethod
 import com.avoqado.pos.payment.domain.CancelacionDeCobro
+import com.avoqado.pos.payment.domain.CardChargeDecision
+import com.avoqado.pos.payment.domain.CardChargeOutcome
 import com.avoqado.pos.payment.domain.ChargeStatusProbe
 import com.avoqado.pos.payment.presentation.PaymentFlowViewModel
 import com.avoqado.pos.pos.data.model.CartItem
@@ -106,7 +108,9 @@ class PaymentFlowCancelacionDurableTest {
         every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(showReviewScreen = false, showTipScreen = false)
         coEvery { terminalPaymentService.fetchOnlineTerminals(any()) } returns
             TerminalListResult.Success(listOf(OnlineTerminal(terminalId = "t1", name = "Terminal 1")))
-        every { terminalPaymentService.unresolvedRequestId } returns null
+        // Sin cobro pendiente propio ni de otras ventas, salvo donde la prueba diga (25-sep: la tarjeta pregunta por los dos).
+        every { terminalPaymentService.pendienteDeLaVenta(any()) } returns null
+        every { terminalPaymentService.pendientesDeOtrasVentas(any()) } returns emptyList()
         every { terminalPaymentService.intentoEnVuelo() } returns null
         every { terminalPaymentService.contextoDe(any()) } returns null
         every { cashPaymentRepository.processCashPayment(any(), any()) } returns CashPaymentResult.Success(changeCents = 0)
@@ -377,12 +381,17 @@ class PaymentFlowCancelacionDurableTest {
 
     @Test
     fun `desde un cobro sin confirmar de una venta ANTERIOR no se ofrece cancelar esa orden`() = runTest {
-        every { terminalPaymentService.unresolvedRequestId } returns "req-vieja"
+        // 🔴 25-sep: el pendiente de otra venta ya no frena la tarjeta; el cajero lo abre con «Revisar» desde el aviso.
+        every { terminalPaymentService.pendientesDeOtrasVentas(any()) } returns listOf(
+            ContextoDeCobro(requestId = "req-vieja", venueId = "venue-1", terminalId = "t1", orderId = "orden-vieja",
+                amountCents = 1500, tipCents = 0, desdeMillis = System.currentTimeMillis()),
+        )
+        coEvery { terminalPaymentService.resolveOutcome("req-vieja") } returns
+            TerminalPaymentResult.Undetermined(CardChargeDecision.UNDETERMINED_MESSAGE, "req-vieja")
         viewModel.startPaymentFlow(cardCart())
-        advanceUntilIdle()
-        // 🔴 La puerta del pendiente ya no es arrancar la venta —el efectivo dejó de bloquearse
-        // (founder, 21-sep)—: es elegir TARJETA, lo único que puede duplicar el cargo.
         viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
+        viewModel.revisarCobroDeOtraVenta(viewModel.avisoDeOtroCobro.value!!.requestId)
         advanceUntilIdle()
         assertTrue((viewModel.state.value as PaymentFlowState.Undetermined).fromPreviousSale)
 
@@ -539,8 +548,13 @@ class PaymentFlowCancelacionDurableTest {
         viewModel.cancelarVenta()
         advanceUntilIdle() // llega el resultado tardío del POST
 
-        verify(exactly = 0) { terminalPaymentService.rearmUnresolvedCharge("req-1") }
-        verify { terminalPaymentService.rearmUnresolvedCharge(null) }
+        // El rezagado decide sobre SU cobro, y de él ya consta que no se cobró: la única llamada SUELTA la entrada.
+        verify(exactly = 1) { terminalPaymentService.aplicarDesenlaceTardio(any(), any(), any()) }
+        verify {
+            terminalPaymentService.aplicarDesenlaceTardio(
+                "req-1", CardChargeOutcome.NotCharged(CardChargeDecision.CANCEL_ALREADY_RESOLVED_MESSAGE), aunSiFueDeclarado = false,
+            )
+        }
     }
 
     // MARK: - Desde «Error»

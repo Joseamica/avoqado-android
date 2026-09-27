@@ -13,6 +13,7 @@ import com.avoqado.pos.kds.data.KDSRepository
 import com.avoqado.pos.kds.domain.KDSOrderBus
 import com.avoqado.pos.payment.data.CashPaymentRepository
 import com.avoqado.pos.payment.data.CashPaymentResult
+import com.avoqado.pos.payment.data.ContextoDeCobro
 import com.avoqado.pos.payment.data.OnlineTerminal
 import com.avoqado.pos.payment.data.OrderRepository
 import com.avoqado.pos.payment.data.PaymentSyncService
@@ -35,6 +36,7 @@ import com.avoqado.pos.pos.data.model.CartItemType
 import com.avoqado.pos.pos.data.model.buildOrderItemRequests
 import com.avoqado.pos.pos.presentation.cart.CartState
 import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.core.util.formatMoney
 import com.avoqado.pos.core.domain.printing.ComandaDispatcher
 import com.avoqado.pos.core.domain.printing.NoStationsFallback
 import com.avoqado.pos.printing.data.ComandasPendientesStore
@@ -55,6 +57,8 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -72,6 +76,14 @@ data class PaymentCompletion(
 )
 
 const val LOCAL_PRINTER_UNAVAILABLE = "__LOCAL_PRINTER_UNAVAILABLE__"
+
+/**
+ * El aviso de un cobro con tarjeta de OTRA venta que quedó sin confirmar, o que SÍ pasó. 🔴 Founder, 25-sep: esa duda ya no
+ * frena la tarjeta de esta venta; se DICE en la selección de terminal.
+ *
+ * @param yaCobrado consta que ese cobro SÍ pasó: se ofrece «Entendido» en vez de «Revisar».
+ */
+data class AvisoDeOtroCobro(val requestId: String, val texto: String, val yaCobrado: Boolean)
 
 @HiltViewModel
 class PaymentFlowViewModel @Inject constructor(
@@ -478,6 +490,71 @@ class PaymentFlowViewModel @Inject constructor(
     fun clearPreviousChargeResolved() { _previousChargeResolved.value = null }
 
     /**
+     * H2 (26-sep): el cobro que SÍ pasó del que habla el mensaje de [previousChargeResolved]. Sigue en la lista durable,
+     * marcado, hasta que el cajero cierra «Cobro anterior resuelto» ([reconocerCobroAnteriorResuelto]) o vence su ventana.
+     * ponytail: sólo en memoria — si el proceso muere antes de cerrarlo, la entrada sigue en disco (su ventana) y se vuelve a decir.
+     */
+    private var cobroQueSiPasoPorReconocer: String? = null
+
+    /** El mensaje de un cobro anterior resuelto; si SÍ pasó, trae su `requestId` para que «Entendido» lo quite (H2). */
+    private fun resolverCobroAnterior(mensaje: String, cobroQueSiPaso: String? = null) {
+        cobroQueSiPasoPorReconocer = cobroQueSiPaso
+        _previousChargeResolved.value = mensaje
+    }
+
+    /** Cerrar «Cobro anterior resuelto» («Entendido» o la X): si ese cobro SÍ pasó, sale de la lista durable — sólo ése. */
+    fun reconocerCobroAnteriorResuelto() {
+        cobroQueSiPasoPorReconocer?.let { terminalPaymentService.reconocerCobro(it) }
+        cobroQueSiPasoPorReconocer = null
+    }
+
+    /**
+     * El cobro sin confirmar (o que SÍ pasó) de OTRA venta, pintado en la selección de terminal. Es la única protección
+     * contra volver a cobrar esa duda, así que sale AL INSTANTE de la lista guardada, sin red; la consulta sólo lo afina.
+     */
+    private val _avisoDeOtroCobro = MutableStateFlow<AvisoDeOtroCobro?>(null)
+    val avisoDeOtroCobro: StateFlow<AvisoDeOtroCobro?> = _avisoDeOtroCobro.asStateFlow()
+
+    /** I-2 (re-revisión): con un «SÍ pasó» en la primera línea, la duda vigente más nueva de otra venta va DEBAJO — nunca la tapa. */
+    private val _segundoAviso = MutableStateFlow<AvisoDeOtroCobro?>(null)
+    val segundoAviso: StateFlow<AvisoDeOtroCobro?> = _segundoAviso.asStateFlow()
+
+    /**
+     * «Entendido» sobre el aviso de un cobro de otra venta que SÍ pasó: sale de la lista durable SÓLO ése (H2), y el
+     * siguiente confirmado —si hay— toma su lugar. Un aviso SIN confirmar no se descarta: su dinero todavía no consta.
+     */
+    fun descartarAvisoDeOtroCobro(requestId: String) {
+        if (_avisoDeOtroCobro.value?.let { it.requestId == requestId && it.yaCobrado } != true) return
+        terminalPaymentService.reconocerCobro(requestId)
+        publicarAviso(terminalPaymentService.pendientesDeOtrasVentas(ordenEnCurso()))
+    }
+
+    /**
+     * M-5: el título «Cobro anterior sin confirmar» sólo cuando el cobro en revisión es de OTRA venta. Con el encabezado
+     * «…de esta venta.» el título es «Cobro sin confirmar».
+     */
+    fun revisaCobroDeOtraVenta(): Boolean =
+        (_state.value as? PaymentFlowState.Undetermined)?.fromPreviousSale == true &&
+            cobroEnRevision?.encabezado != SAME_SALE_CHARGE_PREFIX
+
+    /** H7: el reloj del vencimiento del aviso. Se inyecta en pruebas para moverlo con el tiempo virtual. */
+    @androidx.annotation.VisibleForTesting
+    internal var reloj: () -> Long = System::currentTimeMillis
+
+    /** H7: el recálculo local programado al vencimiento del aviso SIN confirmar que está en pantalla. */
+    private var vencimientoDelAviso: kotlinx.coroutines.Job? = null
+
+    /** Sólo publica la revisión más reciente: una que contesta tarde no pisa el aviso de la venta o la pantalla actual. */
+    private var revisionDeOtrasVentas = 0
+
+    /**
+     * Un cobro abierto como REVISIÓN (no adoptado): del que habla «Cobro anterior sin confirmar», y con qué encabezado —
+     * «de otra venta» si llegó por «Revisar», «de esta venta» si es de esta orden pero no se adoptó.
+     */
+    private data class CobroEnRevision(val requestId: String, val encabezado: String)
+    private var cobroEnRevision: CobroEnRevision? = null
+
+    /**
      * La cancelación de la orden fue RECHAZADA por el server (típicamente 409: ya está pagada).
      * Antes esto sólo se logueaba mientras la app navegaba afuera, así que el cajero se quedaba
      * creyendo que canceló algo que sigue vivo — y encima el cobro podía aterrizar sobre esa
@@ -731,7 +808,8 @@ class PaymentFlowViewModel @Inject constructor(
         resumeOrderId: String? = null,
     ) {
         paymentGeneration++
-        undeterminedRequestId = null // A new checkout never owns an inherited request.
+        // Una venta nueva arranca sin cobro propio: el pendiente de SU orden se lee vivo de la lista, al elegir tarjeta.
+        undeterminedRequestId = null
         cartState = cart
         completionConsumed = false
         // 🔴 Un `Insistiendo` de la venta anterior SÍ se borra: describe algo que ya terminó,
@@ -771,6 +849,11 @@ class PaymentFlowViewModel @Inject constructor(
         cobroAplicadoTrasCancelar = null
         _debeSalir.value = false
         _cancelFailure.value = null
+        // El aviso y la revisión de «otra venta» describían la venta pasada. Se vuelve a pintar desde el disco al elegir
+        // tarjeta: un «SÍ pasó» sin «Entendido» sigue ahí (H2), sólo la copia en pantalla se va.
+        publicarAviso(emptyList())
+        revisionDeOtrasVentas++
+        cobroEnRevision = null
 
         // 🔴 DINERO — MOSTRADOR: partes 2..N de un split.
         //
@@ -912,29 +995,16 @@ class PaymentFlowViewModel @Inject constructor(
                 _state.value = PaymentFlowState.CollectingCashAmount(total)
             }
             PaymentMethod.CARD -> {
-                // 🔴 AQUÍ sí manda el pendiente: mandar otra venta a una terminal con un cargo sin
-                // resolver es el camino del cobro doble. Se resuelve ÉSE antes de ofrecer otro.
-                //
-                // 🔴 SE LEE LA LLAVE VIVA, NUNCA una copia guardada al arrancar la venta. Medido en
-                // una Sunmi D3 el 21-sep: con la copia, el cajero resolvía el pendiente con «Volver a
-                // consultar» —la llave quedaba libre, comprobado en el servidor: `CANCELLED` con
-                // `cancelDisposition=ACCEPTED` y sin `Payment`— y al elegir TARJETA **volvía a
-                // bloquearse**, porque la copia seguía en memoria. Sólo se destrababa saliendo de la
-                // venta y empezando otra. O sea: la guarda sobrevivía a su propia causa, que es el
-                // mismo defecto que este trabajo vino a cerrar.
-                val pendiente = terminalPaymentService.unresolvedRequestId
-                if (pendiente != null) {
-                    val deOtraVenta = pendiente != undeterminedRequestId
-                    _state.value = PaymentFlowState.Undetermined(
-                        totalAmount = total,
-                        message = if (deOtraVenta) PREVIOUS_CHARGE_MESSAGE else CardChargeDecision.UNDETERMINED_MESSAGE,
-                        fromPreviousSale = deOtraVenta,
-                    )
+                // 🔴 Founder, 25-sep: sólo la MISMA venta espera. La duda de otra venta se avisa y NO frena la tarjeta; la
+                // protección contra cobrarla dos veces la sigue dando el servidor, que cerca SU orden en toda terminal.
+                // SE LEE LA LISTA VIVA, nunca una copia (Sunmi D3, 21-sep: la copia sobrevivía a su propia causa).
+                // Una llave en blanco no es un pendiente: no hay a quién preguntarle por ella.
+                val deEstaVenta = terminalPaymentService.pendienteDeLaVenta(ordenEnCurso())
+                if (!deEstaVenta.isNullOrBlank()) {
+                    esperarCobroDeEstaOrden(deEstaVenta, total, CardChargeDecision.UNDETERMINED_MESSAGE)
                     return
                 }
-                // Fetch online terminals and show terminal selection
-                _state.value = PaymentFlowState.SelectingTerminal(total)
-                fetchTerminals()
+                ofrecerTerminales(total)
             }
         }
     }
@@ -1054,22 +1124,158 @@ class PaymentFlowViewModel @Inject constructor(
                     _terminalAvailability.value =
                         if (result.terminals.isEmpty()) TerminalAvailability.NONE
                         else TerminalAvailability.AVAILABLE
+                    // Paridad con iOS (26-sep): sin terminales tampoco es la pantalla de error, que tapaba las líneas ámbar de
+                    // otras ventas: se dice en lugar de la lista, con «Reintentar».
                     if (result.terminals.isEmpty()) {
-                        _state.value = PaymentFlowState.Error(
-                            message = "No hay terminales conectadas",
-                            source = PaymentErrorSource.TERMINAL,
-                        )
+                        (_state.value as? PaymentFlowState.SelectingTerminal)?.let {
+                            _state.value = it.copy(sinLista = "No hay terminales conectadas")
+                        }
                     }
                 }
-                is TerminalListResult.Error -> {
-                    _state.value = PaymentFlowState.Error(
-                        message = result.message,
-                        source = PaymentErrorSource.TERMINAL,
-                    )
+                // B7b-5 (QA 26-sep) y N6 (Codex r2): que la lista no cargue NO es «Error en el pago» — esa pantalla tapaba las
+                // líneas ámbar de otras ventas. La pantalla se queda, lo dice en lugar de la lista (sin red: que la tarjeta
+                // necesita internet) y ofrece «Reintentar».
+                is TerminalListResult.Error -> (_state.value as? PaymentFlowState.SelectingTerminal)?.let {
+                    _state.value = it.copy(sinLista = if (result.sinRed) TARJETA_SIN_RED else result.message)
                 }
             }
         }
     }
+
+    // MARK: - Cobros sin confirmar de OTRAS ventas (founder, 25-sep): se avisan, no frenan
+
+    /** La orden de la venta en curso: exactamente la que viaja a `sendPaymentToTerminal(orderId = …)`. Null en un cobro rápido. */
+    private fun ordenEnCurso(): String? = createdOrderId
+
+    /**
+     * 🔴 El pendiente de ESTA orden frena la tarjeta (la misma cerca que el servidor). Sólo sigue siendo de ESTE flujo el
+     * cobro que este flujo mandó (`undeterminedRequestId`, fijado por su propio POST): se consulta como suyo, como antes de
+     * este plan. Cualquier otro que se encuentre en la lista se abre SIEMPRE como REVISIÓN («…de esta venta»): confirmarlo
+     * jamás da por pagada esta venta. Controlador (26-sep): los importes no distinguen partes ni intentos (2 × $250; la
+     * parte 2 de mostrador llega como pago completo), así que no se comparan. Si sí pasó, se dice («El cobro anterior sí
+     * se había realizado») y el servidor rechaza un segundo cobro sobre una orden ya pagada. La pantalla fija el cobro
+     * del que habla, leído VIVO al elegir tarjeta.
+     */
+    private fun esperarCobroDeEstaOrden(requestId: String, total: Int, message: String) {
+        // H2: ya consta que ESE cobro de esta orden SÍ pasó (sigue en disco su ventana) y no lo mandó este flujo.
+        // No se manda otro ni se pregunta: se dice con el texto de siempre, y su «Entendido» en «Cobro anterior resuelto»
+        // lo quita. El PROPIO sigue abajo: «Volver a consultar» lo aplica como su pago (pantalla de éxito).
+        if (requestId != undeterminedRequestId && terminalPaymentService.yaCobrado(requestId)) {
+            resolverCobroAnterior("El cobro anterior sí se había realizado", cobroQueSiPaso = requestId)
+            return
+        }
+        if (requestId == undeterminedRequestId) {
+            _state.value = PaymentFlowState.Undetermined(totalAmount = total, message = message)
+            return
+        }
+        cobroEnRevision = CobroEnRevision(requestId, SAME_SALE_CHARGE_PREFIX)
+        _state.value = PaymentFlowState.Undetermined(
+            totalAmount = total, message = conEncabezado(SAME_SALE_CHARGE_PREFIX, message), fromPreviousSale = true,
+        )
+    }
+
+    /**
+     * A elegir terminal. TODA entrada a esta pantalla pasa por aquí, para que ninguna llegue sin el aviso de las otras
+     * ventas — también la que viene de resolver el cobro de ésta.
+     */
+    private fun ofrecerTerminales(total: Int) {
+        _state.value = PaymentFlowState.SelectingTerminal(total)
+        fetchTerminals()
+        revisarPendientesDeOtrasVentas()
+    }
+
+    /**
+     * 1. YA, sin red: el aviso sale de la lista guardada — un cobro que SÍ pasó primero (H2: sigue en disco, marcado,
+     *    su ventana de 10 min, en TODA venta y tras reiniciar), y la duda más reciente de menos de [VENTANA_AVISO_MS].
+     * 2. Consulta un lote de hasta 3 que elige el servicio (H6: los consultados hace más tiempo primero, para que todos
+     *    tengan turno). Lo que ya consta como cobrado no se vuelve a consultar.
+     * 3. El definitivo, releyendo el disco: la consulta MARCÓ lo que sí pasó y soltó lo que consta como NO cobrado; un fallo
+     *    de red deja la entrada como está, y se sigue nombrando. Una revisión obsoleta no publica, y no pierde nada: lo
+     *    probado ya quedó en disco para la siguiente.
+     */
+    private fun revisarPendientesDeOtrasVentas() {
+        val turno = ++revisionDeOtrasVentas
+        val otras = terminalPaymentService.pendientesDeOtrasVentas(ordenEnCurso())
+        publicarAviso(otras)
+        val aConsultar = terminalPaymentService.loteDeRevision(otras.filterNot { it.cobrado })
+        if (aConsultar.isEmpty()) return
+        viewModelScope.launch {
+            val consultas = aConsultar.map { it to async { desenlaceSinTragarseLaCancelacion(it.requestId) } }
+            val desenlaces = consultas.associate { (ctx, consulta) -> ctx.requestId to consulta.await() }
+            if (turno != revisionDeOtrasVentas) return@launch
+            publicarAviso(
+                terminalPaymentService.pendientesDeOtrasVentas(ordenEnCurso())
+                    // N3 (Codex r2): lo que ya consta como cobrado no lo esconde el negativo de esta consulta.
+                    .filter { it.cobrado || desenlaces[it.requestId] !is TerminalPaymentResult.Error }
+                    .map { if (desenlaces[it.requestId] is TerminalPaymentResult.Success) it.copy(cobrado = true) else it },
+            )
+        }
+    }
+
+    /**
+     * Pinta el aviso de [pendientes] (el más nuevo primero). H7: lo que está en pantalla se calla a los 10 min aunque la
+     * pantalla siga abierta — un recálculo LOCAL al vencer, sin red. Founder (26-sep): un «SÍ pasó» vence igual que una duda
+     * (el servicio lo purga del disco al releerlo); una duda sólo se calla, sigue en disco frenando su venta.
+     */
+    private fun publicarAviso(pendientes: List<ContextoDeCobro>) {
+        vencimientoDelAviso?.cancel()
+        val (primero, segundo) = avisosDe(pendientes)
+        _avisoDeOtroCobro.value = primero
+        _segundoAviso.value = segundo
+        val vence = listOfNotNull(primero, segundo)
+            .mapNotNull { aviso -> pendientes.firstOrNull { it.requestId == aviso.requestId }?.desdeMillis }
+            .minOrNull()?.plus(VENTANA_AVISO_MS) ?: return
+        vencimientoDelAviso = viewModelScope.launch {
+            delay((vence - reloj()).coerceAtLeast(0))
+            if (reloj() >= vence) publicarAviso(terminalPaymentService.pendientesDeOtrasVentas(ordenEnCurso()))
+        }
+    }
+
+    /**
+     * Las líneas vigentes (menos de [VENTANA_AVISO_MS] desde el cobro, también un «SÍ pasó»): un cobro que SÍ pasó va primero
+     * (pudo ser esta misma venta rehecha) y, I-2, la duda más nueva va debajo; sin «SÍ pasó», la duda va sola arriba.
+     */
+    private fun avisosDe(pendientes: List<ContextoDeCobro>): Pair<AvisoDeOtroCobro?, AvisoDeOtroCobro?> {
+        val ahora = reloj()
+        val vigentes = pendientes.filter { ahora - (it.desdeMillis ?: ahora) < VENTANA_AVISO_MS }
+        val siPaso = vigentes.firstOrNull { it.cobrado }?.let {
+            AvisoDeOtroCobro(it.requestId, textoCobroQueSiPaso(totalDe(it)), yaCobrado = true)
+        }
+        val duda = vigentes.firstOrNull { !it.cobrado }?.let {
+            AvisoDeOtroCobro(it.requestId, textoCobroSinConfirmar(totalDe(it), it.desdeMillis, ahora), yaCobrado = false)
+        }
+        return if (siPaso != null) siPaso to duda else duda to null
+    }
+
+    /** Importe + propina del cobro pendiente; `null` si su contexto no lo guardó (nunca un cero inventado). */
+    private fun totalDe(ctx: ContextoDeCobro): Long? =
+        ctx.amountCents?.let { (it + (ctx.tipCents ?: 0)).toLong() }
+
+    /** Una consulta que falla no tumba a las demás ni se lee como desenlace; la cancelación del scope SÍ se propaga. */
+    private suspend fun desenlaceSinTragarseLaCancelacion(requestId: String): TerminalPaymentResult? =
+        try {
+            terminalPaymentService.resolveOutcome(requestId)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w("PaymentFlow", "⚠️ No se pudo revisar el cobro $requestId de otra venta: ${e.message}")
+            null
+        }
+
+    /** «Revisar» en el aviso: la pantalla de siempre sobre ESE cobro de otra venta. Confirmarlo nunca paga ésta. */
+    fun revisarCobroDeOtraVenta(requestId: String) =
+        reconcileThenOffer(requestId, currentBaseAmount() + currentTipCents, encabezado = PREVIOUS_CHARGE_PREFIX)
+
+    /**
+     * El cobro sin confirmar del que habla la pantalla: el de otra venta que el cajero abrió con «Revisar», o el de ESTA
+     * venta (el que vio esta pantalla o, si el proceso murió, el que la lista durable guarda para su orden).
+     */
+    private fun cobroSinConfirmarEnPantalla(): String? =
+        if ((_state.value as? PaymentFlowState.Undetermined)?.fromPreviousSale == true) cobroEnRevision?.requestId
+        else cobroPendienteDeEstaVenta()
+
+    private fun cobroPendienteDeEstaVenta(): String? =
+        undeterminedRequestId ?: terminalPaymentService.pendienteDeLaVenta(ordenEnCurso())?.takeIf { it.isNotBlank() }
 
     fun selectTerminalAndPay(terminalId: String) {
         selectedTerminalId = terminalId
@@ -1274,12 +1480,15 @@ class PaymentFlowViewModel @Inject constructor(
                     }
                     // 🔴 No se sabe si la tarjeta se cobró. Ni Success ni Error: su propia
                     // pantalla, sin Reintentar a ciegas. Ver PaymentFlowState.Undetermined.
-                    is TerminalPaymentResult.Undetermined -> {
-                        if (!terminalResult.inherited) undeterminedRequestId = terminalResult.requestId
+                    // `inherited` (25-sep) = el servicio NO lo mandó porque ESTA orden ya tiene un cobro sin confirmar: se
+                    // espera; es de este flujo sólo si es el cobro que él mismo mandó (ver `esperarCobroDeEstaOrden`).
+                    is TerminalPaymentResult.Undetermined -> if (terminalResult.inherited) {
+                        esperarCobroDeEstaOrden(terminalResult.requestId, total, terminalResult.message)
+                    } else {
+                        undeterminedRequestId = terminalResult.requestId
                         _state.value = PaymentFlowState.Undetermined(
                             totalAmount = total,
                             message = terminalResult.message,
-                            fromPreviousSale = terminalResult.inherited,
                         )
                     }
                 }
@@ -1829,8 +2038,7 @@ class PaymentFlowViewModel @Inject constructor(
                     reconcileThenOffer(pending, total)
                     return
                 }
-                _state.value = PaymentFlowState.SelectingTerminal(total)
-                fetchTerminals()
+                ofrecerTerminales(total)
             }
             PaymentMethod.CASH -> {
                 val tendered = lastCashTenderedCents ?: (currentBaseAmount() + currentTipCents)
@@ -1857,6 +2065,9 @@ class PaymentFlowViewModel @Inject constructor(
         trasCancelar: Boolean = false,
     ) {
         undeterminedRequestId = null // el desenlace ya consta
+        // H2: ESTE flujo lo aplica como SU pago: la entrada (marcada por la consulta que lo probó) sale de la lista, sin
+        // dejar ni pendiente ni «SÍ pasó» sobre su propio cobro.
+        charged.requestId?.takeIf { it.isNotBlank() }?.let { terminalPaymentService.reconocerCobro(it) }
         lastPaymentId = charged.paymentId
         lastReceiptAccessKey = charged.receiptAccessKey
         lastReceiptUrl = charged.receiptUrl
@@ -1883,10 +2094,10 @@ class PaymentFlowViewModel @Inject constructor(
      * desenlace ENTERO —incluido el cobro exitoso—: el dinero salía y la venta quedaba marcada
      * como impaga. Nadie sabía que ese pago existía, y el cajero cobraba otra vez.
      *
-     * Ahora la referencia del cobro se re-arma como pendiente en la llave DURABLE (disco), que
-     * es la misma que sobrevive al cambio de pestaña y a la muerte del proceso. La próxima venta
-     * la encuentra en `startFlow` y muestra "Cobro sin confirmar" con su "Volver a consultar",
-     * por la ruta `fromPreviousSale`: informa del cargo viejo SIN pagar la venta nueva.
+     * Ahora la referencia del cobro se re-arma como pendiente en la lista DURABLE (disco), que
+     * es la misma que sobrevive al cambio de pestaña y a la muerte del proceso. Esa misma venta la
+     * espera al elegir tarjeta; cualquier otra la ve en el aviso de la selección de terminal, y
+     * «Revisar» la abre por la ruta `fromPreviousSale`: informa del cargo viejo SIN pagar la venta nueva.
      */
     private fun handleStaleCardResult(result: TerminalPaymentResult) {
         val (outcomeDelResultado, requestId) = when (result) {
@@ -1910,24 +2121,24 @@ class PaymentFlowViewModel @Inject constructor(
                 conocido is com.avoqado.pos.payment.domain.DesenlaceDeCancelacion.SeCobro &&
                     requestId == cobroAplicadoTrasCancelar,
         )
-        val pending = CardChargeDecision.unresolvedKeyAfterStaleResult(
-            outcome = outcome,
-            requestId = requestId,
-            armedKey = terminalPaymentService.unresolvedRequestId,
-        )
-        // 🔴 P2 de Codex (20-sep): un ÉXITO tardío manda sobre una declaración ya aceptada — si el cobro
-        // sí pasó, la afirmación del cajero no puede silenciarlo. Cualquier otro desenlace obsoleto NO
-        // repone una llave que la declaración soltó.
+        // 🔴 Desde el 25-sep hay VARIOS pendientes: el desenlace tardío decide sólo sobre SU cobro y nunca toca la
+        // entrada de otro (antes la ranura era una sola y el rezagado se quedaba sin lugar). Sin `requestId` —o en
+        // blanco— no hay referencia que consultar: no se arma nada.
         //
-        // 🔴 Y el indulto es POR SOLICITUD: sólo vale si la llave que se repone es la MISMA de la que
-        // habla la evidencia. Cuando la ranura la gobierna OTRA solicitud (`armedKey` distinto), el
-        // éxito de ÉSTA no dice nada de AQUÉLLA — reponerla resucitaría un cobro que el cajero ya
-        // declaró y resolvió, y volvería a pedirle que lo resuelva.
-        val cobroProbadoDeEstaLlave = outcome is CardChargeOutcome.Charged && pending != null && pending == requestId
-        terminalPaymentService.rearmUnresolvedCharge(pending, aunSiFueDeclarado = cobroProbadoDeEstaLlave)
-        // Esta pantalla ya no gobierna ese cobro: la llave durable manda, y al no coincidir
-        // con ésta la próxima venta lo tratará como "cobro anterior" (no paga la venta nueva).
-        if (pending != null) {
+        // 🔴 P2 de Codex (20-sep): un ÉXITO tardío de ESTE cobro manda sobre una declaración ya aceptada — si
+        // el cobro sí pasó, la afirmación del cajero no puede silenciarlo. Cualquier otro desenlace obsoleto NO
+        // repone lo que la declaración soltó.
+        val pending = requestId?.takeIf { it.isNotBlank() }
+        val enDisco = pending?.let {
+            terminalPaymentService.aplicarDesenlaceTardio(it, outcome, aunSiFueDeclarado = outcome is CardChargeOutcome.Charged)
+        } ?: true
+        if (!enDisco) {
+            // Nada se descarta en silencio: si hubo una cancelación registrada, su intención lo vuelve a entregar.
+            Log.w("PaymentFlow", "⚠️ El desenlace tardío del cobro $pending no quedó en disco")
+        }
+        // Esta pantalla ya no gobierna ese cobro: la lista durable manda. Su venta lo espera; las demás lo ven
+        // en el aviso (no paga la venta nueva).
+        if (pending != null && CardChargeDecision.quedaPendienteTrasDesenlaceTardio(outcome)) {
             Log.w("PaymentFlow", "⚠️ Se canceló, pero el cobro no consta como no cobrado (requestId: $pending)")
         } else {
             Log.d("PaymentFlow", "⏭️ Resultado obsoleto tras cancelar: consta que no se cobró")
@@ -1939,10 +2150,14 @@ class PaymentFlowViewModel @Inject constructor(
      * cobró → flujo normal; no cobró → recién ahí se ofrece cobrar; sigue sin saberse → la
      * pantalla honesta. **Nunca dispara un cargo.**
      */
-    private fun reconcileThenOffer(requestId: String, total: Int, fromPreviousSale: Boolean = false) {
+    private fun reconcileThenOffer(requestId: String, total: Int, encabezado: String? = null) {
         if (recoveryRequestId != null) return
         recoveryRequestId = requestId
-        val pendingMessage = if (fromPreviousSale) PREVIOUS_CHARGE_MESSAGE else CardChargeDecision.UNDETERMINED_MESSAGE
+        // `encabezado` = se REVISA sin adoptar (`fromPreviousSale`). La pantalla tiene que seguir hablando de ESE cobro:
+        // «Volver a consultar» y la declaración lo buscan aquí, porque no es el cobro de esta pantalla.
+        val fromPreviousSale = encabezado != null
+        if (encabezado != null) cobroEnRevision = CobroEnRevision(requestId, encabezado)
+        val pendingMessage = conEncabezado(encabezado, CardChargeDecision.UNDETERMINED_MESSAGE)
         _state.value = PaymentFlowState.Undetermined(
             totalAmount = total,
             message = pendingMessage,
@@ -1960,32 +2175,32 @@ class PaymentFlowViewModel @Inject constructor(
                 is TerminalPaymentResult.Success -> {
                     undeterminedRequestId = null
                     if (fromPreviousSale) {
-                        // 🔴 Ese cobro era de OTRA venta: confirmarlo NO paga ésta.
+                        // 🔴 Ese cobro NO se adoptó (de otra venta, u otra parte de ésta): confirmarlo NO paga ésta.
                         // Y tampoco arranca ésta: el cajero vino a resolver un pendiente,
                         // no a cobrar. Soltarlo en el primer paso de la venta nueva —con el
                         // aviso desvaneciéndose encima— hacía que el desenlace del cobro
                         // viejo pasara volando mientras la pantalla ya le pedía otra cosa.
-                        // Vuelve a donde estaba, con el carrito intacto, y él decide.
-                        _previousChargeResolved.value = "El cobro anterior sí se había realizado"
+                        // Vuelve a donde estaba, con el carrito intacto, y él decide. H2: la entrada queda marcada en
+                        // disco hasta que se cierre «Cobro anterior resuelto» (o venza su ventana).
+                        resolverCobroAnterior("El cobro anterior sí se había realizado", cobroQueSiPaso = requestId)
                     } else {
-                        applyCardCharged(outcome, total)
+                        applyCardCharged(outcome.copy(requestId = outcome.requestId ?: requestId), total)
                     }
                 }
                 is TerminalPaymentResult.Error -> {
                     // Consta que NO se cobró: aquí sí es seguro ofrecer cobrar de nuevo.
                     undeterminedRequestId = null
                     if (fromPreviousSale) {
-                        _previousChargeResolved.value = "El cobro anterior no se realizó"
+                        resolverCobroAnterior("El cobro anterior no se realizó")
                     } else {
-                        _state.value = PaymentFlowState.SelectingTerminal(total)
-                        fetchTerminals()
+                        ofrecerTerminales(total)
                     }
                 }
                 is TerminalPaymentResult.Undetermined -> {
                     if (!fromPreviousSale) undeterminedRequestId = outcome.requestId
                     _state.value = PaymentFlowState.Undetermined(
                         totalAmount = total,
-                        message = if (fromPreviousSale) "$PREVIOUS_CHARGE_PREFIX ${outcome.message}" else outcome.message,
+                        message = conEncabezado(encabezado, outcome.message),
                         checking = false,
                         fromPreviousSale = fromPreviousSale,
                     )
@@ -2001,18 +2216,22 @@ class PaymentFlowViewModel @Inject constructor(
     fun recheckCardCharge() {
         val total = currentBaseAmount() + currentTipCents
         val fromPreviousSale = (_state.value as? PaymentFlowState.Undetermined)?.fromPreviousSale == true
-        // La llave durable manda: si el proceso murió, `undeterminedRequestId` viene vacío
-        // pero el cobro sigue sin resolverse en disco.
-        val pending = undeterminedRequestId ?: terminalPaymentService.unresolvedRequestId
+        // La lista durable manda: si el proceso murió, `undeterminedRequestId` viene vacío
+        // pero el cobro de esta venta sigue sin resolverse en disco.
+        val pending = cobroSinConfirmarEnPantalla()
         if (pending == null) {
             // Ya no hay nada pendiente que consultar: consta que no hay cargo vivo.
-            if (fromPreviousSale) enterInitialState(total) else {
-                _state.value = PaymentFlowState.SelectingTerminal(total)
-                fetchTerminals()
-            }
+            if (fromPreviousSale) enterInitialState(total) else ofrecerTerminales(total)
             return
         }
-        reconcileThenOffer(pending, total, fromPreviousSale)
+        // Una revisión conserva su encabezado. Un pendiente de esta orden que ninguna pantalla fijó (lo encontró la lista)
+        // no lo mandó este flujo: se revisa, igual que en la puerta de la tarjeta.
+        val encabezado = when {
+            fromPreviousSale -> cobroEnRevision?.encabezado ?: PREVIOUS_CHARGE_PREFIX
+            pending != undeterminedRequestId -> SAME_SALE_CHARGE_PREFIX
+            else -> null
+        }
+        reconcileThenOffer(pending, total, encabezado)
     }
 
     /**
@@ -2042,7 +2261,7 @@ class PaymentFlowViewModel @Inject constructor(
      * libera. Y si no consta, `montoCentavos` es `null`: el diálogo dice «ese cobro», no uno falso.
      */
     fun objetivoDeLaDeclaracion(): ObjetivoDeLaDeclaracion? {
-        val requestId = undeterminedRequestId ?: terminalPaymentService.unresolvedRequestId ?: return null
+        val requestId = cobroSinConfirmarEnPantalla() ?: return null
         val contexto = terminalPaymentService.contextoDe(requestId)
         val monto = contexto?.amountCents?.let { it + (contexto.tipCents ?: 0) }
         return ObjetivoDeLaDeclaracion(requestId = requestId, venueId = contexto?.venueId, montoCentavos = monto)
@@ -2078,10 +2297,9 @@ class PaymentFlowViewModel @Inject constructor(
                     undeterminedRequestId = null
                     // El MISMO desenlace que «consta que no se cobró»: el cajero decide si cobra.
                     if (fromPreviousSale) {
-                        _previousChargeResolved.value = CancelacionDeCobro.DECLARACION_LISTO
+                        resolverCobroAnterior(CancelacionDeCobro.DECLARACION_LISTO)
                     } else {
-                        _state.value = PaymentFlowState.SelectingTerminal(total)
-                        fetchTerminals()
+                        ofrecerTerminales(total)
                     }
                 }
                 // El pendiente SE CONSERVA en los dos casos que siguen: nada se resolvió.
@@ -2227,8 +2445,7 @@ class PaymentFlowViewModel @Inject constructor(
         //    crearse. Un cobro de una venta ANTERIOR no es de este flujo: no se cancela desde aquí.
         val requestId = when {
             estado is PaymentFlowState.Undetermined && estado.fromPreviousSale -> null
-            estado is PaymentFlowState.Undetermined -> undeterminedRequestId ?: terminalPaymentService.unresolvedRequestId
-            estado is PaymentFlowState.SentToTerminal -> terminalPaymentService.unresolvedRequestId
+            estado is PaymentFlowState.Undetermined || estado is PaymentFlowState.SentToTerminal -> cobroPendienteDeEstaVenta()
             // Un rechazo de admisión correlacionado ya probó que ese cobro no se creó: no hay a
             // quién preguntarle, y esperar a la terminal dejaría la orden abierta para siempre.
             else -> ultimoIntento?.takeIf { !it.noSeCreo }?.requestId
@@ -3037,6 +3254,9 @@ class PaymentFlowViewModel @Inject constructor(
         return splitBaseAmountOverride ?: (cartState?.totalCents ?: 0)
     }
 
+    /** Se cobra la cuenta ENTERA, sin dividir: sólo entonces se adopta el total del servidor. */
+    private fun esPagoCompleto(): Boolean = _splitType.value == "FULLPAYMENT" && splitBaseAmountOverride == null
+
     /**
      * Fija el total que se va a cobrar cuando el server acaba de crear la orden
      * y devuelve ese total. Ver `totalACobrarCents` para el porqué y para las
@@ -3057,7 +3277,7 @@ class PaymentFlowViewModel @Inject constructor(
         val total = totalACobrarCents(
             estimadoLocalCents = estimadoLocal,
             orden = response.data,
-            esPagoCompleto = _splitType.value == "FULLPAYMENT" && splitBaseAmountOverride == null,
+            esPagoCompleto = esPagoCompleto(),
             laVentaLlevaPromocion = laVentaLlevaPromocion,
         )
         if (total != estimadoLocal) {
@@ -3225,18 +3445,64 @@ class PaymentFlowViewModel @Inject constructor(
         }
     }
 
-    private companion object {
+    companion object {
         /** Sobrevive a la muerte del proceso junto con el resto del SavedStateHandle. */
-        const val KEY_UNDETERMINED_REQUEST = "undeterminedChargeRequestId"
-
-        /** Encabezado del aviso de un cobro sin confirmar heredado de OTRA venta. */
-        const val PREVIOUS_CHARGE_PREFIX = "Quedó un cobro sin confirmar de una venta anterior."
+        private const val KEY_UNDETERMINED_REQUEST = "undeterminedChargeRequestId"
 
         /**
-         * Copy completo mientras no hay más desenlace que la duda. Se COMPONE del prefijo y de
-         * la instrucción estándar: antes era una copia literal y, al anteponerse a un desenlace
-         * que ya traía esa misma instrucción, el cajero la leía dos veces seguidas.
+         * Encabezado de la pantalla de un cobro sin confirmar de OTRA venta, la que abre «Revisar» desde el aviso (25-sep:
+         * ese cobro ya no frena la tarjeta). «Otra venta», el mismo vocabulario que el aviso que lleva hasta ahí.
          */
-        const val PREVIOUS_CHARGE_MESSAGE = "$PREVIOUS_CHARGE_PREFIX ${CardChargeDecision.UNDETERMINED_MESSAGE}"
+        private const val PREVIOUS_CHARGE_PREFIX = "Quedó un cobro sin confirmar de otra venta."
+
+        /**
+         * Encabezado de la misma pantalla cuando el cobro es de ESTA orden pero no se adoptó (otra parte de una cuenta
+         * dividida, o sin importe registrado). Decir «de otra venta» ahí sería falso.
+         */
+        private const val SAME_SALE_CHARGE_PREFIX = "Quedó un cobro sin confirmar de esta venta."
+
+        /**
+         * El texto de una revisión se COMPONE del encabezado y del mensaje del momento: antes era una copia literal
+         * y, al anteponerse a un desenlace que ya traía esa misma instrucción, el cajero la leía dos veces seguidas.
+         */
+        private fun conEncabezado(encabezado: String?, mensaje: String): String =
+            encabezado?.let { "$it $mensaje" } ?: mensaje
+
+        /** El aviso de un cobro de otra venta se calla a los 10 min desde el cobro: una duda y, desde el 26-sep, un «SÍ pasó». */
+        const val VENTANA_AVISO_MS = 10L * 60 * 1000
+
+        const val TARJETA_SIN_RED =
+            "Sin conexión: el cobro con tarjeta necesita internet. Cobra en efectivo o espera a que vuelva la red."
+
+        private const val SI_ES_ESTA_VENTA = "Si es esta misma venta, no la cobres otra vez."
+
+        /**
+         * «Quedó un cobro de $X sin confirmar hace N min en otra venta. Si es esta misma venta, no la cobres otra vez.»
+         * iOS usa el MISMO texto. Sin importe o sin antigüedad conocidos no se inventa ninguno: nunca «$0.00».
+         */
+        fun textoCobroSinConfirmar(totalCentavos: Long?, desdeMillis: Long?, ahoraMillis: Long): String {
+            val cobro = importe(totalCentavos)?.let { "un cobro de $it" } ?: "un cobro"
+            val hace = desdeMillis?.let { " ${antiguedad(ahoraMillis - it)}" }.orEmpty()
+            return "Quedó $cobro sin confirmar$hace en otra venta. $SI_ES_ESTA_VENTA"
+        }
+
+        /** «El cobro de $X de otra venta SÍ pasó. Si es esta misma venta, no la cobres otra vez.» — mismo texto en iOS. */
+        fun textoCobroQueSiPaso(totalCentavos: Long?): String {
+            val cobro = importe(totalCentavos)?.let { "El cobro de $it" } ?: "El cobro"
+            return "$cobro de otra venta SÍ pasó. $SI_ES_ESTA_VENTA"
+        }
+
+        /** Un importe que no consta —o un cero, que un cobro con tarjeta no puede tener— no se imprime. */
+        private fun importe(centavos: Long?): String? = centavos?.takeIf { it > 0 }?.let { formatMoney(it / 100.0) }
+
+        /** Como en la TPV: «hace unos segundos» (< 1 min), «hace N min» (< 60) y «hace N h». Nunca negativa. */
+        private fun antiguedad(millis: Long): String {
+            val minutos = millis.coerceAtLeast(0) / 60_000
+            return when {
+                minutos < 1 -> "hace unos segundos"
+                minutos < 60 -> "hace $minutos min"
+                else -> "hace ${minutos / 60} h"
+            }
+        }
     }
 }

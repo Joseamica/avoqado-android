@@ -6,6 +6,8 @@ import com.avoqado.pos.payment.domain.CancelacionDeCobro
 import com.avoqado.pos.payment.data.ResultadoDeDeclaracion
 import com.avoqado.pos.MainDispatcherRule
 import com.avoqado.pos.payment.domain.CardChargeDecision
+import com.avoqado.pos.payment.domain.CardChargeOutcome
+import com.avoqado.pos.payment.domain.PendientesDeTarjeta
 import com.avoqado.pos.printing.data.ResultadoLegado
 import com.avoqado.pos.printing.data.ReplayDeComandasPendientes
 import com.avoqado.pos.printing.data.AlmacenDeTexto
@@ -172,6 +174,15 @@ class PaymentFlowViewModelTest {
         // mock relajado. Sin cobro en vuelo y sin contexto guardado, salvo donde la prueba diga.
         every { terminalPaymentService.intentoEnVuelo() } returns null
         every { terminalPaymentService.contextoDe(any()) } returns null
+        // Desde el 25-sep la tarjeta pregunta por el pendiente de ESTA venta y avisa de los de las demás. Sin pendientes,
+        // salvo donde la prueba diga: un mock relajado devolvería "" como si hubiera uno.
+        every { terminalPaymentService.pendienteDeLaVenta(any()) } returns null
+        every { terminalPaymentService.pendientesDeOtrasVentas(any()) } returns emptyList()
+        // H6: el lote de la revisión de fondo lo elige el servicio (rota por turnos). Aquí, los más nuevos, como antes; la
+        // rotación de verdad se prueba con el servicio REAL (`AvisoDuraderoDeOtrasVentasTest`).
+        every { terminalPaymentService.loteDeRevision(any(), any()) } answers {
+            firstArg<List<ContextoDeCobro>>().take(secondArg())
+        }
 
         // PRINT_STATIONS — default to "no stations configured" so existing tests keep
         // exercising the legacy single-ticket path unless a test overrides this.
@@ -350,10 +361,9 @@ class PaymentFlowViewModelTest {
             kotlinx.coroutines.delay(60_000)
             result
         }
-        // La ranura arranca LIBRE, como en producción (SharedPreferences devuelve null si no
-        // hay nada). Explícito a propósito: es una entrada del camino del dinero y no puede
-        // depender del valor por defecto de un mock relajado.
-        every { terminalPaymentService.unresolvedRequestId } returns null
+        // La venta arranca SIN cobro pendiente propio, como en producción. Explícito a propósito: es
+        // una entrada del camino del dinero y no puede depender del valor por defecto de un mock relajado.
+        every { terminalPaymentService.pendienteDeLaVenta(any()) } returns null
         // Con el POST en vuelo, «Cancelar» apunta a ESA solicitud: es lo que el servicio real
         // devuelve desde antes del POST y hasta que el intento termina.
         every { terminalPaymentService.intentoEnVuelo() } returns
@@ -376,11 +386,13 @@ class PaymentFlowViewModelTest {
         viewModel.cancel() // el cajero cancela desde el POS
         advanceUntilIdle() // …y la terminal contesta "cobrado", tarde
 
-        // La referencia queda armada en la llave DURABLE: la próxima venta se topa con ella
+        // La referencia queda en la lista DURABLE: la próxima venta se topa con ella
         // y el cajero puede resolverla desde "Cobro sin confirmar".
         // 🔴 `aunSiFueDeclarado = true`: el cobro SÍ pasó. Un éxito tardío manda sobre una
         // declaración ya aceptada — si no, la app silenciaría dinero real (P2 de Codex, 20-sep).
-        verify { terminalPaymentService.rearmUnresolvedCharge("req-1", aunSiFueDeclarado = true) }
+        verify {
+            terminalPaymentService.aplicarDesenlaceTardio("req-1", CardChargeOutcome.Charged("pay-tarde"), aunSiFueDeclarado = true)
+        }
         // Pero NO se secuestra la pantalla de la que el cajero ya se fue.
         assertFalse(
             "cancelar significa que la pantalla no se toca",
@@ -403,7 +415,11 @@ class PaymentFlowViewModelTest {
         advanceUntilIdle()
 
         // Sigue sin saberse: NO se pisa una declaración aceptada con un desenlace incierto.
-        verify { terminalPaymentService.rearmUnresolvedCharge("req-1", aunSiFueDeclarado = false) }
+        verify {
+            terminalPaymentService.aplicarDesenlaceTardio(
+                "req-1", CardChargeOutcome.Undetermined("No pudimos confirmar el cobro."), aunSiFueDeclarado = false,
+            )
+        }
     }
 
     @Test
@@ -421,7 +437,8 @@ class PaymentFlowViewModelTest {
         viewModel.cancel()
         advanceUntilIdle()
 
-        verify { terminalPaymentService.rearmUnresolvedCharge(null) }
+        // Consta que no hubo cargo (y el servicio ya soltó su entrada al contestar): nada que re-armar.
+        verify(exactly = 0) { terminalPaymentService.aplicarDesenlaceTardio(any(), any(), any()) }
         assertFalse(
             "una cancelación limpia no deja pantalla de cobro sin confirmar",
             viewModel.state.value is PaymentFlowState.Undetermined,
@@ -429,16 +446,16 @@ class PaymentFlowViewModelTest {
     }
 
     @Test
-    fun `un desenlace tardio NO pisa la llave del cobro que el cajero mando despues`() = runTest {
-        // La venta ya avanzó a otra cosa: hay un cobro POSTERIOR gobernando el disco. El
-        // rezagado no puede robarle la única ranura — ese otro es el que todavía puede tener
-        // dinero encima.
+    fun `un desenlace tardio sólo toca SU cobro y conserva la entrada del que el cajero mando despues`() = runTest {
+        // La venta ya avanzó a otra cosa: hay un cobro POSTERIOR sin confirmar. 🔴 Desde el 25-sep
+        // cada cobro conserva su entrada: el rezagado deja la SUYA (con dinero encima) y no toca
+        // la del otro. Antes la ranura era una sola y el rezagado se quedaba sin lugar.
         stubOrderCreation()
         terminalRespondsLate(TerminalPaymentResult.Success(paymentId = "pay-viejo", requestId = "req-viejo"))
-        // La llave arranca libre (si no, la venta ni siquiera empezaría) y se ocupa mientras
-        // el rezagado sigue en vuelo.
+        // La venta arranca sin pendiente propio (si no, la tarjeta ni siquiera saldría) y el otro cobro
+        // aparece mientras el rezagado sigue en vuelo.
         var armada: String? = null
-        every { terminalPaymentService.unresolvedRequestId } answers { armada }
+        every { terminalPaymentService.pendienteDeLaVenta(any()) } answers { armada }
 
         viewModel.startPaymentFlow(cardCart())
         viewModel.selectPaymentMethod(PaymentMethod.CARD)
@@ -448,8 +465,10 @@ class PaymentFlowViewModelTest {
         viewModel.cancel()
         advanceUntilIdle()
 
-        // Desenlace incierto: no repone una llave que una declaración pudo haber soltado.
-        verify { terminalPaymentService.rearmUnresolvedCharge("req-nuevo", aunSiFueDeclarado = false) }
+        verify {
+            terminalPaymentService.aplicarDesenlaceTardio("req-viejo", CardChargeOutcome.Charged("pay-viejo"), aunSiFueDeclarado = true)
+        }
+        verify(exactly = 0) { terminalPaymentService.aplicarDesenlaceTardio("req-nuevo", any(), any()) }
     }
 
     @Test
@@ -553,7 +572,7 @@ class PaymentFlowViewModelTest {
     }
 
     @Test
-    fun `un cobro sin resolver BLOQUEA la siguiente venta CON TARJETA, nunca el efectivo`() = runTest {
+    fun `un cobro sin resolver de ESTA venta frena su TARJETA, nunca el efectivo`() = runTest {
         // 🔴 El agujero que esta prueba cierra: el cajero ve "Cobro sin confirmar", se va a
         // Transacciones a comprobar si el pago entró, vuelve y cobra — pantalla nueva, cero
         // advertencia, SEGUNDO CARGO. La llave vive en DISCO justo para eso, y sigue vigente.
@@ -561,8 +580,10 @@ class PaymentFlowViewModelTest {
         // 🔴 Lo que cambió el 21-sep (founder, viéndolo en la D3): antes esto cortaba la venta
         // ENTERA y el negocio no podía cobrar ni en efectivo. Un cargo de tarjeta no se duplica
         // con efectivo: son instrumentos distintos. Se bloquea lo que de verdad puede duplicarlo.
+        //
+        // 🔴 Y el 25-sep (founder): sólo espera la MISMA venta. El pendiente de otra venta avisa y no frena.
         stubOrderCreation()
-        every { terminalPaymentService.unresolvedRequestId } returns "req-1"
+        every { terminalPaymentService.pendienteDeLaVenta(any()) } returns "req-1"
 
         viewModel.startPaymentFlow(cardCart())
         advanceUntilIdle()
@@ -573,12 +594,14 @@ class PaymentFlowViewModelTest {
             viewModel.state.value is PaymentFlowState.Undetermined,
         )
 
-        // Pero mandar ESTA venta a una terminal sí obliga a resolver el cobro anterior.
+        // Pero mandar ESTA venta a una terminal sí obliga a resolver su cobro pendiente.
         viewModel.selectPaymentMethod(PaymentMethod.CARD)
         advanceUntilIdle()
         val state = viewModel.state.value
         assertTrue("con TARJETA sí se topa con el cobro pendiente", state is PaymentFlowState.Undetermined)
-        assertTrue("debe declararse que viene de otra venta", (state as PaymentFlowState.Undetermined).fromPreviousSale)
+        // Controlador (26-sep): no lo mandó ESTE flujo ⇒ se revisa sin adoptarlo, y se dice de quién es.
+        assertTrue("no lo mandó ESTE flujo: se revisa", (state as PaymentFlowState.Undetermined).fromPreviousSale)
+        assertEquals("Quedó un cobro sin confirmar de esta venta. ${CardChargeDecision.UNDETERMINED_MESSAGE}", state.message)
         // Y nadie cobró nada por el camino.
         coVerify(exactly = 0) {
             terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any())
@@ -589,19 +612,20 @@ class PaymentFlowViewModelTest {
     fun `confirmar el cobro de la venta ANTERIOR no marca como pagada la venta actual`() = runTest {
         // Distinción crítica: la llave pendiente era de otra venta. Que aquel cobro sí haya
         // pasado NO paga la venta que el cajero tiene ahora en el carrito.
+        // 🔴 Desde el 25-sep ese pendiente ya no frena la tarjeta: se llega a él con «Revisar», desde el aviso
+        // de la selección de terminal.
         stubOrderCreation()
-        every { terminalPaymentService.unresolvedRequestId } returns "req-vieja"
-        coEvery {
-            terminalPaymentService.resolveOutcome("req-vieja")
-        } returns TerminalPaymentResult.Success(paymentId = "pay-vieja")
+        every { terminalPaymentService.pendientesDeOtrasVentas(any()) } returns listOf(pendiente("req-vieja", "orden-7", haceMin = 2))
+        coEvery { terminalPaymentService.resolveOutcome("req-vieja") } returnsMany listOf(
+            // La revisión de fondo todavía no sabe nada: el aviso ofrece «Revisar».
+            TerminalPaymentResult.Undetermined(CardChargeDecision.UNDETERMINED_MESSAGE, "req-vieja"),
+            TerminalPaymentResult.Success(paymentId = "pay-vieja"),
+        )
 
         viewModel.startPaymentFlow(cardCart())
-        advanceUntilIdle()
-        // 🔴 La puerta del pendiente ya no es arrancar la venta —el efectivo dejó de bloquearse
-        // (founder, 21-sep)—: es elegir TARJETA, que es lo único que puede duplicar el cargo.
         viewModel.selectPaymentMethod(PaymentMethod.CARD)
         advanceUntilIdle()
-        viewModel.recheckCardCharge()
+        viewModel.revisarCobroDeOtraVenta(viewModel.avisoDeOtroCobro.value!!.requestId)
         advanceUntilIdle()
 
         assertFalse(
@@ -621,11 +645,18 @@ class PaymentFlowViewModelTest {
     @Test
     fun `old POST joining current recovery cannot rearm resolved previous sale`() = runTest {
         stubOrderCreation()
-        var pending: String? = null
+        var pendientes: String? = null
         every { secureStorage.accessToken } returns "token"
-        every { secureStorage.pendingCardChargeRequestId } answers { pending }
-        every { secureStorage.pendingCardChargeRequestId = any() } answers { pending = firstArg() }
-        every { secureStorage.persistPendingCardCharge(any(), any()) } answers { pending = firstArg(); true }
+        every { secureStorage.pendingCardChargesJson } answers { pendientes }
+        every { secureStorage.persistPendingCardCharge(any(), any(), any()) } answers {
+            pendientes = PendientesDeTarjeta.agregar(pendientes, firstArg(), secondArg(), thirdArg()); true
+        }
+        every { secureStorage.persistCobroQueSiPaso(any(), any(), any(), any()) } answers {
+            pendientes = PendientesDeTarjeta.agregar(pendientes, firstArg(), secondArg(), thirdArg(), cobrado = true, cobradoEn = arg(3)); true
+        }
+        every { secureStorage.removePendingCardCharge(any()) } answers {
+            pendientes = PendientesDeTarjeta.quitar(pendientes, firstArg())
+        }
         val server = okhttp3.mockwebserver.MockWebServer()
         val postStarted = java.util.concurrent.CountDownLatch(1)
         val getStarted = java.util.concurrent.CountDownLatch(1)
@@ -648,10 +679,12 @@ class PaymentFlowViewModelTest {
         server.start()
         val realService = TerminalPaymentService(secureStorage, okhttp3.OkHttpClient())
         realService.baseUrl = server.url("/api/v1").toString().trimEnd('/')
-        every { terminalPaymentService.unresolvedRequestId } answers { realService.unresolvedRequestId }
-        every { terminalPaymentService.rearmUnresolvedCharge(any(), any()) } answers {
-            realService.rearmUnresolvedCharge(firstArg(), secondArg())
+        every { terminalPaymentService.pendienteDeLaVenta(any()) } answers { realService.pendienteDeLaVenta(firstArg()) }
+        every { terminalPaymentService.pendientesDeOtrasVentas(any()) } answers { realService.pendientesDeOtrasVentas(firstArg()) }
+        every { terminalPaymentService.aplicarDesenlaceTardio(any(), any(), any()) } answers {
+            realService.aplicarDesenlaceTardio(firstArg(), secondArg(), thirdArg())
         }
+        every { terminalPaymentService.reconocerCobro(any()) } answers { realService.reconocerCobro(firstArg()) }
         // El cobro en vuelo lo conoce el servicio REAL: es a quien apunta «Cancelar».
         every { terminalPaymentService.intentoEnVuelo() } answers { realService.intentoEnVuelo() }
         coEvery { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any()) } coAnswers {
@@ -666,11 +699,13 @@ class PaymentFlowViewModelTest {
             assertTrue(postStarted.await(5, java.util.concurrent.TimeUnit.SECONDS))
             viewModel.cancel()
             viewModel.startPaymentFlow(cardCart().copy(items = cardCart().items.map { it.copy(id = "B", unitPrice = 9900) }))
-            // 🔴 La puerta del pendiente ya no es arrancar la venta —el efectivo dejó de bloquearse
-        // (founder, 21-sep)—: es elegir TARJETA, que es lo único que puede duplicar el cargo.
-        viewModel.selectPaymentMethod(PaymentMethod.CARD)
-        advanceUntilIdle()
-        viewModel.recheckCardCharge()
+            // 🔴 25-sep: el pendiente de la venta A ya no frena la tarjeta de B. Elegirla lanza la revisión de fondo
+            // (su GET es EL ÚNICO) y «Revisar» se une a esa misma consulta. Sólo `runCurrent`: avanzar el reloj
+            // vencería los plazos del dinero mientras el HTTP real espera.
+            viewModel.selectPaymentMethod(PaymentMethod.CARD)
+            runCurrent()
+            assertTrue(viewModel.state.value is PaymentFlowState.SelectingTerminal)
+            viewModel.revisarCobroDeOtraVenta(viewModel.avisoDeOtroCobro.value!!.requestId)
             runCurrent()
             assertTrue(getStarted.await(5, java.util.concurrent.TimeUnit.SECONDS))
             releasePost.countDown()
@@ -680,7 +715,10 @@ class PaymentFlowViewModelTest {
             repeat(50) { Thread.sleep(10); runCurrent() }
             assertEquals(1, gets.get())
             assertNotNull(viewModel.previousChargeResolved.value)
-            assertNull(pending)
+            // H2 (26-sep): el cobro probado de la venta A queda MARCADO —no vuelve a la duda— hasta su «Entendido».
+            assertEquals(listOf(true), PendientesDeTarjeta.leer(pendientes).map { it.cobrado })
+            viewModel.reconocerCobroAnteriorResuelto()
+            assertTrue(PendientesDeTarjeta.leer(pendientes).isEmpty())
             assertFalse(viewModel.state.value is PaymentFlowState.Success)
         } finally {
             releasePost.countDown()
@@ -690,31 +728,42 @@ class PaymentFlowViewModelTest {
     }
 
     @Test
-    fun `blocked send cannot adopt a pending request that appeared after checkout entry`() = runTest {
+    fun `P1 un pendiente de ESTA orden que frena el envio con el MISMO importe tampoco se adopta`() = runTest {
+        // 🔴 Founder, 25-sep: la guarda del servicio frena sólo el pendiente de ESTA venta (la orden `order-1` que
+        // crea `stubOrderCreation`), así que el pendiente se siembra para ella y la orden viaja tal cual. La orden
+        // nace DESPUÉS de elegir tarjeta, así que la puerta de la pantalla no lo ve: lo frena el servicio
+        // (`inherited`). Nunca «de otra venta». Y controlador (26-sep): aunque registró el MISMO importe ($15.00), no lo
+        // mandó ESTE flujo ⇒ se revisa: si pasó, se dice, sin dar por pagada esta venta.
         stubOrderCreation()
-        var armed: String? = null
-        every { terminalPaymentService.unresolvedRequestId } answers { armed }
         val realGuard = TerminalPaymentService(secureStorage, okhttp3.OkHttpClient())
-        every { secureStorage.pendingCardChargeRequestId } returns "old-request"
+        every { secureStorage.pendingCardChargesJson } returns PendientesDeTarjeta.agregar(
+            null, "old-request", "order-1", """{"requestId":"old-request","orderId":"order-1","amountCents":1500,"tipCents":0}""",
+        )
+        every { terminalPaymentService.pendienteDeLaVenta(any()) } answers { realGuard.pendienteDeLaVenta(firstArg()) }
+        // El importe registrado queda a la vista: ni así se adopta.
+        every { terminalPaymentService.contextoDe(any()) } answers { realGuard.contextoDe(firstArg()) }
         coEvery { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any()) } coAnswers {
-            armed = "old-request"
-            realGuard.sendPaymentToTerminal("t1", 1500)
+            realGuard.sendPaymentToTerminal("t1", 1500, orderId = arg<String?>(4))
         }
         coEvery { terminalPaymentService.resolveOutcome("old-request") } returns TerminalPaymentResult.Success(paymentId = "old-payment")
         viewModel.startPaymentFlow(cardCart())
         viewModel.selectPaymentMethod(PaymentMethod.CARD)
         viewModel.selectTerminalAndPay("t1")
         advanceUntilIdle()
-        assertTrue((viewModel.state.value as PaymentFlowState.Undetermined).fromPreviousSale)
+        val espera = viewModel.state.value as PaymentFlowState.Undetermined
+        assertTrue("es de ESTA orden, pero no lo mandó este flujo: se revisa", espera.fromPreviousSale)
+        assertEquals("Quedó un cobro sin confirmar de esta venta. ${CardChargeDecision.UNDETERMINED_MESSAGE}", espera.message)
         viewModel.recheckCardCharge()
         advanceUntilIdle()
         assertFalse(viewModel.state.value is PaymentFlowState.Success)
-        assertNotNull(viewModel.previousChargeResolved.value)
+        assertEquals("El cobro anterior sí se había realizado", viewModel.previousChargeResolved.value)
     }
 
     @Test
     fun `two recovery callbacks share one current cycle`() = runTest {
-        every { terminalPaymentService.unresolvedRequestId } returns "pending"
+        // 25-sep: la tarjeta sólo espera el pendiente de ESTA venta, así que la doble consulta se prueba sobre él. Sin
+        // importe registrado no se adopta (controlador, 26-sep): se revisa, y el desenlace se anuncia sin pagar esta venta.
+        every { terminalPaymentService.pendienteDeLaVenta(any()) } returns "pending"
         val result = CompletableDeferred<TerminalPaymentResult>()
         coEvery { terminalPaymentService.resolveOutcome("pending") } coAnswers { result.await() }
         viewModel.startPaymentFlow(cardCart())
@@ -735,19 +784,21 @@ class PaymentFlowViewModelTest {
     @Test
     fun `retained checkout never adopts an inherited request after reopening`() = runTest {
         stubOrderCreation()
-        every { terminalPaymentService.unresolvedRequestId } returns "old-request"
-        coEvery { terminalPaymentService.resolveOutcome("old-request") } returns TerminalPaymentResult.Success(paymentId = "old-payment")
+        // 25-sep: el pendiente de la venta anterior no frena la tarjeta de ésta; se abre con «Revisar».
+        every { terminalPaymentService.pendientesDeOtrasVentas(any()) } returns listOf(pendiente("old-request", "orden-vieja", haceMin = 1))
+        coEvery { terminalPaymentService.resolveOutcome("old-request") } returnsMany listOf(
+            TerminalPaymentResult.Undetermined(CardChargeDecision.UNDETERMINED_MESSAGE, "old-request"),
+            TerminalPaymentResult.Success(paymentId = "old-payment"),
+        )
         viewModel.startPaymentFlow(cardCart())
         advanceUntilIdle()
         viewModel.cancel()
         viewModel.startPaymentFlow(cardCart().copy(items = cardCart().items.map { it.copy(id = "other-line", unitPrice = 9900) }))
         advanceUntilIdle()
-        // 🔴 La puerta del pendiente ya no es arrancar la venta —el efectivo dejó de bloquearse
-        // (founder, 21-sep)—: es elegir TARJETA, que es lo único que puede duplicar el cargo.
         viewModel.selectPaymentMethod(PaymentMethod.CARD)
         advanceUntilIdle()
-        assertTrue((viewModel.state.value as PaymentFlowState.Undetermined).fromPreviousSale)
-        viewModel.recheckCardCharge()
+        assertTrue(viewModel.state.value is PaymentFlowState.SelectingTerminal)
+        viewModel.revisarCobroDeOtraVenta(viewModel.avisoDeOtroCobro.value!!.requestId)
         advanceUntilIdle()
         assertFalse(viewModel.state.value is PaymentFlowState.Success)
         assertNotNull(viewModel.previousChargeResolved.value)
@@ -774,21 +825,21 @@ class PaymentFlowViewModelTest {
         assertEquals(stateBeforeResult, viewModel.state.value)
         assertFalse(viewModel.state.value is PaymentFlowState.Success)
         // El cobro se aplicó: el dinero manda sobre la declaración.
-        verify { terminalPaymentService.rearmUnresolvedCharge("req-1", aunSiFueDeclarado = true) }
+        verify {
+            terminalPaymentService.aplicarDesenlaceTardio("req-1", CardChargeOutcome.Charged("old-payment"), aunSiFueDeclarado = true)
+        }
     }
 
     @Test
     fun `inherited ACTIVE recovery preserves terminal confirmation instruction`() = runTest {
-        every { terminalPaymentService.unresolvedRequestId } returns "old-request"
+        // 25-sep: el cobro de otra venta se abre con «Revisar» desde el aviso; la pantalla de hoy conserva la instrucción.
+        every { terminalPaymentService.pendientesDeOtrasVentas(any()) } returns listOf(pendiente("old-request", "orden-vieja", haceMin = 1))
         val instruction = "El cobro sigue activo. Confirma en la terminal antes de intentar otro cobro."
         coEvery { terminalPaymentService.resolveOutcome("old-request") } returns TerminalPaymentResult.Undetermined(instruction, "old-request")
         viewModel.startPaymentFlow(cardCart())
-        advanceUntilIdle()
-        // 🔴 La puerta del pendiente ya no es arrancar la venta —el efectivo dejó de bloquearse
-        // (founder, 21-sep)—: es elegir TARJETA, que es lo único que puede duplicar el cargo.
         viewModel.selectPaymentMethod(PaymentMethod.CARD)
         advanceUntilIdle()
-        viewModel.recheckCardCharge()
+        viewModel.revisarCobroDeOtraVenta(viewModel.avisoDeOtroCobro.value!!.requestId)
         advanceUntilIdle()
         val state = viewModel.state.value as PaymentFlowState.Undetermined
         assertTrue(state.fromPreviousSale)
@@ -797,20 +848,18 @@ class PaymentFlowViewModelTest {
 
     @Test
     fun `el aviso de la venta anterior no repite la frase del cobro sin confirmar`() = runTest {
-        every { terminalPaymentService.unresolvedRequestId } returns "old-request"
+        every { terminalPaymentService.pendientesDeOtrasVentas(any()) } returns listOf(pendiente("old-request", "orden-vieja", haceMin = 1))
         coEvery { terminalPaymentService.resolveOutcome("old-request") } returns
             TerminalPaymentResult.Undetermined(CardChargeDecision.UNDETERMINED_MESSAGE, "old-request")
         viewModel.startPaymentFlow(cardCart())
-        advanceUntilIdle()
-        // 🔴 La puerta del pendiente ya no es arrancar la venta —el efectivo dejó de bloquearse
-        // (founder, 21-sep)—: es elegir TARJETA, que es lo único que puede duplicar el cargo.
         viewModel.selectPaymentMethod(PaymentMethod.CARD)
         advanceUntilIdle()
-        viewModel.recheckCardCharge()
+        viewModel.revisarCobroDeOtraVenta(viewModel.avisoDeOtroCobro.value!!.requestId)
         advanceUntilIdle()
         val state = viewModel.state.value as PaymentFlowState.Undetermined
         assertTrue(state.fromPreviousSale)
-        assertTrue(state.message, state.message.startsWith("Quedó un cobro sin confirmar de una venta anterior."))
+        // 25-sep: «de otra venta», el mismo vocabulario que el aviso que llevó hasta aquí.
+        assertTrue(state.message, state.message.startsWith("Quedó un cobro sin confirmar de otra venta."))
         val veces = Regex(Regex.escape(CardChargeDecision.UNDETERMINED_MESSAGE)).findAll(state.message).count()
         assertEquals("la instrucción se lee UNA vez: ${state.message}", 1, veces)
     }
@@ -818,7 +867,7 @@ class PaymentFlowViewModelTest {
     @Test
     fun `cobrar de todos modos conserva la llave y no permite otra autorizacion`() = runTest {
         stubOrderCreation()
-        every { terminalPaymentService.unresolvedRequestId } returns "req-1"
+        every { terminalPaymentService.pendienteDeLaVenta(any()) } returns "req-1"
 
         viewModel.startPaymentFlow(cardCart())
         advanceUntilIdle()
@@ -2441,7 +2490,7 @@ class PaymentFlowViewModelTest {
     @Test
     fun `sin llave del cobro NO se declara nada`() = runTest {
         // Nadie tiene un cobro sin confirmar: declarar aquí escribiría sobre una solicitud ajena.
-        every { terminalPaymentService.unresolvedRequestId } returns null
+        every { terminalPaymentService.pendienteDeLaVenta(any()) } returns null
 
         viewModel.declararNoCobrado()
         advanceUntilIdle()
@@ -2474,14 +2523,21 @@ class PaymentFlowViewModelTest {
 
     @Test
     fun `el objetivo declara el importe del COBRO PENDIENTE, no el de la venta nueva`() = runTest {
-        // El pendiente A: $100.00 + $5.00 de propina. La venta nueva que se teclea: $500.00.
-        every { terminalPaymentService.unresolvedRequestId } returns "req-viejo"
-        every { terminalPaymentService.contextoDe("req-viejo") } returns ContextoDeCobro(
+        // El pendiente A: $100.00 + $5.00 de propina. La venta nueva: $15.00. 🔴 Desde el 25-sep el pendiente de
+        // otra venta ya no frena la tarjeta: el cajero lo abre con «Revisar» y declara desde ahí.
+        val pendienteA = ContextoDeCobro(
             requestId = "req-viejo", venueId = "venue-del-cobro", terminalId = "t9",
-            orderId = null, amountCents = 10_000, tipCents = 500,
+            orderId = "orden-a", amountCents = 10_000, tipCents = 500,
         )
+        every { terminalPaymentService.pendientesDeOtrasVentas(any()) } returns listOf(pendienteA)
+        every { terminalPaymentService.contextoDe("req-viejo") } returns pendienteA
+        coEvery { terminalPaymentService.resolveOutcome("req-viejo") } returns
+            TerminalPaymentResult.Undetermined(CardChargeDecision.UNDETERMINED_MESSAGE, "req-viejo")
         stubOrderCreation()
         viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
+        viewModel.revisarCobroDeOtraVenta(viewModel.avisoDeOtroCobro.value!!.requestId)
         advanceUntilIdle()
 
         val objetivo = viewModel.objetivoDeLaDeclaracion()
@@ -2492,7 +2548,7 @@ class PaymentFlowViewModelTest {
 
     @Test
     fun `sin contexto del cobro el objetivo NO inventa un importe`() = runTest {
-        every { terminalPaymentService.unresolvedRequestId } returns "req-sin-contexto"
+        every { terminalPaymentService.pendienteDeLaVenta(any()) } returns "req-sin-contexto"
         every { terminalPaymentService.contextoDe("req-sin-contexto") } returns null
         stubOrderCreation()
         viewModel.startPaymentFlow(cardCart())
@@ -2507,7 +2563,7 @@ class PaymentFlowViewModelTest {
 
     @Test
     fun `la declaracion viaja al venue del COBRO, no al de la sesion`() = runTest {
-        every { terminalPaymentService.unresolvedRequestId } returns "req-viejo"
+        every { terminalPaymentService.pendienteDeLaVenta(any()) } returns "req-viejo"
         every { terminalPaymentService.contextoDe("req-viejo") } returns ContextoDeCobro(
             requestId = "req-viejo", venueId = "venue-del-cobro", terminalId = "t9",
             orderId = null, amountCents = 10_000, tipCents = 500,
@@ -2537,7 +2593,7 @@ class PaymentFlowViewModelTest {
         viewModel.declararNoCobrado()
         runCurrent()
         // La rotación: el flujo arranca de nuevo y la generación avanza.
-        every { terminalPaymentService.unresolvedRequestId } returns null
+        every { terminalPaymentService.pendienteDeLaVenta(any()) } returns null
         viewModel.startPaymentFlow(cardCart())
         advanceUntilIdle()
         val estadoTrasReiniciar = viewModel.state.value
@@ -2576,7 +2632,7 @@ class PaymentFlowViewModelTest {
         // a bloquearse por el cobro recién liberado. El cajero de vuelta al callejón sin salida.
         //
         // La regla vive en el SERVICIO (es quien posee la llave), así que se comprueba ahí: una vez
-        // declarado, `armarLlaveSiLibre` no lo vuelve a poner.
+        // declarado, `armarLlave` no lo vuelve a poner.
         enCobroSinConfirmar()
         coEvery { terminalPaymentService.declararNoCobrado(any(), any()) } returns ResultadoDeDeclaracion.Liberada
         every { terminalPaymentService.yaDeclaradoSinCobro("req-1") } returns true
@@ -2597,13 +2653,14 @@ class PaymentFlowViewModelTest {
         // métodos de pago, así que un cargo de tarjeta sin resolver dejaba al negocio sin poder
         // cobrar NI EN EFECTIVO. Un cargo de tarjeta no se duplica cobrando en efectivo: son
         // instrumentos distintos. Lo único que choca es mandar otra venta a la TERMINAL.
-        every { terminalPaymentService.unresolvedRequestId } returns "req-viejo"
+        // 25-sep: ni siquiera el pendiente de ESTA venta —el único que todavía frena la tarjeta— cierra la caja.
+        every { terminalPaymentService.pendienteDeLaVenta(any()) } returns "req-viejo"
 
         viewModel.startPaymentFlow(cardCart())
         advanceUntilIdle()
 
         assertFalse(
-            "con un pendiente de OTRA venta, la caja NO se cierra (fue ${viewModel.state.value})",
+            "con un cobro de tarjeta pendiente, la caja NO se cierra (fue ${viewModel.state.value})",
             viewModel.state.value is PaymentFlowState.Undetermined,
         )
 
@@ -2623,13 +2680,13 @@ class PaymentFlowViewModelTest {
         // Payment— y al elegir TARJETA volvía a bloquearse, porque el ViewModel guardaba una COPIA
         // de la llave al arrancar la venta. Sólo se destrababa saliendo y empezando otra: la guarda
         // sobrevivía a su propia causa.
-        every { terminalPaymentService.unresolvedRequestId } returns "req-viejo"
+        every { terminalPaymentService.pendienteDeLaVenta(any()) } returns "req-viejo"
 
         viewModel.startPaymentFlow(cardCart())
         advanceUntilIdle()
 
         // Se resuelve el pendiente MIENTRAS la venta sigue abierta.
-        every { terminalPaymentService.unresolvedRequestId } returns null
+        every { terminalPaymentService.pendienteDeLaVenta(any()) } returns null
 
         viewModel.selectPaymentMethod(PaymentMethod.CARD)
         advanceUntilIdle()
@@ -2644,7 +2701,7 @@ class PaymentFlowViewModelTest {
     @Test
     fun `P1 pero mandar esa venta a la TERMINAL sigue bloqueado`() = runTest {
         // El control que protege el dinero: lo que sí puede duplicar un cargo es otro cargo.
-        every { terminalPaymentService.unresolvedRequestId } returns "req-viejo"
+        every { terminalPaymentService.pendienteDeLaVenta(any()) } returns "req-viejo"
 
         viewModel.startPaymentFlow(cardCart())
         advanceUntilIdle()
@@ -2653,6 +2710,793 @@ class PaymentFlowViewModelTest {
 
         val estado = viewModel.state.value
         assertTrue("elegir TARJETA con un pendiente obliga a resolverlo (fue $estado)", estado is PaymentFlowState.Undetermined)
-        assertTrue("y se dice que es de la venta anterior", (estado as PaymentFlowState.Undetermined).fromPreviousSale)
+        // Controlador (26-sep): no lo mandó este flujo ⇒ se revisa; y se dice que es de ESTA venta, no de otra.
+        assertTrue((estado as PaymentFlowState.Undetermined).fromPreviousSale)
+        assertTrue(estado.message, estado.message.startsWith("Quedó un cobro sin confirmar de esta venta."))
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════════════
+    // Founder, 25-sep: sólo la MISMA venta espera. El cobro pendiente de OTRA venta no frena la
+    // tarjeta: se avisa en la selección de terminal, y «Revisar» lleva a la pantalla de siempre.
+    // ══════════════════════════════════════════════════════════════════════════════════════
+
+    private fun pendiente(id: String, orden: String, haceMin: Long, centavos: Int? = 1500, cobrado: Boolean = false) = ContextoDeCobro(
+        requestId = id, venueId = "v", terminalId = "t1", orderId = orden, amountCents = centavos, tipCents = 0,
+        desdeMillis = System.currentTimeMillis() - haceMin * 60_000, cobrado = cobrado,
+    )
+
+    @Test fun `P1 un cobro pendiente de OTRA venta no frena la tarjeta de esta`() = runTest {
+        stubOrderCreation()
+        every { terminalPaymentService.pendienteDeLaVenta(any()) } returns null
+        every { terminalPaymentService.pendientesDeOtrasVentas(any()) } returns listOf(pendiente("r-viejo", "orden-7", haceMin = 2))
+        coEvery { terminalPaymentService.resolveOutcome("r-viejo") } returns
+            TerminalPaymentResult.Undetermined(CardChargeDecision.UNDETERMINED_MESSAGE, "r-viejo")
+
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
+
+        assertTrue("la tarjeta de esta venta NO se frena: ${viewModel.state.value}",
+            viewModel.state.value is PaymentFlowState.SelectingTerminal)
+        val aviso = viewModel.avisoDeOtroCobro.value
+        assertNotNull(aviso)
+        assertTrue(aviso!!.texto.startsWith("Quedó un cobro de"))
+        assertTrue(aviso.texto.contains("en otra venta"))
+    }
+
+    @Test fun `P1 un cobro pendiente de ESTA venta sigue esperando`() = runTest {
+        stubOrderCreation()
+        every { terminalPaymentService.pendienteDeLaVenta(any()) } returns "r-de-esta"
+
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value is PaymentFlowState.Undetermined)
+        // Controlador (26-sep): sigue esperando; como no lo mandó ESTE flujo, se revisa sin adoptarlo.
+        val espera = viewModel.state.value as PaymentFlowState.Undetermined
+        assertTrue(espera.fromPreviousSale)
+        assertTrue(espera.message, espera.message.startsWith("Quedó un cobro sin confirmar de esta venta."))
+    }
+
+    @Test fun `el cobro de otra venta que SI paso se avisa y no se pierde`() = runTest {
+        stubOrderCreation()
+        every { terminalPaymentService.pendienteDeLaVenta(any()) } returns null
+        every { terminalPaymentService.pendientesDeOtrasVentas(any()) } returns listOf(pendiente("r-cobrado", "orden-7", haceMin = 3))
+        coEvery { terminalPaymentService.resolveOutcome("r-cobrado") } returns TerminalPaymentResult.Success(paymentId = "pay-7")
+
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
+
+        val aviso = viewModel.avisoDeOtroCobro.value!!
+        assertTrue(aviso.yaCobrado)
+        assertTrue(aviso.texto.contains("SÍ pasó"))
+    }
+
+    @Test fun `el aviso de otra venta se calla a los 10 min`() = runTest {
+        stubOrderCreation()
+        every { terminalPaymentService.pendienteDeLaVenta(any()) } returns null
+        every { terminalPaymentService.pendientesDeOtrasVentas(any()) } returns listOf(pendiente("r-viejo", "orden-7", haceMin = 11))
+        coEvery { terminalPaymentService.resolveOutcome("r-viejo") } returns
+            TerminalPaymentResult.Undetermined(CardChargeDecision.UNDETERMINED_MESSAGE, "r-viejo")
+
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
+
+        assertNull(viewModel.avisoDeOtroCobro.value)
+        assertTrue(viewModel.state.value is PaymentFlowState.SelectingTerminal)
+    }
+
+    @Test
+    fun `P1 el aviso de otra venta sale AL INSTANTE, antes de que la consulta conteste`() = runTest {
+        // 🔴 Consultar puede tardar decenas de segundos (3 consultas con pausas por pendiente) y el aviso es la ÚNICA
+        // protección contra volver a cobrar la duda de otra venta: si llega después de que el cajero toca la terminal,
+        // no sirvió. Sale de la lista guardada, sin red; la consulta sólo lo afina.
+        stubOrderCreation()
+        every { terminalPaymentService.pendientesDeOtrasVentas(any()) } returns listOf(pendiente("r-viejo", "orden-7", haceMin = 2))
+        val consulta = CompletableDeferred<TerminalPaymentResult>()
+        coEvery { terminalPaymentService.resolveOutcome("r-viejo") } coAnswers { consulta.await() }
+
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        // Ni una vuelta del planificador: el aviso ya está al regresar de elegir tarjeta.
+        assertEquals("r-viejo", viewModel.avisoDeOtroCobro.value?.requestId)
+        runCurrent()
+
+        val provisional = viewModel.avisoDeOtroCobro.value
+        assertNotNull("el aviso no puede esperar a la red", provisional)
+        assertEquals("r-viejo", provisional!!.requestId)
+        assertFalse(provisional.yaCobrado)
+        assertEquals(
+            "Quedó un cobro de \$15.00 sin confirmar hace 2 min en otra venta. Si es esta misma venta, no la cobres otra vez.",
+            provisional.texto,
+        )
+
+        consulta.complete(TerminalPaymentResult.Success(paymentId = "pay-7"))
+        advanceUntilIdle()
+
+        // Al contestar, el definitivo manda: un cobro que SÍ pasó se dice.
+        assertTrue(viewModel.avisoDeOtroCobro.value!!.yaCobrado)
+    }
+
+    @Test
+    fun `P1 sin importe conocido el aviso nunca inventa cero pesos`() = runTest {
+        // Un pendiente guardado antes del 25-sep (o con el contexto ilegible) no trae importe: decir «$0.00» sería
+        // inventar un dato de dinero.
+        stubOrderCreation()
+        every { terminalPaymentService.pendientesDeOtrasVentas(any()) } returns
+            listOf(pendiente("r-sin-importe", "orden-7", haceMin = 2, centavos = null))
+        coEvery { terminalPaymentService.resolveOutcome("r-sin-importe") } returns
+            TerminalPaymentResult.Undetermined(CardChargeDecision.UNDETERMINED_MESSAGE, "r-sin-importe")
+
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
+
+        assertEquals(
+            "Quedó un cobro sin confirmar hace 2 min en otra venta. Si es esta misma venta, no la cobres otra vez.",
+            viewModel.avisoDeOtroCobro.value?.texto,
+        )
+    }
+
+    @Test
+    fun `P1 Volver a consultar en la revision de otra venta pregunta por ESE cobro`() = runTest {
+        // La revisión habla de un cobro que NO es el pendiente de esta venta: «Volver a consultar» tiene que seguir
+        // preguntando por él, no por el de esta venta (que no hay) ni volver al inicio sin consultar nada.
+        stubOrderCreation()
+        every { terminalPaymentService.pendientesDeOtrasVentas(any()) } returns listOf(pendiente("r-viejo", "orden-7", haceMin = 2))
+        coEvery { terminalPaymentService.resolveOutcome("r-viejo") } returnsMany listOf(
+            TerminalPaymentResult.Undetermined(CardChargeDecision.UNDETERMINED_MESSAGE, "r-viejo"), // revisión de fondo
+            TerminalPaymentResult.Undetermined(CardChargeDecision.UNDETERMINED_MESSAGE, "r-viejo"), // «Revisar»
+            TerminalPaymentResult.Success(paymentId = "pay-7"),                                     // «Volver a consultar»
+        )
+
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
+        viewModel.revisarCobroDeOtraVenta("r-viejo")
+        advanceUntilIdle()
+        viewModel.recheckCardCharge()
+        advanceUntilIdle()
+
+        coVerify(exactly = 3) { terminalPaymentService.resolveOutcome("r-viejo") }
+        assertFalse("el cobro de otra venta no paga ésta", viewModel.state.value is PaymentFlowState.Success)
+        assertEquals("El cobro anterior sí se había realizado", viewModel.previousChargeResolved.value)
+    }
+
+    @Test
+    fun `P1 al resolver el pendiente de ESTA venta, la terminal se ofrece CON el aviso de las otras`() = runTest {
+        // Toda entrada a la selección de terminal lleva el aviso: también la que llega tras resolver el cobro propio. El
+        // propio es el que mandó ESTE flujo (controlador, 26-sep): uno encontrado en la lista se revisaría y cerraría el
+        // flujo en vez de ofrecer la terminal.
+        stubOrderCreation()
+        coEvery { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any()) } returns
+            TerminalPaymentResult.Undetermined("No pudimos confirmar el cobro.", "r-de-esta")
+        coEvery { terminalPaymentService.resolveOutcome("r-de-esta") } returns
+            TerminalPaymentResult.Error("El cobro fue rechazado. No se cobró la tarjeta.")
+        // El pendiente de la otra venta aparece DESPUÉS: el aviso final sólo puede salir de la revisión al volver a ofrecer.
+        every { terminalPaymentService.pendientesDeOtrasVentas(any()) } returnsMany listOf(
+            emptyList(),
+            listOf(pendiente("r-otra", "orden-7", haceMin = 1)),
+        )
+        coEvery { terminalPaymentService.resolveOutcome("r-otra") } returns
+            TerminalPaymentResult.Undetermined(CardChargeDecision.UNDETERMINED_MESSAGE, "r-otra")
+
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+        assertTrue(viewModel.state.value is PaymentFlowState.Undetermined)
+        assertNull("montaje: todavía sin aviso", viewModel.avisoDeOtroCobro.value)
+        viewModel.recheckCardCharge() // consta que NO se cobró: ahora sí se ofrece cobrar
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { terminalPaymentService.resolveOutcome("r-de-esta") }
+        assertTrue(viewModel.state.value is PaymentFlowState.SelectingTerminal)
+        assertEquals("r-otra", viewModel.avisoDeOtroCobro.value?.requestId)
+    }
+
+    // ══════════════════════════════════════════════════════════════════════════════════════
+    // Controlador, 26-sep: el pendiente de ESTA orden se ADOPTA como este cobro sólo si su importe
+    // registrado consta y es IGUAL al que se cobra ahora. Si no, la venta sigue esperando (misma
+    // cerca), pero se abre como revisión: jamás se da por pagada con el cobro de otra parte.
+    // ══════════════════════════════════════════════════════════════════════════════════════
+
+    /** Una cuenta de un solo renglón por [centavos]. */
+    private fun cuentaDe(centavos: Int) = CartState(
+        items = listOf(CartItem(id = "cuenta", type = CartItemType.ProductItem("prod-1"), name = "Cuenta", unitPrice = centavos)),
+    )
+
+    @Test
+    fun `P1 el pendiente de ESTA orden con el MISMO importe tampoco se adopta`() = runTest {
+        // Misma orden, $15.00 = $15.00, pago completo: aun así no lo mandó ESTE flujo (controlador, 26-sep: los importes no
+        // distinguen partes ni intentos). Se revisa; si pasó, se dice, y el servidor no deja cobrar dos veces una orden pagada.
+        every { terminalPaymentService.pendienteDeLaVenta(any()) } returns "r-misma"
+        every { terminalPaymentService.contextoDe("r-misma") } returns pendiente("r-misma", "order-1", haceMin = 3)
+        coEvery { terminalPaymentService.resolveOutcome("r-misma") } returns TerminalPaymentResult.Success(paymentId = "pay-misma")
+
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
+        val espera = viewModel.state.value as PaymentFlowState.Undetermined
+        assertTrue("espera, pero como REVISIÓN", espera.fromPreviousSale)
+        assertEquals("Quedó un cobro sin confirmar de esta venta. ${CardChargeDecision.UNDETERMINED_MESSAGE}", espera.message)
+        viewModel.recheckCardCharge()
+        advanceUntilIdle()
+
+        assertFalse("un cobro que este flujo no mandó jamás da por pagada esta venta", viewModel.state.value is PaymentFlowState.Success)
+        assertEquals("El cobro anterior sí se había realizado", viewModel.previousChargeResolved.value)
+        coVerify(exactly = 0) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `P1 la parte 2 de una cuenta dividida en mostrador no adopta el cobro de la parte 1`() = runTest {
+        // Mostrador: la parte 2 llega como pago COMPLETO del saldo ($250) sobre la misma orden, y la parte 1 ($250) quedó
+        // sin confirmar. Mismo importe y pago completo: la regla de importes lo habría adoptado. No lo mandó ESTE flujo.
+        every { terminalPaymentService.pendienteDeLaVenta("orden-mostrador") } returns "r-parte-1"
+        every { terminalPaymentService.contextoDe("r-parte-1") } returns
+            pendiente("r-parte-1", "orden-mostrador", haceMin = 3, centavos = 25_000)
+        coEvery { terminalPaymentService.resolveOutcome("r-parte-1") } returns TerminalPaymentResult.Success(paymentId = "pay-parte-1")
+
+        viewModel.startPaymentFlow(cuentaDe(25_000), resumeOrderId = "orden-mostrador")
+        assertEquals("montaje: la parte 2 se cobra como pago completo", "FULLPAYMENT", viewModel.splitType.value)
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
+        val espera = viewModel.state.value as PaymentFlowState.Undetermined
+        assertTrue("la parte 2 espera a la 1, pero como REVISIÓN", espera.fromPreviousSale)
+        assertEquals("Quedó un cobro sin confirmar de esta venta. ${CardChargeDecision.UNDETERMINED_MESSAGE}", espera.message)
+        viewModel.recheckCardCharge()
+        advanceUntilIdle()
+
+        assertFalse("la parte 2 no queda pagada con el cobro de la 1", viewModel.state.value is PaymentFlowState.Success)
+        assertEquals("El cobro anterior sí se había realizado", viewModel.previousChargeResolved.value)
+        coVerify(exactly = 0) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `P1 el cobro que mando este flujo sigue siendo suyo al volver a elegir tarjeta`() = runTest {
+        // Controlador (26-sep): sólo se adopta lo que ESTE flujo mandó. Su propio POST quedó sin confirmar; al volver a
+        // elegir tarjeta la puerta encuentra ESE cobro: sigue siendo suyo (sin encabezado), como antes de este plan.
+        stubOrderCreation()
+        coEvery { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any()) } returns
+            TerminalPaymentResult.Undetermined("No pudimos confirmar el cobro.", "req-propio")
+        every { terminalPaymentService.pendienteDeLaVenta("order-1") } returns "req-propio"
+        coEvery { terminalPaymentService.resolveOutcome("req-propio") } returns
+            TerminalPaymentResult.Success(paymentId = "pay-propio-gate", requestId = "req-propio")
+
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+        assertFalse("montaje: su propio cobro sin confirmar", (viewModel.state.value as PaymentFlowState.Undetermined).fromPreviousSale)
+
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
+        val espera = viewModel.state.value as PaymentFlowState.Undetermined
+        assertFalse("es el cobro que mandó ESTE flujo: sigue siendo suyo", espera.fromPreviousSale)
+        assertEquals(CardChargeDecision.UNDETERMINED_MESSAGE, espera.message)
+
+        viewModel.recheckCardCharge()
+        advanceUntilIdle()
+        assertEquals("su propio cobro paga esta venta", "pay-propio-gate", (viewModel.state.value as PaymentFlowState.Success).paymentId)
+        assertNull(viewModel.previousChargeResolved.value)
+        coVerify(exactly = 1) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `P1 el servicio frena el reenvio por el cobro de este flujo y sigue siendo suyo`() = runTest {
+        // Su propio POST quedó sin confirmar; el cajero vuelve a mandar la MISMA venta y el servicio la frena (`inherited`)
+        // por ESE cobro, sin tocar la red. Sigue siendo suyo: si pasó, esta venta queda pagada.
+        stubOrderCreation()
+        coEvery { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any()) } returnsMany listOf(
+            TerminalPaymentResult.Undetermined("No pudimos confirmar el cobro.", "req-propio"),
+            TerminalPaymentResult.Undetermined(CardChargeDecision.UNDETERMINED_MESSAGE, "req-propio", inherited = true),
+        )
+        coEvery { terminalPaymentService.resolveOutcome("req-propio") } returns
+            TerminalPaymentResult.Success(paymentId = "pay-propio-reenvio", requestId = "req-propio")
+
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+        viewModel.selectTerminalAndPay("t1") // la misma venta otra vez: el servicio la frena por su propio cobro
+        advanceUntilIdle()
+
+        val espera = viewModel.state.value as PaymentFlowState.Undetermined
+        assertFalse("el cobro que frena el reenvío es de ESTE flujo: sigue siendo suyo", espera.fromPreviousSale)
+        assertEquals(CardChargeDecision.UNDETERMINED_MESSAGE, espera.message)
+        viewModel.recheckCardCharge()
+        advanceUntilIdle()
+        assertEquals("pay-propio-reenvio", (viewModel.state.value as PaymentFlowState.Success).paymentId)
+        assertNull(viewModel.previousChargeResolved.value)
+    }
+
+    @Test
+    fun `P1 el pendiente de ESTA orden con OTRO importe no da por pagada esta parte`() = runTest {
+        // Cuenta dividida de $500: la parte A ($300) quedó sin confirmar y ahora se cobra la B ($200) sobre la MISMA
+        // orden. Espera igual (misma cerca), pero si A resulta cobrada, B NO queda pagada con ese cobro.
+        viewModel.setSplitConfig(type = "CUSTOMAMOUNT", customAmountCents = 20_000)
+        every { terminalPaymentService.pendienteDeLaVenta("orden-dividida") } returns "r-parte-a"
+        every { terminalPaymentService.contextoDe("r-parte-a") } returns
+            pendiente("r-parte-a", "orden-dividida", haceMin = 3, centavos = 30_000)
+        coEvery { terminalPaymentService.resolveOutcome("r-parte-a") } returns TerminalPaymentResult.Success(paymentId = "pay-parte-a")
+
+        viewModel.startPaymentFlow(cuentaDe(50_000), resumeOrderId = "orden-dividida")
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
+        val espera = viewModel.state.value as PaymentFlowState.Undetermined
+        assertTrue("B espera a A (misma orden), pero como REVISIÓN", espera.fromPreviousSale)
+        viewModel.recheckCardCharge()
+        advanceUntilIdle()
+
+        assertFalse("jamás dar por pagada esta parte con el cobro de otra", viewModel.state.value is PaymentFlowState.Success)
+        assertEquals("El cobro anterior sí se había realizado", viewModel.previousChargeResolved.value)
+        coVerify(exactly = 0) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `P1 el pendiente de ESTA orden sin importe conocido no se adopta`() = runTest {
+        // Un contexto de antes del 25-sep, o ilegible: no consta cuánto cobró, así que no se puede afirmar que sea ESTE cobro.
+        every { terminalPaymentService.pendienteDeLaVenta(any()) } returns "r-sin-importe"
+        every { terminalPaymentService.contextoDe("r-sin-importe") } returns
+            pendiente("r-sin-importe", "order-1", haceMin = 3, centavos = null)
+        coEvery { terminalPaymentService.resolveOutcome("r-sin-importe") } returns TerminalPaymentResult.Success(paymentId = "pay-x")
+
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
+        assertTrue((viewModel.state.value as PaymentFlowState.Undetermined).fromPreviousSale)
+        viewModel.recheckCardCharge()
+        advanceUntilIdle()
+
+        assertFalse(viewModel.state.value is PaymentFlowState.Success)
+        assertEquals("El cobro anterior sí se había realizado", viewModel.previousChargeResolved.value)
+    }
+
+    @Test
+    fun `P1 un pendiente de ESTA orden con OTRO importe que frena el envio tampoco se adopta`() = runTest {
+        // La orden nace al mandar, así que la puerta de la pantalla no ve el pendiente: lo frena el servicio
+        // (`inherited`). Misma regla: con otro importe se revisa, no se adopta.
+        stubOrderCreation()
+        val realGuard = TerminalPaymentService(secureStorage, okhttp3.OkHttpClient())
+        every { secureStorage.pendingCardChargesJson } returns PendientesDeTarjeta.agregar(
+            null, "r-parte-a", "order-1", """{"requestId":"r-parte-a","orderId":"order-1","amountCents":30000,"tipCents":0}""",
+        )
+        every { terminalPaymentService.pendienteDeLaVenta(any()) } answers { realGuard.pendienteDeLaVenta(firstArg()) }
+        every { terminalPaymentService.contextoDe(any()) } answers { realGuard.contextoDe(firstArg()) }
+        coEvery { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any()) } coAnswers {
+            realGuard.sendPaymentToTerminal("t1", 1500, orderId = arg<String?>(4))
+        }
+        coEvery { terminalPaymentService.resolveOutcome("r-parte-a") } returns TerminalPaymentResult.Success(paymentId = "pay-parte-a")
+
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+        assertTrue((viewModel.state.value as PaymentFlowState.Undetermined).fromPreviousSale)
+        viewModel.recheckCardCharge()
+        advanceUntilIdle()
+
+        assertFalse(viewModel.state.value is PaymentFlowState.Success)
+        assertEquals("El cobro anterior sí se había realizado", viewModel.previousChargeResolved.value)
+    }
+
+    @Test
+    fun `P1 Volver a consultar un pendiente de ESTA orden que la pantalla no fijo aplica la misma regla`() = runTest {
+        // `recheckCardCharge` es público: un pendiente de esta orden que ninguna pantalla fijó (lo encontró la lista) no lo
+        // mandó ESTE flujo, así que no se adopta — ni con el MISMO importe ($15.00 = $15.00), que la regla de importes adoptaba.
+        every { terminalPaymentService.pendienteDeLaVenta(any()) } returns "r-parte-a"
+        every { terminalPaymentService.contextoDe("r-parte-a") } returns
+            pendiente("r-parte-a", "order-1", haceMin = 3, centavos = 1_500)
+        coEvery { terminalPaymentService.resolveOutcome("r-parte-a") } returns TerminalPaymentResult.Success(paymentId = "pay-parte-a")
+
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.recheckCardCharge()
+        advanceUntilIdle()
+
+        assertFalse(viewModel.state.value is PaymentFlowState.Success)
+        assertEquals("El cobro anterior sí se había realizado", viewModel.previousChargeResolved.value)
+    }
+
+    // --- Ronda 2 (26-sep): una cuenta DIVIDIDA nunca adopta; el encabezado dice de quién es el cobro ---
+
+    @Test
+    fun `P1 en una cuenta dividida en partes IGUALES el pendiente de la otra parte no se adopta`() = runTest {
+        // $500 en 2 partes iguales: la parte A ($250) quedó sin confirmar y la B ($250) elige tarjeta sobre la MISMA
+        // orden. Mismo importe, otra persona: comparar importes no las distingue. Una cuenta dividida SIEMPRE revisa.
+        viewModel.setSplitConfig(type = "EQUALPARTS", numberOfParts = 2)
+        every { terminalPaymentService.pendienteDeLaVenta("orden-dividida") } returns "r-parte-a"
+        every { terminalPaymentService.contextoDe("r-parte-a") } returns
+            pendiente("r-parte-a", "orden-dividida", haceMin = 3, centavos = 25_000)
+        coEvery { terminalPaymentService.resolveOutcome("r-parte-a") } returns TerminalPaymentResult.Success(paymentId = "pay-parte-a")
+
+        viewModel.startPaymentFlow(cuentaDe(50_000), resumeOrderId = "orden-dividida")
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
+        val espera = viewModel.state.value as PaymentFlowState.Undetermined
+        assertEquals("la parte B cobra \$250, igual que la A", 25_000, espera.totalAmount)
+        assertTrue("B espera a A, pero como REVISIÓN aunque el importe sea igual", espera.fromPreviousSale)
+        viewModel.recheckCardCharge()
+        advanceUntilIdle()
+
+        assertFalse("B no queda pagada sin pasar su tarjeta", viewModel.state.value is PaymentFlowState.Success)
+        assertEquals("El cobro anterior sí se había realizado", viewModel.previousChargeResolved.value)
+        coVerify(exactly = 0) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `P1 el encabezado de un pendiente de ESTA venta no adoptado dice de esta venta, tambien tras consultar`() = runTest {
+        // Es de esta orden (otra parte, o sin importe registrado): decir «de otra venta» sería falso.
+        every { terminalPaymentService.pendienteDeLaVenta(any()) } returns "r-sin-importe"
+        every { terminalPaymentService.contextoDe("r-sin-importe") } returns
+            pendiente("r-sin-importe", "order-1", haceMin = 3, centavos = null)
+        coEvery { terminalPaymentService.resolveOutcome("r-sin-importe") } returns
+            TerminalPaymentResult.Undetermined(CardChargeDecision.UNDETERMINED_MESSAGE, "r-sin-importe")
+        val esperado = "Quedó un cobro sin confirmar de esta venta. ${CardChargeDecision.UNDETERMINED_MESSAGE}"
+
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
+        assertEquals(esperado, (viewModel.state.value as PaymentFlowState.Undetermined).message)
+        viewModel.recheckCardCharge()
+        advanceUntilIdle()
+
+        val tras = viewModel.state.value as PaymentFlowState.Undetermined
+        assertTrue(tras.fromPreviousSale)
+        assertEquals("la consulta conserva el encabezado, sin repetir la instrucción", esperado, tras.message)
+    }
+
+    @Test
+    fun `P1 una revision vieja que contesta tarde no pisa el aviso de la nueva`() = runTest {
+        // «No hay terminales» → «Reintentar» vuelve a revisar mientras la primera consulta sigue colgada. La vieja contesta
+        // DESPUÉS: su «SÍ pasó» describe una lista que ya cambió y no puede tapar el aviso vigente.
+        coEvery { terminalPaymentService.fetchOnlineTerminals(any()) } returnsMany listOf(
+            TerminalListResult.Success(listOf(OnlineTerminal(terminalId = "t1", name = "Terminal 1"))), // sonda al arrancar
+            TerminalListResult.Success(emptyList()),                                                     // «No hay terminales»
+            TerminalListResult.Success(listOf(OnlineTerminal(terminalId = "t1", name = "Terminal 1"))), // «Reintentar»
+        )
+        every { terminalPaymentService.pendientesDeOtrasVentas(any()) } returnsMany listOf(
+            listOf(pendiente("r-uno", "orden-7", haceMin = 2)),
+            listOf(pendiente("r-dos", "orden-8", haceMin = 1)),
+        )
+        val primera = CompletableDeferred<TerminalPaymentResult>()
+        coEvery { terminalPaymentService.resolveOutcome("r-uno") } coAnswers { primera.await() }
+        coEvery { terminalPaymentService.resolveOutcome("r-dos") } returns
+            TerminalPaymentResult.Undetermined(CardChargeDecision.UNDETERMINED_MESSAGE, "r-dos")
+
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        runCurrent()
+        // Paridad con iOS (26-sep): sin terminales se dice DENTRO de la selección, con las líneas ámbar encima.
+        assertEquals("montaje: sin terminales", "No hay terminales conectadas",
+            (viewModel.state.value as? PaymentFlowState.SelectingTerminal)?.sinLista)
+        viewModel.retry()
+        runCurrent()
+        assertEquals("r-dos", viewModel.avisoDeOtroCobro.value?.requestId)
+
+        primera.complete(TerminalPaymentResult.Success(paymentId = "pay-uno"))
+        advanceUntilIdle()
+
+        val aviso = viewModel.avisoDeOtroCobro.value!!
+        assertEquals("la revisión vieja no manda", "r-dos", aviso.requestId)
+        assertFalse(aviso.yaCobrado)
+    }
+
+    @Test
+    fun `P1 el pendiente de otra venta que CONSTA como no cobrado deja de avisarse`() = runTest {
+        // El más nuevo consta como NO cobrado (Error): se calla, y el aviso pasa al siguiente que sigue en duda.
+        every { terminalPaymentService.pendientesDeOtrasVentas(any()) } returns listOf(
+            pendiente("r-no-cobrado", "orden-8", haceMin = 1),
+            pendiente("r-en-duda", "orden-7", haceMin = 2),
+        )
+        coEvery { terminalPaymentService.resolveOutcome("r-no-cobrado") } returns
+            TerminalPaymentResult.Error("El cobro fue rechazado. No se cobró la tarjeta.")
+        coEvery { terminalPaymentService.resolveOutcome("r-en-duda") } returns
+            TerminalPaymentResult.Undetermined(CardChargeDecision.UNDETERMINED_MESSAGE, "r-en-duda")
+
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
+
+        assertEquals("r-en-duda", viewModel.avisoDeOtroCobro.value?.requestId)
+    }
+
+    @Test
+    fun `P1 un cobro SIN orden con un pendiente de otra venta sale y se avisa`() = runTest {
+        // Cobro rápido (importe tecleado): no hay orden que cercar. Controlador: sólo aviso, sin espera extra.
+        every { terminalPaymentService.pendientesDeOtrasVentas(null) } returns listOf(pendiente("r-viejo", "orden-7", haceMin = 2))
+        coEvery { terminalPaymentService.resolveOutcome("r-viejo") } returns
+            TerminalPaymentResult.Undetermined(CardChargeDecision.UNDETERMINED_MESSAGE, "r-viejo")
+        coEvery { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any()) } returns
+            TerminalPaymentResult.Success(paymentId = "pay-rapido", requestId = "req-rapido")
+        val importeSuelto = CartState(
+            items = listOf(CartItem(id = "suelto", type = CartItemType.CustomAmount, name = "Importe", unitPrice = 1500)),
+        )
+
+        viewModel.startPaymentFlow(importeSuelto)
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
+
+        assertTrue("sin orden no hay venta que esperar", viewModel.state.value is PaymentFlowState.SelectingTerminal)
+        assertEquals("r-viejo", viewModel.avisoDeOtroCobro.value?.requestId)
+        verify { terminalPaymentService.pendienteDeLaVenta(null) }
+
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+        coVerify(exactly = 1) {
+            terminalPaymentService.sendPaymentToTerminal(
+                terminalId = "t1", amountCents = 1500, tipCents = 0, rating = null, orderId = null, processedByStaffId = any(),
+            )
+        }
+        assertEquals("pay-rapido", (viewModel.state.value as PaymentFlowState.Success).paymentId)
+    }
+
+    // --- Ronda 4 (26-sep, paridad con iOS): el «SÍ pasó» no se pierde; la propina pasa por la misma puerta ---
+
+    @Test
+    fun `P1 un SI paso que el cajero no ha cerrado no lo borra otra revision`() = runTest {
+        // H2 (26-sep): la consulta que prueba el cobro ya NO suelta su entrada: la MARCA en disco. La revisión siguiente la
+        // lee marcada, no la vuelve a consultar, y el «SÍ pasó» sigue. Sólo «Entendido» de ESE cobro la quita del disco.
+        // (Con el disco REAL, venta nueva y reinicio: `AvisoDuraderoDeOtrasVentasTest`.)
+        coEvery { terminalPaymentService.fetchOnlineTerminals(any()) } returnsMany listOf(
+            TerminalListResult.Success(listOf(OnlineTerminal(terminalId = "t1", name = "Terminal 1"))), // sonda al arrancar
+            TerminalListResult.Success(emptyList()),                                                     // «No hay terminales»
+            TerminalListResult.Success(listOf(OnlineTerminal(terminalId = "t1", name = "Terminal 1"))), // «Reintentar»
+        )
+        every { terminalPaymentService.pendientesDeOtrasVentas(any()) } returnsMany listOf(
+            listOf(pendiente("r-cobrado", "orden-7", haceMin = 2)),                 // al instante: todavía en duda
+            listOf(pendiente("r-cobrado", "orden-7", haceMin = 2, cobrado = true)), // de ahí en adelante: la consulta lo marcó
+        )
+        coEvery { terminalPaymentService.resolveOutcome("r-cobrado") } returns TerminalPaymentResult.Success(paymentId = "pay-7")
+
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
+        // Paridad con iOS (26-sep): sin terminales se dice DENTRO de la selección — la pantalla de error tapaba este aviso.
+        assertEquals("montaje: sin terminales", "No hay terminales conectadas",
+            (viewModel.state.value as? PaymentFlowState.SelectingTerminal)?.sinLista)
+        assertTrue("montaje: la revisión probó el cobro", viewModel.avisoDeOtroCobro.value!!.yaCobrado)
+
+        viewModel.retry() // vuelve a la selección de terminal: otra revisión
+        assertEquals("al instante, desde el disco", "r-cobrado", viewModel.avisoDeOtroCobro.value?.requestId)
+        advanceUntilIdle()
+
+        val aviso = viewModel.avisoDeOtroCobro.value
+        assertEquals("el «SÍ pasó» sigue en pantalla", "r-cobrado", aviso?.requestId)
+        assertTrue(aviso!!.yaCobrado)
+        coVerify(exactly = 1) { terminalPaymentService.resolveOutcome("r-cobrado") } // lo probado no se vuelve a consultar
+
+        viewModel.descartarAvisoDeOtroCobro("r-cobrado") // «Entendido»
+        verify(exactly = 1) { terminalPaymentService.reconocerCobro("r-cobrado") }
+    }
+
+    // --- Lote final (26-sep): H7 el aviso vence con la pantalla abierta · M-5 título · B7b-5 sin red ---
+
+    @Test
+    fun `H7 el aviso sin confirmar se calla solo a los 10 min con la pantalla abierta, sin red y sin tocar el disco`() = runTest {
+        // Reloj VIRTUAL: la pantalla se abre con una duda de 9 min 55 s y se queda abierta.
+        val base = System.currentTimeMillis()
+        viewModel.reloj = { base + testScheduler.currentTime }
+        every { terminalPaymentService.pendientesDeOtrasVentas(any()) } returns listOf(
+            ContextoDeCobro("r-casi", "v", "t1", "orden-7", 1500, 0, desdeMillis = base - (10 * 60_000L - 5_000)),
+        )
+        coEvery { terminalPaymentService.resolveOutcome("r-casi") } returns
+            TerminalPaymentResult.Undetermined(CardChargeDecision.UNDETERMINED_MESSAGE, "r-casi")
+
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        runCurrent()
+        assertEquals("montaje: se avisa", "r-casi", viewModel.avisoDeOtroCobro.value?.requestId)
+
+        advanceTimeBy(4_000); runCurrent()
+        assertEquals("a los 9:59 sigue", "r-casi", viewModel.avisoDeOtroCobro.value?.requestId)
+        advanceTimeBy(2_000); runCurrent()
+        assertNull("a los 10:01 se calla, con la pantalla abierta", viewModel.avisoDeOtroCobro.value)
+
+        assertTrue(viewModel.state.value is PaymentFlowState.SelectingTerminal)
+        coVerify(exactly = 1) { terminalPaymentService.resolveOutcome("r-casi") } // vencer no consulta la red
+        verify(exactly = 0) { terminalPaymentService.reconocerCobro(any()) }        // ni borra nada del disco
+        verify(exactly = 0) { terminalPaymentService.soltarLlaveSiEs(any()) }
+    }
+
+    @Test
+    fun `H7 un SI paso vence a los 10 min como las dudas`() = runTest {
+        // Founder, 26-sep: el «SÍ pasó» sigue la MISMA ventana que las dudas y nunca es pegajoso (reemplaza «hasta Entendido»).
+        val base = System.currentTimeMillis()
+        viewModel.reloj = { base + testScheduler.currentTime }
+        every { terminalPaymentService.pendientesDeOtrasVentas(any()) } returns listOf(
+            ContextoDeCobro("r-si", "v", "t1", "orden-7", 1500, 0, desdeMillis = base - (10 * 60_000L - 5_000), cobrado = true),
+        )
+
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        runCurrent()
+        assertTrue("montaje: se ve el «SÍ pasó»", viewModel.avisoDeOtroCobro.value!!.yaCobrado)
+
+        advanceTimeBy(4_000); runCurrent()
+        assertEquals("a los 9:59 sigue", "r-si", viewModel.avisoDeOtroCobro.value?.requestId)
+        advanceTimeBy(2_000); runCurrent()
+        assertNull("a los 10:01 se calla, con la pantalla abierta, sin tocar nada", viewModel.avisoDeOtroCobro.value)
+        coVerify(exactly = 0) { terminalPaymentService.resolveOutcome(any()) } // lo probado no se vuelve a consultar
+    }
+
+    @Test
+    fun `I-2 el SI paso no tapa la duda nueva - se ven las dos lineas`() = runTest {
+        // Re-revisión (I-2): el «SÍ pasó» ocupaba la ÚNICA línea y tapaba la duda nueva de otra venta — la única protección
+        // contra volver a cobrarla.
+        every { terminalPaymentService.pendientesDeOtrasVentas(any()) } returns listOf(
+            pendiente("r-duda", "orden-9", haceMin = 1),
+            pendiente("r-si", "orden-7", haceMin = 3, cobrado = true),
+        )
+        coEvery { terminalPaymentService.resolveOutcome("r-duda") } returns
+            TerminalPaymentResult.Undetermined(CardChargeDecision.UNDETERMINED_MESSAGE, "r-duda")
+
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
+
+        assertEquals("r-si", viewModel.avisoDeOtroCobro.value?.requestId)
+        assertTrue(viewModel.avisoDeOtroCobro.value!!.yaCobrado)
+        assertEquals("y debajo, la duda vigente más nueva", "r-duda", viewModel.segundoAviso.value?.requestId)
+        assertFalse(viewModel.segundoAviso.value!!.yaCobrado)
+    }
+
+    @Test
+    fun `N3 la revision no oculta un cobro que ya consta aunque su propia consulta diga que no`() = runTest {
+        // Codex r2 (N3): la consulta de la revisión vio «no se cobró», pero mientras otro escritor probó que SÍ pasó. La
+        // publicación filtraba por el negativo de su consulta y escondía una entrada ya confirmada. El positivo gana.
+        every { terminalPaymentService.pendientesDeOtrasVentas(any()) } returnsMany listOf(
+            listOf(pendiente("r-a", "orden-7", haceMin = 2)),
+            listOf(pendiente("r-a", "orden-7", haceMin = 2, cobrado = true)),
+        )
+        coEvery { terminalPaymentService.resolveOutcome("r-a") } returns
+            TerminalPaymentResult.Error("No se confirmó el cobro en 30 s.")
+
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
+
+        assertEquals("r-a", viewModel.avisoDeOtroCobro.value?.requestId)
+        assertTrue(viewModel.avisoDeOtroCobro.value!!.yaCobrado)
+    }
+
+    @Test
+    fun `M-5 el titulo dice anterior solo cuando el cobro es de OTRA venta`() = runTest {
+        // «Cobro anterior sin confirmar» encima de «Quedó un cobro sin confirmar de esta venta.» se contradecía.
+        stubOrderCreation()
+        every { terminalPaymentService.pendienteDeLaVenta(any()) } returns "r-de-esta"
+        coEvery { terminalPaymentService.resolveOutcome(any()) } returns
+            TerminalPaymentResult.Undetermined(CardChargeDecision.UNDETERMINED_MESSAGE, "r-de-esta")
+
+        viewModel.startPaymentFlow(cardCart(), resumeOrderId = "order-1")
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
+        assertTrue("montaje: revisión de ESTA venta", (viewModel.state.value as PaymentFlowState.Undetermined).fromPreviousSale)
+        assertFalse("de esta venta: «Cobro sin confirmar»", viewModel.revisaCobroDeOtraVenta())
+
+        viewModel.startPaymentFlow(cardCart())
+        every { terminalPaymentService.pendienteDeLaVenta(any()) } returns null
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        viewModel.revisarCobroDeOtraVenta("r-otra")
+        advanceUntilIdle()
+        assertTrue("de otra venta: «Cobro anterior sin confirmar»", viewModel.revisaCobroDeOtraVenta())
+    }
+
+    @Test
+    fun `B7b-5 sin red la seleccion de terminal dice que la tarjeta necesita internet y conserva el aviso`() = runTest {
+        coEvery { terminalPaymentService.fetchOnlineTerminals(any()) } returns
+            TerminalListResult.Error("Error de conexión", sinRed = true)
+        every { terminalPaymentService.pendientesDeOtrasVentas(any()) } returns listOf(pendiente("r-otra", "orden-7", haceMin = 2))
+        coEvery { terminalPaymentService.resolveOutcome("r-otra") } returns
+            TerminalPaymentResult.Undetermined(CardChargeDecision.UNDETERMINED_MESSAGE, "r-otra")
+
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
+
+        val estado = viewModel.state.value
+        assertTrue("no es «Error en el pago»: $estado", estado is PaymentFlowState.SelectingTerminal)
+        assertEquals("estado sin red", PaymentFlowViewModel.TARJETA_SIN_RED, (estado as PaymentFlowState.SelectingTerminal).sinLista)
+        assertEquals("la línea ámbar de la otra venta sigue, desde el disco", "r-otra", viewModel.avisoDeOtroCobro.value?.requestId)
+        assertEquals(
+            "Sin conexión: el cobro con tarjeta necesita internet. Cobra en efectivo o espera a que vuelva la red.",
+            PaymentFlowViewModel.TARJETA_SIN_RED,
+        )
+
+        // «Reintentar» con la red de vuelta: la lista.
+        coEvery { terminalPaymentService.fetchOnlineTerminals(any()) } returns
+            TerminalListResult.Success(listOf(OnlineTerminal(terminalId = "t1", name = "Terminal 1")))
+        viewModel.retry()
+        advanceUntilIdle()
+
+        val conRed = viewModel.state.value as PaymentFlowState.SelectingTerminal
+        assertNull(conRed.sinLista)
+        assertEquals(listOf("t1"), viewModel.onlineTerminals.value.map { it.terminalId })
+    }
+
+    @Test
+    fun `N6 un error del SERVIDOR al traer las terminales no esconde el aviso de otras ventas`() = runTest {
+        // Codex r2 (N6): el error del servidor cambiaba a la pantalla de error y escondía la línea ámbar. Se dice igual, en
+        // lugar de la lista, con «Reintentar», y el aviso sigue arriba.
+        coEvery { terminalPaymentService.fetchOnlineTerminals(any()) } returns
+            TerminalListResult.Error("Error al buscar terminales (503)")
+        every { terminalPaymentService.pendientesDeOtrasVentas(any()) } returns listOf(pendiente("r-otra", "orden-7", haceMin = 2))
+        coEvery { terminalPaymentService.resolveOutcome("r-otra") } returns
+            TerminalPaymentResult.Undetermined(CardChargeDecision.UNDETERMINED_MESSAGE, "r-otra")
+
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
+
+        val estado = viewModel.state.value as PaymentFlowState.SelectingTerminal
+        assertEquals("Error al buscar terminales (503)", estado.sinLista)
+        assertEquals("la línea ámbar sigue a la vista", "r-otra", viewModel.avisoDeOtroCobro.value?.requestId)
+    }
+
+    @Test
+    fun `P1 con propina el pendiente de ESTA venta tambien frena la tarjeta`() = runTest {
+        // Con la pantalla de propina encendida (lo normal en el ICP) la tarjeta pasa por la MISMA puerta: se elige la
+        // propina y después el método. Espera como revisión, con el total que incluye la propina.
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(showReviewScreen = false, showTipScreen = true)
+        every { terminalPaymentService.pendienteDeLaVenta("orden-propina") } returns "r-propina-esta"
+
+        viewModel.startPaymentFlow(cuentaDe(5_000), resumeOrderId = "orden-propina")
+        assertTrue("montaje: pide propina", viewModel.state.value is PaymentFlowState.CollectingTip)
+        viewModel.submitTip(750)
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        advanceUntilIdle()
+
+        val espera = viewModel.state.value as PaymentFlowState.Undetermined
+        assertTrue(espera.fromPreviousSale)
+        assertTrue(espera.message, espera.message.startsWith("Quedó un cobro sin confirmar de esta venta."))
+        assertEquals("el total incluye la propina", 5_750, espera.totalAmount)
+        coVerify(exactly = 0) { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `P1 con propina el pendiente de otra venta no frena y se avisa`() = runTest {
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(showReviewScreen = false, showTipScreen = true)
+        every { terminalPaymentService.pendientesDeOtrasVentas(any()) } returns listOf(pendiente("r-propina-otra", "orden-7", haceMin = 2))
+        coEvery { terminalPaymentService.resolveOutcome("r-propina-otra") } returns
+            TerminalPaymentResult.Undetermined(CardChargeDecision.UNDETERMINED_MESSAGE, "r-propina-otra")
+
+        viewModel.startPaymentFlow(cardCart())
+        assertTrue("montaje: pide propina", viewModel.state.value is PaymentFlowState.CollectingTip)
+        viewModel.submitTip(750)
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        assertEquals("el aviso sale al instante", "r-propina-otra", viewModel.avisoDeOtroCobro.value?.requestId)
+        advanceUntilIdle()
+
+        assertTrue("la otra venta no frena la tarjeta", viewModel.state.value is PaymentFlowState.SelectingTerminal)
+        assertEquals("y el aviso sigue tras la revisión", "r-propina-otra", viewModel.avisoDeOtroCobro.value?.requestId)
+    }
+
+    @Test
+    fun `los textos del aviso dicen la antiguedad como la TPV y nunca un importe inventado`() {
+        val ahora = 1_000_000_000L
+        assertEquals(
+            "Quedó un cobro de \$15.00 sin confirmar hace unos segundos en otra venta. Si es esta misma venta, no la cobres otra vez.",
+            PaymentFlowViewModel.textoCobroSinConfirmar(1500, ahora - 30_000, ahora),
+        )
+        assertTrue(PaymentFlowViewModel.textoCobroSinConfirmar(1500, ahora - 5 * 60_000, ahora).contains(" hace 5 min "))
+        assertTrue(PaymentFlowViewModel.textoCobroSinConfirmar(1500, ahora - 125 * 60_000, ahora).contains(" hace 2 h "))
+        // Un reloj que se movió hacia atrás nunca da una antigüedad negativa.
+        assertTrue(PaymentFlowViewModel.textoCobroSinConfirmar(1500, ahora + 60_000, ahora).contains(" hace unos segundos "))
+        // Sin importe ni antigüedad no se inventa ninguno de los dos.
+        assertEquals(
+            "Quedó un cobro sin confirmar en otra venta. Si es esta misma venta, no la cobres otra vez.",
+            PaymentFlowViewModel.textoCobroSinConfirmar(null, null, ahora),
+        )
+        assertEquals(
+            "El cobro de \$15.00 de otra venta SÍ pasó. Si es esta misma venta, no la cobres otra vez.",
+            PaymentFlowViewModel.textoCobroQueSiPaso(1500),
+        )
+        assertEquals(
+            "El cobro de otra venta SÍ pasó. Si es esta misma venta, no la cobres otra vez.",
+            PaymentFlowViewModel.textoCobroQueSiPaso(null),
+        )
+        assertFalse(PaymentFlowViewModel.textoCobroQueSiPaso(0).contains("\$0.00"))
     }
 }

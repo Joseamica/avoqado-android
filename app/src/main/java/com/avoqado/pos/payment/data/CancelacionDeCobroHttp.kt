@@ -1,5 +1,6 @@
 package com.avoqado.pos.payment.data
 
+import com.avoqado.pos.payment.domain.CardChargeOutcome
 import com.avoqado.pos.payment.domain.ResultadoDeCancelarOrden
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -39,8 +40,12 @@ class CancelacionDeCobroHttp @Inject constructor(
         terminalPaymentService.soltarLlaveSiEs(requestId)
     }
 
-    override suspend fun armarLlaveSiLibre(requestId: String): Boolean = withContext(Dispatchers.Main.immediate) {
-        terminalPaymentService.armarLlaveSiLibre(requestId)
+    /**
+     * El SeCobro de la cancelación es dinero PROBADO: entra como éxito tardío que manda sobre una declaración de
+     * «no se cobró» (`armarLlave` a secas lo saltaría y la lista durable nunca lo tendría).
+     */
+    override suspend fun entregarCobro(requestId: String, paymentId: String?): Boolean = withContext(Dispatchers.Main.immediate) {
+        terminalPaymentService.aplicarDesenlaceTardio(requestId, CardChargeOutcome.Charged(paymentId), aunSiFueDeclarado = true)
     }
 
     private companion object {

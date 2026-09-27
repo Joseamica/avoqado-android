@@ -35,8 +35,10 @@ fun PaymentFlowScreen(
     /**
      * Se resolvió un cobro pendiente de OTRA venta: cierra este flujo y muestra el mensaje
      * en la pantalla que queda. Ver [PaymentFlowViewModel.previousChargeResolved].
+     * I-1 (re-revisión): SIN valor por defecto — el `{ onCancel() }` de antes se tragaba «El cobro anterior sí se había
+     * realizado» en la mesa. Cada anfitrión lo pinta y llama `reconocerCobroAnteriorResuelto()`.
      */
-    onPreviousChargeResolved: (String) -> Unit = { onCancel() },
+    onPreviousChargeResolved: (String) -> Unit,
     splitConfig: SplitConfig = SplitConfig(),
     /** Mesas (Square): link "Dividir importe" en la selección de método. */
     onSplitImporte: (() -> Unit)? = null,
@@ -61,6 +63,8 @@ fun PaymentFlowScreen(
     val customerDisplayActive by viewModel.customerDisplayActive.collectAsState()
     val terminalAvailability by viewModel.terminalAvailability.collectAsState()
     val terminals by viewModel.onlineTerminals.collectAsState()
+    val avisoDeOtroCobro by viewModel.avisoDeOtroCobro.collectAsState()
+    val segundoAviso by viewModel.segundoAviso.collectAsState()
     // 🔴 Se COLECTA, no se lee del ViewModel a pelo: el refresh del catálogo es
     // asíncrono, y sin observarlo la hoja de "¿cómo pagó el cliente?" se quedaba
     // con la lista vacía de cuando se compuso — la primera venta tras abrir la app
@@ -210,6 +214,12 @@ fun PaymentFlowScreen(
                     // Tras un intento fallido esta pantalla vuelve con la ORDEN ya creada: salir
                     // sin más la dejaba abierta para siempre. Sin nada que cancelar, sale igual.
                     onCancel = { viewModel.cancelarVenta() },
+                    avisoDeOtroCobro = avisoDeOtroCobro,
+                    onRevisarAviso = { viewModel.revisarCobroDeOtraVenta(it) },
+                    onEntendidoAviso = { viewModel.descartarAvisoDeOtroCobro(it) },
+                    segundoAviso = segundoAviso,
+                    sinLista = currentState.sinLista,
+                    onReintentar = { viewModel.retry() },
                 )
             }
             is PaymentFlowState.Processing, is PaymentFlowState.SentToTerminal -> {
@@ -351,7 +361,8 @@ fun PaymentFlowScreen(
                 PaymentUndeterminedView(
                     message = currentState.message,
                     isChecking = currentState.checking,
-                    fromPreviousSale = currentState.fromPreviousSale,
+                    // M-5: el título dice «anterior» sólo si el cobro es de OTRA venta; «…de esta venta.» lleva el neutro.
+                    fromPreviousSale = viewModel.revisaCobroDeOtraVenta(),
                     declaracionRechazada = currentState.declaracionRechazada,
                     onRecheck = { viewModel.recheckCardCharge() },
                     onChargeAgain = { viewModel.chargeAgainDespiteUndetermined() },

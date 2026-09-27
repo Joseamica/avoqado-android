@@ -5,7 +5,10 @@ import com.avoqado.pos.core.data.network.ForbiddenInterceptor
 import com.avoqado.pos.payment.data.ResultadoDeDeclaracion
 import com.avoqado.pos.payment.data.TerminalPaymentResult
 import com.avoqado.pos.payment.data.TerminalPaymentService
+import com.avoqado.pos.payment.domain.CardChargeDecision
+import com.avoqado.pos.payment.domain.CardChargeOutcome
 import com.avoqado.pos.payment.domain.ChargeStatusProbe
+import com.avoqado.pos.payment.domain.PendientesDeTarjeta
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.runBlocking
@@ -38,7 +41,10 @@ class TerminalPaymentServiceHttpTest {
     private lateinit var server: MockWebServer
     private lateinit var service: TerminalPaymentService
     private val secureStorage = mockk<SecureStorage>(relaxed = true)
-    private var pendingKey: String? = null
+
+    // La lista durable de verdad vive en disco; aquí se emula con una variable, con la MISMA lógica pura de producción.
+    private var pendientes: String? = null
+    private fun idsPendientes() = PendientesDeTarjeta.leer(pendientes).map { it.requestId }
 
     @Before
     fun setUp() {
@@ -46,12 +52,15 @@ class TerminalPaymentServiceHttpTest {
         server.start()
         every { secureStorage.venueId } returns "venue-1"
         every { secureStorage.accessToken } returns "token-1"
-        // La llave durable de verdad vive en disco; aquí se emula con una variable.
-        every { secureStorage.pendingCardChargeRequestId } answers { pendingKey }
-        every { secureStorage.pendingCardChargeRequestId = any() } answers { pendingKey = firstArg() }
-
-        every { secureStorage.persistPendingCardCharge(any(), any()) } answers {
-            if (pendingKey != null) false else { pendingKey = firstArg(); true }
+        every { secureStorage.pendingCardChargesJson } answers { pendientes }
+        every { secureStorage.persistPendingCardCharge(any(), any(), any()) } answers {
+            pendientes = PendientesDeTarjeta.agregar(pendientes, firstArg(), secondArg(), thirdArg()); true
+        }
+        every { secureStorage.persistCobroQueSiPaso(any(), any(), any(), any()) } answers {
+            pendientes = PendientesDeTarjeta.agregar(pendientes, firstArg(), secondArg(), thirdArg(), cobrado = true, cobradoEn = arg(3)); true
+        }
+        every { secureStorage.removePendingCardCharge(any()) } answers {
+            pendientes = PendientesDeTarjeta.quitar(pendientes, firstArg())
         }
         service = TerminalPaymentService(secureStorage, OkHttpClient())
         service.baseUrl = server.url("/api/v1").toString().trimEnd('/')
@@ -71,11 +80,11 @@ class TerminalPaymentServiceHttpTest {
     @Test
     fun `legacy cancellation or rejected cancellation does not prove no charge`() = runBlocking {
         for (status in listOf("CANCELLED", "FAILED")) {
-            pendingKey = "pending"
+            pendientes = PendientesDeTarjeta.agregar(null, "pending", null, "{}")
             enqueue(200, """{"status":"$status","inProgress":false,"cancelDisposition":"ACTIVE"}""")
             val result = service.resolveOutcome("pending")
             assertTrue(result is TerminalPaymentResult.Undetermined)
-            assertEquals("pending", pendingKey)
+            assertEquals(listOf("pending"), idsPendientes())
             // Drain unused responses if a terminal disposition was resolved immediately.
         }
     }
@@ -85,7 +94,7 @@ class TerminalPaymentServiceHttpTest {
         enqueue(200, """{"success":false,"status":"unknown"}""")
         repeat(3) { enqueue(404) }
         assertTrue(charge() is TerminalPaymentResult.Undetermined)
-        assertTrue(pendingKey != null)
+        assertTrue(idsPendientes().isNotEmpty())
     }
 
     @Test
@@ -112,7 +121,9 @@ class TerminalPaymentServiceHttpTest {
         release.countDown()
         val late = posting.await()
         assertTrue(late is TerminalPaymentResult.Success)
-        assertNull(pendingKey)
+        // H2 (26-sep): lo probado queda MARCADO hasta que el flujo lo aplique como su pago; lo que no puede es volver a la duda.
+        assertEquals(listOf(true), cobrados())
+        assertTrue(service.unresolvedRequestIds.isEmpty())
         assertEquals(1, queried)
     }
 
@@ -160,7 +171,7 @@ class TerminalPaymentServiceHttpTest {
 
     @Test
     fun `concurrent service recovery shares one bounded GET cycle`() = runBlocking {
-        pendingKey = "pending"
+        pendientes = PendientesDeTarjeta.agregar(null, "pending", null, "{}")
         val arrived = java.util.concurrent.CountDownLatch(1)
         val release = java.util.concurrent.CountDownLatch(1)
         val queries = java.util.concurrent.atomic.AtomicInteger()
@@ -187,7 +198,7 @@ class TerminalPaymentServiceHttpTest {
         enqueue(200, """{"status":"success"}""")
         enqueue(200, """{"status":"UNKNOWN","inProgress":false}""")
         assertTrue(charge() is TerminalPaymentResult.Undetermined)
-        assertTrue(pendingKey != null)
+        assertTrue(idsPendientes().isNotEmpty())
         assertEquals(2, server.requestCount)
     }
 
@@ -218,7 +229,7 @@ class TerminalPaymentServiceHttpTest {
 
     @Test
     fun `failed durable write sends no authorization`() = runBlocking {
-        every { secureStorage.persistPendingCardCharge(any(), any()) } returns false
+        every { secureStorage.persistPendingCardCharge(any(), any(), any()) } returns false
         val result = charge()
         assertTrue(result is TerminalPaymentResult.Error)
         assertEquals(0, server.requestCount)
@@ -226,8 +237,9 @@ class TerminalPaymentServiceHttpTest {
 
     @Test
     fun `recovery after venue switch uses original venue`() = runBlocking {
-        pendingKey = "original-request"
-        every { secureStorage.pendingCardChargeContext } returns """{"requestId":"original-request","venueId":"original-venue"}"""
+        pendientes = PendientesDeTarjeta.agregar(
+            null, "original-request", null, """{"requestId":"original-request","venueId":"original-venue"}""",
+        )
         enqueue(200, """{"status":"COMPLETED","inProgress":false,"paymentId":"paid"}""")
         service.resolveOutcome("original-request")
         assertEquals("/api/v1/mobile/venues/original-venue/terminal-payment/original-request", server.takeRequest().path)
@@ -235,10 +247,10 @@ class TerminalPaymentServiceHttpTest {
 
     @Test
     fun `accepted cancellation permits a deliberate new attempt`() = runBlocking {
-        pendingKey = "cancelled-request"
+        pendientes = PendientesDeTarjeta.agregar(null, "cancelled-request", null, "{}")
         enqueue(200, """{"status":"CANCELLED","inProgress":false,"cancelDisposition":"ACCEPTED"}""")
         assertTrue(service.resolveOutcome("cancelled-request") is TerminalPaymentResult.Error)
-        assertEquals(null, pendingKey)
+        assertTrue(idsPendientes().isEmpty())
         enqueue(200, """{"success":true,"status":"success","paymentId":"new-payment"}""")
         assertTrue(charge() is TerminalPaymentResult.Success)
     }
@@ -257,7 +269,7 @@ class TerminalPaymentServiceHttpTest {
         assertTrue("un 503 con la terminal ya cobrada debe ser ÉXITO", result is TerminalPaymentResult.Success)
         assertEquals("pay-tarde", (result as TerminalPaymentResult.Success).paymentId)
         assertEquals(2, server.requestCount) // cobró una vez y preguntó una vez
-        assertEquals(null, service.unresolvedRequestId) // desenlace resuelto ⇒ llave liberada
+        assertTrue("desenlace resuelto ⇒ entrada liberada", service.unresolvedRequestIds.isEmpty())
     }
 
     @Test
@@ -268,7 +280,7 @@ class TerminalPaymentServiceHttpTest {
         val result = charge()
 
         assertTrue(result is TerminalPaymentResult.Error)
-        assertEquals(null, service.unresolvedRequestId) // consta que no se cobró
+        assertTrue("consta que no se cobró", service.unresolvedRequestIds.isEmpty())
     }
 
     @Test
@@ -279,19 +291,19 @@ class TerminalPaymentServiceHttpTest {
         val result = charge()
 
         assertTrue("sin poder saber, jamás fracaso", result is TerminalPaymentResult.Undetermined)
-        // 🔴 La llave SOBREVIVE: es lo que bloquea el siguiente cobro a ciegas.
-        assertEquals((result as TerminalPaymentResult.Undetermined).requestId, service.unresolvedRequestId)
+        // 🔴 La entrada SOBREVIVE: es lo que frena el siguiente cobro a ciegas de ESA venta.
+        assertEquals(listOf((result as TerminalPaymentResult.Undetermined).requestId), service.unresolvedRequestIds)
     }
 
     @Test
     fun `404 and generic 409 after POST remain unknown`() = runBlocking {
         for (code in listOf(400, 404, 409, 422)) {
-            pendingKey = null
+            pendientes = null
             enqueue(code)
             repeat(3) { enqueue(404) }
             val result = charge()
             assertTrue(result is TerminalPaymentResult.Undetermined)
-            assertEquals((result as TerminalPaymentResult.Undetermined).requestId, pendingKey)
+            assertEquals(listOf((result as TerminalPaymentResult.Undetermined).requestId), idsPendientes())
         }
     }
 
@@ -309,7 +321,7 @@ class TerminalPaymentServiceHttpTest {
         val message = (result as TerminalPaymentResult.Error).message
         assertTrue(message, message.contains("\$125.50") && message.contains("3 min") && message.contains("Sunmi D3"))
         assertTrue(message, message.contains("NO se envió"))
-        assertNull(pendingKey)
+        assertTrue(idsPendientes().isEmpty())
         assertEquals(1, server.requestCount) // ni una consulta de estado: consta que nada se envió
     }
 
@@ -324,7 +336,7 @@ class TerminalPaymentServiceHttpTest {
         }
         val result = charge()
         assertTrue("$result", result is TerminalPaymentResult.Undetermined)
-        assertEquals((result as TerminalPaymentResult.Undetermined).requestId, pendingKey)
+        assertEquals(listOf((result as TerminalPaymentResult.Undetermined).requestId), idsPendientes())
     }
 
     @Test
@@ -333,7 +345,7 @@ class TerminalPaymentServiceHttpTest {
         repeat(3) { enqueue(404) }
         val result = charge()
         assertTrue("$result", result is TerminalPaymentResult.Undetermined)
-        assertEquals((result as TerminalPaymentResult.Undetermined).requestId, pendingKey)
+        assertEquals(listOf((result as TerminalPaymentResult.Undetermined).requestId), idsPendientes())
     }
 
     @Test
@@ -357,25 +369,113 @@ class TerminalPaymentServiceHttpTest {
         service.cancelCurrentPayment()
         val result = inFlight.await()
         assertTrue("$result", result is TerminalPaymentResult.Error)
-        assertNull(pendingKey)
+        assertTrue(idsPendientes().isEmpty())
     }
 
     @Test
     fun `unresolved sale cannot POST again on another terminal after restart`() = runBlocking {
-        pendingKey = "old-request"
+        // 🔴 Founder, 25-sep: lo que frena es el pendiente de ESA venta, en cualquier terminal. Antes CUALQUIER pendiente
+        // frenaba CUALQUIER cobro (la llave era una sola); el de otra venta ya no — ver las pruebas de abajo.
+        pendientes = PendientesDeTarjeta.agregar(null, "old-request", "order-9", """{"requestId":"old-request","orderId":"order-9"}""")
         enqueue(200, """{"success":true,"status":"success"}""")
-        val result = charge()
+        val result = service.sendPaymentToTerminal(terminalId = "t2", amountCents = 25, orderId = "order-9")
         assertTrue(result is TerminalPaymentResult.Undetermined)
-        assertEquals("old-request", pendingKey)
+        assertEquals(listOf("old-request"), idsPendientes())
         assertEquals(0, server.requestCount)
+    }
+
+    // MARK: - Varios pendientes: sólo espera la MISMA venta (founder, 25-sep)
+
+    @Test
+    fun `P1 un pendiente de OTRA venta no impide mandar el cobro de esta`() = runBlocking {
+        pendientes = PendientesDeTarjeta.agregar(null, "r-viejo", "orden-7", """{"requestId":"r-viejo","orderId":"orden-7"}""")
+        enqueue(200, """{"success":true,"status":"success","paymentId":"new-payment"}""")
+
+        val resultado = service.sendPaymentToTerminal(terminalId = "t1", amountCents = 25, orderId = "orden-8")
+
+        assertTrue("el cobro de ESTA venta salió", resultado is TerminalPaymentResult.Success)
+        assertEquals("POST", server.takeRequest(5, java.util.concurrent.TimeUnit.SECONDS)?.method)
+        assertTrue("el pendiente de la otra venta se conserva", "r-viejo" in idsPendientes())
+    }
+
+    @Test
+    fun `P1 un pendiente de ESTA venta sí frena el cobro`() = runBlocking {
+        pendientes = PendientesDeTarjeta.agregar(null, "r-viejo", "orden-8", """{"requestId":"r-viejo","orderId":"orden-8"}""")
+
+        val resultado = service.sendPaymentToTerminal(terminalId = "t1", amountCents = 25, orderId = "orden-8")
+
+        assertTrue(resultado is TerminalPaymentResult.Undetermined)
+        assertEquals("r-viejo", (resultado as TerminalPaymentResult.Undetermined).requestId)
+        assertEquals("no salió ningún POST", 0, server.requestCount)
+    }
+
+    @Test
+    fun `P1 un desenlace tardío sólo toca SU cobro`() {
+        pendientes = PendientesDeTarjeta.agregar(null, "r1", "orden-7", "{}")
+        pendientes = PendientesDeTarjeta.agregar(pendientes, "r2", "orden-8", "{}")
+
+        service.aplicarDesenlaceTardio("r1", com.avoqado.pos.payment.domain.CardChargeOutcome.NotCharged("no se cobró"))
+
+        assertEquals(listOf("r2"), service.unresolvedRequestIds)
+    }
+
+    @Test
+    fun `P1 un exito tardio re-armado sigue siendo de SU venta y conserva su importe`() = runBlocking {
+        // 🔴 El pasillo 2 del 2026-08-10: el cajero canceló, la terminal cobró tarde. Desde N1 el éxito MARCA la entrada al
+        // llegar (antes la soltaba y el ViewModel la volvía a poner); re-armarla conserva SU orden y SU importe — sin eso,
+        // la MISMA venta ya no esperaba.
+        enqueue(200, """{"success":true,"status":"success","paymentId":"pay-tarde"}""")
+        val exito = service.sendPaymentToTerminal(terminalId = "t1", amountCents = 25, orderId = "orden-8")
+        val rid = (exito as TerminalPaymentResult.Success).requestId!!
+        assertEquals("N1: el éxito la MARCA hasta que el flujo la adopte", listOf(true), cobrados())
+
+        service.aplicarDesenlaceTardio(rid, CardChargeOutcome.Charged("pay-tarde"), aunSiFueDeclarado = true)
+
+        assertEquals("la MISMA venta vuelve a esperar", rid, service.pendienteDeLaVenta("orden-8"))
+        assertEquals(25, service.contextoDe(rid)?.amountCents)
+    }
+
+    @Test
+    fun `P2 una llave en blanco nunca se escribe`() {
+        // No se puede consultar (el GET iría sin id) y la venta siguiente se quedaría con un aviso que nadie resuelve.
+        service.aplicarDesenlaceTardio("   ", CardChargeOutcome.Charged("pay-1"), aunSiFueDeclarado = true)
+
+        assertTrue(idsPendientes().isEmpty())
+    }
+
+    @Test
+    fun `P1 un desenlace tardio INCIERTO re-arma SU entrada ya soltada, con su venta e importe`() = runBlocking {
+        // Revisión de B2 (Minor 8): también el camino de la DUDA (no declarado, entrada ya soltada) re-arma, y el
+        // contexto vuelve de lo que el proceso recordó al soltarla. (Desde N1 un éxito ya no suelta: la suelta un «no se cobró».)
+        enqueue(503)
+        enqueue(200, """{"success":true,"inProgress":false,"status":"FAILED","outcome":"NOT_CHARGED","outcomeEvidence":"PROCESSOR_DECLINED"}""")
+        val rechazo = service.sendPaymentToTerminal(terminalId = "t1", amountCents = 25, orderId = "orden-8")
+        val rid = (rechazo as TerminalPaymentResult.Error).requestId!!
+        assertTrue("consta que no se cobró: se suelta", idsPendientes().isEmpty())
+
+        assertTrue(service.aplicarDesenlaceTardio(rid, CardChargeOutcome.Undetermined(CardChargeDecision.UNDETERMINED_MESSAGE)))
+
+        assertTrue(rid in service.unresolvedRequestIds)
+        assertEquals("orden-8", service.contextoDe(rid)?.orderId)
+        assertEquals(25, service.contextoDe(rid)?.amountCents)
+    }
+
+    @Test
+    fun `P2 si el disco no escribe, el desenlace tardio lo dice con false`() {
+        every { secureStorage.persistPendingCardCharge(any(), any(), any()) } returns false
+
+        assertFalse(service.aplicarDesenlaceTardio("r1", CardChargeOutcome.Undetermined("sin confirmar")))
+        assertTrue(idsPendientes().isEmpty())
     }
 
     @Test
     fun `resolving an old request does not clear a newer pending charge`() = runBlocking {
-        pendingKey = "new-request"
+        pendientes = PendientesDeTarjeta.agregar(null, "new-request", null, "{}")
         enqueue(200, """{"status":"COMPLETED","inProgress":false,"paymentId":"old-payment"}""")
         service.resolveOutcome("old-request")
-        assertEquals("new-request", pendingKey)
+        assertEquals("el más nuevo sigue en duda", listOf("new-request"), service.unresolvedRequestIds)
+        // N2 (Codex r2): ausencia no es «Entendido» — el viejo que SÍ pasó vuelve, confirmado, dentro de su ventana.
+        assertEquals(listOf("new-request" to false, "old-request" to true), PendientesDeTarjeta.leer(pendientes).map { it.requestId to it.cobrado })
     }
 
     @Test
@@ -393,7 +493,7 @@ class TerminalPaymentServiceHttpTest {
         assertEquals("pay-1", success.paymentId)
         assertEquals("4242", success.cardLastFour)
         assertEquals("https://dash/r/abc", success.receiptUrl)
-        assertEquals(null, service.unresolvedRequestId)
+        assertTrue(service.unresolvedRequestIds.isEmpty())
     }
 
     // MARK: - getPaymentStatus: el mapeo
@@ -549,13 +649,13 @@ class TerminalPaymentServiceHttpTest {
 
     @Test
     fun `una declaracion aceptada libera y suelta la llave`() = runBlocking {
-        pendingKey = "req-1"
+        pendientes = PendientesDeTarjeta.agregar(null, "req-1", null, "{}")
         enqueue(200, """{"success":true,"released":true,"status":"FAILED"}""")
 
         val r = service.declararNoCobrado("req-1")
 
         assertEquals(ResultadoDeDeclaracion.Liberada, r)
-        assertNull("la llave se suelta sólo cuando el servidor lo acredita", pendingKey)
+        assertTrue("la entrada se suelta sólo cuando el servidor lo acredita", idsPendientes().isEmpty())
         val pedido = server.takeRequest()
         assertEquals("POST", pedido.method)
         assertTrue(pedido.path!!.endsWith("/terminal-payment/req-1/release"))
@@ -566,31 +666,36 @@ class TerminalPaymentServiceHttpTest {
     @Test
     fun `tras declarar, rearmar con un resultado INDETERMINADO viejo NO repone la llave`() = runBlocking {
         // 🔴 P2 de Codex (20-sep): mi cierre anterior puso la guarda en `armarLlaveSiLibre`, pero la
-        // ruta REAL del callback obsoleto es `rearmUnresolvedCharge`, que escribía la llave directo.
+        // ruta REAL del callback obsoleto era `rearmUnresolvedCharge` (hoy `aplicarDesenlaceTardio`).
         // Flujo A vivo → otro flujo declara A y libera → llega `Undetermined(A)` al flujo viejo → la
         // siguiente venta volvía a mostrar el pendiente que se acababa de liberar.
-        pendingKey = "req-1"
+        pendientes = PendientesDeTarjeta.agregar(null, "req-1", null, "{}")
         enqueue(200, """{"released":true}""")
         service.declararNoCobrado("req-1")
-        assertNull(pendingKey)
+        assertTrue(idsPendientes().isEmpty())
 
-        service.rearmUnresolvedCharge("req-1")
+        service.aplicarDesenlaceTardio("req-1", CardChargeOutcome.Undetermined(CardChargeDecision.UNDETERMINED_MESSAGE))
 
-        assertNull("lo declarado no vuelve a la llave por la ruta obsoleta", pendingKey)
+        assertTrue("lo declarado no vuelve a la lista por la ruta obsoleta", idsPendientes().isEmpty())
     }
 
     @Test
     fun `pero un EXITO tardio SI repone la llave — hay dinero y alguien tiene que enterarse`() = runBlocking {
         // 🔴 El otro lado de la misma regla, y es el que protege el dinero: si el cobro SÍ pasó, la
         // declaración del cajero no puede silenciarlo. Se repone para que la próxima venta lo muestre.
-        pendingKey = "req-1"
+        pendientes = PendientesDeTarjeta.agregar(null, "req-1", null, "{}")
         enqueue(200, """{"released":true}""")
         service.declararNoCobrado("req-1")
-        assertNull(pendingKey)
+        assertTrue(idsPendientes().isEmpty())
 
-        service.rearmUnresolvedCharge("req-1", aunSiFueDeclarado = true)
+        service.aplicarDesenlaceTardio("req-1", CardChargeOutcome.Charged("pay-1"), aunSiFueDeclarado = true)
 
-        assertEquals("un éxito tardío manda sobre la declaración", "req-1", pendingKey)
+        assertEquals("un éxito tardío manda sobre la declaración", listOf("req-1"), idsPendientes())
+        // H2 (26-sep): vuelve MARCADO — ya consta, así que no es «sin resolver», y toda venta lo ve hasta su «Entendido».
+        assertTrue(
+            "y la venta siguiente lo VE: la declaración no lo esconde",
+            service.pendientesDeOtrasVentas(null).single().cobrado,
+        )
     }
 
     @Test
@@ -606,7 +711,7 @@ class TerminalPaymentServiceHttpTest {
         // Reintento de CONEXIÓN ≠ reenvío por RESPUESTA: aquí el servidor no recibió nada, así que
         // repetir es seguro SIEMPRE. Contra el reenvío protege la idempotencia del servidor
         // (`resolutionId` determinista + dedup por `bodyHash`), no romper la reconexión.
-        pendingKey = "req-1"
+        pendientes = PendientesDeTarjeta.agregar(null, "req-1", null, "{}")
         // La PRIMERA petición deja una conexión en el pool y el servidor la cierra al terminar —
         // igual que su `Keep-Alive: timeout=5` en producción.
         server.enqueue(
@@ -620,7 +725,7 @@ class TerminalPaymentServiceHttpTest {
         val r = service.declararNoCobrado("req-1")
 
         assertEquals("con la conexión rancia, reconecta y la declaración LLEGA", ResultadoDeDeclaracion.Liberada, r)
-        assertNull("y al liberarse suelta la llave", pendingKey)
+        assertFalse("y al liberarse suelta SU entrada", "req-1" in idsPendientes())
     }
 
     @Test
@@ -660,18 +765,18 @@ class TerminalPaymentServiceHttpTest {
         // 🔴 P1 de Codex: el transporte refrescaba y REENVIABA el POST solo. Ahora la sesión se
         // renueva pero la declaración no se repite — y el 401 tiene su propio desenlace, porque
         // decir «sin conexión» sería falso: la red funcionó.
-        pendingKey = "req-1"
+        pendientes = PendientesDeTarjeta.agregar(null, "req-1", null, "{}")
         enqueue(401, """{"message":"Token expirado"}""")
 
         val r = service.declararNoCobrado("req-1")
 
         assertEquals(ResultadoDeDeclaracion.SesionRenovada, r)
-        assertEquals("la llave se conserva: nada se resolvió", "req-1", pendingKey)
+        assertEquals("la entrada se conserva: nada se resolvió", listOf("req-1"), idsPendientes())
     }
 
     @Test
     fun `un rechazo del servidor conserva el pendiente y su mensaje`() = runBlocking {
-        pendingKey = "req-1"
+        pendientes = PendientesDeTarjeta.agregar(null, "req-1", null, "{}")
         enqueue(409, """{"success":false,"released":false,"code":"POSITIVE_EVIDENCE_EXISTS","message":"Este cobro sí tiene señales de haber pasado."}""")
 
         val r = service.declararNoCobrado("req-1")
@@ -680,7 +785,7 @@ class TerminalPaymentServiceHttpTest {
             ResultadoDeDeclaracion.Rechazada("Este cobro sí tiene señales de haber pasado.", "POSITIVE_EVIDENCE_EXISTS"),
             r,
         )
-        assertEquals("un rechazo NO suelta la llave", "req-1", pendingKey)
+        assertEquals("un rechazo NO suelta la entrada", listOf("req-1"), idsPendientes())
     }
 
     @Test
@@ -688,16 +793,177 @@ class TerminalPaymentServiceHttpTest {
         // 🔴 P2 de Codex: el POST original seguía vivo; declarar soltaba la llave y aquel resultado
         // viejo (UNKNOWN) la re-armaba ⇒ la venta siguiente volvía a bloquearse por el cobro que se
         // acababa de liberar.
-        pendingKey = "req-1"
+        pendientes = PendientesDeTarjeta.agregar(null, "req-1", null, "{}")
         enqueue(200, """{"released":true}""")
         service.declararNoCobrado("req-1")
-        assertNull(pendingKey)
+        assertTrue(idsPendientes().isEmpty())
 
         // Llega el resultado viejo e intenta re-armar.
-        assertTrue(service.armarLlaveSiLibre("req-1"))
+        assertTrue(service.armarLlave("req-1"))
 
-        assertNull("lo declarado no vuelve a la llave", pendingKey)
+        assertTrue("lo declarado no vuelve a la lista", idsPendientes().isEmpty())
         assertTrue(service.yaDeclaradoSinCobro("req-1"))
     }
 
+    // MARK: - Lote final de arreglos (26-sep): H2, H6, H8, B7b-5
+
+    private fun cobrados() = PendientesDeTarjeta.leer(pendientes).map { it.cobrado }
+
+    @Test
+    fun `H8 la terminal que no inicio el cobro dice su motivo en la respuesta inmediata`() = runBlocking {
+        // QA-1 (26-sep): la N86 con el lector abierto contestó ESTE 422. El GET de la recuperación trae la evidencia pero
+        // NO el mensaje (el servidor sólo expone los que escribe él), así que el motivo sale del cuerpo del POST.
+        enqueue(422, """{"success":false,"requestId":"x","status":"failed","errorMessage":"Ya hay un pago en proceso en el terminal","outcomeEvidence":"PRE_AUTHORIZATION"}""")
+        enqueue(200, """{"status":"FAILED","inProgress":false,"outcome":"NOT_CHARGED","outcomeEvidence":"PRE_AUTHORIZATION","failureCode":"TPV_CONFIRMED_NO_CHARGE"}""")
+
+        val r = charge()
+
+        assertEquals("Ya hay un pago en proceso en el terminal", (r as TerminalPaymentResult.Error).message)
+        assertTrue("consta que no se cobró: la entrada se suelta como siempre", idsPendientes().isEmpty())
+    }
+
+    @Test
+    fun `H8 la recuperacion de un cobro que la terminal no inicio dice que no lo inicio, nunca rechazado`() = runBlocking {
+        pendientes = PendientesDeTarjeta.agregar(null, "req-1", null, "{}")
+        enqueue(200, """{"status":"FAILED","inProgress":false,"outcome":"NOT_CHARGED","outcomeEvidence":"PRE_AUTHORIZATION"}""")
+
+        val r = service.resolveOutcome("req-1")
+
+        assertEquals(CardChargeDecision.NO_INICIADO_RESPALDO, (r as TerminalPaymentResult.Error).message)
+    }
+
+    @Test
+    fun `H2 una consulta que prueba el cobro lo MARCA en disco, no lo borra`() = runBlocking {
+        pendientes = PendientesDeTarjeta.agregar(
+            null, "r-otra", "orden-7", """{"requestId":"r-otra","orderId":"orden-7","amountCents":1500,"tipCents":0}""",
+        )
+        enqueue(200, """{"status":"COMPLETED","inProgress":false,"paymentId":"pay-7"}""")
+
+        assertTrue(service.resolveOutcome("r-otra") is TerminalPaymentResult.Success)
+
+        assertEquals("sigue en disco hasta «Entendido»", listOf("r-otra"), idsPendientes())
+        assertEquals(listOf(true), cobrados())
+        assertTrue("ya no está SIN resolver", service.unresolvedRequestIds.isEmpty())
+        assertTrue(service.yaCobrado("r-otra"))
+        val aviso = service.pendientesDeOtrasVentas("orden-8").single()
+        assertTrue("toda venta nueva lo sigue recibiendo, marcado", aviso.cobrado)
+        assertEquals(1500, aviso.amountCents)
+    }
+
+    @Test
+    fun `H2 un no se cobro posterior no suelta un cobro que SI paso, y Entendido quita solo ese`() {
+        pendientes = PendientesDeTarjeta.agregar(null, "r1", "orden-7", "{}", cobrado = true)
+        pendientes = PendientesDeTarjeta.agregar(pendientes, "r2", "orden-8", "{}", cobrado = true)
+
+        service.aplicarDesenlaceTardio("r1", CardChargeOutcome.NotCharged("no se cobró"))
+        assertEquals("el dinero probado manda sobre un «no se cobró» posterior", listOf("r1", "r2"), idsPendientes())
+
+        service.reconocerCobro("r1")
+        assertEquals("«Entendido» quita SÓLO ése", listOf("r2"), idsPendientes())
+    }
+
+    @Test
+    fun `N1 el exito directo del POST MARCA la entrada, no la borra, y sobrevive a recrear el servicio`() = runBlocking {
+        // Codex r2 (N1): el POST acreditaba el cobro y el servicio BORRABA la entrada antes de devolverle el resultado al
+        // flujo. Si el flujo ya no estaba (canceló) o el proceso moría en medio, se perdía el aviso. Ahora la MARCA: la quita
+        // la adopción del flujo que lo mandó (`applyCardCharged`) o «Entendido», y si nadie la adopta, dura su ventana.
+        enqueue(200, """{"success":true,"status":"success","paymentId":"pay-directo"}""")
+        val rid = (service.sendPaymentToTerminal(terminalId = "t1", amountCents = 25, orderId = "orden-8") as TerminalPaymentResult.Success)
+            .requestId!!
+
+        assertEquals("sin adopción del consumidor, sigue guardada y marcada", listOf(rid), idsPendientes())
+        assertEquals(listOf(true), cobrados())
+        val tras = TerminalPaymentService(secureStorage, OkHttpClient()) // reiniciar la app: servicio nuevo, mismo disco
+        assertTrue("dentro de su ventana, la venta siguiente lo ve", tras.pendientesDeOtrasVentas("orden-9").single().cobrado)
+        assertEquals("y sigue protegiendo SU venta", rid, tras.pendienteDeLaVenta("orden-8"))
+    }
+
+    @Test
+    fun `H6 la revision de fondo rota - los consultados hace mas tiempo primero`() {
+        // El más nuevo primero, como los entrega `pendientesDeOtrasVentas`.
+        val todos = listOf("r4", "r3", "r2", "r1").map { com.avoqado.pos.payment.data.ContextoDeCobro(it, "v", "t1", "orden-$it") }
+
+        assertEquals(listOf("r4", "r3", "r2"), service.loteDeRevision(todos).map { it.requestId })
+        assertEquals("el que nunca tuvo turno va primero", listOf("r1", "r4", "r3"), service.loteDeRevision(todos).map { it.requestId })
+        assertEquals(listOf("r2", "r4", "r3"), service.loteDeRevision(todos).map { it.requestId })
+    }
+
+    @Test
+    fun `B7b-5 sin red la lista de terminales lo dice, y un 5xx sigue siendo error del servidor`() = runBlocking {
+        enqueue(503, "{}")
+        assertFalse((service.fetchOnlineTerminals() as com.avoqado.pos.payment.data.TerminalListResult.Error).sinRed)
+
+        service.baseUrl = "http://127.0.0.1:1/api/v1" // nadie escucha: la conexión no sale, como un WiFi sin internet
+        assertTrue((service.fetchOnlineTerminals() as com.avoqado.pos.payment.data.TerminalListResult.Error).sinRed)
+    }
+
+
+    @Test
+    fun `N4 si el disco no acepta la marca, el SI paso se conserva en memoria y se reintenta en la siguiente lectura`() = runBlocking {
+        // Codex r2 (N4): `marcarCobrado` devolvía false y el llamador seguía como si se hubiera guardado. El aviso quedaba
+        // confirmado sólo en la pantalla; en la venta siguiente volvía a ser una duda y a los 10 min, sin red, se callaba.
+        pendientes = PendientesDeTarjeta.agregar(
+            null, "A", "orden-7", """{"requestId":"A","orderId":"orden-7","amountCents":1500,"tipCents":0}""",
+        )
+        every { secureStorage.persistCobroQueSiPaso(any(), any(), any(), any()) } returns false
+        enqueue(200, """{"status":"COMPLETED","inProgress":false,"paymentId":"pay-a"}""")
+
+        assertTrue(service.resolveOutcome("A") is TerminalPaymentResult.Success)
+
+        assertEquals("el disco sigue con la duda", listOf(false), cobrados())
+        assertTrue("pero el aviso ya dice que SÍ pasó (memoria)", service.pendientesDeOtrasVentas("orden-8").single().cobrado)
+        assertEquals("y sigue protegiendo su venta", "A", service.pendienteDeLaVenta("orden-7"))
+        assertFalse(
+            "no se presenta como guardado",
+            service.aplicarDesenlaceTardio("A", CardChargeOutcome.Charged("pay-a"), aunSiFueDeclarado = true),
+        )
+
+        every { secureStorage.persistCobroQueSiPaso(any(), any(), any(), any()) } answers {
+            pendientes = PendientesDeTarjeta.agregar(pendientes, firstArg(), secondArg(), thirdArg(), cobrado = true, cobradoEn = arg(3)); true
+        }
+        service.pendientesDeOtrasVentas("orden-8") // la siguiente lectura natural reintenta
+        assertEquals("se guardó en cuanto el disco lo aceptó", listOf(true), cobrados())
+    }
+
+    @Test
+    fun `el SI paso dura 10 min como las dudas - dentro se conserva, al vencer se purga del disco`() {
+        // Founder, 26-sep: la MISMA ventana que las dudas, desde el cobro (`creadoEn`; si falta, desde que se confirmó). Nunca
+        // pegajoso: al vencer sale del disco. Una DUDA nunca se purga (sigue frenando su venta).
+        val ahora = System.currentTimeMillis()
+        fun ctx(id: String, hace: Long?) = org.json.JSONObject().put("requestId", id).put("orderId", "orden-$id").put("amountCents", 1500)
+            .apply { if (hace != null) put("creadoEn", ahora - hace) }.toString()
+        val min = 60_000L
+        pendientes = PendientesDeTarjeta.agregar(null, "viejo", "orden-viejo", ctx("viejo", 11 * min), cobrado = true, cobradoEn = ahora)
+        pendientes = PendientesDeTarjeta.agregar(pendientes, "nuevo", "orden-nuevo", ctx("nuevo", 3 * min), cobrado = true, cobradoEn = ahora)
+        pendientes = PendientesDeTarjeta.agregar(pendientes, "sf-viejo", "orden-sf-viejo", ctx("sf-viejo", null), cobrado = true, cobradoEn = ahora - 11 * min)
+        pendientes = PendientesDeTarjeta.agregar(pendientes, "sf-nuevo", "orden-sf-nuevo", ctx("sf-nuevo", null), cobrado = true, cobradoEn = ahora - 3 * min)
+        pendientes = PendientesDeTarjeta.agregar(pendientes, "duda-vieja", "orden-duda-vieja", ctx("duda-vieja", 60 * min))
+
+        assertEquals(listOf("duda-vieja", "sf-nuevo", "nuevo"), service.pendientesDeOtrasVentas(null).map { it.requestId })
+        assertEquals("los vencidos salieron del disco; la duda se queda", listOf("nuevo", "sf-nuevo", "duda-vieja"), idsPendientes())
+        assertNull("un SÍ pasó vencido ya no frena su venta", service.pendienteDeLaVenta("orden-viejo"))
+    }
+
+    @Test
+    fun `N6 un 503 con el cuerpo cortado es error del servidor, no sin red`() = runBlocking {
+        // Codex r2 (N6): llegaron las cabeceras (503) y se cortó el cuerpo: el servidor SÍ contestó. Antes salía «sin red».
+        server.enqueue(
+            MockResponse().setResponseCode(503).setBody("x".repeat(64 * 1024))
+                .setSocketPolicy(okhttp3.mockwebserver.SocketPolicy.DISCONNECT_DURING_RESPONSE_BODY),
+        )
+
+        val r = service.fetchOnlineTerminals() as com.avoqado.pos.payment.data.TerminalListResult.Error
+
+        assertFalse(r.sinRed)
+        assertEquals("se conserva el estado HTTP conocido", "Error al buscar terminales (503)", r.message)
+    }
+
+    @Test
+    fun `N6 una conexion cortada o un apreton SSL fallido es sin red`() = runBlocking {
+        for (falla in listOf(java.net.SocketException("Connection reset"), javax.net.ssl.SSLHandshakeException("handshake"))) {
+            val cortado = TerminalPaymentService(secureStorage, OkHttpClient.Builder().addInterceptor { throw falla }.build())
+            cortado.baseUrl = server.url("/api/v1").toString().trimEnd('/')
+            assertTrue("$falla", (cortado.fetchOnlineTerminals() as com.avoqado.pos.payment.data.TerminalListResult.Error).sinRed)
+        }
+    }
 }

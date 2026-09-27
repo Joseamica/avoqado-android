@@ -74,7 +74,15 @@ class CancelacionTransportFalso : CancelacionDeCobroTransport {
         if (llave == requestId) llave = null
     }
 
-    override suspend fun armarLlaveSiLibre(requestId: String): Boolean {
+    /** Cada cobro PROBADO que el coordinador intentó entregar, en orden: `requestId to paymentId`. */
+    val entregas = mutableListOf<Pair<String, String?>>()
+
+    /**
+     * Sigue rechazando cuando la llave la tiene OTRO cobro: así las pruebas del coordinador ejercitan su camino de
+     * «no se pudo entregar, se conserva y se reintenta». El servicio real ya sólo lo rechaza si el disco no escribe.
+     */
+    override suspend fun entregarCobro(requestId: String, paymentId: String?): Boolean {
+        entregas += requestId to paymentId
         val armada = llave
         if (armada != null && armada != requestId) return false
         llave = requestId

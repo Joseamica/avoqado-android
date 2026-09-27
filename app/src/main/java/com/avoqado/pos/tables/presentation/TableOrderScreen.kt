@@ -181,6 +181,8 @@ fun TableOrderScreen(
         mutableStateOf<com.avoqado.pos.payment.presentation.PaymentCompletion?>(null)
     }
     var showSplitImporte by remember { mutableStateOf(false) }
+    // I-1 (re-revisión): el «SÍ pasó» de la orden de esta mesa se pinta aquí y se reconoce; antes el flujo se cerraba callado.
+    var previousChargeNotice by remember { mutableStateOf<String?>(null) }
     val tablesViewModel: TablesViewModel = androidx.hilt.navigation.compose.hiltViewModel()
     var unknownBarcode by remember { mutableStateOf<String?>(null) }
     // Menú … por tiempo (¡Listo!/Repetir). Par (curso, abierto).
@@ -858,6 +860,18 @@ fun TableOrderScreen(
                 },
             )
         }
+        val cerrarCobro = {
+            showPayment = false
+            pendingSplitConfig = com.avoqado.pos.payment.presentation.SplitConfig()
+            committedPaymentCompletion = null
+            // 🔴 La sesión NO puede quedarse en PAYING (auditoría): el tab
+            // Cobrar la detectaría y sembraría el register con esta mesa —
+            // una venta retail acabaría registrada contra la orden de la mesa.
+            viewModel.tableSession.current()?.let { s ->
+                viewModel.tableSession.start(s.copy(mode = com.avoqado.pos.tables.data.TableSession.Mode.ORDERING))
+            }
+            viewModel.loadCheck()
+        }
         androidx.compose.ui.window.Dialog(
             onDismissRequest = { /* la X del flujo cierra; el back no lo tumba a medias */ },
             properties = androidx.compose.ui.window.DialogProperties(
@@ -929,21 +943,39 @@ fun TableOrderScreen(
                             }
                         }
                     },
-                    onCancel = {
-                        showPayment = false
-                        pendingSplitConfig = com.avoqado.pos.payment.presentation.SplitConfig()
-                        committedPaymentCompletion = null
-                        // 🔴 La sesión NO puede quedarse en PAYING (auditoría): el tab
-                        // Cobrar la detectaría y sembraría el register con esta mesa —
-                        // una venta retail acabaría registrada contra la orden de la mesa.
-                        viewModel.tableSession.current()?.let { s ->
-                            viewModel.tableSession.start(s.copy(mode = com.avoqado.pos.tables.data.TableSession.Mode.ORDERING))
-                        }
-                        viewModel.loadCheck()
+                    onCancel = { cerrarCobro() },
+                    onPreviousChargeResolved = { message ->
+                        cerrarCobro()
+                        previousChargeNotice = message
                     },
                 )
             }
         }
+    }
+
+    // Mismo diálogo que el checkout: dinero de un cobro que el cajero creía sin confirmar. Cerrarlo —con la X o con
+    // «Entendido»— lo reconoce: nunca un lazo que exija volver a cerrarlo para poder cobrar la mesa.
+    previousChargeNotice?.let { message ->
+        // El MISMO ViewModel del cobro (mismo dueño de navegación); se pide aquí para no crearlo antes de cobrar.
+        val paymentFlowViewModel: com.avoqado.pos.payment.presentation.PaymentFlowViewModel = hiltViewModel()
+        AvoqadoDialog(
+            title = "Cobro anterior resuelto",
+            description = "$message. Búscala en Ventas si necesitas dar el recibo.",
+            onDismiss = {
+                previousChargeNotice = null
+                paymentFlowViewModel.reconocerCobroAnteriorResuelto()
+            },
+            actionButton = {
+                PrimaryButton(
+                    text = "Entendido",
+                    onClick = {
+                        previousChargeNotice = null
+                        paymentFlowViewModel.reconocerCobroAnteriorResuelto()
+                    },
+                    fullWidth = true,
+                )
+            },
+        ) {}
     }
 
     pendingSwitchTarget?.let { target ->

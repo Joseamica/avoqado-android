@@ -234,11 +234,20 @@ object CardChargeDecision {
     /** Transport classification only; other ambiguous HTTP codes also reconcile above. */
     fun isTransportFailure(httpCode: Int): Boolean = httpCode >= 500 || httpCode == 408
 
+    /** H8: la evidencia con la que la terminal dice que NO inició el cobro (nada llegó al procesador). */
+    const val EVIDENCIA_SIN_AUTORIZACION = "PRE_AUTHORIZATION"
+
+    /** H8: el respaldo cuando la terminal no dijo su motivo. «No inició» no es «rechazado». */
+    const val NO_INICIADO_RESPALDO = "La terminal no inició el cobro. No se cobró la tarjeta."
+
     /**
      * Decide con UNA lectura del estado. `isFinalAttempt` marca la última consulta del ciclo:
      * antes de esa, las respuestas ambiguas sólo piden volver a preguntar.
+     *
+     * @param mensajeDeLaTerminal H8: el motivo que dio la terminal al NO iniciar el cobro. Viaja en la respuesta del POST;
+     *   el GET del estado no lo trae (el servidor sólo expone el mensaje de un rechazo del banco).
      */
-    fun decide(probe: ChargeStatusProbe, isFinalAttempt: Boolean): ProbeDecision = when (probe) {
+    fun decide(probe: ChargeStatusProbe, isFinalAttempt: Boolean, mensajeDeLaTerminal: String? = null): ProbeDecision = when (probe) {
         // 🔴 Un 404 NO prueba que no se haya cobrado, aunque lo parezca. El server crea la
         // fila ANTES de emitir a la terminal, pero entre que el request llega y la fila se
         // escribe corren `validateStaffVenue` y la query de `order.paymentStatus`: si el
@@ -262,52 +271,22 @@ object CardChargeDecision {
 
         is ChargeStatusProbe.Known ->
             if (probe.status == "COMPLETED" && !probe.paymentId.isNullOrBlank()) ProbeDecision.Resolved(CardChargeOutcome.Charged(probe.paymentId))
-            else if (probe.cancelDisposition == "ACTIVE") ProbeDecision.Resolved(fromTerminalStatus(probe))
+            else if (probe.cancelDisposition == "ACTIVE") ProbeDecision.Resolved(fromTerminalStatus(probe, mensajeDeLaTerminal))
             else if (probe.inProgress) ProbeDecision.KeepPolling
-            else ProbeDecision.Resolved(fromTerminalStatus(probe))
+            else ProbeDecision.Resolved(fromTerminalStatus(probe, mensajeDeLaTerminal))
     }
 
     /** Se agotaron las consultas y la solicitud seguía viva: NUNCA "falló" — pudo estar cobrando. */
     fun exhausted(): CardChargeOutcome = CardChargeOutcome.Undetermined(UNDETERMINED_MESSAGE)
 
     /**
-     * El cajero canceló y el desenlace llegó TARDE (la espera dura hasta [WAIT_CEILING_MS]).
-     * ¿Qué llave durable queda armada para la próxima venta?
-     *
-     * 🔴 **"Cancelé" no es "no se cobró".** El cancel es una PETICIÓN: si la tarjeta ya se pasó,
-     * la terminal cobra igual y el server reconcilia la fila a COMPLETED. Descartar el resultado
-     * obsoleto vale para la NAVEGACIÓN (el cajero ya se fue de esa pantalla), pero jamás para el
-     * DINERO: tirar el desenlace entero dejaba la venta pintada como impaga con el cobro ya
-     * hecho — y el siguiente "Cobrar" cobraba por segunda vez. Es el incidente del 2026-08-10
-     * por otro pasillo.
-     *
-     * Sólo un [CardChargeOutcome.NotCharged] COMPROBADO cierra el asunto; todo lo demás queda
-     * pendiente de avisar y se resuelve en la próxima venta por la ruta "cobro anterior", que
-     * informa del cargo viejo SIN marcar como pagada la venta nueva.
-     *
-     * @param armedKey lo que ya gobierna el disco. Si pertenece a OTRO cobro, ese otro es más
-     *   nuevo y sigue vivo: pisarlo con un rezagado perdería la única llave que permite
-     *   resolverlo. La ranura es una sola, así que gana el cobro que todavía puede tener dinero
-     *   encima.
+     * El cajero canceló y el desenlace llegó TARDE. ¿Ese cobro sigue pendiente? 🔴 «Cancelé» no es «no se cobró»: sólo un
+     * [CardChargeOutcome.NotCharged] COMPROBADO lo cierra (incidente del 2026-08-10). Desde el 25-sep hay varios pendientes
+     * a la vez, así que la decisión es sobre ESTE cobro y nunca pisa a otro.
      */
-    fun unresolvedKeyAfterStaleResult(
-        outcome: CardChargeOutcome,
-        requestId: String?,
-        armedKey: String?,
-    ): String? {
-        // 🔴 Una llave EN BLANCO no es una referencia: no se puede consultar (el GET del estado
-        // iría sin id) y dejaría la ranura ocupada para siempre, bloqueando la venta siguiente
-        // con una pantalla que nadie puede resolver. Vacío = ranura libre, nunca "otro cobro".
-        val mine = requestId?.takeIf { it.isNotBlank() }
-        val armed = armedKey?.takeIf { it.isNotBlank() }
-        if (armed != null && armed != mine) return armed
-        return when (outcome) {
-            is CardChargeOutcome.NotCharged -> null
-            is CardChargeOutcome.Charged, is CardChargeOutcome.Undetermined -> mine
-        }
-    }
+    fun quedaPendienteTrasDesenlaceTardio(outcome: CardChargeOutcome): Boolean = outcome !is CardChargeOutcome.NotCharged
 
-    private fun fromTerminalStatus(probe: ChargeStatusProbe.Known): CardChargeOutcome =
+    private fun fromTerminalStatus(probe: ChargeStatusProbe.Known, mensajeDeLaTerminal: String?): CardChargeOutcome =
         when {
             probe.cancelDisposition == "ACTIVE" -> CardChargeOutcome.Undetermined("El cobro sigue activo. Confirma en la terminal. No vuelvas a pasar la tarjeta.")
             probe.status == "COMPLETED" -> CardChargeOutcome.Undetermined(UNDETERMINED_MESSAGE)
@@ -325,6 +304,10 @@ object CardChargeDecision {
                     probe.errorMessage?.takeIf { it.isNotBlank() }
                         ?: "El banco rechazó el cobro. No se cobró la tarjeta: puedes volver a cobrar.",
                 )
+            // H8 (26-sep): la terminal no inició nada — no es un rechazo. Se dice SU motivo (QA-1: «Ya hay un pago en proceso
+            // en el terminal»), recortado; si no lo dio, el respaldo.
+            probe.status == "FAILED" && probe.outcomeEvidence == EVIDENCIA_SIN_AUTORIZACION ->
+                CardChargeOutcome.NotCharged(mensajeDeLaTerminal?.trim()?.takeIf { it.isNotEmpty() } ?: NO_INICIADO_RESPALDO)
             probe.status == "FAILED" -> CardChargeOutcome.NotCharged("El cobro fue rechazado. No se cobró la tarjeta.")
             probe.status == "CANCELLED" && probe.cancelDisposition == "ACCEPTED" -> CardChargeOutcome.NotCharged("El cobro se canceló. No se cobró la tarjeta.")
             // TIMED_OUT, UNKNOWN — y cualquier estado que este cliente no conozca todavía.
