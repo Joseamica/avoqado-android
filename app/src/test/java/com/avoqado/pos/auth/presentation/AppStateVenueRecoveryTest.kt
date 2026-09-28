@@ -119,6 +119,32 @@ class AppStateVenueRecoveryTest {
         assertEquals(listOf("inventory-stop", "inventory-start"), events)
     }
 
+    /**
+     * Etapa 3 del KDS (3.5, D12): la red local sigue a la sesión. La sucursal la enciende (el hub del venue viejo se
+     * desengancha ANTES de iniciar el transporte), y al cerrar sesión se apaga el hub antes que el transporte.
+     */
+    @Test
+    fun `la red local se enciende con la sucursal y al cerrar sesion se apaga el hub antes que el transporte`() = runTest {
+        val appState = createAppState(repairResult = true, onRepair = {}, onPaymentStart = {}, onInventoryStart = {}, onOutboxStart = {})
+        val transporte = mockk<com.avoqado.pos.core.data.lan.TransporteLan>(relaxed = true)
+        val hub = mockk<com.avoqado.pos.core.data.lan.LanHubService>(relaxed = true)
+        appState.transporteLan = transporte
+        appState.lanHubService = hub
+
+        appState.onLoginSuccess()
+        io.mockk.verifyOrder {
+            hub.sincronizarVenue("venue-atole")
+            transporte.iniciar("venue-atole")
+        }
+
+        appState.onLogout()
+        advanceUntilIdle()
+        io.mockk.verifyOrder {
+            hub.stop()
+            transporte.detener()
+        }
+    }
+
     private fun createAppState(
         repairResult: Boolean,
         onRepair: () -> Unit,

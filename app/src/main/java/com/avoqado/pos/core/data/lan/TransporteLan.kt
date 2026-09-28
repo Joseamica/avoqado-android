@@ -12,10 +12,13 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.isActive
@@ -69,7 +72,8 @@ class TransporteLan @Inject constructor(
     @Volatile private var hub: ((String) -> LeaseResponse)? = null
     @Volatile private var receptor: (suspend (KdsComanda) -> Boolean)? = null
     @Volatile private var ajenos: List<LanPeer> = emptyList()
-    private var serverSocket: ServerSocket? = null
+    /** `@Volatile`: [puerto] lo lee cualquier hilo (revisión M1). */
+    @Volatile private var serverSocket: ServerSocket? = null
     private var acceptJob: Job? = null
     private var configJob: Job? = null
     private var discovery: LanDiscovery? = null
@@ -89,11 +93,25 @@ class TransporteLan @Inject constructor(
         configJob = scope.launch {
             combine(printConfigRepository.config, _hubConectado, _receptorActivo) { config, hub, receptor ->
                 hub || receptor || config.stations.any { it.active && it.hasKitchenDisplay }
-            }.distinctUntilChanged().collect { debeVivir -> if (debeVivir) encender() else apagarRed() }
+            }.distinctUntilChanged().collectLatest { debeVivir ->
+                if (!debeVivir) { apagarRed(); return@collectLatest }
+                // Revisión M5/M6: mientras la red local debe vivir se revisa cada minuto. `encender` es idempotente (mismo
+                // socket, mismo TXT ⇒ nada), pero levanta un socket que no abrió y re-anuncia tras una ráfaga de
+                // registros fallida agotada — sin esto un aparato sólo-hub se quedaba invisible hasta el siguiente cambio.
+                while (true) {
+                    encender()
+                    delay(REVISION_DE_RED_MS)
+                }
+            }
         }
         Log.i(TAG, "🛰️ Transporte LAN listo para venue=$venueId device=${deviceId.take(6)}")
     }
 
+    /**
+     * Apaga la red local. NO suelta el hub ni el receptor: son de quien los enganchó ([LanHubService], el Tablero), y
+     * `AppState` apaga el hub ANTES (revisión M2). Si el hub sigue vivo, el siguiente [iniciar] lo vuelve a servir —
+     * es el mismo coordinador, no uno viejo.
+     */
     @Synchronized
     fun detener() {
         configJob?.cancel(); configJob = null
@@ -140,7 +158,11 @@ class TransporteLan @Inject constructor(
     private fun encender() {
         val v = venueId ?: return
         val port = abrirSocket() ?: return
-        val d = discovery ?: LanDiscovery(context, deviceId, v) { ajenos = it; publicarPeers() }.also { discovery = it }
+        val d = discovery ?: run {
+            lateinit var nueva: LanDiscovery
+            nueva = LanDiscovery(context, deviceId, v) { lista -> alCambiarAjenos(nueva, lista) }
+            nueva.also { discovery = it }
+        }
         d.anunciar(port, txt(v))
         d.buscar()
         publicarPeers()
@@ -164,8 +186,20 @@ class TransporteLan @Inject constructor(
         publicarPeers()
     }
 
+    /**
+     * Revisión I2: sólo la instancia VIVA escribe los peers ajenos. Un resolve que contesta tarde en una instancia ya
+     * parada (red apagada, otra sucursal) metía peers viejos —o de otro venue— en la elección del siguiente encendido.
+     */
+    @Synchronized
+    private fun alCambiarAjenos(origen: LanDiscovery, lista: List<LanPeer>) {
+        if (discovery !== origen) return
+        ajenos = lista
+        publicarPeers()
+    }
+
     private fun txt(v: String) = LanTxt.construir(deviceId, v, isWiredConnection(), bootedAtMillis, _estacionesAnunciadas.value, hub != null)
 
+    @Synchronized
     private fun publicarPeers() {
         val p = puerto
         if (venueId == null || p <= 0) { _peers.value = emptyList(); return }
@@ -203,9 +237,18 @@ class TransporteLan @Inject constructor(
     /** Una conexión = una línea = una respuesta = cerrar. */
     private suspend fun atender(client: Socket) = client.use { sock ->
         runCatching {
-            sock.soTimeout = PLAZO_DE_LECTURA_MS
-            // D3: línea más larga que el tope, o nada ⇒ se corta SIN responder (el que envía lo ve como sin acuse).
-            val linea = LineaAcotada.leer(BufferedInputStream(sock.getInputStream())) ?: return@runCatching
+            sock.soTimeout = PLAZO_DE_LECTURA_MS // respaldo por lectura
+            // D3 (revisión I3): el plazo es de la LÍNEA ENTERA, como `LectorDeLinea` de iOS. `soTimeout` sólo corta un
+            // silencio: un peer que gotea un byte cada 2.9 s retenía este hilo 65 536 × 3 s. El vigía cierra el socket
+            // al vencer y se desarma ANTES de rutear: nunca corta el guardado del receptor.
+            val vigia = scope.launch { delay(PLAZO_DE_LECTURA_MS.toLong()); runCatching { sock.close() } }
+            val linea = try {
+                LineaAcotada.leer(BufferedInputStream(sock.getInputStream()))
+            } finally {
+                vigia.cancelAndJoin()
+            }
+            // D3: línea más larga que el tope, nada o plazo vencido ⇒ se corta SIN responder (el que envía: sin acuse).
+            if (linea == null || sock.isClosed) return@runCatching
             val respuesta = EnrutadorLan.responder(linea, venueId, _estacionesAnunciadas.value, hub, receptor)
             sock.getOutputStream().run { write((respuesta + "\n").toByteArray(Charsets.UTF_8)); flush() }
         }.onFailure { Log.w(TAG, "conexión fallida: ${it.message}") }
@@ -220,5 +263,8 @@ class TransporteLan @Inject constructor(
     companion object {
         /** Plazo para que un peer mande su línea completa (D3). El mismo 3 s que tenía el árbitro. */
         const val PLAZO_DE_LECTURA_MS = 3_000
+
+        /** Cada cuánto se revisa que el socket y el anuncio sigan en pie mientras la red local debe vivir (M5/M6). */
+        const val REVISION_DE_RED_MS = 60_000L
     }
 }

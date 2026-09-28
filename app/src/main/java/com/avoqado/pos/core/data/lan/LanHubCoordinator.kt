@@ -61,7 +61,8 @@ class LanHubCoordinator(
             launch {
                 discovery.peers.collect { peers ->
                     _isArbiter.value = ArbiterElection.isArbiter(deviceId, peers)
-                    _hubAvailable.value = peers.isNotEmpty()
+                    // Revisión M7: una pantalla sólo-cocina (`hub=0`) no es con quién coordinar mesas.
+                    _hubAvailable.value = peers.any { it.sirveLeases }
                 }
             }
             launch { renewLoop() }

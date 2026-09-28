@@ -1,12 +1,21 @@
 package com.avoqado.pos.core.data.lan
 
 import android.content.Context
+import android.net.nsd.NsdManager
+import android.net.nsd.NsdServiceInfo
 import com.avoqado.pos.core.data.sync.SyncOutbox
 import com.avoqado.pos.printing.routing.PrintConfig
 import com.avoqado.pos.printing.routing.PrintConfigRepository
+import com.avoqado.pos.printing.routing.StationInfo
 import io.mockk.every
+import io.mockk.just
 import io.mockk.mockk
+import io.mockk.runs
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
@@ -17,8 +26,10 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 import java.io.BufferedInputStream
+import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.Socket
+import java.net.SocketTimeoutException
 
 /**
  * El transporte único con sockets REALES por loopback (etapa 3 del KDS, 3.5, D1). NSD no existe en la JVM (el
@@ -47,9 +58,13 @@ class TransporteLanLoopbackTest {
         transporte.detener()
     }
 
-    private suspend fun esperarPuerto(): Int {
-        withTimeout(3_000) { while (transporte.puerto <= 0) delay(25) }
-        return transporte.puerto
+    /**
+     * El puerto sale positivo dentro de `abrirSocket`, ANTES de que `encender` publique el peer propio: se espera a los
+     * dos (revisión M4). 10 s y no 3: esta Mac corre con la carga por encima de 100.
+     */
+    private suspend fun esperarPuerto(t: TransporteLan = transporte): Int {
+        withTimeout(10_000) { while (t.puerto <= 0 || t.peers.value.none { it.deviceId == "tablet-prueba" }) delay(25) }
+        return t.puerto
     }
 
     private fun enviarLinea(puerto: Int, linea: String): String? = Socket().use { s ->
@@ -122,5 +137,79 @@ class TransporteLanLoopbackTest {
         transporte.iniciar("venue-2")
         transporte.conectarHub(LeaseServer()::respondTo)
         assertTrue(esperarPuerto() > 0)
+    }
+
+    @Test
+    fun `una estacion activa con pantalla abre el socket aunque no haya hub ni receptor`() = runBlocking {
+        config.value = PrintConfig(stations = listOf(StationInfo(id = "st_barra", name = "Barra", hasKitchenDisplay = true)))
+        transporte.iniciar("venue-1")
+        assertTrue(esperarPuerto() > 0)
+    }
+
+    /**
+     * Revisión I3: el plazo de 3 s es para la LÍNEA ENTERA, como `LectorDeLinea` de iOS. `soTimeout` sólo corta un
+     * silencio: un peer que gotea un byte cada 500 ms nunca lo dispara y retendría el hilo 65 536 × 3 s.
+     */
+    @Test
+    fun `P1 un peer que gotea un byte cada medio segundo se corta a los 3 s de la linea entera`() = runBlocking {
+        transporte.iniciar("venue-1")
+        transporte.activarReceptor(setOf("st_barra")) { true }
+        val puerto = esperarPuerto()
+        Socket().use { s ->
+            s.connect(InetSocketAddress("127.0.0.1", puerto), 1_000)
+            s.soTimeout = 9_000
+            val inicio = System.nanoTime()
+            val goteo = launch(Dispatchers.IO) {
+                runCatching {
+                    val out = s.getOutputStream()
+                    out.write('{'.code); out.flush()
+                    while (isActive) { delay(500); out.write('a'.code); out.flush() }
+                }
+            }
+            val fin = runCatching { s.getInputStream().read() } // -1 (cerró) o reset; nunca una respuesta
+            val ms = (System.nanoTime() - inicio) / 1_000_000
+            goteo.cancelAndJoin()
+            assertFalse("el servidor no cortó: venció el plazo del cliente ($ms ms)", fin.exceptionOrNull() is SocketTimeoutException)
+            assertTrue("cerró sin responder: $fin", fin.getOrNull()?.let { it == -1 } ?: true)
+            assertTrue("cortó a los $ms ms, no a los 3 s de la línea", ms in 2_500..6_500)
+        }
+    }
+
+    /**
+     * Revisión I2: un resolve que contesta DESPUÉS de apagar la red (cambio de sucursal, cierre de sesión, config) no
+     * puede colarse al plano cuando la red vuelve: un peer viejo con `hub=1` ganaría la elección aquí y no en los demás.
+     */
+    @Test
+    fun `P1 un resolve tardio de la red apagada no entra al plano cuando la red vuelve`() = runBlocking {
+        val busquedas = mutableListOf<NsdManager.DiscoveryListener>()
+        val resoluciones = mutableListOf<NsdManager.ResolveListener>()
+        val nsd = mockk<NsdManager>(relaxed = true) {
+            every { discoverServices(any<String>(), any<Int>(), capture(busquedas)) } just runs
+            every { resolveService(any(), capture(resoluciones)) } just runs
+        }
+        val otro = mockk<NsdServiceInfo>(relaxed = true) {
+            every { serviceType } returns "._avoqado-pos._tcp."
+            every { serviceName } returns "Avoqado-POS-otro-a"
+            every { attributes } returns mapOf("did" to "otro-aaa".toByteArray(), "venue" to "venue-1".toByteArray(), "hub" to "1".toByteArray())
+            every { host } returns InetAddress.getByAddress(byteArrayOf(192.toByte(), 168.toByte(), 1, 20))
+            every { port } returns 4321
+        }
+        val t = TransporteLan(mockk<Context>(relaxed = true) { every { getSystemService(Context.NSD_SERVICE) } returns nsd }, outbox, printConfig)
+        try {
+            t.iniciar("venue-1")
+            t.conectarHub(LeaseServer()::respondTo)
+            esperarPuerto(t)
+            busquedas.first().onServiceFound(otro)
+
+            t.desconectarHub() // la red local se apaga con el resolve todavía en vuelo
+            withTimeout(10_000) { while (t.puerto > 0) delay(25) }
+            resoluciones.single().onServiceResolved(otro)
+
+            t.conectarHub(LeaseServer()::respondTo)
+            esperarPuerto(t)
+            assertEquals(listOf("tablet-prueba"), t.peers.value.map { it.deviceId })
+        } finally {
+            t.detener()
+        }
     }
 }
