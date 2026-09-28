@@ -29,6 +29,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
@@ -551,6 +552,60 @@ class ComandaDispatcherTest {
         coVerify(exactly = 1) { cola.enqueue(any(), any(), any(), any(), any()) }
     }
 
+    /**
+     * I-1 de la revisión (ronda 1): hoy esto se sostiene sólo porque `ReintentoDeComanda.insistir` mete las
+     * `saltadas` dentro de `NoSalio.estaciones` (`ReintentoDeComanda.kt:177`). Sin esta prueba, una regresión
+     * que leyera sólo `failedStations` marcaría papel que nunca existió y la pantalla escondería una comanda
+     * que nadie vio.
+     */
+    @Test
+    fun `P1 sin ninguna impresora a la mano el respaldo se salta y no se marca`() = runTest {
+        every { printConfigRepository.getCurrentConfig() } returns conBarraSoloPantalla
+        coEvery { comandaPrinter.printComandas(any(), any(), any(), any(), any()) } returns ComandaPrinter.Result(
+            attempted = 1, printed = 0, skippedNoPrinter = 1, lastError = null,
+            skippedStations = listOf("Barra"), failedPlans = emptyList(),
+        )
+
+        val estado = despachadorConCola().dispatch(
+            venueId = "venue-1", lines = listOf(cafe), orderNumber = "1234", orderType = "En tienda",
+            servidorLaTiene = false, origenDelFolio = "sale:ext-1",
+        )
+
+        assertTrue(estado is EstadoDeComanda.NoSalio)
+        assertEquals(listOf("Barra"), (estado as EstadoDeComanda.NoSalio).estaciones)
+        coVerify(exactly = 0) { cola.enqueue(any(), any(), any(), any(), any()) }
+    }
+
+    /** I-1 de la revisión: dos estaciones de respaldo, una sale y la otra truena — sólo la que salió se marca. */
+    @Test
+    fun `P1 dos respaldos - Barra sale y Postres truena - solo Barra se marca`() = runTest {
+        val postresSoloPantalla = StationInfo(id = "st_postres", name = "Postres", printerId = null, active = true, hasKitchenDisplay = true)
+        val conDosRespaldos = conBarraSoloPantalla.copy(
+            stations = conBarraSoloPantalla.stations + postresSoloPantalla,
+            productOverrides = conBarraSoloPantalla.productOverrides + ProductOverride(productId = "prod_postre", printStationId = "st_postres"),
+        )
+        every { printConfigRepository.getCurrentConfig() } returns conDosRespaldos
+        val postre = RoutableItem(orderItemId = "oi_3", productId = "prod_postre", categoryId = null, productName = "Pastel", quantity = 1)
+        val planPostres = TicketPlan("st_postres", false, listOf(ConsolidatedLine("Pastel", 1, emptyList(), null, listOf("oi_3"))))
+        coEvery { comandaPrinter.printComandas(any(), any(), any(), any(), any()) } returns ComandaPrinter.Result(
+            attempted = 2, printed = 1, skippedNoPrinter = 0, lastError = "offline",
+            failedStations = listOf("Postres"), failedPlans = listOf(planPostres),
+        )
+        val marcas = mutableListOf<JsonObject>()
+        coEvery { cola.enqueue(any(), any(), any(), any(), any()) } answers {
+            marcas += thirdArg<JsonObject>()
+            "m-x"
+        }
+
+        despachadorConCola().dispatch(
+            venueId = "venue-1", lines = listOf(cafe, postre), orderNumber = "1234", orderType = "En tienda",
+            maxIntentos = 1, servidorLaTiene = false, origenDelFolio = "sale:ext-1",
+        )
+
+        assertEquals(1, marcas.size)
+        assertEquals("sale:ext-1:st_barra", marcas.single()["sourceKey"]!!.jsonPrimitive.content)
+    }
+
     @Test
     fun `P1 si el papel de respaldo NO salio no se marca - la pantalla lo mostrara al volver la red`() = runTest {
         every { printConfigRepository.getCurrentConfig() } returns conBarraSoloPantalla
@@ -628,13 +683,19 @@ class ComandaDispatcherTest {
         coVerify(exactly = 0) { comandaPrinter.printComandas(any(), any(), any(), any(), any()) }
     }
 
+    /**
+     * M-4 de la revisión (ronda 1): en producción `trabajo` sobrevive a un reinicio de la app dentro de
+     * `ComandasPendientesStore`, que lo pasa por JSON. `respaldoLocal` no es `@Transient` y `true` no es su
+     * default, así que el round-trip debería conservarlo — pero nada lo fijaba. Aquí se serializa y
+     * deserializa ANTES de reintentar, igual que el store real.
+     */
     @Test
     fun `P1 volver a imprimir un respaldo conserva la marca de respaldo con la config vigente`() = runTest {
         every { printConfigRepository.getCurrentConfig() } returns conBarraSoloPantalla
         val planes = mutableListOf<List<TicketPlan>>()
         val configs = mutableListOf<PrintConfig>()
         imprimeTodo(planes, configs)
-        val trabajo = TrabajoPendiente(
+        val trabajoOriginal = TrabajoPendiente(
             planes = listOf(TicketPlan("st_barra", false, listOf(ConsolidatedLine("Café", 1, emptyList(), null, listOf("oi_2"))))),
             config = KitchenDeliveryPolicy.conRespaldo(conBarraSoloPantalla, listOf("st_barra")),
             orderNumber = "1234",
@@ -644,6 +705,12 @@ class ComandaDispatcherTest {
             venueId = "venue-1",
             orderId = null,
         )
+        val json = Json { ignoreUnknownKeys = true }
+        val trabajo = json.decodeFromString(
+            TrabajoPendiente.serializer(),
+            json.encodeToString(TrabajoPendiente.serializer(), trabajoOriginal),
+        )
+        assertTrue("el round-trip de JSON tiene que conservar la marca de respaldo", trabajo.config.stations.single { it.id == "st_barra" }.respaldoLocal)
 
         despachadorConCola().reintentar(trabajo)
 
@@ -679,5 +746,39 @@ class ComandaDispatcherTest {
         assertEquals(listOf(EstadoDeComanda.Salio, EstadoDeComanda.Salio), estados.toList())
         assertEquals(listOf("Mesa 5 · Aperitivos", "Mesa 5 · Principales"), encabezados.toList())
         coVerify(exactly = 2) { printConfigRepository.refreshConTope("venue-1", any()) }
+    }
+
+    /**
+     * I-2 de la revisión (ronda 1): sin guarda por pedido, un `dispatch` que revienta se saltaba TODO lo que
+     * seguía en el `for` — el mesero de "Mesa 5 · Principales" nunca se enteraba, y el único rastro quedaba en
+     * el log del `CoroutineExceptionHandler`. `dispatch` está documentado como que no lanza, pero
+     * `internalPrinterForRouting()` (bind AIDL, fuera del try/catch por plan) y el `alCambiarEstado` del
+     * llamador sí pueden.
+     */
+    @Test
+    fun `despacharEnFondo no deja que un pedido que truena se lleve entre pies a los que siguen`() {
+        every { printConfigRepository.getCurrentConfig() } returns conEstaciones
+        val estados = java.util.concurrent.CopyOnWriteArrayList<EstadoDeComanda>()
+        var llamada = 0
+        coEvery { comandaPrinter.printComandas(any(), any(), any(), any(), any()) } answers {
+            llamada++
+            if (llamada == 1) throw RuntimeException("AIDL no conectó")
+            ComandaPrinter.Result(attempted = 1, printed = 1, skippedNoPrinter = 0, lastError = null)
+        }
+
+        dispatcher.despacharEnFondo(
+            venueId = "venue-1",
+            orderNumber = "1234",
+            pedidos = listOf(
+                ComandaDispatcher.Pedido(listOf(taco), "Mesa 5 · Aperitivos"),
+                ComandaDispatcher.Pedido(listOf(taco), "Mesa 5 · Principales"),
+            ),
+            alCambiarEstado = { estados += it },
+        )
+
+        runBlocking { withTimeout(5_000) { while (estados.size < 2) delay(10) } }
+        assertTrue("el primer pedido tiene que avisar NoSalio, no desaparecer", estados[0] is EstadoDeComanda.NoSalio)
+        assertEquals(listOf("Mesa 5 · Aperitivos"), (estados[0] as EstadoDeComanda.NoSalio).estaciones)
+        assertEquals("el segundo pedido tiene que seguir imprimiendo", EstadoDeComanda.Salio, estados[1])
     }
 }

@@ -116,6 +116,9 @@ class ComandaDispatcher @Inject constructor(
      * reintenta, y su [alCambiarEstado] guarda el pendiente y avisa aunque la pantalla ya no exista.
      *
      * Uno detrás de otro, como hasta hoy: dos cursos a la misma impresora no se pisan la conexión ni salen al revés.
+     *
+     * 🔴 [alCambiarEstado] se llama en `Dispatchers.Default` (el de [fondo]): si el llamador toca Compose o guarda
+     * estado que no es thread-safe, tiene que publicar en un `StateFlow` o saltar a `Dispatchers.Main` él mismo.
      */
     fun despacharEnFondo(
         venueId: String?,
@@ -127,16 +130,38 @@ class ComandaDispatcher @Inject constructor(
         alCambiarEstado: (EstadoDeComanda) -> Unit = {},
     ): Job = fondo.launch {
         for (pedido in pedidos) {
-            dispatch(
-                venueId = venueId,
-                lines = pedido.lines,
-                orderNumber = orderNumber,
-                orderType = pedido.orderType,
-                orderId = orderId,
-                servidorLaTiene = servidorLaTiene,
-                origenDelFolio = origenDelFolio,
-                alCambiarEstado = alCambiarEstado,
-            )
+            // I-2 de la revisión (ronda 1): sin esta guarda, un `dispatch` que revienta se llevaba entre pies a
+            // TODOS los pedidos que seguían — el `for` moría ahí y el único rastro quedaba en el log del
+            // `CoroutineExceptionHandler` de arriba. `dispatch` está documentado como que no lanza, pero
+            // `internalPrinterForRouting()` (bind AIDL, fuera del try/catch por plan de `ComandaPrinter`) y el
+            // `alCambiarEstado` del propio llamador (que `insistir` invoca directo) sí pueden.
+            try {
+                dispatch(
+                    venueId = venueId,
+                    lines = pedido.lines,
+                    orderNumber = orderNumber,
+                    orderType = pedido.orderType,
+                    orderId = orderId,
+                    servidorLaTiene = servidorLaTiene,
+                    origenDelFolio = origenDelFolio,
+                    alCambiarEstado = alCambiarEstado,
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Pedido \"${pedido.orderType}\" del despacho en fondo falló: ${e.message}", e)
+                // El aviso es best-effort: si el propio `alCambiarEstado` truena, no puede tirar los pedidos
+                // que faltan — es la MISMA falla que se está blindando, una capa más adentro.
+                runCatching {
+                    alCambiarEstado(
+                        EstadoDeComanda.NoSalio(
+                            estaciones = listOf(pedido.orderType),
+                            causa = e.message,
+                            orderNumber = orderNumber,
+                        ),
+                    )
+                }
+            }
         }
     }
 
@@ -245,6 +270,9 @@ class ComandaDispatcher @Inject constructor(
         val reparto = servidorLaTiene?.let { KitchenDeliveryPolicy.decidir(plans, config, it) }
             ?: KitchenDeliveryPolicy.Reparto(plans, emptyList())
         // Todo iba a pantallas que el servidor ya alimenta: no hay papel que mandar ni que reportar a «la libreta».
+        // M-3 de la revisión (ronda 1): con `servidorLaTiene = null` esto también puede vaciar `plans` (todas las
+        // líneas con `quantity <= 0`) y ahora regresa `null` sin avisar, en vez de reportar `Salio` como antes.
+        // Cambio aceptado (prácticamente inalcanzable) — iOS trae la misma guarda.
         if (reparto.aImprimir.isEmpty()) return null
         val estado = reintentoDeComanda.insistir(
             plans = reparto.aImprimir,
