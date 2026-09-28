@@ -1,11 +1,20 @@
 package com.avoqado.pos.tables.presentation
 
+import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.MainDispatcherRule
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.sync.SyncOutbox
+import com.avoqado.pos.core.domain.printing.ComandaDispatcher
 import com.avoqado.pos.core.util.ConnectivityMonitor
+import com.avoqado.pos.pos.data.model.Product
+import com.avoqado.pos.printing.data.ComandaPrinter
+import com.avoqado.pos.printing.data.ComandasPendientesStore
+import com.avoqado.pos.printing.data.EstadoDeComanda
+import com.avoqado.pos.printing.data.ReintentoDeComanda
+import com.avoqado.pos.printing.data.TrabajoPendiente
 import com.avoqado.pos.printing.routing.PrintConfig
 import com.avoqado.pos.printing.routing.PrintConfigRepository
+import com.avoqado.pos.printing.routing.StationInfo
 import com.avoqado.pos.tables.data.AddOrderItemRequest
 import com.avoqado.pos.tables.data.OrderDetail
 import com.avoqado.pos.tables.data.TableServiceRepository
@@ -16,10 +25,16 @@ import io.mockk.coVerify
 import io.mockk.coVerifyOrder
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.verify
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonArray
@@ -27,6 +42,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import retrofit2.HttpException
@@ -50,8 +66,12 @@ class TableOrderRondaConLlaveTest {
     private val payloads = mutableListOf<JsonObject>()
     private val ids = mutableListOf<String>()
     private val enviados = mutableListOf<List<AddOrderItemRequest>>()
+    private val dispatcher = mockk<ComandaDispatcher>(relaxed = true)
 
-    private fun vm(): TableOrderViewModel {
+    private fun vm(
+        store: ComandasPendientesStore = mockk(relaxed = true),
+        despachador: ComandaDispatcher = dispatcher,
+    ): TableOrderViewModel {
         every { repository.tables } returns MutableStateFlow(emptyList())
         every { repository.ownership } returns MutableStateFlow(TableServiceRepository.TableOwnership())
         coEvery { repository.getOrderDetail(any(), any()) } returns Result.success(OrderDetail(id = "o1", orderNumber = "ORD-1", items = emptyList()))
@@ -75,6 +95,7 @@ class TableOrderRondaConLlaveTest {
             comandaPrinter = mockk(relaxed = true), printerService = mockk(relaxed = true), secureStorage = secureStorage,
             syncOutbox = syncOutbox, productsRepository = mockk(relaxed = true), connectivityMonitor = connectivity,
             timeEntryRepository = mockk(relaxed = true),
+            comandaDispatcher = despachador, comandasPendientesStore = store,
         ).apply {
             addCustomAmount("Pan", 3000)
             addCustomAmount("Café", 4500)
@@ -173,5 +194,178 @@ class TableOrderRondaConLlaveTest {
         coVerify { syncOutbox.soltar("venue-1", llave) }
         coVerify(exactly = 0) { syncOutbox.descartar(any(), any()) }
         assertEquals(TableOrderViewModel.MENSAJE_RONDA_INCIERTA, mensaje)
+    }
+
+    // MARK: - Etapa 3 del KDS (fase 3.4): presupuesto corto, un reintento tras 409 y el despachador del mostrador
+
+    private val cafe = Product(id = "prod-cafe", name = "Café", priceValue = 30.0)
+    private fun http(codigo: Int, cuerpo: String = "{}") = HttpException(Response.error<Any>(codigo, cuerpo.toResponseBody(null)))
+
+    @Test
+    fun `P1 una ronda colgada se rinde a los 15 s - la suelta con su llave y dice Sin conexion`() = runTest {
+        coEvery { repository.addRound(any(), any(), any(), any()) } coAnswers {
+            delay(60_000)
+            Result.success(UpdatedOrder(id = "o1", version = 4))
+        }
+        var mensaje: String? = null
+        val vm = vm()
+
+        vm.sendRound { _, msg -> mensaje = msg }
+        advanceUntilIdle()
+
+        assertEquals(TableOrderViewModel.MENSAJE_RONDA_SIN_CONEXION, mensaje)
+        coVerify { syncOutbox.soltar("venue-1", ids.single()) }
+        assertTrue("se rindió antes del minuto: ${currentTime} ms", currentTime < 60_000)
+    }
+
+    @Test
+    fun `P1 un 409 reintenta UNA vez con la version fresca y la MISMA llave`() = runTest {
+        val versiones = mutableListOf<Int>()
+        coEvery { repository.addRound(any(), any(), capture(enviados), capture(versiones)) } returnsMany listOf(
+            Result.failure(http(409)),
+            Result.success(UpdatedOrder(id = "o1", version = 8)),
+        )
+        var ok: Boolean? = null
+        val vm = vm()
+        coEvery { repository.getOrderDetail(any(), any()) } returns
+            Result.success(OrderDetail(id = "o1", orderNumber = "ORD-1", items = emptyList(), version = 7))
+
+        vm.sendRound { exito, _ -> ok = exito }
+        advanceUntilIdle()
+
+        assertEquals(listOf(3, 7), versiones)
+        assertEquals(enviados[0].map { it.externalId }, enviados[1].map { it.externalId })
+        coVerify { syncOutbox.descartar("venue-1", ids.single()) }
+        coVerify(exactly = 0) { syncOutbox.soltar(any(), any()) }
+        assertEquals(true, ok)
+    }
+
+    @Test
+    fun `P1 un 409 y luego cuenta pagada descarta y NO imprime`() = runTest {
+        coEvery { repository.addRound(any(), any(), any(), any()) } returnsMany listOf(
+            Result.failure(http(409)),
+            Result.failure(http(400, """{"message":"Cannot add items to a paid order"}""")),
+        )
+        var ok: Boolean? = null
+        val vm = vm()
+        coEvery { repository.getOrderDetail(any(), any()) } returns
+            Result.success(OrderDetail(id = "o1", orderNumber = "ORD-1", items = emptyList(), version = 9))
+        vm.addProduct(cafe)
+
+        vm.sendRound { exito, _ -> ok = exito }
+        advanceUntilIdle()
+
+        assertEquals(false, ok)
+        coVerify { syncOutbox.descartar("venue-1", ids.single()) }
+        verify(exactly = 0) { dispatcher.despacharEnFondo(any(), any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `P1 sin red la ronda imprime por el despachador como envio que el servidor NO tiene`() = runTest {
+        coEvery { repository.addRound(any(), any(), any(), any()) } returns Result.failure(IOException("sin red"))
+        val vm = vm()
+        vm.addProduct(cafe)
+
+        vm.sendRound { _, _ -> }
+        advanceUntilIdle()
+
+        val llave = ids.single()
+        verify {
+            dispatcher.despacharEnFondo(
+                venueId = "venue-1", orderNumber = "ORD-1",
+                pedidos = match { pedidos -> pedidos.map { it.orderType } == listOf("Mesa 5") },
+                orderId = "o1", servidorLaTiene = false, origenDelFolio = "round:$llave", alCambiarEstado = any(),
+            )
+        }
+    }
+
+    @Test
+    fun `P1 con la ronda en linea el despachador sabe que el servidor ya la tiene`() = runTest {
+        coEvery { repository.addRound(any(), any(), any(), any()) } returns Result.success(UpdatedOrder(id = "o1", version = 4))
+        val vm = vm()
+        vm.addProduct(cafe)
+
+        vm.sendRound { _, _ -> }
+        advanceUntilIdle()
+
+        val llave = ids.single()
+        verify {
+            dispatcher.despacharEnFondo(
+                venueId = "venue-1", orderNumber = "ORD-1",
+                pedidos = match { pedidos -> pedidos.map { it.orderType } == listOf("Mesa 5") },
+                orderId = "o1", servidorLaTiene = true, origenDelFolio = "round:$llave", alCambiarEstado = any(),
+            )
+        }
+    }
+
+    @Test
+    fun `P1 si la comanda de la ronda no sale se avisa en la mesa y se guarda para el reintento`() = runTest {
+        coEvery { repository.addRound(any(), any(), any(), any()) } returns Result.success(UpdatedOrder(id = "o1", version = 4))
+        val store = mockk<ComandasPendientesStore>(relaxed = true)
+        val noSalio = EstadoDeComanda.NoSalio(
+            estaciones = listOf("Barra"),
+            causa = "offline",
+            orderNumber = "ORD-1",
+            trabajo = TrabajoPendiente(
+                planes = emptyList(), config = PrintConfig(), orderNumber = "ORD-1", orderType = "Mesa 5",
+                serverName = null, comboNames = emptyMap(), venueId = "venue-1", orderId = null,
+            ),
+        )
+        every { dispatcher.despacharEnFondo(any(), any(), any(), any(), any(), any(), any()) } answers {
+            arg<(EstadoDeComanda) -> Unit>(6).invoke(noSalio)
+            Job()
+        }
+        val vm = vm(store)
+        vm.addProduct(cafe)
+
+        vm.sendRound { _, _ -> }
+        advanceUntilIdle()
+
+        verify { store.guardar(noSalio, any()) }
+        assertEquals("No salió la comanda de: Barra", vm.actionMessage.value)
+        assertEquals(true, vm.actionIsError.value)
+    }
+
+    /**
+     * 🔴 El mesero manda la ronda y regresa al plano en ese momento (la pantalla de la mesa muere con su
+     * `viewModelScope`). Si la comanda de la ronda corriera ahí, se cancelaría a media espera de la impresora: ni
+     * reintento, ni aviso, ni pendiente guardado — una comanda perdida sin que nadie se entere. Con el despachador
+     * REAL (su ámbito vive con la app) la comanda sigue, se rinde, se GUARDA y se avisa.
+     *
+     * La impresora espera una puerta que la prueba abre DESPUÉS de cerrar la pantalla: así el despacho está en vuelo
+     * cuando se cancela el `viewModelScope` (sin la puerta todo terminaría antes y la prueba no mordería).
+     */
+    @Test
+    fun `P1 cerrar la pantalla de la mesa NO cancela la comanda de la ronda - la que no sale se guarda y se avisa`() = runTest {
+        coEvery { repository.addRound(any(), any(), any(), any()) } returns Result.success(UpdatedOrder(id = "o1", version = 4))
+        val store = mockk<ComandasPendientesStore>(relaxed = true)
+        val configDeBarra = mockk<PrintConfigRepository>(relaxed = true)
+        every { configDeBarra.getCurrentConfig() } returns PrintConfig(
+            stations = listOf(StationInfo(id = "st_barra", name = "Barra", printerId = "pr_1", active = true)),
+            defaultStationId = "st_barra",
+        )
+        val puerta = CompletableDeferred<Unit>()
+        val impresora = mockk<ComandaPrinter>(relaxed = true)
+        coEvery { impresora.printComandas(any(), any(), any(), any(), any(), any(), any()) } coAnswers {
+            puerta.await()
+            ComandaPrinter.Result(
+                attempted = 1, printed = 0, skippedNoPrinter = 0, lastError = "offline",
+                failedStations = listOf("Barra"), failedPlans = firstArg(),
+            )
+        }
+        val despachadorReal = ComandaDispatcher(
+            configDeBarra,
+            ReintentoDeComanda(impresora, esperar = {}, reporteDeComandas = mockk(relaxed = true)),
+            mockk(relaxed = true),
+        )
+        val vm = vm(store = store, despachador = despachadorReal)
+        vm.addProduct(cafe)
+
+        vm.sendRound { _, _ -> }
+        advanceUntilIdle()
+        vm.viewModelScope.cancel() // el mesero regresó al plano: la pantalla de la mesa ya no existe
+        puerta.complete(Unit)
+
+        verify(timeout = 5_000) { store.guardar(match { it.estaciones == listOf("Barra") }, any()) }
     }
 }

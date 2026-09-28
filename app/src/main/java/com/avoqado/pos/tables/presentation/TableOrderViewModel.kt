@@ -28,6 +28,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 import kotlin.math.round
 
@@ -64,6 +65,10 @@ class TableOrderViewModel @Inject constructor(
     private val connectivityMonitor: com.avoqado.pos.core.util.ConnectivityMonitor,
     /** "Marcar entrada/salida" (Acciones) reusa el reloj checador tal cual. */
     val timeEntryRepository: com.avoqado.pos.timeclock.data.TimeEntryRepository,
+    /** Etapa 3 del KDS (3.4): las rondas imprimen por el MISMO despachador del mostrador (reintento, aviso, respaldo). */
+    private val comandaDispatcher: com.avoqado.pos.core.domain.printing.ComandaDispatcher,
+    /** La comanda de una ronda que no salió queda aquí, como la del mostrador: el reloj la reintenta sola. */
+    private val comandasPendientesStore: com.avoqado.pos.printing.data.ComandasPendientesStore,
 ) : ViewModel() {
 
     /** Json para serializar payloads de intents (mismas opciones que la red). */
@@ -189,6 +194,17 @@ class TableOrderViewModel @Inject constructor(
          * aquí: sería decirle al mesero algo que no está pasando.
          */
         const val MENSAJE_RONDA_INCIERTA = "No se pudo confirmar la ronda — se guardó e imprimió; se reintentará sola"
+
+        /** Presupuesto corto de la ronda EN LÍNEA (spec 2026-09-27 §5, H2): el mismo que la ruta del dinero. */
+        const val PRESUPUESTO_RONDA_MS = 15_000L
+
+        /** Leer la versión fresca de la cuenta tras un 409. */
+        const val PRESUPUESTO_VERSION_MS = 5_000L
+
+        fun mensajeComandaNoSalio(estaciones: List<String>): String = "No salió la comanda de: ${estaciones.joinToString(", ")}"
+
+        const val PISTA_COMANDA_REINTENTO = "Se vuelve a intentar sola cuando la impresora responda."
+        const val PISTA_COMANDA_SIN_IMPRESORA = "Esa estación no tiene impresora: revisa la configuración de impresoras."
     }
 
     // MARK: - Check (server truth)
@@ -494,8 +510,7 @@ class TableOrderViewModel @Inject constructor(
                         )
                     },
                     enLinea = {
-                        repository.addRound(vId, session.orderId, conLlaves, session.version)
-                            .onFailure { ultimoErrorEnLinea = it }
+                        enviarRondaEnLinea(vId, session, conLlaves).onFailure { ultimoErrorEnLinea = it }
                     },
                     soltar = { syncOutbox.soltar(vId, roundKey) },
                     descartar = { syncOutbox.descartar(vId, roundKey) },
@@ -509,7 +524,7 @@ class TableOrderViewModel @Inject constructor(
                     _isSending.value = false
                     onDone(true, "Ronda enviada a cocina — Mesa ${session.tableNumber}")
                     loadCheck()
-                    printRoundComandas(vId, session, lines, refreshFloor = true)
+                    printRoundComandas(vId, session, lines, refreshFloor = true, servidorLaTiene = true, roundKey = roundKey)
                 }
                 RondaConLlave.Desenlace.Encolada -> {
                     // La MISMA red de seguridad quedó suelta en la cola (misma llave); el replay la reproduce y el
@@ -538,6 +553,38 @@ class TableOrderViewModel @Inject constructor(
         is retrofit2.HttpException -> e.code() in 502..504
         else -> false
     }
+
+    /**
+     * La ronda EN LÍNEA con presupuesto corto (spec 2026-09-27 §5, H2 — antes esperaba el timeout del cliente, 30 s, y
+     * retenía la cola del aparato todo ese rato) y UN reintento con la versión FRESCA si perdió el CAS (409). Las MISMAS
+     * llaves: lo que el primer intento alcanzó a escribir se deduplica por `(orderId, externalId)`.
+     *
+     * 🔴 El caso que lo pidió (crónica 3.3): otro aparato ya COBRÓ la mesa. `addItemsToOrder` revisa la versión ANTES
+     * que el pago, así que el primer intento recibe 409; con la versión fresca recibe el 400 «cuenta pagada», que es
+     * rechazo definitivo: la ronda se descarta y NO se manda papel a la cocina. Si leer la versión falla, se regresa el
+     * 409 original y la ronda se suelta como hasta hoy.
+     */
+    private suspend fun enviarRondaEnLinea(
+        vId: String,
+        session: TableSession.Active,
+        conLlaves: List<AddOrderItemRequest>,
+    ): Result<com.avoqado.pos.tables.data.UpdatedOrder> {
+        val primero = conPresupuesto(PRESUPUESTO_RONDA_MS) { repository.addRound(vId, session.orderId, conLlaves, session.version) }
+        val error = primero.exceptionOrNull()
+        if (error !is retrofit2.HttpException || error.code() != 409) return primero
+        val fresca = conPresupuesto(PRESUPUESTO_VERSION_MS) { repository.getOrderDetail(vId, session.orderId) }
+            .getOrNull()?.version ?: return primero
+        return conPresupuesto(PRESUPUESTO_RONDA_MS) { repository.addRound(vId, session.orderId, conLlaves, fresca) }
+    }
+
+    /**
+     * Un tope es un fallo de RED (`SocketTimeoutException`): la ronda se suelta y el mesero lee «Sin conexión».
+     * ponytail: sólo el tope TOTAL (la spec dice 5 s conectar / 15 s total); una conexión colgada ya se corta a los 15 s.
+     * Separar el de conexión pide un cliente OkHttp propio para rondas — sólo si se mide que 15 s es lento.
+     */
+    private suspend fun <T> conPresupuesto(ms: Long, llamada: suspend () -> Result<T>): Result<T> =
+        withTimeoutOrNull(ms) { llamada() }
+            ?: Result.failure(java.net.SocketTimeoutException("La ronda no respondió en ${ms / 1_000} s"))
 
     /**
      * Rechazo DEFINITIVO de una ronda: el server dijo que NO y reintentar la MISMA versión no lo va a
@@ -693,7 +740,7 @@ class TableOrderViewModel @Inject constructor(
         _pending.value = emptyList()
         _isSending.value = false
         onDone(true, mensaje)
-        printRoundComandas(vId, session, lines, refreshFloor = false)
+        printRoundComandas(vId, session, lines, refreshFloor = false, servidorLaTiene = false, roundKey = intentId)
         // Corte E: la venta offline descuenta el stock local aproximado.
         productsRepository.applyLocalSale(
             lines.mapNotNull { line ->
@@ -702,55 +749,75 @@ class TableOrderViewModel @Inject constructor(
         )
     }
 
-    /** Comandas por curso a las estaciones LAN (funciona con o sin internet —
-     *  la config de ruteo usa su cache si el refresh de red falla). */
+    /**
+     * Comandas por curso, por el MISMO despachador del mostrador (spec 2026-09-27 §5): refresca la config con tope de
+     * 1.5 s, rutea, decide por estación (`KitchenDeliveryPolicy`) e INSISTE si la impresora no contesta, con aviso.
+     * Funciona con o sin internet: la config usa su cache si el refresh falla.
+     *
+     * 🔴 SIN guard por estaciones (offline-first §4.1a): el motor es fail-open ("SIN ESTACIÓN") y la impresora KITCHEN
+     * local recibe lo no ruteado. En este dominio el fail-safe jamás puede ser no imprimir.
+     *
+     * 🔴 NO en `viewModelScope`: esta pantalla muere cuando el mesero regresa al plano, casi siempre justo después de
+     * mandar la ronda. `despacharEnFondo` corre en el ámbito del despachador (vive con la app): el reintento sigue y una
+     * comanda que no sale se guarda y se avisa aunque la mesa ya esté cerrada.
+     *
+     * @param servidorLaTiene `true` si la ronda llegó EN LÍNEA (el servidor arma su comanda de pantalla); `false` si
+     *   quedó en la cola (las estaciones «sólo pantalla» salen en papel de respaldo).
+     * @param roundKey la llave de la ronda: `round:<roundKey>` es su folio en el servidor.
+     */
     private fun printRoundComandas(
         vId: String,
         session: TableSession.Active,
         lines: List<PendingLine>,
         refreshFloor: Boolean,
+        servidorLaTiene: Boolean,
+        roundKey: String,
     ) {
-        viewModelScope.launch {
-            runCatching { printConfigRepository.refresh(vId) }
-            val config = printConfigRepository.getCurrentConfig()
-            // 🔴 SIN guard por estaciones. Antes esto exigía al menos una
-            // estación activa, así que un local sin estaciones configuradas —o
-            // un POS recién instalado que nunca pudo bajarlas— NO imprimía NADA,
-            // aunque tuviera su impresora de cocina conectada y con rol. La
-            // cocina no se enteraba del pedido y nadie lo notaba hasta el
-            // reclamo. El motor de ruteo YA es fail-open (los items sin estación
-            // forman un ticket "SIN ESTACIÓN") y printComandas cae a la
-            // impresora KITCHEN local, así que dejarlo pasar es lo correcto:
-            // en este dominio el fail-safe jamás puede ser no imprimir.
-            run {
-                // One comanda batch per course so each ticket reads
-                // "Mesa 8 · Aperitivos" like the single-course flow.
-                // Comandas route catalog products only — custom
-                // amounts ride to the check but never to kitchen.
-                val kitchenLines = lines.filter { it.item.type is CartItemType.ProductItem }
-                kitchenLines.groupBy { it.course }.forEach { (course, courseLines) ->
-                    val routable = courseLines.map { line ->
-                        RoutableItem(
-                            orderItemId = line.item.id,
-                            productId = (line.item.type as? CartItemType.ProductItem)?.productId,
-                            categoryId = line.item.categoryId,
-                            productName = line.item.name,
-                            quantity = line.item.quantity,
-                            modifiers = line.item.selectedModifiers.map { it.modifierName },
-                            notes = line.item.itemNote,
-                        )
-                    }
-                    val plans = PrintRoutingMapper.buildComandas(routable, config)
-                    comandaPrinter.printComandas(
-                        plans = plans,
-                        config = config,
-                        orderNumber = session.orderNumber,
-                        orderType = "Mesa ${session.tableNumber}" + (course?.let { " · $it" } ?: ""),
+        if (refreshFloor) viewModelScope.launch { repository.refresh(vId) }
+        // Comandas route catalog products only — custom amounts ride to the check but never to kitchen.
+        val kitchenLines = lines.filter { it.item.type is CartItemType.ProductItem }
+        // One comanda batch per course so each ticket reads "Mesa 8 · Aperitivos" like the single-course flow.
+        val pedidos = kitchenLines.groupBy { it.course }.map { (course, courseLines) ->
+            com.avoqado.pos.core.domain.printing.ComandaDispatcher.Pedido(
+                lines = courseLines.map { line ->
+                    RoutableItem(
+                        orderItemId = line.item.id,
+                        productId = (line.item.type as? CartItemType.ProductItem)?.productId,
+                        categoryId = line.item.categoryId,
+                        productName = line.item.name,
+                        quantity = line.item.quantity,
+                        modifiers = line.item.selectedModifiers.map { it.modifierName },
+                        notes = line.item.itemNote,
                     )
-                }
-            }
-            if (refreshFloor) repository.refresh(vId)
+                },
+                orderType = "Mesa ${session.tableNumber}" + (course?.let { " · $it" } ?: ""),
+            )
         }
+        if (pedidos.isEmpty()) return
+        comandaDispatcher.despacharEnFondo(
+            venueId = vId,
+            orderNumber = session.orderNumber,
+            pedidos = pedidos,
+            // «La libreta» con el id REAL de la orden; una mesa provisional todavía no lo tiene.
+            orderId = session.orderId.takeUnless { session.isProvisional },
+            servidorLaTiene = servidorLaTiene,
+            origenDelFolio = "round:$roundKey",
+            alCambiarEstado = { avisarComandaDeRonda(it) },
+        )
+    }
+
+    /**
+     * La comanda de una ronda que no salió se DICE en la mesa, nunca en silencio, y si hay qué reenviar queda en el
+     * almacén de comandas pendientes: el reloj de `ReplayDeComandasPendientes` la vuelve a mandar en cuanto la
+     * impresora conteste y Cobrar muestra el aviso con «Volver a imprimir». Mismo trato que la venta de mostrador.
+     */
+    private fun avisarComandaDeRonda(estado: com.avoqado.pos.printing.data.EstadoDeComanda) {
+        if (estado !is com.avoqado.pos.printing.data.EstadoDeComanda.NoSalio) return
+        if (estado.trabajo != null) comandasPendientesStore.guardar(estado)
+        showError(
+            mensajeComandaNoSalio(estado.estaciones),
+            if (estado.trabajo != null) PISTA_COMANDA_REINTENTO else PISTA_COMANDA_SIN_IMPRESORA,
+        )
     }
 
     // MARK: - Sent-item actions

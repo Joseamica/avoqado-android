@@ -153,6 +153,8 @@ class TableOrderReprintComandasTest {
             productsRepository = mockk(relaxed = true),
             connectivityMonitor = connectivityMonitor,
             timeEntryRepository = mockk(relaxed = true),
+            comandaDispatcher = mockk(relaxed = true),
+            comandasPendientesStore = mockk(relaxed = true),
         ).also { it.loadCheck() }
     }
 
