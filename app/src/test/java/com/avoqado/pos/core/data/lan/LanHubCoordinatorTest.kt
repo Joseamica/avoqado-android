@@ -109,9 +109,9 @@ class LanHubCoordinatorTest {
     }
 }
 
-/** Descubrimiento de mentira: entrega una lista fija de peers. */
+/** Transporte de mentira: entrega una lista fija de peers y acepta el enganche del hub sin abrir nada. */
 private class FakeDiscovery(peers: List<LanPeer>) : LanDiscoveryPort {
     override val peers = kotlinx.coroutines.flow.MutableStateFlow(peers)
-    override fun start(myPort: Int, isWired: Boolean, bootedAtMillis: Long) {}
-    override fun stop() {}
+    override fun conectarHub(respondTo: (String) -> LeaseResponse) {}
+    override fun desconectarHub() {}
 }

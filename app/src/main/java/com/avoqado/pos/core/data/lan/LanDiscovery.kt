@@ -4,10 +4,9 @@ import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.net.wifi.WifiManager
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
-import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.asStateFlow
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -19,6 +18,9 @@ private const val TAG = "LanDiscovery"
  * Cada POS se anuncia como `_avoqado-pos._tcp` y busca a los demás. De ahí sale
  * la lista de [LanPeer] con la que [ArbiterElection] decide quién arbitra, sin
  * que nadie configure IPs a mano.
+ *
+ * Desde la 3.5 (D1) es una pieza del transporte único: anuncia con el TXT que le dan y busca; el socket vive en
+ * `TransporteLan`.
  *
  * Espejo EXACTO en avoqado-ios: Services/LAN/LanDiscovery.swift.
  *
@@ -41,97 +43,130 @@ class LanDiscovery(
     private val context: Context,
     private val deviceId: String,
     private val venueId: String,
-) : LanDiscoveryPort {
+    /** Los peers AJENOS vivos (este aparato lo agrega [TransporteLan]). */
+    private val alCambiarPeers: (List<LanPeer>) -> Unit,
+) {
     private val nsdManager: NsdManager? =
         runCatching { context.getSystemService(Context.NSD_SERVICE) as? NsdManager }.getOrNull()
 
     private var multicastLock: WifiManager.MulticastLock? = null
     private var registrationListener: NsdManager.RegistrationListener? = null
     private var discoveryListener: NsdManager.DiscoveryListener? = null
+    private var txtRegistrado: Map<String, String>? = null
 
-    private val _peers = MutableStateFlow<List<LanPeer>>(emptyList())
-    /** Peers vivos vistos en la red (incluye a este dispositivo). */
-    override val peers: StateFlow<List<LanPeer>> = _peers.asStateFlow()
+    private var peers: List<LanPeer> = emptyList()
+        set(value) { field = value; alCambiarPeers(value) }
 
     private val resolveQueue = ConcurrentLinkedQueue<NsdServiceInfo>()
     private val resolving = AtomicBoolean(false)
 
-    /** Anuncia este POS y empieza a buscar a los demás. */
-    override fun start(myPort: Int, isWired: Boolean, bootedAtMillis: Long) {
-        val manager = nsdManager ?: run {
-            Log.w(TAG, "NSD no disponible — el hub queda en modo isla")
-            return
-        }
+    /**
+     * Anuncia este POS con ese TXT. NSD no edita un registro vivo: si el TXT cambió (`kds=`, `hub=`) se da de baja y
+     * se vuelve a registrar; los peers ven perdido → encontrado, con el MISMO puerto. Con el mismo TXT no hace nada.
+     *
+     * 🔴 Un fallo de registro NO es definitivo: `onRegistrationFailed` suelta el listener y reintenta con espera acotada
+     * (1, 2, 4, 8, 16, 30 s: 6 intentos por ráfaga). Si la guarda de arriba lo dejara puesto, cada `reanunciar()` (el KDS lo
+     * llama cada minuto) sería un no-op y la pantalla nunca volvería a anunciarse: todo «sólo pantalla» saldría en papel
+     * sin causa aparente. Agotada la ráfaga, el siguiente `reanunciar()` vuelve a empezar desde cero.
+     */
+    fun anunciar(port: Int, txt: Map<String, String>) {
+        val manager = nsdManager ?: run { Log.w(TAG, "NSD no disponible — sin anuncio"); return }
+        if (registrationListener != null && txtRegistrado == txt) return
+        dejarDeAnunciar()
         acquireMulticastLock()
-
-        // Este dispositivo siempre está en su propia lista: si es el único POS
-        // encendido, tiene que poder elegirse árbitro a sí mismo.
-        _peers.value = listOf(
-            LanPeer(deviceId = deviceId, host = "127.0.0.1", port = myPort, isWired = isWired, bootedAtMillis = bootedAtMillis),
-        )
-
         val info = NsdServiceInfo().apply {
             serviceName = "Avoqado-POS-${deviceId.take(6)}"
             serviceType = LeaseProtocol.SERVICE_TYPE
-            port = myPort
-            setAttribute(LeaseProtocol.TXT_DEVICE_ID, deviceId)
-            setAttribute(LeaseProtocol.TXT_WIRED, if (isWired) "1" else "0")
-            setAttribute(LeaseProtocol.TXT_BOOTED_AT, bootedAtMillis.toString())
-            setAttribute(LeaseProtocol.TXT_VENUE_ID, venueId)
+            this.port = port
+            txt.forEach { (k, v) -> setAttribute(k, v) }
         }
-
-        registrationListener = object : NsdManager.RegistrationListener {
+        val listener = object : NsdManager.RegistrationListener {
             override fun onServiceRegistered(info: NsdServiceInfo) {
-                Log.i(TAG, "📡 Anunciado como ${info.serviceName} en el puerto $myPort")
+                intentosDeAnuncio = 0
+                Log.i(TAG, "📡 Anunciado como ${info.serviceName} en el puerto $port txt=$txt")
             }
             override fun onRegistrationFailed(info: NsdServiceInfo, errorCode: Int) {
-                Log.e(TAG, "❌ No se pudo anunciar (código $errorCode) — modo isla")
+                // Mismo estado que el `onFailure` de `registerService`: sin esto la guarda de `anunciar` lo dejaba mudo para siempre.
+                registrationListener = null
+                txtRegistrado = null
+                programarReintentoDeAnuncio(port, txt, errorCode)
             }
             override fun onServiceUnregistered(info: NsdServiceInfo) {}
             override fun onUnregistrationFailed(info: NsdServiceInfo, errorCode: Int) {}
         }
-        runCatching { manager.registerService(info, NsdManager.PROTOCOL_DNS_SD, registrationListener) }
-            .onFailure { Log.e(TAG, "registerService falló: ${it.message}") }
+        registrationListener = listener
+        txtRegistrado = txt
+        runCatching { manager.registerService(info, NsdManager.PROTOCOL_DNS_SD, listener) }
+            .onFailure { Log.e(TAG, "registerService falló: ${it.message}"); registrationListener = null; txtRegistrado = null }
+    }
 
-        discoveryListener = object : NsdManager.DiscoveryListener {
-            override fun onDiscoveryStarted(type: String) {
-                Log.d(TAG, "🔎 Buscando POS en la red local")
-            }
+    private var intentosDeAnuncio = 0
+    private var reintentoDeAnuncio: Runnable? = null
+    /** `lazy`: en la JVM de las pruebas `nsdManager` es null y este camino nunca corre — no se toca `Looper` en vano. */
+    private val reloj by lazy { Handler(Looper.getMainLooper()) }
+
+    private fun programarReintentoDeAnuncio(port: Int, txt: Map<String, String>, errorCode: Int) {
+        val espera = esperaDeReintentoDeAnuncio(intentosDeAnuncio)
+        if (espera == null) {
+            Log.e(TAG, "❌ No se pudo anunciar (código $errorCode) tras $intentosDeAnuncio intentos — modo isla hasta el siguiente reanunciar()")
+            intentosDeAnuncio = 0
+            return
+        }
+        intentosDeAnuncio++
+        Log.w(TAG, "⚠️ No se pudo anunciar (código $errorCode) — reintento $intentosDeAnuncio en ${espera / 1_000} s")
+        reintentoDeAnuncio?.let { reloj.removeCallbacks(it) }
+        val r = Runnable { reintentoDeAnuncio = null; anunciar(port, txt) }
+        reintentoDeAnuncio = r
+        reloj.postDelayed(r, espera)
+    }
+
+    fun dejarDeAnunciar() {
+        reintentoDeAnuncio?.let { reloj.removeCallbacks(it); reintentoDeAnuncio = null }
+        registrationListener?.let { runCatching { nsdManager?.unregisterService(it) } }
+        registrationListener = null
+        txtRegistrado = null
+    }
+
+    /** Empieza a buscar a los demás. Idempotente. */
+    fun buscar() {
+        val manager = nsdManager ?: run { Log.w(TAG, "NSD no disponible — sin descubrimiento"); return }
+        if (discoveryListener != null) return
+        acquireMulticastLock()
+        val listener = object : NsdManager.DiscoveryListener {
+            override fun onDiscoveryStarted(type: String) { Log.d(TAG, "🔎 Buscando POS en la red local") }
             override fun onServiceFound(info: NsdServiceInfo) {
                 if (info.serviceType?.contains("avoqado-pos") != true) return
                 resolveQueue.add(info)
                 drainResolveQueue()
             }
             override fun onServiceLost(info: NsdServiceInfo) {
-                // Se cae del plano por NOMBRE porque el TXT ya no viaja aquí.
+                // Se cae del plano por NOMBRE porque el TXT ya no viaja aquí (`contains`: el SO puede renombrar a «(2)»).
                 val name = info.serviceName ?: return
-                _peers.value = _peers.value.filterNot { it.deviceId.isNotEmpty() && name.endsWith(it.deviceId.take(6)) }
+                peers = peers.filterNot { it.deviceId.isNotEmpty() && name.contains(it.deviceId.take(6)) }
                 Log.d(TAG, "👋 Peer perdido: $name")
             }
             override fun onDiscoveryStopped(type: String) {}
-            override fun onStartDiscoveryFailed(type: String, errorCode: Int) {
-                Log.e(TAG, "❌ Descubrimiento falló ($errorCode) — modo isla")
-            }
+            override fun onStartDiscoveryFailed(type: String, errorCode: Int) { Log.e(TAG, "❌ Descubrimiento falló ($errorCode) — modo isla") }
             override fun onStopDiscoveryFailed(type: String, errorCode: Int) {}
         }
-        runCatching {
-            manager.discoverServices(LeaseProtocol.SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, discoveryListener)
-        }.onFailure { Log.e(TAG, "discoverServices falló: ${it.message}") }
+        discoveryListener = listener
+        runCatching { manager.discoverServices(LeaseProtocol.SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, listener) }
+            .onFailure { Log.e(TAG, "discoverServices falló: ${it.message}"); discoveryListener = null }
     }
 
-    override fun stop() {
-        val manager = nsdManager
-        registrationListener?.let { runCatching { manager?.unregisterService(it) } }
-        discoveryListener?.let { runCatching { manager?.stopServiceDiscovery(it) } }
-        registrationListener = null
+    /** Baja el anuncio, para de buscar y suelta el lock. */
+    fun parar() {
+        dejarDeAnunciar()
+        intentosDeAnuncio = 0
+        discoveryListener?.let { runCatching { nsdManager?.stopServiceDiscovery(it) } }
         discoveryListener = null
         releaseMulticastLock()
-        _peers.value = emptyList()
+        peers = emptyList()
     }
 
     /**
-     * Resuelve de a UNO: resolveService revienta con FAILURE_ALREADY_ACTIVE si
-     * hay otro en curso, y en un restaurante llegan varios servicios de golpe.
+     * Resuelve de a UNO: resolveService revienta con FAILURE_ALREADY_ACTIVE si hay otro en curso, y en un restaurante
+     * llegan varios servicios de golpe.
      */
     private fun drainResolveQueue() {
         if (!resolving.compareAndSet(false, true)) return
@@ -162,32 +197,11 @@ class LanDiscovery(
     }
 
     private fun onPeerResolved(info: NsdServiceInfo) {
-        val attrs = info.attributes ?: emptyMap()
-        fun txt(key: String): String? = attrs[key]?.let { String(it) }
-
-        val peerDeviceId = txt(LeaseProtocol.TXT_DEVICE_ID) ?: return
-        val peerVenue = txt(LeaseProtocol.TXT_VENUE_ID)
-
-        // Plaza comercial / food court: el WiFi puede ser compartido. Arbitrar
-        // las mesas de OTRO negocio sería catastrófico y silencioso.
-        if (peerVenue != null && peerVenue != venueId) {
-            Log.d(TAG, "🚫 Peer de otro venue ignorado ($peerVenue)")
-            return
-        }
-        // El propio anuncio se filtra por deviceId, no por nombre: el SO puede
-        // renombrar el servicio a "(2)" si hay colisión.
-        if (peerDeviceId == deviceId) return
-
-        val host = info.host?.hostAddress ?: return
-        val peer = LanPeer(
-            deviceId = peerDeviceId,
-            host = host,
-            port = info.port,
-            isWired = txt(LeaseProtocol.TXT_WIRED) == "1",
-            bootedAtMillis = txt(LeaseProtocol.TXT_BOOTED_AT)?.toLongOrNull() ?: 0L,
-        )
-        _peers.value = _peers.value.filterNot { it.deviceId == peerDeviceId } + peer
-        Log.i(TAG, "🤝 Peer: ${peer.deviceId.take(6)} en ${peer.host}:${peer.port} (cableado=${peer.isWired})")
+        val txt = info.attributes.orEmpty().mapValues { (_, v) -> v?.let { String(it) } }
+        // El TXT se lee PURO (`LanTxt`): otro venue, este mismo aparato o sin host ⇒ null.
+        val peer = LanTxt.peerDesde(txt, info.host?.hostAddress, info.port, deviceId, venueId) ?: return
+        peers = peers.filterNot { it.deviceId == peer.deviceId } + peer
+        Log.i(TAG, "🤝 Peer: ${peer.deviceId.take(6)} en ${peer.host}:${peer.port} kds=${peer.kdsStations} hub=${peer.sirveLeases}")
     }
 
     /**
@@ -195,6 +209,7 @@ class LanDiscovery(
      * pantalla y el descubrimiento falla justo en producción.
      */
     private fun acquireMulticastLock() {
+        if (multicastLock?.isHeld == true) return
         runCatching {
             val wifi = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
             multicastLock = wifi?.createMulticastLock("avoqado-lan-hub")?.apply {
@@ -207,5 +222,14 @@ class LanDiscovery(
     private fun releaseMulticastLock() {
         runCatching { multicastLock?.takeIf { it.isHeld }?.release() }
         multicastLock = null
+    }
+
+    companion object {
+        const val MAX_INTENTOS_DE_ANUNCIO = 6
+        const val ESPERA_MAXIMA_DE_ANUNCIO_MS = 30_000L
+
+        /** PURA: 1, 2, 4, 8, 16, 30 s para los intentos 0..5; `null` = ráfaga agotada (se espera al siguiente `reanunciar()`). */
+        fun esperaDeReintentoDeAnuncio(intento: Int): Long? =
+            if (intento >= MAX_INTENTOS_DE_ANUNCIO) null else minOf(ESPERA_MAXIMA_DE_ANUNCIO_MS, 1_000L shl intento)
     }
 }

@@ -66,6 +66,22 @@ class AppState @Inject constructor(
     @Inject
     lateinit var wasteSyncCoordinator: com.avoqado.pos.inventory.waste.data.WasteSyncCoordinator
 
+    /**
+     * Etapa 3 del KDS (3.5, D12): el transporte de la red local y el hub Premium viven con la app; aquí sólo se
+     * encienden y apagan. Por miembro, como [wasteSyncCoordinator], para no romper a quien construye este ViewModel a
+     * mano en las pruebas de JVM.
+     */
+    @Inject
+    lateinit var transporteLan: com.avoqado.pos.core.data.lan.TransporteLan
+
+    @Inject
+    lateinit var lanHubService: com.avoqado.pos.core.data.lan.LanHubService
+
+    private fun detenerRedLocal() {
+        if (::lanHubService.isInitialized) lanHubService.stop()
+        if (::transporteLan.isInitialized) transporteLan.detener()
+    }
+
     private fun notifyDeviceSessionChanged() {
         if (::deviceCapabilitySyncCoordinator.isInitialized) {
             deviceCapabilitySyncCoordinator.onSessionChanged()
@@ -107,6 +123,9 @@ class AppState @Inject constructor(
             // conexión» tiene que poder decir qué estaciones salen en papel desde el primer minuto, no desde la primera
             // comanda. `topeMs = 0` = no espera a la red; la descarga sigue sola.
             viewModelScope.launch { printConfigRepository.refreshConTope(venueId, topeMs = 0) }
+            // Etapa 3 del KDS (3.5, D12): la red local sigue a la sucursal. Idempotente por venue; con otra reinicia.
+            if (::lanHubService.isInitialized) lanHubService.sincronizarVenue(venueId)
+            if (::transporteLan.isInitialized) transporteLan.iniciar(venueId)
         }
     }
 
@@ -131,6 +150,7 @@ class AppState @Inject constructor(
         viewModelScope.launch {
             secureStorage.sessionInvalidated.collect {
                 stopInventorySync()
+                detenerRedLocal()
                 _isLoggedIn.value = false
                 notifyDeviceSessionChanged()
             }
@@ -352,6 +372,7 @@ class AppState @Inject constructor(
             paymentSyncService.stop()
             stopInventorySync()
             syncOutbox.stop()
+            detenerRedLocal()
             secureStorage.clearSession()
             _isLoggedIn.value = false
             notifyDeviceSessionChanged()

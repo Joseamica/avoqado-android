@@ -3,8 +3,7 @@ package com.avoqado.pos.core.data.lan
 import android.util.Log
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.io.BufferedReader
-import java.io.InputStreamReader
+import java.io.BufferedInputStream
 import java.io.PrintWriter
 import java.net.InetSocketAddress
 import java.net.Socket
@@ -55,10 +54,10 @@ class LeaseClient(
         runCatching {
             Socket().use { socket ->
                 socket.connect(InetSocketAddress(arbiter.host, arbiter.port), connectTimeoutMs)
-                socket.soTimeout = LeaseServer.SOCKET_TIMEOUT_MS
+                socket.soTimeout = READ_TIMEOUT_MS
                 PrintWriter(socket.getOutputStream(), true).println(LeaseProtocol.encode(request))
-                val line = BufferedReader(InputStreamReader(socket.getInputStream())).readLine()
-                line?.let { LeaseProtocol.decodeResponse(it) }
+                // D3: hasta el salto de línea, acotado a 64 KiB (antes `readLine()` sin tope).
+                LineaAcotada.leer(BufferedInputStream(socket.getInputStream()))?.let { LeaseProtocol.decodeResponse(it) }
             }
         }.onFailure {
             // No es un error de negocio: el árbitro no está. Modo isla.
@@ -70,5 +69,8 @@ class LeaseClient(
         /** 1.5s: si el árbitro no contesta en ese tiempo desde la MISMA red
          *  local, no está. Esperar más solo congela la UI del mesero. */
         const val CONNECT_TIMEOUT_MS = 1_500
+
+        /** Lo que antes era `LeaseServer.SOCKET_TIMEOUT_MS`: 3 s para que el árbitro conteste una petición de lease. */
+        const val READ_TIMEOUT_MS = 3_000
     }
 }

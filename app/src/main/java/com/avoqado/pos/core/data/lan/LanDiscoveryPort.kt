@@ -3,18 +3,15 @@ package com.avoqado.pos.core.data.lan
 import kotlinx.coroutines.flow.StateFlow
 
 /**
- * Lo que el coordinador necesita del descubrimiento: una lista de peers que
- * cambia sola.
- *
- * Existe como interfaz para que [LanHubCoordinator] se pueda probar SIN un
- * Context de Android ni una red real — la implementación de verdad
- * ([LanDiscovery]) depende de NsdManager, que no corre en tests unitarios.
- *
- * Espejo en iOS: allí el coordinador recibe LanDiscovery directo porque su
- * `@Published peers` ya es sustituible sin protocolo.
+ * Lo que el hub de mesas necesita del transporte único (etapa 3 del KDS, 3.5, D1): los peers que cambian solos, y un
+ * enganche para contestar leases desde ESTE aparato. Existe como interfaz para que [LanHubCoordinator] se pruebe SIN
+ * `Context` ni red (`FakeDiscovery` en `LanHubCoordinatorTest`). La implementación real es [TransporteLan].
  */
 interface LanDiscoveryPort {
     val peers: StateFlow<List<LanPeer>>
-    fun start(myPort: Int, isWired: Boolean, bootedAtMillis: Long)
-    fun stop()
+
+    /** Desde aquí el TXT dice `hub=1` y las ops de lease se contestan con [respondTo] (el `LeaseServer` puro). */
+    fun conectarHub(respondTo: (String) -> LeaseResponse)
+
+    fun desconectarHub()
 }
