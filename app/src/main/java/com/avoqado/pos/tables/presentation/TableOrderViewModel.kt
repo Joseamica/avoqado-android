@@ -178,6 +178,17 @@ class TableOrderViewModel @Inject constructor(
     companion object {
         /** Base slots, always visible in the pending card (Square-style). */
         val BASE_COURSES: List<String?> = listOf(null, "Aperitivos", "Principales", "Postres")
+
+        /** La ronda se guardó e imprimió, pero el aparato genuinamente no tiene red. */
+        const val MENSAJE_RONDA_SIN_CONEXION = "Sin conexión — ronda guardada e impresa; se sincronizará sola"
+
+        /**
+         * El aparato SÍ tiene red, pero el server respondió algo que no confirma ni descarta la ronda
+         * (409 por CAS perdido, cualquier 5xx, o un error que no es HTTP) — `addItemsToOrder` no es
+         * transaccional y pudo dejar filas escritas (Task 7 review, 2026-09-28). Nunca "Sin conexión"
+         * aquí: sería decirle al mesero algo que no está pasando.
+         */
+        const val MENSAJE_RONDA_INCIERTA = "No se pudo confirmar la ronda — se guardó e imprimió; se reintentará sola"
     }
 
     // MARK: - Check (server truth)
@@ -466,6 +477,11 @@ class TableOrderViewModel @Inject constructor(
             // la red. Si la respuesta se pierde, el replay lleva las MISMAS llaves y el servidor deduplica.
             val roundKey = java.util.UUID.randomUUID().toString()
             val conLlaves = RondaConLlave.conLlaves(requests, roundKey)
+            // Task 7 review (2026-09-28): `addItemsToOrder` no es transaccional y hace el CAS de versión AL FINAL
+            // — un 409 (perdió el CAS) o un 5xx a medio POST pueden dejar filas YA escritas. Se necesita saber cuál
+            // fue el último error para decidir el mensaje del desenlace `Encolada` (¿de verdad no hay red, o SÍ hay
+            // red pero no se pudo confirmar?).
+            var ultimoErrorEnLinea: Throwable? = null
             when (
                 val desenlace = RondaConLlave.enviar(
                     guardarRetenido = {
@@ -477,10 +493,13 @@ class TableOrderViewModel @Inject constructor(
                             retenido = true,
                         )
                     },
-                    enLinea = { repository.addRound(vId, session.orderId, conLlaves, session.version) },
+                    enLinea = {
+                        repository.addRound(vId, session.orderId, conLlaves, session.version)
+                            .onFailure { ultimoErrorEnLinea = it }
+                    },
                     soltar = { syncOutbox.soltar(vId, roundKey) },
                     descartar = { syncOutbox.descartar(vId, roundKey) },
-                    esErrorDeRed = ::isNetworkError,
+                    esErrorDeRed = { !esRechazoDefinitivoDeRonda(it) },
                 )
             ) {
                 is RondaConLlave.Desenlace.Enviada -> {
@@ -492,18 +511,18 @@ class TableOrderViewModel @Inject constructor(
                     loadCheck()
                     printRoundComandas(vId, session, lines, refreshFloor = true)
                 }
-                // Sin red: la MISMA red de seguridad quedó suelta en la cola; aquí sólo se marca, imprime y descuenta.
-                RondaConLlave.Desenlace.Encolada -> marcarRondaEncolada(vId, session, lines, roundKey, onDone)
+                RondaConLlave.Desenlace.Encolada -> {
+                    // La MISMA red de seguridad quedó suelta en la cola (misma llave); el replay la reproduce y el
+                    // reducer deduplica por (orderId, externalId). El mensaje SÍ importa: "Sin conexión" sólo si de
+                    // verdad no hay red — un 409/5xx con red viva es un caso distinto (ver constantes arriba).
+                    val motivo = ultimoErrorEnLinea?.let { if (isNetworkError(it)) MENSAJE_RONDA_SIN_CONEXION else MENSAJE_RONDA_INCIERTA }
+                        ?: MENSAJE_RONDA_SIN_CONEXION
+                    marcarRondaEncolada(vId, session, lines, roundKey, onDone, motivo)
+                }
                 is RondaConLlave.Desenlace.Rechazada -> {
                     _isSending.value = false
                     repository.refresh(vId)
-                    val e = desenlace.error
-                    val msg = if (e.message?.contains("409") == true) {
-                        "La orden cambió en otro dispositivo — vuelve a abrir la mesa"
-                    } else {
-                        com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo enviar la ronda")
-                    }
-                    onDone(false, msg)
+                    onDone(false, com.avoqado.pos.core.data.network.ServerErrorText.humanize(desenlace.error, "No se pudo enviar la ronda"))
                 }
                 is RondaConLlave.Desenlace.NoSeGuardo -> {
                     _isSending.value = false
@@ -519,6 +538,17 @@ class TableOrderViewModel @Inject constructor(
         is retrofit2.HttpException -> e.code() in 502..504
         else -> false
     }
+
+    /**
+     * Rechazo DEFINITIVO de una ronda: el server dijo que NO y reintentar la MISMA versión no lo va a
+     * cambiar, así que hay que descartar la red de seguridad y avisarle al mesero YA (Task 7 review,
+     * 2026-09-28). Todo lo demás — un 409 (perdió el CAS de versión, pero `addItemsToOrder` no es
+     * transaccional y puede haber dejado filas escritas), cualquier 5xx, o un error que no es HTTP —
+     * NO es definitivo: la ronda pudo entrar a medias, así que se suelta y el reducer deduplica por
+     * (orderId, externalId) sobre la versión que encuentre al reproducirla.
+     */
+    private fun esRechazoDefinitivoDeRonda(e: Throwable): Boolean =
+        e is retrofit2.HttpException && e.code() in setOf(400, 403, 404, 422)
 
     /**
      * Acciones ONLINE-ONLY a propósito (quitar descuento/cargo YA aplicado,
@@ -644,20 +674,25 @@ class TableOrderViewModel @Inject constructor(
             )
         }
 
-    /** La ronda quedó en la cola (sin red): «Por sincronizar», comanda por LAN y stock local, como siempre. */
+    /**
+     * La ronda quedó en la cola: «Por sincronizar», comanda por LAN y stock local, como siempre. El mensaje lo
+     * decide el llamador (Task 7 review, 2026-09-28) — puede ser genuinamente "sin red" (mesa provisional, o
+     * fallo de red real) o "no se pudo confirmar" (409/5xx con red viva, ver [MENSAJE_RONDA_INCIERTA]).
+     */
     private suspend fun marcarRondaEncolada(
         vId: String,
         session: TableSession.Active,
         lines: List<PendingLine>,
         intentId: String,
         onDone: (Boolean, String) -> Unit,
+        mensaje: String = MENSAJE_RONDA_SIN_CONEXION,
     ) {
         // Espejo EXACTO de la llave de cada renglón: es lo que deja separar el cheque antes de que sincronice.
         val stamped = lines.mapIndexed { idx, line -> line.copy(externalId = RondaConLlave.llave(intentId, idx)) }
         _queued.value = _queued.value + stamped
         _pending.value = emptyList()
         _isSending.value = false
-        onDone(true, "Sin conexión — ronda guardada e impresa; se sincronizará sola")
+        onDone(true, mensaje)
         printRoundComandas(vId, session, lines, refreshFloor = false)
         // Corte E: la venta offline descuenta el stock local aproximado.
         productsRepository.applyLocalSale(

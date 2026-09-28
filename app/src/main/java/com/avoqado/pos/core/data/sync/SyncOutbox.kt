@@ -368,9 +368,13 @@ class SyncOutbox @Inject constructor(
         refreshCounts(venueId)
     }
 
-    /** Lectura persistida usada por las guardas de sesión y cambio de venue. */
+    /**
+     * Lectura persistida usada por las guardas de sesión y cambio de venue. Cuenta PENDING + HELD —
+     * una ronda en vuelo (Task 7 review, 2026-09-28) también bloquea salir, aunque el badge visible
+     * ([pendingCount]) no la muestre.
+     */
     suspend fun blockingWorkCount(venueId: String): Int =
-        dao.pendingCount(venueId) + dao.rejectedCount(venueId)
+        dao.pendingCount(venueId) + dao.heldCount(venueId) + dao.rejectedCount(venueId)
 
     companion object {
         /** El tipo de intent que MUEVE DINERO EN EFECTIVO. Espejo exacto del `SyncIntentType` del server. */

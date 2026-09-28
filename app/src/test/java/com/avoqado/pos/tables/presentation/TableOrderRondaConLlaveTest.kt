@@ -108,9 +108,10 @@ class TableOrderRondaConLlaveTest {
     fun `P1 sin red la ronda NO se encola dos veces - se suelta la misma y las lineas quedan con su llave`() = runTest {
         coEvery { repository.addRound(any(), any(), any(), any()) } returns Result.failure(IOException("sin red"))
         var ok: Boolean? = null
+        var mensaje: String? = null
         val vm = vm()
 
-        vm.sendRound { exito, _ -> ok = exito }
+        vm.sendRound { exito, msg -> ok = exito; mensaje = msg }
         advanceUntilIdle()
 
         val llave = ids.single()
@@ -119,12 +120,13 @@ class TableOrderRondaConLlaveTest {
         coVerify(exactly = 0) { syncOutbox.descartar(any(), any()) }
         assertEquals(listOf("sync:$llave:0", "sync:$llave:1"), vm.queued.value.map { it.externalId })
         assertEquals(true, ok)
+        assertEquals(TableOrderViewModel.MENSAJE_RONDA_SIN_CONEXION, mensaje)
     }
 
     @Test
-    fun `un rechazo del servidor descarta la red de seguridad y deja las lineas para reintentar`() = runTest {
+    fun `un rechazo DEFINITIVO (422) descarta la red de seguridad y deja las lineas para reintentar`() = runTest {
         coEvery { repository.addRound(any(), any(), any(), any()) } returns
-            Result.failure(HttpException(Response.error<Any>(409, "{}".toResponseBody(null))))
+            Result.failure(HttpException(Response.error<Any>(422, "{}".toResponseBody(null))))
         var ok: Boolean? = null
         val vm = vm()
 
@@ -135,5 +137,41 @@ class TableOrderRondaConLlaveTest {
         coVerify(exactly = 0) { syncOutbox.soltar(any(), any()) }
         assertEquals(2, vm.pending.value.size)
         assertEquals(false, ok)
+    }
+
+    @Test
+    fun `P1 un 409 NO descarta - la ronda pudo quedar escrita a medias, se suelta con la MISMA llave`() = runTest {
+        coEvery { repository.addRound(any(), any(), any(), any()) } returns
+            Result.failure(HttpException(Response.error<Any>(409, "{}".toResponseBody(null))))
+        var ok: Boolean? = null
+        var mensaje: String? = null
+        val vm = vm()
+
+        vm.sendRound { exito, msg -> ok = exito; mensaje = msg }
+        advanceUntilIdle()
+
+        val llave = ids.single()
+        coVerify(exactly = 1) { syncOutbox.enqueue(any(), any(), any(), any(), any()) }
+        coVerify { syncOutbox.soltar("venue-1", llave) }
+        coVerify(exactly = 0) { syncOutbox.descartar(any(), any()) }
+        assertEquals(listOf("sync:$llave:0", "sync:$llave:1"), vm.queued.value.map { it.externalId })
+        assertEquals(true, ok)
+        assertEquals(TableOrderViewModel.MENSAJE_RONDA_INCIERTA, mensaje)
+    }
+
+    @Test
+    fun `P1 un 500 tampoco descarta y NO dice Sin conexion - se suelta con la MISMA llave`() = runTest {
+        coEvery { repository.addRound(any(), any(), any(), any()) } returns
+            Result.failure(HttpException(Response.error<Any>(500, "{}".toResponseBody(null))))
+        var mensaje: String? = null
+        val vm = vm()
+
+        vm.sendRound { _, msg -> mensaje = msg }
+        advanceUntilIdle()
+
+        val llave = ids.single()
+        coVerify { syncOutbox.soltar("venue-1", llave) }
+        coVerify(exactly = 0) { syncOutbox.descartar(any(), any()) }
+        assertEquals(TableOrderViewModel.MENSAJE_RONDA_INCIERTA, mensaje)
     }
 }

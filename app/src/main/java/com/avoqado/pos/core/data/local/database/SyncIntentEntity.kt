@@ -111,6 +111,14 @@ interface SyncIntentDao {
     suspend fun pendingCount(venueId: String): Int
 
     /**
+     * Rondas retenidas (Task 7 review, 2026-09-28): las guardas de logout/cambio de sucursal deben
+     * ver una ronda en vuelo como trabajo pendiente — no cuenta en el badge visible ([pendingCount]),
+     * pero SÍ debe bloquear salir de la sesión (`blockingWorkCount`).
+     */
+    @Query("SELECT COUNT(*) FROM pos_sync_intents WHERE venue_id = :venueId AND status = '${SyncIntentEntity.STATUS_HELD}'")
+    suspend fun heldCount(venueId: String): Int
+
+    /**
      * Los payloads de un tipo que siguen esperando a reproducirse, **con la hora en
      * que se encolaron**. Lo usa el cajón para saber qué ventas en efectivo el server
      * todavía no puede conocer — ver `PendingCashSales`. Devuelve el JSON crudo: quien

@@ -173,11 +173,25 @@ class SyncOutboxRetenidoTest {
 
         outbox.stop()
         outbox.start(VENUE)
+        // El `launch` de start() corre en Dispatchers.IO, fuera del reloj virtual de runTest: hay que esperar a que
+        // termine de verdad (Task 7 review, 2026-09-28) antes de afirmar sobre `soltarRetenidos`, o la aserción
+        // puede correr ANTES de que ese launch haya llegado a decidir si soltaba o no.
+        coVerify(timeout = 2_000, exactly = 2) { dao.deleteOldAcked(any()) }
         outbox.replayNow(VENUE)
 
         coVerify(exactly = 1) { dao.soltarRetenidos() }
         assertEquals(STATUS_HELD, cola.single { it.id == "ronda" }.status)
         outbox.stop()
+    }
+
+    @Test
+    fun `P1 blockingWorkCount cuenta las rondas retenidas - logout y cambio de sucursal no las ignoran`() = runTest {
+        val outbox = outbox(listOf(intent("ronda", 1, "ADD_ITEMS", STATUS_HELD)))
+        coEvery { dao.pendingCount(VENUE) } returns 0
+        coEvery { dao.rejectedCount(VENUE) } returns 0
+        coEvery { dao.heldCount(VENUE) } answers { cola.count { it.status == STATUS_HELD } }
+
+        assertEquals(1, outbox.blockingWorkCount(VENUE))
     }
 
     @Test

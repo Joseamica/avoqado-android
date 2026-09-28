@@ -59,6 +59,12 @@ object RondaConLlave {
             // Cerraron la mesa a medio envío: la ronda no puede quedarse retenida (sería barrera para todo lo demás).
             withContext(NonCancellable) { soltar() }
             throw e
+        } catch (e: Exception) {
+            // `enLinea` no debería lanzar (el repositorio usa `runCatching`), pero si algún día lo hace, una
+            // excepción sin capturar aquí dejaría la ronda HELD para siempre — barrera hasta reiniciar la app, con
+            // el PAY_CASH detrás. Se trata como "no se sabe": entra al mismo `fold` de abajo, donde `esErrorDeRed`
+            // decide soltar/descartar igual que con cualquier otro fallo (Task 7 review, 2026-09-28).
+            Result.failure(e)
         }
         return resultado.fold(
             onSuccess = { valor ->

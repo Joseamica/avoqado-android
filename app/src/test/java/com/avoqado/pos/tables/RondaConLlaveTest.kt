@@ -128,4 +128,17 @@ class RondaConLlaveTest {
         trabajo.cancelAndJoin()
         assertEquals(listOf("guardar", "soltar"), pasos)
     }
+
+    @Test
+    fun `P1 una excepcion de enLinea que no es cancelacion se trata como incierta, no como exito ni como retenida para siempre`() = runTest {
+        val d = RondaConLlave.enviar<Unit>(
+            guardarRetenido = { pasos += "guardar" },
+            enLinea = { throw IllegalStateException("bug en el repositorio") },
+            soltar = { pasos += "soltar" },
+            descartar = { pasos += "descartar" },
+            esErrorDeRed = { true },
+        )
+        assertEquals(RondaConLlave.Desenlace.Encolada, d)
+        assertEquals(listOf("guardar", "soltar"), pasos)
+    }
 }
