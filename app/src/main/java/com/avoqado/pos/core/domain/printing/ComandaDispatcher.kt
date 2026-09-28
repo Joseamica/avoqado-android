@@ -29,6 +29,8 @@ import android.util.Log
 import com.avoqado.pos.core.data.sync.SyncIntentTypes
 import com.avoqado.pos.core.data.sync.SyncOutbox
 import com.avoqado.pos.printing.data.ComandaPrinter
+import com.avoqado.pos.printing.data.EntregaKds
+import com.avoqado.pos.printing.data.EntregaPorWifi
 import com.avoqado.pos.printing.data.EstadoDeComanda
 import com.avoqado.pos.printing.data.PoliticaDeReintento
 import com.avoqado.pos.printing.data.PrinterService
@@ -41,6 +43,7 @@ import com.avoqado.pos.printing.routing.PrintConfig
 import com.avoqado.pos.printing.routing.PrintConfigRepository
 import com.avoqado.pos.printing.routing.PrintRoutingMapper
 import com.avoqado.pos.printing.routing.RoutableItem
+import com.avoqado.pos.printing.routing.TicketPlan
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
@@ -93,6 +96,12 @@ class ComandaDispatcher @Inject constructor(
      * no pérdida).
      */
     private val syncOutbox: SyncOutbox? = null,
+    /**
+     * Etapa 3 del KDS (3.5): el empuje por WiFi a las pantallas del local. Hilt SIEMPRE la inyecta. ponytail: opcional
+     * por lo mismo que `syncOutbox` (11 sitios de prueba con ≤ 4 argumentos, dos con WIP ajeno); sin ella no se empuja
+     * y las «sólo pantalla» salen en papel de respaldo, que es el lado seguro.
+     */
+    private val entregaPorWifi: EntregaPorWifi? = null,
 ) {
 
     /**
@@ -197,9 +206,8 @@ class ComandaDispatcher @Inject constructor(
      * @param orderId el id REAL de la orden (server) — para «la libreta» (Task 16), que lo manda
      *   al servidor junto con el resultado. `null` en los caminos que todavía no lo tienen a
      *   mano (hoy: el KDS); ahí el reporte cae a `orderNumber` en vez de perderse.
-     * @param servidorLaTiene Etapa 3 del KDS (3.4): ¿la venta o la ronda YA llegó al servidor? `true` ⇒ las estaciones
-     *   «sólo pantalla» no se imprimen (el servidor arma su comanda); `false` ⇒ salen en papel de RESPALDO y se marcan.
-     *   `null` = este disparo no reparte por pantalla y se comporta EXACTAMENTE como antes (KDS de Uber, vale de área).
+     * @param servidorLaTiene Etapa 3 del KDS: `true`/`false` = este disparo reparte por pantalla (se empuja por WiFi y
+     *   el ACUSE decide el papel de las «sólo pantalla», 3.5 D6); `null` = como antes (KDS de Uber, vale de área).
      * @param origenDelFolio `sale:<Order.externalId>` o `round:<roundKey>`: la base del folio de la marca. `null` = no
      *   se marca.
      * @return el [EstadoDeComanda] final del ruteo, para que el caller pueda AVISAR de una
@@ -266,36 +274,83 @@ class ComandaDispatcher @Inject constructor(
         }
 
         val plans = PrintRoutingMapper.buildComandas(lines, config)
-        // Etapa 3 del KDS (3.4): la caja decide por estación (`KitchenDeliveryPolicy`). `null` = comportamiento de antes.
-        val reparto = servidorLaTiene?.let { KitchenDeliveryPolicy.decidir(plans, config, it) }
-            ?: KitchenDeliveryPolicy.Reparto(plans, emptyList())
-        // Todo iba a pantallas que el servidor ya alimenta: no hay papel que mandar ni que reportar a «la libreta».
-        // M-3 de la revisión (ronda 1): con `servidorLaTiene = null` esto también puede vaciar `plans` (todas las
-        // líneas con `quantity <= 0`) y ahora regresa `null` sin avisar, en vez de reportar `Salio` como antes.
-        // Cambio aceptado (prácticamente inalcanzable) — iOS trae la misma guarda.
-        if (reparto.aImprimir.isEmpty()) return null
-        val estado = reintentoDeComanda.insistir(
-            plans = reparto.aImprimir,
-            // La config CONGELADA del trabajo lleva marcadas las estaciones de respaldo: `ComandaPrinter` les pone su
-            // encabezado y su impresora, y `TrabajoPendiente` lo conserva para cualquier reintento.
-            config = KitchenDeliveryPolicy.conRespaldo(config, reparto.respaldo),
-            orderNumber = orderNumber,
-            orderType = orderType,
-            serverName = serverName,
-            // COMBOS — el nombre viaja aparte del motor de ruteo (que es espejo byte a byte
-            // del server y no sabe de promociones) y se vuelve a atar por `orderItemId` ya
-            // ruteado, para que cada estación encabece SUS productos con su combo.
-            comboNames = lines.mapNotNull { line -> line.comboName?.let { line.orderItemId to it } }.toMap(),
-            maxIntentos = maxIntentos,
-            // «La libreta» (Task 16) — el MISMO venueId que ya se usa arriba para el refresh.
-            venueId = venueId,
-            orderId = orderId,
-            alCambiarEstado = alCambiarEstado,
-        )
-        if (reparto.respaldo.isNotEmpty()) {
-            marcarPapelDeRespaldo(venueId, reparto.respaldo, config, estado, origenDelFolio, orderNumber)
+        val comboNames = lines.mapNotNull { line -> line.comboName?.let { line.orderItemId to it } }.toMap()
+        // Etapa 3 del KDS (3.5, D6): «WiFi primero». Sólo si el llamador reparte por pantalla (`servidorLaTiene != null`:
+        // mostrador y rondas; Uber y vales no) y hay folio (sin folio no hay `sourceKey` que empujar). La entrega se
+        // GUARDA antes de conectar; el acuse por ESTACIÓN es lo que decide el papel de las «sólo pantalla».
+        val entregas = if (servidorLaTiene != null && venueId != null && origenDelFolio != null) {
+            entregasPorWifi(venueId, plans, config, orderNumber, orderType, serverName, comboNames, orderId, origenDelFolio)
+        } else {
+            emptyList()
         }
-        return estado
+        val acusadas = if (entregas.isEmpty()) emptySet() else entregaPorWifi?.entregar(entregas).orEmpty()
+        try {
+            val reparto = servidorLaTiene?.let { KitchenDeliveryPolicy.decidir(plans, config, acusadas) }
+                ?: KitchenDeliveryPolicy.Reparto(plans, emptyList())
+            // Todo iba a pantallas que acusaron: no hay papel que mandar ni que reportar a «la libreta».
+            // M-3 de la revisión (3.4): con `servidorLaTiene = null` esto también puede vaciar `plans` (todas las
+            // líneas con `quantity <= 0`) y regresa `null` sin avisar — cambio aceptado, iOS trae la misma guarda.
+            if (reparto.aImprimir.isEmpty()) return null
+            val estado = reintentoDeComanda.insistir(
+                plans = reparto.aImprimir,
+                // La config CONGELADA del trabajo lleva marcadas las estaciones de respaldo: `ComandaPrinter` les pone su
+                // encabezado y su impresora, y `TrabajoPendiente` lo conserva para cualquier reintento.
+                config = KitchenDeliveryPolicy.conRespaldo(config, reparto.respaldo),
+                orderNumber = orderNumber,
+                orderType = orderType,
+                serverName = serverName,
+                // COMBOS — el nombre viaja aparte del motor de ruteo (que es espejo byte a byte
+                // del server y no sabe de promociones) y se vuelve a atar por `orderItemId` ya
+                // ruteado, para que cada estación encabece SUS productos con su combo.
+                comboNames = comboNames,
+                maxIntentos = maxIntentos,
+                // «La libreta» (Task 16) — el MISMO venueId que ya se usa arriba para el refresh.
+                venueId = venueId,
+                orderId = orderId,
+                alCambiarEstado = alCambiarEstado,
+            )
+            if (reparto.respaldo.isNotEmpty()) {
+                marcarPapelDeRespaldo(venueId, reparto.respaldo, config, estado, origenDelFolio, orderNumber)
+            }
+            return estado
+        } finally {
+            // El papel ya se decidió (salió, o no hacía falta): las filas de esta entrega sobran. Si el proceso murió
+            // antes de llegar aquí, el replay al abrir las retoma (D7).
+            if (entregas.isNotEmpty()) entregaPorWifi?.cerrar(entregas)
+        }
+    }
+
+    /** Una entrega por plan con pantalla (D6). Trabajo de respaldo SÓLO para «sólo pantalla»: impresora+pantalla imprime su papel de todos modos. */
+    private fun entregasPorWifi(
+        venueId: String,
+        plans: List<TicketPlan>,
+        config: PrintConfig,
+        orderNumber: String,
+        orderType: String,
+        serverName: String?,
+        comboNames: Map<String, String>,
+        orderId: String?,
+        origen: String,
+    ): List<EntregaKds> {
+        val deviceId = entregaPorWifi?.deviceId ?: return emptyList()
+        val ahora = System.currentTimeMillis()
+        return KitchenDeliveryPolicy.planesConPantalla(plans, config).map { plan ->
+            val stationId = requireNotNull(plan.stationId)
+            val soloPantalla = config.stations.firstOrNull { it.id == stationId }?.let { KitchenDeliveryPolicy.esSoloPantalla(it) } == true
+            EntregaKds(
+                mensaje = KitchenDeliveryPolicy.mensajeParaPantalla(plan, venueId, deviceId, origen, orderNumber, orderType, orderId, ahora),
+                trabajoDeRespaldo = if (soloPantalla) {
+                    TrabajoPendiente(
+                        planes = listOf(plan),
+                        config = KitchenDeliveryPolicy.conRespaldo(config, listOf(stationId)),
+                        orderNumber = orderNumber, orderType = orderType, serverName = serverName,
+                        comboNames = comboNames, venueId = venueId, orderId = orderId,
+                    )
+                } else {
+                    null
+                },
+            )
+        }
     }
 
     /**

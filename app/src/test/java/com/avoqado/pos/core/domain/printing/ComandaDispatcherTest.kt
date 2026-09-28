@@ -2,6 +2,8 @@ package com.avoqado.pos.core.domain.printing
 
 import com.avoqado.pos.core.data.sync.SyncOutbox
 import com.avoqado.pos.printing.data.ComandaPrinter
+import com.avoqado.pos.printing.data.EntregaKds
+import com.avoqado.pos.printing.data.EntregaPorWifi
 import com.avoqado.pos.printing.data.ResultadoLegado
 import com.avoqado.pos.printing.data.EstadoDeComanda
 import com.avoqado.pos.printing.data.PoliticaDeReintento
@@ -21,6 +23,7 @@ import com.avoqado.pos.printing.routing.StationInfo
 import com.avoqado.pos.printing.routing.TicketPlan
 import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.coVerifyOrder
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.slot
@@ -93,6 +96,8 @@ class ComandaDispatcherTest {
         coEvery { comandaPrinter.printComandas(any(), any(), any(), any(), any()) } returns
             ComandaPrinter.Result(attempted = 1, printed = 1, skippedNoPrinter = 0, lastError = null)
         coEvery { printerService.autoPrintKitchenTicket(any()) } returns ResultadoLegado(intentadas = 1, fallidas = emptyList())
+        coEvery { entrega.entregar(any(), any()) } returns emptySet()
+        every { entrega.deviceId } returns "tablet-1"
 
         // 🔴 NO REGRESIÓN (Task 4): `ComandaDispatcher` ya no llama a `comandaPrinter.printComandas`
         // directo — pasa por `ReintentoDeComanda`, REAL (sin mockear: es justo lo que ya prueba
@@ -490,6 +495,7 @@ class ComandaDispatcherTest {
     // MARK: - Etapa 3 del KDS (3.4): la caja decide por estación
 
     private val cola = mockk<SyncOutbox>(relaxed = true)
+    private val entrega = mockk<EntregaPorWifi>(relaxed = true)
     private val barraSoloPantalla = StationInfo(id = "st_barra", name = "Barra", printerId = null, active = true, hasKitchenDisplay = true)
     private val conBarraSoloPantalla = PrintConfig(
         stations = listOf(StationInfo(id = "st_cocina", name = "Cocina", printerId = "pr_1", active = true), barraSoloPantalla),
@@ -503,6 +509,7 @@ class ComandaDispatcherTest {
         ReintentoDeComanda(comandaPrinter, reporteDeComandas = mockk<ReporteDeComandas>(relaxed = true)),
         printerService,
         cola,
+        entrega,
     )
 
     /** La impresora imprime TODO; anota qué planes y con qué config (la de la hoja de respaldo). */
@@ -514,11 +521,12 @@ class ComandaDispatcherTest {
     }
 
     @Test
-    fun `P1 con el servidor al tanto la estacion solo pantalla NO se imprime ni se marca`() = runTest {
+    fun `P1 con acuse de la pantalla la estacion solo pantalla NO se imprime ni se marca`() = runTest {
         every { printConfigRepository.getCurrentConfig() } returns conBarraSoloPantalla
         val planes = mutableListOf<List<TicketPlan>>()
         val configs = mutableListOf<PrintConfig>()
         imprimeTodo(planes, configs)
+        coEvery { entrega.entregar(any(), any()) } returns setOf("st_barra")
 
         despachadorConCola().dispatch(
             venueId = "venue-1", lines = listOf(taco, cafe), orderNumber = "1234", orderType = "En tienda",
@@ -530,7 +538,7 @@ class ComandaDispatcherTest {
     }
 
     @Test
-    fun `P1 sin el servidor la estacion solo pantalla sale de RESPALDO y se marca con el folio del servidor`() = runTest {
+    fun `P1 sin acuse la estacion solo pantalla sale de RESPALDO aunque el servidor tenga la venta, y se marca con el folio del servidor`() = runTest {
         every { printConfigRepository.getCurrentConfig() } returns conBarraSoloPantalla
         val planes = mutableListOf<List<TicketPlan>>()
         val configs = mutableListOf<PrintConfig>()
@@ -540,7 +548,7 @@ class ComandaDispatcherTest {
 
         despachadorConCola().dispatch(
             venueId = "venue-1", lines = listOf(taco, cafe), orderNumber = "1234", orderType = "En tienda",
-            servidorLaTiene = false, origenDelFolio = "sale:ext-1",
+            servidorLaTiene = true, origenDelFolio = "sale:ext-1",
         )
 
         assertEquals(listOf("st_cocina", "st_barra"), planes.single().map { it.stationId })
@@ -671,8 +679,9 @@ class ComandaDispatcherTest {
     }
 
     @Test
-    fun `si TODO va a pantallas que el servidor ya alimenta no imprime ni reporta`() = runTest {
+    fun `si TODO va a pantallas que acusaron no imprime ni reporta`() = runTest {
         every { printConfigRepository.getCurrentConfig() } returns conBarraSoloPantalla
+        coEvery { entrega.entregar(any(), any()) } returns setOf("st_barra")
 
         val estado = despachadorConCola().dispatch(
             venueId = "venue-1", lines = listOf(cafe), orderNumber = "1234", orderType = "En tienda",
@@ -780,5 +789,67 @@ class ComandaDispatcherTest {
         assertTrue("el primer pedido tiene que avisar NoSalio, no desaparecer", estados[0] is EstadoDeComanda.NoSalio)
         assertEquals(listOf("Mesa 5 · Aperitivos"), (estados[0] as EstadoDeComanda.NoSalio).estaciones)
         assertEquals("el segundo pedido tiene que seguir imprimiendo", EstadoDeComanda.Salio, estados[1])
+    }
+
+    @Test
+    fun `P1 la entrega se guarda antes de empujar y se cierra despues del papel`() = runTest {
+        every { printConfigRepository.getCurrentConfig() } returns conBarraSoloPantalla
+        val planes = mutableListOf<List<TicketPlan>>()
+        val configs = mutableListOf<PrintConfig>()
+        imprimeTodo(planes, configs)
+        val entregas = slot<List<EntregaKds>>()
+        coEvery { entrega.entregar(capture(entregas), any()) } returns emptySet()
+
+        despachadorConCola().dispatch(
+            venueId = "venue-1", lines = listOf(taco, cafe), orderNumber = "1234", orderType = "En tienda",
+            servidorLaTiene = true, origenDelFolio = "sale:ext-1", orderId = "ord-1",
+        )
+
+        // Sólo Barra (sólo pantalla) se empuja: Cocina no tiene pantalla. Y la entrega lleva su trabajo de respaldo congelado.
+        val e = entregas.captured.single()
+        assertEquals("sale:ext-1:st_barra", e.mensaje.sourceKey)
+        assertEquals("tablet-1", e.mensaje.deviceId)
+        assertEquals("ord-1", e.mensaje.orderId)
+        assertEquals(listOf("Café"), e.mensaje.items.map { it.productName })
+        assertEquals(listOf(false, true), e.trabajoDeRespaldo!!.config.stations.map { it.respaldoLocal })
+        coVerifyOrder {
+            entrega.entregar(any(), any())
+            comandaPrinter.printComandas(any(), any(), any(), any(), any())
+            entrega.cerrar(any())
+        }
+    }
+
+    @Test
+    fun `impresora mas pantalla se empuja SIN trabajo de respaldo y su papel sale como hoy`() = runTest {
+        every { printConfigRepository.getCurrentConfig() } returns PrintConfig(
+            stations = listOf(StationInfo(id = "st_barra", name = "Barra", printerId = "pr_2", active = true, hasKitchenDisplay = true)),
+            productOverrides = listOf(ProductOverride(productId = "prod_cafe", printStationId = "st_barra")),
+            defaultStationId = "st_barra",
+        )
+        val planes = mutableListOf<List<TicketPlan>>()
+        val configs = mutableListOf<PrintConfig>()
+        imprimeTodo(planes, configs)
+        val entregas = slot<List<EntregaKds>>()
+        coEvery { entrega.entregar(capture(entregas), any()) } returns setOf("st_barra")
+
+        despachadorConCola().dispatch(
+            venueId = "venue-1", lines = listOf(cafe), orderNumber = "1234", orderType = "En tienda",
+            servidorLaTiene = true, origenDelFolio = "sale:ext-1",
+        )
+
+        assertNull(entregas.captured.single().trabajoDeRespaldo)
+        assertEquals(listOf("st_barra"), planes.single().map { it.stationId })
+        coVerify(exactly = 0) { cola.enqueue(any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `sin folio o sin decision del llamador no se empuja nada`() = runTest {
+        every { printConfigRepository.getCurrentConfig() } returns conBarraSoloPantalla
+        imprimeTodo(mutableListOf(), mutableListOf())
+
+        despachadorConCola().dispatch(venueId = "venue-1", lines = listOf(cafe), orderNumber = "1234", orderType = "En tienda", servidorLaTiene = true, origenDelFolio = null)
+        despachadorConCola().dispatch(venueId = "venue-1", lines = listOf(cafe), orderNumber = "1234", orderType = "Delivery")
+
+        coVerify(exactly = 0) { entrega.entregar(any(), any()) }
     }
 }

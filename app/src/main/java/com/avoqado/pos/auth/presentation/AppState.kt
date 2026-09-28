@@ -77,6 +77,10 @@ class AppState @Inject constructor(
     @Inject
     lateinit var lanHubService: com.avoqado.pos.core.data.lan.LanHubService
 
+    /** Etapa 3 del KDS (3.5, D7): las entregas por WiFi que quedaron en disco se retoman al abrir. */
+    @Inject
+    lateinit var replayDeEntregasKds: com.avoqado.pos.printing.data.ReplayDeEntregasKds
+
     private fun detenerRedLocal() {
         if (::lanHubService.isInitialized) lanHubService.stop()
         if (::transporteLan.isInitialized) transporteLan.detener()
@@ -126,6 +130,7 @@ class AppState @Inject constructor(
             // Etapa 3 del KDS (3.5, D12): la red local sigue a la sucursal. Idempotente por venue; con otra reinicia.
             if (::lanHubService.isInitialized) lanHubService.sincronizarVenue(venueId)
             if (::transporteLan.isInitialized) transporteLan.iniciar(venueId)
+            if (::replayDeEntregasKds.isInitialized) viewModelScope.launch { replayDeEntregasKds.reproducirAlAbrir(venueId) }
         }
     }
 

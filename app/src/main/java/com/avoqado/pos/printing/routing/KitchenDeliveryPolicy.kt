@@ -1,5 +1,8 @@
 package com.avoqado.pos.printing.routing
 
+import com.avoqado.pos.core.data.lan.KdsComanda
+import com.avoqado.pos.core.data.lan.KdsComandaItem
+
 /**
  * Etapa 3 del KDS, fase 3.4 — «la caja decide por estación» (spec docs/superpowers/specs/2026-09-27-kds-etapa-3-design.md
  * §5). PURA: sin red, sin impresora, sin reloj. Espejo EXACTO de `KitchenDeliveryPolicy.swift` de avoqado-ios: mismos
@@ -8,17 +11,21 @@ package com.avoqado.pos.printing.routing
  * | Estación                                           | Qué hace la caja                                          |
  * |----------------------------------------------------|-----------------------------------------------------------|
  * | sólo impresora                                     | imprime como hoy                                          |
- * | impresora + pantalla                               | imprime como hoy (la pantalla la recibe del servidor)     |
- * | sólo pantalla y el servidor YA tiene el envío      | NO imprime: el servidor arma la comanda y la pantalla la ve |
- * | sólo pantalla y el servidor NO lo tiene            | papel de RESPALDO + marca `FALLBACK_PRINTED`              |
+ * | impresora + pantalla                               | imprime como hoy y además la empuja por el WiFi del local |
+ * | sólo pantalla y ≥ 1 pantalla suya ACUSÓ por WiFi   | NO imprime: la pantalla ya la tiene                       |
+ * | sólo pantalla sin acuse                            | papel de RESPALDO + marca `FALLBACK_PRINTED`, con o sin internet |
  *
- * 🔴 En la 3.4 no hay red local (llega en la 3.5, con acuse de la pantalla). La única prueba de que la pantalla va a ver
- * la comanda es que la venta o la ronda LLEGÓ al servidor, que es quien las arma. Sin esa prueba, papel.
+ * 🔴 Desde la 3.5 (D6) la única prueba de que la pantalla va a ver la comanda es su ACUSE por el WiFi del local. Que la
+ * venta llegara al servidor ya no basta: la pantalla puede estar apagada con la caja en línea (primer límite de la 3.4).
+ * Sin acuse, papel.
  */
 object KitchenDeliveryPolicy {
 
     /** `action` del intent `KDS_TICKET_MARK` (servidor: `applyKdsTicketMark` en sync.mobile.service.ts). */
     const val FALLBACK_PRINTED = "FALLBACK_PRINTED"
+
+    /** `action` del intent `KDS_TICKET_MARK` cuando la pantalla marcó LISTO sin red (3.5, D10). */
+    const val BUMP = "BUMP"
 
     /**
      * «Sólo pantalla» es EXACTAMENTE: pantalla efectiva (casilla Y plan, la manda el servidor) y sin impresora. No «sin
@@ -30,15 +37,54 @@ object KitchenDeliveryPolicy {
     data class Reparto(
         /** Los planes que SÍ salen en papel (incluidos los de respaldo). */
         val aImprimir: List<TicketPlan>,
-        /** Estaciones «sólo pantalla» que salen en papel de respaldo porque el servidor no tiene el envío. */
+        /** Estaciones «sólo pantalla» que salen en papel de respaldo porque ninguna de sus pantallas acusó. */
         val respaldo: List<String>,
     )
 
-    fun decidir(plans: List<TicketPlan>, config: PrintConfig, servidorLaTiene: Boolean): Reparto {
+    /**
+     * Etapa 3 del KDS (3.5, D6): el ACUSE de la pantalla decide, no el servidor. Una estación «sólo pantalla» con acuse
+     * de ≥ 1 pantalla no se imprime; sin acuse sale en papel de RESPALDO, con o sin internet (cierra el primer límite de
+     * la 3.4: pantalla apagada con la caja en línea). Por ESTACIÓN: Barra puede acusar mientras Postres está apagada.
+     *
+     * @param acusadas ids de estación con acuse por WiFi en ESTE envío (vacío = nadie contestó, o no se empujó).
+     */
+    fun decidir(plans: List<TicketPlan>, config: PrintConfig, acusadas: Set<String>): Reparto {
         val soloPantalla = config.stations.filter { esSoloPantalla(it) }.map { it.id }.toSet()
         if (soloPantalla.isEmpty()) return Reparto(plans, emptyList())
-        if (servidorLaTiene) return Reparto(plans.filter { it.stationId !in soloPantalla }, emptyList())
-        return Reparto(plans, plans.mapNotNull { it.stationId }.filter { it in soloPantalla }.distinct())
+        val aImprimir = plans.filter { it.stationId !in soloPantalla || it.stationId !in acusadas }
+        val respaldo = plans.mapNotNull { it.stationId }.filter { it in soloPantalla && it !in acusadas }.distinct()
+        return Reparto(aImprimir, respaldo)
+    }
+
+    /** Los planes que se EMPUJAN por WiFi (D6): estación activa con pantalla (sólo pantalla o impresora+pantalla). «Sin estación» no. */
+    fun planesConPantalla(plans: List<TicketPlan>, config: PrintConfig): List<TicketPlan> =
+        plans.filter { p -> p.stationId != null && config.stations.any { it.id == p.stationId && it.active && it.hasKitchenDisplay } }
+
+    /** El mensaje `comanda` de UN plan (D4). El folio es el del servidor; el id de cada renglón, el del carrito o uno sintético. */
+    fun mensajeParaPantalla(
+        plan: TicketPlan,
+        venueId: String,
+        deviceId: String,
+        origen: String,
+        orderNumber: String,
+        orderType: String,
+        orderId: String?,
+        createdAtMillis: Long,
+    ): KdsComanda {
+        val sourceKey = folio(origen, plan.stationId)
+        return KdsComanda(
+            venueId = venueId,
+            deviceId = deviceId,
+            sourceKey = sourceKey,
+            stationId = requireNotNull(plan.stationId) { "un plan sin estación no se empuja" },
+            orderNumber = orderNumber,
+            orderType = orderType,
+            orderId = orderId,
+            createdAtMillis = createdAtMillis,
+            items = plan.lines.mapIndexed { i, l ->
+                KdsComandaItem(id = l.orderItemIds.firstOrNull() ?: "$sourceKey#$i", productName = l.productName, quantity = l.quantity, modifiers = l.modifiers, notes = l.notes)
+            },
+        )
     }
 
     /**

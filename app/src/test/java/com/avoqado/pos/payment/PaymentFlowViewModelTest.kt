@@ -12,6 +12,7 @@ import com.avoqado.pos.printing.data.ResultadoLegado
 import com.avoqado.pos.printing.data.ReplayDeComandasPendientes
 import com.avoqado.pos.printing.data.AlmacenDeTexto
 import com.avoqado.pos.printing.data.ComandasPendientesStore
+import com.avoqado.pos.printing.data.EntregaPorWifi
 import com.avoqado.pos.areatickets.data.AreaTicketCheckout
 import com.avoqado.pos.areatickets.data.AreaTicketCheckoutOrder
 import com.avoqado.pos.areatickets.data.AreaTicketCheckoutTotals
@@ -110,6 +111,15 @@ class PaymentFlowViewModelTest {
     private val storeDePendientes by lazy { ComandasPendientesStore(almacenDePendientes) }
     /** Etapa 3 del KDS (3.4): la cola donde el despachador deja la marca del papel de respaldo. */
     private val colaDeMarcas = mockk<SyncOutbox>(relaxed = true)
+    /**
+     * Etapa 3 del KDS (3.5): la pantalla de Barra ACUSA — sin acuse D6 la sacaría de respaldo y la marcaría. Lo que
+     * estas pruebas miden es el reparto del ViewModel, no D6 (D6 vive en `ComandaDispatcherTest`). Una prueba que
+     * simula que la pantalla NO contesta lo re-stubbea (`P1 venta en efectivo SIN RED`).
+     */
+    private val entregaPorWifi = mockk<EntregaPorWifi>(relaxed = true) {
+        coEvery { entregar(any(), any()) } returns setOf("st_barra")
+        every { deviceId } returns "tablet-1"
+    }
     /** El MISMO dispatcher que ve el ViewModel y el reintento periódico — ver más abajo. */
     private val comandaDispatcherReal by lazy {
         ComandaDispatcher(
@@ -117,6 +127,7 @@ class PaymentFlowViewModelTest {
             ReintentoDeComanda(comandaPrinter, reporteDeComandas = mockk<ReporteDeComandas>(relaxed = true)),
             printerService,
             colaDeMarcas,
+            entregaPorWifi,
         )
     }
 
@@ -1352,6 +1363,9 @@ class PaymentFlowViewModelTest {
 
     @Test
     fun `P1 venta en efectivo SIN RED - respaldo en papel y marca con el externalId de la orden`() = runTest {
+        // Etapa 3 del KDS (3.5, D6): el papel lo decide el ACUSE, no el internet. Aquí la pantalla tampoco contesta por
+        // el WiFi del local, que es el caso en que la caja imprime el respaldo.
+        coEvery { entregaPorWifi.entregar(any(), any()) } returns emptySet()
         val llave = slot<String>()
         coEvery { orderRepository.createOrder(any(), any(), any(), any(), capture(llave)) } returns
             Result.failure(java.net.UnknownHostException("sin red"))

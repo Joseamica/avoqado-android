@@ -9,6 +9,10 @@ import com.avoqado.pos.inventory.data.local.InventoryTransferDao
 import com.avoqado.pos.inventory.data.local.InventoryTransferEntity
 import com.avoqado.pos.inventory.data.local.PurchaseOrderDao
 import com.avoqado.pos.inventory.data.local.PurchaseOrderEntity
+import com.avoqado.pos.kds.data.local.EntregaKdsPendienteEntity
+import com.avoqado.pos.kds.data.local.EntregasKdsPendientesDao
+import com.avoqado.pos.kds.data.local.KdsTicketLocalEntity
+import com.avoqado.pos.kds.data.local.KdsTicketsLocalesDao
 import com.avoqado.pos.reservations.data.PendingReservationActionDao
 import com.avoqado.pos.inventory.waste.data.PendingWasteDao
 import com.avoqado.pos.inventory.waste.data.PendingWasteEntity
@@ -32,8 +36,11 @@ import com.avoqado.pos.reservations.data.PendingReservationActionEntity
         WasteCatalogEntity::class,
         // v12 — la cola durable de mermas por subir (folio = llave)
         PendingWasteEntity::class,
+        // v13 — etapa 3 del KDS (3.5): entregas por WiFi que la caja guarda ANTES de conectar, y comandas que la pantalla guarda ANTES de acusar
+        EntregaKdsPendienteEntity::class,
+        KdsTicketLocalEntity::class,
     ],
-    version = 12,
+    version = 13,
     exportSchema = true,
 )
 abstract class AvoqadoDatabase : RoomDatabase() {
@@ -46,4 +53,6 @@ abstract class AvoqadoDatabase : RoomDatabase() {
     abstract fun syncIntentDao(): SyncIntentDao
     abstract fun wasteCatalogDao(): WasteCatalogDao
     abstract fun pendingWasteDao(): PendingWasteDao
+    abstract fun entregasKdsPendientesDao(): EntregasKdsPendientesDao
+    abstract fun kdsTicketsLocalesDao(): KdsTicketsLocalesDao
 }

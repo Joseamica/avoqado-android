@@ -26,46 +26,83 @@ class KitchenDeliveryPolicyTest {
     private fun config(vararg stations: StationInfo) = PrintConfig(stations = stations.toList(), defaultStationId = "st_cocina")
 
     @Test
-    fun `solo impresora - imprime como hoy con o sin servidor`() {
+    fun `solo impresora - imprime como hoy con o sin acuse`() {
         val planes = listOf(plan("st_cocina"))
-        for (servidor in listOf(true, false)) {
-            val r = KitchenDeliveryPolicy.decidir(planes, config(cocina), servidorLaTiene = servidor)
+        for (acusadas in listOf(emptySet(), setOf("st_cocina"))) {
+            val r = KitchenDeliveryPolicy.decidir(planes, config(cocina), acusadas)
             assertEquals(planes, r.aImprimir)
             assertEquals(emptyList<String>(), r.respaldo)
         }
     }
 
     @Test
-    fun `impresora mas pantalla - imprime como hoy con o sin servidor`() {
+    fun `impresora mas pantalla - imprime como hoy con o sin acuse`() {
         val planes = listOf(plan("st_barra"))
-        for (servidor in listOf(true, false)) {
-            val r = KitchenDeliveryPolicy.decidir(planes, config(cocina, barraConImpresora), servidorLaTiene = servidor)
+        for (acusadas in listOf(emptySet(), setOf("st_barra"))) {
+            val r = KitchenDeliveryPolicy.decidir(planes, config(cocina, barraConImpresora), acusadas)
             assertEquals(planes, r.aImprimir)
             assertEquals(emptyList<String>(), r.respaldo)
         }
     }
 
     @Test
-    fun `P1 solo pantalla con el servidor al tanto - NO se imprime`() {
-        val r = KitchenDeliveryPolicy.decidir(
-            listOf(plan("st_cocina"), plan("st_barra")), config(cocina, barraSoloPantalla), servidorLaTiene = true,
-        )
+    fun `P1 solo pantalla con acuse de su pantalla - NO se imprime`() {
+        val r = KitchenDeliveryPolicy.decidir(listOf(plan("st_cocina"), plan("st_barra")), config(cocina, barraSoloPantalla), acusadas = setOf("st_barra"))
         assertEquals(listOf("st_cocina"), r.aImprimir.map { it.stationId })
         assertEquals(emptyList<String>(), r.respaldo)
     }
 
     @Test
-    fun `P1 solo pantalla sin el servidor - sale en papel de respaldo`() {
-        val r = KitchenDeliveryPolicy.decidir(
-            listOf(plan("st_cocina"), plan("st_barra")), config(cocina, barraSoloPantalla), servidorLaTiene = false,
-        )
+    fun `P1 solo pantalla sin acuse - sale en papel de respaldo, con o sin internet`() {
+        val r = KitchenDeliveryPolicy.decidir(listOf(plan("st_cocina"), plan("st_barra")), config(cocina, barraSoloPantalla), acusadas = emptySet())
         assertEquals(listOf("st_cocina", "st_barra"), r.aImprimir.map { it.stationId })
         assertEquals(listOf("st_barra"), r.respaldo)
     }
 
     @Test
+    fun `P1 el acuse decide POR ESTACION - Barra acusa y Postres no`() {
+        val postres = StationInfo(id = "st_postres", name = "Postres", printerId = null, hasKitchenDisplay = true)
+        val r = KitchenDeliveryPolicy.decidir(
+            listOf(plan("st_barra"), plan("st_postres")), config(cocina, barraSoloPantalla, postres), acusadas = setOf("st_barra"),
+        )
+        assertEquals(listOf("st_postres"), r.aImprimir.map { it.stationId })
+        assertEquals(listOf("st_postres"), r.respaldo)
+    }
+
+    @Test
+    fun `planesConPantalla son los de estaciones activas con pantalla - sin estacion y sin pantalla no se empujan`() {
+        val postresSinNada = StationInfo(id = "st_postres", name = "Postres", printerId = null)
+        val planes = listOf(plan("st_cocina"), plan("st_barra"), plan("st_postres"), plan(null))
+        val conPantalla = KitchenDeliveryPolicy.planesConPantalla(planes, config(cocina, barraConImpresora, postresSinNada))
+        assertEquals(listOf("st_barra"), conPantalla.map { it.stationId })
+        assertEquals(emptyList<TicketPlan>(), KitchenDeliveryPolicy.planesConPantalla(planes, config(cocina, barraSoloPantalla.copy(active = false))))
+    }
+
+    @Test
+    fun `mensajeParaPantalla lleva el folio del servidor, el id del renglon o uno sintetico`() {
+        val plan = TicketPlan(
+            stationId = "st_barra", unrouted = false,
+            lines = listOf(
+                ConsolidatedLine("Café", 2, listOf("Sin azúcar"), "caliente", listOf("oi_2", "oi_3")),
+                ConsolidatedLine("Té", 1, emptyList(), null, emptyList()),
+            ),
+        )
+        val m = KitchenDeliveryPolicy.mensajeParaPantalla(plan, "venue-1", "tablet-1", "sale:ext-1", "1234", "En tienda", "ord-1", 5L)
+        assertEquals("sale:ext-1:st_barra", m.sourceKey)
+        assertEquals("st_barra", m.stationId)
+        assertEquals("tablet-1", m.deviceId)
+        assertEquals("ord-1", m.orderId)
+        assertEquals(5L, m.createdAtMillis)
+        assertEquals(listOf("oi_2", "sale:ext-1:st_barra#1"), m.items.map { it.id })
+        assertEquals(listOf("Sin azúcar"), m.items[0].modifiers)
+        assertEquals("caliente", m.items[0].notes)
+        assertEquals(1, m.version)
+        assertEquals("comanda", m.op)
+    }
+
+    @Test
     fun `P1 H4 - estacion sin impresora y SIN pantalla imprime como hoy`() {
-        val r = KitchenDeliveryPolicy.decidir(listOf(plan("st_postres")), config(cocina, postresSinNada), servidorLaTiene = true)
+        val r = KitchenDeliveryPolicy.decidir(listOf(plan("st_postres")), config(cocina, postresSinNada), acusadas = emptySet())
         assertEquals(listOf("st_postres"), r.aImprimir.map { it.stationId })
         assertFalse(KitchenDeliveryPolicy.esSoloPantalla(postresSinNada))
     }
@@ -73,8 +110,8 @@ class KitchenDeliveryPolicyTest {
     @Test
     fun `sin estacion, estacion borrada o config vacia - como hoy`() {
         val planes = listOf(plan(null), plan("st_borrada"))
-        assertEquals(planes, KitchenDeliveryPolicy.decidir(planes, config(cocina, barraSoloPantalla), servidorLaTiene = true).aImprimir)
-        assertEquals(planes, KitchenDeliveryPolicy.decidir(planes, PrintConfig(), servidorLaTiene = false).aImprimir)
+        assertEquals(planes, KitchenDeliveryPolicy.decidir(planes, config(cocina, barraSoloPantalla), acusadas = emptySet()).aImprimir)
+        assertEquals(planes, KitchenDeliveryPolicy.decidir(planes, PrintConfig(), acusadas = emptySet()).aImprimir)
     }
 
     @Test
