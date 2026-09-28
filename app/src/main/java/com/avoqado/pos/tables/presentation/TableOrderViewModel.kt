@@ -196,6 +196,9 @@ class TableOrderViewModel @Inject constructor(
          */
         const val MENSAJE_RONDA_INCIERTA = "No se pudo confirmar la ronda — se guardó e imprimió; se reintentará sola"
 
+        /** El 400 «Cannot add items to a paid order» (QA 3.4, Sunmi D3): otro aparato ya cobró la mesa. */
+        const val MENSAJE_RONDA_CUENTA_COBRADA = "Esta cuenta ya se cobró en otro aparato. La ronda no se envió."
+
         /** Presupuesto corto de la ronda EN LÍNEA (spec 2026-09-27 §5, H2): el mismo que la ruta del dinero. */
         const val PRESUPUESTO_RONDA_MS = 15_000L
 
@@ -205,7 +208,7 @@ class TableOrderViewModel @Inject constructor(
         fun mensajeComandaNoSalio(estaciones: List<String>): String = "No salió la comanda de: ${estaciones.joinToString(", ")}"
 
         const val PISTA_COMANDA_REINTENTO = "Se vuelve a intentar sola cuando la impresora responda."
-        const val PISTA_COMANDA_SIN_IMPRESORA = "Esa estación no tiene impresora: revisa la configuración de impresoras."
+        const val PISTA_COMANDA_SIN_IMPRESORA = com.avoqado.pos.printing.data.ReintentoDeComanda.CAUSA_SIN_IMPRESORA
     }
 
     // MARK: - Check (server truth)
@@ -444,8 +447,15 @@ class TableOrderViewModel @Inject constructor(
      * the server accepts course per line), then prints one comanda batch per
      * course. Success → session cleared, caller returns to the floor plan
      * (Square drops the waiter back on the plano after firing).
+     *
+     * 🔴 El aviso lo publica el ViewModel con el estilo del desenlace (QA 3.4): la pantalla pintaba TODO desenlace con
+     * `showMessage`, así que un rechazo definitivo («cuenta ya cobrada») salía con palomita verde.
      */
-    fun sendRound(onDone: (Boolean, String) -> Unit) {
+    fun sendRound(alTerminar: (Boolean, String) -> Unit = { _, _ -> }) {
+        val onDone: (Boolean, String) -> Unit = { ok, texto ->
+            if (ok) showMessage(texto) else showError(texto)
+            alTerminar(ok, texto)
+        }
         val session = tableSession.current() ?: run { onDone(false, "No hay mesa activa"); return }
         val vId = venueId ?: return
         if (_isSending.value) return
@@ -538,7 +548,7 @@ class TableOrderViewModel @Inject constructor(
                 is RondaConLlave.Desenlace.Rechazada -> {
                     _isSending.value = false
                     repository.refresh(vId)
-                    onDone(false, com.avoqado.pos.core.data.network.ServerErrorText.humanize(desenlace.error, "No se pudo enviar la ronda"))
+                    onDone(false, textoDeRondaRechazada(desenlace.error))
                 }
                 is RondaConLlave.Desenlace.NoSeGuardo -> {
                     _isSending.value = false
@@ -546,6 +556,13 @@ class TableOrderViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    /** El server no da código para «cuenta pagada», sólo el texto; el cuerpo se lee UNA vez. */
+    private fun textoDeRondaRechazada(e: Throwable): String {
+        val delServer = (e as? retrofit2.HttpException)?.let { com.avoqado.pos.core.data.network.ServerErrorText.serverMessageFrom(it) }
+        if (delServer?.contains("paid order", ignoreCase = true) == true) return MENSAJE_RONDA_CUENTA_COBRADA
+        return com.avoqado.pos.core.data.network.ServerErrorText.humanize(delServer, "No se pudo enviar la ronda")
     }
 
     /** Red caída/timeout — nunca un rechazo de negocio del server. */

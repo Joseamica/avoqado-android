@@ -285,6 +285,39 @@ class TableOrderRondaConLlaveTest {
     }
 
     @Test
+    fun `P1 cuenta ya cobrada en otro aparato se avisa como ERROR en espanol y las lineas se quedan`() = runTest {
+        coEvery { repository.addRound(any(), any(), any(), any()) } returnsMany listOf(
+            Result.failure(http(409)),
+            Result.failure(http(400, """{"message":"Cannot add items to a paid order"}""")),
+        )
+        var mensaje: String? = null
+        val vm = vm()
+        coEvery { repository.getOrderDetail(any(), any()) } returns
+            Result.success(OrderDetail(id = "o1", orderNumber = "ORD-1", items = emptyList(), version = 9))
+
+        vm.sendRound { _, texto -> mensaje = texto }
+        advanceUntilIdle()
+
+        val esperado = "Esta cuenta ya se cobró en otro aparato. La ronda no se envió."
+        assertEquals(esperado, mensaje)
+        assertEquals(esperado, vm.actionMessage.value)
+        assertEquals(true, vm.actionIsError.value)
+        assertEquals(2, vm.pending.value.size)
+    }
+
+    @Test
+    fun `un rechazo definitivo cualquiera tampoco se pinta como exito`() = runTest {
+        coEvery { repository.addRound(any(), any(), any(), any()) } returns Result.failure(http(422, """{"message":"Producto inactivo"}"""))
+        val vm = vm()
+
+        vm.sendRound { _, _ -> }
+        advanceUntilIdle()
+
+        assertEquals(true, vm.actionIsError.value)
+        assertEquals(2, vm.pending.value.size)
+    }
+
+    @Test
     fun `P1 sin red la ronda imprime por el despachador como envio que el servidor NO tiene`() = runTest {
         coEvery { repository.addRound(any(), any(), any(), any()) } returns Result.failure(IOException("sin red"))
         val vm = vm()
