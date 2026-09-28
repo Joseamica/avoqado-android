@@ -32,6 +32,10 @@ data class KDSOrder(
     var status: KDSOrderStatus,
     var startedAt: Long? = null,
     var completedAt: Long? = null,
+    /** Folio de la comanda (spec 2026-09-27 §1): `sale:…`, `round:…`, `order:…`. `null` = Uber o fila vieja. */
+    val sourceKey: String? = null,
+    /** Estación a la que el servidor la repartió. `null` = «Sin estación»: sale en todas las pantallas. */
+    val printStationId: String? = null,
 )
 
 data class KDSOrderItem(

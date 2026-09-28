@@ -1,12 +1,15 @@
 package com.avoqado.pos.kds.data
 
 import android.util.Log
+import com.avoqado.pos.BuildConfig
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ApiConstants
+import com.avoqado.pos.core.data.network.ForbiddenInterceptor
 import com.avoqado.pos.kds.domain.CanalReparto
 import com.avoqado.pos.kds.domain.KDSOrder
 import com.avoqado.pos.kds.domain.KDSOrderItem
 import com.avoqado.pos.kds.domain.KDSOrderStatus
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
@@ -15,6 +18,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
+import java.net.URLEncoder
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -26,40 +30,124 @@ class KDSRepository @Inject constructor(
     private val client: OkHttpClient,
 ) {
 
-    // MARK: - Fetch active KDS orders
+    // MARK: - Base de las rutas (etapa 3)
 
-    suspend fun fetchOrders(): Result<List<KDSOrder>> {
-        val venueId = secureStorage.venueId
-            ?: return Result.failure(Exception("No venue selected"))
-        val token = secureStorage.accessToken
-            ?: return Result.failure(Exception("Not authenticated"))
+    /**
+     * `…/mobile/venues/<venue>/<resto>`. Los tests de JVM la apuntan a MockWebServer con `avoqado.test.baseUrl` (patrón
+     * de `InventoryRepository.venueBaseUrl`). 🔴 Sólo en DEBUG: estas peticiones llevan el `Bearer` de la sesión.
+     */
+    private fun ruta(venueId: String, resto: String): String {
+        val base = (if (BuildConfig.DEBUG) System.getProperty("avoqado.test.baseUrl") else null) ?: ApiConstants.BASE_URL
+        return "$base/mobile/venues/$venueId/$resto"
+    }
 
-        return try {
-            val request = Request.Builder()
-                .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/kds/orders?status=NEW,PREPARING,READY")
-                .header("Authorization", "Bearer $token")
-                .get()
-                .build()
+    private fun conEstacion(stationId: String?): String? =
+        stationId?.let { "stationId=" + URLEncoder.encode(it, "UTF-8") }
 
-            val (code, body) = withContext(Dispatchers.IO) {
-                val response = client.newCall(request).execute()
-                response.code to (response.body?.string() ?: "")
-            }
+    private fun sesion(): Pair<String, String>? {
+        val venueId = secureStorage.venueId ?: return null
+        val token = secureStorage.accessToken ?: return null
+        return venueId to token
+    }
 
-            if (code in 200..299) {
-                val json = JSONObject(body)
-                val data = json.optJSONArray("data") ?: JSONArray()
-                val orders = (0 until data.length()).mapNotNull { parseOrder(data.getJSONObject(it)) }
-                Log.d(TAG, "Fetched ${orders.size} orders from API")
-                Result.success(orders)
-            } else {
-                Log.e(TAG, "Fetch failed: $code - $body")
-                Result.failure(Exception("Error al obtener ordenes KDS ($code)"))
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Fetch error: ${e.message}")
-            Result.failure(e)
+    /** El cuerpo si fue 2xx; un «no» del servidor sale como [KdsHttpException] con su `code`; sin red, `IOException`. */
+    private suspend fun ejecutar(request: Request): Result<String> = try {
+        val (code, body) = withContext(Dispatchers.IO) {
+            client.newCall(request).execute().use { response -> response.code to response.body?.string().orEmpty() }
         }
+        if (code in 200..299) Result.success(body) else Result.failure(rechazo(code, body))
+    } catch (e: CancellationException) {
+        // Cerraron la pantalla a medio sondeo: la cancelación sigue su camino, no se disfraza de «sin red».
+        throw e
+    } catch (e: Exception) {
+        Result.failure(e)
+    }
+
+    private fun rechazo(code: Int, body: String): KdsHttpException {
+        val json = runCatching { JSONObject(body) }.getOrNull()
+        val codigo = json?.optString("code")?.takeIf { it.isNotBlank() && it != "null" }
+        val mensaje = json?.optString("message")?.takeIf { it.isNotBlank() && it != "null" } ?: "Error del servidor ($code)"
+        return KdsHttpException(code, codigo, mensaje)
+    }
+
+    /** Una acción de la cocina: la pantalla explica su propio error, sin el diálogo global de permisos. */
+    private fun accion(url: String, token: String, metodo: String, cuerpo: JSONObject? = null): Request =
+        Request.Builder()
+            .url(url)
+            .header("Authorization", "Bearer $token")
+            .header(ForbiddenInterceptor.LOCAL_ERROR_HEADER, "1")
+            .method(metodo, (cuerpo ?: JSONObject()).toString().toRequestBody("application/json".toMediaType()))
+            .build()
+
+    private fun comandas(body: String): List<KDSOrder> {
+        val data = JSONObject(body).optJSONArray("data") ?: JSONArray()
+        return (0 until data.length()).mapNotNull { parseOrder(data.getJSONObject(it)) }
+    }
+
+    private fun sinSesion(): Result<Nothing> = Result.failure(IllegalStateException("Sin sesión o sin sucursal"))
+
+    // MARK: - Tablero por estación (etapa 3, spec §3)
+
+    /**
+     * Las comandas pendientes de UNA estación (más las «Sin estación»), de la más vieja a la más nueva. El servidor topa
+     * en 100. `stationId = null` = todas (sólo lo usan las apps viejas).
+     */
+    suspend fun fetchOrders(stationId: String? = null): Result<List<KDSOrder>> {
+        val (venueId, token) = sesion() ?: return sinSesion()
+        val consulta = listOfNotNull("status=NEW,PREPARING,READY", conEstacion(stationId)).joinToString("&")
+        val request = Request.Builder()
+            .url(ruta(venueId, "kds/orders?$consulta"))
+            .header("Authorization", "Bearer $token")
+            // Corre sola cada 10 s: un 403 no puede sacar el diálogo global encima de la cocina.
+            .header(ForbiddenInterceptor.BACKGROUND_HEADER, "1")
+            .get()
+            .build()
+        return ejecutar(request).mapCatching(::comandas)
+            .onFailure { Log.d(TAG, "Tablero no leído: ${it.message}") }
+    }
+
+    /** «Recientes»: las últimas 20 terminadas en 60 min, para deshacer un LISTO por error. */
+    suspend fun fetchRecientes(stationId: String?): Result<List<KDSOrder>> {
+        val (venueId, token) = sesion() ?: return sinSesion()
+        val url = ruta(venueId, "kds/orders/recent") + (conEstacion(stationId)?.let { "?$it" } ?: "")
+        val request = Request.Builder()
+            .url(url)
+            .header("Authorization", "Bearer $token")
+            .header(ForbiddenInterceptor.LOCAL_ERROR_HEADER, "1")
+            .get()
+            .build()
+        return ejecutar(request).mapCatching(::comandas)
+    }
+
+    /** LISTO de un toque. */
+    suspend fun bumpOrder(orderId: String): Result<Unit> {
+        val (venueId, token) = sesion() ?: return sinSesion()
+        return ejecutar(accion(ruta(venueId, "kds/orders/$orderId/bump"), token, "POST")).map { }
+    }
+
+    /** «Deshacer»: la comanda terminada vuelve a la cocina. */
+    suspend fun recall(kdsId: String): Result<Unit> {
+        val (venueId, token) = sesion() ?: return sinSesion()
+        return ejecutar(accion(ruta(venueId, "kds/orders/$kdsId/recall"), token, "POST")).map { }
+    }
+
+    /** «Marcar todas listas». Devuelve cuántas terminó el servidor. Tope del servidor: 100 ids. */
+    suspend fun bumpBatch(ids: List<String>): Result<Int> {
+        val (venueId, token) = sesion() ?: return sinSesion()
+        val cuerpo = JSONObject().put("ids", JSONArray(ids))
+        return ejecutar(accion(ruta(venueId, "kds/orders/bump-batch"), token, "POST", cuerpo))
+            .mapCatching { JSONObject(it).optJSONObject("data")?.optInt("completed", 0) ?: 0 }
+    }
+
+    /**
+     * Prender/apagar la pantalla de una estación desde la tablet: el MISMO registro y las mismas reglas que el
+     * dashboard (`printers:manage`; prender pasa por la puerta de lanzamiento y el plan Pro). 403 ⇒ `KdsHttpException`
+     * con `KITCHEN_DISPLAY_NOT_RELEASED` o `KITCHEN_DISPLAY_REQUIRES_PRO`.
+     */
+    suspend fun setKitchenDisplay(stationId: String, enabled: Boolean): Result<Unit> {
+        val (venueId, token) = sesion() ?: return sinSesion()
+        val url = ruta(venueId, "print-stations/$stationId/kitchen-display")
+        return ejecutar(accion(url, token, "PUT", JSONObject().put("enabled", enabled))).map { }
     }
 
     // MARK: - Create KDS order
@@ -157,37 +245,6 @@ class KDSRepository @Inject constructor(
         }
     }
 
-    // MARK: - Bump order
-
-    suspend fun bumpOrder(orderId: String): Result<Unit> {
-        val venueId = secureStorage.venueId
-            ?: return Result.failure(Exception("No venue selected"))
-        val token = secureStorage.accessToken
-            ?: return Result.failure(Exception("Not authenticated"))
-
-        return try {
-            val request = Request.Builder()
-                .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/kds/orders/$orderId/bump")
-                .header("Authorization", "Bearer $token")
-                .post("".toRequestBody("application/json".toMediaType()))
-                .build()
-
-            val code = withContext(Dispatchers.IO) {
-                client.newCall(request).execute().code
-            }
-
-            if (code in 200..299) {
-                Log.d(TAG, "Order bumped: $orderId")
-                Result.success(Unit)
-            } else {
-                Result.failure(Exception("Error al completar orden ($code)"))
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Bump error: ${e.message}")
-            Result.failure(e)
-        }
-    }
-
     // MARK: - Parse helpers
 
     private fun parseOrder(json: JSONObject): KDSOrder? {
@@ -225,6 +282,8 @@ class KDSRepository @Inject constructor(
                 status = status,
                 startedAt = startedAt,
                 completedAt = completedAt,
+                sourceKey = json.optString("sourceKey", "").takeIf { it.isNotEmpty() && it != "null" },
+                printStationId = json.optString("printStationId", "").takeIf { it.isNotEmpty() && it != "null" },
             )
         } catch (e: Exception) {
             Log.e(TAG, "Parse order error: ${e.message}")
@@ -526,3 +585,6 @@ data class KDSOrderItemRequest(
     val modifiers: List<String> = emptyList(),
     val notes: String? = null,
 )
+
+/** Un «no» del servidor con su código (`{ message, code }` del manejador global). */
+class KdsHttpException(val status: Int, val codigo: String?, message: String) : Exception(message)

@@ -607,4 +607,55 @@ class RoleManagerTest {
         assertFalse(roleManager.canManageCustomers)
         assertFalse(roleManager.canViewCustomers)
     }
+
+    // MARK: - Pantalla de cocina (etapa 3, fase 3.3): se espeja el PERMISO de las rutas, no una lista de roles
+
+    @Test
+    fun `P1 KITCHEN entra a la pantalla de cocina con su lista REAL y no la prende`() {
+        every { secureStorage.userRole } returns "KITCHEN"
+        every { secureStorage.venuePermissions } returns PermisosRealesDelServer.KITCHEN
+        assertTrue("el server le da orders:update: marcar LISTO es su trabajo", roleManager.canAccessKDS)
+        assertFalse("la cocina no configura impresoras: no prende la pantalla", roleManager.canManagePrinters)
+    }
+
+    @Test
+    fun `VIEWER y HOST no operan la pantalla - no tienen orders update`() {
+        every { secureStorage.userRole } returns "VIEWER"
+        every { secureStorage.venuePermissions } returns PermisosRealesDelServer.VIEWER
+        assertFalse(roleManager.canAccessKDS)
+        every { secureStorage.userRole } returns "HOST"
+        every { secureStorage.venuePermissions } returns PermisosRealesDelServer.HOST
+        assertFalse(roleManager.canAccessKDS)
+    }
+
+    @Test
+    fun `prenden la pantalla quienes configuran impresoras (lista REAL del server)`() {
+        listOf(
+            "MANAGER" to PermisosRealesDelServer.MANAGER,
+            "ADMIN" to PermisosRealesDelServer.ADMIN,
+            "OWNER" to PermisosRealesDelServer.OWNER,
+            "SUPERADMIN" to PermisosRealesDelServer.SUPERADMIN,
+        ).forEach { (rol, lista) ->
+            every { secureStorage.userRole } returns rol
+            every { secureStorage.venuePermissions } returns lista
+            assertTrue("$rol configura impresoras", roleManager.canManagePrinters)
+        }
+        listOf("WAITER" to PermisosRealesDelServer.WAITER, "CASHIER" to PermisosRealesDelServer.CASHIER).forEach { (rol, lista) ->
+            every { secureStorage.userRole } returns rol
+            every { secureStorage.venuePermissions } returns lista
+            assertFalse("$rol no configura impresoras", roleManager.canManagePrinters)
+        }
+    }
+
+    @Test
+    fun `pantalla de cocina (respaldo por rol) incluye a KITCHEN y deja fuera a VIEWER`() {
+        every { secureStorage.userRole } returns "KITCHEN"
+        assertTrue(roleManager.canAccessKDS)
+        every { secureStorage.userRole } returns "VIEWER"
+        assertFalse(roleManager.canAccessKDS)
+        every { secureStorage.userRole } returns "WAITER"
+        assertFalse("sin lista, prender cae a MANAGER+", roleManager.canManagePrinters)
+        every { secureStorage.userRole } returns "MANAGER"
+        assertTrue(roleManager.canManagePrinters)
+    }
 }

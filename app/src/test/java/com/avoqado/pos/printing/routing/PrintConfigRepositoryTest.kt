@@ -2,11 +2,13 @@ package com.avoqado.pos.printing.routing
 
 import com.avoqado.pos.core.data.local.PayloadCache
 import com.avoqado.pos.core.data.network.ApiService
+import com.avoqado.pos.core.di.NetworkModule
 import io.mockk.coEvery
 import io.mockk.mockk
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -89,5 +91,40 @@ class PrintConfigRepositoryTest {
         // es lo que hace que la comanda salga en un apagón de internet.
         assertEquals(1, repository.getCurrentConfig().stations.size)
         assertEquals("st_cocina", repository.getCurrentConfig().stations.first().id)
+    }
+
+    // MARK: - Etapa 3 del KDS (fase 3.3): la pantalla EFECTIVA y la puerta de lanzamiento
+
+    @Test
+    fun `la etapa 3 trae la pantalla efectiva por estacion y la puerta de lanzamiento`() {
+        val r = NetworkModule.provideJson().decodeFromString(
+            PrintConfigResponse.serializer(),
+            """{"success":true,"data":{"stations":[{"id":"st1","name":"Barra","hasKitchenDisplay":true}],"kitchenDisplayOpenToClients":true,"version":"v2"}}""",
+        )
+        assertTrue(r.data.stations.single().hasKitchenDisplay)
+        assertTrue(r.data.kitchenDisplayOpenToClients)
+    }
+
+    @Test
+    fun `P1 un servidor anterior a la etapa 3 se lee como pantalla apagada y puerta cerrada`() {
+        val r = NetworkModule.provideJson().decodeFromString(
+            PrintConfigResponse.serializer(),
+            """{"success":true,"data":{"stations":[{"id":"st1","name":"Barra"}],"version":"v1"}}""",
+        )
+        assertFalse(r.data.stations.single().hasKitchenDisplay)
+        assertFalse(r.data.kitchenDisplayOpenToClients)
+    }
+
+    @Test
+    fun `la copia en disco conserva la pantalla - sin red la tablet sigue sabiendo que esta prendida`() {
+        // Las MISMAS opciones que `PrintConfigRepository.cacheJson`.
+        val cacheJson = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+        val original = PrintConfig(
+            stations = listOf(StationInfo(id = "st1", name = "Barra", hasKitchenDisplay = true)),
+            kitchenDisplayOpenToClients = true,
+            version = "v2",
+        )
+        val copia = cacheJson.decodeFromString(PrintConfig.serializer(), cacheJson.encodeToString(PrintConfig.serializer(), original))
+        assertEquals(original, copia)
     }
 }

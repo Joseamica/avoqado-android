@@ -220,6 +220,17 @@ class PlanManagerTest {
         assertTrue(planManager.hasFeature("OFFLINE_LAN_HUB"))
     }
 
+    // MARK: - Pantalla de cocina (etapa 3, decisión D-A del 27-sep)
+
+    @Test
+    fun `KITCHEN_DISPLAY is PRO`() {
+        stubPlan(tier = "FREE")
+        assertFalse(planManager.hasFeature("KITCHEN_DISPLAY"))
+        stubPlan(tier = "PRO")
+        assertTrue(planManager.hasFeature("KITCHEN_DISPLAY"))
+        assertEquals("Pro", planManager.requiredTierLabel("KITCHEN_DISPLAY"))
+    }
+
     /**
      * Candado estructural: TODO código que la app consulta al plan tiene que estar en el mapa.
      * Un código que falte no truena — `hasFeature` lo deja pasar en cualquier plan (así se
