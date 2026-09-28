@@ -315,6 +315,37 @@ class KDSViewModelTest {
     }
 
     @Test
+    fun `P1 Ronda 3 marcar todas protege el lote de un sondeo viejo`() = runTest {
+        coEvery { repo.bumpBatch(any()) } returns Result.success(2)
+        val vm = armar() // k1, k2
+
+        vm.marcarTodasListas()
+        assertEquals(emptyList<String>(), vm.comandas.value.map { it.id })
+
+        // Un sondeo con dato viejo (arrancó antes del lote) sigue trayendo k1 y k2.
+        coEvery { repo.fetchOrders(any()) } returns Result.success(listOf(comanda("k1", 1_000), comanda("k2", 2_000)))
+        vm.refrescar()
+
+        assertEquals("el sondeo viejo no resucita el lote recién marcado", emptyList<String>(), vm.comandas.value.map { it.id })
+    }
+
+    @Test
+    fun `Ronda 3 marcar todas si el lote falla las suelta del blindaje al regresar`() = runTest {
+        coEvery { repo.bumpBatch(any()) } returns Result.failure(IOException("sin red"))
+        val vm = armar() // k1, k2
+
+        vm.marcarTodasListas()
+        assertEquals(listOf("k1", "k2"), vm.comandas.value.map { it.id }) // regresan de inmediato (optimismo deshecho)
+
+        // El servidor confirma que siguen pendientes de verdad — sin soltarlas del blindaje, este sondeo REAL
+        // las escondería otra vez por hasta 15 s.
+        coEvery { repo.fetchOrders(any()) } returns Result.success(listOf(comanda("k1", 1_000), comanda("k2", 2_000)))
+        vm.refrescar()
+
+        assertEquals("el fallo las soltó del blindaje: un sondeo real SÍ las repinta", listOf("k1", "k2"), vm.comandas.value.map { it.id })
+    }
+
+    @Test
     fun `sonido y letra grande se guardan en el aparato`() = runTest {
         val vm = armar()
         vm.toggleSound()

@@ -276,10 +276,16 @@ class KDSViewModel @Inject constructor(
         if (ids.isEmpty()) return
         val quitadas = _comandas.value.filter { it.id in ids }
         _comandas.value = _comandas.value.filterNot { it.id in ids }
+        // M4/Ronda 3: mismo blindaje que listo() — un sondeo que ya estaba en vuelo no puede resucitar el lote.
+        val ahora = System.currentTimeMillis()
+        ids.forEach { bumpsRecientes[it] = ahora }
         viewModelScope.launch {
             kdsRepository.bumpBatch(ids)
                 .onSuccess { refrescarTablero() }
                 .onFailure { e ->
+                    // El lote no aplicó: se sueltan del blindaje también, o un sondeo real que SÍ las trae de
+                    // vuelta (porque siguen pendientes de verdad) las escondería por hasta 15 s.
+                    ids.forEach(bumpsRecientes::remove)
                     val regresan = quitadas.filter { q -> _comandas.value.none { it.id == q.id } }
                     _comandas.value = (_comandas.value + regresan).sortedBy { it.createdAt }
                     if (esSinRed(e)) _sinConexion.value = true
