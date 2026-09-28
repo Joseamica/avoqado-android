@@ -35,13 +35,17 @@ POS sin red → outbox (intents) → replay al reconectar → reducer del server
 ### 2.1 El contrato de intents se espeja por nombre EXACTO
 
 `SyncIntentType` en `avoqado-server/src/services/mobile/sync.mobile.service.ts`
-es la fuente de verdad. Los 14 tipos actuales:
+es la fuente de verdad. Los 15 tipos actuales:
 
 ```
 OPEN_TABLE · ADD_ITEMS · PAY_CASH · APPLY_DISCOUNT · APPLY_SERVICE_CHARGE
 COMP_ORDER · UPDATE_DETAILS · CANCEL_ORDER · MOVE_ORDER · ASSIGN_ORDER
-CLEAR_TABLE · SPLIT_ORDER · SPLIT_BY_SEAT · MERGE_ORDERS
+CLEAR_TABLE · SPLIT_ORDER · SPLIT_BY_SEAT · MERGE_ORDERS · KDS_TICKET_MARK
 ```
+
+`KDS_TICKET_MARK` (KDS etapa 3): marca pegajosa por folio de la comanda — `FALLBACK_PRINTED` lo produce la caja
+desde la 3.4 cuando una estación «sólo pantalla» salió en papel de respaldo sin red. Siempre ACK: nunca cuarentena
+ni bloquea intents de dinero.
 
 Agregar uno = tocar server + Android + iOS + el MCP `pos_sync_status`, en el
 MISMO cambio. Un tipo que el server no conoce se rechaza con
