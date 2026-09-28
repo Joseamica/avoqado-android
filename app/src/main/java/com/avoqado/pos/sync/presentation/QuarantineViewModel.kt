@@ -207,6 +207,7 @@ class QuarantineViewModel @Inject constructor(
         "MOVE_ORDER" -> "Mover mesa"
         "ASSIGN_ORDER" -> "Asignar mesero"
         "CLEAR_TABLE" -> "Liberar mesa"
+        "KDS_TICKET_MARK" -> "Marca de comanda en papel"
         else -> type
     }
 

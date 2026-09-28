@@ -76,6 +76,13 @@ data class StationInfo(
      * activa Y plan). Sin el campo (servidor anterior) ⇒ apagada.
      */
     val hasKitchenDisplay: Boolean = false,
+    /**
+     * SÓLO DEL CLIENTE — el servidor nunca lo manda. `KitchenDeliveryPolicy.conRespaldo` lo prende en la config CONGELADA
+     * de UN trabajo de impresión (etapa 3 del KDS, fase 3.4): esta estación «sólo pantalla» sale en papel de RESPALDO
+     * (encabezado propio, impresora de la estación default → cocina local → caja). Viaja dentro de
+     * `TrabajoPendiente.config`, así que un reintento no lo olvida.
+     */
+    val respaldoLocal: Boolean = false,
 )
 
 @Serializable
