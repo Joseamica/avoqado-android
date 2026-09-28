@@ -27,6 +27,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
@@ -825,11 +826,26 @@ class TableOrderViewModel @Inject constructor(
         // comanda con el `isError` de otro aviso). El guardado de arriba se queda FUERA del `launch`: tiene que
         // escribirse aunque la pantalla ya no exista; el aviso en pantalla, en cambio, es un no-op inofensivo en
         // ese caso — lo que importa ya quedó en el almacén, que es lo que lee Cobrar.
-        viewModelScope.launch {
-            showError(
-                mensajeComandaNoSalio(estado.estaciones),
-                if (estado.trabajo != null) PISTA_COMANDA_REINTENTO else PISTA_COMANDA_SIN_IMPRESORA,
-            )
+        //
+        // Ronda 2 (revisión de suite completa): el guard `viewModelScope.isActive` es el arreglo de RAÍZ, no un
+        // parche de prueba. Con la pantalla ya cerrada (`viewModelScope` cancelado), `.launch{}` de todos modos
+        // intenta despachar hacia `Dispatchers.Main` antes de notar la cancelación — en un dispositivo real eso
+        // es gratis (el Main real de Android nunca "falta"), pero en la suite de pruebas el Main del harness
+        // puede estar entre tests (reseteado por un `MainDispatcherRule` que ya terminó) cuando este despacho de
+        // fondo por fin llega, y el intento revienta con una excepción FATAL de la maquinaria de corrutinas que
+        // ninguna de las dos partes puede atrapar — se reporta, sin relación, contra el SIGUIENTE test que
+        // arranque (`UncaughtExceptionsBeforeTest`, visto en la suite completa: 1001156 →
+        // run-avoqado-android.DQXu57). Comprobar `isActive` ANTES de intentar el `launch` evita el despacho
+        // entero cuando ya no hay nadie mirando — ni un StateFlow que nadie lee ni una corrutina que arriesgue
+        // tocar Main. No es un caso nuevo para el mesero: la pantalla YA se fue, así que no hay diferencia
+        // observable con lanzar y que se cancele sola.
+        if (viewModelScope.isActive) {
+            viewModelScope.launch {
+                showError(
+                    mensajeComandaNoSalio(estado.estaciones),
+                    if (estado.trabajo != null) PISTA_COMANDA_REINTENTO else PISTA_COMANDA_SIN_IMPRESORA,
+                )
+            }
         }
     }
 
