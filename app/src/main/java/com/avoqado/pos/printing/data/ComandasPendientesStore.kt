@@ -53,8 +53,12 @@ class ComandasPendientesStore @Inject constructor(
      */
     val pendiente: StateFlow<EstadoDeComanda.NoSalio?> = _pendiente.asStateFlow()
 
+    /** El venue del último [cargar]; `null` = nunca se cargó (sin venue conocido). Lo usa la guarda de [guardar]. */
+    @Volatile private var venueCargado: String? = null
+
     /** Se llama UNA vez al abrir sesión en un venue — ver `AppState.startOfflineOutbox`. */
     fun cargar(venueIdActual: String?, ahora: Long = System.currentTimeMillis()) {
+        venueCargado = venueIdActual
         _pendiente.value = leer(venueIdActual, ahora)
     }
 
@@ -68,17 +72,35 @@ class ComandasPendientesStore @Inject constructor(
     )
 
     /**
+     * La ÚNICA guarda de lo que entra aquí (revisión final de la 3.4, I-1 y m-8): los llamadores —mostrador y ronda—
+     * pueden conservar la suya, pero la verdad vive en este almacén.
+     *
+     * 1. **Sin trabajo, nada.** Un `NoSalio` sin trabajo (todas las estaciones saltadas, o el camino legado) no se
+     *    puede reimprimir; guardarlo PISABA el pendiente recuperable de otra venta —su reintento y su «Volver a
+     *    imprimir»— en memoria y en disco. Devuelve `false` sin tocar ninguno de los dos.
+     * 2. **Venue ajeno, se rechaza entero.** Si `trabajo.venueId` no es el del último [cargar], NO se publica en
+     *    memoria —el reloj de reintento y Cobrar, que leen [pendiente], lo mandarían a las impresoras de la sucursal
+     *    equivocada— 🔴 **y tampoco se escribe a disco** (igual que iOS): el almacén es de UNA ranura
+     *    (`PrefsComoAlmacen`, una sola clave `ultima_no_salio`, sin ranuras por venue), así que escribirlo pisaría el
+     *    pendiente recuperable del venue actual en disco. Lo único que se pierde es el reintento automático del
+     *    trabajo viejo; su aviso ya se mostró. Devuelve `false`.
+     * 3. **Nunca cargado** (sin venue conocido): como antes, se escribe y se publica.
+     *
      * @return `true` si el aviso quedó de verdad en el aparato. 🔴 Un `false` NO se puede tratar
      * como éxito: significa que si la app muere ahora, esa comanda desaparece.
      */
-    fun guardar(estado: EstadoDeComanda.NoSalio, ahora: Long = System.currentTimeMillis()): Boolean =
-        runCatching {
+    fun guardar(estado: EstadoDeComanda.NoSalio, ahora: Long = System.currentTimeMillis()): Boolean {
+        val trabajo = estado.trabajo ?: return false
+        val cargado = venueCargado
+        if (cargado != null && trabajo.venueId != cargado) return false
+        return runCatching {
             val texto = json.encodeToString(
-                Guardada(estado.estaciones, estado.causa, estado.orderNumber, estado.trabajo, ahora),
+                Guardada(estado.estaciones, estado.causa, estado.orderNumber, trabajo, ahora),
             )
             almacen.escribir(texto).also { if (it) _pendiente.value = estado }
         }.onFailure { Log.w(TAG, "No se pudo guardar la comanda pendiente: ${it.message}") }
             .getOrDefault(false)
+    }
 
     /**
      * Devuelve el aviso guardado, o `null` si no hay o si ya VENCIÓ.

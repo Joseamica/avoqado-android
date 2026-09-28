@@ -6,8 +6,10 @@ import com.avoqado.pos.printing.routing.PrinterInfo
 import com.avoqado.pos.printing.routing.StationInfo
 import com.avoqado.pos.printing.routing.TicketPlan
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /** Almacén en memoria — la costura que permite probar esto sin Robolectric. */
@@ -156,5 +158,79 @@ class ComandasPendientesStoreTest {
         ComandasPendientesStore(almacen).guardar(fallo, ahora)
 
         assertNull(ComandasPendientesStore(almacen).leer(null, ahora))
+    }
+
+    // MARK: - Revisión final de la 3.4 (I-1, m-8): la guarda vive en el almacén, no en cada llamador
+
+    private val deOtraSucursal = fallo.copy(
+        orderNumber = "ORD-9",
+        trabajo = fallo.trabajo!!.copy(venueId = "venue-2", orderNumber = "ORD-9"),
+    )
+
+    /**
+     * I-1: una ronda cuyo respaldo se saltó termina en `NoSalio(trabajo = null)`. Guardarlo pisaba el pendiente
+     * recuperable del mostrador —su reintento y su «Volver a imprimir»— con algo que nadie puede reimprimir.
+     */
+    @Test
+    fun `P1 guardar SIN trabajo no pisa un pendiente recuperable`() {
+        val almacen = AlmacenFalso()
+        val store = ComandasPendientesStore(almacen)
+        store.cargar("venue-1", ahora)
+        store.guardar(fallo, ahora)
+
+        val sinTrabajo = EstadoDeComanda.NoSalio(listOf("Barra"), null, "ORD-43", trabajo = null)
+
+        assertFalse("se guardó un aviso sin nada que reimprimir", store.guardar(sinTrabajo, ahora))
+        assertEquals(fallo, store.pendiente.value)
+        assertEquals("ORD-42", ComandasPendientesStore(almacen).leer("venue-1", ahora)?.orderNumber)
+    }
+
+    /** m-8: el reloj de reintento y Cobrar leen la MEMORIA; un trabajo de otra sucursal imprimiría en el local equivocado. */
+    @Test
+    fun `P1 un trabajo de OTRA sucursal no se publica en memoria ni se escribe`() {
+        val almacen = AlmacenFalso()
+        val store = ComandasPendientesStore(almacen)
+        store.cargar("venue-1", ahora)
+
+        assertFalse(store.guardar(deOtraSucursal, ahora))
+
+        assertNull("se publicó un trabajo de otra sucursal", store.pendiente.value)
+        // Almacén de UNA ranura: escribirlo pisaría el pendiente del venue actual (paridad con iOS).
+        assertNull("se escribió un trabajo de otra sucursal", almacen.texto)
+    }
+
+    /** Un cambio de sucursal vuelve a llamar `cargar` (AppState.refreshTabs → startOfflineOutbox): la guarda sigue al venue nuevo. */
+    @Test
+    fun `tras cambiar de sucursal los trabajos del venue nuevo se guardan`() {
+        val store = ComandasPendientesStore(AlmacenFalso())
+        store.cargar("venue-1", ahora)
+        store.cargar("venue-2", ahora)
+
+        assertTrue(store.guardar(deOtraSucursal, ahora))
+        assertEquals(deOtraSucursal, store.pendiente.value)
+    }
+
+    @Test
+    fun `P1 un trabajo de OTRA sucursal no pisa el pendiente de la sucursal actual`() {
+        val almacen = AlmacenFalso()
+        val store = ComandasPendientesStore(almacen)
+        store.cargar("venue-1", ahora)
+        store.guardar(fallo, ahora)
+
+        assertFalse(store.guardar(deOtraSucursal, ahora))
+
+        assertEquals(fallo, store.pendiente.value)
+        assertEquals("ORD-42", ComandasPendientesStore(almacen).leer("venue-1", ahora)?.orderNumber)
+    }
+
+    @Test
+    fun `el caso normal sigue igual - y sin sucursal cargada se guarda como antes`() {
+        val cargado = ComandasPendientesStore(AlmacenFalso()).apply { cargar("venue-1", ahora) }
+        assertTrue(cargado.guardar(fallo, ahora))
+        assertEquals(fallo, cargado.pendiente.value)
+
+        val sinCargar = ComandasPendientesStore(AlmacenFalso())
+        assertTrue(sinCargar.guardar(deOtraSucursal, ahora))
+        assertEquals(deOtraSucursal, sinCargar.pendiente.value)
     }
 }

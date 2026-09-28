@@ -42,7 +42,6 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import retrofit2.HttpException
@@ -214,7 +213,33 @@ class TableOrderRondaConLlaveTest {
 
         assertEquals(TableOrderViewModel.MENSAJE_RONDA_SIN_CONEXION, mensaje)
         coVerify { syncOutbox.soltar("venue-1", ids.single()) }
-        assertTrue("se rindió antes del minuto: ${currentTime} ms", currentTime < 60_000)
+        // El reloj virtual es determinista: se rinde EXACTAMENTE en el presupuesto, no «antes del minuto».
+        assertEquals(TableOrderViewModel.PRESUPUESTO_RONDA_MS, currentTime)
+    }
+
+    /** m-5 de la revisión final: tras el 409 hay UN solo reintento — un bucle retendría la cola del aparato. */
+    @Test
+    fun `P1 dos 409 seguidos - UN solo reintento y se suelta con la MISMA llave`() = runTest {
+        coEvery { repository.addRound(any(), any(), capture(enviados), any()) } returnsMany listOf(
+            Result.failure(http(409)),
+            Result.failure(http(409)),
+            Result.success(UpdatedOrder(id = "o1", version = 9)),
+        )
+        var mensaje: String? = null
+        val vm = vm()
+        coEvery { repository.getOrderDetail(any(), any()) } returns
+            Result.success(OrderDetail(id = "o1", orderNumber = "ORD-1", items = emptyList(), version = 7))
+
+        vm.sendRound { _, msg -> mensaje = msg }
+        advanceUntilIdle()
+
+        coVerify(exactly = 2) { repository.addRound(any(), any(), any(), any()) }
+        val llave = ids.single()
+        assertEquals(enviados[0].map { it.externalId }, enviados[1].map { it.externalId })
+        coVerify { syncOutbox.soltar("venue-1", llave) }
+        coVerify(exactly = 0) { syncOutbox.descartar(any(), any()) }
+        assertEquals(listOf("sync:$llave:0", "sync:$llave:1"), vm.queued.value.map { it.externalId })
+        assertEquals(TableOrderViewModel.MENSAJE_RONDA_INCIERTA, mensaje)
     }
 
     @Test

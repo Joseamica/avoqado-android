@@ -1370,6 +1370,20 @@ class PaymentFlowViewModelTest {
         assertTrue(estado is PaymentFlowState.Success && estado.isQueued)
         assertEquals(listOf("st_barra"), planes.captured.map { it.stationId })
         assertEquals("sale:${llave.captured}:st_barra", marca.captured["sourceKey"]!!.jsonPrimitive.content)
+
+        // m-6 de la revisión final: el folio es POR VENTA. Una segunda venta que NO crea orden (retoma "order-2") y
+        // cuyo efectivo también se encola no puede heredar el folio de la anterior: su marca escondería la comanda
+        // de OTRA venta en la pantalla. Sin folio propio, el papel sale igual pero sin marca.
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any()) } returns
+            Result.failure(java.net.UnknownHostException("sin red"))
+        viewModel.startPaymentFlow(cartConCafe, resumeOrderId = "order-2")
+        viewModel.confirmCashCustom(3000)
+        advanceUntilIdle()
+
+        val segunda = viewModel.state.value
+        assertTrue(segunda is PaymentFlowState.Success && segunda.isQueued)
+        coVerify(exactly = 2) { comandaPrinter.printComandas(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 1) { colaDeMarcas.enqueue(any(), "KDS_TICKET_MARK", any(), any(), any()) }
     }
 
     @Test
