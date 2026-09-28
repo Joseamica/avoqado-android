@@ -1093,7 +1093,7 @@ class PaymentFlowViewModelTest {
         advanceUntilIdle()
 
         assertTrue(viewModel.state.value is PaymentFlowState.Success)
-        coVerify(exactly = 1) { printConfigRepository.refresh("venue-1") }
+        coVerify(exactly = 1) { printConfigRepository.refreshConTope("venue-1", any()) }
         coVerify(exactly = 1) { comandaPrinter.printComandas(any(), config, any(), any(), any()) }
         coVerify(exactly = 0) { printerService.autoPrintKitchenTicket(any()) }
         assertEquals(listOf("Taco"), plansSlot.captured.single().lines.map { it.productName })
