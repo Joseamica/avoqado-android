@@ -71,6 +71,7 @@ class TableOrderRondaConLlaveTest {
     private fun vm(
         store: ComandasPendientesStore = mockk(relaxed = true),
         despachador: ComandaDispatcher = dispatcher,
+        secureStorage: SecureStorage = mockk<SecureStorage>(relaxed = true).also { every { it.venueId } returns "venue-1" },
     ): TableOrderViewModel {
         every { repository.tables } returns MutableStateFlow(emptyList())
         every { repository.ownership } returns MutableStateFlow(TableServiceRepository.TableOwnership())
@@ -78,8 +79,6 @@ class TableOrderRondaConLlaveTest {
         every { syncOutbox.acks } returns MutableSharedFlow()
         every { syncOutbox.pendingCount } returns MutableStateFlow(0)
         coEvery { syncOutbox.enqueue(any(), any(), capture(payloads), capture(ids), any()) } answers { arg(3) }
-        val secureStorage = mockk<SecureStorage>(relaxed = true)
-        every { secureStorage.venueId } returns "venue-1"
         val connectivity = mockk<ConnectivityMonitor>(relaxed = true)
         every { connectivity.isConnected } returns MutableStateFlow(true)
         val printConfig = mockk<PrintConfigRepository>(relaxed = true)
@@ -367,5 +366,44 @@ class TableOrderRondaConLlaveTest {
         puerta.complete(Unit)
 
         verify(timeout = 5_000) { store.guardar(match { it.estaciones == listOf("Barra") }, any()) }
+    }
+
+    /**
+     * Task 9 review, ronda 1, m-2: `despacharEnFondo` vive en el ámbito de la app y puede seguir insistiendo
+     * minutos después de que el mesero cambie de sucursal. Si el trabajo que no salió es de la sucursal VIEJA,
+     * guardarlo en el almacén EN MEMORIA de la sucursal ACTUAL se saltaría el filtro por venue que `leer()` sí
+     * aplica al releer de disco — con dos locales en el mismo 192.168.1.x el papel saldría en el equivocado.
+     */
+    @Test
+    fun `P1 el venue cambio antes de que la comanda terminara - no se guarda para el venue viejo`() = runTest {
+        coEvery { repository.addRound(any(), any(), any(), any()) } returns Result.success(UpdatedOrder(id = "o1", version = 4))
+        val store = mockk<ComandasPendientesStore>(relaxed = true)
+        var venueActual = "venue-1"
+        val secureStorage = mockk<SecureStorage>(relaxed = true)
+        every { secureStorage.venueId } answers { venueActual }
+        val noSalioDeVenue1 = EstadoDeComanda.NoSalio(
+            estaciones = listOf("Barra"),
+            causa = "offline",
+            orderNumber = "ORD-1",
+            trabajo = TrabajoPendiente(
+                planes = emptyList(), config = PrintConfig(), orderNumber = "ORD-1", orderType = "Mesa 5",
+                serverName = null, comboNames = emptyMap(), venueId = "venue-1", orderId = null,
+            ),
+        )
+        every { dispatcher.despacharEnFondo(any(), any(), any(), any(), any(), any(), any()) } answers {
+            // El mesero ya cambió de sucursal para cuando el despacho (en fondo) por fin reporta.
+            venueActual = "venue-2"
+            arg<(EstadoDeComanda) -> Unit>(6).invoke(noSalioDeVenue1)
+            Job()
+        }
+        val vm = vm(store = store, secureStorage = secureStorage)
+        vm.addProduct(cafe)
+
+        vm.sendRound { _, _ -> }
+        advanceUntilIdle()
+
+        verify(exactly = 0) { store.guardar(any(), any()) }
+        // El aviso en pantalla SÍ sale — la mesa que sigue abierta no tiene por qué mentir del todo.
+        assertEquals("No salió la comanda de: Barra", vm.actionMessage.value)
     }
 }
