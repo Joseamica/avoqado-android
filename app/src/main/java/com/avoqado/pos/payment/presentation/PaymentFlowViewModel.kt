@@ -8,7 +8,6 @@ import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.areatickets.data.AreaTicketRepository
 import com.avoqado.pos.areatickets.data.NormalCheckoutItem
 import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
-import com.avoqado.pos.kds.data.KDSOrderItemRequest
 import com.avoqado.pos.kds.data.KDSRepository
 import com.avoqado.pos.kds.domain.KDSOrderBus
 import com.avoqado.pos.payment.data.CashPaymentRepository
@@ -96,6 +95,8 @@ class PaymentFlowViewModel @Inject constructor(
     private val tpvSettingsRepository: TpvSettingsRepository,
     private val paymentSyncService: PaymentSyncService,
     private val cashDrawerRepository: CashDrawerRepository,
+    // ponytail: sin uso desde la fase 3.3 del KDS (el servidor arma la comanda al cobrar). Se quedan porque ocho tests
+    // de cobro los pasan (dos son WIP de otra sesión el 27-sep); se quitan en la tarea de seguimiento del Cierre.
     private val kdsRepository: KDSRepository,
     private val kdsOrderBus: KDSOrderBus,
     private val printerService: PrinterService,
@@ -1384,7 +1385,7 @@ class PaymentFlowViewModel @Inject constructor(
                                             changeAmount = 0,
                                             isQueued = true,
                                         )
-                                        createKDSOrderAndPrint(PaymentMethod.CASH)
+                                        autoPrintAfterPayment(PaymentMethod.CASH)
                                     } else {
                                         estrenarLlaveTrasRechazoDeOrden(error)
                                         _state.value = PaymentFlowState.Error(
@@ -1528,7 +1529,7 @@ class PaymentFlowViewModel @Inject constructor(
                                 receiptUrl = result.receiptUrl,
                                 inventoryWarningMessage = result.inventoryWarningMessage,
                             )
-                            createKDSOrderAndPrint(PaymentMethod.CASH)
+                            autoPrintAfterPayment(PaymentMethod.CASH)
                         },
                         onFailure = { error ->
                             Log.w("💵", "Cash payment recording failed: ${error.message}")
@@ -1556,7 +1557,7 @@ class PaymentFlowViewModel @Inject constructor(
                                     method = PaymentMethod.CASH,
                                     isQueued = true,
                                 )
-                                createKDSOrderAndPrint(PaymentMethod.CASH)
+                                autoPrintAfterPayment(PaymentMethod.CASH)
                             } else {
                                 _state.value = PaymentFlowState.Error(
                                     message = "No se pudo registrar el pago: ${error.message ?: "error desconocido"}",
@@ -1573,7 +1574,7 @@ class PaymentFlowViewModel @Inject constructor(
                         method = PaymentMethod.CASH,
                         paymentId = lastPaymentId,
                     )
-                    createKDSOrderAndPrint(PaymentMethod.CASH)
+                    autoPrintAfterPayment(PaymentMethod.CASH)
                 }
             }
             null -> {
@@ -1702,7 +1703,7 @@ class PaymentFlowViewModel @Inject constructor(
                                             changeAmount = result.changeCents,
                                             isQueued = true,
                                         )
-                                        createKDSOrderAndPrint(PaymentMethod.CASH, result.changeCents)
+                                        autoPrintAfterPayment(PaymentMethod.CASH, result.changeCents)
                                     } else {
                                         // Non-queueable error (validation, auth, etc.)
                                         estrenarLlaveTrasRechazoDeOrden(error)
@@ -1748,7 +1749,7 @@ class PaymentFlowViewModel @Inject constructor(
                                 }
                                 recordCashSale(total, null)
                                 // 🔴 D16: este camino (cobro rápido en efectivo) NUNCA pasa por
-                                // `createKDSOrderAndPrint`/`autoPrintAfterPayment`, así que sin
+                                // `autoPrintAfterPayment`, así que sin
                                 // congelar `lastReceipt` AQUÍ, el primer toque de «Imprimir» en la
                                 // pantalla de éxito arma el recibo con la hora de ESE toque — no la
                                 // de la venta (revisión de conjunto, I2).
@@ -1857,7 +1858,7 @@ class PaymentFlowViewModel @Inject constructor(
                     changeAmount = changeCents,
                     isQueued = true,
                 )
-                createKDSOrderAndPrint(PaymentMethod.CASH, changeCents)
+                autoPrintAfterPayment(PaymentMethod.CASH, changeCents)
                 return
             }
         }
@@ -1925,7 +1926,7 @@ class PaymentFlowViewModel @Inject constructor(
                     receiptUrl = result.receiptUrl,
                     inventoryWarningMessage = result.inventoryWarningMessage,
                 )
-                createKDSOrderAndPrint(PaymentMethod.CASH, finalChange)
+                autoPrintAfterPayment(PaymentMethod.CASH, finalChange)
             },
             onFailure = { error ->
                 val isQueueable = OrderRepository.isQueueableError(error) ||
@@ -1950,7 +1951,7 @@ class PaymentFlowViewModel @Inject constructor(
                         changeAmount = changeCents,
                         isQueued = true,
                     )
-                    createKDSOrderAndPrint(PaymentMethod.CASH, changeCents)
+                    autoPrintAfterPayment(PaymentMethod.CASH, changeCents)
                 } else {
                     _state.value = PaymentFlowState.Error(
                         message = "No se pudo registrar el pago: ${error.message ?: "error desconocido"}",
@@ -2082,7 +2083,7 @@ class PaymentFlowViewModel @Inject constructor(
             receiptUrl = charged.receiptUrl,
             cobroTrasCancelar = trasCancelar,
         )
-        createKDSOrderAndPrint(PaymentMethod.CARD)
+        autoPrintAfterPayment(PaymentMethod.CARD)
     }
 
     /**
@@ -2661,13 +2662,6 @@ class PaymentFlowViewModel @Inject constructor(
         }
     }
 
-    // MARK: - KDS Order Creation & Auto Print
-
-    private fun createKDSOrderAndPrint(method: PaymentMethod = PaymentMethod.CARD, changeCents: Int? = null) {
-        createKDSOrderIfNeeded()
-        autoPrintAfterPayment(method, changeCents)
-    }
-
     /**
      * Cajón de dinero al cobrar en EFECTIVO (conducta estándar de POS), por la impresora de
      * recibos y sólo si tiene «abrir cajón al cobrar» activado. La regla de cuándo vive en
@@ -2694,60 +2688,6 @@ class PaymentFlowViewModel @Inject constructor(
         viewModelScope.launch { abrirCajonDeDinero() }
     }
 
-    private fun createKDSOrderIfNeeded() {
-        val cart = cartState ?: return
-        val realItems = cart.items.filter {
-            it.type is CartItemType.ProductItem && !it.locked
-        }
-        if (realItems.isEmpty()) return
-
-        val orderNumber = createdOrderId?.takeLast(4) ?: "Q-${(1000..9999).random()}"
-
-        viewModelScope.launch {
-            val kdsItems = realItems.map { item ->
-                KDSOrderItemRequest(
-                    productName = item.name,
-                    quantity = item.quantity,
-                    modifiers = item.selectedModifiers.map { it.modifierName },
-                    notes = item.itemNote,
-                )
-            }
-
-            kdsRepository.createOrder(
-                orderNumber = orderNumber,
-                orderType = "DINE_IN",
-                orderId = createdOrderId,
-                items = kdsItems,
-            ).fold(
-                onSuccess = {
-                    Log.d("💰", "KDS order created: #$orderNumber")
-                    // Notify same-device KDS via bus
-                    kdsOrderBus.publish(
-                        com.avoqado.pos.kds.domain.KDSOrder(
-                            id = "local-${System.currentTimeMillis()}",
-                            orderNumber = orderNumber,
-                            orderType = "En tienda",
-                            items = realItems.map { item ->
-                                com.avoqado.pos.kds.domain.KDSOrderItem(
-                                    id = item.id,
-                                    productName = item.name,
-                                    quantity = item.quantity,
-                                    modifiers = item.selectedModifiers.map { it.modifierName },
-                                    notes = item.itemNote,
-                                )
-                            },
-                            createdAt = System.currentTimeMillis(),
-                            status = com.avoqado.pos.kds.domain.KDSOrderStatus.NEW,
-                        ),
-                    )
-                },
-                onFailure = { error ->
-                    Log.d("💰", "KDS order failed (non-blocking): ${error.message}")
-                },
-            )
-        }
-    }
-
     // MARK: - Auto Print
 
     private fun autoPrintAfterPayment(method: PaymentMethod, changeCents: Int? = null) {
@@ -2768,7 +2708,7 @@ class PaymentFlowViewModel @Inject constructor(
             if (abrirCajon) abrirCajonDeDinero()
 
             // 🔴 Sigue dentro de ESTE `viewModelScope.launch` — desligado del camino del cobro,
-            // que a esta altura ya resolvió `_state` (ver `createKDSOrderAndPrint`, llamado
+            // que a esta altura ya resolvió `_state` (ver `autoPrintAfterPayment`, llamado
             // DESPUÉS de `_state.value = Success`). Con el reintento esto puede tardar hasta
             // ~1 minuto: si viviera en la coroutine del pago, congelaría la caja con el
             // cliente enfrente. `PaymentFlowViewModelTest` fija que `state` llega a `Success`

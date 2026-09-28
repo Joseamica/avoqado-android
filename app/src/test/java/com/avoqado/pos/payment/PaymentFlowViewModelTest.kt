@@ -1301,6 +1301,17 @@ class PaymentFlowViewModelTest {
         coVerify(exactly = 1) { printerService.openCashDrawer(integrada) }
     }
 
+    // MARK: - Etapa 3 del KDS (fase 3.3): la comanda de pantalla la arma el SERVIDOR al cobrar
+
+    @Test
+    fun `P1 un cobro con productos ya no crea la comanda de pantalla desde la app y el ticket sale igual`() = runTest {
+        val recibo = reciboDelCobro { viewModel.confirmCashCustom(2000) }
+
+        assertEquals("el ticket sale como siempre", "Efectivo", recibo.paymentMethod)
+        coVerify(exactly = 0) { kdsRepository.createOrder(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { kdsOrderBus.publish(any()) }
+    }
+
     @Test
     fun `un pago declarado como transferencia no abre el cajon`() = runTest {
         conImpresoraDeTickets()
