@@ -32,6 +32,10 @@ data class LanPeer(
     val isWired: Boolean = false,
     /** Epoch ms de arranque del dispositivo. Menor = lleva más tiempo vivo. */
     val bootedAtMillis: Long = 0L,
+    /** Etapa 3 del KDS (3.5): estaciones cuyo Tablero está en pantalla en ese aparato (TXT `kds=`). */
+    val kdsStations: Set<String> = emptySet(),
+    /** ¿Contesta leases? (TXT `hub=`; ausente = app vieja = sí). Un aparato sólo-cocina no puede ganar la elección. */
+    val sirveLeases: Boolean = true,
 )
 
 object ArbiterElection {
@@ -46,9 +50,13 @@ object ArbiterElection {
      */
     fun pick(peers: List<LanPeer>): LanPeer? = ranked(peers).firstOrNull()
 
-    /** Los peers de mejor a peor candidato. Determinista para el mismo input. */
+    /**
+     * Los peers de mejor a peor candidato. Determinista para el mismo input.
+     * Etapa 3 del KDS (3.5, D1): sólo entran los que SIRVEN leases — una pantalla de cocina (`hub=0`) que ganara la
+     * elección no contestaría ni un acquire y dejaría todas las mesas en NoHub.
+     */
     fun ranked(peers: List<LanPeer>): List<LanPeer> =
-        peers.sortedWith(
+        peers.filter { it.sirveLeases }.sortedWith(
             compareByDescending<LanPeer> { it.isWired }
                 .thenBy { it.bootedAtMillis }
                 .thenBy { it.deviceId },
