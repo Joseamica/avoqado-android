@@ -5,321 +5,339 @@ import android.media.RingtoneManager
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.avoqado.pos.kds.data.KDSRepository
-import com.avoqado.pos.core.domain.printing.ComandaDispatcher
-import com.avoqado.pos.printing.data.ComandaPrinter
-import com.avoqado.pos.printing.routing.ConsolidatedLine
-import com.avoqado.pos.printing.routing.PrintConfigRepository
-import com.avoqado.pos.printing.data.EstadoDeComanda
-import com.avoqado.pos.printing.routing.RoutableItem
-import com.avoqado.pos.printing.routing.TicketPlan
 import com.avoqado.pos.core.data.sync.SyncOutbox
-import javax.inject.Provider
+import com.avoqado.pos.core.domain.PlanManager
+import com.avoqado.pos.core.domain.RoleManager
+import com.avoqado.pos.core.domain.printing.ComandaDispatcher
+import com.avoqado.pos.kds.data.KDSRepository
+import com.avoqado.pos.kds.data.KdsPrefs
+import com.avoqado.pos.kds.domain.AccionDeCocina
+import com.avoqado.pos.kds.domain.AvisoDeCocina
 import com.avoqado.pos.kds.domain.CanalReparto
-import com.avoqado.pos.kds.domain.KDSFilter
+import com.avoqado.pos.kds.domain.EntradaDeCasilla
+import com.avoqado.pos.kds.domain.EstadoDeCasilla
 import com.avoqado.pos.kds.domain.KDSOrder
-import com.avoqado.pos.kds.domain.KDSOrderBus
-import com.avoqado.pos.kds.domain.KDSOrderItem
-import com.avoqado.pos.kds.domain.KDSOrderStatus
+import com.avoqado.pos.kds.domain.TextosDeCocina
+import com.avoqado.pos.kds.domain.avisoDeFallo
+import com.avoqado.pos.kds.domain.esSinRed
+import com.avoqado.pos.kds.domain.estacionElegida
+import com.avoqado.pos.kds.domain.estacionesParaElegir
+import com.avoqado.pos.kds.domain.estadoDeCasilla
+import com.avoqado.pos.kds.domain.idsParaMarcarTodas
+import com.avoqado.pos.printing.data.ComandaPrinter
+import com.avoqado.pos.printing.data.EstadoDeComanda
+import com.avoqado.pos.printing.routing.ConsolidatedLine
+import com.avoqado.pos.printing.routing.PrintConfig
+import com.avoqado.pos.printing.routing.PrintConfigRepository
+import com.avoqado.pos.printing.routing.RoutableItem
+import com.avoqado.pos.printing.routing.StationInfo
+import com.avoqado.pos.printing.routing.TicketPlan
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.stateIn
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import java.util.UUID
 import javax.inject.Inject
+import javax.inject.Provider
 
 private const val TAG = "🍳 KDS-VM"
 
-// MARK: - Settings data class
-
+/** Ajustes de ESTA tablet (se guardan en [KdsPrefs]). «Auto-completar» se quitó: nadie cierra por tiempo (spec §7). */
 data class KDSSettings(
     val soundEnabled: Boolean = true,
-    val autoBumpEnabled: Boolean = false,
     val largeFontEnabled: Boolean = false,
 )
 
+/** Qué enseña la pantalla de cocina (spec 2026-09-27 §4 «Tablet» y §7). Espejo de `VistaDeCocina` de iOS. */
+sealed interface VistaDeCocina {
+    /** Sin estación elegida — o la guardada ya no existe o se desactivó, y se dice. */
+    data class ElegirEstacion(val estaciones: List<StationInfo>, val laGuardadaYaNoExiste: Boolean) : VistaDeCocina
+
+    /** La estación no tiene pantalla (efectiva): se explica y, si se puede, se ofrece prenderla. */
+    data class SinPantalla(val estacion: StationInfo, val estado: EstadoDeCasilla) : VistaDeCocina
+
+    /** El tablero de la estación. */
+    data class Tablero(val estacion: StationInfo, val estado: EstadoDeCasilla) : VistaDeCocina
+}
+
 @HiltViewModel
 class KDSViewModel @Inject constructor(
-    private val orderBus: KDSOrderBus,
     private val kdsRepository: KDSRepository,
-    // El MISMO despachador que usan mesas y vales: ruteo, fallbacks y la regla de que un
-    // guard de configuración jamás va delante de la impresión. Una segunda implementación
-    // aquí acabaría imprimiendo distinto que el resto del local.
+    // El MISMO despachador que usan mesas y vales: ruteo, fallbacks y la regla de que un guard de configuración jamás
+    // va delante de la impresión.
     private val comandaDispatcher: ComandaDispatcher,
-    // Para el ticket de EMPAQUE, que no pasa por el ruteo: es un plan armado a mano con el
-    // pedido completo.
+    // Para el ticket de EMPAQUE, que no pasa por el ruteo.
     private val comandaPrinter: ComandaPrinter,
     private val printConfigRepository: PrintConfigRepository,
-    // El deviceId del outbox, NO uno nuevo: la regla de offline-first lo dice explícito —
-    // si cambia al reiniciar, el mismo aparato se ve como dos y el árbitro deja de servir.
+    // El deviceId del outbox, NO uno nuevo (regla de offline-first).
     private val syncOutbox: Provider<SyncOutbox>,
+    private val prefs: KdsPrefs,
+    private val roleManager: RoleManager,
+    private val planManager: PlanManager,
     @ApplicationContext private val appContext: Context,
 ) : ViewModel() {
 
-    // MARK: - State
+    // MARK: - Estado
 
-    private val _orders = MutableStateFlow<List<KDSOrder>>(emptyList())
+    private val _vista = MutableStateFlow<VistaDeCocina>(VistaDeCocina.ElegirEstacion(emptyList(), laGuardadaYaNoExiste = false))
+    val vista: StateFlow<VistaDeCocina> = _vista.asStateFlow()
 
-    /**
-     * Un mensaje que la cocina TIENE que leer, no un log.
-     *
-     * 🔴 Existe porque los errores de responder a un pedido de delivery no son técnicos:
-     * "el plazo venció y ya no sirve reintentar" es información operativa, y el servidor la
-     * manda escrita para leerse aquí. Tragársela dejaría al cocinero picándole a un botón
-     * que ya no puede hacer nada.
-     */
-    private val _errorMessage = MutableStateFlow<String?>(null)
-    val errorMessage: StateFlow<String?> = _errorMessage.asStateFlow()
+    /** Las comandas pendientes de la estación, en orden de llegada (como las manda el servidor). */
+    private val _comandas = MutableStateFlow<List<KDSOrder>>(emptyList())
+    val comandas: StateFlow<List<KDSOrder>> = _comandas.asStateFlow()
 
-    fun clearError() {
-        _errorMessage.value = null
-    }
+    private val _recientes = MutableStateFlow<List<KDSOrder>>(emptyList())
+    val recientes: StateFlow<List<KDSOrder>> = _recientes.asStateFlow()
 
-    /**
-     * Los canales de reparto, para el control de "me saturé".
-     *
-     * Lista VACÍA cuando el venue no vende por reparto, no tiene el plan, o este puesto no
-     * tiene el permiso: en los tres casos el control simplemente no se dibuja. Es el mismo
-     * criterio del resto del tablero — no mostrarle a un cocinero un botón que le va a dar
-     * error.
-     */
+    /** Sin red: el tablero se queda con lo que tenía y lo DICE (neutro, nunca rojo). */
+    private val _sinConexion = MutableStateFlow(false)
+    val sinConexion: StateFlow<Boolean> = _sinConexion.asStateFlow()
+
+    /** Un mensaje que la cocina TIENE que leer: barra fija hasta «Entendido». */
+    private val _aviso = MutableStateFlow<AvisoDeCocina?>(null)
+    val aviso: StateFlow<AvisoDeCocina?> = _aviso.asStateFlow()
+
+    private val _exito = MutableStateFlow<String?>(null)
+    val exito: StateFlow<String?> = _exito.asStateFlow()
+
+    private val _cambiandoPantalla = MutableStateFlow(false)
+    val cambiandoPantalla: StateFlow<Boolean> = _cambiandoPantalla.asStateFlow()
+
+    private val _settings = MutableStateFlow(KDSSettings(soundEnabled = prefs.sonido, largeFontEnabled = prefs.letraGrande))
+    val settings: StateFlow<KDSSettings> = _settings.asStateFlow()
+
     private val _canalesReparto = MutableStateFlow<List<CanalReparto>>(emptyList())
     val canalesReparto: StateFlow<List<CanalReparto>> = _canalesReparto.asStateFlow()
 
-    private val _filter = MutableStateFlow(KDSFilter.ALL)
-    val filter: StateFlow<KDSFilter> = _filter.asStateFlow()
+    /** La config con que se armó la vista: nombres de estaciones e impresoras para los textos de la pantalla. */
+    private val _config = MutableStateFlow(PrintConfig())
+    val config: StateFlow<PrintConfig> = _config.asStateFlow()
 
-    private val _settings = MutableStateFlow(KDSSettings())
-    val settings: StateFlow<KDSSettings> = _settings.asStateFlow()
-
-    val filteredOrders: StateFlow<List<KDSOrder>> = combine(
-        _orders,
-        _filter,
-    ) { orders, filter ->
-        val visible = orders.filter { it.status != KDSOrderStatus.COMPLETED }
-        when (filter) {
-            KDSFilter.ALL -> visible
-            KDSFilter.NEW -> visible.filter { it.status == KDSOrderStatus.NEW }
-            KDSFilter.PREPARING -> visible.filter { it.status == KDSOrderStatus.PREPARING }
-            KDSFilter.READY -> visible.filter { it.status == KDSOrderStatus.READY }
-        }
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), emptyList())
-
-    val activeOrderCount: StateFlow<Int> = _orders.combine(_orders) { orders, _ ->
-        orders.count { it.status != KDSOrderStatus.COMPLETED }
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0)
-
-    val averageTimeSeconds: StateFlow<Long> = _orders.combine(_orders) { orders, _ ->
-        val completed = orders.filter { it.completedAt != null && it.startedAt != null }
-        if (completed.isEmpty()) 0L
-        else completed.map { (it.completedAt!! - it.startedAt!!) / 1000 }.average().toLong()
-    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(5_000), 0L)
-
+    /** «Cambiar de estación» a mano: el sondeo no puede regresar a la guardada mientras se elige. */
+    private var eligiendoAMano = false
     private var previousOrderIds: Set<String> = emptySet()
     private var hasLoadedFromAPI = false
 
-    // MARK: - Init
+    fun cerrarAviso() { _aviso.value = null }
 
-    init {
-        collectBusOrders()
-        // NEVER seed mock orders in production: staff saw fabricated tickets as
-        // real, a failed fetch kept them forever, and advance/bump fired REAL
-        // API calls against the fake IDs. Start empty; polling fills real data.
-        startPolling()
-    }
+    fun cerrarExito() { _exito.value = null }
 
-    private fun collectBusOrders() {
-        viewModelScope.launch {
-            orderBus.newOrders.collect { order ->
-                Log.d(TAG, "Nuevo pedido recibido via bus: #${order.orderNumber}")
-                // Fetch fresh from API instead of adding locally
-                fetchOrders()
-            }
-        }
-    }
+    // MARK: - Sondeo (sólo mientras la pantalla se ve)
 
-    private fun startPolling() {
-        viewModelScope.launch {
-            // Initial fetch
-            fetchOrders()
+    /**
+     * 🔴 Lo llama `KDSScreen` desde un `LaunchedEffect`: el sondeo vive MIENTRAS la pantalla está a la vista y se cancela
+     * al cerrarla. Antes arrancaba en `init` y este ViewModel —atado al menú «Más»— seguía pidiendo comandas cada 10 s
+     * con la pantalla cerrada, en cada aparato donde alguien la abrió una vez.
+     */
+    suspend fun mientrasSeVe() {
+        // Al volver a abrir la pantalla se regresa a la estación guardada: este ViewModel vive con «Más», y un «Cambiar
+        // de estación» que se cerró sin elegir no puede dejarla atorada en el selector.
+        eligiendoAMano = false
+        refrescar()
+        var vuelta = 0
+        while (true) {
+            delay(10_000)
+            vuelta++
+            // La config cada minuto en CUALQUIER vista (¿prendieron o apagaron la pantalla desde el dashboard?): el
+            // tablero aparece a lo más un minuto después; prenderla desde esta tablet refresca al instante. Entre
+            // vueltas, sólo las comandas (no hace nada fuera del tablero).
+            if (vuelta % 6 == 0) refrescar() else refrescarTablero()
             fetchCanalesReparto()
-            // Poll every 10 seconds
-            while (isActive) {
-                delay(10_000)
-                fetchOrders()
-                // Va en el MISMO ciclo: así la cuenta regresiva de la pausa se apaga sola
-                // cuando el servidor reactiva el canal, sin que nadie tenga que refrescar.
-                fetchCanalesReparto()
-            }
         }
     }
 
-    // MARK: - Fetch Orders from API
+    /** Relee la config (cache-first), decide qué enseñar y, si es tablero, trae sus comandas. */
+    internal suspend fun refrescar() {
+        val venueId = kdsRepository.venueIdActual() ?: return
+        // Cache-first: primero lo que el aparato ya sabe, sin esperar a la red…
+        _config.value = printConfigRepository.getCurrentConfig()
+        if (!eligiendoAMano && _config.value.version.isNotEmpty()) _vista.value = vistaPara(prefs.estacion(venueId))
+        // …y luego la verdad del servidor.
+        printConfigRepository.refresh(venueId)
+        _config.value = printConfigRepository.getCurrentConfig()
+        if (!eligiendoAMano) _vista.value = vistaPara(prefs.estacion(venueId))
+        // En el tablero sólo el fetch de comandas decide si hay red (abajo); fuera de él, si nunca vio la config
+        // (`version` vacía = sin red desde que se instaló: se dice, en vez de afirmar que no hay estaciones).
+        if (_vista.value !is VistaDeCocina.Tablero) _sinConexion.value = _config.value.version.isEmpty()
+        refrescarTablero()
+    }
 
-    private suspend fun fetchOrders() {
-        kdsRepository.fetchOrders().fold(
-            onSuccess = { apiOrders ->
-                val newIds = apiOrders.map { it.id }.toSet()
-                val addedIds = newIds - previousOrderIds
-                if (hasLoadedFromAPI && addedIds.isNotEmpty()) {
-                    playNotificationSound()
-                }
-                previousOrderIds = newIds
+    private fun vistaPara(guardada: String?): VistaDeCocina {
+        val config = _config.value
+        val elegida = estacionElegida(guardada, config.stations)
+            ?: return VistaDeCocina.ElegirEstacion(
+                estacionesParaElegir(config.stations),
+                laGuardadaYaNoExiste = guardada != null && config.version.isNotEmpty(),
+            )
+        val estado = estadoDeCasilla(
+            EntradaDeCasilla(
+                abiertaAClientes = config.kitchenDisplayOpenToClients,
+                esSuperadmin = roleManager.role == "SUPERADMIN",
+                puedeConfigurar = roleManager.canManagePrinters,
+                tieneAccesoPro = planManager.hasFeature("KITCHEN_DISPLAY"),
+                prendida = elegida.hasKitchenDisplay,
+            ),
+        )
+        return if (elegida.hasKitchenDisplay) VistaDeCocina.Tablero(elegida, estado) else VistaDeCocina.SinPantalla(elegida, estado)
+    }
+
+    private suspend fun refrescarTablero() {
+        val tablero = _vista.value as? VistaDeCocina.Tablero ?: return
+        kdsRepository.fetchOrders(tablero.estacion.id).fold(
+            onSuccess = { nuevas ->
+                _sinConexion.value = false
+                val ids = nuevas.map { it.id }.toSet()
+                if (hasLoadedFromAPI && (ids - previousOrderIds).isNotEmpty()) playNotificationSound()
+                previousOrderIds = ids
                 hasLoadedFromAPI = true
-                _orders.value = apiOrders
-                // Después de publicar, no antes: la pantalla se actualiza aunque la impresora
-                // esté tardando. La cocina ve el pedido primero, el papel sale enseguida.
-                viewModelScope.launch { imprimirComandasPendientes(apiOrders) }
+                _comandas.value = nuevas
+                // Después de publicar: la cocina ve el pedido primero, el papel sale enseguida.
+                viewModelScope.launch { imprimirComandasPendientes(nuevas) }
             },
-            onFailure = { error ->
-                Log.d(TAG, "API fetch failed (keeping current data): ${error.message}")
-                // Keep mock/previous data as fallback
+            onFailure = { e ->
+                // Se CONSERVA lo que ya se veía: sin red la cocina sigue trabajando con eso.
+                if (esSinRed(e)) _sinConexion.value = true
+                Log.d(TAG, "No se pudo leer el tablero (se conserva lo que había): ${e.message}")
             },
         )
     }
 
-    private fun loadMockOrders() {
-        val now = System.currentTimeMillis()
-        val mocks = listOf(
-            KDSOrder(
-                id = UUID.randomUUID().toString(),
-                orderNumber = "101",
-                orderType = "En tienda",
-                items = listOf(
-                    KDSOrderItem("1", "Hamburguesa clasica", 2, listOf("Sin cebolla", "Extra queso")),
-                    KDSOrderItem("2", "Papas fritas", 1),
-                    KDSOrderItem("3", "Refresco grande", 2, notes = "Sin hielo"),
-                ),
-                createdAt = now - 8 * 60 * 1000,
-                status = KDSOrderStatus.NEW,
-            ),
-            KDSOrder(
-                id = UUID.randomUUID().toString(),
-                orderNumber = "102",
-                orderType = "Para llevar",
-                items = listOf(
-                    KDSOrderItem("4", "Ensalada cesar", 1, listOf("Aderezo aparte")),
-                    KDSOrderItem("5", "Agua mineral", 1),
-                ),
-                createdAt = now - 5 * 60 * 1000,
-                status = KDSOrderStatus.PREPARING,
-                startedAt = now - 3 * 60 * 1000,
-            ),
-            KDSOrder(
-                id = UUID.randomUUID().toString(),
-                orderNumber = "103",
-                orderType = "En tienda",
-                items = listOf(
-                    KDSOrderItem("6", "Tacos al pastor", 3, listOf("Con todo")),
-                    KDSOrderItem("7", "Guacamole", 1),
-                ),
-                createdAt = now - 12 * 60 * 1000,
-                status = KDSOrderStatus.NEW,
-            ),
-            KDSOrder(
-                id = UUID.randomUUID().toString(),
-                orderNumber = "104",
-                orderType = "Delivery",
-                items = listOf(
-                    KDSOrderItem("8", "Pizza margherita", 1),
-                    KDSOrderItem("9", "Alitas BBQ", 1, listOf("Extra salsa")),
-                ),
-                createdAt = now - 2 * 60 * 1000,
-                status = KDSOrderStatus.PREPARING,
-                startedAt = now - 1 * 60 * 1000,
-            ),
-            KDSOrder(
-                id = UUID.randomUUID().toString(),
-                orderNumber = "105",
-                orderType = "En tienda",
-                items = listOf(
-                    KDSOrderItem("10", "Cafe americano", 2),
-                    KDSOrderItem("11", "Pan dulce", 3),
-                ),
-                createdAt = now - 15 * 60 * 1000,
-                status = KDSOrderStatus.READY,
-                startedAt = now - 14 * 60 * 1000,
-            ),
-        )
-        _orders.value = mocks
-        previousOrderIds = mocks.map { it.id }.toSet()
+    // MARK: - Estación
+
+    fun elegirEstacion(id: String) {
+        val venueId = kdsRepository.venueIdActual() ?: return
+        prefs.guardarEstacion(venueId, id)
+        eligiendoAMano = false
+        _comandas.value = emptyList()
+        previousOrderIds = emptySet()
+        hasLoadedFromAPI = false
+        _vista.value = vistaPara(id)
+        viewModelScope.launch { refrescarTablero() }
     }
 
-    // MARK: - Actions
-
-    fun setFilter(newFilter: KDSFilter) {
-        _filter.value = newFilter
+    fun cambiarEstacion() {
+        eligiendoAMano = true
+        _vista.value = VistaDeCocina.ElegirEstacion(estacionesParaElegir(_config.value.stations), laGuardadaYaNoExiste = false)
     }
 
-    fun advanceStatus(orderId: String) {
-        _orders.value = _orders.value.map { order ->
-            if (order.id == orderId) {
-                val now = System.currentTimeMillis()
-                when (order.status) {
-                    KDSOrderStatus.NEW -> order.copy(
-                        status = KDSOrderStatus.PREPARING,
-                        startedAt = now,
-                    )
-                    KDSOrderStatus.PREPARING -> order.copy(
-                        status = KDSOrderStatus.READY,
-                    )
-                    KDSOrderStatus.READY -> order.copy(
-                        status = KDSOrderStatus.COMPLETED,
-                        completedAt = now,
-                    )
-                    KDSOrderStatus.COMPLETED -> order
-                }
-            } else {
-                order
+    // MARK: - LISTO, lote y deshacer
+
+    /** LISTO de un toque: sale del tablero al instante; si el servidor no se entera, REGRESA y se dice por qué. */
+    fun listo(id: String) {
+        val comanda = _comandas.value.firstOrNull { it.id == id } ?: return
+        _comandas.value = _comandas.value.filterNot { it.id == id }
+        viewModelScope.launch {
+            kdsRepository.bumpOrder(id).onFailure { e ->
+                if (_comandas.value.none { it.id == id }) _comandas.value = (_comandas.value + comanda).sortedBy { it.createdAt }
+                if (esSinRed(e)) _sinConexion.value = true
+                _aviso.value = avisoDeFallo(e, AccionDeCocina.LISTO)
             }
         }
-
-        // Sync to server
-        val order = _orders.value.find { it.id == orderId }
-        if (order != null) {
-            viewModelScope.launch {
-                kdsRepository.updateStatus(orderId, order.status.name).onFailure {
-                    // Optimistic local mutation failed server-side: resync so the
-                    // board self-corrects instead of silently diverging.
-                    fetchOrders()
-                }
-            }
-        }
-
-        Log.d(TAG, "Estado avanzado para pedido: $orderId")
     }
+
+    /** «Marcar todas listas» (la pantalla confirma antes). Nunca un delivery sin aceptar. */
+    fun marcarTodasListas() {
+        val ids = idsParaMarcarTodas(_comandas.value)
+        if (ids.isEmpty()) return
+        val quitadas = _comandas.value.filter { it.id in ids }
+        _comandas.value = _comandas.value.filterNot { it.id in ids }
+        viewModelScope.launch {
+            kdsRepository.bumpBatch(ids)
+                .onSuccess { refrescarTablero() }
+                .onFailure { e ->
+                    val regresan = quitadas.filter { q -> _comandas.value.none { it.id == q.id } }
+                    _comandas.value = (_comandas.value + regresan).sortedBy { it.createdAt }
+                    if (esSinRed(e)) _sinConexion.value = true
+                    _aviso.value = avisoDeFallo(e, AccionDeCocina.MARCAR_TODAS)
+                }
+        }
+    }
+
+    fun abrirRecientes() {
+        val tablero = _vista.value as? VistaDeCocina.Tablero ?: return
+        viewModelScope.launch {
+            kdsRepository.fetchRecientes(tablero.estacion.id)
+                .onSuccess { _recientes.value = it }
+                .onFailure { e -> _aviso.value = avisoDeFallo(e, AccionDeCocina.RECIENTES) }
+        }
+    }
+
+    /** «Deshacer»: sin optimismo — la comanda sigue en Recientes hasta que el servidor la regresa. */
+    fun deshacer(id: String) {
+        viewModelScope.launch {
+            kdsRepository.recall(id)
+                .onSuccess {
+                    _recientes.value = _recientes.value.filterNot { it.id == id }
+                    refrescarTablero()
+                }
+                .onFailure { e ->
+                    if (esSinRed(e)) _sinConexion.value = true
+                    _aviso.value = avisoDeFallo(e, AccionDeCocina.DESHACER)
+                }
+        }
+    }
+
+    // MARK: - Prender / apagar la pantalla desde la tablet (la pantalla confirma antes; abrir NUNCA la prende)
+
+    fun cambiarPantalla(prender: Boolean) {
+        val estacion = when (val v = _vista.value) {
+            is VistaDeCocina.Tablero -> v.estacion
+            is VistaDeCocina.SinPantalla -> v.estacion
+            is VistaDeCocina.ElegirEstacion -> return
+        }
+        if (_cambiandoPantalla.value) return
+        _cambiandoPantalla.value = true
+        viewModelScope.launch {
+            kdsRepository.setKitchenDisplay(estacion.id, prender)
+                .onSuccess {
+                    _exito.value = if (prender) TextosDeCocina.prendida(estacion.name) else TextosDeCocina.apagada(estacion.name)
+                    refrescar()
+                }
+                .onFailure { e -> _aviso.value = avisoDeFallo(e, AccionDeCocina.PANTALLA) }
+            _cambiandoPantalla.value = false
+        }
+    }
+
+    // MARK: - Ajustes del aparato
+
+    fun toggleSound() = guardarAjustes(_settings.value.copy(soundEnabled = !_settings.value.soundEnabled))
+
+    fun toggleLargeFont() = guardarAjustes(_settings.value.copy(largeFontEnabled = !_settings.value.largeFontEnabled))
+
+    private fun guardarAjustes(ajustes: KDSSettings) {
+        _settings.value = ajustes
+        prefs.sonido = ajustes.soundEnabled
+        prefs.letraGrande = ajustes.largeFontEnabled
+    }
+
+    // MARK: - Delivery, impresión de lo que llegó solo y «me saturé»
 
     /**
      * "Sí lo preparo." Sólo aparece en canales configurados en MANUAL, donde el sistema NO
      * acepta solo y el plazo del proveedor (~11.5 min en Uber) ya está corriendo.
      *
      * 🔴 NO se pinta como aceptado antes de que el proveedor conteste. Con el estado del
-     * pedido no aplica el optimismo que sí usa `advanceStatus`: ahí un error sólo desordena
+     * pedido no aplica el optimismo que sí usa `listo`: ahí un error sólo desordena
      * un tablero, aquí haría creer a la cocina que el pedido está confirmado y que puede
      * ponerse a cocinar. Si el plazo venció, ese platillo ya no lo va a recoger nadie.
      */
     fun acceptDeliveryOrder(kdsId: String) {
-        val order = _orders.value.find { it.id == kdsId } ?: return
-        val orderId = order.orderId ?: return
+        val comanda = _comandas.value.firstOrNull { it.id == kdsId } ?: return
+        val orderId = comanda.orderId ?: return
 
         viewModelScope.launch {
             kdsRepository.acceptDeliveryOrder(orderId)
                 .onSuccess {
                     // Se relee del servidor en vez de asumir: es el server quien sabe si el
                     // proveedor de verdad lo tomó.
-                    fetchOrders()
+                    refrescarTablero()
                 }
                 .onFailure { e ->
                     // El mensaje viene del servidor y está escrito para leerse en la cocina
                     // (por ejemplo: el plazo venció y no sirve reintentar).
-                    _errorMessage.value = e.message ?: "No se pudo aceptar el pedido"
+                    _aviso.value = AvisoDeCocina(e.message ?: "No se pudo aceptar el pedido", esError = true)
                 }
         }
     }
@@ -329,13 +347,13 @@ class KDSViewModel @Inject constructor(
      * si el pedido ya se había aceptado — la cocina sólo dice que no puede.
      */
     fun denyDeliveryOrder(kdsId: String, reason: String = "OUT_OF_ITEMS") {
-        val order = _orders.value.find { it.id == kdsId } ?: return
-        val orderId = order.orderId ?: return
+        val comanda = _comandas.value.firstOrNull { it.id == kdsId } ?: return
+        val orderId = comanda.orderId ?: return
 
         viewModelScope.launch {
             kdsRepository.denyDeliveryOrder(orderId, reason)
-                .onSuccess { fetchOrders() }
-                .onFailure { e -> _errorMessage.value = e.message ?: "No se pudo rechazar el pedido" }
+                .onSuccess { refrescarTablero() }
+                .onFailure { e -> _aviso.value = AvisoDeCocina(e.message ?: "No se pudo rechazar el pedido", esError = true) }
         }
     }
 
@@ -462,7 +480,7 @@ class KDSViewModel @Inject constructor(
         viewModelScope.launch {
             kdsRepository.snoozeDelivery(linkId, minutos)
                 .onSuccess { fetchCanalesReparto() }
-                .onFailure { e -> _errorMessage.value = e.message ?: "No se pudo pausar el reparto" }
+                .onFailure { e -> _aviso.value = AvisoDeCocina(e.message ?: "No se pudo pausar el reparto", esError = true) }
         }
     }
 
@@ -471,40 +489,8 @@ class KDSViewModel @Inject constructor(
         viewModelScope.launch {
             kdsRepository.reanudarDelivery(linkId)
                 .onSuccess { fetchCanalesReparto() }
-                .onFailure { e -> _errorMessage.value = e.message ?: "No se pudo reanudar el reparto" }
+                .onFailure { e -> _aviso.value = AvisoDeCocina(e.message ?: "No se pudo reanudar el reparto", esError = true) }
         }
-    }
-
-    fun bumpOrder(orderId: String) {
-        _orders.value = _orders.value.map { order ->
-            if (order.id == orderId) {
-                order.copy(
-                    status = KDSOrderStatus.COMPLETED,
-                    completedAt = System.currentTimeMillis(),
-                )
-            } else {
-                order
-            }
-        }
-
-        // Sync to server
-        viewModelScope.launch {
-            kdsRepository.bumpOrder(orderId).onFailure { fetchOrders() }
-        }
-
-        Log.d(TAG, "Pedido completado (bump): $orderId")
-    }
-
-    fun toggleSound() {
-        _settings.value = _settings.value.copy(soundEnabled = !_settings.value.soundEnabled)
-    }
-
-    fun toggleAutoBump() {
-        _settings.value = _settings.value.copy(autoBumpEnabled = !_settings.value.autoBumpEnabled)
-    }
-
-    fun toggleLargeFont() {
-        _settings.value = _settings.value.copy(largeFontEnabled = !_settings.value.largeFontEnabled)
     }
 
     // MARK: - Sound
@@ -520,22 +506,6 @@ class KDSViewModel @Inject constructor(
         }
     }
 }
-
-// MARK: - Helper for KDSOrderItem (used by KDSOrderBus convenience)
-
-fun KDSOrderItem(
-    id: String,
-    productName: String,
-    quantity: Int,
-    modifiers: List<String> = emptyList(),
-    notes: String? = null,
-) = com.avoqado.pos.kds.domain.KDSOrderItem(
-    id = id,
-    productName = productName,
-    quantity = quantity,
-    modifiers = modifiers,
-    notes = notes,
-)
 
 /**
  * ¿La comanda SALIÓ de verdad? Decide si el KDS confirma la impresión o suelta el pedido.

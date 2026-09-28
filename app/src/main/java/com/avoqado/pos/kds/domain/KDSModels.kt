@@ -56,13 +56,6 @@ enum class KDSOrderStatus(val label: String) {
     COMPLETED("Completado"),
 }
 
-enum class KDSFilter(val label: String) {
-    ALL("Todos"),
-    NEW("Nuevos"),
-    PREPARING("Prep"),
-    READY("Listos"),
-}
-
 /**
  * Un canal de reparto tal como lo necesita el POS: nada de secretos ni configuración.
  *

@@ -210,41 +210,6 @@ class KDSRepository @Inject constructor(
         }
     }
 
-    // MARK: - Update status
-
-    suspend fun updateStatus(orderId: String, status: String): Result<Unit> {
-        val venueId = secureStorage.venueId
-            ?: return Result.failure(Exception("No venue selected"))
-        val token = secureStorage.accessToken
-            ?: return Result.failure(Exception("Not authenticated"))
-
-        return try {
-            val jsonBody = JSONObject().apply { put("status", status) }
-            val requestBody = jsonBody.toString()
-                .toRequestBody("application/json".toMediaType())
-
-            val request = Request.Builder()
-                .url("${ApiConstants.BASE_URL}/mobile/venues/$venueId/kds/orders/$orderId/status")
-                .header("Authorization", "Bearer $token")
-                .put(requestBody)
-                .build()
-
-            val code = withContext(Dispatchers.IO) {
-                client.newCall(request).execute().code
-            }
-
-            if (code in 200..299) {
-                Log.d(TAG, "Status updated: $orderId -> $status")
-                Result.success(Unit)
-            } else {
-                Result.failure(Exception("Error al actualizar estado ($code)"))
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Update status error: ${e.message}")
-            Result.failure(e)
-        }
-    }
-
     // MARK: - Parse helpers
 
     private fun parseOrder(json: JSONObject): KDSOrder? {

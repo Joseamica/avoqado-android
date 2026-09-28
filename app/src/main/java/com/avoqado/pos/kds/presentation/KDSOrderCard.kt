@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
@@ -25,13 +24,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.kds.domain.KDSOrder
 import com.avoqado.pos.kds.domain.KDSOrderStatus
+import com.avoqado.pos.kds.domain.TextosDeCocina
 
 // MARK: - Color Constants
 
@@ -47,7 +49,9 @@ fun KDSOrderCard(
     order: KDSOrder,
     elapsedText: String,
     isLargeFont: Boolean,
-    onAdvanceStatus: () -> Unit,
+    /** `etiquetaDeEstacion(…)`: «Sin estación» o el nombre de otra estación; `null` = es de esta. */
+    etiqueta: String?,
+    onListo: () -> Unit,
     modifier: Modifier = Modifier,
     /** Sólo se usan cuando `order.needsAcceptance` — ver el bloque de acciones abajo. */
     onAcceptDelivery: () -> Unit = {},
@@ -125,6 +129,13 @@ fun KDSOrderCard(
                 // Order type badge
                 OrderTypeBadge(orderType = order.orderType)
 
+                // «Sin estación» o el nombre de la estación que la mandó aquí (ya no tiene pantalla propia): la
+                // MISMA píldora, para que no lea como un dato distinto.
+                if (etiqueta != null) {
+                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxs))
+                    OrderTypeBadge(orderType = etiqueta)
+                }
+
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
 
                 // Items list
@@ -176,37 +187,13 @@ fun KDSOrderCard(
                     return@Column
                 }
 
-                // Action button
-                val (buttonText, buttonColor) = when (order.status) {
-                    KDSOrderStatus.NEW -> "Preparar" to MaterialTheme.colorScheme.primary
-                    KDSOrderStatus.PREPARING -> "Listo" to PreparingAmber
-                    KDSOrderStatus.READY -> "Completar" to ReadyGreen
-                    KDSOrderStatus.COMPLETED -> "Completado" to MaterialTheme.colorScheme.surfaceContainerHigh
-                }
-
-                Button(
-                    onClick = onAdvanceStatus,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(56.dp),
-                    shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.md),
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = buttonColor,
-                        contentColor = if (order.status == KDSOrderStatus.NEW) {
-                            MaterialTheme.colorScheme.onPrimary
-                        } else {
-                            Color.White
-                        },
-                    ),
-                    enabled = order.status != KDSOrderStatus.COMPLETED,
-                ) {
-                    Text(
-                        text = buttonText,
-                        style = if (isLargeFont) MaterialTheme.typography.titleMedium
-                                else MaterialTheme.typography.bodyLarge,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                }
+                // Un toque: LISTO. Sale del tablero al instante (optimista); si el servidor no se entera, regresa.
+                PrimaryButton(
+                    text = TextosDeCocina.LISTO,
+                    onClick = onListo,
+                    fullWidth = true,
+                    modifier = Modifier.testTag("kds-listo-${order.id}"),
+                )
             }
         }
     }
