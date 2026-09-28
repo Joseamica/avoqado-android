@@ -150,6 +150,13 @@ class PaymentFlowViewModel @Inject constructor(
     private var createdOrderId: String? = null
     private var createdOrderNumber: String? = null  // folio real del backend
 
+    /**
+     * Etapa 3 del KDS (3.4): el `externalId` con el que se creó (o encoló) la orden de ESTA venta — la base del folio
+     * `sale:<externalId>` de la marca del papel de respaldo. Se copia aquí porque `paymentIdempotencyKey` se limpia al
+     * llegar a Success, antes de que la comanda salga.
+     */
+    private var externalIdDeLaVenta: String? = null
+
     /// Re-entrancy guard: a fast double-tap on a cash preset or a terminal row
     /// used to enter processCashPayment/confirmPayment TWICE — both saw
     /// createdOrderId == null and created two orders + recorded two payments.
@@ -841,6 +848,7 @@ class PaymentFlowViewModel @Inject constructor(
         currentTipCents = 0
         createdOrderId = null
         createdOrderNumber = null
+        externalIdDeLaVenta = null
         // Una venta nueva no hereda la cancelación de la anterior: ni su observación, ni su aviso,
         // ni su salida. El aviso de «no se pudo guardar» describía la venta pasada y reaparecía
         // encima de ésta.
@@ -1313,6 +1321,7 @@ class PaymentFlowViewModel @Inject constructor(
                         // Create order only once per payment session.
                         val orderRequest = buildOrderRequest(cart)
                         val orderExternalId = sessionIdempotencyKey()
+                        externalIdDeLaVenta = orderExternalId
                         val orderResult = orderRepository.createOrder(
                             orderRequest,
                             staffId = selectedStaffId(),
@@ -1631,6 +1640,7 @@ class PaymentFlowViewModel @Inject constructor(
                             )
                         } else {
                             val orderExternalId = sessionIdempotencyKey()
+                            externalIdDeLaVenta = orderExternalId
                             val orderResult = orderRepository.createOrder(
                                 orderRequest,
                                 staffId = selectedStaffId(),
@@ -2697,6 +2707,11 @@ class PaymentFlowViewModel @Inject constructor(
         // vacíos — una transferencia abriría el cajón.
         val cobrado = (_state.value as? PaymentFlowState.Success)?.totalAmount ?: (currentBaseAmount() + currentTipCents)
         val abrirCajon = CajonDeDinero.debeAbrirse(method, manualMethod, selectedTender, cobrado)
+        // Etapa 3 del KDS (3.4): se decide AQUÍ, como el cajón — la venta siguiente limpia estos campos. Una venta
+        // ENCOLADA todavía no llega al servidor, que es quien arma la comanda de pantalla: sus estaciones «sólo
+        // pantalla» salen en papel de respaldo.
+        val servidorLaTiene = (_state.value as? PaymentFlowState.Success)?.isQueued != true
+        val origenDelFolio = externalIdDeLaVenta?.let { "sale:$it" }
 
         viewModelScope.launch {
             buildReceiptSnapshot(method, changeCents)?.let { receipt ->
@@ -2713,7 +2728,7 @@ class PaymentFlowViewModel @Inject constructor(
             // ~1 minuto: si viviera en la coroutine del pago, congelaría la caja con el
             // cliente enfrente. `PaymentFlowViewModelTest` fija que `state` llega a `Success`
             // aunque la comanda siga reintentando.
-            despacharComanda(cart)
+            despacharComanda(cart, servidorLaTiene, origenDelFolio)
         }
     }
 
@@ -2727,7 +2742,7 @@ class PaymentFlowViewModel @Inject constructor(
      * qué coroutine corre. [autoPrintAfterPayment] ya la corre dentro de la suya; [reintentarComanda]
      * abre una nueva. Nunca se llama desde el camino del cobro.
      */
-    private suspend fun despacharComanda(cart: CartState) {
+    private suspend fun despacharComanda(cart: CartState, servidorLaTiene: Boolean, origenDelFolio: String?) {
         val realItems = cart.items.filter {
             it.type is CartItemType.ProductItem && !it.locked
         }
@@ -2786,6 +2801,9 @@ class PaymentFlowViewModel @Inject constructor(
             // Una comanda que sigue reintentando o que se rindió se DICE, con la estación por
             // nombre y la CAUSA REAL que reportó la impresora — nunca un texto genérico. La regla
             // de "de qué venta habla este aviso" vive en UN solo sitio: [aplicarEstadoDeComanda].
+            // Etapa 3 del KDS (3.4): la caja decide por estación — ver `KitchenDeliveryPolicy`.
+            servidorLaTiene = servidorLaTiene,
+            origenDelFolio = origenDelFolio,
             alCambiarEstado = { estado -> aplicarEstadoDeComanda(estado, orderNumber) },
         )
     }

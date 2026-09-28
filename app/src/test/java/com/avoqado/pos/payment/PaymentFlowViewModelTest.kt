@@ -18,6 +18,7 @@ import com.avoqado.pos.areatickets.data.AreaTicketCheckoutTotals
 import com.avoqado.pos.areatickets.data.AreaTicketRepository
 import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
 import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.core.data.sync.SyncOutbox
 import com.avoqado.pos.core.domain.printing.ComandaDispatcher
 import com.avoqado.pos.kds.data.KDSRepository
 import com.avoqado.pos.kds.domain.KDSOrderBus
@@ -48,6 +49,7 @@ import com.avoqado.pos.printing.data.model.KitchenItem
 import com.avoqado.pos.printing.data.model.KitchenTicketData
 import com.avoqado.pos.printing.data.model.ReceiptData
 import com.avoqado.pos.printing.routing.PrintConfig
+import com.avoqado.pos.printing.routing.ProductOverride
 import com.avoqado.pos.payment.domain.ManualPaymentChoice
 import com.avoqado.pos.payment.domain.ManualPaymentMethod
 import com.avoqado.pos.payment.domain.TenderTypeOption
@@ -69,6 +71,8 @@ import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.runCurrent
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -104,12 +108,15 @@ class PaymentFlowViewModelTest {
     /** Visible para poder comprobar CUÁNDO se persiste una comanda que no salió. */
     private val almacenDePendientes = AlmacenEnMemoria()
     private val storeDePendientes by lazy { ComandasPendientesStore(almacenDePendientes) }
+    /** Etapa 3 del KDS (3.4): la cola donde el despachador deja la marca del papel de respaldo. */
+    private val colaDeMarcas = mockk<SyncOutbox>(relaxed = true)
     /** El MISMO dispatcher que ve el ViewModel y el reintento periódico — ver más abajo. */
     private val comandaDispatcherReal by lazy {
         ComandaDispatcher(
             printConfigRepository,
             ReintentoDeComanda(comandaPrinter, reporteDeComandas = mockk<ReporteDeComandas>(relaxed = true)),
             printerService,
+            colaDeMarcas,
         )
     }
 
@@ -1310,6 +1317,59 @@ class PaymentFlowViewModelTest {
         assertEquals("el ticket sale como siempre", "Efectivo", recibo.paymentMethod)
         coVerify(exactly = 0) { kdsRepository.createOrder(any(), any(), any(), any()) }
         coVerify(exactly = 0) { kdsOrderBus.publish(any()) }
+    }
+
+    // MARK: - Etapa 3 del KDS (fase 3.4): la caja decide por estación
+
+    private val configConBarraSoloPantalla = PrintConfig(
+        stations = listOf(
+            StationInfo(id = "st_cocina", name = "Cocina", printerId = "pr_1", active = true),
+            StationInfo(id = "st_barra", name = "Barra", printerId = null, active = true, hasKitchenDisplay = true),
+        ),
+        productOverrides = listOf(ProductOverride(productId = "prod-cafe", printStationId = "st_barra")),
+        defaultStationId = "st_cocina",
+    )
+    private val cartConCafe = CartState(
+        items = listOf(CartItem(id = "line-cafe", type = CartItemType.ProductItem("prod-cafe"), name = "Café", unitPrice = 3000)),
+    )
+
+    @Test
+    fun `P1 venta en efectivo EN LINEA - la estacion solo pantalla no se imprime ni se marca`() = runTest {
+        coEvery { orderRepository.createOrder(any(), any(), any(), any(), any()) } returns
+            Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-en-linea")))
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any()) } returns
+            Result.success(OrderRepository.CashPayResult(paymentId = "pay-en-linea", receiptAccessKey = null))
+        every { printConfigRepository.getCurrentConfig() } returns configConBarraSoloPantalla
+
+        viewModel.startPaymentFlow(cartConCafe)
+        viewModel.confirmCashCustom(3000)
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value is PaymentFlowState.Success)
+        coVerify(exactly = 0) { comandaPrinter.printComandas(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { colaDeMarcas.enqueue(any(), "KDS_TICKET_MARK", any(), any(), any()) }
+    }
+
+    @Test
+    fun `P1 venta en efectivo SIN RED - respaldo en papel y marca con el externalId de la orden`() = runTest {
+        val llave = slot<String>()
+        coEvery { orderRepository.createOrder(any(), any(), any(), any(), capture(llave)) } returns
+            Result.failure(java.net.UnknownHostException("sin red"))
+        every { printConfigRepository.getCurrentConfig() } returns configConBarraSoloPantalla
+        val planes = slot<List<TicketPlan>>()
+        coEvery { comandaPrinter.printComandas(capture(planes), any(), any(), any(), any()) } returns
+            ComandaPrinter.Result(attempted = 1, printed = 1, skippedNoPrinter = 0, lastError = null)
+        val marca = slot<JsonObject>()
+        coEvery { colaDeMarcas.enqueue("venue-1", "KDS_TICKET_MARK", capture(marca), any(), any()) } returns "m-1"
+
+        viewModel.startPaymentFlow(cartConCafe)
+        viewModel.confirmCashCustom(3000)
+        advanceUntilIdle()
+
+        val estado = viewModel.state.value
+        assertTrue(estado is PaymentFlowState.Success && estado.isQueued)
+        assertEquals(listOf("st_barra"), planes.captured.map { it.stationId })
+        assertEquals("sale:${llave.captured}:st_barra", marca.captured["sourceKey"]!!.jsonPrimitive.content)
     }
 
     @Test
