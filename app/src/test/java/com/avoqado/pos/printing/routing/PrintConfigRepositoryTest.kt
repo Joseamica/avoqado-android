@@ -5,8 +5,13 @@ import com.avoqado.pos.core.data.network.ApiService
 import com.avoqado.pos.core.di.NetworkModule
 import io.mockk.coEvery
 import io.mockk.mockk
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -126,5 +131,50 @@ class PrintConfigRepositoryTest {
         )
         val copia = cacheJson.decodeFromString(PrintConfig.serializer(), cacheJson.encodeToString(PrintConfig.serializer(), original))
         assertEquals(original, copia)
+    }
+
+    // MARK: - Etapa 3 del KDS (3.4): refresco con tope
+
+    /**
+     * H2 de la spec: con la API muerta y el WiFi vivo, esperar la config congelaba la comanda 30 s. Ahora se espera a lo
+     * más el tope y se imprime con la guardada; la descarga NO se cancela: la config fresca llega sola después.
+     */
+    @Test
+    fun `P1 refreshConTope no espera mas del tope - y la config fresca llega sola despues`() = runTest {
+        val puerta = CompletableDeferred<Unit>()
+        coEvery { apiService.getPrintConfig("venue-1") } coAnswers {
+            puerta.await()
+            PrintConfigResponse(success = true, data = configConEstacion())
+        }
+
+        repository.refreshConTope("venue-1", topeMs = 50)
+
+        assertTrue("regresó sin esperar a la red colgada", repository.getCurrentConfig().stations.isEmpty())
+        puerta.complete(Unit)
+        withContext(Dispatchers.Default) {
+            withTimeout(5_000) { while (repository.getCurrentConfig().stations.isEmpty()) delay(10) }
+        }
+        assertEquals(1, repository.getCurrentConfig().stations.size)
+    }
+
+    /**
+     * 🔴 La app recién abierta no tiene config en memoria, y el `refresh` sólo hidrata del disco cuando la red FALLA —
+     * con la API colgada eso tarda el timeout (~30 s). Sin hidratar primero, la caja decidía en 1.5 s con una config
+     * VACÍA: ticket legado o «SIN ESTACIÓN», sin ruteo ni respaldo. Hoy (sin tope) esa comanda sale bien, 30 s tarde.
+     */
+    @Test
+    fun `P1 arranque en frio con la API colgada - decide con la config guardada en disco`() = runTest {
+        val json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+            .encodeToString(PrintConfig.serializer(), configConEstacion())
+        coEvery { payloadCache.load(PayloadCache.TYPE_PRINT_CONFIG, "venue-1") } returns
+            PayloadCache.Cached(json = json, updatedAt = System.currentTimeMillis() - 60_000L)
+        coEvery { apiService.getPrintConfig("venue-1") } coAnswers {
+            CompletableDeferred<Unit>().await() // la API no contesta nunca
+            PrintConfigResponse(success = true, data = PrintConfig())
+        }
+
+        repository.refreshConTope("venue-1", topeMs = 50)
+
+        assertEquals(listOf("st_cocina"), repository.getCurrentConfig().stations.map { it.id })
     }
 }

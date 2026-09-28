@@ -2,9 +2,14 @@ package com.avoqado.pos.printing.routing
 
 import android.util.Log
 import com.avoqado.pos.core.data.network.ApiService
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -27,6 +32,9 @@ class PrintConfigRepository @Inject constructor(
     val config: StateFlow<PrintConfig> = _config.asStateFlow()
 
     private val cacheJson = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+
+    /** Donde sigue la descarga que [refreshConTope] dejó de esperar. */
+    private val fondo = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     fun getCurrentConfig(): PrintConfig = _config.value
 
@@ -63,6 +71,22 @@ class PrintConfigRepository @Inject constructor(
         }
     }
 
+    /**
+     * Etapa 3 del KDS (3.4, H2 de la spec): espera la config fresca a lo más [topeMs]. Si la red tarda más —API muerta
+     * con el WiFi vivo, el caso del ICP— regresa y quien llama decide e imprime con la guardada. La descarga NO se
+     * cancela: sigue en segundo plano y actualiza [config] cuando llegue (cancelarla dejaría a una red lenta sin config
+     * fresca nunca, porque este es el único refresco del mostrador).
+     *
+     * 🔴 «La guardada» tiene que EXISTIR en memoria: en un arranque en frío [config] está vacía y [refresh] sólo hidrata
+     * del disco cuando la red FALLA (con la API colgada, ~30 s). Por eso se hidrata PRIMERO; si no, se decidiría con una
+     * config vacía (ticket legado / «SIN ESTACIÓN»). `topeMs = 0` = no espera a la red (precarga de `AppState`).
+     */
+    suspend fun refreshConTope(venueId: String, topeMs: Long = TOPE_REFRESCO_MS) {
+        if (_config.value.stations.isEmpty()) hydrateFromCache(venueId)
+        val enCurso = fondo.launch { refresh(venueId) }
+        withTimeoutOrNull(topeMs) { enCurso.join() }
+    }
+
     private suspend fun hydrateFromCache(venueId: String) {
         val cached = payloadCache.load(
             com.avoqado.pos.core.data.local.PayloadCache.TYPE_PRINT_CONFIG,
@@ -80,5 +104,6 @@ class PrintConfigRepository @Inject constructor(
 
     companion object {
         private const val TAG = "PrintConfigRepository"
+        const val TOPE_REFRESCO_MS = 1_500L
     }
 }
