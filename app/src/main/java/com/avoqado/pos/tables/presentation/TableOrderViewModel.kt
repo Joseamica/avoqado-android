@@ -18,6 +18,7 @@ import com.avoqado.pos.printing.routing.RoutableItem
 import com.avoqado.pos.tables.data.AddOrderItemRequest
 import com.avoqado.pos.tables.data.OrderDetail
 import com.avoqado.pos.tables.data.OrderDetailItem
+import com.avoqado.pos.tables.data.RondaConLlave
 import com.avoqado.pos.tables.data.TableServiceRepository
 import com.avoqado.pos.tables.data.TableSession
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -461,36 +462,54 @@ class TableOrderViewModel @Inject constructor(
                 return@launch
             }
 
-            repository.addRound(vId, session.orderId, requests, session.version).fold(
-                onSuccess = { updated ->
-                    // Saved — hand control back IMMEDIATELY; printing and the
-                    // floor refresh are slow network hops and must not block.
-                    // Square: Enviar NO regresa al piso — la sesión sigue viva
-                    // y el panel recarga para mostrar la ronda recién enviada.
-                    tableSession.updateVersion(updated.version)
+            // Etapa 3 del KDS (spec §5): cada renglón lleva su llave y la red de seguridad se escribe RETENIDA antes de
+            // la red. Si la respuesta se pierde, el replay lleva las MISMAS llaves y el servidor deduplica.
+            val roundKey = java.util.UUID.randomUUID().toString()
+            val conLlaves = RondaConLlave.conLlaves(requests, roundKey)
+            when (
+                val desenlace = RondaConLlave.enviar(
+                    guardarRetenido = {
+                        syncOutbox.enqueue(
+                            vId,
+                            com.avoqado.pos.core.data.sync.SyncIntentTypes.ADD_ITEMS,
+                            payloadDeRonda(session, conLlaves),
+                            id = roundKey,
+                            retenido = true,
+                        )
+                    },
+                    enLinea = { repository.addRound(vId, session.orderId, conLlaves, session.version) },
+                    soltar = { syncOutbox.soltar(vId, roundKey) },
+                    descartar = { syncOutbox.descartar(vId, roundKey) },
+                    esErrorDeRed = ::isNetworkError,
+                )
+            ) {
+                is RondaConLlave.Desenlace.Enviada -> {
+                    // Saved — hand control back IMMEDIATELY; printing and the floor refresh are slow network hops.
+                    tableSession.updateVersion(desenlace.valor.version)
                     _pending.value = emptyList()
                     _isSending.value = false
                     onDone(true, "Ronda enviada a cocina — Mesa ${session.tableNumber}")
                     loadCheck()
                     printRoundComandas(vId, session, lines, refreshFloor = true)
-                },
-                onFailure = { e ->
-                    if (isNetworkError(e)) {
-                        // Sin red: write-ahead al outbox + impresión LAN local.
-                        // La comanda sale YA; el server se entera en el replay.
-                        enqueueRoundOffline(vId, session, lines, requests, onDone)
+                }
+                // Sin red: la MISMA red de seguridad quedó suelta en la cola; aquí sólo se marca, imprime y descuenta.
+                RondaConLlave.Desenlace.Encolada -> marcarRondaEncolada(vId, session, lines, roundKey, onDone)
+                is RondaConLlave.Desenlace.Rechazada -> {
+                    _isSending.value = false
+                    repository.refresh(vId)
+                    val e = desenlace.error
+                    val msg = if (e.message?.contains("409") == true) {
+                        "La orden cambió en otro dispositivo — vuelve a abrir la mesa"
                     } else {
-                        _isSending.value = false
-                        repository.refresh(vId)
-                        val msg = if (e.message?.contains("409") == true) {
-                            "La orden cambió en otro dispositivo — vuelve a abrir la mesa"
-                        } else {
-                            com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo enviar la ronda")
-                        }
-                        onDone(false, msg)
+                        com.avoqado.pos.core.data.network.ServerErrorText.humanize(e, "No se pudo enviar la ronda")
                     }
-                },
-            )
+                    onDone(false, msg)
+                }
+                is RondaConLlave.Desenlace.NoSeGuardo -> {
+                    _isSending.value = false
+                    onDone(false, "No se pudo guardar la ronda — intenta de nuevo")
+                }
+            }
         }
     }
 
@@ -597,9 +616,8 @@ class TableOrderViewModel @Inject constructor(
     // eso aquí no hay guard: ver splitItems / mergeFrom.
 
     /**
-     * Offline-first: la ronda se guarda como intent ADD_ITEMS (write-ahead),
-     * se imprime la comanda por LAN al instante y las líneas quedan en
-     * [queued] ("Por sincronizar") hasta que el ack del replay las confirme.
+     * Offline-first (mesa PROVISIONAL, abierta sin red): la ronda se escribe como intent ADD_ITEMS (write-ahead) y se
+     * marca «Por sincronizar». El reducer le pone a cada renglón `sync:<intentId>:<idx>`.
      */
     private suspend fun enqueueRoundOffline(
         vId: String,
@@ -608,7 +626,13 @@ class TableOrderViewModel @Inject constructor(
         requests: List<AddOrderItemRequest>,
         onDone: (Boolean, String) -> Unit,
     ) {
-        val payload = kotlinx.serialization.json.buildJsonObject {
+        val intentId = syncOutbox.enqueue(vId, com.avoqado.pos.core.data.sync.SyncIntentTypes.ADD_ITEMS, payloadDeRonda(session, requests))
+        marcarRondaEncolada(vId, session, lines, intentId, onDone)
+    }
+
+    /** El payload del intent ADD_ITEMS (mismas opciones de JSON que la red). */
+    private fun payloadDeRonda(session: TableSession.Active, requests: List<AddOrderItemRequest>) =
+        kotlinx.serialization.json.buildJsonObject {
             if (session.isProvisional) {
                 put("localOrderId", kotlinx.serialization.json.JsonPrimitive(session.orderId))
             } else {
@@ -616,17 +640,20 @@ class TableOrderViewModel @Inject constructor(
             }
             put(
                 "items",
-                wireJson.encodeToJsonElement(
-                    kotlinx.serialization.builtins.ListSerializer(AddOrderItemRequest.serializer()),
-                    requests,
-                ),
+                wireJson.encodeToJsonElement(kotlinx.serialization.builtins.ListSerializer(AddOrderItemRequest.serializer()), requests),
             )
         }
-        val intentId = syncOutbox.enqueue(vId, com.avoqado.pos.core.data.sync.SyncIntentTypes.ADD_ITEMS, payload)
-        // Espejo EXACTO del externalId que el reducer inyecta por índice
-        // (sync.mobile.service.ts: `sync:${intent.id}:${idx}`). Guardarlo aquí
-        // es lo que deja separar el cheque antes de que sincronice.
-        val stamped = lines.mapIndexed { idx, line -> line.copy(externalId = "sync:$intentId:$idx") }
+
+    /** La ronda quedó en la cola (sin red): «Por sincronizar», comanda por LAN y stock local, como siempre. */
+    private suspend fun marcarRondaEncolada(
+        vId: String,
+        session: TableSession.Active,
+        lines: List<PendingLine>,
+        intentId: String,
+        onDone: (Boolean, String) -> Unit,
+    ) {
+        // Espejo EXACTO de la llave de cada renglón: es lo que deja separar el cheque antes de que sincronice.
+        val stamped = lines.mapIndexed { idx, line -> line.copy(externalId = RondaConLlave.llave(intentId, idx)) }
         _queued.value = _queued.value + stamped
         _pending.value = emptyList()
         _isSending.value = false
