@@ -34,6 +34,11 @@ fun ConnectivityBanner(
      * conexión» — porque eso explica las dos cosas a la vez y dos bandas apiladas no se leen.
      */
     avisoDeLaCaja: String? = null,
+    /**
+     * Etapa 3 del KDS (3.4): sin red, las estaciones «sólo pantalla» salen en papel de respaldo — la banda lo DICE fijo
+     * mientras dure (`KitchenDeliveryPolicy.avisoSinRed`). `null` = el venue no tiene estaciones «sólo pantalla».
+     */
+    avisoDeCocina: String? = null,
 ) {
     AnimatedVisibility(
         visible = visible || avisoDeLaCaja != null,
@@ -52,8 +57,7 @@ fun ConnectivityBanner(
             Text(
                 text = when {
                     !visible && avisoDeLaCaja != null -> avisoDeLaCaja
-                    pendingSync > 0 -> "Sin conexión — $pendingSync por sincronizar (todo se guarda aquí)"
-                    else -> "Sin conexión — las ventas se guardan en el dispositivo"
+                    else -> textoSinRed(pendingSync, avisoDeCocina)
                 },
                 color = Color.White,
                 style = MaterialTheme.typography.labelMedium,
@@ -69,4 +73,14 @@ fun ConnectivityBanner(
             )
         }
     }
+}
+
+/** El texto de la banda cuando NO hay red. Puro para probarlo; espejo de `ConnectivityBannerView.textoSinRed` (iOS). */
+internal fun textoSinRed(pendingSync: Int, avisoDeCocina: String?): String {
+    val base = if (pendingSync > 0) {
+        "Sin conexión — $pendingSync por sincronizar (todo se guarda aquí)"
+    } else {
+        "Sin conexión — las ventas se guardan en el dispositivo"
+    }
+    return avisoDeCocina?.let { "$base · $it" } ?: base
 }

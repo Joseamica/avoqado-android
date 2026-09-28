@@ -48,6 +48,7 @@ class AppState @Inject constructor(
     cashDrawerRepository: com.avoqado.pos.cashdrawer.data.CashDrawerRepository,
     val venueSwitchState: com.avoqado.pos.settings.domain.VenueSwitchState,
     connectivityMonitor: ConnectivityMonitor,
+    private val printConfigRepository: com.avoqado.pos.printing.routing.PrintConfigRepository,
 ) : ViewModel() {
 
     /**
@@ -102,6 +103,10 @@ class AppState @Inject constructor(
             // que nadie tenga que tocar un botón. Ver [ReplayDeComandasPendientes].
             comandasPendientesStore.cargar(venueId)
             replayDeComandas.iniciar(viewModelScope)
+            // Etapa 3 del KDS (3.4): la config de impresión entra YA (la guardada si no hay red): la banda de «Sin
+            // conexión» tiene que poder decir qué estaciones salen en papel desde el primer minuto, no desde la primera
+            // comanda. `topeMs = 0` = no espera a la red; la descarga sigue sola.
+            viewModelScope.launch { printConfigRepository.refreshConTope(venueId, topeMs = 0) }
         }
     }
 
@@ -160,6 +165,18 @@ class AppState @Inject constructor(
      */
     val avisoDeCobrosRetenidos: StateFlow<String?> = cashDrawerRepository.estadoDeLosCobros
         .map { com.avoqado.pos.cashdrawer.data.textoDeCobrosRetenidos(it) }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000),
+            initialValue = null,
+        )
+
+    /**
+     * Etapa 3 del KDS (3.4): sin red, las estaciones «sólo pantalla» salen en papel de respaldo. La banda de «Sin
+     * conexión» lo dice fijo mientras dure — nunca en rojo, nunca un aviso por comanda.
+     */
+    val avisoDeCocinaSinRed: StateFlow<String?> = printConfigRepository.config
+        .map { com.avoqado.pos.printing.routing.KitchenDeliveryPolicy.avisoSinRed(it) }
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5_000),

@@ -112,6 +112,7 @@ fun AvoqadoNavGraph(
     val showOfflineBanner by appState.showOfflineBanner.collectAsState()
     val offlinePendingCount by appState.offlinePendingCount.collectAsState()
     val avisoDeCobrosRetenidos by appState.avisoDeCobrosRetenidos.collectAsState()
+    val avisoDeCocinaSinRed by appState.avisoDeCocinaSinRed.collectAsState()
     val reconciliationCount by appState.reconciliationCount.collectAsState()
     val sessionGuardMessage by appState.sessionGuardMessage.collectAsState()
     val visibleTabs by appState.visibleTabs.collectAsState()
@@ -138,6 +139,7 @@ fun AvoqadoNavGraph(
                     showOfflineBanner = showOfflineBanner,
                     offlinePendingCount = offlinePendingCount,
                     avisoDeCobrosRetenidos = avisoDeCobrosRetenidos,
+                    avisoDeCocinaSinRed = avisoDeCocinaSinRed,
                     syncIssueCount = reconciliationCount,
                     onTabsShouldRefresh = { appState.refreshTabs() },
                 )
@@ -217,6 +219,8 @@ private fun MainScaffold(
     offlinePendingCount: Int = 0,
     /** Ver `AppState.avisoDeCobrosRetenidos`: la espera de la caja se DICE (P2-4). */
     avisoDeCobrosRetenidos: String? = null,
+    /** Ver `AppState.avisoDeCocinaSinRed`: sin red, lo «sólo pantalla» sale en papel y se DICE (KDS 3.4). */
+    avisoDeCocinaSinRed: String? = null,
     syncIssueCount: Int = 0,
     onTabsShouldRefresh: () -> Unit = {},
 ) {
@@ -343,6 +347,7 @@ private fun MainScaffold(
                         visible = showOfflineBanner,
                         pendingSync = offlinePendingCount,
                         avisoDeLaCaja = avisoDeCobrosRetenidos,
+                        avisoDeCocina = avisoDeCocinaSinRed,
                     )
                     com.avoqado.pos.sync.presentation.QuarantineBanner(count = syncIssueCount) { showQuarantineSheet = true }
                     // Cancelaciones de cobro que no se pudieron confirmar: se ven aquí —Cobrar
@@ -627,6 +632,7 @@ private fun MainScaffold(
                         visible = showOfflineBanner,
                         pendingSync = offlinePendingCount,
                         avisoDeLaCaja = avisoDeCobrosRetenidos,
+                        avisoDeCocina = avisoDeCocinaSinRed,
                     )
                     com.avoqado.pos.sync.presentation.QuarantineBanner(count = syncIssueCount) { showQuarantineSheet = true }
                     // Cancelaciones de cobro que no se pudieron confirmar: se ven aquí —Cobrar

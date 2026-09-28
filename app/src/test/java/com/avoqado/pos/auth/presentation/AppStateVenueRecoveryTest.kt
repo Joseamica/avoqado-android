@@ -126,6 +126,10 @@ class AppStateVenueRecoveryTest {
         onInventoryStart: () -> Unit,
         onInventoryStop: () -> Unit = {},
         onOutboxStart: () -> Unit,
+        printConfigRepository: com.avoqado.pos.printing.routing.PrintConfigRepository =
+            mockk<com.avoqado.pos.printing.routing.PrintConfigRepository>(relaxed = true) {
+                every { config } returns MutableStateFlow(com.avoqado.pos.printing.routing.PrintConfig())
+            },
     ): AppState {
         val secureStorage = mockk<SecureStorage>(relaxed = true) {
             every { isLoggedIn } returns true
@@ -191,6 +195,33 @@ class AppStateVenueRecoveryTest {
             },
             venueSwitchState = mockk<VenueSwitchState>(relaxed = true),
             connectivityMonitor = connectivityMonitor,
+            printConfigRepository = printConfigRepository,
         )
+    }
+
+    /**
+     * Etapa 3 del KDS (3.4): la config de impresión se precarga al arrancar (la GUARDADA si no hay red), para que la
+     * banda de «Sin conexión» diga qué estaciones salen en papel desde el primer minuto, no desde la primera comanda.
+     */
+    @Test
+    fun `P1 al arrancar precarga la config de impresion sin esperar a la red`() {
+        val printConfig = mockk<com.avoqado.pos.printing.routing.PrintConfigRepository>(relaxed = true) {
+            every { config } returns MutableStateFlow(com.avoqado.pos.printing.routing.PrintConfig())
+        }
+
+        createAppState(
+            repairResult = true,
+            onRepair = {},
+            onPaymentStart = {},
+            onInventoryStart = {},
+            onOutboxStart = {},
+            printConfigRepository = printConfig,
+        )
+
+        // atLeast(1), no exactly(1): startOfflineOutbox() YA se invoca dos veces al arrancar (init
+        // directo + refreshPlanAndSettings -> refreshTabs -> startOfflineOutbox), algo previo a esta
+        // tarea (ver AppState.kt) — exactly(1) es un falso rojo. atLeast(1) con los args exactos sigue
+        // cayendo si la precarga se quita.
+        io.mockk.coVerify(atLeast = 1) { printConfig.refreshConTope("venue-atole", 0L) }
     }
 }
