@@ -318,6 +318,9 @@ class KDSViewModel @Inject constructor(
             kdsRepository.recall(id)
                 .onSuccess {
                     _recientes.value = _recientes.value.filterNot { it.id == id }
+                    // Ronda 4: LISTO + Deshacer inmediato (antes de que un sondeo confirme el bump) no puede
+                    // quedar tapado por el blindaje de M4 — el servidor SÍ va a volver a mandar esta comanda.
+                    bumpsRecientes.remove(id)
                     refrescarTablero()
                 }
                 .onFailure { e ->

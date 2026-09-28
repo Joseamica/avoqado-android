@@ -346,6 +346,23 @@ class KDSViewModelTest {
     }
 
     @Test
+    fun `P1 Ronda 4 LISTO seguido de deshacer inmediato no queda tapado por el blindaje`() = runTest {
+        coEvery { repo.bumpOrder("k1") } returns Result.success(Unit)
+        coEvery { repo.recall("k1") } returns Result.success(Unit)
+        // fetchOrders sigue mockeado (default de armar()) para regresar siempre [k1, k2].
+        val vm = armar()
+
+        vm.listo("k1")
+        assertEquals(listOf("k2"), vm.comandas.value.map { it.id })
+
+        vm.deshacer("k1")
+
+        // deshacer() relee el tablero de inmediato: el servidor YA volvió a mandar k1 (recall exitoso), y sin
+        // soltar el blindaje de M4 el filtro seguiría escondiéndola hasta 15 s.
+        assertEquals("deshacer suelta el blindaje: la comanda se ve de inmediato", listOf("k1", "k2"), vm.comandas.value.map { it.id })
+    }
+
+    @Test
     fun `sonido y letra grande se guardan en el aparato`() = runTest {
         val vm = armar()
         vm.toggleSound()
