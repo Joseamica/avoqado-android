@@ -58,6 +58,19 @@ class RondaConLlaveTest {
     }
 
     @Test
+    fun `P1 M2 una excepcion en descartar tras exito no tumba la app`() = runTest {
+        val d = RondaConLlave.enviar(
+            guardarRetenido = { pasos += "guardar" },
+            enLinea = { pasos += "enLinea"; Result.success(7) },
+            soltar = { pasos += "soltar" },
+            descartar = { pasos += "descartar"; throw IllegalStateException("disco lleno") },
+            esErrorDeRed = { it is IOException },
+        )
+        assertEquals("la ronda ya está en el servidor: el DELETE que revienta no debe tumbar nada", RondaConLlave.Desenlace.Enviada(7), d)
+        assertEquals(listOf("guardar", "enLinea", "descartar"), pasos)
+    }
+
+    @Test
     fun `un rechazo del servidor descarta el intent y regresa el error tal cual`() = runTest {
         val rechazo = IllegalStateException("409")
         val d = RondaConLlave.enviar(

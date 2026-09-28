@@ -18,7 +18,9 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.outlined.CloudOff
@@ -80,6 +82,7 @@ fun KDSScreen(
     val vista by viewModel.vista.collectAsState()
     val comandas by viewModel.comandas.collectAsState()
     val recientes by viewModel.recientes.collectAsState()
+    val recientesNoLeidas by viewModel.recientesNoLeidas.collectAsState()
     val sinConexion by viewModel.sinConexion.collectAsState()
     val aviso by viewModel.aviso.collectAsState()
     val exito by viewModel.exito.collectAsState()
@@ -268,6 +271,7 @@ fun KDSScreen(
     if (showRecientes) {
         RecientesSheet(
             recientes = recientes,
+            noLeidas = recientesNoLeidas,
             onDeshacer = viewModel::deshacer,
             onDismiss = { showRecientes = false },
         )
@@ -680,6 +684,7 @@ private fun TableroDeCocina(
 @Composable
 private fun RecientesSheet(
     recientes: List<KDSOrder>,
+    noLeidas: AvisoDeCocina?,
     onDeshacer: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -688,7 +693,13 @@ private fun RecientesSheet(
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
     ) {
         ImmersiveWindow()
-        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = AvoqadoTheme.spacing.lg)) {
+        // M1: hasta 20 filas en una tablet en horizontal no caben en la altura de la hoja sin esto.
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = AvoqadoTheme.spacing.lg),
+        ) {
             Text(
                 text = TextosDeCocina.RECIENTES,
                 style = MaterialTheme.typography.headlineSmall,
@@ -701,7 +712,15 @@ private fun RecientesSheet(
                 modifier = Modifier.padding(bottom = AvoqadoTheme.spacing.lg),
             )
 
-            if (recientes.isEmpty()) {
+            if (noLeidas != null) {
+                // I2: no se pudo leer — nunca se pinta como «no hay nada».
+                Text(
+                    text = noLeidas.texto,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (noLeidas.esError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(vertical = AvoqadoTheme.spacing.xl).testTag("kds-recientes-no-leidas"),
+                )
+            } else if (recientes.isEmpty()) {
                 Text(
                     text = TextosDeCocina.RECIENTES_VACIO,
                     style = MaterialTheme.typography.bodyMedium,

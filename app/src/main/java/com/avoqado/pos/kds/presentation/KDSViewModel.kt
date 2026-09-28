@@ -44,6 +44,9 @@ import javax.inject.Provider
 
 private const val TAG = "🍳 KDS-VM"
 
+/** M4: ventana en la que un LISTO recién confirmado protege su comanda de un sondeo viejo que la traiga de vuelta. */
+private const val VENTANA_BUMP_RECIENTE_MS = 15_000L
+
 /** Ajustes de ESTA tablet (se guardan en [KdsPrefs]). «Auto-completar» se quitó: nadie cierra por tiempo (spec §7). */
 data class KDSSettings(
     val soundEnabled: Boolean = true,
@@ -91,6 +94,11 @@ class KDSViewModel @Inject constructor(
     private val _recientes = MutableStateFlow<List<KDSOrder>>(emptyList())
     val recientes: StateFlow<List<KDSOrder>> = _recientes.asStateFlow()
 
+    /** I2: si la ÚLTIMA lectura de Recientes falló, qué se le dice — la hoja lo pinta en vez de afirmar que no hay
+     *  nada. `null` cuando la última lectura sí funcionó (aunque haya salido vacía de verdad). */
+    private val _recientesNoLeidas = MutableStateFlow<AvisoDeCocina?>(null)
+    val recientesNoLeidas: StateFlow<AvisoDeCocina?> = _recientesNoLeidas.asStateFlow()
+
     /** Sin red: el tablero se queda con lo que tenía y lo DICE (neutro, nunca rojo). */
     private val _sinConexion = MutableStateFlow(false)
     val sinConexion: StateFlow<Boolean> = _sinConexion.asStateFlow()
@@ -120,6 +128,9 @@ class KDSViewModel @Inject constructor(
     private var previousOrderIds: Set<String> = emptySet()
     private var hasLoadedFromAPI = false
 
+    /** M4: ids marcados LISTO hace poco → cuándo. Ver `bumpsVigentes()`. */
+    private val bumpsRecientes = mutableMapOf<String, Long>()
+
     fun cerrarAviso() { _aviso.value = null }
 
     fun cerrarExito() { _exito.value = null }
@@ -135,6 +146,9 @@ class KDSViewModel @Inject constructor(
         // Al volver a abrir la pantalla se regresa a la estación guardada: este ViewModel vive con «Más», y un «Cambiar
         // de estación» que se cerró sin elegir no puede dejarla atorada en el selector.
         eligiendoAMano = false
+        // M3: este ViewModel sigue vivo con la pantalla cerrada, así que sin esto lo que llegó mientras tanto sonaba
+        // como «comanda nueva». El primer tablero de ESTA apertura es la línea base — nunca suena.
+        hasLoadedFromAPI = false
         refrescar()
         var vuelta = 0
         while (true) {
@@ -188,13 +202,17 @@ class KDSViewModel @Inject constructor(
         kdsRepository.fetchOrders(tablero.estacion.id).fold(
             onSuccess = { nuevas ->
                 _sinConexion.value = false
-                val ids = nuevas.map { it.id }.toSet()
+                // M4: un sondeo que arrancó ANTES de un LISTO puede traer todavía esa comanda — se ignora mientras
+                // el bump está en vuelo, o hasta que el servidor confirme que ya no la manda.
+                olvidarBumpsConfirmadosPorElServidor(nuevas)
+                val filtradas = nuevas.filterNot { it.id in bumpsVigentes() }
+                val ids = filtradas.map { it.id }.toSet()
                 if (hasLoadedFromAPI && (ids - previousOrderIds).isNotEmpty()) playNotificationSound()
                 previousOrderIds = ids
                 hasLoadedFromAPI = true
-                _comandas.value = nuevas
+                _comandas.value = filtradas
                 // Después de publicar: la cocina ve el pedido primero, el papel sale enseguida.
-                viewModelScope.launch { imprimirComandasPendientes(nuevas) }
+                viewModelScope.launch { imprimirComandasPendientes(filtradas) }
             },
             onFailure = { e ->
                 // Se CONSERVA lo que ya se veía: sin red la cocina sigue trabajando con eso.
@@ -202,6 +220,18 @@ class KDSViewModel @Inject constructor(
                 Log.d(TAG, "No se pudo leer el tablero (se conserva lo que había): ${e.message}")
             },
         )
+    }
+
+    /** M4: ids protegidos AHORA MISMO — poda primero los que ya caducaron (ventana de 15 s). */
+    private fun bumpsVigentes(): Set<String> {
+        val corte = System.currentTimeMillis() - VENTANA_BUMP_RECIENTE_MS
+        bumpsRecientes.entries.removeAll { it.value < corte }
+        return bumpsRecientes.keys
+    }
+
+    /** El servidor ya no manda estos ids: dejó de hacer falta protegerlos (no hay que esperar los 15 s). */
+    private fun olvidarBumpsConfirmadosPorElServidor(nuevas: List<KDSOrder>) {
+        bumpsVigentes().filterNot { id -> nuevas.any { it.id == id } }.forEach(bumpsRecientes::remove)
     }
 
     // MARK: - Estación
@@ -228,8 +258,11 @@ class KDSViewModel @Inject constructor(
     fun listo(id: String) {
         val comanda = _comandas.value.firstOrNull { it.id == id } ?: return
         _comandas.value = _comandas.value.filterNot { it.id == id }
+        // M4: protege contra un sondeo que ya estaba en vuelo y todavía no sabe de este bump.
+        bumpsRecientes[id] = System.currentTimeMillis()
         viewModelScope.launch {
             kdsRepository.bumpOrder(id).onFailure { e ->
+                bumpsRecientes.remove(id)
                 if (_comandas.value.none { it.id == id }) _comandas.value = (_comandas.value + comanda).sortedBy { it.createdAt }
                 if (esSinRed(e)) _sinConexion.value = true
                 _aviso.value = avisoDeFallo(e, AccionDeCocina.LISTO)
@@ -259,8 +292,17 @@ class KDSViewModel @Inject constructor(
         val tablero = _vista.value as? VistaDeCocina.Tablero ?: return
         viewModelScope.launch {
             kdsRepository.fetchRecientes(tablero.estacion.id)
-                .onSuccess { _recientes.value = it }
-                .onFailure { e -> _aviso.value = avisoDeFallo(e, AccionDeCocina.RECIENTES) }
+                .onSuccess {
+                    _recientes.value = it
+                    _recientesNoLeidas.value = null
+                }
+                .onFailure { e ->
+                    // I2: la UI no puede mentir — sin esto la hoja decía «nada se marcó como listo» cuando en
+                    // realidad no se pudo leer. La barra de atrás se queda igual, por si se cierra la hoja sin leerlo.
+                    val aviso = avisoDeFallo(e, AccionDeCocina.RECIENTES)
+                    _recientesNoLeidas.value = aviso
+                    _aviso.value = aviso
+                }
         }
     }
 

@@ -1,5 +1,6 @@
 package com.avoqado.pos.kds.presentation
 
+import android.media.RingtoneManager
 import com.avoqado.pos.MainDispatcherRule
 import com.avoqado.pos.core.domain.PlanManager
 import com.avoqado.pos.core.domain.RoleManager
@@ -19,10 +20,15 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.mockkStatic
+import io.mockk.unmockkStatic
 import io.mockk.verify
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -189,6 +195,31 @@ class KDSViewModelTest {
     }
 
     @Test
+    fun `P1 recientes sin red no dice que no hubo nada`() = runTest {
+        coEvery { repo.fetchRecientes("st-barra") } returns Result.failure(IOException("sin red"))
+        val vm = armar()
+
+        vm.abrirRecientes()
+
+        assertTrue("no se toca lo que ya había, pero tampoco se afirma vacío", vm.recientes.value.isEmpty())
+        assertEquals(AvisoDeCocina(AccionDeCocina.RECIENTES.sinRed, esError = false), vm.recientesNoLeidas.value)
+    }
+
+    @Test
+    fun `recientes leer con exito limpia el aviso de fallo anterior`() = runTest {
+        coEvery { repo.fetchRecientes("st-barra") } returns Result.failure(IOException("sin red"))
+        val vm = armar()
+        vm.abrirRecientes()
+        assertTrue(vm.recientesNoLeidas.value != null)
+
+        coEvery { repo.fetchRecientes("st-barra") } returns Result.success(listOf(comanda("k9", 500)))
+        vm.abrirRecientes()
+
+        assertNull(vm.recientesNoLeidas.value)
+        assertEquals(listOf("k9"), vm.recientes.value.map { it.id })
+    }
+
+    @Test
     fun `deshacer regresa la comanda a la cocina y la saca de Recientes`() = runTest {
         coEvery { repo.fetchRecientes("st-barra") } returns Result.success(listOf(comanda("k9", 500)))
         coEvery { repo.recall("k9") } returns Result.success(Unit)
@@ -217,6 +248,70 @@ class KDSViewModelTest {
         )
         coVerify(exactly = 1) { repo.reclamarImpresion("k1", any()) }
         coVerify(exactly = 1) { repo.reclamarImpresion("k2", any()) }
+    }
+
+    @Test
+    fun `P1 M3 reabrir la pantalla no suena por lo que llego mientras estuvo cerrada`() = runTest {
+        mockkStatic(RingtoneManager::class)
+        every { RingtoneManager.getDefaultUri(any()) } returns null
+        every { RingtoneManager.getRingtone(any(), any()) } returns null
+        try {
+            // Primera apertura (armar() ya deja hasLoadedFromAPI=true y previousOrderIds={k1,k2}). El VM SIGUE VIVO
+            // con «Más» cuando se cierra la pantalla — es la misma instancia la que se vuelve a abrir.
+            val vm = armar()
+
+            // Mientras la pantalla estuvo cerrada llegó k3 — sin el fix, hasLoadedFromAPI sigue en true y k3
+            // sonaría como comanda nueva en cuanto se reabre.
+            coEvery { repo.fetchOrders(any()) } returns Result.success(
+                listOf(comanda("k1", 1_000), comanda("k2", 2_000), comanda("k3", 3_000)),
+            )
+
+            val job = launch { vm.mientrasSeVe() } // reabrir
+            runCurrent()
+            job.cancelAndJoin()
+
+            assertEquals(listOf("k1", "k2", "k3"), vm.comandas.value.map { it.id })
+            verify(exactly = 0) { RingtoneManager.getDefaultUri(any()) }
+        } finally {
+            unmockkStatic(RingtoneManager::class)
+        }
+    }
+
+    @Test
+    fun `P1 M4 un sondeo viejo no resucita una comanda que se acaba de marcar LISTO`() = runTest {
+        coEvery { repo.bumpOrder("k1") } returns Result.success(Unit)
+        val vm = armar() // k1, k2
+
+        vm.listo("k1")
+        assertEquals(listOf("k2"), vm.comandas.value.map { it.id })
+
+        // Un sondeo que arrancó ANTES del bump regresa con k1 todavía en la lista (dato viejo).
+        coEvery { repo.fetchOrders(any()) } returns Result.success(listOf(comanda("k1", 1_000), comanda("k2", 2_000)))
+        vm.refrescar()
+
+        assertEquals("el sondeo viejo no resucita lo recién marcado", listOf("k2"), vm.comandas.value.map { it.id })
+
+        // Como ya no está en el tablero, un segundo toque es un no-op — no manda otro bump ni pinta error rojo.
+        vm.listo("k1")
+        coVerify(exactly = 1) { repo.bumpOrder("k1") }
+        assertNull(vm.aviso.value)
+    }
+
+    @Test
+    fun `M4 cuando el servidor deja de mandarla ya no hace falta esperar la ventana`() = runTest {
+        coEvery { repo.bumpOrder("k1") } returns Result.success(Unit)
+        val vm = armar() // k1, k2
+        vm.listo("k1")
+
+        // El siguiente sondeo ya no trae k1: el servidor la confirmó.
+        coEvery { repo.fetchOrders(any()) } returns Result.success(listOf(comanda("k2", 2_000)))
+        vm.refrescar()
+        assertEquals(listOf("k2"), vm.comandas.value.map { it.id })
+
+        // Si "k1" reapareciera después (server-side genuinamente distinto), ya no está protegida por la ventana.
+        coEvery { repo.fetchOrders(any()) } returns Result.success(listOf(comanda("k1", 1_000), comanda("k2", 2_000)))
+        vm.refrescar()
+        assertEquals(listOf("k1", "k2"), vm.comandas.value.map { it.id })
     }
 
     @Test

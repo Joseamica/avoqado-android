@@ -68,7 +68,10 @@ object RondaConLlave {
         }
         return resultado.fold(
             onSuccess = { valor ->
-                withContext(NonCancellable) { descartar() }
+                // La ronda ya está en el servidor: si el DELETE local revienta (disco lleno, base corrupta — raro),
+                // NO debe tumbar la app. La fila HELD sobrante se suelta sola en el siguiente arranque y el servidor
+                // deduplica por llave — sin daño de datos (M2, revisión final de fase 3.3).
+                withContext(NonCancellable) { runCatching { descartar() } }
                 Desenlace.Enviada(valor)
             },
             onFailure = { e ->
