@@ -45,7 +45,9 @@ object RondaConLlave {
         } catch (e: CancellationException) {
             // Cerraron la mesa mientras se escribía: la fila pudo quedar escrita, y retenida sería barrera para todo lo
             // demás (incluido un cobro en efectivo) hasta reabrir la app. Se suelta (no hace nada si no se escribió).
-            withContext(NonCancellable) { soltar() }
+            // Si el propio `soltar()` revienta (Room), tampoco debe tumbar la app — se queda HELD hasta el
+            // siguiente arranque, que la suelta igual (Ronda 2, revisión final de fase 3.3).
+            withContext(NonCancellable) { runCatching { soltar() } }
             throw e
         } catch (e: Exception) {
             // Escritura a medias (insertó y falló después): se descarta, porque nada salió en línea y el mesero va a
@@ -57,7 +59,7 @@ object RondaConLlave {
             enLinea()
         } catch (e: CancellationException) {
             // Cerraron la mesa a medio envío: la ronda no puede quedarse retenida (sería barrera para todo lo demás).
-            withContext(NonCancellable) { soltar() }
+            withContext(NonCancellable) { runCatching { soltar() } }
             throw e
         } catch (e: Exception) {
             // `enLinea` no debería lanzar (el repositorio usa `runCatching`), pero si algún día lo hace, una
@@ -77,10 +79,10 @@ object RondaConLlave {
             onFailure = { e ->
                 // `runCatching` del repositorio también envuelve la cancelación: cuenta como «no se sabe», se suelta.
                 if (e is CancellationException || esErrorDeRed(e)) {
-                    withContext(NonCancellable) { soltar() }
+                    withContext(NonCancellable) { runCatching { soltar() } }
                     Desenlace.Encolada
                 } else {
-                    withContext(NonCancellable) { descartar() }
+                    withContext(NonCancellable) { runCatching { descartar() } }
                     Desenlace.Rechazada(e)
                 }
             },

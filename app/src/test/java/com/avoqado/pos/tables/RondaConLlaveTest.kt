@@ -45,6 +45,19 @@ class RondaConLlaveTest {
     }
 
     @Test
+    fun `P1 Ronda 2 una excepcion en soltar en el camino de red tampoco tumba la app`() = runTest {
+        val d = RondaConLlave.enviar(
+            guardarRetenido = { pasos += "guardar" },
+            enLinea = { Result.failure<Unit>(IOException("sin red")) },
+            soltar = { pasos += "soltar"; throw IllegalStateException("disco lleno") },
+            descartar = { pasos += "descartar" },
+            esErrorDeRed = { it is IOException },
+        )
+        assertEquals("sigue siendo Encolada aunque soltar() reviente", RondaConLlave.Desenlace.Encolada, d)
+        assertEquals(listOf("guardar", "soltar"), pasos)
+    }
+
+    @Test
     fun `P1 sin red se suelta para repetirse, no se descarta`() = runTest {
         val d = RondaConLlave.enviar(
             guardarRetenido = { pasos += "guardar" },

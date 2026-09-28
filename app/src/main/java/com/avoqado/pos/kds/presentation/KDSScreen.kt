@@ -58,6 +58,7 @@ import com.avoqado.pos.designsystem.components.ImmersiveWindow
 import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.components.TierBadge
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
+import com.avoqado.pos.designsystem.theme.Warning
 import com.avoqado.pos.kds.domain.AvisoDeCocina
 import com.avoqado.pos.kds.domain.CanalReparto
 import com.avoqado.pos.kds.domain.EstadoDeCasilla
@@ -182,7 +183,7 @@ fun KDSScreen(
                 AvoqadoDialog(
                     title = TextosDeCocina.prenderTitulo(estacion.name),
                     onDismiss = cerrar,
-                    description = TextosDeCocina.prenderDetalle(estacion.name) + "\n" +
+                    description = TextosDeCocina.prenderDetalle(estacion.name) + "\n\n" +
                         (impresora?.let { TextosDeCocina.conImpresora(it) } ?: TextosDeCocina.SIN_IMPRESORA_AL_PRENDER),
                     actionButton = {
                         PrimaryButton(
@@ -401,13 +402,19 @@ private fun SelectorDeEstacion(
             Text(
                 text = TextosDeCocina.ELEGIDA_YA_NO_EXISTE,
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.error,
+                // M5 (Ronda 2): no es un error, es un aviso — el mismo ámbar que AvoqadoWarningToast/ConnectivityBanner.
+                color = Warning,
                 modifier = Modifier.padding(AvoqadoTheme.spacing.lg),
             )
         }
 
         when {
-            vista.estaciones.isNotEmpty() -> Column(modifier = Modifier.padding(horizontal = AvoqadoTheme.spacing.lg)) {
+            // M5 (Ronda 2): con muchas estaciones la lista no cabía en pantalla, como iOS.
+            vista.estaciones.isNotEmpty() -> Column(
+                modifier = Modifier
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = AvoqadoTheme.spacing.lg),
+            ) {
                 vista.estaciones.forEach { estacion ->
                     Row(
                         modifier = Modifier
