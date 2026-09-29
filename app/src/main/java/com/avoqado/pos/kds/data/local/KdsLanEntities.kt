@@ -125,7 +125,10 @@ internal fun unirItemsJson(previos: String, nuevos: String): String {
     val a = runCatching { jsonDeItems.decodeFromString(serializer, previos) }.getOrDefault(emptyList())
     val b = runCatching { jsonDeItems.decodeFromString(serializer, nuevos) }.getOrDefault(emptyList())
     val ids = a.map { it.id }.toSet()
-    return jsonDeItems.encodeToString(serializer, a + b.filter { it.id !in ids })
+    val nuevos = b.filter { it.id !in ids }
+    // Nada nuevo ⇒ la fila se queda tal cual (reescribirla le agregaba al texto campos nuevos en `null`, como `course`).
+    if (nuevos.isEmpty()) return previos
+    return jsonDeItems.encodeToString(serializer, a + nuevos)
 }
 
 /** Los ids de los renglones de una fila guardada; un JSON ilegible es «sin renglones» (por eso todo lo que llegue es nuevo). */

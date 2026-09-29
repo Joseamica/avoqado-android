@@ -89,6 +89,21 @@ const val TOPE_DEL_TABLERO = 100
 fun idsParaMarcarTodas(comandas: List<KDSOrder>): List<String> =
     comandas.filterNot { it.needsAcceptance }.map { it.id }.take(TOPE_DEL_TABLERO)
 
+// MARK: - KDS 3.6: los tiempos de una mesa
+
+/** Los platillos de UN tiempo de la tarjeta. [tiempo] `null` = sin encabezado. */
+data class GrupoDeTiempo(val tiempo: String?, val items: List<KDSOrderItem>)
+
+/**
+ * Los platillos agrupados por tiempo, en el orden en que aparece cada uno (la caja los manda en el orden del menú). Sin
+ * ningún tiempo ⇒ un grupo sin encabezado: la venta de mostrador se ve como siempre. Con tiempos, lo que no trae va bajo
+ * «Inmediato», el mismo nombre del «¡MARCHAR Inmediato!» del papel.
+ */
+fun gruposPorTiempo(items: List<KDSOrderItem>): List<GrupoDeTiempo> {
+    if (items.none { it.course != null }) return listOf(GrupoDeTiempo(null, items))
+    return items.groupBy { it.course ?: TextosDeCocina.INMEDIATO }.map { (tiempo, suyos) -> GrupoDeTiempo(tiempo, suyos) }
+}
+
 // MARK: - Etapa 3 del KDS (3.5, D9): la mezcla por folio
 
 /** Prefijo del id sintético de una comanda que SÓLO está en este aparato (llegó por WiFi y el servidor aún no la manda). */
@@ -158,6 +173,8 @@ object TextosDeCocina {
     /** Mientras llega la config por primera vez: nunca se afirma «no hay estaciones» antes de saberlo. */
     const val CARGANDO = "Cargando estaciones…"
     const val SIN_ESTACION = "Sin estación"
+    /** 3.6: el encabezado de los platillos sin tiempo en una mesa con tiempos. */
+    const val INMEDIATO = "Inmediato"
     const val ELEGIR_TITULO = "¿Qué estación es esta pantalla?"
     const val ELEGIR_DETALLE = "Cada pantalla enseña sólo las comandas de su estación. Se guarda en este aparato."
     const val ELEGIDA_YA_NO_EXISTE = "La estación que tenías elegida ya no existe o se desactivó. Elige otra."

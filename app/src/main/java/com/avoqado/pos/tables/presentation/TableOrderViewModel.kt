@@ -809,6 +809,9 @@ class TableOrderViewModel @Inject constructor(
                     )
                 },
                 orderType = "Mesa ${session.tableNumber}" + (course?.let { " · $it" } ?: ""),
+                // KDS 3.6: la pantalla junta los cursos en una tarjeta — «Mesa 8» arriba y el tiempo en cada platillo.
+                curso = course,
+                etiquetaPantalla = "Mesa ${session.tableNumber}",
             )
         }
         if (pedidos.isEmpty()) return

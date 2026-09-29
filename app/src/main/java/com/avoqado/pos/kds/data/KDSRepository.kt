@@ -227,12 +227,17 @@ class KDSRepository @Inject constructor(
             val startedAt = json.optString("startedAt", "").takeIf { it.isNotEmpty() && it != "null" }?.let { parseIsoDate(it) }
             val completedAt = json.optString("completedAt", "").takeIf { it.isNotEmpty() && it != "null" }?.let { parseIsoDate(it) }
 
-            // Map orderType to display name
-            val displayType = when (orderType) {
-                "DINE_IN" -> "En tienda"
-                "TAKEOUT" -> "Para llevar"
-                "DELIVERY" -> "Delivery"
-                else -> orderType
+            // KDS 3.6: la comanda de una mesa dice cuál («Mesa 8»), no «En tienda». Servidor viejo = sin el campo.
+            val mesa = json.optString("tableNumber", "").takeIf { it.isNotBlank() && it != "null" }
+            val displayType = if (mesa != null) {
+                "Mesa $mesa"
+            } else {
+                when (orderType) {
+                    "DINE_IN" -> "En tienda"
+                    "TAKEOUT" -> "Para llevar"
+                    "DELIVERY" -> "Delivery"
+                    else -> orderType
+                }
             }
 
             KDSOrder(
@@ -266,6 +271,7 @@ class KDSRepository @Inject constructor(
                 notes = json.optString("notes", "").takeIf { it.isNotEmpty() && it != "null" },
                 productId = json.optString("productId", "").takeIf { it.isNotEmpty() && it != "null" },
                 categoryId = json.optString("categoryId", "").takeIf { it.isNotEmpty() && it != "null" },
+                course = json.optString("course", "").takeIf { it.isNotBlank() && it != "null" },
             )
         } catch (e: Exception) {
             Log.e(TAG, "Parse item error: ${e.message}")

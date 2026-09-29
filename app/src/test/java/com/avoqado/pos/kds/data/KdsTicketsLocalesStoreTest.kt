@@ -120,6 +120,29 @@ class KdsTicketsLocalesStoreTest {
     }
 
     @Test
+    fun `KDS 3_6 el tiempo de cada platillo se guarda en el disco y se lee de vuelta - fila vieja sin el campo queda en null`() = runTest {
+        every { dao.deLaEstacion("v1", "st-barra") } returns flowOf(
+            listOf(
+                KdsTicketLocalEntity(
+                    "round:rk:st-barra", "v1", "st-barra", "77", "Mesa 8",
+                    """[{"id":"a","productName":"Guacamole","quantity":2,"modifiers":[],"notes":null,"course":"Aperitivos"},{"id":"b","productName":"Agua","quantity":1,"modifiers":[]}]""",
+                    5, null,
+                ),
+            ),
+        )
+        assertEquals(listOf("Aperitivos", null), store.deLaEstacion("v1", "st-barra").first().single().items.map { it.course })
+
+        val orden = KDSOrder(
+            id = "k1", orderNumber = "1", orderType = "Mesa 8", items = listOf(KDSOrderItem("i", "Tacos", 1, course = "Principales")),
+            createdAt = 1, status = KDSOrderStatus.NEW, sourceKey = "round:rk:st-barra", printStationId = "st-barra",
+        )
+        val sombra = slot<KdsTicketLocalEntity>()
+        coEvery { dao.marcarListaOCrear(capture(sombra), 50) } returns Unit
+        store.marcarLista(orden, "v1", "st-barra", ahora = 50)
+        assertTrue(sombra.captured.itemsJson, sombra.captured.itemsJson.contains("\"course\":\"Principales\""))
+    }
+
+    @Test
     fun `deLaEstacion traduce la fila al dominio y purgar usa la vigencia de 12 h`() = runTest {
         every { dao.deLaEstacion("v1", "st-barra") } returns flowOf(
             listOf(KdsTicketLocalEntity("round:rk:st-barra", "v1", "st-barra", "77", "Mesa 8", """[{"id":"a","productName":"Café","quantity":2,"modifiers":[],"notes":null}]""", 5, null)),

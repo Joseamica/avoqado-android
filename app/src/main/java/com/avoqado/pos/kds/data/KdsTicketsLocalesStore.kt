@@ -70,7 +70,7 @@ class KdsTicketsLocalesStore @Inject constructor(private val dao: KdsTicketsLoca
             KdsTicketLocalEntity(
                 sourceKey = sourceKey, venueId = venueId, stationId = stationId, orderNumber = orden.orderNumber,
                 orderType = orden.orderType,
-                itemsJson = json.encodeToString(items, orden.items.map { KdsComandaItem(it.id, it.productName, it.quantity, it.modifiers, it.notes) }),
+                itemsJson = json.encodeToString(items, orden.items.map { KdsComandaItem(it.id, it.productName, it.quantity, it.modifiers, it.notes, it.course) }),
                 // I2 (revisión T8): la vigencia de 12 h cuenta desde que ESTE aparato guardó la marca. Con el `createdAt`
                 // del servidor, una comanda de ayer marcada sin red nacía vencida: la purga (cada minuto) la borraba y
                 // la comanda volvía al tablero. Una fila LISTA nunca se pinta, así que su orden no importa.
@@ -108,7 +108,7 @@ class KdsTicketsLocalesStore @Inject constructor(private val dao: KdsTicketsLoca
     private fun KdsTicketLocalEntity.aDominio() = KdsTicketLocal(
         sourceKey = sourceKey, venueId = venueId, stationId = stationId, orderNumber = orderNumber, orderType = orderType,
         items = runCatching { json.decodeFromString(items, itemsJson) }.getOrDefault(emptyList())
-            .map { KDSOrderItem(id = it.id, productName = it.productName, quantity = it.quantity, modifiers = it.modifiers, notes = it.notes) },
+            .map { KDSOrderItem(id = it.id, productName = it.productName, quantity = it.quantity, modifiers = it.modifiers, notes = it.notes, course = it.course) },
         recibidaEnMillis = recibidaEnMillis, listaEnMillis = listaEnMillis,
     )
 

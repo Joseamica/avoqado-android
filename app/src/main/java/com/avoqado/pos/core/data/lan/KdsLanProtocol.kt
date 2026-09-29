@@ -57,6 +57,8 @@ data class KdsComandaItem(
     val quantity: Int,
     val modifiers: List<String> = emptyList(),
     val notes: String? = null,
+    /** KDS 3.6: el tiempo del platillo («Aperitivos»); `null` = sin tiempo. Swift lo OMITE cuando es nil. */
+    val course: String? = null,
 )
 
 @Serializable
@@ -70,7 +72,7 @@ data class KdsComanda(
     val sourceKey: String,
     val stationId: String,
     val orderNumber: String,
-    /** Texto para mostrar: «En tienda», «Mesa 8 · Aperitivos». */
+    /** Texto para mostrar arriba: «En tienda», «Mesa 8». El tiempo va en cada renglón ([KdsComandaItem.course]). */
     val orderType: String,
     val orderId: String? = null,
     val createdAtMillis: Long,

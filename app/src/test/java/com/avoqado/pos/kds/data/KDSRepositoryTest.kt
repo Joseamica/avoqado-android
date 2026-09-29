@@ -44,14 +44,15 @@ class KDSRepositoryTest {
         runCatching { server.shutdown() }
     }
 
-    private fun comanda(sourceKey: String? = null, printStationId: String? = null): String {
+    private fun comanda(sourceKey: String? = null, printStationId: String? = null, extraJson: String = "", itemJson: String = ""): String {
         val extra = buildString {
             sourceKey?.let { append(",\"sourceKey\":\"$it\"") }
             printStationId?.let { append(",\"printStationId\":\"$it\"") }
+            append(extraJson)
         }
         return "{\"id\":\"k1\",\"orderNumber\":\"101\",\"orderType\":\"DINE_IN\",\"orderId\":\"o1\",\"status\":\"NEW\"," +
             "\"createdAt\":\"2026-09-27T12:00:00.000Z\"," +
-            "\"items\":[{\"id\":\"i1\",\"productName\":\"Taco\",\"quantity\":2,\"modifiers\":[]}]$extra}"
+            "\"items\":[{\"id\":\"i1\",\"productName\":\"Taco\",\"quantity\":2,\"modifiers\":[]$itemJson}]$extra}"
     }
 
     private fun lista(vararg comandas: String) = "{\"success\":true,\"data\":[${comandas.joinToString(",")}]}"
@@ -81,6 +82,29 @@ class KDSRepositoryTest {
         assertNull(c.sourceKey)
         assertNull(c.printStationId)
         assertEquals("101", c.orderNumber)
+        // Sin mesa: «En tienda», como siempre, y sin tiempos.
+        assertEquals("En tienda", c.orderType)
+        assertNull(c.items.single().course)
+    }
+
+    @Test
+    fun `KDS 3_6 la comanda de una mesa dice Mesa 8 y trae el tiempo de cada platillo`() = runTest {
+        server.enqueue(MockResponse().setBody(lista(comanda(extraJson = ",\"tableNumber\":\"8\"", itemJson = ",\"course\":\"Aperitivos\""))))
+
+        val c = repo.fetchOrders("st-barra").getOrThrow().single()
+
+        assertEquals("Mesa 8", c.orderType)
+        assertEquals("Aperitivos", c.items.single().course)
+    }
+
+    @Test
+    fun `KDS 3_6 una mesa y un tiempo en null se leen como sin mesa y sin tiempo`() = runTest {
+        server.enqueue(MockResponse().setBody(lista(comanda(extraJson = ",\"tableNumber\":null", itemJson = ",\"course\":null"))))
+
+        val c = repo.fetchOrders("st-barra").getOrThrow().single()
+
+        assertEquals("En tienda", c.orderType)
+        assertNull(c.items.single().course)
     }
 
     @Test

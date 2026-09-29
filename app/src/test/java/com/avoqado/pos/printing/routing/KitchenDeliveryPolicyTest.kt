@@ -98,6 +98,19 @@ class KitchenDeliveryPolicyTest {
         assertEquals("caliente", m.items[0].notes)
         assertEquals(1, m.version)
         assertEquals("comanda", m.op)
+        // Sin tiempo (mostrador): ningún renglón lo trae.
+        assertEquals(listOf(null, null), m.items.map { it.course })
+    }
+
+    @Test
+    fun `KDS 3_6 el mensaje de un curso lleva su tiempo en cada renglon`() {
+        val plan = TicketPlan(
+            stationId = "st_barra", unrouted = false,
+            lines = listOf(ConsolidatedLine("Guacamole", 2, emptyList(), null, listOf("oi_1"))),
+        )
+        val m = KitchenDeliveryPolicy.mensajeParaPantalla(plan, "venue-1", "tablet-1", "round:rk-1", "1234", "Mesa 8", "ord-1", 5L, "Aperitivos")
+        assertEquals("Mesa 8", m.orderType)
+        assertEquals(listOf("Aperitivos"), m.items.map { it.course })
     }
 
     @Test

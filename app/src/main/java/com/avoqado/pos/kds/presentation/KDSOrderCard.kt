@@ -34,6 +34,7 @@ import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.kds.domain.KDSOrder
 import com.avoqado.pos.kds.domain.KDSOrderStatus
 import com.avoqado.pos.kds.domain.TextosDeCocina
+import com.avoqado.pos.kds.domain.gruposPorTiempo
 
 // MARK: - Color Constants
 
@@ -138,9 +139,20 @@ fun KDSOrderCard(
 
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
 
-                // Items list
-                order.items.forEach { item ->
-                    KDSItemRow(item = item, isLargeFont = isLargeFont)
+                // Items list — KDS 3.6: en una mesa con tiempos, agrupados bajo «Aperitivos», «Principales»…
+                gruposPorTiempo(order.items).forEach { grupo ->
+                    if (grupo.tiempo != null) {
+                        Text(
+                            text = grupo.tiempo,
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(top = AvoqadoTheme.spacing.xs),
+                        )
+                    }
+                    grupo.items.forEach { item ->
+                        KDSItemRow(item = item, isLargeFont = isLargeFont)
+                    }
                 }
 
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))

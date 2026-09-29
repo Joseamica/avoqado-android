@@ -46,6 +46,23 @@ class KdsLanProtocolTest {
     }
 
     @Test
+    fun `KDS 3_6 el tiempo del platillo viaja en cada renglon - explicito aunque sea null`() {
+        assertTrue(KdsLanProtocol.encode(comanda).contains("\"course\":null"))
+        val conTiempo = comanda.copy(items = comanda.items.map { it.copy(course = "Aperitivos") })
+        assertTrue(KdsLanProtocol.encode(conTiempo).contains("\"course\":\"Aperitivos\""))
+    }
+
+    @Test
+    fun `KDS 3_6 decodifica el tiempo que manda Swift, y sin el campo queda en null`() {
+        val fromIOS = """{"v":1,"op":"comanda","venueId":"venue-1","deviceId":"ipad-1","sourceKey":"round:rk-9:st_barra","stationId":"st_barra","orderNumber":"77","orderType":"Mesa 8","createdAtMillis":1700000000000,"items":[{"id":"oi_9","productName":"Guacamole","quantity":2,"modifiers":[],"course":"Aperitivos"},{"id":"oi_10","productName":"Agua","quantity":1,"modifiers":[]}]}"""
+
+        val c = KdsLanProtocol.decodeComanda(fromIOS)!!
+
+        assertEquals("Mesa 8", c.orderType)
+        assertEquals(listOf("Aperitivos", null), c.items.map { it.course })
+    }
+
+    @Test
     fun `decodifica un acuse de Swift y lo reconoce como acuse de SU folio`() {
         val fromIOS = """{"v":1,"status":"ok","sourceKey":"sale:ext-1:st_barra"}"""
         assertTrue(KdsLanProtocol.esAcuse(fromIOS, "sale:ext-1:st_barra"))

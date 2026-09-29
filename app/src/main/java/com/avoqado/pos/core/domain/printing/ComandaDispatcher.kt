@@ -118,7 +118,17 @@ class ComandaDispatcher @Inject constructor(
     )
 
     /** Una comanda de un despacho en fondo: sus renglones y su encabezado (p. ej. un curso de la ronda). */
-    data class Pedido(val lines: List<RoutableItem>, val orderType: String)
+    /**
+     * [curso] y [etiquetaPantalla] (KDS 3.6): la pantalla de cocina junta los cursos de una ronda en UNA tarjeta, así que
+     * no le sirve el «Mesa 8 · Aperitivos» del papel: recibe «Mesa 8» arriba y el tiempo en cada platillo. `null` = lo de
+     * siempre ([orderType] para las dos).
+     */
+    data class Pedido(
+        val lines: List<RoutableItem>,
+        val orderType: String,
+        val curso: String? = null,
+        val etiquetaPantalla: String? = null,
+    )
 
     /**
      * El MISMO [dispatch], uno por [Pedido] y EN ORDEN, en el ámbito del despachador. Lo usan las RONDAS de mesa
@@ -158,6 +168,8 @@ class ComandaDispatcher @Inject constructor(
                     origenDelFolio = origenDelFolio,
                     alCambiarEstado = alCambiarEstado,
                     refrescar = guardadasAntes == null,
+                    etiquetaPantalla = pedido.etiquetaPantalla,
+                    curso = pedido.curso,
                 )
             } catch (e: CancellationException) {
                 throw e
@@ -209,6 +221,7 @@ class ComandaDispatcher @Inject constructor(
                 entregasPorWifi(
                     venueId, PrintRoutingMapper.buildComandas(p.lines, config), config, orderNumber, p.orderType,
                     serverName = null, comboNames = comboNamesDe(p.lines), orderId = orderId, origen = origen,
+                    etiquetaPantalla = p.etiquetaPantalla, curso = p.curso,
                 )
             }
             wifi.guardar(entregas)
@@ -281,6 +294,10 @@ class ComandaDispatcher @Inject constructor(
         alCambiarEstado: (EstadoDeComanda) -> Unit = {},
         /** `false` = quien llama ya refrescó ([despacharEnFondo] con cursos que se guardaron antes, I3): no se repite. */
         refrescar: Boolean = true,
+        /** Lo que lee la pantalla de cocina arriba («Mesa 8»); `null` = [orderType]. Ver [Pedido]. */
+        etiquetaPantalla: String? = null,
+        /** El tiempo de estos renglones en la pantalla de cocina («Aperitivos»). */
+        curso: String? = null,
     ): EstadoDeComanda? {
         // Sin renglones no hay nada que imprimir — y nos ahorramos hasta el refresh, igual que el
         // mostrador, que salía antes de tocar la red. No es un guard de configuración: es que
@@ -332,7 +349,7 @@ class ComandaDispatcher @Inject constructor(
         // mostrador y rondas; Uber y vales no) y hay folio (sin folio no hay `sourceKey` que empujar). La entrega se
         // GUARDA antes de conectar; el acuse por ESTACIÓN es lo que decide el papel de las «sólo pantalla».
         val entregas = if (servidorLaTiene != null && venueId != null && origenDelFolio != null) {
-            entregasPorWifi(venueId, plans, config, orderNumber, orderType, serverName, comboNames, orderId, origenDelFolio)
+            entregasPorWifi(venueId, plans, config, orderNumber, orderType, serverName, comboNames, orderId, origenDelFolio, etiquetaPantalla, curso)
         } else {
             emptyList()
         }
@@ -416,6 +433,8 @@ class ComandaDispatcher @Inject constructor(
         comboNames: Map<String, String>,
         orderId: String?,
         origen: String,
+        etiquetaPantalla: String? = null,
+        curso: String? = null,
     ): List<EntregaKds> {
         val deviceId = entregaPorWifi?.deviceId ?: return emptyList()
         val ahora = System.currentTimeMillis()
@@ -423,7 +442,9 @@ class ComandaDispatcher @Inject constructor(
             val stationId = requireNotNull(plan.stationId)
             val soloPantalla = config.stations.firstOrNull { it.id == stationId }?.let { KitchenDeliveryPolicy.esSoloPantalla(it) } == true
             EntregaKds(
-                mensaje = KitchenDeliveryPolicy.mensajeParaPantalla(plan, venueId, deviceId, origen, orderNumber, orderType, orderId, ahora),
+                mensaje = KitchenDeliveryPolicy.mensajeParaPantalla(
+                    plan, venueId, deviceId, origen, orderNumber, etiquetaPantalla ?: orderType, orderId, ahora, curso,
+                ),
                 trabajoDeRespaldo = if (soloPantalla) {
                     TrabajoPendiente(
                         planes = listOf(plan),

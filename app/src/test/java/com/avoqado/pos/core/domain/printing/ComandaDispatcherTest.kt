@@ -810,6 +810,25 @@ class ComandaDispatcherTest {
     }
 
     @Test
+    fun `KDS 3_6 la ronda manda a la pantalla la mesa y el tiempo, y el papel de respaldo conserva su encabezado`() = runTest {
+        every { printConfigRepository.getCurrentConfig() } returns conBarraSoloPantalla
+        imprimeTodo(mutableListOf(), mutableListOf())
+        val entregas = slot<List<EntregaKds>>()
+        coEvery { entrega.entregar(capture(entregas), any()) } returns emptySet()
+
+        despachadorConCola().dispatch(
+            venueId = "venue-1", lines = listOf(taco, cafe), orderNumber = "1234", orderType = "Mesa 8 \u00b7 Aperitivos",
+            servidorLaTiene = true, origenDelFolio = "round:rk-1", orderId = "ord-1",
+            etiquetaPantalla = "Mesa 8", curso = "Aperitivos",
+        )
+
+        val e = entregas.captured.single()
+        assertEquals("Mesa 8", e.mensaje.orderType)
+        assertEquals(listOf("Aperitivos"), e.mensaje.items.map { it.course })
+        assertEquals("Mesa 8 \u00b7 Aperitivos", e.trabajoDeRespaldo!!.orderType)
+    }
+
+    @Test
     fun `P1 la entrega se guarda antes de empujar y se cierra despues del papel`() = runTest {
         every { printConfigRepository.getCurrentConfig() } returns conBarraSoloPantalla
         val planes = mutableListOf<List<TicketPlan>>()

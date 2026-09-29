@@ -194,4 +194,33 @@ class KdsReglasTest {
     fun `el texto de la pantalla recibiendo por WiFi es el acordado`() {
         assertEquals("Sin internet: recibiendo por el WiFi del local", TextosDeCocina.SIN_INTERNET_CON_WIFI)
     }
+
+    // MARK: - KDS 3.6: los tiempos de una mesa
+
+    private fun platillo(nombre: String, tiempo: String?) = KDSOrderItem(id = nombre, productName = nombre, quantity = 1, course = tiempo)
+
+    @Test
+    fun `sin tiempos la tarjeta se ve como siempre - un grupo sin encabezado`() {
+        val items = listOf(platillo("Café", null), platillo("Pan", null))
+        assertEquals(listOf(GrupoDeTiempo(null, items)), gruposPorTiempo(items))
+    }
+
+    @Test
+    fun `con tiempos agrupa en el orden en que aparece cada uno, y lo que no trae va en Inmediato`() {
+        val guac = platillo("Guacamole", "Aperitivos")
+        val tacos = platillo("Tacos", "Principales")
+        val sopa = platillo("Sopa", "Aperitivos")
+        val agua = platillo("Agua", null)
+
+        val grupos = gruposPorTiempo(listOf(guac, tacos, sopa, agua))
+
+        assertEquals(listOf("Aperitivos", "Principales", "Inmediato"), grupos.map { it.tiempo })
+        assertEquals(listOf(guac, sopa), grupos[0].items)
+        assertEquals(listOf(agua), grupos[2].items)
+    }
+
+    @Test
+    fun `una tarjeta vacia no truena`() {
+        assertEquals(listOf(GrupoDeTiempo(null, emptyList())), gruposPorTiempo(emptyList()))
+    }
 }

@@ -47,6 +47,8 @@ data class KDSOrderItem(
     /** Para RUTEAR el renglón a su estación. `null` = no supimos de qué producto es. */
     val productId: String? = null,
     val categoryId: String? = null,
+    /** KDS 3.6: el tiempo del platillo en una mesa («Aperitivos»). `null` = sin tiempo. */
+    val course: String? = null,
 )
 
 /**

@@ -70,6 +70,8 @@ object KitchenDeliveryPolicy {
         orderType: String,
         orderId: String?,
         createdAtMillis: Long,
+        /** KDS 3.6: el tiempo de estos renglones («Aperitivos»); viaja en cada uno porque la pantalla junta los cursos. */
+        curso: String? = null,
     ): KdsComanda {
         val sourceKey = folio(origen, plan.stationId)
         return KdsComanda(
@@ -82,7 +84,10 @@ object KitchenDeliveryPolicy {
             orderId = orderId,
             createdAtMillis = createdAtMillis,
             items = plan.lines.mapIndexed { i, l ->
-                KdsComandaItem(id = l.orderItemIds.firstOrNull() ?: "$sourceKey#$i", productName = l.productName, quantity = l.quantity, modifiers = l.modifiers, notes = l.notes)
+                KdsComandaItem(
+                    id = l.orderItemIds.firstOrNull() ?: "$sourceKey#$i", productName = l.productName, quantity = l.quantity,
+                    modifiers = l.modifiers, notes = l.notes, course = curso,
+                )
             },
         )
     }

@@ -192,6 +192,10 @@ No depende del hub Premium: viaja por el MISMO transporte. Espejo en iOS con los
   `kds_tickets_locales` ANTES de acusar, y acusa sólo si el mismo receptor sigue enganchado con esa estación (la
   GENERACIÓN del transporte sube al soltar el receptor, al cambiar de estación y al reiniciar el transporte). El mismo
   folio UNE renglones por id; un curso con renglones NUEVOS sobre una fila ya LISTA no se guarda ni se acusa ⇒ papel.
+- **La mesa y los tiempos (3.6):** una ronda manda a la pantalla `orderType` = «Mesa 8» (no el «Mesa 8 · Aperitivos» del
+  papel, que sigue igual) y el tiempo en cada renglón (`course`); el servidor devuelve lo mismo (`tableNumber` y
+  `items[].course`, leídos de la cuenta al consultar: si la mueven de mesa, la cocina ve la nueva). La tarjeta agrupa
+  por tiempo en orden de aparición (sin tiempo ⇒ «Inmediato»); sin ningún tiempo se ve como siempre.
 - **Mezcla por folio** (`juntarPorFolio`): la copia del servidor gana; una local sin copia se ve como `lan:<folio>`; un
   folio LISTO local esconde la copia del servidor hasta 12 h (o hasta que el servidor deje de mandarlo).
 - **LISTO sin red:** `KDS_TICKET_MARK BUMP` por la cola PRIMERO y DESPUÉS `listaEnMillis`, en UNA transacción del DAO

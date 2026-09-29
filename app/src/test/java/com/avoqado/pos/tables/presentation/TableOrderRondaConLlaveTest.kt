@@ -349,7 +349,10 @@ class TableOrderRondaConLlaveTest {
         verify {
             dispatcher.despacharEnFondo(
                 venueId = "venue-1", orderNumber = "ORD-1",
-                pedidos = match { pedidos -> pedidos.map { it.orderType } == listOf("Mesa 5") },
+                pedidos = match { pedidos ->
+                    pedidos.map { it.orderType } == listOf("Mesa 5") && pedidos.map { it.etiquetaPantalla } == listOf("Mesa 5") &&
+                        pedidos.map { it.curso } == listOf(null)
+                },
                 orderId = "o1", servidorLaTiene = true, origenDelFolio = "round:$llave", alCambiarEstado = any(),
             )
         }
