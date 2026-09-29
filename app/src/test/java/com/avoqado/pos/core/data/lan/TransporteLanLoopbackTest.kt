@@ -116,6 +116,31 @@ class TransporteLanLoopbackTest {
         assertEquals(setOf("st_barra"), transporte.pantallasDe("st_barra").map { it.kdsStations }.single())
     }
 
+    /**
+     * Paridad con iOS (ronda de la Task 3): «recibiendo» = receptor enganchado Y el socket sirviendo. La pantalla de
+     * cocina dice «recibiendo por el WiFi del local» con esto: enganchado sin socket (red local apagada o reabriéndose)
+     * sería decirle a la cocina que le llegan comandas que en realidad salen en papel.
+     */
+    @Test
+    fun `P1 receptorActivo exige el socket sirviendo, no solo el receptor enganchado`() = runBlocking {
+        transporte.activarReceptor(setOf("st_barra")) { true } // enganchado, pero el transporte aún no arranca: sin socket
+        assertFalse("enganchado sin socket NO es recibir", transporte.receptorActivo.value)
+
+        transporte.iniciar("venue-1")
+        esperarPuerto() // el socket se publica ANTES que el peer propio, y el estado con él
+        assertTrue("con el socket sirviendo sí recibe", transporte.receptorActivo.value)
+
+        transporte.detener() // la red local se cae con el receptor todavía enganchado
+        assertFalse("socket cerrado: ya no recibe", transporte.receptorActivo.value)
+
+        transporte.iniciar("venue-1") // se reabre sola: el receptor sigue enganchado
+        esperarPuerto()
+        assertTrue(transporte.receptorActivo.value)
+
+        transporte.desactivarReceptor()
+        assertFalse(transporte.receptorActivo.value)
+    }
+
     @Test
     fun `P1 una linea de mas de 64 KiB se corta sin responder`() = runBlocking {
         transporte.iniciar("venue-1")

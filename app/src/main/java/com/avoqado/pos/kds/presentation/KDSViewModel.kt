@@ -5,28 +5,35 @@ import android.media.RingtoneManager
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.avoqado.pos.core.data.sync.SyncIntentTypes
 import com.avoqado.pos.core.data.sync.SyncOutbox
 import com.avoqado.pos.core.domain.PlanManager
 import com.avoqado.pos.core.domain.RoleManager
 import com.avoqado.pos.core.domain.printing.ComandaDispatcher
 import com.avoqado.pos.kds.data.KDSRepository
 import com.avoqado.pos.kds.data.KdsPrefs
+import com.avoqado.pos.kds.data.KdsTicketsLocalesStore
+import com.avoqado.pos.kds.data.ReceptorDeComandas
 import com.avoqado.pos.kds.domain.AccionDeCocina
 import com.avoqado.pos.kds.domain.AvisoDeCocina
 import com.avoqado.pos.kds.domain.CanalReparto
 import com.avoqado.pos.kds.domain.EntradaDeCasilla
 import com.avoqado.pos.kds.domain.EstadoDeCasilla
 import com.avoqado.pos.kds.domain.KDSOrder
+import com.avoqado.pos.kds.domain.KdsTicketLocal
 import com.avoqado.pos.kds.domain.TextosDeCocina
 import com.avoqado.pos.kds.domain.avisoDeFallo
+import com.avoqado.pos.kds.domain.esLocal
 import com.avoqado.pos.kds.domain.esSinRed
 import com.avoqado.pos.kds.domain.estacionElegida
 import com.avoqado.pos.kds.domain.estacionesParaElegir
 import com.avoqado.pos.kds.domain.estadoDeCasilla
 import com.avoqado.pos.kds.domain.idsParaMarcarTodas
+import com.avoqado.pos.kds.domain.juntarPorFolio
 import com.avoqado.pos.printing.data.ComandaPrinter
 import com.avoqado.pos.printing.data.EstadoDeComanda
 import com.avoqado.pos.printing.routing.ConsolidatedLine
+import com.avoqado.pos.printing.routing.KitchenDeliveryPolicy
 import com.avoqado.pos.printing.routing.PrintConfig
 import com.avoqado.pos.printing.routing.PrintConfigRepository
 import com.avoqado.pos.printing.routing.RoutableItem
@@ -34,11 +41,14 @@ import com.avoqado.pos.printing.routing.StationInfo
 import com.avoqado.pos.printing.routing.TicketPlan
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import javax.inject.Inject
 import javax.inject.Provider
 
@@ -80,6 +90,9 @@ class KDSViewModel @Inject constructor(
     private val roleManager: RoleManager,
     private val planManager: PlanManager,
     @ApplicationContext private val appContext: Context,
+    // Etapa 3 del KDS (3.5): el WiFi del local. Los dos viven fuera del ViewModel (D8).
+    private val receptor: ReceptorDeComandas,
+    private val ticketsLocales: KdsTicketsLocalesStore,
 ) : ViewModel() {
 
     // MARK: - Estado
@@ -125,11 +138,23 @@ class KDSViewModel @Inject constructor(
 
     /** «Cambiar de estación» a mano: el sondeo no puede regresar a la guardada mientras se elige. */
     private var eligiendoAMano = false
+    /** Lo que ya se veía, por FOLIO (o id si no tiene): la copia `lan:` que el servidor reemplaza es la MISMA comanda — no suena dos veces. */
     private var previousOrderIds: Set<String> = emptySet()
     private var hasLoadedFromAPI = false
 
     /** M4: ids marcados LISTO hace poco → cuándo. Ver `bumpsVigentes()`. */
     private val bumpsRecientes = mutableMapOf<String, Long>()
+
+    // Etapa 3 del KDS (3.5, D9): las dos fuentes de la mezcla por folio.
+    private var delServidor: List<KDSOrder> = emptyList()
+    private var locales: List<KdsTicketLocal> = emptyList()
+    private var localesJob: Job? = null
+    private var estacionObservada: String? = null
+    /** Sólo mientras `mientrasSeVe()` corre: el receptor NO puede acusar con la pantalla cerrada (D8). */
+    private var pantallaVisible = false
+
+    /** D11: sin internet pero recibiendo por el WiFi — la banda lo dice distinto. */
+    val recibiendoPorWifi: StateFlow<Boolean> get() = receptor.activo
 
     fun cerrarAviso() { _aviso.value = null }
 
@@ -149,16 +174,23 @@ class KDSViewModel @Inject constructor(
         // M3: este ViewModel sigue vivo con la pantalla cerrada, así que sin esto lo que llegó mientras tanto sonaba
         // como «comanda nueva». El primer tablero de ESTA apertura es la línea base — nunca suena.
         hasLoadedFromAPI = false
-        refrescar()
-        var vuelta = 0
-        while (true) {
-            delay(10_000)
-            vuelta++
-            // La config cada minuto en CUALQUIER vista (¿prendieron o apagaron la pantalla desde el dashboard?): el
-            // tablero aparece a lo más un minuto después; prenderla desde esta tablet refresca al instante. Entre
-            // vueltas, sólo las comandas (no hace nada fuera del tablero).
-            if (vuelta % 6 == 0) refrescar() else refrescarTablero()
-            fetchCanalesReparto()
+        pantallaVisible = true
+        try {
+            refrescar()
+            var vuelta = 0
+            while (true) {
+                delay(10_000)
+                vuelta++
+                // La config cada minuto en CUALQUIER vista (¿prendieron o apagaron la pantalla desde el dashboard?): el
+                // tablero aparece a lo más un minuto después; prenderla desde esta tablet refresca al instante. Entre
+                // vueltas, sólo las comandas (no hace nada fuera del tablero).
+                if (vuelta % 6 == 0) refrescar() else refrescarTablero()
+                fetchCanalesReparto()
+            }
+        } finally {
+            // Al cerrar la pantalla el receptor se apaga: una comanda acusada aquí sin nadie mirando sería una comanda perdida.
+            pantallaVisible = false
+            sincronizarReceptor()
         }
     }
 
@@ -168,10 +200,12 @@ class KDSViewModel @Inject constructor(
         // Cache-first: primero lo que el aparato ya sabe, sin esperar a la red…
         _config.value = printConfigRepository.getCurrentConfig()
         if (!eligiendoAMano && _config.value.version.isNotEmpty()) _vista.value = vistaPara(prefs.estacion(venueId))
+        sincronizarReceptor()
         // …y luego la verdad del servidor.
         printConfigRepository.refresh(venueId)
         _config.value = printConfigRepository.getCurrentConfig()
         if (!eligiendoAMano) _vista.value = vistaPara(prefs.estacion(venueId))
+        sincronizarReceptor()
         // En el tablero sólo el fetch de comandas decide si hay red (abajo); fuera de él, si nunca vio la config
         // (`version` vacía = sin red desde que se instaló: se dice, en vez de afirmar que no hay estaciones).
         if (_vista.value !is VistaDeCocina.Tablero) _sinConexion.value = _config.value.version.isEmpty()
@@ -205,21 +239,57 @@ class KDSViewModel @Inject constructor(
                 // M4: un sondeo que arrancó ANTES de un LISTO puede traer todavía esa comanda — se ignora mientras
                 // el bump está en vuelo, o hasta que el servidor confirme que ya no la manda.
                 olvidarBumpsConfirmadosPorElServidor(nuevas)
-                val filtradas = nuevas.filterNot { it.id in bumpsVigentes() }
-                val ids = filtradas.map { it.id }.toSet()
-                if (hasLoadedFromAPI && (ids - previousOrderIds).isNotEmpty()) playNotificationSound()
-                previousOrderIds = ids
-                hasLoadedFromAPI = true
-                _comandas.value = filtradas
+                delServidor = nuevas
+                publicar(desdeServidor = true)
                 // Después de publicar: la cocina ve el pedido primero, el papel sale enseguida.
-                viewModelScope.launch { imprimirComandasPendientes(filtradas) }
+                viewModelScope.launch { imprimirComandasPendientes(delServidor.filterNot { it.id in bumpsVigentes() }) }
             },
             onFailure = { e ->
-                // Se CONSERVA lo que ya se veía: sin red la cocina sigue trabajando con eso.
+                // Se CONSERVA lo que ya se veía y se sigue mezclando con lo local: sin red la cocina trabaja con eso (D9).
                 if (esSinRed(e)) _sinConexion.value = true
+                publicar(desdeServidor = false)
+                // M3 sin internet: lo que se ve ahora ES la línea base. Sin esto, con la pantalla abierta sin red, lo que
+                // llega por el WiFi del local nunca sonaba (la base sólo la ponía una lectura buena del servidor).
+                hasLoadedFromAPI = true
                 Log.d(TAG, "No se pudo leer el tablero (se conserva lo que había): ${e.message}")
             },
         )
+    }
+
+    /** D9: `servidor ∪ locales` por folio, menos los bumps en vuelo (M4). Suena sólo si ya hubo un tablero base. */
+    private fun publicar(desdeServidor: Boolean) {
+        val juntas = juntarPorFolio(delServidor, locales).filterNot { it.id in bumpsVigentes() }
+        val claves = juntas.map { it.sourceKey ?: it.id }.toSet()
+        if (hasLoadedFromAPI && (claves - previousOrderIds).isNotEmpty()) playNotificationSound()
+        previousOrderIds = claves
+        if (desdeServidor) hasLoadedFromAPI = true
+        _comandas.value = juntas
+    }
+
+    /**
+     * D8: el receptor sólo vive con un Tablero en pantalla, y anuncia SU estación. Se llama cada vez que cambia la vista
+     * y al cerrar la pantalla. Observa el almacén local de esa estación para mezclar lo que llega por WiFi.
+     */
+    private fun sincronizarReceptor() {
+        val venueId = kdsRepository.venueIdActual()
+        val tablero = _vista.value as? VistaDeCocina.Tablero
+        if (venueId == null || tablero == null || !pantallaVisible) {
+            receptor.desactivar()
+            localesJob?.cancel(); localesJob = null
+            estacionObservada = null
+            locales = emptyList()
+            return
+        }
+        receptor.activar(venueId, tablero.estacion.id)
+        if (localesJob?.isActive != true || estacionObservada != tablero.estacion.id) {
+            localesJob?.cancel()
+            estacionObservada = tablero.estacion.id
+            // Lo de la estación anterior no se mezcla con la nueva mientras llega la primera lectura.
+            locales = emptyList()
+            localesJob = viewModelScope.launch {
+                ticketsLocales.deLaEstacion(venueId, tablero.estacion.id).collect { locales = it; publicar(desdeServidor = false) }
+            }
+        }
     }
 
     /** M4: ids protegidos AHORA MISMO — poda primero los que ya caducaron (ventana de 15 s). */
@@ -244,25 +314,40 @@ class KDSViewModel @Inject constructor(
         previousOrderIds = emptySet()
         hasLoadedFromAPI = false
         _vista.value = vistaPara(id)
+        delServidor = emptyList()
+        sincronizarReceptor()
         viewModelScope.launch { refrescarTablero() }
     }
 
     fun cambiarEstacion() {
         eligiendoAMano = true
         _vista.value = VistaDeCocina.ElegirEstacion(estacionesParaElegir(_config.value.stations), laGuardadaYaNoExiste = false)
+        sincronizarReceptor()
     }
 
     // MARK: - LISTO, lote y deshacer
 
-    /** LISTO de un toque: sale del tablero al instante; si el servidor no se entera, REGRESA y se dice por qué. */
+    /** LISTO de un toque: sale del tablero al instante; sin red o sólo local va como marca `BUMP` (D10). */
     fun listo(id: String) {
         val comanda = _comandas.value.firstOrNull { it.id == id } ?: return
         _comandas.value = _comandas.value.filterNot { it.id == id }
+        if (esLocal(id)) {
+            // Sólo existe aquí: no hay id del servidor que «bumpear». La marca por folio lo resuelve al sincronizar.
+            viewModelScope.launch { marcarListaSinServidor(comanda) }
+            return
+        }
         // M4: protege contra un sondeo que ya estaba en vuelo y todavía no sabe de este bump.
         bumpsRecientes[id] = System.currentTimeMillis()
         viewModelScope.launch {
             kdsRepository.bumpOrder(id).onFailure { e ->
                 bumpsRecientes.remove(id)
+                if (esSinRed(e) && comanda.sourceKey != null) {
+                    // D10: sin red, con folio ⇒ marca BUMP por la cola + `listaEnMillis`. Sale de la pantalla y NO dice error.
+                    _sinConexion.value = true
+                    marcarListaSinServidor(comanda)
+                    return@onFailure
+                }
+                // Sin folio (Uber, filas viejas) o un «no» del servidor: REGRESA y se dice por qué, como antes.
                 if (_comandas.value.none { it.id == id }) _comandas.value = (_comandas.value + comanda).sortedBy { it.createdAt }
                 if (esSinRed(e)) _sinConexion.value = true
                 _aviso.value = avisoDeFallo(e, AccionDeCocina.LISTO)
@@ -270,26 +355,56 @@ class KDSViewModel @Inject constructor(
         }
     }
 
-    /** «Marcar todas listas» (la pantalla confirma antes). Nunca un delivery sin aceptar. */
+    /** D10: persiste `listaEnMillis` ANTES de encolar la marca (la pantalla la esconde ya; el servidor se entera al sincronizar). */
+    private suspend fun marcarListaSinServidor(comanda: KDSOrder) {
+        val sourceKey = comanda.sourceKey ?: return
+        val venueId = kdsRepository.venueIdActual() ?: return
+        val stationId = comanda.printStationId ?: (_vista.value as? VistaDeCocina.Tablero)?.estacion?.id ?: return
+        // Room puede fallar (disco lleno): se registra y la marca se encola IGUAL — una excepción aquí tumbaría la app (M14).
+        runCatching { ticketsLocales.marcarLista(comanda, venueId, stationId) }
+            .onFailure { Log.w(TAG, "No se pudo persistir el LISTO de $sourceKey: ${it.message}") }
+        runCatching {
+            syncOutbox.get().enqueue(
+                venueId,
+                SyncIntentTypes.KDS_TICKET_MARK,
+                buildJsonObject {
+                    put("sourceKey", sourceKey)
+                    put("stationId", stationId)
+                    put("action", KitchenDeliveryPolicy.BUMP)
+                    put("label", comanda.orderNumber)
+                },
+            )
+        }.onFailure { Log.w(TAG, "No se pudo encolar el BUMP de $sourceKey: ${it.message}") }
+    }
+
+    /** «Marcar todas listas» (la pantalla confirma antes). Nunca un delivery sin aceptar. Sin red: una marca BUMP por comanda con folio. */
     fun marcarTodasListas() {
         val ids = idsParaMarcarTodas(_comandas.value)
         if (ids.isEmpty()) return
         val quitadas = _comandas.value.filter { it.id in ids }
         _comandas.value = _comandas.value.filterNot { it.id in ids }
+        val (localesIds, delServidorIds) = ids.partition { esLocal(it) }
+        viewModelScope.launch { quitadas.filter { it.id in localesIds }.forEach { marcarListaSinServidor(it) } }
+        if (delServidorIds.isEmpty()) return
         // M4/Ronda 3: mismo blindaje que listo() — un sondeo que ya estaba en vuelo no puede resucitar el lote.
         val ahora = System.currentTimeMillis()
-        ids.forEach { bumpsRecientes[it] = ahora }
+        delServidorIds.forEach { bumpsRecientes[it] = ahora }
         viewModelScope.launch {
-            kdsRepository.bumpBatch(ids)
+            kdsRepository.bumpBatch(delServidorIds)
                 .onSuccess { refrescarTablero() }
                 .onFailure { e ->
                     // El lote no aplicó: se sueltan del blindaje también, o un sondeo real que SÍ las trae de
                     // vuelta (porque siguen pendientes de verdad) las escondería por hasta 15 s.
-                    ids.forEach(bumpsRecientes::remove)
-                    val regresan = quitadas.filter { q -> _comandas.value.none { it.id == q.id } }
+                    delServidorIds.forEach(bumpsRecientes::remove)
+                    val sinRed = esSinRed(e)
+                    if (sinRed) _sinConexion.value = true
+                    val delServidorQuitadas = quitadas.filter { it.id in delServidorIds }
+                    // D10: sin red, las que tienen folio van como marca BUMP; las que no (Uber, filas viejas) regresan.
+                    val marcables = if (sinRed) delServidorQuitadas.filter { it.sourceKey != null } else emptyList()
+                    marcables.forEach { marcarListaSinServidor(it) }
+                    val regresan = (delServidorQuitadas - marcables.toSet()).filter { q -> _comandas.value.none { it.id == q.id } }
                     _comandas.value = (_comandas.value + regresan).sortedBy { it.createdAt }
-                    if (esSinRed(e)) _sinConexion.value = true
-                    _aviso.value = avisoDeFallo(e, AccionDeCocina.MARCAR_TODAS)
+                    if (regresan.isNotEmpty() || !sinRed) _aviso.value = avisoDeFallo(e, AccionDeCocina.MARCAR_TODAS)
                 }
         }
     }

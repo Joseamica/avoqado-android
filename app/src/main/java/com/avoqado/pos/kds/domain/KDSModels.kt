@@ -49,6 +49,21 @@ data class KDSOrderItem(
     val categoryId: String? = null,
 )
 
+/**
+ * Etapa 3 del KDS (3.5, D8): una comanda guardada en ESTE aparato — llegó por el WiFi del local (antes de acusar) o se
+ * marcó LISTO sin red (`listaEnMillis`). Espejo de `KdsTicketLocal` de iOS.
+ */
+data class KdsTicketLocal(
+    val sourceKey: String,
+    val venueId: String,
+    val stationId: String,
+    val orderNumber: String,
+    val orderType: String,
+    val items: List<KDSOrderItem>,
+    val recibidaEnMillis: Long,
+    val listaEnMillis: Long?,
+)
+
 enum class KDSOrderStatus(val label: String) {
     NEW("Nuevo"),
     PREPARING("En preparacion"),

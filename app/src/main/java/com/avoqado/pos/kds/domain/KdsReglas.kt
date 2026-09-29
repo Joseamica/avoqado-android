@@ -89,6 +89,39 @@ const val TOPE_DEL_TABLERO = 100
 fun idsParaMarcarTodas(comandas: List<KDSOrder>): List<String> =
     comandas.filterNot { it.needsAcceptance }.map { it.id }.take(TOPE_DEL_TABLERO)
 
+// MARK: - Etapa 3 del KDS (3.5, D9): la mezcla por folio
+
+/** Prefijo del id sintético de una comanda que SÓLO está en este aparato (llegó por WiFi y el servidor aún no la manda). */
+const val ID_LAN = "lan:"
+
+fun esLocal(id: String): Boolean = id.startsWith(ID_LAN)
+
+fun KdsTicketLocal.aKDSOrder(): KDSOrder = KDSOrder(
+    id = ID_LAN + sourceKey,
+    orderId = null,
+    orderNumber = orderNumber,
+    orderType = orderType,
+    items = items,
+    createdAt = recibidaEnMillis,
+    status = KDSOrderStatus.NEW,
+    sourceKey = sourceKey,
+    printStationId = stationId,
+)
+
+/**
+ * `servidor ∪ locales` por folio: la copia del servidor GANA (la local se descarta); las locales sin copia del servidor
+ * se muestran con id `lan:<folio>`; los folios marcados LISTO sin red (`listaEnMillis != null`) NO se muestran aunque el
+ * servidor los devuelva (hasta que deje de devolverlos o venzan las 12 h). Se llama en cada consulta buena, cuando llega
+ * una comanda por WiFi y cuando falla la consulta (sin red se muestra lo guardado). PURA; espejo de `KDSReglas.juntarPorFolio`.
+ */
+fun juntarPorFolio(servidor: List<KDSOrder>, locales: List<KdsTicketLocal>): List<KDSOrder> {
+    val listas = locales.filter { it.listaEnMillis != null }.map { it.sourceKey }.toSet()
+    val delServidor = servidor.filterNot { it.sourceKey != null && it.sourceKey in listas }
+    val foliosDelServidor = servidor.mapNotNull { it.sourceKey }.toSet()
+    val soloLocales = locales.filter { it.listaEnMillis == null && it.sourceKey !in foliosDelServidor }.map { it.aKDSOrder() }
+    return (delServidor + soloLocales).sortedBy { it.createdAt }
+}
+
 // MARK: - Errores: sin red es un ESTADO, no un error rojo
 
 data class AvisoDeCocina(val texto: String, val esError: Boolean)
@@ -120,6 +153,8 @@ fun avisoDeFallo(error: Throwable, accion: AccionDeCocina): AvisoDeCocina = when
 
 object TextosDeCocina {
     const val SIN_CONEXION = "Sin conexión: la pantalla se pone al día cuando vuelva la red"
+    /** 3.5, D11: sin internet pero con el receptor del WiFi vivo — la pantalla sigue recibiendo. */
+    const val SIN_INTERNET_CON_WIFI = "Sin internet: recibiendo por el WiFi del local"
     /** Mientras llega la config por primera vez: nunca se afirma «no hay estaciones» antes de saberlo. */
     const val CARGANDO = "Cargando estaciones…"
     const val SIN_ESTACION = "Sin estación"

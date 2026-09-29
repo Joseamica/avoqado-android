@@ -35,6 +35,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -45,6 +46,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
@@ -95,6 +97,15 @@ fun KDSScreen(
     // 🔴 El sondeo vive MIENTRAS esta pantalla está a la vista: se cancela solo al cerrarla.
     LaunchedEffect(Unit) { viewModel.mientrasSeVe() }
 
+    // Etapa 3 del KDS (3.5, D13): la pantalla de cocina no se apaga sola. Sin esto el aparato duerme, el receptor deja de
+    // acusar y la caja imprime papel.
+    val view = LocalView.current
+    DisposableEffect(Unit) {
+        view.keepScreenOn = true
+        onDispose { view.keepScreenOn = false }
+    }
+    val recibiendoPorWifi by viewModel.recibiendoPorWifi.collectAsState()
+
     var showSettings by remember { mutableStateOf(false) }
     var showRecientes by remember { mutableStateOf(false) }
     var confirmacion by remember { mutableStateOf<Confirmacion?>(null) }
@@ -132,7 +143,7 @@ fun KDSScreen(
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.surfaceVariant),
     ) {
-        if (sinConexion) BannerSinConexion()
+        if (sinConexion) BannerSinConexion(texto = if (recibiendoPorWifi) TextosDeCocina.SIN_INTERNET_CON_WIFI else TextosDeCocina.SIN_CONEXION)
         aviso?.let { BarraDeAviso(it, onCerrar = viewModel::cerrarAviso) }
 
         when (val v = vista) {
@@ -308,7 +319,7 @@ private fun nombreImpresora(estacion: StationInfo, printers: List<PrinterInfo>):
 
 /** Sin red: se DICE, neutro, nunca rojo. El tablero conserva lo que ya tenía. */
 @Composable
-private fun BannerSinConexion() {
+private fun BannerSinConexion(texto: String) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -324,7 +335,7 @@ private fun BannerSinConexion() {
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Text(
-            text = TextosDeCocina.SIN_CONEXION,
+            text = texto,
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

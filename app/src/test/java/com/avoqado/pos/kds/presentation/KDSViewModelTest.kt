@@ -2,16 +2,20 @@ package com.avoqado.pos.kds.presentation
 
 import android.media.RingtoneManager
 import com.avoqado.pos.MainDispatcherRule
+import com.avoqado.pos.core.data.sync.SyncOutbox
 import com.avoqado.pos.core.domain.PlanManager
 import com.avoqado.pos.core.domain.RoleManager
 import com.avoqado.pos.kds.data.KDSRepository
 import com.avoqado.pos.kds.data.KdsHttpException
 import com.avoqado.pos.kds.data.KdsPrefs
+import com.avoqado.pos.kds.data.KdsTicketsLocalesStore
+import com.avoqado.pos.kds.data.ReceptorDeComandas
 import com.avoqado.pos.kds.domain.AccionDeCocina
 import com.avoqado.pos.kds.domain.AvisoDeCocina
 import com.avoqado.pos.kds.domain.KDSOrder
 import com.avoqado.pos.kds.domain.KDSOrderItem
 import com.avoqado.pos.kds.domain.KDSOrderStatus
+import com.avoqado.pos.kds.domain.KdsTicketLocal
 import com.avoqado.pos.kds.domain.TextosDeCocina
 import com.avoqado.pos.printing.routing.PrintConfig
 import com.avoqado.pos.printing.routing.PrintConfigRepository
@@ -21,15 +25,20 @@ import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
+import io.mockk.slot
 import io.mockk.unmockkStatic
 import io.mockk.verify
+import io.mockk.verifyOrder
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -54,6 +63,16 @@ class KDSViewModelTest {
     private val prefs = mockk<KdsPrefs>(relaxed = true)
     private val roleManager = mockk<RoleManager>()
     private val planManager = mockk<PlanManager>()
+    private val receptorActivo = MutableStateFlow(false)
+    private val receptor = mockk<ReceptorDeComandas>(relaxed = true) { every { activo } returns receptorActivo }
+    private val locales = MutableStateFlow<List<KdsTicketLocal>>(emptyList())
+    private val ticketsLocales = mockk<KdsTicketsLocalesStore>(relaxed = true) { every { deLaEstacion(any(), any()) } returns locales }
+    private val cola = mockk<SyncOutbox>(relaxed = true)
+
+    private fun local(folio: String, recibida: Long, lista: Long? = null) = KdsTicketLocal(
+        sourceKey = folio, venueId = "v1", stationId = "st-barra", orderNumber = "77", orderType = "Mesa 8",
+        items = listOf(KDSOrderItem("l-1", "Café", 2)), recibidaEnMillis = recibida, listaEnMillis = lista,
+    )
 
     private val barra = StationInfo(id = "st-barra", name = "Barra", hasKitchenDisplay = true)
     private var config = PrintConfig(stations = listOf(barra), version = "v1")
@@ -81,8 +100,9 @@ class KDSViewModelTest {
         coEvery { repo.fetchOrders(any()) } returns Result.success(comandas)
         coEvery { repo.fetchDeliveryChannels() } returns Result.success(emptyList())
         return KDSViewModel(
-            repo, mockk(relaxed = true), mockk(relaxed = true), printConfig, Provider { mockk(relaxed = true) },
+            repo, mockk(relaxed = true), mockk(relaxed = true), printConfig, Provider { cola },
             prefs, roleManager, planManager, mockk(relaxed = true),
+            receptor, ticketsLocales,
         ).also { it.refrescar() }
     }
 
@@ -113,10 +133,10 @@ class KDSViewModelTest {
     }
 
     @Test
-    fun `P1 LISTO sin red regresa la comanda a su lugar y lo dice sin rojo`() = runTest {
+    fun `P1 LISTO sin red SIN folio (Uber) regresa la comanda a su lugar y lo dice sin rojo`() = runTest {
         val puerta = CompletableDeferred<Unit>()
         coEvery { repo.bumpOrder("k1") } coAnswers { puerta.await(); Result.failure(IOException("sin red")) }
-        val vm = armar()
+        val vm = armar(comandas = listOf(comanda("k1", 1_000, sourceKey = null), comanda("k2", 2_000)))
 
         vm.listo("k1")
         assertEquals("optimista: se quita al instante", listOf("k2"), vm.comandas.value.map { it.id })
@@ -332,7 +352,8 @@ class KDSViewModelTest {
     @Test
     fun `Ronda 3 marcar todas si el lote falla las suelta del blindaje al regresar`() = runTest {
         coEvery { repo.bumpBatch(any()) } returns Result.failure(IOException("sin red"))
-        val vm = armar() // k1, k2
+        // Sin folio: prueba el blindaje M4, no D10 (con folio, sin red, se marcan BUMP y NO regresan).
+        val vm = armar(comandas = listOf(comanda("k1", 1_000, sourceKey = null), comanda("k2", 2_000, sourceKey = null)))
 
         vm.marcarTodasListas()
         assertEquals(listOf("k1", "k2"), vm.comandas.value.map { it.id }) // regresan de inmediato (optimismo deshecho)
@@ -370,5 +391,146 @@ class KDSViewModelTest {
         verify { prefs.sonido = false }
         verify { prefs.letraGrande = true }
         assertEquals(KDSSettings(soundEnabled = false, largeFontEnabled = true), vm.settings.value)
+    }
+
+    // MARK: - Etapa 3 del KDS (3.5): el WiFi del local
+
+    @Test
+    fun `P1 el receptor se activa con la estacion del tablero y se apaga al cerrar la pantalla`() = runTest {
+        val vm = armar()
+        val job = launch { vm.mientrasSeVe() }
+        runCurrent()
+        verify(atLeast = 1) { receptor.activar("v1", "st-barra") }
+        job.cancelAndJoin()
+        // En ORDEN: `armar()` ya lo apagó una vez (sin pantalla a la vista); lo que se prueba es que se apague DESPUÉS
+        // de haberse activado, o sea al cerrar la pantalla.
+        verifyOrder {
+            receptor.activar("v1", "st-barra")
+            receptor.desactivar()
+        }
+    }
+
+    @Test
+    fun `P1 LISTO sin red con folio encola BUMP y persiste la marca, sin regresar la comanda ni pintar error`() = runTest {
+        coEvery { repo.bumpOrder("k1") } returns Result.failure(IOException("sin red"))
+        val marca = slot<JsonObject>()
+        coEvery { cola.enqueue("v1", "KDS_TICKET_MARK", capture(marca), any(), false) } returns "m-1"
+        val vm = armar()
+
+        vm.listo("k1")
+        advanceUntilIdle()
+
+        assertEquals(listOf("k2"), vm.comandas.value.map { it.id })
+        assertNull(vm.aviso.value)
+        assertTrue(vm.sinConexion.value)
+        coVerify(exactly = 1) { ticketsLocales.marcarLista(match { it.id == "k1" }, "v1", "st-barra", any()) }
+        assertEquals("sale:k1:st-barra", marca.captured["sourceKey"]!!.jsonPrimitive.content)
+        assertEquals("BUMP", marca.captured["action"]!!.jsonPrimitive.content)
+        assertEquals("k1", marca.captured["label"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `P1 una comanda que llego por WiFi se ve con id lan y su LISTO va por la cola aunque haya red`() = runTest {
+        val vm = armar()
+        val job = launch { vm.mientrasSeVe() }
+        runCurrent()
+        locales.value = listOf(local("round:rk:st-barra", 3_000))
+        runCurrent()
+
+        assertEquals(listOf("k1", "k2", "lan:round:rk:st-barra"), vm.comandas.value.map { it.id })
+        vm.listo("lan:round:rk:st-barra")
+        // NUNCA `advanceUntilIdle()` con `mientrasSeVe()` vivo: su `while (true) { delay(10_000) }` gira sin fin en el
+        // reloj virtual hasta el OOM (memoria `runtest-con-timer-infinito-gira-hasta-oom`). `listo` de una `lan:` corre en
+        // `viewModelScope` (Main = Unconfined): con `runCurrent()` ya terminó.
+        runCurrent()
+
+        coVerify(exactly = 0) { repo.bumpOrder(any()) }
+        coVerify(exactly = 1) { cola.enqueue("v1", "KDS_TICKET_MARK", any(), any(), false) }
+        coVerify(exactly = 1) { ticketsLocales.marcarLista(match { it.sourceKey == "round:rk:st-barra" }, "v1", "st-barra", any()) }
+        job.cancelAndJoin()
+    }
+
+    @Test
+    fun `P1 el servidor gana por folio y lo marcado sin red no resucita aunque el sondeo lo traiga`() = runTest {
+        val vm = armar()
+        val job = launch { vm.mientrasSeVe() }
+        runCurrent()
+        locales.value = listOf(local("sale:k1:st-barra", 900), local("sale:k2:st-barra", 1_900, lista = 1_950))
+        runCurrent()
+        assertEquals("k1 gana sobre su copia local; k2 está LISTO sin red", listOf("k1"), vm.comandas.value.map { it.id })
+
+        coEvery { repo.fetchOrders(any()) } returns Result.failure(IOException("sin red"))
+        vm.refrescar()
+        assertEquals("sin red se conserva y se sigue mezclando", listOf("k1"), vm.comandas.value.map { it.id })
+        job.cancelAndJoin()
+    }
+
+    @Test
+    fun `marcar todas sin red encola una marca por comanda con folio y regresa las que no tienen`() = runTest {
+        coEvery { repo.bumpBatch(any()) } returns Result.failure(IOException("sin red"))
+        val vm = armar(comandas = listOf(comanda("k1", 1_000), comanda("u1", 2_000, sourceKey = null)))
+
+        vm.marcarTodasListas()
+        advanceUntilIdle()
+
+        assertEquals(listOf("u1"), vm.comandas.value.map { it.id })
+        coVerify(exactly = 1) { cola.enqueue("v1", "KDS_TICKET_MARK", any(), any(), false) }
+        assertEquals(AvisoDeCocina(AccionDeCocina.MARCAR_TODAS.sinRed, esError = false), vm.aviso.value)
+    }
+
+    @Test
+    fun `recibiendo por WiFi refleja el receptor`() = runTest {
+        val vm = armar()
+        assertFalse(vm.recibiendoPorWifi.value)
+        receptorActivo.value = true
+        assertTrue(vm.recibiendoPorWifi.value)
+    }
+
+    @Test
+    fun `P2 la copia del servidor que reemplaza a la del WiFi no vuelve a sonar`() = runTest {
+        mockkStatic(RingtoneManager::class)
+        every { RingtoneManager.getDefaultUri(any()) } returns null
+        every { RingtoneManager.getRingtone(any(), any()) } returns null
+        try {
+            val vm = armar()
+            val job = launch { vm.mientrasSeVe() }
+            runCurrent()
+            locales.value = listOf(local("sale:k3:st-barra", 3_000)) // llega por el WiFi: suena
+            runCurrent()
+            assertEquals(listOf("k1", "k2", "lan:sale:k3:st-barra"), vm.comandas.value.map { it.id })
+
+            // El servidor ya la tiene: cambia de id (`lan:` → k3) pero es la MISMA comanda — no suena otra vez.
+            coEvery { repo.fetchOrders(any()) } returns Result.success(listOf(comanda("k1", 1_000), comanda("k2", 2_000), comanda("k3", 3_000)))
+            vm.refrescar()
+
+            assertEquals(listOf("k1", "k2", "k3"), vm.comandas.value.map { it.id })
+            verify(exactly = 1) { RingtoneManager.getDefaultUri(any()) }
+            job.cancelAndJoin()
+        } finally {
+            unmockkStatic(RingtoneManager::class)
+        }
+    }
+
+    @Test
+    fun `P2 abierta sin internet, lo que llega por el WiFi suena`() = runTest {
+        mockkStatic(RingtoneManager::class)
+        every { RingtoneManager.getDefaultUri(any()) } returns null
+        every { RingtoneManager.getRingtone(any(), any()) } returns null
+        try {
+            val vm = armar()
+            coEvery { repo.fetchOrders(any()) } returns Result.failure(IOException("sin red"))
+            val job = launch { vm.mientrasSeVe() } // se abre SIN internet: la base es lo que ya se veía
+            runCurrent()
+            verify(exactly = 0) { RingtoneManager.getDefaultUri(any()) }
+
+            locales.value = listOf(local("round:rk:st-barra", 3_000))
+            runCurrent()
+
+            assertEquals(listOf("k1", "k2", "lan:round:rk:st-barra"), vm.comandas.value.map { it.id })
+            verify(exactly = 1) { RingtoneManager.getDefaultUri(any()) }
+            job.cancelAndJoin()
+        } finally {
+            unmockkStatic(RingtoneManager::class)
+        }
     }
 }

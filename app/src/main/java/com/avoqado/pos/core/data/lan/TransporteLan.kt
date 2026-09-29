@@ -61,7 +61,14 @@ class TransporteLan @Inject constructor(
     private val _estacionesAnunciadas = MutableStateFlow<Set<String>>(emptySet())
     val estacionesAnunciadas: StateFlow<Set<String>> = _estacionesAnunciadas.asStateFlow()
 
-    /** ¿Hay un receptor de comandas vivo (un Tablero en pantalla)? La banda de la caja lo usa (D11). */
+    /** ¿Alguien enganchó un receptor (un Tablero en pantalla)? Decide si la red local debe vivir; NO dice que se reciba. */
+    private val _receptorEnganchado = MutableStateFlow(false)
+
+    /**
+     * ¿Recibiendo DE VERDAD? Receptor enganchado Y el socket sirviendo (puerto > 0). Se prende hasta que el socket abre y
+     * se apaga si se cierra o se está reabriendo: la pantalla de cocina lo usa para decir «recibiendo por el WiFi del
+     * local» (D11). Espejo de `receptorActivo` de iOS (ronda de la Task 3).
+     */
     private val _receptorActivo = MutableStateFlow(false)
     val receptorActivo: StateFlow<Boolean> = _receptorActivo.asStateFlow()
 
@@ -91,7 +98,7 @@ class TransporteLan @Inject constructor(
         detener()
         this.venueId = venueId
         configJob = scope.launch {
-            combine(printConfigRepository.config, _hubConectado, _receptorActivo) { config, hub, receptor ->
+            combine(printConfigRepository.config, _hubConectado, _receptorEnganchado) { config, hub, receptor ->
                 hub || receptor || config.stations.any { it.active && it.hasKitchenDisplay }
             }.distinctUntilChanged().collectLatest { debeVivir ->
                 if (!debeVivir) { apagarRed(); return@collectLatest }
@@ -138,14 +145,16 @@ class TransporteLan @Inject constructor(
     fun activarReceptor(estaciones: Set<String>, alRecibir: suspend (KdsComanda) -> Boolean) {
         receptor = alRecibir
         _estacionesAnunciadas.value = estaciones
-        _receptorActivo.value = estaciones.isNotEmpty()
+        _receptorEnganchado.value = estaciones.isNotEmpty()
+        publicarReceptor()
         reanunciar()
     }
 
     fun desactivarReceptor() {
         receptor = null
         _estacionesAnunciadas.value = emptySet()
-        _receptorActivo.value = false
+        _receptorEnganchado.value = false
+        publicarReceptor()
         reanunciar()
     }
 
@@ -175,6 +184,22 @@ class TransporteLan @Inject constructor(
         runCatching { serverSocket?.close() }; serverSocket = null
         ajenos = emptyList()
         publicarPeers()
+        publicarReceptor()
+    }
+
+    /** Sincronizado: el que corre al último lee los dos datos ya escritos (el socket lo cambia el hilo de IO; el enganche, el Tablero). */
+    @Synchronized
+    private fun publicarReceptor() {
+        _receptorActivo.value = _receptorEnganchado.value && puerto > 0
+    }
+
+    /** El `accept` murió con el socket abierto: se cierra para no aparentar que sirve; la revisión de cada minuto lo reabre. */
+    @Synchronized
+    private fun soltarSocket(socket: ServerSocket) {
+        if (serverSocket !== socket) return
+        runCatching { socket.close() }; serverSocket = null
+        publicarPeers()
+        publicarReceptor()
     }
 
     /** Cambió el TXT (`kds=` o `hub=`): se vuelve a registrar el servicio (NSD no edita un TXT ya registrado). */
@@ -212,6 +237,7 @@ class TransporteLan @Inject constructor(
         return try {
             val socket = ServerSocket(0) // puerto efímero: se publica en el TXT, nadie lo adivina
             serverSocket = socket
+            publicarReceptor()
             acceptJob = scope.launch { aceptar(socket) }
             Log.i(TAG, "🛰️ Transporte LAN escuchando en el puerto ${socket.localPort}")
             socket.localPort
@@ -227,6 +253,7 @@ class TransporteLan @Inject constructor(
                 socket.accept()
             } catch (e: Exception) {
                 if (!socket.isClosed) Log.w(TAG, "accept falló: ${e.message}")
+                soltarSocket(socket)
                 return
             }
             // Cada conexión en su corrutina: una tablet lenta no bloquea a las demás.

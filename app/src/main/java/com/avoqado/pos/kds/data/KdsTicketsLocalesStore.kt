@@ -1,0 +1,87 @@
+package com.avoqado.pos.kds.data
+
+import android.util.Log
+import com.avoqado.pos.core.data.lan.KdsComanda
+import com.avoqado.pos.core.data.lan.KdsComandaItem
+import com.avoqado.pos.kds.data.local.KdsTicketLocalEntity
+import com.avoqado.pos.kds.data.local.KdsTicketsLocalesDao
+import com.avoqado.pos.kds.domain.KDSOrder
+import com.avoqado.pos.kds.domain.KDSOrderItem
+import com.avoqado.pos.kds.domain.KdsTicketLocal
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.Json
+import javax.inject.Inject
+import javax.inject.Singleton
+
+private const val TAG = "KdsTicketsLocales"
+
+/**
+ * Etapa 3 del KDS (3.5, D8) — lo que la PANTALLA guarda en el aparato: la comanda que llegó por WiFi (ANTES de acusar;
+ * el mismo folio UNE renglones) y el LISTO sin red (`listaEnMillis`, pegajoso). Vive fuera del ViewModel (que muere con
+ * la pantalla). Espejo de `KdsTicketsLocalesStore.swift`.
+ */
+@Singleton
+class KdsTicketsLocalesStore @Inject constructor(private val dao: KdsTicketsLocalesDao) {
+
+    private val json = Json { ignoreUnknownKeys = true }
+    private val items = ListSerializer(KdsComandaItem.serializer())
+
+    /** Commit en disco; `true` SÓLO si quedó guardada — el acuse sale sólo entonces. Nunca lanza. */
+    suspend fun unir(comanda: KdsComanda, ahora: Long = System.currentTimeMillis()): Boolean = try {
+        dao.unir(
+            KdsTicketLocalEntity(
+                sourceKey = comanda.sourceKey, venueId = comanda.venueId, stationId = comanda.stationId,
+                orderNumber = comanda.orderNumber, orderType = comanda.orderType,
+                itemsJson = json.encodeToString(items, comanda.items), recibidaEnMillis = ahora, listaEnMillis = null,
+            ),
+        )
+        true
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Exception) {
+        Log.e(TAG, "❌ No se pudo guardar la comanda ${comanda.sourceKey}: ${e.message}")
+        false
+    }
+
+    /**
+     * LISTO sin red (D10): se persiste ANTES de encolar la marca. Una comanda que llegó por WiFi ya tiene fila (se marca);
+     * una del servidor no (se crea con la marca puesta, para que un sondeo no la resucite).
+     */
+    suspend fun marcarLista(orden: KDSOrder, venueId: String, stationId: String, ahora: Long = System.currentTimeMillis()) {
+        val sourceKey = orden.sourceKey ?: return
+        // Sin REPLACE sobre una fila ya LISTA (cambiaría hora y renglones): sólo se crea si no existe. Espejo de iOS.
+        if (dao.marcarLista(sourceKey, ahora) == 0 && dao.porFolio(sourceKey) == null) {
+            dao.guardar(
+                KdsTicketLocalEntity(
+                    sourceKey = sourceKey, venueId = venueId, stationId = stationId, orderNumber = orden.orderNumber,
+                    orderType = orden.orderType,
+                    itemsJson = json.encodeToString(items, orden.items.map { KdsComandaItem(it.id, it.productName, it.quantity, it.modifiers, it.notes) }),
+                    recibidaEnMillis = orden.createdAt, listaEnMillis = ahora,
+                ),
+            )
+        }
+    }
+
+    /** Pendientes Y listas de la estación (la mezcla necesita las dos), en orden de llegada. */
+    fun deLaEstacion(venueId: String, stationId: String): Flow<List<KdsTicketLocal>> =
+        dao.deLaEstacion(venueId, stationId).map { filas -> filas.map { it.aDominio() } }
+
+    suspend fun purgar(venueId: String, ahora: Long = System.currentTimeMillis()) {
+        runCatching { dao.purgar(venueId, ahora - VIGENCIA_MS) }
+    }
+
+    private fun KdsTicketLocalEntity.aDominio() = KdsTicketLocal(
+        sourceKey = sourceKey, venueId = venueId, stationId = stationId, orderNumber = orderNumber, orderType = orderType,
+        items = runCatching { json.decodeFromString(items, itemsJson) }.getOrDefault(emptyList())
+            .map { KDSOrderItem(id = it.id, productName = it.productName, quantity = it.quantity, modifiers = it.modifiers, notes = it.notes) },
+        recibidaEnMillis = recibidaEnMillis, listaEnMillis = listaEnMillis,
+    )
+
+    companion object {
+        /** 12 h (D8): una comanda de ayer que nadie marcó no se queda en la pantalla para siempre. */
+        const val VIGENCIA_MS = 12L * 60 * 60 * 1_000
+    }
+}

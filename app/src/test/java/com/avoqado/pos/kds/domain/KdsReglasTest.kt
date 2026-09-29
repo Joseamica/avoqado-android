@@ -149,4 +149,49 @@ class KdsReglasTest {
         )
         assertEquals(AvisoDeCocina(AccionDeCocina.DESHACER.generico, esError = true), avisoDeFallo(IllegalStateException(), AccionDeCocina.DESHACER))
     }
+
+    // MARK: - Etapa 3 del KDS (3.5, D9): la mezcla por folio
+
+    private fun delServidor(id: String, folio: String?, creada: Long) = KDSOrder(
+        id = id, orderId = "o-$id", orderNumber = id, orderType = "En tienda",
+        items = listOf(KDSOrderItem("i-$id", "Taco", 1)), createdAt = creada, status = KDSOrderStatus.NEW,
+        sourceKey = folio, printStationId = "st-barra",
+    )
+
+    private fun local(folio: String, recibida: Long, lista: Long? = null) = KdsTicketLocal(
+        sourceKey = folio, venueId = "v1", stationId = "st-barra", orderNumber = "77", orderType = "Mesa 8 · Aperitivos",
+        items = listOf(KDSOrderItem("l-1", "Café", 2)), recibidaEnMillis = recibida, listaEnMillis = lista,
+    )
+
+    @Test
+    fun `P1 el servidor gana por folio y lo marcado sin red no resucita`() {
+        val servidor = listOf(delServidor("k1", "sale:a:st-barra", 1_000), delServidor("k2", "sale:b:st-barra", 2_000))
+        val locales = listOf(
+            local("sale:a:st-barra", recibida = 900), // ya la mandó el servidor: gana su copia (k1), se descarta la local
+            local("sale:b:st-barra", recibida = 1_900, lista = 1_950), // LISTO sin red: NO se muestra aunque el servidor la devuelva
+            local("round:c:st-barra", recibida = 3_000), // sólo local: se muestra con id sintético
+        )
+        val juntas = juntarPorFolio(servidor, locales)
+        assertEquals(listOf("k1", "lan:round:c:st-barra"), juntas.map { it.id })
+        val soloLocal = juntas.last()
+        assertEquals("round:c:st-barra", soloLocal.sourceKey)
+        assertEquals("Mesa 8 · Aperitivos", soloLocal.orderType)
+        assertEquals("st-barra", soloLocal.printStationId)
+        assertNull(soloLocal.orderId)
+        assertTrue(esLocal(soloLocal.id))
+        assertFalse(esLocal("k1"))
+    }
+
+    @Test
+    fun `sin copia del servidor (sin red) se muestra lo guardado, en orden de llegada, y lo de Uber sin folio no se toca`() {
+        val uber = delServidor("u1", null, 500)
+        val juntas = juntarPorFolio(listOf(uber), listOf(local("round:c:st-barra", 3_000), local("sale:d:st-barra", 1_000)))
+        assertEquals(listOf("u1", "lan:sale:d:st-barra", "lan:round:c:st-barra"), juntas.map { it.id })
+        assertEquals(emptyList<KDSOrder>(), juntarPorFolio(emptyList(), listOf(local("x", 1, lista = 2))))
+    }
+
+    @Test
+    fun `el texto de la pantalla recibiendo por WiFi es el acordado`() {
+        assertEquals("Sin internet: recibiendo por el WiFi del local", TextosDeCocina.SIN_INTERNET_CON_WIFI)
+    }
 }
