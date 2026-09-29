@@ -16,6 +16,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import com.avoqado.pos.core.domain.RoleManager
 import javax.inject.Inject
 import com.avoqado.pos.cashdrawer.data.CorteTicketBuilder
@@ -122,18 +124,44 @@ class CashDrawerViewModel @Inject constructor(
 
     // MARK: - Init
 
+    // 🔴 Van ANTES del `init`: Kotlin inicializa en orden de declaración, y `alEntrar()` los usa
+    // en el mismo instante (viewModelScope corre en Main.immediate).
+    /**
+     * ¿Lo que se ve de la caja ya lo confirmó el servidor? `false` = la última consulta no llegó
+     * (sin red): la pantalla y el corte sólo conocen lo que registró ESTE aparato, y lo dicen.
+     */
+    private val _confirmadoConServidor = MutableStateFlow(true)
+    val confirmadoConServidor: StateFlow<Boolean> = _confirmadoConServidor.asStateFlow()
+
+    /** Dos entradas seguidas no mandan dos syncs encimados: el segundo espera al primero. */
+    private val candadoDelSync = Mutex()
+
     init {
-        syncAndLoad()
+        alEntrar()
     }
 
-    private fun syncAndLoad() {
+    private suspend fun sincronizar(): Boolean =
+        candadoDelSync.withLock { repository.syncFromApi() }.also { _confirmadoConServidor.value = it }
+
+    /**
+     * 🔴 CADA ENTRADA A CAJA PREGUNTA AL SERVIDOR, no sólo la primera.
+     *
+     * El ViewModel sobrevive entre visitas (días, en la D3), y volver a entrar sólo leía Room. Lo
+     * que escribe el SERVIDOR —el egreso de un reembolso, la venta en efectivo cobrada en la
+     * terminal u otro aparato, el cierre hecho en otro lado— no llegaba nunca: Testarudo,
+     * 28-sep-2026, «Faltante $145» en la tablet contra $0.00 en el servidor, y Better Stack sin un
+     * solo `GET /cash-drawer/current` en dos días. Espejo de iOS (`CashDrawerView.onAppear →
+     * loadCurrentDrawer`): primero lo local (instantáneo, y lo único que hay sin red), luego el
+     * servidor y se vuelve a pintar.
+     */
+    fun alEntrar() {
+        loadCurrentSession()
         viewModelScope.launch {
-            try {
-                repository.syncFromApi()
-            } catch (e: Exception) {
-                Log.e(TAG, "⚠️ API sync failed, using local data: ${e.message}")
-            }
+            sincronizar()
             loadCurrentSession()
+            if (_selectedSection.value == CashDrawerSection.HISTORY) {
+                _closedSessions.value = runCatching { repository.getHistory() }.getOrDefault(_closedSessions.value)
+            }
         }
     }
 
@@ -216,7 +244,7 @@ class CashDrawerViewModel @Inject constructor(
             _isLoading.value = true
             try {
                 // Sync from API first, then read from Room
-                repository.syncFromApi()
+                sincronizar()
                 _closedSessions.value = repository.getHistory()
             } catch (e: Exception) {
                 Log.e(TAG, "❌ Error loading history: ${e.message}")
@@ -301,18 +329,43 @@ class CashDrawerViewModel @Inject constructor(
     /// Returns true only when the close actually succeeded — callers must gate
     /// the daily report on this (before, the report was FABRICATED client-side
     /// and shown even when the close failed).
-    suspend fun closeSession(actualAmountCents: Int, note: String?): Boolean {
+    /**
+     * El corte que se enseña al cerrar.
+     *
+     * 🔴 Se lee de Room DESPUÉS de que el servidor contestó el cierre: si lo aceptó, la caja ya
+     * trae sus movimientos (el reembolso que la tablet no tenía) y su diferencia. Antes la pantalla
+     * armaba el corte con una foto tomada ANTES de cerrar y el «Faltante $145» salía aunque el
+     * servidor dijera $0.00. [confirmado] = `false` si el cierre sigue en la cola (sin red).
+     */
+    data class CorteCerrado(
+        val session: CashDrawerSessionEntity,
+        val events: List<CashDrawerEventEntity>,
+        val confirmado: Boolean,
+    )
+
+    /** `null` = no se pudo cerrar; el motivo queda en [errorMessage]. */
+    suspend fun closeSession(actualAmountCents: Int, note: String?): CorteCerrado? {
         return try {
-                repository.closeSession(actualAmountCents, note)
-                _currentSession.value = null
-                _events.value = emptyList()
-                _expectedAmountCents.value = 0
-                Log.d(TAG, "✅ Session closed")
-            true
+            val cerrada = repository.closeSession(actualAmountCents, note)
+            _currentSession.value = null
+            _events.value = emptyList()
+            _expectedAmountCents.value = 0
+            if (cerrada == null) {
+                errorMessage.value = "No hay una caja abierta en este aparato."
+                return null
+            }
+            Log.d(TAG, "✅ Session closed")
+            val confirmado = !repository.tieneCierrePendiente(cerrada.id)
+            _confirmadoConServidor.value = confirmado
+            CorteCerrado(
+                session = repository.getSession(cerrada.id) ?: cerrada,
+                events = repository.getEvents(cerrada.id),
+                confirmado = confirmado,
+            )
         } catch (e: Exception) {
             Log.e(TAG, "❌ Error closing session: ${e.message}")
             errorMessage.value = "No se pudo cerrar la caja. Intenta de nuevo."
-            false
+            null
         }
     }
 
@@ -393,6 +446,8 @@ class CashDrawerViewModel @Inject constructor(
         // media jornada. No cierra nada, no cuenta el dinero y no arroja diferencia
         // — sólo dice cuánto DEBERÍA haber en el cajón en este momento.
         isPartial: Boolean = false,
+        /** El corte no se pudo confirmar con el servidor: el papel lo dice. */
+        sinConfirmar: Boolean = false,
     ) {
         val printer = printerService.getDefaultPrinter(PrinterRole.RECEIPT)
         if (printer == null) {
@@ -417,6 +472,7 @@ class CashDrawerViewModel @Inject constructor(
                     // papel sale en blanco. Mismo criterio que `escposFor`.
                     switchToSingleByteFirst =
                         printer.connectionTypeEnum == com.avoqado.pos.printing.data.model.PrinterConnectionType.INTERNAL,
+                    sinConfirmar = sinConfirmar,
                 )
                 printerService.sendPrintData(data, printer)
                 _printCorteResult.value = PrintCorteResult.Success(isPartial)
@@ -447,6 +503,12 @@ class CashDrawerViewModel @Inject constructor(
         events: List<CashDrawerEventEntity>,
     ) {
         viewModelScope.launch {
+            // 🔴 El papel se archiva: antes de imprimirlo se le pregunta al servidor, o sale sin el
+            // egreso del reembolso o la venta de la terminal que sólo él conoce. Sin red se imprime
+            // con lo que hay y el ticket lo DICE.
+            val confirmado = sincronizar()
+            val frescos = runCatching { repository.getEvents(session.id) }.getOrDefault(events)
+            loadCurrentSession()
             // `null` si no se pudo consultar — NUNCA `emptyList()`, que significa "no hubo cobros".
             val tenders = runCatching {
                 repository.getTenderBreakdown(session.openedAt, System.currentTimeMillis())
@@ -454,10 +516,11 @@ class CashDrawerViewModel @Inject constructor(
             _tenderBreakdown.value = tenders
             printCorte(
                 session = session,
-                events = events,
+                events = frescos,
                 tenders = tenders,
                 venueName = venueName,
                 isPartial = true,
+                sinConfirmar = !confirmado,
             )
         }
     }

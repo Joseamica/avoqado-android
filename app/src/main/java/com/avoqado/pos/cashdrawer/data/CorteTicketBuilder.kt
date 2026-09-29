@@ -31,6 +31,20 @@ object CorteTicketBuilder {
      */
     const val PREFIJO_REEMBOLSO = "Reembolso:"
 
+    /** Mismo texto en pantalla ([AVISO_SIN_CONFIRMAR]) y en iOS (`CortePrinter.swift`). */
+    const val AVISO_SIN_CONFIRMAR =
+        "Sin conexión: este corte sólo incluye lo registrado en este aparato. Reembolsos o cobros " +
+            "hechos desde el dashboard o la terminal pueden faltar. Vuelve a abrirlo con conexión."
+
+    /** La versión del papel: renglones cortos, sin depender de cómo parta el texto la impresora. */
+    val TICKET_SIN_CONFIRMAR = listOf(
+        "SIN CONEXIÓN: sólo incluye lo",
+        "registrado en este aparato.",
+        "Reembolsos o cobros de la",
+        "terminal o del dashboard pueden",
+        "faltar. Reimprímelo con conexión.",
+    )
+
 
     fun build(
         session: CashDrawerSessionEntity,
@@ -52,6 +66,13 @@ object CorteTicketBuilder {
          * imprimiendo el primer corte en la D3.
          */
         switchToSingleByteFirst: Boolean = false,
+        /**
+         * 🔴 El corte salió SIN confirmarlo con el servidor (sin red): sólo trae lo que registró
+         * este aparato. Lo que escribe el servidor —el egreso de un reembolso, la venta en efectivo
+         * de la terminal— puede faltar, y el papel se archiva: tiene que decirlo, o un faltante
+         * inventado queda como prueba (Testarudo, 28-sep-2026).
+         */
+        sinConfirmar: Boolean = false,
     ): ByteArray {
         val zone = com.avoqado.pos.core.util.VenueTimeZone.zoneId()
         val fecha = java.time.format.DateTimeFormatter.ofPattern("dd MMM yyyy", java.util.Locale("es", "MX"))
@@ -221,6 +242,10 @@ object CorteTicketBuilder {
                 money(kotlin.math.abs(diff)),
             )
             p.setBold(false)
+        }
+        if (sinConfirmar) {
+            p.printDivider()
+            TICKET_SIN_CONFIRMAR.forEach { p.printLine(it) }
         }
         p.feedLines(3)
         p.cut()

@@ -73,10 +73,10 @@ fun CashDrawerScreen(
     onDismiss: () -> Unit,
     viewModel: CashDrawerViewModel = hiltViewModel(),
 ) {
-    // Reload on every entry: the Hilt VM can outlive the overlay, so sales
-    // recorded while the screen was closed (recordCashSale from the register)
-    // were showing stale ("Ventas $0"). Fresh load fixes it.
-    LaunchedEffect(Unit) { viewModel.loadCurrentSession() }
+    // 🔴 Cada entrada pregunta al SERVIDOR, no sólo a Room: el VM de Hilt sobrevive días, y lo que
+    // escribe el servidor (el egreso de un reembolso, la venta de la terminal) no llegaba nunca —
+    // Testarudo, 28-sep-2026, «Faltante $145» contra $0.00. Ver `CashDrawerViewModel.alEntrar`.
+    LaunchedEffect(Unit) { viewModel.alEntrar() }
 
     if (isTablet) {
         TabletCashDrawerLayout(
@@ -112,6 +112,8 @@ private fun TabletCashDrawerLayout(
     val drawerError by viewModel.errorMessage.collectAsState()
     var reportSession by remember { mutableStateOf<CashDrawerSessionEntity?>(null) }
     var reportEvents by remember { mutableStateOf<List<CashDrawerEventEntity>>(emptyList()) }
+    // El corte que se enseña no se pudo confirmar con el servidor: la pantalla y el papel lo dicen.
+    var reportSinConfirmar by remember { mutableStateOf(false) }
 
     // Show DailyReportView if active
     if (showDailyReport && reportSession != null) {
@@ -138,12 +140,14 @@ private fun TabletCashDrawerLayout(
                     reportSession!!.closedAt ?: System.currentTimeMillis(),
                 )
             },
+            sinConfirmar = reportSinConfirmar,
             onPrint = {
                 viewModel.printCorte(
                     session = reportSession!!,
                     events = reportEvents,
                     tenders = tenderBreakdown,
                     venueName = viewModel.venueName,
+                    sinConfirmar = reportSinConfirmar,
                 )
             },
             onDismiss = {
@@ -213,10 +217,13 @@ private fun TabletCashDrawerLayout(
                 onOpenDrawer = { showOpenSheet = true },
                 onPayIn = { showPayInSheet = true },
                 onPayOut = { showPayOutSheet = true },
-                onCloseDrawer = { showCloseSheet = true },
+                // Antes de contar se vuelve a preguntar al servidor: el esperado tiene que incluir
+                // lo que él escribió mientras la pantalla estaba abierta.
+                onCloseDrawer = { viewModel.alEntrar(); showCloseSheet = true },
                 onSessionTap = { session ->
                     viewModel.loadEventsForSession(session.id) { events ->
                         reportSession = session
+                        reportSinConfirmar = !viewModel.confirmadoConServidor.value
                         reportEvents = events
                         showDailyReport = true
                     }
@@ -317,33 +324,23 @@ private fun TabletCashDrawerLayout(
 
     if (showCloseSheet) {
         val expectedCents by viewModel.expectedAmountCents.collectAsState()
-        val sessionForReport = viewModel.currentSession.collectAsState().value
         val eventsForReport = viewModel.events.collectAsState().value
         CloseDrawerSheet(
             expectedAmountCents = expectedCents,
             retiros = ConteoSospechoso.retirosDelDia(eventsForReport),
             efectivoCobradoCents = ConteoSospechoso.efectivoCobradoCents(eventsForReport),
             onConfirm = { actualCents, note ->
-                // Capture session and events before closing
-                val closedSession = sessionForReport?.copy(
-                    actualAmountCents = actualCents,
-                    closedAt = System.currentTimeMillis(),
-                    overShortCents = actualCents - expectedCents,
-                    closingNote = note,
-                )
-                val closedEvents = eventsForReport.toList()
                 scope.launch {
-                    // Report ONLY on confirmed success: before, a fabricated
-                    // client-side "cierre" report was shown even when the
-                    // close failed and the drawer stayed open.
-                    val ok = viewModel.closeSession(actualCents, note)
-                    if (ok) {
+                    // 🔴 El corte se arma con lo que quedó DESPUÉS de que el servidor contestó, no
+                    // con una foto tomada antes de cerrar: si lo aceptó, ya trae los movimientos que
+                    // sólo él conocía y su diferencia. Sólo se enseña si el cierre se registró.
+                    val corte = viewModel.closeSession(actualCents, note)
+                    if (corte != null) {
                         showCloseSheet = false
-                        if (closedSession != null) {
-                            reportSession = closedSession
-                            reportEvents = closedEvents
-                            showDailyReport = true
-                        }
+                        reportSession = corte.session
+                        reportEvents = corte.events
+                        reportSinConfirmar = !corte.confirmado
+                        showDailyReport = true
                     }
                 }
             },
@@ -372,6 +369,8 @@ private fun PhoneCashDrawerLayout(
     val drawerError by viewModel.errorMessage.collectAsState()
     var reportSession by remember { mutableStateOf<CashDrawerSessionEntity?>(null) }
     var reportEvents by remember { mutableStateOf<List<CashDrawerEventEntity>>(emptyList()) }
+    // El corte que se enseña no se pudo confirmar con el servidor: la pantalla y el papel lo dicen.
+    var reportSinConfirmar by remember { mutableStateOf(false) }
 
     // Show DailyReportView if active
     if (showDailyReport && reportSession != null) {
@@ -398,12 +397,14 @@ private fun PhoneCashDrawerLayout(
                     reportSession!!.closedAt ?: System.currentTimeMillis(),
                 )
             },
+            sinConfirmar = reportSinConfirmar,
             onPrint = {
                 viewModel.printCorte(
                     session = reportSession!!,
                     events = reportEvents,
                     tenders = tenderBreakdown,
                     venueName = viewModel.venueName,
+                    sinConfirmar = reportSinConfirmar,
                 )
             },
             onDismiss = {
@@ -447,10 +448,13 @@ private fun PhoneCashDrawerLayout(
                     onOpenDrawer = { showOpenSheet = true },
                     onPayIn = { showPayInSheet = true },
                     onPayOut = { showPayOutSheet = true },
-                    onCloseDrawer = { showCloseSheet = true },
+                    // Antes de contar se vuelve a preguntar al servidor: el esperado tiene que incluir
+                    // lo que él escribió mientras la pantalla estaba abierta.
+                    onCloseDrawer = { viewModel.alEntrar(); showCloseSheet = true },
                     onSessionTap = { session ->
                         viewModel.loadEventsForSession(session.id) { events ->
                             reportSession = session
+                            reportSinConfirmar = !viewModel.confirmadoConServidor.value
                             reportEvents = events
                             showDailyReport = true
                         }
@@ -586,29 +590,23 @@ private fun PhoneCashDrawerLayout(
 
     if (showCloseSheet) {
         val expectedCents by viewModel.expectedAmountCents.collectAsState()
-        val sessionForReport = viewModel.currentSession.collectAsState().value
         val eventsForReport = viewModel.events.collectAsState().value
         CloseDrawerSheet(
             expectedAmountCents = expectedCents,
             retiros = ConteoSospechoso.retirosDelDia(eventsForReport),
             efectivoCobradoCents = ConteoSospechoso.efectivoCobradoCents(eventsForReport),
             onConfirm = { actualCents, note ->
-                val closedSession = sessionForReport?.copy(
-                    actualAmountCents = actualCents,
-                    closedAt = System.currentTimeMillis(),
-                    overShortCents = actualCents - expectedCents,
-                    closingNote = note,
-                )
-                val closedEvents = eventsForReport.toList()
                 scope.launch {
-                    val ok = viewModel.closeSession(actualCents, note)
-                    if (ok) {
+                    // 🔴 El corte se arma con lo que quedó DESPUÉS de que el servidor contestó, no
+                    // con una foto tomada antes de cerrar: si lo aceptó, ya trae los movimientos que
+                    // sólo él conocía y su diferencia. Sólo se enseña si el cierre se registró.
+                    val corte = viewModel.closeSession(actualCents, note)
+                    if (corte != null) {
                         showCloseSheet = false
-                        if (closedSession != null) {
-                            reportSession = closedSession
-                            reportEvents = closedEvents
-                            showDailyReport = true
-                        }
+                        reportSession = corte.session
+                        reportEvents = corte.events
+                        reportSinConfirmar = !corte.confirmado
+                        showDailyReport = true
                     }
                 }
             },
@@ -719,7 +717,11 @@ private fun CurrentDrawerContent(
     val partialSession = session
     if (showPartialReport && partialSession != null) {
         val partialTenders by viewModel.tenderBreakdown.collectAsState()
+        val confirmado by viewModel.confirmadoConServidor.collectAsState()
         LaunchedEffect(partialSession.id) {
+            // El corte parcial también pregunta al servidor: sin eso enseña el esperado sin el
+            // reembolso o la venta de la terminal que sólo él conoce.
+            viewModel.alEntrar()
             viewModel.loadTenderBreakdown(partialSession.openedAt, System.currentTimeMillis())
         }
         DailyReportView(
@@ -733,6 +735,7 @@ private fun CurrentDrawerContent(
             onRetryBreakdown = {
                 viewModel.loadTenderBreakdown(partialSession.openedAt, System.currentTimeMillis())
             },
+            sinConfirmar = !confirmado,
             onPrint = { viewModel.printPartialCorte(partialSession, events) },
             onDismiss = { showPartialReport = false },
         )
