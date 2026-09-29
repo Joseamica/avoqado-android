@@ -603,12 +603,23 @@ class PaymentFlowViewModel @Inject constructor(
         }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
     /**
-     * «Ya la canté»: una PERSONA lo resolvió — deja de perseguirla entre arranques. `yaLaCante` (no `limpiar`) cierra
-     * además sus entregas por WiFi, para que el replay no la imprima sola después (KDS 3.5, ronda 3 de la Task 6).
+     * «Ya la canté» — SÓLO el toque explícito del botón. Resuelve la libreta únicamente si el aviso que se ve ES la
+     * libreta: entonces `yaLaCante` (no `limpiar`) la suelta y cierra sus entregas por WiFi, para que el replay no la
+     * imprima sola después (KDS 3.5, rondas 3 y 4 de la Task 6).
+     *
+     * 🔴 N-I1 (ronda 4): cualquier otro aviso —el «Reintentando» de otra venta, un «no salió» sin trabajo de OTRA venta—
+     * sólo se OCULTA. Resolver ahí la libreta cerraba las entregas de una comanda que nadie cantó: con la impresora
+     * caída, esa comanda no quedaba en ningún lado.
      */
     fun clearComandaWarning() {
-        _avisoEnCurso.value = null
-        comandasPendientesStore.yaLaCante()
+        val pendiente = comandasPendientesStore.pendiente.value
+        val visto = _avisoEnCurso.value ?: pendiente
+        if (pendiente != null && visto == pendiente) {
+            _avisoEnCurso.value = null
+            comandasPendientesStore.yaLaCante()
+        } else {
+            ocultarAvisoDeComanda()
+        }
     }
 
     /**

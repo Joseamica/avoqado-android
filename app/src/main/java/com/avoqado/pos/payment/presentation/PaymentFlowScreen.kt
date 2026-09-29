@@ -425,7 +425,9 @@ fun PaymentFlowScreen(
             message = "Reintentando la comanda",
             subtitle = "${aviso.estaciones.joinToString(", ")} · pedido ${aviso.orderNumber} · " +
                 "intento ${aviso.intento} de ${aviso.de}",
-            onDismiss = { viewModel.clearComandaWarning() },
+            // 🔴 Sin botones: se cierra SOLO a los 2.6 s (y con Atrás / tocar fuera). Ese cierre no es «Ya la canté»:
+            // sólo oculta. Si resolviera, soltaría la libreta de OTRA comanda y cerraría sus entregas (KDS 3.5, N-I1).
+            onDismiss = { viewModel.ocultarAvisoDeComanda() },
         )
         is EstadoDeComanda.NoSalio -> AvoqadoWarningToast(
             message = "No salió la comanda de: ${aviso.estaciones.joinToString(", ")} · pedido ${aviso.orderNumber}",
