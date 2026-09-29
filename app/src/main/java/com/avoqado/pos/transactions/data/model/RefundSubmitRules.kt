@@ -76,3 +76,40 @@ fun importeAjustadoAlTope(amountStr: String, tope: Double): String {
     val escrito = amountStr.replace(',', '.').toDoubleOrNull() ?: return amountStr
     return if (escrito > tope + 0.001) "%.2f".format(java.util.Locale.US, tope) else amountStr
 }
+
+/**
+ * Reembolso POR ARTÍCULOS: ¿la casilla «Incluir propina» arranca marcada? Sí cuando los artículos
+ * elegidos cubren toda la venta que queda del cobro (devolver todo = todo el dinero, como Square).
+ * Compara CENTAVOS ENTEROS con 2 de tolerancia por el reparto de unidades (en dobles, 144.98 vs 145
+ * da 0.02000000000001 y fallaba). Servidor viejo sin la venta restante ⇒ no.
+ */
+fun propinaMarcadaPorDefecto(importeArticulos: Double, ventaRestante: Double?): Boolean =
+    ventaRestante != null && importeArticulos > 0 &&
+        kotlin.math.abs(centavosDelImporte(importeArticulos) - centavosDelImporte(ventaRestante)) <= 2
+
+/**
+ * Qué mandar en `tipRefundCents` al reembolsar POR ARTÍCULOS. `null` ⇒ el campo no viaja y el
+ * servidor devuelve sólo los artículos, como siempre.
+ *
+ * La propina se topa con lo que queda del TOTAL una vez descontados los artículos:
+ * `min(propina restante, total restante − artículos)`, en centavos enteros (espejo de `propinaQueCabe`
+ * del dashboard). Con un acumulado histórico sin filas, venta + propina restantes pueden sumar más de lo
+ * que el servidor deja salir: cobro $145 + $14.50 con $9.50 devueltos sin filas ⇒ total restante $150, y
+ * con los $145 de artículos caben $5.00, no $14.50 (mandar $159.50 daba 400). `totalRestante` nulo ⇒ sin
+ * tope de total. Resultado ≤ 0 ⇒ `null`.
+ */
+fun tipRefundCentsPorArticulos(
+    marcada: Boolean,
+    propinaRestante: Double?,
+    totalRestante: Double?,
+    importeArticulos: Double,
+): Int? {
+    if (!marcada || propinaRestante == null || propinaRestante <= 0) return null
+    val propina = centavosDelImporte(propinaRestante)
+    val cabe = if (totalRestante == null) {
+        propina
+    } else {
+        minOf(propina, centavosDelImporte(totalRestante) - centavosDelImporte(importeArticulos))
+    }
+    return cabe.takeIf { it > 0 }
+}

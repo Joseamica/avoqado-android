@@ -1,14 +1,20 @@
 package com.avoqado.pos.printing.data
 
 import com.avoqado.pos.printing.routing.ConsolidatedLine
+import com.avoqado.pos.printing.routing.KitchenDeliveryPolicy
 import com.avoqado.pos.printing.routing.PrintConfig
 import com.avoqado.pos.printing.routing.PrinterInfo
 import com.avoqado.pos.printing.routing.StationInfo
 import com.avoqado.pos.printing.routing.TicketPlan
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
+import io.mockk.coVerify
+import io.mockk.mockk
+import kotlinx.coroutines.runBlocking
 
 /** Almacén en memoria — la costura que permite probar esto sin Robolectric. */
 private class AlmacenFalso(var texto: String? = null) : AlmacenDeTexto {
@@ -156,5 +162,123 @@ class ComandasPendientesStoreTest {
         ComandasPendientesStore(almacen).guardar(fallo, ahora)
 
         assertNull(ComandasPendientesStore(almacen).leer(null, ahora))
+    }
+
+    // MARK: - Revisión final de la 3.4 (I-1, m-8): la guarda vive en el almacén, no en cada llamador
+
+    private val deOtraSucursal = fallo.copy(
+        orderNumber = "ORD-9",
+        trabajo = fallo.trabajo!!.copy(venueId = "venue-2", orderNumber = "ORD-9"),
+    )
+
+    /**
+     * I-1: una ronda cuyo respaldo se saltó termina en `NoSalio(trabajo = null)`. Guardarlo pisaba el pendiente
+     * recuperable del mostrador —su reintento y su «Volver a imprimir»— con algo que nadie puede reimprimir.
+     */
+    @Test
+    fun `P1 guardar SIN trabajo no pisa un pendiente recuperable`() {
+        val almacen = AlmacenFalso()
+        val store = ComandasPendientesStore(almacen)
+        store.cargar("venue-1", ahora)
+        store.guardar(fallo, ahora)
+
+        val sinTrabajo = EstadoDeComanda.NoSalio(listOf("Barra"), null, "ORD-43", trabajo = null)
+
+        assertFalse("se guardó un aviso sin nada que reimprimir", store.guardar(sinTrabajo, ahora))
+        assertEquals(fallo, store.pendiente.value)
+        assertEquals("ORD-42", ComandasPendientesStore(almacen).leer("venue-1", ahora)?.orderNumber)
+    }
+
+    /** m-8: el reloj de reintento y Cobrar leen la MEMORIA; un trabajo de otra sucursal imprimiría en el local equivocado. */
+    @Test
+    fun `P1 un trabajo de OTRA sucursal no se publica en memoria ni se escribe`() {
+        val almacen = AlmacenFalso()
+        val store = ComandasPendientesStore(almacen)
+        store.cargar("venue-1", ahora)
+
+        assertFalse(store.guardar(deOtraSucursal, ahora))
+
+        assertNull("se publicó un trabajo de otra sucursal", store.pendiente.value)
+        // Almacén de UNA ranura: escribirlo pisaría el pendiente del venue actual (paridad con iOS).
+        assertNull("se escribió un trabajo de otra sucursal", almacen.texto)
+    }
+
+    /** Un cambio de sucursal vuelve a llamar `cargar` (AppState.refreshTabs → startOfflineOutbox): la guarda sigue al venue nuevo. */
+    @Test
+    fun `tras cambiar de sucursal los trabajos del venue nuevo se guardan`() {
+        val store = ComandasPendientesStore(AlmacenFalso())
+        store.cargar("venue-1", ahora)
+        store.cargar("venue-2", ahora)
+
+        assertTrue(store.guardar(deOtraSucursal, ahora))
+        assertEquals(deOtraSucursal, store.pendiente.value)
+    }
+
+    @Test
+    fun `P1 un trabajo de OTRA sucursal no pisa el pendiente de la sucursal actual`() {
+        val almacen = AlmacenFalso()
+        val store = ComandasPendientesStore(almacen)
+        store.cargar("venue-1", ahora)
+        store.guardar(fallo, ahora)
+
+        assertFalse(store.guardar(deOtraSucursal, ahora))
+
+        assertEquals(fallo, store.pendiente.value)
+        assertEquals("ORD-42", ComandasPendientesStore(almacen).leer("venue-1", ahora)?.orderNumber)
+    }
+
+    @Test
+    fun `el caso normal sigue igual - y sin sucursal cargada se guarda como antes`() {
+        val cargado = ComandasPendientesStore(AlmacenFalso()).apply { cargar("venue-1", ahora) }
+        assertTrue(cargado.guardar(fallo, ahora))
+        assertEquals(fallo, cargado.pendiente.value)
+
+        val sinCargar = ComandasPendientesStore(AlmacenFalso())
+        assertTrue(sinCargar.guardar(deOtraSucursal, ahora))
+        assertEquals(deOtraSucursal, sinCargar.pendiente.value)
+    }
+
+    // MARK: - Etapa 3 del KDS (3.5), ronda 3 de la Task 6 (I2 de la revisión de la Task 7)
+
+    /**
+     * «Ya la canté»: una PERSONA resolvió la comanda. Además de soltar la libreta, se cierran las entregas por WiFi de ESE
+     * papel de respaldo (venue + orden + plan exacto): si no, el reloj del replay la imprimiría sola en el siguiente tic o
+     * en la próxima apertura — el duplicado que esta libreta existe para evitar.
+     */
+    @Test
+    fun `P1 ya la cante suelta la libreta y cierra las entregas del respaldo de ESA comanda`() = runBlocking {
+        val entrega = mockk<EntregaPorWifi>(relaxed = true)
+        val planCocina = TicketPlan("st_cocina", false, listOf(ConsolidatedLine("Taco", 1, emptyList(), null, listOf("oi_9"))))
+        val conRespaldo = fallo.copy(
+            trabajo = fallo.trabajo!!.copy(
+                planes = listOf(plan, planCocina),
+                config = KitchenDeliveryPolicy.conRespaldo(config, listOf("st_barra")),
+            ),
+        )
+        val store = ComandasPendientesStore(AlmacenFalso(), entrega)
+        store.cargar("venue-1", ahora)
+        assertTrue(store.guardar(conRespaldo, ahora))
+
+        store.yaLaCante()?.join()
+
+        assertNull(store.pendiente.value)
+        // Sólo el plan de la estación de RESPALDO: las demás nunca tuvieron fila.
+        coVerify(exactly = 1) { entrega.cerrarPorPapel("venue-1", "ORD-42", listOf(plan)) }
+    }
+
+    /**
+     * 🔴 `limpiar()` NO cierra entregas: también lo llama un `Salio` de OTRA venta (y el reloj de la libreta). Cerrar ahí
+     * borraría la fila que recupera la comanda de una ronda de mesa en la próxima apertura.
+     */
+    @Test
+    fun `limpiar no cierra entregas`() {
+        val entrega = mockk<EntregaPorWifi>(relaxed = true)
+        val store = ComandasPendientesStore(AlmacenFalso(), entrega)
+        store.cargar("venue-1", ahora)
+        store.guardar(fallo.copy(trabajo = fallo.trabajo!!.copy(config = KitchenDeliveryPolicy.conRespaldo(config, listOf("st_barra")))), ahora)
+
+        store.limpiar()
+
+        coVerify(exactly = 0) { entrega.cerrarPorPapel(any(), any(), any()) }
     }
 }

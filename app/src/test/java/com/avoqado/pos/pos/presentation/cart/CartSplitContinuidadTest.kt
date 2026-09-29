@@ -545,6 +545,84 @@ class CartSplitContinuidadTest {
     }
 
     @Test
+    fun `P1 por producto con premio - la parte 2 descuenta lo que el servidor CONFIRMO, no un estimado nuevo`() = runTest {
+        // Hallazgo P1 de Codex (27-sep): tras pagar una parte, el carrito volvía a estimar el
+        // premio sobre lo que quedaba. El premio ya se canjeó (o no) sobre la ORDEN entera.
+        val vm = createViewModel()
+        vm.setSelectedCustomer("cust-ana", "Ana")
+        vm.addProduct(refresco.copy(id = "prod-a", name = "A", priceValue = 100.0))
+        vm.addProduct(refresco.copy(id = "prod-b", name = "B", priceValue = 100.0))
+        vm.setPendingStampReward(com.avoqado.pos.loyalty.data.PremioPorAplicar("rw1", "Premio", "PERCENTAGE", 10.0))
+        val lineaA = vm.cartState.value.items.first { it.name == "A" }.id
+
+        // El servidor aplicó el 10% sobre $200 = $20. Queda B ($100) con $20 de premio: $80.
+        vm.aplicarCobroConfirmado(
+            splitType = "BYPRODUCT",
+            paidItemIds = setOf(lineaA),
+            remainingBalanceCents = 8000,
+            premioConfirmadoCents = 2000,
+        )
+
+        assertEquals(8000, vm.cartState.value.totalCents)
+    }
+
+    @Test
+    fun `P1 por producto con premio RECHAZADO - la parte 2 cobra el precio completo`() = runTest {
+        val vm = createViewModel()
+        vm.setSelectedCustomer("cust-ana", "Ana")
+        vm.addProduct(refresco.copy(id = "prod-a", name = "A", priceValue = 100.0))
+        vm.addProduct(refresco.copy(id = "prod-b", name = "B", priceValue = 100.0))
+        vm.setPendingStampReward(com.avoqado.pos.loyalty.data.PremioPorAplicar("rw1", "Premio", "FIXED_AMOUNT", 30.0))
+        val lineaA = vm.cartState.value.items.first { it.name == "A" }.id
+
+        vm.aplicarCobroConfirmado(
+            splitType = "BYPRODUCT",
+            paidItemIds = setOf(lineaA),
+            remainingBalanceCents = 10000,
+            premioConfirmadoCents = 0,
+        )
+
+        assertNull(vm.cartState.value.pendingStampReward)
+        assertEquals(10000, vm.cartState.value.totalCents)
+    }
+
+    @Test
+    fun `P1 con una venta a medio cobrar el premio ya no se cambia ni se quita`() = runTest {
+        // Hallazgo P1 de Codex (ronda 2): re-escanear y elegir otro premio bajaba la parte 2 sin
+        // canjearlo — la parte 2 cobra contra la orden existente, que ya decidió su premio.
+        val vm = createViewModel()
+        vm.setSelectedCustomer("cust-ana", "Ana")
+        vm.addProduct(refresco.copy(id = "prod-b", name = "B", priceValue = 100.0))
+        vm.setPendingStampReward(com.avoqado.pos.loyalty.data.PremioPorAplicar("rw1", "Premio", "FIXED_AMOUNT", 20.0))
+        vm.markPendingSplitOrder("orden-1")
+
+        assertFalse(vm.setPendingStampReward(com.avoqado.pos.loyalty.data.PremioPorAplicar("rw2", "Otro", "FIXED_AMOUNT", 50.0)))
+        assertFalse(vm.setPendingStampReward(null))
+        assertEquals("rw1", vm.cartState.value.pendingStampRewardId)
+        assertFalse(vm.puedeCambiarPremio())
+    }
+
+    @Test
+    fun `P1 por producto, si el servidor dice que ya no se debe nada, la venta se cierra aunque queden renglones`() = runTest {
+        // A $100 + B $100 con premio de $150: pagar A liquida la orden ($50). B ya es parte de esa
+        // orden pagada; dejarlo en el carrito permitía cobrarlo otra vez (hallazgo P1 de Codex).
+        val vm = createViewModel()
+        vm.setSelectedCustomer("cust-ana", "Ana")
+        vm.addProduct(refresco.copy(id = "prod-a", name = "A", priceValue = 100.0))
+        vm.addProduct(refresco.copy(id = "prod-b", name = "B", priceValue = 100.0))
+        val lineaA = vm.cartState.value.items.first { it.name == "A" }.id
+
+        val cobro = vm.aplicarCobroConfirmado(
+            splitType = "BYPRODUCT",
+            paidItemIds = setOf(lineaA),
+            remainingBalanceCents = 0,
+        )
+
+        assertTrue(vm.cartState.value.isEmpty)
+        assertTrue(cobro.ventaTerminada)
+    }
+
+    @Test
     fun `guardar el carrito suelta al cliente — se fue con el carrito guardado`() = runTest {
         val vm = createViewModel()
         vm.setSelectedCustomer("cust-ana", "Ana")

@@ -332,6 +332,38 @@ class OrderRequestPromotionTest {
         assertNotNull(diferirSlot.captured.items.first().promotionRef)
     }
 
+    @Test
+    fun `P1 pagar despues con premio rechazado lo dice en vez de celebrar en silencio`() = runTest {
+        // El carrito anunció $70 a diferir, pero el servidor rechazó el premio y la cuenta
+        // abierta quedó en el precio completo (hallazgo P2 de Codex, 27-sep).
+        val premioEnviado = slot<String?>()
+        coEvery {
+            orderRepository.createOrder(any(), any(), any(), any(), any(), captureNullable(premioEnviado), any())
+        } returns Result.success(
+            CreateOrderResponse(
+                success = true,
+                data = OrderData(
+                    id = "order-2",
+                    stampReward = com.avoqado.pos.payment.data.model.StampRewardOnOrder(applied = false, reason = "Este premio ya venció."),
+                ),
+            ),
+        )
+
+        val cartViewModel = createCartViewModel()
+        cartViewModel.restoreSavedCart(comoCarritoGuardado(listOf(lineaNormal)))
+        cartViewModel.setSelectedCustomer("cust-1")
+        cartViewModel.setPendingStampReward(
+            com.avoqado.pos.loyalty.data.PremioPorAplicar("rw1", "Premio", "FIXED_AMOUNT", 30.0),
+        )
+        cartViewModel.createPayLaterOrder("cust-1")
+        advanceUntilIdle()
+
+        assertEquals("rw1", premioEnviado.captured)
+        val aviso = cartViewModel.avisoDelPremio.value
+        assertNotNull(aviso)
+        assertTrue(aviso!!.contains("Este premio ya venció."))
+    }
+
     // MARK: - 7. El total autoritativo es el del server
 
     @Test

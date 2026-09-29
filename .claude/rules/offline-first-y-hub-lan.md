@@ -35,13 +35,18 @@ POS sin red → outbox (intents) → replay al reconectar → reducer del server
 ### 2.1 El contrato de intents se espeja por nombre EXACTO
 
 `SyncIntentType` en `avoqado-server/src/services/mobile/sync.mobile.service.ts`
-es la fuente de verdad. Los 14 tipos actuales:
+es la fuente de verdad. Los 15 tipos actuales:
 
 ```
 OPEN_TABLE · ADD_ITEMS · PAY_CASH · APPLY_DISCOUNT · APPLY_SERVICE_CHARGE
 COMP_ORDER · UPDATE_DETAILS · CANCEL_ORDER · MOVE_ORDER · ASSIGN_ORDER
-CLEAR_TABLE · SPLIT_ORDER · SPLIT_BY_SEAT · MERGE_ORDERS
+CLEAR_TABLE · SPLIT_ORDER · SPLIT_BY_SEAT · MERGE_ORDERS · KDS_TICKET_MARK
 ```
+
+`KDS_TICKET_MARK` (KDS etapa 3): marca pegajosa por folio de la comanda — `FALLBACK_PRINTED` lo produce la caja
+cuando una estación «sólo pantalla» salió en papel de respaldo (3.4; desde la 3.5, cuando ninguna pantalla acusó), y
+`BUMP` la pantalla de cocina al tocar LISTO sin red (3.5, cierra el folio entero). Siempre ACK: nunca cuarentena ni
+bloquea intents de dinero.
 
 Agregar uno = tocar server + Android + iOS + el MCP `pos_sync_status`, en el
 MISMO cambio. Un tipo que el server no conoce se rechaza con
@@ -105,14 +110,20 @@ el mismo POS se ve como dos peers y la elección de árbitro deja de ser estable
 
 ## 3. Hub LAN (PREMIUM `OFFLINE_LAN_HUB`)
 
-Código: `core/data/lan/` (Android) · `Services/LAN/` (iOS). Cuatro capas:
+Código: `core/data/lan/` (Android) · `Services/LAN/` (iOS). **UN transporte por aparato** (`TransporteLan`, KDS 3.5):
+UN `ServerSocket`, UN anuncio `_avoqado-pos._tcp` y UN buscador. Rutea cada línea por `op` (`EnrutadorLan`):
+`acquire|renew|release|list` al hub de mesas (sólo si está encendido en ESE aparato) y `comanda` al receptor de cocina
+(sólo con un Tablero a la vista); lo demás, «Operación desconocida». TXT: `did`, `wired`, `boot`, `venue`, `kds=<estaciones
+en pantalla>`, `hub=1|0` — un aparato con `hub=0` no entra a la elección del árbitro. Líneas de ≤ 64 KiB con plazo de 3 s
+para la línea entera (`LineaAcotada`). Las capas del hub de mesas:
 
 1. **Núcleo** (`TableLease`, `LeaseRegistry`, `ArbiterElection`) — lógica PURA,
    sin red y con el reloj por parámetro. Toda la corrección vive aquí.
 2. **Protocolo** (`LeaseProtocol`) — JSON por línea sobre TCP crudo.
-3. **Transporte + descubrimiento** (`LeaseServer`, `LeaseClient`, `LanDiscovery`)
-   — mDNS `_avoqado-pos._tcp`.
-4. **Coordinador + wiring** (`LanHubCoordinator`, `LanHubService`).
+3. **Transporte + descubrimiento** (`TransporteLan` es dueño del socket y del anuncio;
+   `LanDiscovery`, `LeaseClient`; `LeaseServer` sólo contesta líneas).
+4. **Coordinador + wiring** (`LanHubCoordinator`, `LanHubService`): consume los
+   peers del transporte y registra sus ops en él; no abre nada propio.
 
 ### 3.1 Lo que hay que entender antes de tocarlo
 
@@ -154,6 +165,57 @@ salón con un iPad y una tablet.
   otro negocio se ignora; arbitrar mesas ajenas sería catastrófico y silencioso.
 - El propio anuncio se filtra por `deviceId`, **no por nombre** (el SO renombra a
   "(2)" si hay colisión).
+
+### 3.4 Comandas a la pantalla de cocina por el WiFi del local (KDS etapa 3, fase 3.5)
+
+No depende del hub Premium: viaja por el MISMO transporte. Espejo en iOS con los mismos umbrales y textos.
+
+- **La caja** (`ComandaDispatcher` + `printing/data/EntregaPorWifi`): si quien llama reparte por pantalla (mostrador y
+  rondas; Uber, vales y reimpresiones no) empuja cada plan con pantalla a TODAS las pantallas que anuncian esa estación,
+  en paralelo (conectar ≤ 1 s, total ≤ 1.5 s). 🔴 El `kds=` de una pantalla CAMBIA (sólo lo anuncia con el Tablero a
+  la vista) y Android NSD **no avisa** un cambio de TXT de un servicio ya conocido (QA 29-sep: la caja se quedaba con
+  `kds=[]` y todo salía en papel hasta reiniciarla). Por eso `LanDiscovery.refrescar()` re-resuelve los conocidos en cada
+  revisión (60 s) y cuando una entrega no encuentra pantalla (espera ≤ 1 s dentro del presupuesto) — SÓLO en Android 14+:
+  abajo no se puede cancelar un resolve colgado y un aparato ido trabaría el resolver del sistema. El anuncio propio no
+  cuenta como conocido. Acuse estricto `{"v":1,"status":"ok","sourceKey":<el mismo>}`; cualquier
+  otra cosa = sin acuse. El acuse decide el papel de las «sólo pantalla»: sin acuse ⇒ papel de respaldo + marca
+  `FALLBACK_PRINTED`, con o sin internet. «Impresora + pantalla» imprime siempre.
+- **Se guarda ANTES de tocar la red:** cada entrega «sólo pantalla» va a `entregas_kds_pendientes` (una fila por plan:
+  `<folio>|<orderItemIds>`). Una fila se borra sólo cuando su papel se DECIDIÓ (acusó, salió, o la estación no tiene
+  impresora). Si el despacho truena o se cancela —también a media entrega—, sus filas se SUELTAN (`soltadaEnMillis`, bajo
+  `NonCancellable`).
+- **Replay** (`ReplayDeEntregasKds`, al abrir y cada 60 s): toma filas de un proceso muerto o ya soltadas; una fila de
+  este proceso sin soltar es de un despacho vivo y no se toca. < 10 min ⇒ se reempuja (espera ≤ 3 s a que aparezca la
+  pantalla); el resto, o sin acuse ⇒ papel + marca. Revalida la sucursal por fila; > 8 h se descarta con log.
+- **La pantalla** (`kds/data/ReceptorDeComandas` + `KdsTicketsLocalesStore`): el receptor vive SÓLO con el Tablero a la
+  vista (se apaga en `ON_STOP`, al cambiar de estación y si la observación de lo guardado se cae). Guarda en
+  `kds_tickets_locales` ANTES de acusar, y acusa sólo si el mismo receptor sigue enganchado con esa estación (la
+  GENERACIÓN del transporte sube al soltar el receptor, al cambiar de estación y al reiniciar el transporte). El mismo
+  folio UNE renglones por id; un curso con renglones NUEVOS sobre una fila ya LISTA no se guarda ni se acusa ⇒ papel.
+- **La mesa y los tiempos (3.6):** una ronda manda a la pantalla `orderType` = «Mesa 8» (no el «Mesa 8 · Aperitivos» del
+  papel, que sigue igual) y el tiempo en cada renglón (`course`); el servidor devuelve lo mismo (`tableNumber` y
+  `items[].course`, leídos de la cuenta al consultar: si la mueven de mesa, la cocina ve la nueva). La tarjeta agrupa
+  por tiempo: «Inmediato» (sin tiempo) primero y los demás en orden de aparición; sin ningún tiempo se ve como siempre.
+- **Mezcla por folio** (`juntarPorFolio`): la copia del servidor gana; una local sin copia se ve como `lan:<folio>`; un
+  folio LISTO local esconde la copia del servidor hasta 12 h (o hasta que el servidor deje de mandarlo).
+- **LISTO sin red:** `KDS_TICKET_MARK BUMP` por la cola PRIMERO y DESPUÉS `listaEnMillis`, en UNA transacción del DAO
+  (`marcarListaOCrear`: marca la fila pendiente o, si no hay ninguna, inserta la sombra LISTA; nunca reemplaza una fila).
+  La sombra va con la estación del TABLERO donde se tocó; el BUMP, con la de la comanda.
+- **Banda de la caja:** «Las comandas de Barra salen en papel si la pantalla no contesta»; tras 3 entregas seguidas sin
+  acuse a la misma estación, fija «La pantalla de Barra no se alcanza por el WiFi» (la limpia el primer acuse). Nada de
+  eso en la tablet que ES la pantalla. Pantalla sin internet con receptor vivo: «Sin internet: recibiendo por el WiFi del
+  local».
+
+🔴 **Invariante: la fila local de un folio ⊆ la copia del servidor de ese folio.** El folio (`round:<roundKey>:<estación>`
+o `sale:<externalId>:<estación>`) lo arma el servidor DE UNA VEZ con todos sus renglones, y la caja empuja exactamente los
+renglones que ruteó de esa misma ronda o venta. Por eso marcar LISTO el folio entero es correcto (esconde lo mismo que la
+cocina tocó), y NO hay que comparar renglones entre la copia local y la del servidor (son dos espacios de ids). Sólo una
+config de ruteo distinta en caja y servidor la rompe, y ese renglón aparece en la estación a la que el servidor lo mandó.
+
+🔴 **Regla de los cursos:** las entregas de TODOS los cursos de una ronda quedan en disco ANTES de que el primero toque la
+red (`despacharEnFondo` refresca la config una vez, rutea todos y los guarda; cada curso se despacha sin volver a
+refrescar). Si el proceso muere entre dos cursos, el replay empuja o imprime el que faltaba. Sin esto el curso 2 no existía
+en ningún lado, y un LISTO sin red sobre el curso 1 cerraba el folio entero en el servidor: pérdida, no duplicado.
 
 ---
 
@@ -261,7 +323,7 @@ bug que no lo es.
 
 ---
 
-## 7. Estado y límites honestos (2026-07-25)
+## 7. Estado y límites honestos (2026-09-29)
 
 **Funciona y está verificado en hardware:** abrir mesa, rondas, efectivo,
 descuentos, cargos, cortesías, mover/asignar/anular, liberar, separar y fusionar
@@ -269,8 +331,14 @@ cheques, dividir por puesto — todo sin red. Hub LAN previniendo el doble-abre.
 Comanda imprimiendo offline **verificada contra un receptor ESC/POS real**, sin
 red y sin config de estaciones (2026-07-28). Cuarentena visible para rechazos.
 
+**KDS por el WiFi del local (3.5, §3.4): construido y con pruebas unitarias (2026-09-29); falta el QA en aparato apagando
+la red** (Home con comanda empujada, SIM + WiFi sin internet, pantalla en segundo plano, cambio de estación a
+media entrega, WiFi que aísla aparatos). Límites declarados: con un WiFi que aísla aparatos todo lo «sólo pantalla» sale
+en papel (sin perder nada, y la caja lo dice); los planes «Sin estación» no se empujan (el servidor los pone en todas las
+pantallas); cambiar de sucursal sin red conserva la config anterior (`switchVenue` es una llamada al servidor); lo
+marcado LISTO sin red no aparece en «Recientes» y «Deshacer» sigue sólo en línea.
+
 **NO está hecho:**
-- **KDS offline** — es lo único grande que falta del hub.
 - **Fencing del lado del server** (rechazar intents con época vieja): necesita
   persistir `lastLeaseEpoch` por mesa. Sin eso el sistema ya es seguro
   (ADD_ITEMS fusiona, PAY_CASH es idempotente, la propiedad de mesa rechaza
@@ -280,5 +348,5 @@ red y sin config de estaciones (2026-07-28). Cuarentena visible para rechazos.
   **no se ha probado con un iPad y una impresora físicos.**
 - ~~Alta manual de impresora por IP~~ — HECHO 2026-08-04 en ambas.
 
-**No vender:** "servicio completo offline multi-terminal" mientras el KDS offline
-no exista.
+**No vender:** "servicio completo offline multi-terminal" hasta que el QA en aparato
+de la 3.5 pase.

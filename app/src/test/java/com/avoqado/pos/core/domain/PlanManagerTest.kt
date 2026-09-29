@@ -211,4 +211,80 @@ class PlanManagerTest {
         every { secureStorage.planSnapshot } returns retainNewestPlan(paid, next)
         assertFalse(planManager.hasFeature("CFDI"))
     }
+
+    // MARK: - Mesas y hub LAN (27-sep-2026): no estaban en el mapa y el default-allow
+    // los regalaba en cualquier plan. Espejo de basePlan.service.ts por nombre exacto.
+
+    @Test
+    fun `TABLE_SERVICE is PRO`() {
+        stubPlan(tier = "FREE")
+        assertFalse(planManager.hasFeature("TABLE_SERVICE"))
+        stubPlan(tier = "PRO")
+        assertTrue(planManager.hasFeature("TABLE_SERVICE"))
+        stubPlan(tier = "PREMIUM")
+        assertTrue(planManager.hasFeature("TABLE_SERVICE"))
+        assertEquals("Pro", planManager.requiredTierLabel("TABLE_SERVICE"))
+    }
+
+    @Test
+    fun `OFFLINE_LAN_HUB is PREMIUM, not PRO`() {
+        stubPlan(tier = "FREE")
+        assertFalse(planManager.hasFeature("OFFLINE_LAN_HUB"))
+        stubPlan(tier = "PRO")
+        assertFalse(planManager.hasFeature("OFFLINE_LAN_HUB"))
+        stubPlan(tier = "PREMIUM")
+        assertTrue(planManager.hasFeature("OFFLINE_LAN_HUB"))
+        assertEquals("Premium", planManager.requiredTierLabel("OFFLINE_LAN_HUB"))
+    }
+
+    @Test
+    fun `exempt venue keeps tables and LAN hub on FREE`() {
+        stubPlan(tier = "FREE", exempt = true)
+        assertTrue(planManager.hasFeature("TABLE_SERVICE"))
+        assertTrue(planManager.hasFeature("OFFLINE_LAN_HUB"))
+    }
+
+    @Test
+    fun `unknown plan keeps tables and LAN hub (fail-open)`() {
+        stubPlan(tier = null)
+        assertTrue(planManager.hasFeature("TABLE_SERVICE"))
+        assertTrue(planManager.hasFeature("OFFLINE_LAN_HUB"))
+    }
+
+    // MARK: - Pantalla de cocina (etapa 3, decisión D-A del 27-sep)
+
+    @Test
+    fun `KITCHEN_DISPLAY is PRO`() {
+        stubPlan(tier = "FREE")
+        assertFalse(planManager.hasFeature("KITCHEN_DISPLAY"))
+        stubPlan(tier = "PRO")
+        assertTrue(planManager.hasFeature("KITCHEN_DISPLAY"))
+        assertEquals("Pro", planManager.requiredTierLabel("KITCHEN_DISPLAY"))
+    }
+
+    /**
+     * Candado estructural: TODO código que la app consulta al plan tiene que estar en el mapa.
+     * Un código que falte no truena — `hasFeature` lo deja pasar en cualquier plan (así se
+     * regalaron `TABLE_SERVICE` y `OFFLINE_LAN_HUB`). Si agregas un gate nuevo, agrega su
+     * código al mapa con el MISMO tier que `avoqado-server` `basePlan.service.ts`.
+     */
+    @Test
+    fun `every feature code the app gates on is in the tier map`() {
+        val root = listOf(java.io.File("src/main/java"), java.io.File("app/src/main/java"))
+            .firstOrNull { it.isDirectory }
+            ?: error("No encontré src/main/java desde ${java.io.File(".").absolutePath}")
+        val patterns = listOf(
+            Regex("""hasFeature\("([A-Z0-9_]+)"\)"""),
+            Regex("""requiresUpgrade\("([A-Z0-9_]+)"\)"""),
+            Regex("""requiredTierLabel\("([A-Z0-9_]+)"\)"""),
+            Regex("""FEATURE_CODE\s*=\s*"([A-Z0-9_]+)""""),
+        )
+        val used = root.walkTopDown()
+            .filter { it.isFile && it.extension == "kt" }
+            .flatMap { file -> patterns.flatMap { p -> p.findAll(file.readText()).map { it.groupValues[1] }.toList() } }
+            .toSet()
+        assertTrue("El barrido no encontró ningún código: la regex se rompió", used.size >= 5)
+        val missing = used - PlanManager.FEATURE_REQUIRED_TIER.keys
+        assertTrue("Códigos consultados al plan que NO están en el mapa (se regalan): $missing", missing.isEmpty())
+    }
 }

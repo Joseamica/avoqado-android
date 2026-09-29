@@ -144,6 +144,9 @@ data class TransactionItem(
     val fullyRefunded: Boolean get() = refundedQty >= quantity && quantity > 0
     /** True when some — but not all — units have been refunded. */
     val partiallyRefunded: Boolean get() = refundedQty in 1 until quantity
+    /** Piezas que aún se pueden devolver (espejo de `refundableQty` en iOS). Un server viejo sin
+     *  `refundedQty` manda 0 ⇒ la línea completa. */
+    val refundableQty: Int get() = (quantity - refundedQty).coerceAtLeast(0)
 }
 
 @Serializable

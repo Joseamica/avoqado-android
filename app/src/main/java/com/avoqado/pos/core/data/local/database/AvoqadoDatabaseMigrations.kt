@@ -4,6 +4,7 @@ import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 import com.avoqado.pos.inventory.waste.data.PendingWasteSql
 import com.avoqado.pos.inventory.waste.data.WasteSql
+import com.avoqado.pos.kds.data.local.KdsLanSql
 
 object AvoqadoDatabaseMigrations {
     // v1 only persisted pending payments. v2 added cash drawer offline state.
@@ -234,6 +235,20 @@ object AvoqadoDatabaseMigrations {
     val MIGRATION_11_12 = object : Migration(11, 12) {
         override fun migrate(database: SupportSQLiteDatabase) {
             database.execSQL(PendingWasteSql.CREAR_TABLA)
+        }
+    }
+
+    /**
+     * v13 — etapa 3 del KDS (3.5, D7/D8): dos tablas nuevas, nada que migrar. La caja escribe la entrega ANTES de conectar
+     * y la pantalla escribe la comanda ANTES de acusar (`todo-funciona-sin-red.md`, pregunta 2).
+     *
+     * 🔴 El `CREATE TABLE` sale de [KdsLanSql], las MISMAS constantes que ejecuta `KdsLanSqlTest`, y `KdsLanMigracionTest`
+     * las compara contra el esquema que Room exporta.
+     */
+    val MIGRATION_12_13 = object : Migration(12, 13) {
+        override fun migrate(database: SupportSQLiteDatabase) {
+            database.execSQL(KdsLanSql.CREAR_ENTREGAS)
+            database.execSQL(KdsLanSql.CREAR_TICKETS)
         }
     }
 }

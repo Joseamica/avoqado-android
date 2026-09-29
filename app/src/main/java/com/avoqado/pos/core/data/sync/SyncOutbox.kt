@@ -11,8 +11,10 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -82,6 +84,13 @@ class SyncOutbox @Inject constructor(
     val acks: SharedFlow<SyncAck> = _acks.asSharedFlow()
 
     private var started = false
+
+    /**
+     * Una ronda retenida en disco al arrancar es de un proceso que MURIÓ a medio envío (spec §5): se suelta UNA vez
+     * por proceso, antes del primer replay, y el servidor deduplica por su llave. Sólo la primera vez: en un cambio
+     * de sucursal podría haber una ronda en vuelo de verdad.
+     */
+    private var retenidosDeOtroProcesoSoltados = false
     private var activeVenueId: String? = null
     private var connectivityJob: Job? = null
     private var timerJob: Job? = null
@@ -117,7 +126,20 @@ class SyncOutbox @Inject constructor(
         activeVenueId = venueId
         Log.d(TAG, "start() venue=$venueId device=$deviceId")
 
+        // 🔴 Una ronda retenida en disco al arrancar es de un proceso que MURIÓ a medio envío (spec §5): se suelta UNA
+        // vez por proceso, antes del primer replay, y el servidor deduplica por su llave. Sólo la primera vez: en un
+        // cambio de sucursal podría haber una ronda en vuelo de verdad.
+        val soltarRetenidos = !retenidosDeOtroProcesoSoltados
+        retenidosDeOtroProcesoSoltados = true
+
         scope.launch {
+            // Corre en este `launch`, no antes de volver de `start()`: una ronda enviada en los primeros milisegundos de
+            // un proceso nuevo podría soltarse aquí y reproducirse junto a su envío en línea. No duplica: las dos llevan
+            // las MISMAS llaves y el servidor deduplica por `(orderId, externalId)`.
+            if (soltarRetenidos) {
+                val soltados = dao.soltarRetenidos()
+                if (soltados > 0) Log.w(TAG, "🔓 $soltados ronda(s) retenida(s) de un proceso anterior vuelven a la cola")
+            }
             dao.deleteOldAcked(System.currentTimeMillis() - ACKED_TTL_MS)
             refreshCounts(venueId)
             replayNow(venueId)
@@ -171,13 +193,21 @@ class SyncOutbox @Inject constructor(
     // MARK: - Enqueue (write-ahead)
 
     /**
-     * Escribe el intent ANTES de cualquier efecto y dispara replay inmediato.
-     * @return el id del intent (UUID = idempotencyKey).
+     * Escribe el intent ANTES de cualquier efecto y, si no va retenido, dispara el replay.
+     *
+     * @param id el id del intent (= idempotencyKey). Un llamador write-ahead pasa el suyo para poner la MISMA llave en
+     *   el payload antes de escribirlo (patrón PAX `TablesRepository.addItems`).
+     * @param retenido `true` = red de seguridad de un intento EN LÍNEA: se escribe pero no sale —y nada detrás sale—
+     *   hasta [soltar] o [descartar].
      */
-    suspend fun enqueue(venueId: String, type: String, payload: JsonObject): String {
-        val id = UUID.randomUUID().toString()
-        // seq asignado ATÓMICAMENTE (maxSeq+insert en una transacción) — evita
-        // seq duplicado que desordenaría el replay.
+    suspend fun enqueue(
+        venueId: String,
+        type: String,
+        payload: JsonObject,
+        id: String = UUID.randomUUID().toString(),
+        retenido: Boolean = false,
+    ): String {
+        // seq asignado ATÓMICAMENTE (maxSeq+insert en una transacción).
         val seq = dao.insertWithNextSeq(
             SyncIntentEntity(
                 id = id,
@@ -186,12 +216,27 @@ class SyncOutbox @Inject constructor(
                 seq = 0, // reemplazado dentro de insertWithNextSeq
                 type = type,
                 payloadJson = json.encodeToString(JsonObject.serializer(), payload),
+                status = if (retenido) SyncIntentEntity.STATUS_HELD else SyncIntentEntity.STATUS_PENDING,
             ),
         )
         refreshCounts(venueId)
-        Log.d(TAG, "📥 Encolado $type seq=$seq id=$id")
-        scope.launch { replayNow(venueId) }
+        Log.d(TAG, "📥 Encolado $type seq=$seq id=$id${if (retenido) " (retenido)" else ""}")
+        if (!retenido) scope.launch { replayNow(venueId) }
         return id
+    }
+
+    /** La ronda en vuelo falló por red: su red de seguridad vuelve a la cola y el replay la manda (y lo de detrás). */
+    suspend fun soltar(venueId: String, id: String) {
+        withContext(NonCancellable) { dao.soltar(id) }
+        refreshCounts(venueId)
+        scope.launch { replayNow(venueId) }
+    }
+
+    /** La ronda llegó o el servidor la rechazó: su red de seguridad sobra; lo que esperaba detrás ya puede salir. */
+    suspend fun descartar(venueId: String, id: String) {
+        withContext(NonCancellable) { dao.descartar(id) }
+        refreshCounts(venueId)
+        scope.launch { replayNow(venueId) }
     }
 
     // MARK: - Replay
@@ -217,12 +262,20 @@ class SyncOutbox @Inject constructor(
                 val leidos = dao.pendingFifo(venueId, BATCH_SIZE)
                 if (leidos.isEmpty()) break
 
+                // 🔴 RONDA EN VUELO (spec §5): lo que va detrás de una ronda retenida NO sale hasta que ella se suelte o
+                // se descarte. Mismo principio que la barrera del cajón: cortar, nunca reordenar.
+                val antesDeLaRetenida = leidos.take(hastaElPrimerRetenido(leidos.map { it.status }))
+                if (antesDeLaRetenida.isEmpty()) {
+                    Log.d(TAG, "⏸️ Una ronda en vuelo retiene la cola")
+                    break
+                }
+
                 // 🔴 SE CORTA EN EL PRIMER `PAY_CASH`, NO SE REORDENA. El FIFO por aparato es lo
                 // que hace que una mesa se abra antes de que le agreguen artículos: adelantar lo
                 // que no es dinero rompería ese orden. Lo que NO es dinero sigue fluyendo; el
                 // cobro en efectivo y todo lo posterior esperan a que la caja aterrice.
-                val cuantos = cuantosIntentsSePuedenMandar(leidos.map { it.type }, cobrosPuedenSalir)
-                val batch = leidos.take(cuantos)
+                val cuantos = cuantosIntentsSePuedenMandar(antesDeLaRetenida.map { it.type }, cobrosPuedenSalir)
+                val batch = antesDeLaRetenida.take(cuantos)
                 if (batch.isEmpty()) {
                     Log.w(TAG, "⏸️ El outbox se detiene en el primer PAY_CASH: la caja aún no llega al servidor")
                     break
@@ -279,9 +332,9 @@ class SyncOutbox @Inject constructor(
                 Log.d(TAG, "✅ Replay de ${batch.size} intents aplicado")
                 if (sawRetry) break // no hot-loop sobre el mismo PENDING
                 if (batch.size < leidos.size) {
-                    // El lote venía recortado por la barrera del cajón: lo que sigue es el
-                    // `PAY_CASH` que tiene que esperar. Volver al `while` lo re-leería en caliente.
-                    Log.w(TAG, "⏸️ Quedan ${leidos.size - batch.size} intents esperando a que la caja llegue al servidor")
+                    // El lote venía recortado por la barrera del cajón o por una ronda en vuelo. Volver al
+                    // `while` lo re-leería en caliente.
+                    Log.w(TAG, "⏸️ Quedan ${leidos.size - batch.size} intents esperando (caja o ronda en vuelo)")
                     break
                 }
             }
@@ -315,9 +368,13 @@ class SyncOutbox @Inject constructor(
         refreshCounts(venueId)
     }
 
-    /** Lectura persistida usada por las guardas de sesión y cambio de venue. */
+    /**
+     * Lectura persistida usada por las guardas de sesión y cambio de venue. Cuenta PENDING + HELD —
+     * una ronda en vuelo (Task 7 review, 2026-09-28) también bloquea salir, aunque el badge visible
+     * ([pendingCount]) no la muestre.
+     */
     suspend fun blockingWorkCount(venueId: String): Int =
-        dao.pendingCount(venueId) + dao.rejectedCount(venueId)
+        dao.pendingCount(venueId) + dao.heldCount(venueId) + dao.rejectedCount(venueId)
 
     companion object {
         /** El tipo de intent que MUEVE DINERO EN EFECTIVO. Espejo exacto del `SyncIntentType` del server. */
@@ -336,6 +393,10 @@ class SyncOutbox @Inject constructor(
             val primerCobro = tipos.indexOf(TIPO_PAGO_EN_EFECTIVO)
             return if (primerCobro < 0) tipos.size else primerCobro
         }
+
+        /** Cuántas entradas del lote van ANTES de la primera ronda retenida (todas si no hay). Pura, como la del cajón. */
+        internal fun hastaElPrimerRetenido(estados: List<String>): Int =
+            estados.indexOf(SyncIntentEntity.STATUS_HELD).let { if (it < 0) estados.size else it }
 
         private const val KEY_DEVICE_ID = "sync_device_id"
         private const val BATCH_SIZE = 50

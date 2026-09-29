@@ -218,6 +218,11 @@ data class AddOrderItemRequest(
     val cortesiaReason: String? = null,
     /** Asiento/comensal de la línea (Square's seats). */
     val seat: Int? = null,
+    /**
+     * Llave del renglón (`sync:<roundKey>:<idx>`, etapa 3 del KDS): la MISMA en línea y en el replay, así el servidor
+     * deduplica la ronda por `(orderId, externalId)` y arma UNA comanda con folio `round:<roundKey>`.
+     */
+    val externalId: String? = null,
 )
 
 @Serializable

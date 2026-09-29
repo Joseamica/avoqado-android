@@ -32,6 +32,10 @@ data class KDSOrder(
     var status: KDSOrderStatus,
     var startedAt: Long? = null,
     var completedAt: Long? = null,
+    /** Folio de la comanda (spec 2026-09-27 §1): `sale:…`, `round:…`, `order:…`. `null` = Uber o fila vieja. */
+    val sourceKey: String? = null,
+    /** Estación a la que el servidor la repartió. `null` = «Sin estación»: sale en todas las pantallas. */
+    val printStationId: String? = null,
 )
 
 data class KDSOrderItem(
@@ -43,6 +47,23 @@ data class KDSOrderItem(
     /** Para RUTEAR el renglón a su estación. `null` = no supimos de qué producto es. */
     val productId: String? = null,
     val categoryId: String? = null,
+    /** KDS 3.6: el tiempo del platillo en una mesa («Aperitivos»). `null` = sin tiempo. */
+    val course: String? = null,
+)
+
+/**
+ * Etapa 3 del KDS (3.5, D8): una comanda guardada en ESTE aparato — llegó por el WiFi del local (antes de acusar) o se
+ * marcó LISTO sin red (`listaEnMillis`). Espejo de `KdsTicketLocal` de iOS.
+ */
+data class KdsTicketLocal(
+    val sourceKey: String,
+    val venueId: String,
+    val stationId: String,
+    val orderNumber: String,
+    val orderType: String,
+    val items: List<KDSOrderItem>,
+    val recibidaEnMillis: Long,
+    val listaEnMillis: Long?,
 )
 
 enum class KDSOrderStatus(val label: String) {
@@ -50,13 +71,6 @@ enum class KDSOrderStatus(val label: String) {
     PREPARING("En preparacion"),
     READY("Listo"),
     COMPLETED("Completado"),
-}
-
-enum class KDSFilter(val label: String) {
-    ALL("Todos"),
-    NEW("Nuevos"),
-    PREPARING("Prep"),
-    READY("Listos"),
 }
 
 /**

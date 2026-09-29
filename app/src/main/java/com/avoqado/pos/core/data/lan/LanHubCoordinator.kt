@@ -3,6 +3,7 @@ package com.avoqado.pos.core.data.lan
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -48,27 +49,30 @@ class LanHubCoordinator(
     private val _myTables = MutableStateFlow<Set<String>>(emptySet())
     val myTables: StateFlow<Set<String>> = _myTables.asStateFlow()
 
-    fun start(isWired: Boolean, bootedAtMillis: Long) {
-        val port = server.start()
-        if (port <= 0) {
-            Log.w(TAG, "Sin socket propio: no puedo ser árbitro, pero sí cliente")
-        }
-        discovery.start(myPort = port, isWired = isWired, bootedAtMillis = bootedAtMillis)
+    /** Los colectores de `start`: `stop` los cancela (antes vivían para siempre — una fuga por cada cambio de sucursal, M12). */
+    private var trabajos: Job? = null
 
-        scope.launch {
-            discovery.peers.collect { peers ->
-                val amArbiter = ArbiterElection.isArbiter(deviceId, peers)
-                _isArbiter.value = amArbiter
-                _hubAvailable.value = peers.isNotEmpty()
-                if (amArbiter && !server.isRunning) server.start()
+    /** Desde la 3.5 (D1) el hub NO abre socket ni descubrimiento: se engancha al transporte único y consume sus peers. */
+    fun start() {
+        discovery.conectarHub(server::respondTo)
+
+        trabajos?.cancel()
+        trabajos = scope.launch {
+            launch {
+                discovery.peers.collect { peers ->
+                    _isArbiter.value = ArbiterElection.isArbiter(deviceId, peers)
+                    // Revisión M7: una pantalla sólo-cocina (`hub=0`) no es con quién coordinar mesas.
+                    _hubAvailable.value = peers.any { it.sirveLeases }
+                }
             }
+            launch { renewLoop() }
         }
-        scope.launch { renewLoop() }
     }
 
     fun stop() {
-        discovery.stop()
-        server.stop()
+        trabajos?.cancel() // no `scope.cancel()`: `sincronizarVenue` hace stop() → start() y el scope tiene que seguir vivo
+        trabajos = null
+        discovery.desconectarHub()
         heldLeases.clear()
         _myTables.value = emptySet()
         _hubAvailable.value = false

@@ -26,7 +26,11 @@
 package com.avoqado.pos.core.domain.printing
 
 import android.util.Log
+import com.avoqado.pos.core.data.sync.SyncIntentTypes
+import com.avoqado.pos.core.data.sync.SyncOutbox
 import com.avoqado.pos.printing.data.ComandaPrinter
+import com.avoqado.pos.printing.data.EntregaKds
+import com.avoqado.pos.printing.data.EntregaPorWifi
 import com.avoqado.pos.printing.data.EstadoDeComanda
 import com.avoqado.pos.printing.data.PoliticaDeReintento
 import com.avoqado.pos.printing.data.PrinterService
@@ -34,9 +38,23 @@ import com.avoqado.pos.printing.data.ReintentoDeComanda
 import com.avoqado.pos.printing.data.TrabajoPendiente
 import com.avoqado.pos.printing.data.model.KitchenItem
 import com.avoqado.pos.printing.data.model.KitchenTicketData
+import com.avoqado.pos.printing.routing.KitchenDeliveryPolicy
+import com.avoqado.pos.printing.routing.PrintConfig
 import com.avoqado.pos.printing.routing.PrintConfigRepository
 import com.avoqado.pos.printing.routing.PrintRoutingMapper
 import com.avoqado.pos.printing.routing.RoutableItem
+import com.avoqado.pos.printing.routing.TicketPlan
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineExceptionHandler
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -73,7 +91,152 @@ class ComandaDispatcher @Inject constructor(
     private val printConfigRepository: PrintConfigRepository,
     private val reintentoDeComanda: ReintentoDeComanda,
     private val printerService: PrinterService,
+    /**
+     * Etapa 3 del KDS (3.4): la cola donde va la marca `FALLBACK_PRINTED` del papel de respaldo. Hilt SIEMPRE la
+     * inyecta. ponytail: opcional sólo porque nueve archivos de prueba construyen el despachador con tres argumentos y
+     * dos son WIP de otra sesión; sin cola no se marca (la pantalla mostraría esa comanda al volver la red: duplicado,
+     * no pérdida).
+     */
+    private val syncOutbox: SyncOutbox? = null,
+    /**
+     * Etapa 3 del KDS (3.5): el empuje por WiFi a las pantallas del local. Hilt SIEMPRE la inyecta. ponytail: opcional
+     * por lo mismo que `syncOutbox` (11 sitios de prueba con ≤ 4 argumentos, dos con WIP ajeno); sin ella no se empuja
+     * y las «sólo pantalla» salen en papel de respaldo, que es el lado seguro.
+     */
+    private val entregaPorWifi: EntregaPorWifi? = null,
 ) {
+
+    /**
+     * Etapa 3 del KDS (3.4): el ámbito de los despachos que NO pueden depender de una pantalla. Esta clase es
+     * `@Singleton`, así que vive con la app. `Dispatchers.Default` y no `Main`: la impresión ya salta a su hilo, y así
+     * las pruebas de JVM no necesitan un `Main` falso. El manejador sólo registra: `dispatch` no lanza por contrato,
+     * pero una excepción suelta en este ámbito tumbaría la app.
+     */
+    private val fondo = CoroutineScope(
+        SupervisorJob() + Dispatchers.Default +
+            CoroutineExceptionHandler { _, e -> Log.e(TAG, "❌ Despacho en fondo falló: ${e.message}", e) },
+    )
+
+    /** Una comanda de un despacho en fondo: sus renglones y su encabezado (p. ej. un curso de la ronda). */
+    /**
+     * [curso] y [etiquetaPantalla] (KDS 3.6): la pantalla de cocina junta los cursos de una ronda en UNA tarjeta, así que
+     * no le sirve el «Mesa 8 · Aperitivos» del papel: recibe «Mesa 8» arriba y el tiempo en cada platillo. `null` = lo de
+     * siempre ([orderType] para las dos).
+     */
+    data class Pedido(
+        val lines: List<RoutableItem>,
+        val orderType: String,
+        val curso: String? = null,
+        val etiquetaPantalla: String? = null,
+    )
+
+    /**
+     * El MISMO [dispatch], uno por [Pedido] y EN ORDEN, en el ámbito del despachador. Lo usan las RONDAS de mesa
+     * (Task 9): si corriera en el `viewModelScope` de la mesa, el mesero que regresa al plano antes de que la impresora
+     * conteste cancelaría el reintento (~1 min) y la comanda que no salió desaparecería sin aviso. Aquí sigue:
+     * reintenta, y su [alCambiarEstado] guarda el pendiente y avisa aunque la pantalla ya no exista.
+     *
+     * Uno detrás de otro, como hasta hoy: dos cursos a la misma impresora no se pisan la conexión ni salen al revés.
+     *
+     * 🔴 [alCambiarEstado] se llama en `Dispatchers.Default` (el de [fondo]): si el llamador toca Compose o guarda
+     * estado que no es thread-safe, tiene que publicar en un `StateFlow` o saltar a `Dispatchers.Main` él mismo.
+     */
+    fun despacharEnFondo(
+        venueId: String?,
+        orderNumber: String,
+        pedidos: List<Pedido>,
+        orderId: String? = null,
+        servidorLaTiene: Boolean? = null,
+        origenDelFolio: String? = null,
+        alCambiarEstado: (EstadoDeComanda) -> Unit = {},
+    ): Job = fondo.launch {
+        val guardadasAntes = guardarLaRonda(venueId, orderNumber, pedidos, orderId, servidorLaTiene, origenDelFolio)
+        for (pedido in pedidos) {
+            // I-2 de la revisión (ronda 1): sin esta guarda, un `dispatch` que revienta se llevaba entre pies a
+            // TODOS los pedidos que seguían — el `for` moría ahí y el único rastro quedaba en el log del
+            // `CoroutineExceptionHandler` de arriba. `dispatch` está documentado como que no lanza, pero
+            // `internalPrinterForRouting()` (bind AIDL, fuera del try/catch por plan de `ComandaPrinter`) y el
+            // `alCambiarEstado` del propio llamador (que `insistir` invoca directo) sí pueden.
+            try {
+                dispatch(
+                    venueId = venueId,
+                    lines = pedido.lines,
+                    orderNumber = orderNumber,
+                    orderType = pedido.orderType,
+                    orderId = orderId,
+                    servidorLaTiene = servidorLaTiene,
+                    origenDelFolio = origenDelFolio,
+                    alCambiarEstado = alCambiarEstado,
+                    refrescar = guardadasAntes == null,
+                    etiquetaPantalla = pedido.etiquetaPantalla,
+                    curso = pedido.curso,
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(TAG, "❌ Pedido \"${pedido.orderType}\" del despacho en fondo falló: ${e.message}", e)
+                // El aviso es best-effort: si el propio `alCambiarEstado` truena, no puede tirar los pedidos
+                // que faltan — es la MISMA falla que se está blindando, una capa más adentro.
+                runCatching {
+                    alCambiarEstado(
+                        EstadoDeComanda.NoSalio(
+                            estaciones = listOf(pedido.orderType),
+                            causa = e.message,
+                            orderNumber = orderNumber,
+                        ),
+                    )
+                }
+            }
+        }
+        // Ya no hay despacho vivo de este lote: una fila guardada de antemano que su curso no reusó (la config cambió en
+        // medio, o el curso tronó antes de empujar) se SUELTA para que el replay la decida — duplicado, nunca pérdida. Las
+        // que su curso ya cerró no existen: soltarlas no toca nada.
+        guardadasAntes?.let { entregaPorWifi?.soltar(it) }
+    }
+
+    /**
+     * Revisión final de la 3.5 (I3): los cursos de una ronda comparten folio y salen uno tras otro. Las entregas de TODOS
+     * quedan en disco ANTES de que el primero toque la red (`todo-funciona-sin-red.md`, pregunta 2, aplicada al lote, no al
+     * curso): si el proceso muere entre dos cursos, el replay empuja o imprime el que faltaba. Sin esto el curso 2 no
+     * existía en ningún lado, y un LISTO sin red sobre el curso 1 cerraba el folio entero en el servidor: pérdida.
+     *
+     * Refresca la config UNA vez (cada curso se despacha sin volver a refrescar: mismos planes, mismas filas). Cada curso
+     * vuelve a guardar la suya al despachar (`REPLACE` por `entregaId`, inocuo). `null` = el lote no reparte por pantalla
+     * (o no se pudo preparar): cada curso sigue como antes, con su propio refresco.
+     */
+    private suspend fun guardarLaRonda(
+        venueId: String?,
+        orderNumber: String,
+        pedidos: List<Pedido>,
+        orderId: String?,
+        servidorLaTiene: Boolean?,
+        origen: String?,
+    ): List<EntregaKds>? {
+        val wifi = entregaPorWifi ?: return null
+        if (servidorLaTiene == null || venueId == null || origen == null) return null
+        return try {
+            printConfigRepository.refreshConTope(venueId)
+            val config = printConfigRepository.getCurrentConfig()
+            val entregas = pedidos.flatMap { p ->
+                entregasPorWifi(
+                    venueId, PrintRoutingMapper.buildComandas(p.lines, config), config, orderNumber, p.orderType,
+                    serverName = null, comboNames = comboNamesDe(p.lines), orderId = orderId, origen = origen,
+                    etiquetaPantalla = p.etiquetaPantalla, curso = p.curso,
+                )
+            }
+            wifi.guardar(entregas)
+            entregas
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // Preparar el lote nunca puede impedir que salgan los cursos: sin esto, cada uno guarda la suya como antes.
+            Log.w(TAG, "No se pudieron guardar de antemano los cursos de $orderNumber: ${e.message}")
+            null
+        }
+    }
+
+    private fun comboNamesDe(lines: List<RoutableItem>): Map<String, String> =
+        lines.mapNotNull { line -> line.comboName?.let { line.orderItemId to it } }.toMap()
 
     /**
      * Dispara las comandas de [lines]. Es la MISMA secuencia de siempre, en el mismo orden:
@@ -107,6 +270,10 @@ class ComandaDispatcher @Inject constructor(
      * @param orderId el id REAL de la orden (server) — para «la libreta» (Task 16), que lo manda
      *   al servidor junto con el resultado. `null` en los caminos que todavía no lo tienen a
      *   mano (hoy: el KDS); ahí el reporte cae a `orderNumber` en vez de perderse.
+     * @param servidorLaTiene Etapa 3 del KDS: `true`/`false` = este disparo reparte por pantalla (se empuja por WiFi y
+     *   el ACUSE decide el papel de las «sólo pantalla», 3.5 D6); `null` = como antes (KDS de Uber, vale de área).
+     * @param origenDelFolio `sale:<Order.externalId>` o `round:<roundKey>`: la base del folio de la marca. `null` = no
+     *   se marca.
      * @return el [EstadoDeComanda] final del ruteo, para que el caller pueda AVISAR de una
      *   comanda que no salió (Testarudo cobró días sin comanda de barra porque este resultado
      *   se tiraba). `null` cuando no hubo ruteo que reportar: sin renglones, o el camino
@@ -122,7 +289,15 @@ class ComandaDispatcher @Inject constructor(
         noStationsFallback: NoStationsFallback = NoStationsFallback.RouteAnyway,
         maxIntentos: Int = PoliticaDeReintento.INTENTOS_MAXIMOS,
         orderId: String? = null,
+        servidorLaTiene: Boolean? = null,
+        origenDelFolio: String? = null,
         alCambiarEstado: (EstadoDeComanda) -> Unit = {},
+        /** `false` = quien llama ya refrescó ([despacharEnFondo] con cursos que se guardaron antes, I3): no se repite. */
+        refrescar: Boolean = true,
+        /** Lo que lee la pantalla de cocina arriba («Mesa 8»); `null` = [orderType]. Ver [Pedido]. */
+        etiquetaPantalla: String? = null,
+        /** El tiempo de estos renglones en la pantalla de cocina («Aperitivos»). */
+        curso: String? = null,
     ): EstadoDeComanda? {
         // Sin renglones no hay nada que imprimir — y nos ahorramos hasta el refresh, igual que el
         // mostrador, que salía antes de tocar la red. No es un guard de configuración: es que
@@ -130,8 +305,9 @@ class ComandaDispatcher @Inject constructor(
         if (lines.isEmpty()) return null
 
         // El refresh nunca lanza (falla abierto y conserva la config vigente), así que una red lenta
-        // o caída sólo significa "imprime con lo último que sabías" — jamás "no imprimas".
-        venueId?.let { printConfigRepository.refresh(it) }
+        // o caída sólo significa "imprime con lo último que sabías" — jamás "no imprimas". Con tope de
+        // 1.5 s (spec §5, H2): si la red tarda, se decide con la guardada y la descarga sigue sola.
+        if (refrescar) venueId?.let { printConfigRepository.refreshConTope(it) }
         val config = printConfigRepository.getCurrentConfig()
 
         val legacy = noStationsFallback as? NoStationsFallback.LegacySingleTicket
@@ -168,22 +344,158 @@ class ComandaDispatcher @Inject constructor(
         }
 
         val plans = PrintRoutingMapper.buildComandas(lines, config)
-        return reintentoDeComanda.insistir(
-            plans = plans,
-            config = config,
-            orderNumber = orderNumber,
-            orderType = orderType,
-            serverName = serverName,
-            // COMBOS — el nombre viaja aparte del motor de ruteo (que es espejo byte a byte
-            // del server y no sabe de promociones) y se vuelve a atar por `orderItemId` ya
-            // ruteado, para que cada estación encabece SUS productos con su combo.
-            comboNames = lines.mapNotNull { line -> line.comboName?.let { line.orderItemId to it } }.toMap(),
-            maxIntentos = maxIntentos,
-            // «La libreta» (Task 16) — el MISMO venueId que ya se usa arriba para el refresh.
-            venueId = venueId,
-            orderId = orderId,
-            alCambiarEstado = alCambiarEstado,
-        )
+        val comboNames = comboNamesDe(lines)
+        // Etapa 3 del KDS (3.5, D6): «WiFi primero». Sólo si el llamador reparte por pantalla (`servidorLaTiene != null`:
+        // mostrador y rondas; Uber y vales no) y hay folio (sin folio no hay `sourceKey` que empujar). La entrega se
+        // GUARDA antes de conectar; el acuse por ESTACIÓN es lo que decide el papel de las «sólo pantalla».
+        val entregas = if (servidorLaTiene != null && venueId != null && origenDelFolio != null) {
+            entregasPorWifi(venueId, plans, config, orderNumber, orderType, serverName, comboNames, orderId, origenDelFolio, etiquetaPantalla, curso)
+        } else {
+            emptyList()
+        }
+        // 🔴 Ronda 1 (I2): SIN `finally`. Si algo truena (el bind AIDL, el callback del llamador) o se cancela antes de
+        // decidir el papel, las filas se QUEDAN: no salió papel ni quedó nada en la libreta. Rondas 2 y 3: además se
+        // SUELTAN para que el reloj del replay las retome en este mismo proceso — la cancelación, bajo `NonCancellable`
+        // (ya no hay ámbito vivo). Revisión final (I1): el EMPUJE también va aquí adentro. Afuera, cancelar a media entrega
+        // (el cajero sale de la pantalla de cobro) dejaba las filas «en curso» —el replay las salta— hasta reiniciar, y a
+        // las 8 h se tiraban sin papel. Cancelado mientras empuja, `acusadas` sigue vacío: se sueltan todas.
+        var acusadas = emptySet<String>()
+        val (reparto, estado) = try {
+            if (entregas.isNotEmpty()) acusadas = entregaPorWifi?.entregar(entregas).orEmpty()
+            val decidido = servidorLaTiene?.let { KitchenDeliveryPolicy.decidir(plans, config, acusadas) }
+                ?: KitchenDeliveryPolicy.Reparto(plans, emptyList())
+            // Todo iba a pantallas que acusaron: no hay papel que mandar ni que reportar a «la libreta» (y sus filas ya se
+            // borraron al acusar). M-3 de la revisión (3.4): con `servidorLaTiene = null` esto también puede vaciar `plans`
+            // (todas las líneas con `quantity <= 0`) y regresa `null` sin avisar — cambio aceptado, iOS trae la misma guarda.
+            if (decidido.aImprimir.isEmpty()) return null
+            decidido to reintentoDeComanda.insistir(
+                plans = decidido.aImprimir,
+                // La config CONGELADA del trabajo lleva marcadas las estaciones de respaldo: `ComandaPrinter` les pone su
+                // encabezado y su impresora, y `TrabajoPendiente` lo conserva para cualquier reintento.
+                config = KitchenDeliveryPolicy.conRespaldo(config, decidido.respaldo),
+                orderNumber = orderNumber,
+                orderType = orderType,
+                serverName = serverName,
+                // COMBOS — el nombre viaja aparte del motor de ruteo (que es espejo byte a byte
+                // del server y no sabe de promociones) y se vuelve a atar por `orderItemId` ya
+                // ruteado, para que cada estación encabece SUS productos con su combo.
+                comboNames = comboNames,
+                maxIntentos = maxIntentos,
+                // «La libreta» (Task 16) — el MISMO venueId que ya se usa arriba para el refresh.
+                venueId = venueId,
+                orderId = orderId,
+                alCambiarEstado = alCambiarEstado,
+            )
+        } catch (e: CancellationException) {
+            withContext(NonCancellable) { soltarSinPapel(entregas, acusadas) }
+            throw e
+        } catch (e: Exception) {
+            soltarSinPapel(entregas, acusadas)
+            throw e
+        }
+        if (reparto.respaldo.isNotEmpty()) {
+            marcarPapelDeRespaldo(venueId, reparto.respaldo, config, estado, origenDelFolio, orderNumber)
+        }
+        cerrarLasDecididas(entregas, acusadas, estado)
+        return estado
+    }
+
+    /** El despacho no llegó a decidir el papel (truena o se cancela): todas sus filas guardadas sin acuse se sueltan. */
+    private suspend fun soltarSinPapel(entregas: List<EntregaKds>, acusadas: Set<String>) {
+        val guardadas = entregas.filter { it.entregaId != null && it.mensaje.stationId !in acusadas }
+        if (guardadas.isNotEmpty()) entregaPorWifi?.soltar(guardadas)
+    }
+
+    /**
+     * Ronda 1 (I2) — D7: la fila de una entrega se borra cuando su papel ya se DECIDIÓ. Las que acusaron ya se borraron;
+     * aquí se cierran las de respaldo cuyo papel SALIÓ y las de una estación SIN impresora (insistir no le inventa una:
+     * reintentarla en cada apertura sólo repetiría el mismo «no hay impresora»; su pantalla la verá por el servidor).
+     * La que TRONÓ se queda: va en el `NoSalio` que el llamador guarda en la libreta, y la cierra el papel cuando por fin
+     * sale ([reintentar] → [EntregaPorWifi.cerrarPorPapel]). Ronda 2 (N2): además se SUELTA, para que el reloj del
+     * replay la retome en este mismo proceso si la libreta la pierde (su única ranura la pisa otra falla).
+     */
+    private suspend fun cerrarLasDecididas(entregas: List<EntregaKds>, acusadas: Set<String>, estado: EstadoDeComanda) {
+        val tronaron = (estado as? EstadoDeComanda.NoSalio)?.trabajo?.planes.orEmpty()
+        val guardadas = entregas.filter { e -> e.trabajoDeRespaldo != null && e.mensaje.stationId !in acusadas }
+        val (retenidas, decididas) = guardadas.partition { e -> e.trabajoDeRespaldo!!.planes.any { it in tronaron } }
+        if (decididas.isNotEmpty()) entregaPorWifi?.cerrar(decididas)
+        if (retenidas.isNotEmpty()) entregaPorWifi?.soltar(retenidas)
+    }
+
+    /** Una entrega por plan con pantalla (D6). Trabajo de respaldo SÓLO para «sólo pantalla»: impresora+pantalla imprime su papel de todos modos. */
+    private fun entregasPorWifi(
+        venueId: String,
+        plans: List<TicketPlan>,
+        config: PrintConfig,
+        orderNumber: String,
+        orderType: String,
+        serverName: String?,
+        comboNames: Map<String, String>,
+        orderId: String?,
+        origen: String,
+        etiquetaPantalla: String? = null,
+        curso: String? = null,
+    ): List<EntregaKds> {
+        val deviceId = entregaPorWifi?.deviceId ?: return emptyList()
+        val ahora = System.currentTimeMillis()
+        return KitchenDeliveryPolicy.planesConPantalla(plans, config).map { plan ->
+            val stationId = requireNotNull(plan.stationId)
+            val soloPantalla = config.stations.firstOrNull { it.id == stationId }?.let { KitchenDeliveryPolicy.esSoloPantalla(it) } == true
+            EntregaKds(
+                mensaje = KitchenDeliveryPolicy.mensajeParaPantalla(
+                    plan, venueId, deviceId, origen, orderNumber, etiquetaPantalla ?: orderType, orderId, ahora, curso,
+                ),
+                trabajoDeRespaldo = if (soloPantalla) {
+                    TrabajoPendiente(
+                        planes = listOf(plan),
+                        config = KitchenDeliveryPolicy.conRespaldo(config, listOf(stationId)),
+                        orderNumber = orderNumber, orderType = orderType, serverName = serverName,
+                        comboNames = comboNames, venueId = venueId, orderId = orderId,
+                    )
+                } else {
+                    null
+                },
+            )
+        }
+    }
+
+    /**
+     * Etapa 3 del KDS (3.4): encola `KDS_TICKET_MARK FALLBACK_PRINTED` por cada estación de respaldo que SÍ salió en
+     * papel: al volver la red, el servidor la esconde de las pantallas (spec §3). Se encola DESPUÉS del papel a
+     * propósito — ver [KitchenDeliveryPolicy.marcasDeRespaldo]. Nunca lanza: una marca que no se guardó sólo significa
+     * que la pantalla también la mostrará al volver la red.
+     */
+    private suspend fun marcarPapelDeRespaldo(
+        venueId: String?,
+        respaldo: List<String>,
+        config: PrintConfig,
+        estado: EstadoDeComanda,
+        origen: String?,
+        label: String,
+    ) {
+        val vId = venueId ?: return
+        val cola = syncOutbox ?: return
+        val sinPapel = (estado as? EstadoDeComanda.NoSalio)?.estaciones.orEmpty()
+        val marcas = KitchenDeliveryPolicy.marcasDeRespaldo(respaldo, config, sinPapel, origen, label)
+        if (marcas.isEmpty()) Log.w(TAG, "🧾 Respaldo sin marca (origen=$origen, sin papel=$sinPapel)")
+        for (m in marcas) {
+            try {
+                cola.enqueue(
+                    vId,
+                    SyncIntentTypes.KDS_TICKET_MARK,
+                    buildJsonObject {
+                        put("sourceKey", m.sourceKey)
+                        put("stationId", m.stationId)
+                        put("action", KitchenDeliveryPolicy.FALLBACK_PRINTED)
+                        put("label", m.label)
+                    },
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.w(TAG, "No se pudo encolar la marca de papel ${m.sourceKey}: ${e.message}")
+            }
+        }
     }
 
     /**
@@ -207,6 +519,11 @@ class ComandaDispatcher @Inject constructor(
     suspend fun reintentar(
         trabajo: TrabajoPendiente,
         alCambiarEstado: (EstadoDeComanda) -> Unit = {},
+        /**
+         * `false` = quien llama ya refrescó con [refrescarConfig]. El replay de entregas (KDS 3.5, paridad con iOS) lo
+         * hace aparte para revalidar la sucursal ANTES y DESPUÉS del refresco: aquí no se vuelve a refrescar.
+         */
+        refrescar: Boolean = true,
     ): EstadoDeComanda {
         // 🔴 Se congela QUÉ imprimir, no DÓNDE. La config vieja llevaba la dirección de la
         // impresora en el momento del fallo, así que corregir la IP en Ajustes y tocar «Volver
@@ -215,12 +532,35 @@ class ComandaDispatcher @Inject constructor(
         //
         // El refresh falla abierto (conserva la config vigente), así que sin red esto es
         // exactamente lo de antes: se reimprime con lo último que el aparato sabía.
-        trabajo.venueId?.let { printConfigRepository.refresh(it) }
-        val configVigente = printConfigRepository.getCurrentConfig()
-        return reintentoDeComanda.reintentar(
+        if (refrescar) trabajo.venueId?.let { refrescarConfig(it) }
+        // Etapa 3 del KDS (3.4): la config vigente, pero con las estaciones que iban de RESPALDO marcadas otra vez — si
+        // no, «Volver a imprimir» sacaría la hoja sin su encabezado y sin la impresora de la default.
+        val configVigente = KitchenDeliveryPolicy.heredarRespaldo(de = trabajo.config, en = printConfigRepository.getCurrentConfig())
+        val estado = reintentoDeComanda.reintentar(
             trabajo.copy(config = configVigente),
             alCambiarEstado = alCambiarEstado,
         )
+        cerrarPapelQueSalio(trabajo, estado)
+        return estado
+    }
+
+    /** El refresco con tope de [reintentar], suelto: falla abierto (sin red conserva la config vigente). */
+    suspend fun refrescarConfig(venueId: String) {
+        printConfigRepository.refreshConTope(venueId)
+    }
+
+    /**
+     * Etapa 3 del KDS (3.5), ronda 1 (I2): el papel de RESPALDO que por fin salió («Volver a imprimir», el reloj de la
+     * libreta, el replay) cierra su entrega pendiente; si no, la próxima apertura lo imprimiría otra vez. Sólo mira las
+     * estaciones que el trabajo lleva marcadas de respaldo: un trabajo sin respaldo no toca la base.
+     */
+    private suspend fun cerrarPapelQueSalio(trabajo: TrabajoPendiente, estado: EstadoDeComanda) {
+        val vId = trabajo.venueId ?: return
+        val respaldo = trabajo.config.stations.filter { it.respaldoLocal }.map { it.id }.toSet()
+        if (respaldo.isEmpty()) return
+        val tronaron = (estado as? EstadoDeComanda.NoSalio)?.trabajo?.planes.orEmpty()
+        val salieron = trabajo.planes.filter { it.stationId in respaldo && it !in tronaron }
+        if (salieron.isNotEmpty()) entregaPorWifi?.cerrarPorPapel(vId, trabajo.orderNumber, salieron)
     }
 
     suspend fun dispatchAreaComanda(

@@ -73,6 +73,12 @@ fun DailyReportView(
      * historial sin saber que eso ayudaría.
      */
     onRetryBreakdown: () -> Unit = {},
+    /**
+     * 🔴 El corte no se pudo confirmar con el servidor (sin red): sólo trae lo que registró este
+     * aparato, y el egreso de un reembolso o la venta de la terminal pueden faltar. Se DICE —
+     * Testarudo, 28-sep-2026: un «Faltante $145» que no existía, sin ninguna pista de por qué.
+     */
+    sinConfirmar: Boolean = false,
     onDismiss: () -> Unit,
 ) {
     val context = LocalContext.current
@@ -121,7 +127,10 @@ fun DailyReportView(
     val transactionCount = events.count { it.type == CashDrawerEventType.CASH_SALE.name }
     // Total sales = all tenders when the server breakdown is available.
     val totalSalesCents = if (hasServerBreakdown) tenderBreakdown.orEmpty().sumOf { it.totalCents } else cashSalesCents
-    val avgTicketCents = if (transactionCount > 0) totalSalesCents / transactionCount else 0
+    // 🔴 `transactionCount` sólo cuenta las ventas en EFECTIVO del cajón: dividir entre él el total
+    // de todos los métodos inflaba el promedio. Mismo criterio y mismos textos que el ticket
+    // impreso (`CorteTicketBuilder`) y que iOS.
+    val avgTicketCents = if (transactionCount > 0) cashSalesCents / transactionCount else 0
 
     // Resta TODOS los egresos, reembolsos incluidos: ese dinero salió del cajón.
     val expectedCents = session.startingAmountCents + cashSalesCents + payInsCents - payOutsTodosCents
@@ -200,12 +209,15 @@ fun DailyReportView(
             // tarjeta le hace creer al dueño que vendió menos de lo que vendió.
             if (showExpected || !isPartial) {
                 ReportRow(
-                    label = if (hasServerBreakdown) "Ventas totales" else "Ventas en efectivo",
+                    // «Netas»: el desglose del server ya resta los reembolsos. Con «totales», $138
+                    // vendidos y $138 devueltos se leían «Ventas totales $0.00» junto a «Ticket
+                    // promedio en efectivo $69.00» (D3, 29-sep). Mismo texto que el ticket e iOS.
+                    label = if (hasServerBreakdown) "Ventas netas" else "Ventas en efectivo",
                     value = formatCurrency(totalSalesCents),
                 )
             }
-            ReportRow(label = "No. de transacciones", value = "$transactionCount")
-            ReportRow(label = "Ticket promedio", value = formatCurrency(avgTicketCents))
+            ReportRow(label = if (hasServerBreakdown) "Transacciones en efectivo" else "Transacciones", value = "$transactionCount")
+            ReportRow(label = if (hasServerBreakdown) "Ticket promedio en efectivo" else "Ticket promedio", value = formatCurrency(avgTicketCents))
 
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
 
@@ -408,6 +420,14 @@ fun DailyReportView(
                             value = formatCurrency(abs(differenceCents)),
                             valueColor = diffColor,
                             isBold = true,
+                        )
+                    }
+                    if (sinConfirmar) {
+                        Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+                        Text(
+                            text = CorteTicketBuilder.AVISO_SIN_CONFIRMAR,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 }

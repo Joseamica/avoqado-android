@@ -399,7 +399,7 @@ class CorteTicketBuilderTest {
 
     /**
      * 🔴 El cajón sólo conoce las ventas en EFECTIVO, así que el conteo y el
-     * promedio son de efectivo — pero "Ventas totales" incluye tarjeta cuando
+     * promedio son de efectivo — pero "Ventas netas" incluye tarjeta cuando
      * el server manda el desglose. Sin etiquetarlo, las tres filas se leen como
      * un bloque coherente y no lo son: un gerente deduce un ticket promedio que
      * no corresponde a nada. Mismos textos en avoqado-ios (CortePrinter.swift).
@@ -408,7 +408,11 @@ class CorteTicketBuilderTest {
     fun `con desglose del server el conteo y el promedio se marcan como de efectivo`() {
         val t = papel(tenders = tenders)
 
-        assertTrue("el total es de todos los métodos", t.contains("Ventas totales"))
+        // «Netas»: el desglose del server ya resta los reembolsos. Con «totales», una caja con
+        // $138 vendidos y $138 devueltos decía «Ventas totales $0.00» junto a «Ticket promedio
+        // en efectivo $69.00» (D3, 29-sep) y nadie entendía de dónde salía el promedio.
+        assertTrue("el total es de todos los métodos, ya sin reembolsos", t.contains("Ventas netas"))
+        assertFalse("ya no dice «totales»", t.contains("Ventas totales"))
         assertTrue("el conteo debe decir que es sólo de efectivo", t.contains("Transacciones en efectivo"))
         assertTrue("el promedio debe decir que es sólo de efectivo", t.contains("Ticket promedio en efectivo"))
     }

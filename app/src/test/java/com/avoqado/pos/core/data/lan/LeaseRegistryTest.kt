@@ -178,4 +178,18 @@ class ArbiterElectionTest {
     fun `sin peers no hay árbitro - el dispositivo trabaja como isla`() {
         assertNull(ArbiterElection.pick(emptyList()))
     }
+
+    /**
+     * Etapa 3 del KDS (3.5, D1): una tablet que SÓLO es pantalla de cocina anuncia `hub=0`. Si entrara a la elección
+     * podría ganarla (cableada, más uptime) y no contestar un solo lease: todas las mesas caerían a NoHub.
+     */
+    @Test
+    fun `P1 un aparato que no sirve leases (solo cocina) no puede ganar la eleccion`() {
+        val cocina = LanPeer("cpad", "10.0.0.5", 8080, isWired = true, bootedAtMillis = 0, sirveLeases = false)
+        val caja = LanPeer("tablet-b", "10.0.0.3", 8080, isWired = false, bootedAtMillis = 9_000)
+
+        assertEquals("tablet-b", ArbiterElection.pick(listOf(cocina, caja))?.deviceId)
+        assertFalse(ArbiterElection.isArbiter("cpad", listOf(cocina, caja)))
+        assertNull(ArbiterElection.pick(listOf(cocina)))
+    }
 }

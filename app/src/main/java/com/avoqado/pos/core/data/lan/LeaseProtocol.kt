@@ -41,6 +41,15 @@ object LeaseProtocol {
     const val TXT_BOOTED_AT = "boot"
     const val TXT_VENUE_ID = "venue"
 
+    /**
+     * Etapa 3 del KDS (3.5, D1): estaciones cuyo Tablero está EN PANTALLA en ese aparato, separadas por coma. Ausente
+     * = ese aparato no recibe comandas por WiFi (una tablet que eligió estación una vez y hoy está en Cobrar NO acusa).
+     */
+    const val TXT_KDS = "kds"
+
+    /** Etapa 3 del KDS (3.5, D1): `1` si el aparato contesta leases (hub Premium encendido), `0` si no. Ausente = app vieja = sí. */
+    const val TXT_HUB = "hub"
+
     val json = Json {
         ignoreUnknownKeys = true // un peer más nuevo puede mandar campos extra
         encodeDefaults = true

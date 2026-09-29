@@ -57,6 +57,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.avoqado.pos.printing.data.EstadoDeComanda
+import com.avoqado.pos.loyalty.data.comoPremioPorAplicar
 import com.avoqado.pos.areatickets.presentation.AreaTicketOperationsViewModel
 import com.avoqado.pos.core.util.formatMoney
 
@@ -763,6 +764,8 @@ fun CheckoutScreen(
                             cartViewModel.fetchStaff()
                             showStaffSelector = true
                         },
+                        onRemoveStampReward = { cartViewModel.setPendingStampReward(null) },
+                        premioEditable = cartViewModel.puedeCambiarPremio(),
                         onSplitPayment = {
                             // Membresías grant only on FULL payment — a split sale
                             // charged the pack without ever granting credits.
@@ -1085,6 +1088,8 @@ fun CheckoutScreen(
                 cartViewModel.fetchStaff()
                 showStaffSelector = true
             },
+            onRemoveStampReward = { cartViewModel.setPendingStampReward(null) },
+            premioEditable = cartViewModel.puedeCambiarPremio(),
             onSplitPayment = {
                 // Membresías grant only on FULL payment — mismo guard que en tablet.
                 if (cartViewModel.hasCreditPack) {
@@ -1248,12 +1253,16 @@ fun CheckoutScreen(
             .joinToString(" ")
             .ifBlank { "Cliente identificado" }
 
-        val premio = tarjeta.rewardsToClaim.firstOrNull()
+        // 🔴 Con una venta a medio cobrar, su orden ya decidió el premio: no se ofrece otro.
+        val premio = tarjeta.rewardsToClaim.firstOrNull()?.takeIf { cartViewModel.puedeCambiarPremio() }
+        val premioBloqueado = tarjeta.rewardsToClaim.isNotEmpty() && premio == null
         val avance = "${tarjeta.stampsEarned} de ${tarjeta.stampsRequired} sellos"
         val detalle = if (premio != null) {
             // El premio se dice PRIMERO: es lo único que el cajero tiene que accionar,
             // y si va después del avance se lo salta.
             "🎁 Tiene un premio por cobrar: ${premio.rewardLabel}\n\n$avance · esta compra le suma otro"
+        } else if (premioBloqueado) {
+            "Esta venta ya se está cobrando por partes: su premio no se puede cambiar.\n\n$avance"
         } else {
             "$avance · esta compra le suma otro"
         }
@@ -1274,7 +1283,7 @@ fun CheckoutScreen(
                     PrimaryButton(
                         text = "Aplicar ${premio.rewardLabel}",
                         onClick = {
-                            cartViewModel.setPendingStampReward(premio.id)
+                            cartViewModel.setPendingStampReward(premio.comoPremioPorAplicar())
                             scannedCustomerCard = null
                         },
                         fullWidth = true,
@@ -1567,6 +1576,7 @@ fun CheckoutScreen(
                         splitType = completion.splitType,
                         paidItemIds = completion.paidItemIds,
                         remainingBalanceCents = completion.remainingBalanceCents,
+                        premioConfirmadoCents = completion.premioConfirmadoCents,
                     )
                     when (cobro.rama) {
                         CartViewModel.RamaCobro.RENGLONES_PAGADOS -> Unit
@@ -1777,7 +1787,18 @@ fun CheckoutScreen(
         )
     }
 
-    if (showPayLaterSuccessToast) {
+    // 🔴 El premio no quedó como lo anunció el carrito: se dice ANTES de celebrar la venta diferida.
+    val avisoDelPremioDiferido by cartViewModel.avisoDelPremio.collectAsState()
+    avisoDelPremioDiferido?.let { aviso ->
+        AvoqadoWarningToast(
+            message = "Revisa el premio",
+            subtitle = aviso,
+            onDismiss = { cartViewModel.descartarAvisoDelPremio() },
+            secondaryLabel = "Entendido",
+        )
+    }
+
+    if (showPayLaterSuccessToast && avisoDelPremioDiferido == null) {
         AvoqadoSuccessToast(
             message = "¡Venta enviada a pagar después!",
             onDismiss = { showPayLaterSuccessToast = false },
@@ -1996,6 +2017,8 @@ private fun IPhoneCartSheet(
      * compilador cace el próximo olvido.
      */
     onSplitPayment: () -> Unit,
+    onRemoveStampReward: () -> Unit,
+    premioEditable: Boolean,
     customerName: String? = null,
     customerId: String? = null,
     onCustomerTap: () -> Unit = {},
@@ -2071,6 +2094,8 @@ private fun IPhoneCartSheet(
                 staffName = staffName,
                 onStaffTap = onStaffTap,
                 onSplitPayment = onSplitPayment,
+                onRemoveStampReward = onRemoveStampReward,
+                premioEditable = premioEditable,
                 referralCode = referralCode,
                 referralUiState = referralUiState,
                 customerSelectedForReferral = customerSelectedForReferral,

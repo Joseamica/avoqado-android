@@ -28,6 +28,11 @@ data class PrintConfig(
     val categoryRouting: List<CategoryRoute> = emptyList(),
     /** Products that have an explicit override set. */
     val productOverrides: List<ProductOverride> = emptyList(),
+    /**
+     * Etapa 3 del KDS: ¿la pantalla de cocina ya se ofrece a clientes? (`PANTALLA_ABIERTA_A_CLIENTES` del servidor,
+     * se abre en la fase 3.6). Un servidor anterior no lo manda ⇒ CERRADA: nunca se ofrece algo que el servidor no conoce.
+     */
+    val kitchenDisplayOpenToClients: Boolean = false,
     val version: String = "",
 )
 
@@ -66,6 +71,18 @@ data class StationInfo(
     val isDefault: Boolean = false,
     val active: Boolean = true,
     val displayOrder: Int = 0,
+    /**
+     * Etapa 3 del KDS: ¿esta estación se atiende con pantalla? Lo manda el servidor EFECTIVO (casilla Y estación
+     * activa Y plan). Sin el campo (servidor anterior) ⇒ apagada.
+     */
+    val hasKitchenDisplay: Boolean = false,
+    /**
+     * SÓLO DEL CLIENTE — el servidor nunca lo manda. `KitchenDeliveryPolicy.conRespaldo` lo prende en la config CONGELADA
+     * de UN trabajo de impresión (etapa 3 del KDS, fase 3.4): esta estación «sólo pantalla» sale en papel de RESPALDO
+     * (encabezado propio, impresora de la estación default → cocina local → caja). Viaja dentro de
+     * `TrabajoPendiente.config`, así que un reintento no lo olvida.
+     */
+    val respaldoLocal: Boolean = false,
 )
 
 @Serializable

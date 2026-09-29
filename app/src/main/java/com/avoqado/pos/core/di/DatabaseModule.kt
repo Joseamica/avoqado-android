@@ -10,6 +10,8 @@ import com.avoqado.pos.inventory.data.local.InventoryTransferDao
 import com.avoqado.pos.inventory.data.local.PurchaseOrderDao
 import com.avoqado.pos.inventory.waste.data.PendingWasteDao
 import com.avoqado.pos.inventory.waste.data.WasteCatalogDao
+import com.avoqado.pos.kds.data.local.EntregasKdsPendientesDao
+import com.avoqado.pos.kds.data.local.KdsTicketsLocalesDao
 import com.avoqado.pos.reservations.data.PendingReservationActionDao
 import dagger.Module
 import dagger.Provides
@@ -40,6 +42,7 @@ object DatabaseModule {
             AvoqadoDatabaseMigrations.MIGRATION_9_10,
             AvoqadoDatabaseMigrations.MIGRATION_10_11,
             AvoqadoDatabaseMigrations.MIGRATION_11_12,
+            AvoqadoDatabaseMigrations.MIGRATION_12_13,
         )
             .build()
     }
@@ -54,6 +57,12 @@ object DatabaseModule {
 
     @Provides
     fun providePendingWasteDao(database: AvoqadoDatabase): PendingWasteDao = database.pendingWasteDao()
+
+    @Provides
+    fun provideEntregasKdsPendientesDao(database: AvoqadoDatabase): EntregasKdsPendientesDao = database.entregasKdsPendientesDao()
+
+    @Provides
+    fun provideKdsTicketsLocalesDao(database: AvoqadoDatabase): KdsTicketsLocalesDao = database.kdsTicketsLocalesDao()
 
     @Provides
     fun provideCashDrawerDao(database: AvoqadoDatabase): CashDrawerDao {

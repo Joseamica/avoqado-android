@@ -273,9 +273,7 @@ fun TableOrderScreen(
         if (blockIfReadOnly()) return
         // Square: Enviar se queda en la mesa — el panel muestra la ronda recién
         // enviada como bloque nuevo; se sale con Regresar/Guardar.
-        viewModel.sendRound { _, msg ->
-            viewModel.showMessage(msg)
-        }
+        viewModel.sendRound()
     }
 
     fun firePagar() {

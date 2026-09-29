@@ -272,6 +272,65 @@ fun totalACobrarCents(
     return delServer
 }
 
+/**
+ * 🔴 El canje de lealtad es online A PROPÓSITO (regla offline §5, como Square): una venta con premio
+ * no se encola sin red — se dice, y el cajero reintenta o quita el premio. Mismo texto en iOS.
+ */
+const val MENSAJE_PREMIO_SIN_RED =
+    "Sin conexión: el premio necesita internet. Reintenta cuando vuelva la conexión, o quita el premio para cobrar sin él."
+
+/** Lo que se cobra en una venta con premio de cartilla, y qué hay que decirle al cajero. */
+data class CobroConPremio(val totalCents: Int, val aviso: String?)
+
+/**
+ * 🔴 DINERO — cuánto se cobra cuando la venta llevaba un premio de cartilla.
+ *
+ * Estándar de Square y Toast: el premio es un descuento de la cuenta ANTES de cobrar y su monto
+ * lo decide quien lleva la lealtad (el servidor). El carrito ya restó un ESTIMADO
+ * ([premioEstimadoCents]); aquí se cambia por lo que el servidor CONFIRMÓ al crear la venta.
+ *
+ * NO se usa el `total` del servidor: tras el canje hoy pierde el descuento de cuenta y la propina
+ * (arreglo pendiente en el servidor). El monto del premio es lo único que hace falta, y ése sí
+ * es exacto.
+ *
+ * - aplicado ⇒ estimado + premio estimado − premio confirmado;
+ * - no aplicado (o el servidor no dijo nada) ⇒ el precio completo, y se AVISA: el premio no se
+ *   quemó y el total ya no es el que anunció el carrito.
+ */
+fun cobroConPremio(estimadoLocalCents: Int, premioEstimadoCents: Int, resultado: StampRewardOnOrder?): CobroConPremio {
+    val confirmado = resultado?.discountCents ?: 0
+    val total = (estimadoLocalCents + premioEstimadoCents - confirmado).coerceAtLeast(0)
+    val aviso = when {
+        resultado?.applied != true ->
+            "No se aplicó el premio: ${motivoDelPremio(resultado)} Se cobra el precio completo."
+        premioEstimadoCents == 0 ->
+            "Premio aplicado: −${com.avoqado.pos.core.util.formatMoney(confirmado / 100.0)}."
+        confirmado != premioEstimadoCents ->
+            "El premio se aplicó por ${com.avoqado.pos.core.util.formatMoney(confirmado / 100.0)}, " +
+                "no por ${com.avoqado.pos.core.util.formatMoney(premioEstimadoCents / 100.0)}."
+        else -> null
+    }
+    return CobroConPremio(total, aviso)
+}
+
+/**
+ * En EFECTIVO el dinero se recibe ANTES de crear la venta: si el premio no se aplicó (o por menos)
+ * y lo recibido no cubre el total real, NO se registra nada — se vuelve a pedir, con esto a la vista.
+ */
+fun avisoDeEfectivoCortoPorPremio(resultado: StampRewardOnOrder?, totalRealCents: Int, recibidoCents: Int): String {
+    val queSePaso = if (resultado?.applied == true) {
+        "El premio se aplicó por ${com.avoqado.pos.core.util.formatMoney(resultado.discountCents / 100.0)}."
+    } else {
+        "No se aplicó el premio: ${motivoDelPremio(resultado)}"
+    }
+    val falta = (totalRealCents - recibidoCents).coerceAtLeast(0)
+    return "$queSePaso El total es ${com.avoqado.pos.core.util.formatMoney(totalRealCents / 100.0)}: " +
+        "faltan ${com.avoqado.pos.core.util.formatMoney(falta / 100.0)}."
+}
+
+private fun motivoDelPremio(resultado: StampRewardOnOrder?): String =
+    resultado?.reason?.trim()?.takeIf { it.isNotEmpty() } ?: "el servidor no lo confirmó."
+
 @Serializable
 data class OrderData(
     val id: String,
@@ -291,6 +350,11 @@ data class OrderData(
     val status: String? = null,
     /** Promociones que el server resolvió en esta orden. Vacío = venta normal. */
     val promotions: List<OrderPromotionData> = emptyList(),
+    /**
+     * 🔴 DINERO. Qué pasó con el premio de cartilla que viajó en la creación. Ausente cuando
+     * no viajaba ninguno (o el servidor es anterior al 26-ago).
+     */
+    val stampReward: StampRewardOnOrder? = null,
 ) {
     /**
      * El total de la orden en CENTAVOS, que es la unidad en la que cobra el POS.
@@ -299,6 +363,23 @@ data class OrderData(
      */
     val totalCents: Int?
         get() = total?.let { kotlin.math.round(it * 100).toInt() } ?: totalAmount
+}
+
+/**
+ * El premio de cartilla, según el servidor (`StampRewardOnOrderResult`). `discountAmount` va en
+ * PESOS con decimales, como todo el dinero de esa respuesta.
+ */
+@Serializable
+data class StampRewardOnOrder(
+    val applied: Boolean = false,
+    val discountAmount: Double? = null,
+    val rewardLabel: String? = null,
+    /** Por qué no se aplicó. El cajero tiene que poder verlo. */
+    val reason: String? = null,
+) {
+    /** Lo que el servidor descontó, en centavos. 0 si no se aplicó. */
+    val discountCents: Int
+        get() = if (applied) kotlin.math.round((discountAmount ?: 0.0) * 100).toInt().coerceAtLeast(0) else 0
 }
 
 /** Una promoción tal como quedó registrada en la orden. */

@@ -50,6 +50,14 @@ data class SyncIntentEntity(
         const val STATUS_PENDING = "PENDING"
         const val STATUS_ACKED = "ACKED"
         const val STATUS_REJECTED = "REJECTED"
+
+        /**
+         * Etapa 3 del KDS (spec 2026-09-27 §5): la red de seguridad de una ronda que va EN LÍNEA. Está escrita pero el
+         * replay no la manda —y nada detrás de ella sale— hasta que alguien la suelte (falla de red) o la descarte
+         * (éxito o rechazo). Si el proceso muere con ella retenida, se suelta en el primer arranque. Estado LOCAL: el
+         * servidor nunca lo ve, y no cambia el esquema (`status` es texto).
+         */
+        const val STATUS_HELD = "HELD"
     }
 }
 
@@ -83,11 +91,32 @@ interface SyncIntentDao {
         return seq
     }
 
-    @Query("SELECT * FROM pos_sync_intents WHERE venue_id = :venueId AND status = 'PENDING' ORDER BY seq ASC LIMIT :limit")
+    /** Lo que falta mandar, CON las rondas retenidas: el replay corta antes de la primera (barrera FIFO). */
+    @Query("SELECT * FROM pos_sync_intents WHERE venue_id = :venueId AND status IN ('${SyncIntentEntity.STATUS_PENDING}', '${SyncIntentEntity.STATUS_HELD}') ORDER BY seq ASC LIMIT :limit")
     suspend fun pendingFifo(venueId: String, limit: Int = 50): List<SyncIntentEntity>
+
+    /** La ronda en vuelo falló por red: vuelve a la cola como un intent cualquiera. */
+    @Query("UPDATE pos_sync_intents SET status = '${SyncIntentEntity.STATUS_PENDING}' WHERE id = :id AND status = '${SyncIntentEntity.STATUS_HELD}'")
+    suspend fun soltar(id: String): Int
+
+    /** La ronda llegó (o el servidor la rechazó): su red de seguridad sobra. Nunca borra un ACKED ni un REJECTED. */
+    @Query("DELETE FROM pos_sync_intents WHERE id = :id AND status IN ('${SyncIntentEntity.STATUS_PENDING}', '${SyncIntentEntity.STATUS_HELD}')")
+    suspend fun descartar(id: String): Int
+
+    /** Primer arranque del proceso: lo que siga retenido es de un proceso que murió a medio envío. */
+    @Query("UPDATE pos_sync_intents SET status = '${SyncIntentEntity.STATUS_PENDING}' WHERE status = '${SyncIntentEntity.STATUS_HELD}'")
+    suspend fun soltarRetenidos(): Int
 
     @Query("SELECT COUNT(*) FROM pos_sync_intents WHERE venue_id = :venueId AND status = 'PENDING'")
     suspend fun pendingCount(venueId: String): Int
+
+    /**
+     * Rondas retenidas (Task 7 review, 2026-09-28): las guardas de logout/cambio de sucursal deben
+     * ver una ronda en vuelo como trabajo pendiente — no cuenta en el badge visible ([pendingCount]),
+     * pero SÍ debe bloquear salir de la sesión (`blockingWorkCount`).
+     */
+    @Query("SELECT COUNT(*) FROM pos_sync_intents WHERE venue_id = :venueId AND status = '${SyncIntentEntity.STATUS_HELD}'")
+    suspend fun heldCount(venueId: String): Int
 
     /**
      * Los payloads de un tipo que siguen esperando a reproducirse, **con la hora en

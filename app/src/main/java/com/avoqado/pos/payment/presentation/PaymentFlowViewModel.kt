@@ -8,7 +8,6 @@ import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.areatickets.data.AreaTicketRepository
 import com.avoqado.pos.areatickets.data.NormalCheckoutItem
 import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
-import com.avoqado.pos.kds.data.KDSOrderItemRequest
 import com.avoqado.pos.kds.data.KDSRepository
 import com.avoqado.pos.kds.domain.KDSOrderBus
 import com.avoqado.pos.payment.data.CashPaymentRepository
@@ -29,6 +28,9 @@ import com.avoqado.pos.payment.data.model.PaymentErrorSource
 import com.avoqado.pos.payment.data.model.PaymentFlowState
 import com.avoqado.pos.payment.data.model.PaymentItem
 import com.avoqado.pos.payment.data.model.PaymentMethod
+import com.avoqado.pos.payment.data.model.MENSAJE_PREMIO_SIN_RED
+import com.avoqado.pos.payment.data.model.avisoDeEfectivoCortoPorPremio
+import com.avoqado.pos.payment.data.model.cobroConPremio
 import com.avoqado.pos.payment.data.model.totalACobrarCents
 import com.avoqado.pos.payment.domain.CardChargeDecision
 import com.avoqado.pos.payment.domain.CardChargeOutcome
@@ -73,6 +75,12 @@ data class PaymentCompletion(
      * el POS.
      */
     val orderId: String? = null,
+    /**
+     * 🔴 Lo que el servidor CONFIRMÓ del premio de cartilla al crear la orden (0 = lo rechazó); null =
+     * la venta no llevaba premio. El carrito lo usa para que la parte siguiente de un pago dividido
+     * descuente lo confirmado y no vuelva a estimar (`CartViewModel.aplicarCobroConfirmado`).
+     */
+    val premioConfirmadoCents: Int? = null,
 )
 
 const val LOCAL_PRINTER_UNAVAILABLE = "__LOCAL_PRINTER_UNAVAILABLE__"
@@ -96,6 +104,8 @@ class PaymentFlowViewModel @Inject constructor(
     private val tpvSettingsRepository: TpvSettingsRepository,
     private val paymentSyncService: PaymentSyncService,
     private val cashDrawerRepository: CashDrawerRepository,
+    // ponytail: sin uso desde la fase 3.3 del KDS (el servidor arma la comanda al cobrar). Se quedan porque ocho tests
+    // de cobro los pasan (dos son WIP de otra sesión el 27-sep); se quitan en la tarea de seguimiento del Cierre.
     private val kdsRepository: KDSRepository,
     private val kdsOrderBus: KDSOrderBus,
     private val printerService: PrinterService,
@@ -122,6 +132,28 @@ class PaymentFlowViewModel @Inject constructor(
 
     private val _state = MutableStateFlow<PaymentFlowState>(PaymentFlowState.Loading)
     val state: StateFlow<PaymentFlowState> = _state.asStateFlow()
+
+    /**
+     * 🔴 DINERO. El premio de cartilla NO se pudo aplicar (o se aplicó por otro monto que el del
+     * carrito): el cajero tiene que saberlo, porque el total que cobra ya no es el que anunció.
+     * null = nada que decir. Nunca en silencio.
+     */
+    private val _avisoDelPremio = MutableStateFlow<String?>(null)
+    val avisoDelPremio: StateFlow<String?> = _avisoDelPremio.asStateFlow()
+
+    fun descartarAvisoDelPremio() {
+        _avisoDelPremio.value = null
+    }
+
+    /** Lo que el servidor CONFIRMÓ del premio al crear la venta (0 si no lo aplicó). null = aún no se sabe. */
+    private var premioConfirmadoCents: Int? = null
+
+    /**
+     * 🔴 Cuánto bajó la cuenta el premio, para el ticket y la pantalla del cliente: lo confirmado si ya se
+     * sabe, si no el estimado del carrito. Sin esto el ticket diría «Subtotal $100 · Total $70» sin el
+     * renglón que explica la diferencia.
+     */
+    private fun premioEnLaCuenta(cart: CartState): Int = premioConfirmadoCents ?: cart.stampRewardCents
     private var completionConsumed = false
 
     /**
@@ -148,6 +180,13 @@ class PaymentFlowViewModel @Inject constructor(
     private var currentTipCents: Int = 0
     private var createdOrderId: String? = null
     private var createdOrderNumber: String? = null  // folio real del backend
+
+    /**
+     * Etapa 3 del KDS (3.4): el `externalId` con el que se creó (o encoló) la orden de ESTA venta — la base del folio
+     * `sale:<externalId>` de la marca del papel de respaldo. Se copia aquí porque `paymentIdempotencyKey` se limpia al
+     * llegar a Success, antes de que la comanda salga.
+     */
+    private var externalIdDeLaVenta: String? = null
 
     /// Re-entrancy guard: a fast double-tap on a cash preset or a terminal row
     /// used to enter processCashPayment/confirmPayment TWICE — both saw
@@ -192,6 +231,12 @@ class PaymentFlowViewModel @Inject constructor(
     /// screen, marking Success and PRINTING a receipt for a cancelled payment.
     private var recoveryRequestId: String? = null
     private var paymentGeneration = 0
+
+    /** El toque de «Cobrar» que arrancó el cobro en pantalla. Ver `startPaymentFlow`. */
+    private var aperturaEnCurso: String? = null
+
+    /** ¿Esta apertura ya arrancó el cobro que está en pantalla? Entonces la pantalla no reparte ni arranca otra vez. */
+    fun esElCobroEnCurso(apertura: String): Boolean = apertura == aperturaEnCurso
 
     // MARK: - Cancelación durable del cobro (§C.4)
 
@@ -352,10 +397,10 @@ class PaymentFlowViewModel @Inject constructor(
         val tip = currentTipCents
         return if (cart != null && cart.items.isNotEmpty()) {
             com.avoqado.pos.customerdisplay.CustomerContent.Total(
-                totalCents = cart.totalCents + tip,
+                totalCents = cart.totalCents + cart.stampRewardCents - premioEnLaCuenta(cart) + tip,
                 items = cart.items,
                 subtotalCents = cart.subtotalCents,
-                discountCents = cart.discountCents,
+                discountCents = cart.discountCents + premioEnLaCuenta(cart),
                 taxCents = cart.taxCents,
                 tipCents = tip,
             )
@@ -594,10 +639,24 @@ class PaymentFlowViewModel @Inject constructor(
             enCurso ?: pendiente?.takeIf { it.orderNumber != oculto }
         }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
-    /** «Ya la canté»: una PERSONA lo resolvió — deja de perseguirla entre arranques. */
+    /**
+     * «Ya la canté» — SÓLO el toque explícito del botón. Resuelve la libreta únicamente si el aviso que se ve ES la
+     * libreta: entonces `yaLaCante` (no `limpiar`) la suelta y cierra sus entregas por WiFi, para que el replay no la
+     * imprima sola después (KDS 3.5, rondas 3 y 4 de la Task 6).
+     *
+     * 🔴 N-I1 (ronda 4): cualquier otro aviso —el «Reintentando» de otra venta, un «no salió» sin trabajo de OTRA venta—
+     * sólo se OCULTA. Resolver ahí la libreta cerraba las entregas de una comanda que nadie cantó: con la impresora
+     * caída, esa comanda no quedaba en ningún lado.
+     */
     fun clearComandaWarning() {
-        _avisoEnCurso.value = null
-        comandasPendientesStore.limpiar()
+        val pendiente = comandasPendientesStore.pendiente.value
+        val visto = _avisoEnCurso.value ?: pendiente
+        if (pendiente != null && visto == pendiente) {
+            _avisoEnCurso.value = null
+            comandasPendientesStore.yaLaCante()
+        } else {
+            ocultarAvisoDeComanda()
+        }
     }
 
     /**
@@ -806,7 +865,17 @@ class PaymentFlowViewModel @Inject constructor(
         customerId: String? = null,
         customerName: String? = null,
         resumeOrderId: String? = null,
+        apertura: String? = null,
     ) {
+        // 🔴 La MISMA apertura (un toque de «Cobrar») no reinicia el cobro. La pantalla vuelve a
+        // componerse al cambiar de pestaña o girar la tablet y relanza este arranque con lo que
+        // haya en el carrito: tras cobrar, vacío. En la D3 (29-sep) eso volvía a pedir la
+        // calificación de una venta ya pagada y terminaba en un cobro de $0.00 con «Efectivo $0».
+        if (apertura != null && apertura == aperturaEnCurso) {
+            Log.d("💰", "Mismo cobro (apertura $apertura): se sigue donde iba")
+            return
+        }
+        aperturaEnCurso = apertura
         paymentGeneration++
         // Una venta nueva arranca sin cobro propio: el pendiente de SU orden se lee vivo de la lista, al elegir tarjeta.
         undeterminedRequestId = null
@@ -830,6 +899,8 @@ class PaymentFlowViewModel @Inject constructor(
         serverTotalOverrideCents = null
         serverOrderTotalCents = null
         serverRemainingBalanceCents = null
+        _avisoDelPremio.value = null
+        premioConfirmadoCents = null
         val amount = currentBaseAmount()
 
         // Reset transient state from any previous session.
@@ -840,6 +911,7 @@ class PaymentFlowViewModel @Inject constructor(
         currentTipCents = 0
         createdOrderId = null
         createdOrderNumber = null
+        externalIdDeLaVenta = null
         // Una venta nueva no hereda la cancelación de la anterior: ni su observación, ni su aviso,
         // ni su salida. El aviso de «no se pudo guardar» describía la venta pasada y reaparecía
         // encima de ésta.
@@ -1312,6 +1384,7 @@ class PaymentFlowViewModel @Inject constructor(
                         // Create order only once per payment session.
                         val orderRequest = buildOrderRequest(cart)
                         val orderExternalId = sessionIdempotencyKey()
+                        externalIdDeLaVenta = orderExternalId
                         val orderResult = orderRepository.createOrder(
                             orderRequest,
                             staffId = selectedStaffId(),
@@ -1323,7 +1396,8 @@ class PaymentFlowViewModel @Inject constructor(
                             // así que el descuento tiene que existir antes de que
                             // vuelva. Con una segunda llamada quedaría una ventana con
                             // la cuenta al total completo.
-                            stampRewardId = cart.pendingStampRewardId,
+                            stampRewardId = cart.pendingStampRewardId?.takeIf { cart.premioAplica },
+                            stampRewardExpectedDiscount = cart.stampRewardCents.takeIf { it > 0 },
                         )
 
                         orderResult.fold(
@@ -1362,7 +1436,15 @@ class PaymentFlowViewModel @Inject constructor(
                                     val isQueueable = OrderRepository.isQueueableError(error) ||
                                         (error is OrderRepository.ServerException && OrderRepository.isQueueableHttpCode(error.code))
 
-                                    if (isQueueable) {
+                                    if (isQueueable && cart.pendingStampRewardId != null && cart.premioAplica) {
+                                        // 🔴 El canje de lealtad es online A PROPÓSITO (regla offline §5, como
+                                        // Square): no se encola ni se registra. El cajero reintenta (la misma
+                                        // llave deduplica si la creación sí llegó) o quita el premio.
+                                        _state.value = PaymentFlowState.Error(
+                                            message = MENSAJE_PREMIO_SIN_RED,
+                                            source = PaymentErrorSource.NETWORK,
+                                        )
+                                    } else if (isQueueable) {
                                         cashPaymentRepository.queueCashPayment(
                                             orderRequest = orderRequest,
                                             staffId = selectedStaffId(),
@@ -1384,7 +1466,7 @@ class PaymentFlowViewModel @Inject constructor(
                                             changeAmount = 0,
                                             isQueued = true,
                                         )
-                                        createKDSOrderAndPrint(PaymentMethod.CASH)
+                                        autoPrintAfterPayment(PaymentMethod.CASH)
                                     } else {
                                         estrenarLlaveTrasRechazoDeOrden(error)
                                         _state.value = PaymentFlowState.Error(
@@ -1440,6 +1522,21 @@ class PaymentFlowViewModel @Inject constructor(
                 // canceló, este cobro no sale. Lo que quede por cancelar ya se registró.
                 if (generacion != paymentGeneration) {
                     Log.d("💰", "Cancelado antes de enviar: el cobro no se manda a la terminal")
+                    return
+                }
+                // 🔴 Un premio que deja la cuenta en $0 (un café gratis como único producto): no hay nada que
+                // cobrarle a una tarjeta, y el servidor rechaza un cobro de terminal ≤ 0. La orden se cierra
+                // con un registro de $0, igual que una cortesía total.
+                val ordenEnCero = createdOrderId
+                val carritoEnCero = cartState
+                if (total <= 0 && !ordenEnCero.isNullOrBlank() && carritoEnCero != null) {
+                    recordCashPaymentForOrder(
+                        orderId = ordenEnCero,
+                        total = 0,
+                        cashReceivedCents = 0,
+                        changeCents = 0,
+                        orderRequest = buildOrderRequest(carritoEnCero),
+                    )
                     return
                 }
                 _state.value = PaymentFlowState.SentToTerminal(total)
@@ -1528,7 +1625,7 @@ class PaymentFlowViewModel @Inject constructor(
                                 receiptUrl = result.receiptUrl,
                                 inventoryWarningMessage = result.inventoryWarningMessage,
                             )
-                            createKDSOrderAndPrint(PaymentMethod.CASH)
+                            autoPrintAfterPayment(PaymentMethod.CASH)
                         },
                         onFailure = { error ->
                             Log.w("💵", "Cash payment recording failed: ${error.message}")
@@ -1556,7 +1653,7 @@ class PaymentFlowViewModel @Inject constructor(
                                     method = PaymentMethod.CASH,
                                     isQueued = true,
                                 )
-                                createKDSOrderAndPrint(PaymentMethod.CASH)
+                                autoPrintAfterPayment(PaymentMethod.CASH)
                             } else {
                                 _state.value = PaymentFlowState.Error(
                                     message = "No se pudo registrar el pago: ${error.message ?: "error desconocido"}",
@@ -1573,7 +1670,7 @@ class PaymentFlowViewModel @Inject constructor(
                         method = PaymentMethod.CASH,
                         paymentId = lastPaymentId,
                     )
-                    createKDSOrderAndPrint(PaymentMethod.CASH)
+                    autoPrintAfterPayment(PaymentMethod.CASH)
                 }
             }
             null -> {
@@ -1630,12 +1727,18 @@ class PaymentFlowViewModel @Inject constructor(
                             )
                         } else {
                             val orderExternalId = sessionIdempotencyKey()
+                            externalIdDeLaVenta = orderExternalId
                             val orderResult = orderRepository.createOrder(
                                 orderRequest,
                                 staffId = selectedStaffId(),
                                 customerId = attachedCustomerId,
                                 orderType = cart.orderType,
                                 externalId = orderExternalId,
+                                // 🔴 El premio viaja también en EFECTIVO. Antes este camino
+                                // creaba la orden sin él: el cajero tocaba «Aplicar premio» y
+                                // el cliente pagaba completo sin que nadie se enterara.
+                                stampRewardId = cart.pendingStampRewardId?.takeIf { cart.premioAplica },
+                                stampRewardExpectedDiscount = cart.stampRewardCents.takeIf { it > 0 },
                             )
                             orderResult.fold(
                                 onSuccess = { orderResponse ->
@@ -1658,7 +1761,23 @@ class PaymentFlowViewModel @Inject constructor(
                                     // dinero recibido alcanza; si no, se cobra el
                                     // estimado (como hasta hoy) en vez de dejar
                                     // al cajero pidiendo centavos de vuelta.
-                                    val totalFinal = adoptarTotalDelServer(orderRequest, orderResponse, total)
+                                    val adoptado = adoptarTotalDelServer(orderRequest, orderResponse, total)
+                                    // 🔴 Con premio no son centavos: el premio no se aplicó (o por menos) y el
+                                    // efectivo recibido no cubre el total real. NO se registra un cobro corto
+                                    // —dejaría la cuenta debiendo y la caja la daría por liquidada—: se vuelve
+                                    // a elegir cómo paga, con el total real y el motivo a la vista. La orden ya
+                                    // existe, así que el siguiente intento cobra contra ELLA, sin crear otra.
+                                    if (cart.pendingStampRewardId != null && adoptado > cashReceivedCents) {
+                                        _avisoDelPremio.value = avisoDeEfectivoCortoPorPremio(
+                                            orderResponse.data?.stampReward,
+                                            totalRealCents = adoptado,
+                                            recibidoCents = cashReceivedCents,
+                                        )
+                                        isProcessingPayment = false
+                                        _state.value = PaymentFlowState.SelectingPaymentMethod(adoptado)
+                                        return@fold
+                                    }
+                                    val totalFinal = adoptado
                                         .takeIf { it <= cashReceivedCents }
                                         ?: total.also { serverTotalOverrideCents = null }
                                     recordCashPaymentForOrder(
@@ -1680,7 +1799,15 @@ class PaymentFlowViewModel @Inject constructor(
                                     }
                                     val isQueueable = OrderRepository.isQueueableError(error) ||
                                         (error is OrderRepository.ServerException && OrderRepository.isQueueableHttpCode(error.code))
-                                    if (isQueueable) {
+                                    if (isQueueable && cart.pendingStampRewardId != null && cart.premioAplica) {
+                                        // 🔴 El canje de lealtad es online A PROPÓSITO (regla offline §5, como
+                                        // Square): no se encola ni se registra. El cajero reintenta (la misma
+                                        // llave deduplica si la creación sí llegó) o quita el premio.
+                                        _state.value = PaymentFlowState.Error(
+                                            message = MENSAJE_PREMIO_SIN_RED,
+                                            source = PaymentErrorSource.NETWORK,
+                                        )
+                                    } else if (isQueueable) {
                                         cashPaymentRepository.queueCashPayment(
                                             orderRequest = orderRequest,
                                             staffId = selectedStaffId(),
@@ -1702,7 +1829,7 @@ class PaymentFlowViewModel @Inject constructor(
                                             changeAmount = result.changeCents,
                                             isQueued = true,
                                         )
-                                        createKDSOrderAndPrint(PaymentMethod.CASH, result.changeCents)
+                                        autoPrintAfterPayment(PaymentMethod.CASH, result.changeCents)
                                     } else {
                                         // Non-queueable error (validation, auth, etc.)
                                         estrenarLlaveTrasRechazoDeOrden(error)
@@ -1748,7 +1875,7 @@ class PaymentFlowViewModel @Inject constructor(
                                 }
                                 recordCashSale(total, null)
                                 // 🔴 D16: este camino (cobro rápido en efectivo) NUNCA pasa por
-                                // `createKDSOrderAndPrint`/`autoPrintAfterPayment`, así que sin
+                                // `autoPrintAfterPayment`, así que sin
                                 // congelar `lastReceipt` AQUÍ, el primer toque de «Imprimir» en la
                                 // pantalla de éxito arma el recibo con la hora de ESE toque — no la
                                 // de la venta (revisión de conjunto, I2).
@@ -1857,7 +1984,7 @@ class PaymentFlowViewModel @Inject constructor(
                     changeAmount = changeCents,
                     isQueued = true,
                 )
-                createKDSOrderAndPrint(PaymentMethod.CASH, changeCents)
+                autoPrintAfterPayment(PaymentMethod.CASH, changeCents)
                 return
             }
         }
@@ -1925,14 +2052,16 @@ class PaymentFlowViewModel @Inject constructor(
                     receiptUrl = result.receiptUrl,
                     inventoryWarningMessage = result.inventoryWarningMessage,
                 )
-                createKDSOrderAndPrint(PaymentMethod.CASH, finalChange)
+                autoPrintAfterPayment(PaymentMethod.CASH, finalChange)
             },
             onFailure = { error ->
                 val isQueueable = OrderRepository.isQueueableError(error) ||
                     (error is OrderRepository.ServerException && OrderRepository.isQueueableHttpCode(error.code))
                 if (isQueueable && areaTicketRepository.session.current() == null) {
                     cashPaymentRepository.queueCashPayment(
-                        orderRequest = orderRequest,
+                        // 🔴 Lo que se COBRÓ, no el estimado del carrito: con un premio rechazado se
+                        // cobraron $100 y el pedido traía $70 — la cola registraría $70 al sincronizar.
+                        orderRequest = orderRequest.copy(total = total, tip = currentTipCents),
                         staffId = selectedStaffId(),
                         customerId = attachedCustomerId,
                         idempotencyKey = sessionIdempotencyKey(),
@@ -1950,7 +2079,7 @@ class PaymentFlowViewModel @Inject constructor(
                         changeAmount = changeCents,
                         isQueued = true,
                     )
-                    createKDSOrderAndPrint(PaymentMethod.CASH, changeCents)
+                    autoPrintAfterPayment(PaymentMethod.CASH, changeCents)
                 } else {
                     _state.value = PaymentFlowState.Error(
                         message = "No se pudo registrar el pago: ${error.message ?: "error desconocido"}",
@@ -2082,7 +2211,7 @@ class PaymentFlowViewModel @Inject constructor(
             receiptUrl = charged.receiptUrl,
             cobroTrasCancelar = trasCancelar,
         )
-        createKDSOrderAndPrint(PaymentMethod.CARD)
+        autoPrintAfterPayment(PaymentMethod.CARD)
     }
 
     /**
@@ -2661,13 +2790,6 @@ class PaymentFlowViewModel @Inject constructor(
         }
     }
 
-    // MARK: - KDS Order Creation & Auto Print
-
-    private fun createKDSOrderAndPrint(method: PaymentMethod = PaymentMethod.CARD, changeCents: Int? = null) {
-        createKDSOrderIfNeeded()
-        autoPrintAfterPayment(method, changeCents)
-    }
-
     /**
      * Cajón de dinero al cobrar en EFECTIVO (conducta estándar de POS), por la impresora de
      * recibos y sólo si tiene «abrir cajón al cobrar» activado. La regla de cuándo vive en
@@ -2694,60 +2816,6 @@ class PaymentFlowViewModel @Inject constructor(
         viewModelScope.launch { abrirCajonDeDinero() }
     }
 
-    private fun createKDSOrderIfNeeded() {
-        val cart = cartState ?: return
-        val realItems = cart.items.filter {
-            it.type is CartItemType.ProductItem && !it.locked
-        }
-        if (realItems.isEmpty()) return
-
-        val orderNumber = createdOrderId?.takeLast(4) ?: "Q-${(1000..9999).random()}"
-
-        viewModelScope.launch {
-            val kdsItems = realItems.map { item ->
-                KDSOrderItemRequest(
-                    productName = item.name,
-                    quantity = item.quantity,
-                    modifiers = item.selectedModifiers.map { it.modifierName },
-                    notes = item.itemNote,
-                )
-            }
-
-            kdsRepository.createOrder(
-                orderNumber = orderNumber,
-                orderType = "DINE_IN",
-                orderId = createdOrderId,
-                items = kdsItems,
-            ).fold(
-                onSuccess = {
-                    Log.d("💰", "KDS order created: #$orderNumber")
-                    // Notify same-device KDS via bus
-                    kdsOrderBus.publish(
-                        com.avoqado.pos.kds.domain.KDSOrder(
-                            id = "local-${System.currentTimeMillis()}",
-                            orderNumber = orderNumber,
-                            orderType = "En tienda",
-                            items = realItems.map { item ->
-                                com.avoqado.pos.kds.domain.KDSOrderItem(
-                                    id = item.id,
-                                    productName = item.name,
-                                    quantity = item.quantity,
-                                    modifiers = item.selectedModifiers.map { it.modifierName },
-                                    notes = item.itemNote,
-                                )
-                            },
-                            createdAt = System.currentTimeMillis(),
-                            status = com.avoqado.pos.kds.domain.KDSOrderStatus.NEW,
-                        ),
-                    )
-                },
-                onFailure = { error ->
-                    Log.d("💰", "KDS order failed (non-blocking): ${error.message}")
-                },
-            )
-        }
-    }
-
     // MARK: - Auto Print
 
     private fun autoPrintAfterPayment(method: PaymentMethod, changeCents: Int? = null) {
@@ -2757,6 +2825,11 @@ class PaymentFlowViewModel @Inject constructor(
         // vacíos — una transferencia abriría el cajón.
         val cobrado = (_state.value as? PaymentFlowState.Success)?.totalAmount ?: (currentBaseAmount() + currentTipCents)
         val abrirCajon = CajonDeDinero.debeAbrirse(method, manualMethod, selectedTender, cobrado)
+        // Etapa 3 del KDS (3.4): se decide AQUÍ, como el cajón — la venta siguiente limpia estos campos. Una venta
+        // ENCOLADA todavía no llega al servidor, que es quien arma la comanda de pantalla: sus estaciones «sólo
+        // pantalla» salen en papel de respaldo.
+        val servidorLaTiene = (_state.value as? PaymentFlowState.Success)?.isQueued != true
+        val origenDelFolio = externalIdDeLaVenta?.let { "sale:$it" }
 
         viewModelScope.launch {
             buildReceiptSnapshot(method, changeCents)?.let { receipt ->
@@ -2768,12 +2841,12 @@ class PaymentFlowViewModel @Inject constructor(
             if (abrirCajon) abrirCajonDeDinero()
 
             // 🔴 Sigue dentro de ESTE `viewModelScope.launch` — desligado del camino del cobro,
-            // que a esta altura ya resolvió `_state` (ver `createKDSOrderAndPrint`, llamado
+            // que a esta altura ya resolvió `_state` (ver `autoPrintAfterPayment`, llamado
             // DESPUÉS de `_state.value = Success`). Con el reintento esto puede tardar hasta
             // ~1 minuto: si viviera en la coroutine del pago, congelaría la caja con el
             // cliente enfrente. `PaymentFlowViewModelTest` fija que `state` llega a `Success`
             // aunque la comanda siga reintentando.
-            despacharComanda(cart)
+            despacharComanda(cart, servidorLaTiene, origenDelFolio)
         }
     }
 
@@ -2787,7 +2860,7 @@ class PaymentFlowViewModel @Inject constructor(
      * qué coroutine corre. [autoPrintAfterPayment] ya la corre dentro de la suya; [reintentarComanda]
      * abre una nueva. Nunca se llama desde el camino del cobro.
      */
-    private suspend fun despacharComanda(cart: CartState) {
+    private suspend fun despacharComanda(cart: CartState, servidorLaTiene: Boolean, origenDelFolio: String?) {
         val realItems = cart.items.filter {
             it.type is CartItemType.ProductItem && !it.locked
         }
@@ -2801,53 +2874,70 @@ class PaymentFlowViewModel @Inject constructor(
         // vale de área (§5.6). Mover el mecanismo no cambió ni una llamada de este camino:
         // mismos argumentos, mismo orden, mismo ticket legado (con su `category`) — lo fijan
         // PaymentFlowViewModelTest y ComandaDispatcherTest.
-        comandaDispatcher.dispatch(
-            venueId = secureStorage.venueId,
-            lines = realItems.map { item ->
-                RoutableItem(
-                    orderItemId = item.id,
-                    productId = (item.type as? CartItemType.ProductItem)?.productId,
-                    categoryId = item.categoryId,
-                    productName = item.name,
-                    quantity = item.quantity,
-                    modifiers = item.selectedModifiers.map { it.modifierName },
-                    notes = item.itemNote,
-                    // COMBOS — el nombre viaja con la línea para que cada estación
-                    // pueda encabezar SUS productos con el combo al que pertenecen.
-                    comboName = item.promotionInstanceId?.let { item.promotionName ?: "Combo" },
-                )
-            },
-            orderNumber = orderNumber,
-            orderType = "En tienda",
-            // «La libreta» (Task 16) — el id REAL de la orden, para que el reporte al servidor
-            // no dependa del `orderNumber` truncado/aleatorio de arriba.
-            orderId = createdOrderId,
-            // Sin estaciones configuradas: EXACTAMENTE lo de antes — un solo ticket de cocina
-            // abanicado a todas las impresoras con rol KITCHEN.
-            noStationsFallback = NoStationsFallback.LegacySingleTicket(
-                // COMBOS — en la comanda la llave es el NOMBRE (ver ComboPrintLines):
-                // los productos del mismo combo van juntos bajo un encabezado.
-                ComboPrintLines.kitchen(
-                    realItems.map { item ->
-                        val comboName = item.promotionInstanceId?.let { item.promotionName ?: "Combo" }
-                        val tag = comboName?.let { ComboPrintLines.Tag(key = it, name = it) }
-                        tag to KitchenItem(
-                            name = item.name,
-                            quantity = item.quantity,
-                            modifiers = item.selectedModifiers.map { it.modifierName }.ifEmpty { null },
-                            note = item.itemNote,
-                            category = item.subtitle,
-                        )
-                    },
+        // 🔴 Esto corre en un `viewModelScope.launch` suelto, DESPUÉS de cobrar: una excepción aquí
+        // (lectura de disco, bind de la impresora) no tenía quién la atrapara y cerraba la app con el
+        // cliente enfrente. Se dice como «No salió la comanda» —sin botón: no hay trabajo que reenviar—
+        // y sólo la cancelación se propaga.
+        try {
+            comandaDispatcher.dispatch(
+                venueId = secureStorage.venueId,
+                lines = realItems.map { item ->
+                    RoutableItem(
+                        orderItemId = item.id,
+                        productId = (item.type as? CartItemType.ProductItem)?.productId,
+                        categoryId = item.categoryId,
+                        productName = item.name,
+                        quantity = item.quantity,
+                        modifiers = item.selectedModifiers.map { it.modifierName },
+                        notes = item.itemNote,
+                        // COMBOS — el nombre viaja con la línea para que cada estación
+                        // pueda encabezar SUS productos con el combo al que pertenecen.
+                        comboName = item.promotionInstanceId?.let { item.promotionName ?: "Combo" },
+                    )
+                },
+                orderNumber = orderNumber,
+                orderType = "En tienda",
+                // «La libreta» (Task 16) — el id REAL de la orden, para que el reporte al servidor
+                // no dependa del `orderNumber` truncado/aleatorio de arriba.
+                orderId = createdOrderId,
+                // Sin estaciones configuradas: EXACTAMENTE lo de antes — un solo ticket de cocina
+                // abanicado a todas las impresoras con rol KITCHEN.
+                noStationsFallback = NoStationsFallback.LegacySingleTicket(
+                    // COMBOS — en la comanda la llave es el NOMBRE (ver ComboPrintLines):
+                    // los productos del mismo combo van juntos bajo un encabezado.
+                    ComboPrintLines.kitchen(
+                        realItems.map { item ->
+                            val comboName = item.promotionInstanceId?.let { item.promotionName ?: "Combo" }
+                            val tag = comboName?.let { ComboPrintLines.Tag(key = it, name = it) }
+                            tag to KitchenItem(
+                                name = item.name,
+                                quantity = item.quantity,
+                                modifiers = item.selectedModifiers.map { it.modifierName }.ifEmpty { null },
+                                note = item.itemNote,
+                                category = item.subtitle,
+                            )
+                        },
+                    ),
                 ),
-            ),
-            // Una comanda que sigue reintentando o que se rindió se DICE, con la estación por
-            // nombre y la CAUSA REAL que reportó la impresora — nunca un texto genérico.
-            // Una comanda que sigue reintentando o que se rindió se DICE, con la estación por
-            // nombre y la CAUSA REAL que reportó la impresora — nunca un texto genérico. La regla
-            // de "de qué venta habla este aviso" vive en UN solo sitio: [aplicarEstadoDeComanda].
-            alCambiarEstado = { estado -> aplicarEstadoDeComanda(estado, orderNumber) },
-        )
+                // Una comanda que sigue reintentando o que se rindió se DICE, con la estación por
+                // nombre y la CAUSA REAL que reportó la impresora — nunca un texto genérico.
+                // Una comanda que sigue reintentando o que se rindió se DICE, con la estación por
+                // nombre y la CAUSA REAL que reportó la impresora — nunca un texto genérico. La regla
+                // de "de qué venta habla este aviso" vive en UN solo sitio: [aplicarEstadoDeComanda].
+                // Etapa 3 del KDS (3.4): la caja decide por estación — ver `KitchenDeliveryPolicy`.
+                servidorLaTiene = servidorLaTiene,
+                origenDelFolio = origenDelFolio,
+                alCambiarEstado = { estado -> aplicarEstadoDeComanda(estado, orderNumber) },
+            )
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e("🍳", "❌ La comanda del pedido $orderNumber reventó al despacharse: ${e.message}", e)
+            aplicarEstadoDeComanda(
+                EstadoDeComanda.NoSalio(listOf("Cocina"), e.message, orderNumber, trabajo = null),
+                orderNumber,
+            )
+        }
     }
 
     private val _reintentandoComandaManualmente = MutableStateFlow(false)
@@ -2998,7 +3088,8 @@ class PaymentFlowViewModel @Inject constructor(
 
         val isFullPayment = splitTypeValue == "FULLPAYMENT"
         val receiptSubtotal = if (cart != null && isFullPayment) cart.subtotalCents else baseAmount
-        val receiptDiscount = if (cart != null && isFullPayment && cart.discountCents > 0) cart.discountCents else 0
+        // El premio de cartilla también es descuento en el papel: sin él, subtotal − descuento ≠ total.
+        val receiptDiscount = if (cart != null && isFullPayment) cart.discountCents + premioEnLaCuenta(cart) else 0
         val receiptTax = if (cart != null && isFullPayment) cart.taxCents else 0
         val resolvedChange = changeCents ?: successState?.changeAmount
 
@@ -3152,6 +3243,7 @@ class PaymentFlowViewModel @Inject constructor(
                     remainingBalanceCents = serverRemainingBalanceCents ?: remaining,
                     paidItemIds = validPaidIds,
                     orderId = createdOrderId,
+                    premioConfirmadoCents = premioConfirmadoCents,
                 )
             }
             "EQUALPARTS", "CUSTOMAMOUNT" -> {
@@ -3174,6 +3266,7 @@ class PaymentFlowViewModel @Inject constructor(
                     // un link, un abono anterior). La resta local es el respaldo.
                     remainingBalanceCents = serverRemainingBalanceCents ?: remaining,
                     orderId = createdOrderId,
+                    premioConfirmadoCents = premioConfirmadoCents,
                 )
             }
             else -> {
@@ -3194,6 +3287,7 @@ class PaymentFlowViewModel @Inject constructor(
                     splitType = splitTypeValue,
                     remainingBalanceCents = 0,
                     orderId = createdOrderId,
+                    premioConfirmadoCents = premioConfirmadoCents,
                 )
             }
         }
@@ -3226,10 +3320,10 @@ class PaymentFlowViewModel @Inject constructor(
         return when (splitTypeValue) {
             "FULLPAYMENT" -> PaymentContext(
                 subtotalCents = cart.subtotalCents,
-                discountCents = cart.discountCents,
+                discountCents = cart.discountCents + premioEnLaCuenta(cart),
                 taxCents = cart.taxCents,
                 tipCents = currentTipCents,
-                totalCents = cart.totalCents + currentTipCents,
+                totalCents = cart.totalCents + cart.stampRewardCents - premioEnLaCuenta(cart) + currentTipCents,
                 rating = currentRating,
                 items = visibleItems,
                 splitType = splitTypeValue,
@@ -3267,6 +3361,27 @@ class PaymentFlowViewModel @Inject constructor(
         response: CreateOrderResponse,
         estimadoLocal: Int,
     ): Int {
+        // 🔴 Premio de cartilla: el carrito ya restó un ESTIMADO; aquí manda lo que el servidor
+        // CONFIRMÓ. Va antes que la promoción porque el total del servidor tras el canje no es
+        // de fiar todavía (pierde descuento de cuenta y propina). Ver `cobroConPremio`.
+        val carrito = cartState
+        if (carrito?.pendingStampRewardId != null) {
+            val cobro = cobroConPremio(estimadoLocal, carrito.stampRewardCents, response.data?.stampReward)
+            _avisoDelPremio.value = cobro.aviso
+            val confirmado = response.data?.stampReward?.discountCents ?: 0
+            premioConfirmadoCents = confirmado
+            // Lo que vale la venta ENTERA (con propina, como el total del servidor): contra esto se mide el
+            // resto de un pago dividido. `estimadoLocal` es sólo la parte que se cobra ahora.
+            serverOrderTotalCents = (carrito.totalCents + carrito.stampRewardCents - confirmado + currentTipCents).coerceAtLeast(0)
+            // En pago dividido la parte la eligió el cajero y no se toca: el resto sale del saldo
+            // que devuelve el servidor, que ya trae el premio.
+            if (!esPagoCompleto()) return estimadoLocal
+            if (cobro.totalCents != estimadoLocal) {
+                serverTotalOverrideCents = cobro.totalCents
+                Log.d("🎁", "Premio confirmado: se cobra ${cobro.totalCents} (el carrito estimaba $estimadoLocal)")
+            }
+            return cobro.totalCents
+        }
         val laVentaLlevaPromocion = orderRequest.items.any { it.promotionRef != null }
         // Se GUARDA aunque no se adopte. En pago dividido el importe de ESTA
         // parte lo eligió el cajero y no se toca, pero el RESTO tiene que salir

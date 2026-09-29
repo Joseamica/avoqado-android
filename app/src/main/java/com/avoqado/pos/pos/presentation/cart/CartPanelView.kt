@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.AttachMoney
 import androidx.compose.material.icons.automirrored.filled.CallSplit
 import androidx.compose.material.icons.filled.CardGiftcard
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Campaign
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
@@ -39,6 +40,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
@@ -112,6 +114,13 @@ fun CartPanelView(
      * compilador cace al siguiente que lo olvide.
      */
     onSplitPayment: () -> Unit,
+    /**
+     * Quita el premio de cartilla de la venta. SIN default, por la misma lección que
+     * [onSplitPayment]: con `= {}` la X del carrito de teléfono quedaría muerta.
+     */
+    onRemoveStampReward: () -> Unit,
+    /** false con una venta a medio cobrar: el premio ya quedó en su orden y no se quita (sin X). */
+    premioEditable: Boolean = true,
     /** Cumplimiento de la venta (header de la sección, antes fijo "En tienda"). */
     onOrderTypeChange: (String) -> Unit = {},
     // Referral capture (Plan 5B) — optional, the cart still works without it.
@@ -386,6 +395,22 @@ fun CartPanelView(
                             name = cartState.orderDiscount.name,
                             displayValue = cartState.orderDiscount.displayValue,
                             amount = "-${cartState.orderDiscountDisplay}",
+                            useDenseTabletLayout = useDenseTabletLayout,
+                        )
+                    }
+
+                    // 🔴 El premio de cartilla, como descuento de la cuenta ANTES de cobrar (Square,
+                    // Toast): el cajero y el cliente ven lo mismo que se va a cobrar. El monto es
+                    // un estimado; al cobrar manda el que confirma el servidor.
+                    cartState.pendingStampReward?.let { premio ->
+                        PremioDeCartillaRow(
+                            etiqueta = premio.etiqueta,
+                            monto = when {
+                                !cartState.premioAplica -> "No aplica a esta venta"
+                                cartState.stampRewardCents > 0 -> "-${cartState.stampRewardDisplay}"
+                                else -> "Se calcula al cobrar"
+                            },
+                            onQuitar = onRemoveStampReward.takeIf { premioEditable },
                             useDenseTabletLayout = useDenseTabletLayout,
                         )
                     }
@@ -971,6 +996,58 @@ private fun DiscountItemRow(
             },
             color = DiscountText,
         )
+    }
+}
+
+/** El premio de cartilla aplicado: misma forma que [DiscountItemRow], con X para quitarlo. */
+@Composable
+private fun PremioDeCartillaRow(
+    etiqueta: String,
+    monto: String,
+    onQuitar: (() -> Unit)?,
+    useDenseTabletLayout: Boolean = false,
+) {
+    val estilo = if (useDenseTabletLayout) MaterialTheme.typography.bodySmall else MaterialTheme.typography.bodyMedium
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(
+                horizontal = AvoqadoTheme.spacing.xl,
+                vertical = if (useDenseTabletLayout) AvoqadoTheme.spacing.sm else AvoqadoTheme.spacing.md,
+            ),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(if (useDenseTabletLayout) 44.dp else 48.dp)
+                .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
+                .background(MaterialTheme.colorScheme.outlineVariant),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.Filled.CardGiftcard,
+                contentDescription = null,
+                tint = Color.White,
+                modifier = Modifier.size(if (useDenseTabletLayout) 18.dp else 20.dp),
+            )
+        }
+        Text(
+            text = "Premio: $etiqueta",
+            style = estilo,
+            color = MaterialTheme.colorScheme.onSurface,
+            modifier = Modifier.weight(1f),
+        )
+        Text(text = monto, style = estilo, color = DiscountText)
+        if (onQuitar != null) {
+            IconButton(onClick = onQuitar) {
+                Icon(
+                    Icons.Filled.Close,
+                    contentDescription = "Quitar premio",
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
     }
 }
 

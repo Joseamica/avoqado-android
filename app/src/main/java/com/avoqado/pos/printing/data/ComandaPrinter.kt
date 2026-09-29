@@ -8,6 +8,7 @@ import com.avoqado.pos.printing.data.model.PrinterConnectionType
 import com.avoqado.pos.printing.data.model.PrinterRole
 import com.avoqado.pos.printing.data.model.SavedPrinter
 import com.avoqado.pos.printing.routing.ConsolidatedLine
+import com.avoqado.pos.printing.routing.KitchenDeliveryPolicy
 import com.avoqado.pos.printing.routing.PrintConfig
 import com.avoqado.pos.printing.routing.PrinterInfo
 import com.avoqado.pos.printing.routing.TicketPlan
@@ -47,6 +48,11 @@ class ComandaPrinter @Inject constructor(
         val copies: Int,
         val stationLabel: String,
         val ticket: KitchenTicketData,
+        /**
+         * Etapa 3 del KDS (3.4): la hoja es de RESPALDO de una estación «sólo pantalla» (`StationInfo.respaldoLocal`).
+         * Si ni la default ni la cocina local tienen impresora, [printComandas] la manda a la de la CAJA.
+         */
+        val deRespaldo: Boolean = false,
     )
 
     /**
@@ -70,7 +76,11 @@ class ComandaPrinter @Inject constructor(
         internalPrinter: SavedPrinter? = null,
     ): ResolvedComanda {
         val station = plan.stationId?.let { id -> config.stations.firstOrNull { it.id == id } }
-        val printerInfo = station?.printerId?.let { pid -> config.printers.firstOrNull { it.id == pid } }
+        // Etapa 3 del KDS (3.4): una estación «sólo pantalla» que sale de RESPALDO no tiene impresora propia — usa la de
+        // la estación default (spec §5); si tampoco hay, `printComandas` cae a la cocina local y luego a la caja.
+        val deRespaldo = station?.respaldoLocal == true
+        val printerId = if (deRespaldo) impresoraDeLaDefault(config) else station?.printerId
+        val printerInfo = printerId?.let { pid -> config.printers.firstOrNull { it.id == pid } }
         val savedPrinter = printerInfo?.toKitchenSavedPrinter(internalPrinter)
         val stationLabel = station?.name ?: UNROUTED_STATION_LABEL
 
@@ -89,7 +99,7 @@ class ComandaPrinter @Inject constructor(
                 },
             ),
             serverName = serverName,
-            stationName = stationLabel,
+            stationName = if (deRespaldo) KitchenDeliveryPolicy.encabezadoDeRespaldo(stationLabel) else stationLabel,
         )
 
         return ResolvedComanda(
@@ -97,8 +107,13 @@ class ComandaPrinter @Inject constructor(
             copies = (station?.copies ?: 1).coerceAtLeast(1),
             stationLabel = stationLabel,
             ticket = ticket,
+            deRespaldo = deRespaldo,
         )
     }
+
+    /** La impresora de la estación default (activa), o `null`. La usa sólo el papel de respaldo. */
+    private fun impresoraDeLaDefault(config: PrintConfig): String? =
+        config.defaultStationId?.let { d -> config.stations.firstOrNull { it.id == d && it.active } }?.printerId
 
     /**
      * Print one comanda per station. Each plan is wrapped independently — a failing
@@ -189,7 +204,11 @@ class ComandaPrinter @Inject constructor(
             try {
                 val resolved = resolve(plan, config, orderNumber, orderType, serverName, comboNames, internalPrinter)
                 stationLabel = resolved.stationLabel
-                val printer = resolved.savedPrinter ?: printerService.getDefaultPrinter(PrinterRole.KITCHEN)
+                val printer = resolved.savedPrinter
+                    ?: printerService.getDefaultPrinter(PrinterRole.KITCHEN)
+                    // Etapa 3 del KDS (3.4): el respaldo es el ÚLTIMO papel que hay — sin default ni cocina local, sale en
+                    // la impresora de la caja. Sólo el respaldo: una estación de impresora sin impresora se salta como hoy.
+                    ?: if (resolved.deRespaldo) printerService.getDefaultPrinter(PrinterRole.RECEIPT) else null
                 if (printer == null) {
                     Log.w(
                         TAG,

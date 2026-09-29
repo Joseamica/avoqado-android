@@ -115,6 +115,11 @@ class ReintentoDeComanda @Inject constructor(
         this.esperar = esperar
     }
 
+    companion object {
+        /** La causa cuando lo que no salió fue SALTADO (la estación no tiene impresora). Mismo texto que iOS. */
+        const val CAUSA_SIN_IMPRESORA = "Esa estación no tiene impresora: revisa la configuración de impresoras."
+    }
+
     /**
      * @param maxIntentos tope de intentos para ESTA llamada — default el de
      *   [PoliticaDeReintento.INTENTOS_MAXIMOS] (~1 minuto). El mostrador no tiene a quién
@@ -180,7 +185,9 @@ class ReintentoDeComanda @Inject constructor(
         } else {
             EstadoDeComanda.NoSalio(
                 estaciones = sinComanda,
-                causa = ultimo.lastError,
+                // QA 3.4: si en el último intento no TRONÓ nada, lo que falta son estaciones SALTADAS (sin impresora):
+                // «La impresora no respondió» sería mentira. Con una falla real, la causa real.
+                causa = if (ultimo.failedPlans.isEmpty()) CAUSA_SIN_IMPRESORA else ultimo.lastError,
                 orderNumber = orderNumber,
                 // 🔴 SÓLO lo que TRONÓ. Un plan saltado no tiene impresora: reenviarlo no le
                 // inventa una, y meterlo aquí haría que el botón prometa algo imposible.

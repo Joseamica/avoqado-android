@@ -255,18 +255,20 @@ class RoleManager @Inject constructor(
         get() = role in setOf("CASHIER", "MANAGER", "ADMIN", "OWNER", "SUPERADMIN")
 
     /**
-     * Kitchen display: WAITER, CASHIER, MANAGER, ADMIN, OWNER, SUPERADMIN
-     *
-     * ⚠️ DIVERGE, y NO hay permiso que espejar: las 4 rutas de `/mobile/venues/:id/kds`
-     * llevan `authenticateTokenMiddleware + requireVenueMembership` y NINGÚN
-     * `checkPermission`. O sea que el server se lo sirve a cualquier miembro del
-     * venue —incluido KITCHEN, el rol que lleva el nombre de la pantalla, al que
-     * esta lista se lo niega—. Elegir un permiso aquí sería INVENTARLE una regla
-     * al server, no espejarla: o el server empieza a checar uno, o esto es una
-     * decisión de producto declarada. Se deja como está a propósito.
+     * Pantalla de cocina — espejo EXACTO de `orders:update`, el permiso de las rutas que la OPERAN (LISTO, deshacer,
+     * «marcar todas»; `mobile.routes.ts`, etapa 3). Leer el tablero es `orders:read` y lo tienen los 9 roles, pero una
+     * entrada al menú desde la que no se puede marcar nada sería mentir. Con la lista real entran WAITER, CASHIER,
+     * KITCHEN (la que le da nombre, antes fuera), MANAGER, ADMIN, OWNER y SUPERADMIN; VIEWER y HOST no. Espejo de iOS.
      */
     val canAccessKDS: Boolean
-        get() = role in setOf("WAITER", "CASHIER", "MANAGER", "ADMIN", "OWNER", "SUPERADMIN")
+        get() = hasVenuePermission("orders:update", fallbackRoles = KDS_RESPALDO)
+
+    /**
+     * Prender o apagar la pantalla de una estación desde la tablet — espejo EXACTO de `printers:manage` (decisión D-B
+     * del 27-sep): gerente explícito, admin y dueño por `printers:*`, superadmin por `*:*`. Espejo de iOS.
+     */
+    val canManagePrinters: Boolean
+        get() = hasVenuePermission("printers:manage", fallbackRoles = MANAGER_UP)
 
     // MARK: - Effective venue permissions
 
@@ -355,6 +357,9 @@ class RoleManager @Inject constructor(
 
         /** El respaldo histórico de lo que se usa desde el piso. */
         val FLOOR = setOf("WAITER", "CASHIER", "MANAGER", "ADMIN", "OWNER", "SUPERADMIN")
+
+        /** El respaldo de la pantalla de cocina: el piso más la cocina. */
+        val KDS_RESPALDO = FLOOR + "KITCHEN"
     }
 }
 

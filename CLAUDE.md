@@ -207,7 +207,7 @@ Guía de instalación en un local: **`docs/INSTALACION-HUB-LAN.md`**
 
 Lo mínimo que tienes que saber:
 
-- Los 14 tipos de intent se espejan por nombre EXACTO entre server, Android e
+- Los 15 tipos de intent se espejan por nombre EXACTO entre server, Android e
   iOS. Agregar uno = tocar los tres + el MCP `pos_sync_status`, en el MISMO cambio.
 - Hay TRES estados de ack: `ACKED`, `REJECTED` (permanente → cuarentena) y
   `RETRY` (transitorio → el cliente reintenta). Convertir un transitorio en

@@ -2,6 +2,11 @@ package com.avoqado.pos.printing.data
 
 import android.content.Context
 import android.util.Log
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -38,7 +43,15 @@ class ComandasPendientesStore @Inject constructor(
      * quedaría sin una sola prueba.
      */
     private val almacen: AlmacenDeTexto,
+    /**
+     * Etapa 3 del KDS (3.5), ronda 3 de la Task 6: con qué se cierran las entregas por WiFi de una comanda que una
+     * persona dio por resuelta ([yaLaCante]). Hilt SIEMPRE la inyecta. ponytail: opcional porque ~20 pruebas construyen
+     * el almacén con un solo argumento; sin ella «Ya la canté» sólo suelta la libreta, como antes.
+     */
+    private val entregaPorWifi: EntregaPorWifi? = null,
 ) {
+    /** Donde corre el cierre de [yaLaCante]: el toque es de la pantalla, el borrado es de la base. */
+    private val fondo = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val json = Json { ignoreUnknownKeys = true }
 
     private val _pendiente = MutableStateFlow<EstadoDeComanda.NoSalio?>(null)
@@ -53,8 +66,12 @@ class ComandasPendientesStore @Inject constructor(
      */
     val pendiente: StateFlow<EstadoDeComanda.NoSalio?> = _pendiente.asStateFlow()
 
+    /** El venue del último [cargar]; `null` = nunca se cargó (sin venue conocido). Lo usa la guarda de [guardar]. */
+    @Volatile private var venueCargado: String? = null
+
     /** Se llama UNA vez al abrir sesión en un venue — ver `AppState.startOfflineOutbox`. */
     fun cargar(venueIdActual: String?, ahora: Long = System.currentTimeMillis()) {
+        venueCargado = venueIdActual
         _pendiente.value = leer(venueIdActual, ahora)
     }
 
@@ -68,17 +85,35 @@ class ComandasPendientesStore @Inject constructor(
     )
 
     /**
+     * La ÚNICA guarda de lo que entra aquí (revisión final de la 3.4, I-1 y m-8): los llamadores —mostrador y ronda—
+     * pueden conservar la suya, pero la verdad vive en este almacén.
+     *
+     * 1. **Sin trabajo, nada.** Un `NoSalio` sin trabajo (todas las estaciones saltadas, o el camino legado) no se
+     *    puede reimprimir; guardarlo PISABA el pendiente recuperable de otra venta —su reintento y su «Volver a
+     *    imprimir»— en memoria y en disco. Devuelve `false` sin tocar ninguno de los dos.
+     * 2. **Venue ajeno, se rechaza entero.** Si `trabajo.venueId` no es el del último [cargar], NO se publica en
+     *    memoria —el reloj de reintento y Cobrar, que leen [pendiente], lo mandarían a las impresoras de la sucursal
+     *    equivocada— 🔴 **y tampoco se escribe a disco** (igual que iOS): el almacén es de UNA ranura
+     *    (`PrefsComoAlmacen`, una sola clave `ultima_no_salio`, sin ranuras por venue), así que escribirlo pisaría el
+     *    pendiente recuperable del venue actual en disco. Lo único que se pierde es el reintento automático del
+     *    trabajo viejo; su aviso ya se mostró. Devuelve `false`.
+     * 3. **Nunca cargado** (sin venue conocido): como antes, se escribe y se publica.
+     *
      * @return `true` si el aviso quedó de verdad en el aparato. 🔴 Un `false` NO se puede tratar
      * como éxito: significa que si la app muere ahora, esa comanda desaparece.
      */
-    fun guardar(estado: EstadoDeComanda.NoSalio, ahora: Long = System.currentTimeMillis()): Boolean =
-        runCatching {
+    fun guardar(estado: EstadoDeComanda.NoSalio, ahora: Long = System.currentTimeMillis()): Boolean {
+        val trabajo = estado.trabajo ?: return false
+        val cargado = venueCargado
+        if (cargado != null && trabajo.venueId != cargado) return false
+        return runCatching {
             val texto = json.encodeToString(
-                Guardada(estado.estaciones, estado.causa, estado.orderNumber, estado.trabajo, ahora),
+                Guardada(estado.estaciones, estado.causa, estado.orderNumber, trabajo, ahora),
             )
             almacen.escribir(texto).also { if (it) _pendiente.value = estado }
         }.onFailure { Log.w(TAG, "No se pudo guardar la comanda pendiente: ${it.message}") }
             .getOrDefault(false)
+    }
 
     /**
      * Devuelve el aviso guardado, o `null` si no hay o si ya VENCIÓ.
@@ -123,6 +158,28 @@ class ComandasPendientesStore @Inject constructor(
             orderNumber = guardada.orderNumber,
             trabajo = guardada.trabajo,
         )
+    }
+
+    /**
+     * «Ya la canté» (I2 de la revisión de la Task 7): una PERSONA resolvió la comanda. Se suelta la libreta Y se cierran
+     * las entregas por WiFi del papel de RESPALDO de esa comanda (venue + orden + plan exacto, como `cerrarPorPapel`): si
+     * no, el reloj de `ReplayDeEntregasKds` la imprimiría sola en el siguiente tic o en la próxima apertura — el ticket
+     * duplicado que esta libreta existe para evitar.
+     *
+     * 🔴 NO va dentro de [limpiar]: `limpiar` también lo llama un `Salio` de OTRA venta y el reloj de la libreta; cerrar
+     * ahí borraría la fila que recupera la comanda de una ronda de mesa en la próxima apertura (pérdida, no duplicado).
+     *
+     * @return el cierre en curso (las pruebas lo esperan), o `null` si no había nada que cerrar.
+     */
+    fun yaLaCante(): Job? {
+        val trabajo = _pendiente.value?.trabajo
+        limpiar()
+        val entregas = entregaPorWifi ?: return null
+        val venueId = trabajo?.venueId ?: return null
+        val respaldo = trabajo.config.stations.filter { it.respaldoLocal }.map { it.id }.toSet()
+        val planes = trabajo.planes.filter { it.stationId in respaldo }
+        if (planes.isEmpty()) return null
+        return fondo.launch { entregas.cerrarPorPapel(venueId, trabajo.orderNumber, planes) }
     }
 
     fun limpiar() {

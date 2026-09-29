@@ -68,7 +68,9 @@ import com.avoqado.pos.transactions.data.RefundRepository
 import com.avoqado.pos.transactions.data.model.RefundAmountCalculator
 import com.avoqado.pos.transactions.data.model.centavosDelImporte
 import com.avoqado.pos.transactions.data.model.importeAjustadoAlTope
+import com.avoqado.pos.transactions.data.model.propinaMarcadaPorDefecto
 import com.avoqado.pos.transactions.data.model.tipRefundCentsParaEnvio
+import com.avoqado.pos.transactions.data.model.tipRefundCentsPorArticulos
 import com.avoqado.pos.transactions.data.model.topeReembolsable
 import com.avoqado.pos.transactions.data.model.Transaction
 import com.avoqado.pos.transactions.data.model.TransactionItem
@@ -194,6 +196,31 @@ fun IssueRefundSheet(
         item.id != null && item.trackInventory
     }
 
+    // Reembolso POR ARTÍCULOS: la casilla arranca marcada si se devuelve toda la venta que queda;
+    // si el cajero la toca, manda su elección hasta cerrar la hoja.
+    val propinaRestante = transaction.remainingRefundableTip ?: 0.0
+    var propinaArticulosAMano by remember(transaction.id) { mutableStateOf<Boolean?>(null) }
+    val propinaArticulosMarcada = propinaArticulosAMano
+        ?: propinaMarcadaPorDefecto(itemsAmount, transaction.remainingRefundableSale)
+    // Sólo con artículos elegidos: marcar la casilla ANTES de elegir no puede armar un total de puro propina.
+    // La propina se topa con lo que queda del TOTAL tras los artículos (`maxRefundable`): con un acumulado
+    // histórico sin filas, venta + propina puede sumar más de lo que el servidor deja salir. UN solo cálculo
+    // (`tipRefundCentsPorArticulos`) alimenta el monto de la casilla, el resumen, el total y la petición.
+    val propinaQueCabe = (
+        tipRefundCentsPorArticulos(true, transaction.remainingRefundableTip, maxRefundable, itemsAmount) ?: 0
+    ) / 100.0
+    val propinaArticulosCents = if (tab == RefundTab.ITEMS && itemsAmount > 0) {
+        tipRefundCentsPorArticulos(
+            propinaArticulosMarcada,
+            transaction.remainingRefundableTip,
+            maxRefundable,
+            itemsAmount,
+        )
+    } else {
+        null
+    }
+    val propinaArticulos = (propinaArticulosCents ?: 0) / 100.0
+
     val amountToRefund = if (tab == RefundTab.ITEMS) itemsAmount else parsedAmount
     // 🔴 El tope depende de si la propina viaja. Con la casilla desmarcada la app manda
     // `tipRefundCents = 0` y el servidor lee el importe ENTERO como venta: ofrecer el
@@ -287,8 +314,9 @@ fun IssueRefundSheet(
         // pestaña dejaba al cajero con «Selecciona al menos un artículo» y ni un artículo que
         // tocar, sin forma de recuperarlos. Bastaban 600 dp de alto, con el teclado CERRADO.
         //
-        // En la pestaña de artículos el pie es corto (motivo, resumen y botones: ~200 dp), así
-        // que con el alto de cualquier aparato real cabe sin comprimir nada. La banda sólo
+        // En la pestaña de artículos el pie es corto (motivo, resumen y botones: ~200 dp; ~265 dp
+        // cuando el cobro trae propina y suma la casilla «Incluir propina», sin teclado abierto),
+        // así que con el alto de cualquier aparato real cabe sin comprimir nada. La banda sólo
         // cede su sitio donde es prescindible: en importe, donde su único contenido es un
         // aviso que el pie ya repite palabra por palabra.
         val apretado = tab == RefundTab.AMOUNT && maxHeight < 640.dp
@@ -563,6 +591,18 @@ fun IssueRefundSheet(
                 )
             }
 
+            // Por ARTÍCULOS: la propina que queda del cobro. Antes nunca se devolvía y el cajero
+            // no tenía forma de hacerlo; ahora es una decisión visible junto al total.
+            if (tab == RefundTab.ITEMS && propinaRestante > 0) {
+                FilaIncluirPropina(
+                    paymentTipAmount = propinaQueCabe,
+                    includeTip = propinaArticulosMarcada,
+                    onIncludeTipChange = { propinaArticulosAMano = it },
+                    porArticulos = true,
+                    modifier = Modifier.padding(top = spacing.md),
+                )
+            }
+
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -634,7 +674,7 @@ fun IssueRefundSheet(
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                         Text(
-                            text = formatMoney(amountToRefund),
+                            text = formatMoney(amountToRefund + propinaArticulos),
                             style = MaterialTheme.typography.headlineSmall,
                             fontWeight = FontWeight.SemiBold,
                         )
@@ -658,9 +698,26 @@ fun IssueRefundSheet(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
+                        // Lo mismo por ARTÍCULOS: el total ya incluye (o no) la propina, y se dice.
+                        if (tab == RefundTab.ITEMS && propinaRestante > 0 && itemsAmount > 0) {
+                            Text(
+                                text = if (propinaArticulosCents != null) {
+                                    "Incluye ${formatMoney(propinaArticulos)} de propina"
+                                } else {
+                                    "Sin tocar la propina del mesero"
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
                     Text(
-                        text = "Disponible ${formatMoney(topeActual)}",
+                        // Por artículos el tope es la VENTA restante (la propina va aparte, en la casilla).
+                        text = if (tab == RefundTab.ITEMS) {
+                            "Venta disponible ${formatMoney(topeActual)}"
+                        } else {
+                            "Disponible ${formatMoney(topeActual)}"
+                        },
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -735,13 +792,17 @@ fun IssueRefundSheet(
                                         item.id?.let { id ->
                                             AssociatedRefundItem(
                                                 orderItemId = id,
-                                                quantity = refundQtyByItem[id] ?: item.quantity,
+                                                // Lo que QUEDA de la línea: con la original, una
+                                                // línea ya devuelta en parte rebotaba con 400.
+                                                quantity = refundQtyByItem[id] ?: item.refundableQty,
                                             )
                                         }
                                     },
                                     restockItemIds = restockableItems
                                         .mapNotNull { it.id }
                                         .filter { restockItemIds.contains(it) },
+                                    // null ⇒ el campo no viaja (casilla desmarcada): sólo artículos.
+                                    tipRefundCents = propinaArticulosCents,
                                 )
                             } else {
                                 // When the user unchecks "Incluir propina" and
@@ -778,10 +839,11 @@ fun IssueRefundSheet(
                                     // local, y un PAY_OUT que llega por `/cash-drawer/sync` es
                                     // indistinguible de un retiro a mano.
                                     //
-                                    // El movimiento aparece en la tablet en cuanto se abre Caja:
-                                    // `CashDrawerViewModel.init` → `syncFromApi()` baja los eventos
-                                    // que el servidor confirmó y de ahí sale el corte. La copia local
-                                    // se ALIMENTA de lo confirmado; no se adelanta a ciegas.
+                                    // El movimiento aparece en la tablet en cuanto se entra a Caja:
+                                    // CADA entrada (`CashDrawerViewModel.alEntrar` → `syncFromApi()`)
+                                    // baja los eventos que el servidor confirmó, y el cierre adopta la
+                                    // caja que devuelve el servidor; de ahí sale el corte. La copia
+                                    // local se ALIMENTA de lo confirmado; no se adelanta a ciegas.
                                     //
                                     // Vigilado por `RefundCashDrawerOwnershipTest`.
                                     onRefunded()
@@ -832,7 +894,7 @@ private fun ItemsBody(
             // lo que alcanza a ver (medido en la Sunmi, 2026-09-11).
             Text(
                 text = "${transaction.items.size} artículo${if (transaction.items.size == 1) "" else "s"} · " +
-                    "Máximo reembolsable: ${formatMoney(maxRefundable)}",
+                    "Venta máxima reembolsable: ${formatMoney(maxRefundable)}",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -1197,6 +1259,8 @@ private fun FilaIncluirPropina(
     includeTip: Boolean,
     onIncludeTipChange: (Boolean) -> Unit,
     modifier: Modifier = Modifier,
+    /** Reembolso por ARTÍCULOS: otros subtítulos (el importe de la derecha es la propina que queda). */
+    porArticulos: Boolean = false,
 ) {
     val spacing = AvoqadoTheme.spacing
     Box(modifier = modifier) {
@@ -1221,10 +1285,11 @@ private fun FilaIncluirPropina(
                     fontWeight = FontWeight.Medium,
                 )
                 Text(
-                    text = if (includeTip) {
-                        "Se reparte proporcional entre venta y propina del pago original."
-                    } else {
-                        "Solo se reembolsa el producto; la propina del mesero queda intacta."
+                    text = when {
+                        porArticulos && includeTip -> "Se devuelve también la propina del cobro."
+                        porArticulos -> "Solo se reembolsan los artículos; la propina del mesero queda intacta."
+                        includeTip -> "Se reparte proporcional entre venta y propina del pago original."
+                        else -> "Solo se reembolsa el producto; la propina del mesero queda intacta."
                     },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,

@@ -426,6 +426,8 @@ class OrderRepository @Inject constructor(
              * es el 99% de las ventas.
              */
             stampRewardId: String? = null,
+            /** Cuánto descontó la caja por el premio al cobrar (centavos). Ver `stampRewardExpectedDiscount` en el servidor. */
+            stampRewardExpectedDiscount: Int? = null,
         ): String {
             return buildJsonObject {
                 put(
@@ -531,7 +533,16 @@ class OrderRepository @Inject constructor(
                 put("total", request.total)
                 if (request.discount > 0) put("discount", request.discount)
                 customerId?.takeIf { it.isNotBlank() }?.let { put("customerId", it) }
-                stampRewardId?.takeIf { it.isNotBlank() }?.let { put("stampRewardId", it) }
+                stampRewardId?.takeIf { it.isNotBlank() }?.let {
+                    put("stampRewardId", it)
+                    // 🔴 «Esta caja resta el premio de lo que cobra.» Sin esto el servidor lo
+                    // ignora: es el candado que impide que una caja vieja (≤ 2.19.1, que
+                    // cobraba el precio completo) queme el premio.
+                    put("stampRewardAware", true)
+                    // Si el servidor no lo confirma igual (pasa al reconectar una venta cobrada sin red),
+                    // lo deja en la bitácora en vez de dejar la cuenta debiendo en silencio.
+                    stampRewardExpectedDiscount?.takeIf { d -> d > 0 }?.let { d -> put("stampRewardExpectedDiscount", d) }
+                }
                 request.splitType?.let { put("splitType", it) }
                 request.note?.trim()?.takeIf { it.isNotEmpty() }?.let { put("note", it) }
                 request.reservationId?.takeIf { it.isNotBlank() }?.let { put("reservationId", it) }
@@ -586,6 +597,7 @@ class OrderRepository @Inject constructor(
         orderType: String = "TAKEOUT",
         externalId: String = java.util.UUID.randomUUID().toString(),
         stampRewardId: String? = null,
+        stampRewardExpectedDiscount: Int? = null,
     ): Result<CreateOrderResponse> {
         val venueId = secureStorage.venueId ?: return Result.failure(Exception("No venue selected"))
         val token = secureStorage.accessToken ?: return Result.failure(Exception("Not authenticated"))
@@ -605,6 +617,7 @@ class OrderRepository @Inject constructor(
                 orderType = orderType,
                 externalId = externalId,
                 stampRewardId = stampRewardId,
+                stampRewardExpectedDiscount = stampRewardExpectedDiscount,
             )
             val body = payload.toRequestBody("application/json".toMediaType())
 

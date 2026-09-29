@@ -36,6 +36,8 @@ import kotlin.time.Duration
  */
 private class DispatcherFalso {
     var resultado: EstadoDeComanda? = EstadoDeComanda.Salio
+    /** Si no es nulo, `dispatch` LANZA esto en vez de contestar (disco, bind de la impresora). */
+    var lanza: Exception? = null
 
     private val lineasSlot = slot<List<RoutableItem>>()
     private val orderTypeSlot = slot<String>()
@@ -43,7 +45,7 @@ private class DispatcherFalso {
     val mock: ComandaDispatcher = mockk {
         coEvery {
             dispatch(any(), capture(lineasSlot), any(), capture(orderTypeSlot), any(), any(), any(), any(), any())
-        } coAnswers { resultado }
+        } coAnswers { lanza?.let { throw it }; resultado }
     }
 
     val ultimoOrderType: String? get() = if (orderTypeSlot.isCaptured) orderTypeSlot.captured else null
@@ -122,6 +124,22 @@ class OrdersReimprimirComandaTest {
         viewModel.selectOrder("orden-1")
         viewModel.reimprimirComanda("orden-1")
         assertEquals("No salió la comanda de: Cocina · sin conexion", viewModel.mensajeDeReimpresion.value)
+    }
+
+    /**
+     * P1: el despacho corre en un `viewModelScope.launch` con `try/finally` y SIN `catch`. Si `dispatch` lanzaba, la
+     * excepción no tenía quién la atrapara y cerraba la app. `runTest` falla con cualquier excepción no atrapada de una
+     * coroutine, así que sin el arreglo esta prueba truena con «disco lleno» en vez de llegar al assert.
+     */
+    @Test
+    fun `P1 si el despacho lanza, la app no se cae y lo DICE con la causa`() = runTest {
+        dispatcherFalso.lanza = IllegalStateException("disco lleno")
+        val viewModel = createViewModel()
+        viewModel.selectOrder("orden-1")
+        viewModel.reimprimirComanda("orden-1")
+        advanceUntilIdle()
+        assertEquals("No salió la comanda de: Cocina · disco lleno", viewModel.mensajeDeReimpresion.value)
+        assertEquals(false, viewModel.isReimprimiendoComanda.value)
     }
 
     @Test

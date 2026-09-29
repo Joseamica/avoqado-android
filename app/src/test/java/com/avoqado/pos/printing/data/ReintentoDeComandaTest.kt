@@ -132,6 +132,30 @@ class ReintentoDeComandaTest {
         assertTrue(estado is EstadoDeComanda.NoSalio)
     }
 
+    @Test
+    fun `P2 si TODAS las que no salieron se saltaron la causa dice que no hay impresora`() = runTest {
+        val printer = ComandaPrinterFalso(resultados = listOf(saltada("Cocina")))
+        val sut = ReintentoDeComanda(printer.comandaPrinter, esperar = { }, reporteDeComandas = reporteDeComandasFalso())
+
+        val estado = sut.insistir(planes, config, "ORD-1", "En tienda", null, emptyMap()) as EstadoDeComanda.NoSalio
+
+        assertEquals("Esa estación no tiene impresora: revisa la configuración de impresoras.", estado.causa)
+    }
+
+    @Test
+    fun `P2 si una tronó de verdad y otra se saltó la causa es la real`() = runTest {
+        val mixto = ComandaPrinter.Result(
+            attempted = 2, printed = 0, skippedNoPrinter = 1, lastError = "timeout",
+            failedStations = listOf("Cocina"), skippedStations = listOf("Barra"), failedPlans = listOf(planCocina),
+        )
+        val printer = ComandaPrinterFalso(resultados = listOf(mixto))
+        val sut = ReintentoDeComanda(printer.comandaPrinter, esperar = { }, reporteDeComandas = reporteDeComandasFalso())
+
+        val estado = sut.insistir(planes, config, "ORD-1", "En tienda", null, emptyMap(), maxIntentos = 1) as EstadoDeComanda.NoSalio
+
+        assertEquals("timeout", estado.causa)
+    }
+
     /**
      * P1 de la ronda de arreglo 1: `alCambiarEstado` no tenía NI UNA prueba, y es justo lo que
      * la Tarea 4 usa para pintarle al cajero "Reintentando la comanda de Cocina · intento 2 de 6".

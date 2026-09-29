@@ -27,8 +27,19 @@ data class ScannedCustomer(
     val lastName: String? = null,
 )
 
+/**
+ * Un premio ganado y sin cobrar. `rewardType`/`rewardValue` (aditivos: un servidor viejo no
+ * los manda) dejan que el carrito muestre el descuento ANTES de cobrar — ver [PremioPorAplicar].
+ */
 @Serializable
-data class ScannedReward(val id: String, val rewardLabel: String)
+data class ScannedReward(
+    val id: String,
+    val rewardLabel: String,
+    /** `FIXED_AMOUNT` · `PERCENTAGE` · `FREE_PRODUCT`. */
+    val rewardType: String? = null,
+    /** Pesos para `FIXED_AMOUNT`, porcentaje para `PERCENTAGE`, null para `FREE_PRODUCT`. */
+    val rewardValue: Double? = null,
+)
 
 @Serializable
 data class WalletScanResponse(

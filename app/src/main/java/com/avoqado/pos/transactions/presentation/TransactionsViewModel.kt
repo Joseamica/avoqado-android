@@ -422,9 +422,11 @@ class TransactionsViewModel @Inject constructor(
                     // aunque no hubiera caja abierta (`addPayOut` devuelve null) y aunque el
                     // POST al servidor fallara (`fireApiPayOut` se traga el error).
                     //
-                    // El movimiento aparece en la tablet en cuanto se abre Caja:
-                    // `CashDrawerViewModel.init` → `syncFromApi()`. Vigilado por
-                    // `RefundCashDrawerOwnershipTest`.
+                    // El movimiento aparece en la tablet en cuanto se entra a Caja: CADA entrada
+                    // (`CashDrawerViewModel.alEntrar` → `syncFromApi()`), no sólo la primera — antes
+                    // era sólo el `init`, el VM vivía días y en Testarudo (28-sep-2026) el reembolso
+                    // nunca llegó al corte. Vigilado por `RefundCashDrawerOwnershipTest` y
+                    // `CashDrawerCorteConfirmadoPorElServidorTest`.
 
                     _refundState.value = RefundUiState.Success(
                         refundResult.message ?: "Reembolso procesado",

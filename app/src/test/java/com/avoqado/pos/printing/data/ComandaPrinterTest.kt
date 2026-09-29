@@ -16,6 +16,7 @@ import io.mockk.mockk
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -530,5 +531,58 @@ class ComandaPrinterTest {
         )
 
         assertEquals("reimprimió las 2 copias en vez de la que faltaba", 1, copiasImpresas)
+    }
+
+    // MARK: - Etapa 3 del KDS (3.4): papel de RESPALDO de una estación «sólo pantalla»
+
+    private val barraSoloPantalla = StationInfo(id = "st_barra_sp", name = "Barra", printerId = null, hasKitchenDisplay = true)
+    private val configConRespaldo = PrintConfig(
+        printers = listOf(cocinaPrinterInfo),
+        stations = listOf(cocinaStation, barraSoloPantalla.copy(respaldoLocal = true)),
+        defaultStationId = "st_cocina",
+    )
+    private val impresoraDeLaCaja = SavedPrinter(id = "caja", name = "Caja", connectionType = "wifi", address = "10.0.0.9", port = 9100)
+
+    @Test
+    fun `P1 el respaldo sale en la impresora de la estacion default con encabezado RESPALDO`() {
+        val r = comandaPrinter.resolve(plan("st_barra_sp", listOf(tacoLine)), configConRespaldo, orderNumber = "1234", orderType = "En tienda")
+
+        assertEquals("192.168.1.50", r.savedPrinter?.address)
+        assertEquals("Barra", r.stationLabel)
+        assertEquals("RESPALDO · Barra · pantalla sin conexión", r.ticket.stationName)
+        assertTrue(r.deRespaldo)
+    }
+
+    @Test
+    fun `sin marca de respaldo la estacion sin impresora se resuelve como hoy`() {
+        val sinMarca = configConRespaldo.copy(stations = listOf(cocinaStation, barraSoloPantalla))
+        val r = comandaPrinter.resolve(plan("st_barra_sp", listOf(tacoLine)), sinMarca, orderNumber = "1234", orderType = "En tienda")
+
+        assertNull(r.savedPrinter)
+        assertEquals("Barra", r.ticket.stationName)
+        assertFalse(r.deRespaldo)
+    }
+
+    @Test
+    fun `P1 sin impresora en la default ni cocina local el respaldo sale en la caja`() = runTest {
+        val sinImpresoraEnLaDefault = configConRespaldo.copy(printers = emptyList())
+        every { printerService.getDefaultPrinter(PrinterRole.KITCHEN) } returns null
+        every { printerService.getDefaultPrinter(PrinterRole.RECEIPT) } returns impresoraDeLaCaja
+
+        val r = comandaPrinter.printComandas(listOf(plan("st_barra_sp", listOf(tacoLine))), sinImpresoraEnLaDefault, orderNumber = "1234")
+
+        coVerify(exactly = 1) { printerService.printKitchenTicket(any(), impresoraDeLaCaja) }
+        assertEquals(1, r.printed)
+    }
+
+    @Test
+    fun `una estacion que NO va de respaldo nunca cae a la caja`() = runTest {
+        every { printerService.getDefaultPrinter(PrinterRole.KITCHEN) } returns null
+        every { printerService.getDefaultPrinter(PrinterRole.RECEIPT) } returns impresoraDeLaCaja
+
+        val r = comandaPrinter.printComandas(listOf(plan("st_orphan", listOf(tacoLine))), config, orderNumber = "1234")
+
+        coVerify(exactly = 0) { printerService.printKitchenTicket(any(), any()) }
+        assertEquals(listOf("Postres"), r.skippedStations)
     }
 }

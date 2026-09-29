@@ -2,6 +2,8 @@ package com.avoqado.pos.auth.presentation
 
 import com.avoqado.pos.MainDispatcherRule
 import com.avoqado.pos.auth.data.AuthRepository
+import com.avoqado.pos.core.data.lan.RachaSinAcuse
+import com.avoqado.pos.core.data.lan.TransporteLan
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.sync.SyncOutbox
 import com.avoqado.pos.core.domain.PlanManager
@@ -9,6 +11,7 @@ import com.avoqado.pos.core.domain.RoleManager
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.inventory.data.InventoryCountSyncCoordinator
 import com.avoqado.pos.payment.data.PaymentSyncService
+import com.avoqado.pos.printing.routing.StationInfo
 import com.avoqado.pos.reservations.data.ReservationRepository
 import com.avoqado.pos.settings.domain.PosMode
 import com.avoqado.pos.settings.domain.PosModeManager
@@ -22,6 +25,9 @@ import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.advanceTimeBy
@@ -144,6 +150,32 @@ class AppStateVenueRecoveryTest {
         assertEquals(initial + 1, refreshes)
     }
 
+    /**
+     * Etapa 3 del KDS (3.5, D12): la red local sigue a la sesión. La sucursal la enciende (el hub del venue viejo se
+     * desengancha ANTES de iniciar el transporte), y al cerrar sesión se apaga el hub antes que el transporte.
+     */
+    @Test
+    fun `la red local se enciende con la sucursal y al cerrar sesion se apaga el hub antes que el transporte`() = runTest {
+        val appState = createAppState(repairResult = true, onRepair = {}, onPaymentStart = {}, onInventoryStart = {}, onOutboxStart = {})
+        val transporte = mockk<com.avoqado.pos.core.data.lan.TransporteLan>(relaxed = true)
+        val hub = mockk<com.avoqado.pos.core.data.lan.LanHubService>(relaxed = true)
+        appState.transporteLan = transporte
+        appState.lanHubService = hub
+
+        appState.onLoginSuccess()
+        io.mockk.verifyOrder {
+            hub.sincronizarVenue("venue-atole")
+            transporte.iniciar("venue-atole")
+        }
+
+        appState.onLogout()
+        advanceUntilIdle()
+        io.mockk.verifyOrder {
+            hub.stop()
+            transporte.detener()
+        }
+    }
+
     private fun createAppState(
         repairResult: Boolean,
         onRepair: () -> Unit,
@@ -153,6 +185,10 @@ class AppStateVenueRecoveryTest {
         onOutboxStart: () -> Unit,
         connected: MutableStateFlow<Boolean> = MutableStateFlow(true),
         onSettingsRefresh: () -> Unit = {},
+        printConfigRepository: com.avoqado.pos.printing.routing.PrintConfigRepository =
+            mockk<com.avoqado.pos.printing.routing.PrintConfigRepository>(relaxed = true) {
+                every { config } returns MutableStateFlow(com.avoqado.pos.printing.routing.PrintConfig())
+            },
     ): AppState {
         val secureStorage = mockk<SecureStorage>(relaxed = true) {
             every { isLoggedIn } returns true
@@ -218,6 +254,61 @@ class AppStateVenueRecoveryTest {
             },
             venueSwitchState = mockk<VenueSwitchState>(relaxed = true),
             connectivityMonitor = connectivityMonitor,
+            printConfigRepository = printConfigRepository,
         )
+    }
+
+    /**
+     * Etapa 3 del KDS (3.4): la config de impresión se precarga al arrancar (la GUARDADA si no hay red), para que la
+     * banda de «Sin conexión» diga qué estaciones salen en papel desde el primer minuto, no desde la primera comanda.
+     */
+    @Test
+    fun `P1 al arrancar precarga la config de impresion sin esperar a la red`() {
+        val printConfig = mockk<com.avoqado.pos.printing.routing.PrintConfigRepository>(relaxed = true) {
+            every { config } returns MutableStateFlow(com.avoqado.pos.printing.routing.PrintConfig())
+        }
+
+        createAppState(
+            repairResult = true,
+            onRepair = {},
+            onPaymentStart = {},
+            onInventoryStart = {},
+            onOutboxStart = {},
+            printConfigRepository = printConfig,
+        )
+
+        // atLeast(1), no exactly(1): startOfflineOutbox() YA se invoca dos veces al arrancar (init
+        // directo + refreshPlanAndSettings -> refreshTabs -> startOfflineOutbox), algo previo a esta
+        // tarea (ver AppState.kt) — exactly(1) es un falso rojo. atLeast(1) con los args exactos sigue
+        // cayendo si la precarga se quita.
+        io.mockk.coVerify(atLeast = 1) { printConfig.refreshConTope("venue-atole", 0L) }
+    }
+
+    /** Etapa 3 del KDS (3.5, D11): en la tablet que ES la pantalla la banda no dice lo del papel; la racha se dice con o sin red. */
+    @Test
+    fun `P1 con el receptor vivo la banda calla lo del papel, y tras 3 sin acuse dice que la pantalla no se alcanza`() {
+        val barra = StationInfo(id = "st_barra", name = "Barra", hasKitchenDisplay = true)
+        val printConfig = mockk<com.avoqado.pos.printing.routing.PrintConfigRepository>(relaxed = true) {
+            every { config } returns MutableStateFlow(com.avoqado.pos.printing.routing.PrintConfig(stations = listOf(barra)))
+        }
+        val receptorActivo = MutableStateFlow(false)
+        val racha = RachaSinAcuse()
+        val transporte = mockk<TransporteLan>(relaxed = true) {
+            every { this@mockk.receptorActivo } returns receptorActivo
+            every { this@mockk.racha } returns racha
+        }
+        val appState = createAppState(repairResult = true, onRepair = {}, onPaymentStart = {}, onInventoryStart = {}, onOutboxStart = {}, printConfigRepository = printConfig)
+        appState.transporteLan = transporte
+
+        // Con tope: si la banda nunca llega al texto esperado, la prueba falla en vez de colgar la corrida entera.
+        runBlocking {
+            withTimeout(10_000) {
+                assertEquals("Las comandas de Barra salen en papel si la pantalla no contesta", appState.avisoDeCocinaSinRed.first { it != null })
+                receptorActivo.value = true
+                assertEquals(null, appState.avisoDeCocinaSinRed.first { it == null })
+                repeat(3) { racha.registrar(setOf("st_barra"), emptySet()) }
+                assertEquals("La pantalla de Barra no se alcanza por el WiFi", appState.avisoDeRacha.first { it != null })
+            }
+        }
     }
 }

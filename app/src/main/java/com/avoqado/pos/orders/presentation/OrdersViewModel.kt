@@ -1,5 +1,6 @@
 package com.avoqado.pos.orders.presentation
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.core.data.local.SecureStorage
@@ -238,6 +239,16 @@ class OrdersViewModel @Inject constructor(
                     orderId = order.id,
                 )
                 _mensajeDeReimpresion.value = MensajeDeReimpresion(orderId, mensajeDeEstado(estado))
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // 🔴 Sin este catch, una excepción de `dispatch` (lectura de config, bind de la impresora) no tenía
+                // quién la atrapara en este `launch` y cerraba la app. Se DICE como cualquier comanda que no salió.
+                Log.e("OrdersViewModel", "❌ La reimpresión del pedido ${order.orderNumber} reventó: ${e.message}", e)
+                _mensajeDeReimpresion.value = MensajeDeReimpresion(
+                    orderId,
+                    mensajeDeEstado(EstadoDeComanda.NoSalio(listOf("Cocina"), e.message, order.orderNumber)),
+                )
             } finally {
                 _isReimprimiendoComanda.value = false
             }

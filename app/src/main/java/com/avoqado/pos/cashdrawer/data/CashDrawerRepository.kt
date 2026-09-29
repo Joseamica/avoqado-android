@@ -930,22 +930,31 @@ class CashDrawerRepository @Inject constructor(
 
     /**
      * Fetch open session + events from API and update Room.
-     * Called on launch / pull-to-refresh.
+     *
+     * 🔴 Se llama CADA VEZ que se entra a Caja (`CashDrawerViewModel.alEntrar`), no sólo al crear
+     * el ViewModel: el egreso de un reembolso, la venta en efectivo cobrada en la terminal o en
+     * otro aparato los escribe el SERVIDOR, y la única forma de que lleguen al corte es esta.
+     * Testarudo, 28-sep-2026: el ViewModel vivía días, la tablet no preguntó en dos días y el
+     * corte marcó un «Faltante $145» que el servidor tenía en $0.00.
+     *
+     * @return `true` si el servidor contestó sobre la caja abierta (haya o no una); `false` sin
+     *   red o con una respuesta ilegible — entonces lo que se ve es sólo lo que sabe este aparato,
+     *   y el corte lo tiene que DECIR.
      */
-    suspend fun syncFromApi() {
-        if (venueId.isEmpty()) return
-        try {
+    suspend fun syncFromApi(): Boolean {
+        if (venueId.isEmpty()) return false
+        return try {
             reproducirCierresPendientes()
-            syncCurrentSession()
+            val caja = syncCurrentSession()
             syncHistory()
+            caja !is CajaDelServidor.NoSeSupo
         } catch (e: Exception) {
             Log.e(TAG, "❌ Sync from API error: ${e.message}")
+            false
         }
     }
 
-    private suspend fun syncCurrentSession() {
-        pedirCajaAbiertaAlServidor()
-    }
+    private suspend fun syncCurrentSession(): CajaDelServidor = pedirCajaAbiertaAlServidor()
 
     /**
      * Lo que contestó `GET /cash-drawer/current`.
@@ -1184,6 +1193,7 @@ class CashDrawerRepository @Inject constructor(
         // una que un sync anterior ya copió. Ver [PendingCashSales.ventasProtegidas].
         val ventasNuevasDelServer = mutableListOf<VentaConfirmadaPorPrimeraVez>()
         var servidorConfirmaVentas = false
+        var servidorConfirmaCierre = false
         val confirmedIds = eventsArray.orEmpty().map { eventJson ->
             val obj = eventJson.jsonObject
             val event = parseEventFromApi(obj, server.id)
@@ -1197,6 +1207,7 @@ class CashDrawerRepository @Inject constructor(
             // ventana de arriba: un movimiento mal archivado en la caja vieja que el
             // server cuenta en la de hoy tiene que venirse, o lo perderíamos.
             val adoptada = promoteEvent(obj["localId"]?.jsonPrimitive?.contentOrNull, event.id) != null
+            if (event.type == CashDrawerEventType.CLOSE.name) servidorConfirmaCierre = true
             if (event.type == CashDrawerEventType.CASH_SALE.name) {
                 servidorConfirmaVentas = true
                 if (!yaEstaba && !adoptada) {
@@ -1232,7 +1243,11 @@ class CashDrawerRepository @Inject constructor(
             }
             dao.deleteUnconfirmedEvents(
                 server.id,
-                tiposABorrar(servidorConfirmaVentas),
+                // 🔴 El `CLOSE` local es una copia del que el servidor escribe al cerrar: si el
+                // servidor ya trae el suyo, el local sobra (el corte adoptado tras cerrar, o el del
+                // historial, lo pintaría dos veces). Si no lo trae, el local es el único registro.
+                tiposABorrar(servidorConfirmaVentas) +
+                    if (servidorConfirmaCierre) listOf(CashDrawerEventType.CLOSE.name) else emptyList(),
                 confirmedIds,
                 PendingCashSales.ventasProtegidas(
                     ventasLocales = ventasLocales,
@@ -1303,8 +1318,22 @@ class CashDrawerRepository @Inject constructor(
                 val root = json.decodeFromString<JsonObject>(body)
                 val sessionsArray = root["sessions"]?.jsonArray
                 sessionsArray?.forEach { sessionJson ->
-                    val session = parseSessionFromApi(sessionJson.jsonObject)
-                    dao.insertSession(session)
+                    val obj = sessionJson.jsonObject
+                    val session = parseSessionFromApi(obj)
+                    // 🔴 El historial SÍ trae los movimientos de cada caja cerrada, y antes se tiraban:
+                    // el corte de una caja cerrada se recalculaba con la copia local —incompleta si un
+                    // reembolso o una venta los escribió el servidor, VACÍA si la caja se abrió en otro
+                    // aparato— y reimprimirlo repetía el faltante falso para siempre. Sólo se adopta
+                    // cuando la lista difiere, para no rehacer 20 cajas en cada visita.
+                    val idsDelServidor = (obj["events"] as? JsonArray).orEmpty()
+                        .mapNotNull { (it as? JsonObject)?.get("id")?.jsonPrimitive?.contentOrNull }
+                        .toSet()
+                    val idsLocales = dao.getSessionEvents(session.id).map { it.id }.toSet()
+                    if (idsDelServidor.isNotEmpty() && idsDelServidor != idsLocales) {
+                        adoptServerSession(obj)
+                    } else {
+                        dao.insertSession(session)
+                    }
                 }
                 Log.d(TAG, "✅ Synced ${sessionsArray?.size ?: 0} history sessions from API")
             } catch (e: Exception) {
@@ -2336,6 +2365,7 @@ class CashDrawerRepository @Inject constructor(
             }
 
             clasificarRespuestaDelServer("CLOSE", code, codigoDeNegocio(body)).also {
+                if (it == DestinoDeLaOperacion.CONFIRMADA && code in 200..299) adoptarCajaCerrada(sessionId, body)
                 when (it) {
                     DestinoDeLaOperacion.CONFIRMADA -> Log.d(TAG, "✅ Cierre aceptado por el server ($sessionId, $code)")
                     DestinoDeLaOperacion.RECHAZADA -> Log.e(TAG, "🛑 Cierre RECHAZADO por el server ($code) — $body")
@@ -2348,11 +2378,39 @@ class CashDrawerRepository @Inject constructor(
         }
     }
 
+    /**
+     * 🔴 La respuesta del cierre trae la caja ENTERA como la cerró el servidor — con los
+     * movimientos que sólo él escribió (el egreso de un reembolso hecho desde el dashboard, la venta
+     * en efectivo cobrada en la terminal) y la diferencia que firmó. Antes se tiraba, y el corte que
+     * se pintaba e imprimía salía de la copia local: Testarudo, 28-sep-2026, «Faltante $145» en la
+     * tablet contra $0.00 en el servidor.
+     *
+     * Sólo se adopta la caja que se mandó a cerrar: una respuesta con otra caja mezclaría
+     * movimientos ajenos. Si algo falla aquí el cierre sigue confirmado (ya lo aceptó el servidor);
+     * el corte se queda con la copia local, que es el comportamiento de antes.
+     */
+    private suspend fun adoptarCajaCerrada(sessionId: String, body: String) {
+        try {
+            val caja = parseSessionEnvelope(json.decodeFromString<JsonObject>(body)) ?: return
+            val id = caja["id"]?.jsonPrimitive?.contentOrNull
+            if (id != sessionId || caja["status"]?.jsonPrimitive?.contentOrNull != CashDrawerStatus.CLOSED.name) {
+                Log.w(TAG, "⚠️ El cierre de $sessionId contestó con la caja $id: no se adopta")
+                return
+            }
+            adoptServerSession(caja)
+            Log.d(TAG, "✅ Corte de $sessionId tomado del servidor")
+        } catch (e: Exception) {
+            Log.e(TAG, "❌ No se pudo adoptar la caja cerrada $sessionId: ${e.message}")
+        }
+    }
+
     // MARK: - Events & Computation
 
     suspend fun getEvents(sessionId: String): List<CashDrawerEventEntity> {
         return dao.getSessionEvents(sessionId)
     }
+
+    suspend fun getSession(sessionId: String): CashDrawerSessionEntity? = dao.getSession(sessionId)
 
     suspend fun computeExpectedAmount(sessionId: String, startingAmountCents: Int): Int {
         val cashSales = dao.sumEventsByType(sessionId, CashDrawerEventType.CASH_SALE.name)

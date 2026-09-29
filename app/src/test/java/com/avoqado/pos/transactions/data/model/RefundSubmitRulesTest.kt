@@ -1,7 +1,9 @@
 package com.avoqado.pos.transactions.data.model
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /**
@@ -129,5 +131,88 @@ class RefundSubmitRulesTest {
         assertEquals("50", importeAjustadoAlTope(amountStr = "50", tope = 200.0))
         assertEquals("", importeAjustadoAlTope(amountStr = "", tope = 200.0))
         assertEquals("abc", importeAjustadoAlTope(amountStr = "abc", tope = 200.0))
+    }
+
+    // ── Reembolso por artículos: la casilla «Incluir propina» ─────────────────────────
+
+    @Test
+    fun `arranca marcada al devolver toda la venta que queda`() {
+        assertTrue(propinaMarcadaPorDefecto(145.0, 145.0))
+    }
+
+    @Test
+    fun `arranca desmarcada al devolver una parte`() {
+        assertFalse(propinaMarcadaPorDefecto(65.0, 145.0))
+    }
+
+    @Test
+    fun `uno o dos centavos de redondeo del reparto de unidades no la desmarcan`() {
+        assertTrue(propinaMarcadaPorDefecto(144.99, 145.0))
+        assertTrue(propinaMarcadaPorDefecto(144.98, 145.0))
+    }
+
+    @Test
+    fun `tres centavos ya no son redondeo`() {
+        assertFalse(propinaMarcadaPorDefecto(144.97, 145.0))
+    }
+
+    @Test
+    fun `servidor viejo sin venta restante arranca desmarcada`() {
+        assertFalse(propinaMarcadaPorDefecto(145.0, null))
+    }
+
+    @Test
+    fun `sin articulos elegidos no arranca marcada`() {
+        assertFalse(propinaMarcadaPorDefecto(0.0, 0.0))
+    }
+
+    // Firma: (marcada, propinaRestante, totalRestante, importeArticulos). Cobro de $145 + $14.50 sin acumulado
+    // histórico ⇒ total restante $159.50.
+
+    @Test
+    fun `marcada manda la propina restante en centavos redondeados`() {
+        assertEquals(1450, tipRefundCentsPorArticulos(true, 14.5, 159.5, 145.0))
+        assertEquals(435, tipRefundCentsPorArticulos(true, 4.35, 100.0, 50.0))
+    }
+
+    @Test
+    fun `desmarcada no manda el campo`() {
+        assertNull(tipRefundCentsPorArticulos(false, 14.5, 159.5, 145.0))
+    }
+
+    @Test
+    fun `sin propina restante no manda el campo aunque este marcada`() {
+        assertNull(tipRefundCentsPorArticulos(true, null, 159.5, 145.0))
+        assertNull(tipRefundCentsPorArticulos(true, 0.0, 159.5, 145.0))
+    }
+
+    @Test
+    fun `sin acumulado historico la propina completa cabe y no cambia`() {
+        // total = venta + propina: $159.50 − $145 = $14.50 = la propina restante.
+        assertEquals(1450, tipRefundCentsPorArticulos(true, 14.5, 159.5, 145.0))
+    }
+
+    @Test
+    fun `con acumulado historico sin filas la propina se topa con lo que queda del total`() {
+        // $145 + $14.50 con $9.50 devueltos sin filas: el total restante es $150. Todos los artículos ($145)
+        // dejan $5.00; mandar los $14.50 completos daba $159.50 y el servidor respondía 400.
+        assertEquals(500, tipRefundCentsPorArticulos(true, 14.5, 150.0, 145.0))
+    }
+
+    @Test
+    fun `articulos que agotan el total no mandan el campo`() {
+        assertNull(tipRefundCentsPorArticulos(true, 14.5, 145.0, 145.0))
+        assertNull(tipRefundCentsPorArticulos(true, 14.5, 100.0, 145.0))
+    }
+
+    @Test
+    fun `el tope del total se calcula en centavos enteros`() {
+        // En dobles 1.0 − 0.67 = 0.33000000000000007; en centavos son 33 exactos.
+        assertEquals(33, tipRefundCentsPorArticulos(true, 14.5, 1.0, 0.67))
+    }
+
+    @Test
+    fun `sin total restante conocido se comporta como antes`() {
+        assertEquals(1450, tipRefundCentsPorArticulos(true, 14.5, null, 145.0))
     }
 }

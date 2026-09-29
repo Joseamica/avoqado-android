@@ -12,12 +12,14 @@ import com.avoqado.pos.printing.data.ResultadoLegado
 import com.avoqado.pos.printing.data.ReplayDeComandasPendientes
 import com.avoqado.pos.printing.data.AlmacenDeTexto
 import com.avoqado.pos.printing.data.ComandasPendientesStore
+import com.avoqado.pos.printing.data.EntregaPorWifi
 import com.avoqado.pos.areatickets.data.AreaTicketCheckout
 import com.avoqado.pos.areatickets.data.AreaTicketCheckoutOrder
 import com.avoqado.pos.areatickets.data.AreaTicketCheckoutTotals
 import com.avoqado.pos.areatickets.data.AreaTicketRepository
 import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
 import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.core.data.sync.SyncOutbox
 import com.avoqado.pos.core.domain.printing.ComandaDispatcher
 import com.avoqado.pos.kds.data.KDSRepository
 import com.avoqado.pos.kds.domain.KDSOrderBus
@@ -47,7 +49,9 @@ import com.avoqado.pos.printing.data.ReporteDeComandas
 import com.avoqado.pos.printing.data.model.KitchenItem
 import com.avoqado.pos.printing.data.model.KitchenTicketData
 import com.avoqado.pos.printing.data.model.ReceiptData
+import com.avoqado.pos.printing.routing.ConsolidatedLine
 import com.avoqado.pos.printing.routing.PrintConfig
+import com.avoqado.pos.printing.routing.ProductOverride
 import com.avoqado.pos.payment.domain.ManualPaymentChoice
 import com.avoqado.pos.payment.domain.ManualPaymentMethod
 import com.avoqado.pos.payment.domain.TenderTypeOption
@@ -69,6 +73,8 @@ import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.runCurrent
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -103,13 +109,27 @@ class PaymentFlowViewModelTest {
 
     /** Visible para poder comprobar CUÁNDO se persiste una comanda que no salió. */
     private val almacenDePendientes = AlmacenEnMemoria()
-    private val storeDePendientes by lazy { ComandasPendientesStore(almacenDePendientes) }
+    /** Con el empuje por WiFi (KDS 3.5): así «Ya la canté» cierra —o NO cierra— las entregas de su comanda. */
+    private val storeDePendientes by lazy { ComandasPendientesStore(almacenDePendientes, entregaPorWifi) }
+    /** Etapa 3 del KDS (3.4): la cola donde el despachador deja la marca del papel de respaldo. */
+    private val colaDeMarcas = mockk<SyncOutbox>(relaxed = true)
+    /**
+     * Etapa 3 del KDS (3.5): la pantalla de Barra ACUSA — sin acuse D6 la sacaría de respaldo y la marcaría. Lo que
+     * estas pruebas miden es el reparto del ViewModel, no D6 (D6 vive en `ComandaDispatcherTest`). Una prueba que
+     * simula que la pantalla NO contesta lo re-stubbea (`P1 venta en efectivo SIN RED`).
+     */
+    private val entregaPorWifi = mockk<EntregaPorWifi>(relaxed = true) {
+        coEvery { entregar(any(), any()) } returns setOf("st_barra")
+        every { deviceId } returns "tablet-1"
+    }
     /** El MISMO dispatcher que ve el ViewModel y el reintento periódico — ver más abajo. */
     private val comandaDispatcherReal by lazy {
         ComandaDispatcher(
             printConfigRepository,
             ReintentoDeComanda(comandaPrinter, reporteDeComandas = mockk<ReporteDeComandas>(relaxed = true)),
             printerService,
+            colaDeMarcas,
+            entregaPorWifi,
         )
     }
 
@@ -1093,7 +1113,7 @@ class PaymentFlowViewModelTest {
         advanceUntilIdle()
 
         assertTrue(viewModel.state.value is PaymentFlowState.Success)
-        coVerify(exactly = 1) { printConfigRepository.refresh("venue-1") }
+        coVerify(exactly = 1) { printConfigRepository.refreshConTope("venue-1", any()) }
         coVerify(exactly = 1) { comandaPrinter.printComandas(any(), config, any(), any(), any()) }
         coVerify(exactly = 0) { printerService.autoPrintKitchenTicket(any()) }
         assertEquals(listOf("Taco"), plansSlot.captured.single().lines.map { it.productName })
@@ -1299,6 +1319,87 @@ class PaymentFlowViewModelTest {
         val integrada = conImpresoraDeTickets()
         reciboDelCobro { viewModel.confirmCashCustom(2000) }
         coVerify(exactly = 1) { printerService.openCashDrawer(integrada) }
+    }
+
+    // MARK: - Etapa 3 del KDS (fase 3.3): la comanda de pantalla la arma el SERVIDOR al cobrar
+
+    @Test
+    fun `P1 un cobro con productos ya no crea la comanda de pantalla desde la app y el ticket sale igual`() = runTest {
+        val recibo = reciboDelCobro { viewModel.confirmCashCustom(2000) }
+
+        assertEquals("el ticket sale como siempre", "Efectivo", recibo.paymentMethod)
+        coVerify(exactly = 0) { kdsRepository.createOrder(any(), any(), any(), any()) }
+        coVerify(exactly = 0) { kdsOrderBus.publish(any()) }
+    }
+
+    // MARK: - Etapa 3 del KDS (fase 3.4): la caja decide por estación
+
+    private val configConBarraSoloPantalla = PrintConfig(
+        stations = listOf(
+            StationInfo(id = "st_cocina", name = "Cocina", printerId = "pr_1", active = true),
+            StationInfo(id = "st_barra", name = "Barra", printerId = null, active = true, hasKitchenDisplay = true),
+        ),
+        productOverrides = listOf(ProductOverride(productId = "prod-cafe", printStationId = "st_barra")),
+        defaultStationId = "st_cocina",
+    )
+    private val cartConCafe = CartState(
+        items = listOf(CartItem(id = "line-cafe", type = CartItemType.ProductItem("prod-cafe"), name = "Café", unitPrice = 3000)),
+    )
+
+    @Test
+    fun `P1 venta en efectivo EN LINEA - la estacion solo pantalla no se imprime ni se marca`() = runTest {
+        coEvery { orderRepository.createOrder(any(), any(), any(), any(), any()) } returns
+            Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-en-linea")))
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any()) } returns
+            Result.success(OrderRepository.CashPayResult(paymentId = "pay-en-linea", receiptAccessKey = null))
+        every { printConfigRepository.getCurrentConfig() } returns configConBarraSoloPantalla
+
+        viewModel.startPaymentFlow(cartConCafe)
+        viewModel.confirmCashCustom(3000)
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value is PaymentFlowState.Success)
+        coVerify(exactly = 0) { comandaPrinter.printComandas(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { colaDeMarcas.enqueue(any(), "KDS_TICKET_MARK", any(), any(), any()) }
+    }
+
+    @Test
+    fun `P1 venta en efectivo SIN RED - respaldo en papel y marca con el externalId de la orden`() = runTest {
+        // Etapa 3 del KDS (3.5, D6): el papel lo decide el ACUSE, no el internet. Aquí la pantalla tampoco contesta por
+        // el WiFi del local, que es el caso en que la caja imprime el respaldo.
+        coEvery { entregaPorWifi.entregar(any(), any()) } returns emptySet()
+        val llave = slot<String>()
+        coEvery { orderRepository.createOrder(any(), any(), any(), any(), capture(llave)) } returns
+            Result.failure(java.net.UnknownHostException("sin red"))
+        every { printConfigRepository.getCurrentConfig() } returns configConBarraSoloPantalla
+        val planes = slot<List<TicketPlan>>()
+        coEvery { comandaPrinter.printComandas(capture(planes), any(), any(), any(), any()) } returns
+            ComandaPrinter.Result(attempted = 1, printed = 1, skippedNoPrinter = 0, lastError = null)
+        val marca = slot<JsonObject>()
+        coEvery { colaDeMarcas.enqueue("venue-1", "KDS_TICKET_MARK", capture(marca), any(), any()) } returns "m-1"
+
+        viewModel.startPaymentFlow(cartConCafe)
+        viewModel.confirmCashCustom(3000)
+        advanceUntilIdle()
+
+        val estado = viewModel.state.value
+        assertTrue(estado is PaymentFlowState.Success && estado.isQueued)
+        assertEquals(listOf("st_barra"), planes.captured.map { it.stationId })
+        assertEquals("sale:${llave.captured}:st_barra", marca.captured["sourceKey"]!!.jsonPrimitive.content)
+
+        // m-6 de la revisión final: el folio es POR VENTA. Una segunda venta que NO crea orden (retoma "order-2") y
+        // cuyo efectivo también se encola no puede heredar el folio de la anterior: su marca escondería la comanda
+        // de OTRA venta en la pantalla. Sin folio propio, el papel sale igual pero sin marca.
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any()) } returns
+            Result.failure(java.net.UnknownHostException("sin red"))
+        viewModel.startPaymentFlow(cartConCafe, resumeOrderId = "order-2")
+        viewModel.confirmCashCustom(3000)
+        advanceUntilIdle()
+
+        val segunda = viewModel.state.value
+        assertTrue(segunda is PaymentFlowState.Success && segunda.isQueued)
+        coVerify(exactly = 2) { comandaPrinter.printComandas(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 1) { colaDeMarcas.enqueue(any(), "KDS_TICKET_MARK", any(), any(), any()) }
     }
 
     @Test
@@ -1515,6 +1616,24 @@ class PaymentFlowViewModelTest {
         advanceUntilIdle()
 
         assertNull(viewModel.comandaWarning.value)
+    }
+
+    /**
+     * P1: el despacho de la comanda corre en un `viewModelScope.launch` suelto. Si `dispatch` lanzaba
+     * (una lectura de disco, el bind de la impresora, el propio aviso), la excepción no tenía quién la
+     * atrapara y tumbaba la caja justo después de cobrar. `runTest` falla con cualquier excepción no
+     * atrapada de una coroutine (medido: sin el arreglo esta prueba truena con «disco lleno»).
+     */
+    @Test
+    fun `P1 si el despacho de la comanda lanza, la caja no se cae y el cajero ve No salio la comanda`() = runTest {
+        every { printConfigRepository.getCurrentConfig() } throws IllegalStateException("disco lleno")
+
+        completarCobroEnEfectivo()
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value is PaymentFlowState.Success)
+        val aviso = viewModel.comandaWarning.value as EstadoDeComanda.NoSalio
+        assertEquals("disco lleno", aviso.causa)
     }
 
     // MARK: - Ronda de arreglo 1: dos ventas en vuelo a la vez (el reintento estiró la ventana)
@@ -3498,5 +3617,142 @@ class PaymentFlowViewModelTest {
             PaymentFlowViewModel.textoCobroQueSiPaso(null),
         )
         assertFalse(PaymentFlowViewModel.textoCobroQueSiPaso(0).contains("\$0.00"))
+    }
+
+    // MARK: - Etapa 3 del KDS (3.5), ronda 4 de la Task 6 (N-I1): sólo el toque EXPLÍCITO sobre la libreta la resuelve
+
+    /** La comanda X de OTRA venta que no salió: en la libreta, con su papel de respaldo (Barra) y su fila por WiFi. */
+    private val planBarraDeX = TicketPlan("st_barra", false, listOf(ConsolidatedLine("Café", 1, emptyList(), null, listOf("oi_x"))))
+    private val comandaX = EstadoDeComanda.NoSalio(
+        estaciones = listOf("Barra"),
+        causa = "La impresora no respondió.",
+        orderNumber = "XXXX",
+        trabajo = com.avoqado.pos.printing.data.TrabajoPendiente(
+            planes = listOf(planBarraDeX),
+            config = com.avoqado.pos.printing.routing.KitchenDeliveryPolicy.conRespaldo(configConBarraSoloPantalla, listOf("st_barra")),
+            orderNumber = "XXXX", orderType = "En tienda", serverName = null, comboNames = emptyMap(),
+            venueId = "venue-1", orderId = "order-x",
+        ),
+    )
+
+    /**
+     * 🔴 N-I1: el toast «Reintentando la comanda» de la venta S se cierra SOLO a los 2.6 s (no tiene botones). Si ese
+     * cierre llegaba a «Ya la canté», soltaba la libreta Y cerraba las entregas de X — una comanda que NADIE resolvió:
+     * con la impresora caída, X no quedaba en ningún lado. Un cierre que no es sobre la libreta sólo OCULTA.
+     */
+    @Test
+    fun `P1 cerrar el aviso Reintentando de OTRA venta no suelta la libreta ni cierra las entregas de X`() = runTest {
+        assertTrue(storeDePendientes.guardar(comandaX))
+        laImpresoraFallaSiempre()
+        completarCobroEnEfectivo()
+        assertTrue(viewModel.comandaWarning.value is EstadoDeComanda.Insistiendo)
+
+        viewModel.clearComandaWarning()
+
+        assertEquals("XXXX", storeDePendientes.pendiente.value?.orderNumber)
+        coVerify(exactly = 0) { entregaPorWifi.cerrarPorPapel(any(), any(), any()) }
+    }
+
+    /** El cierre solo del toast (y Atrás / tocar fuera) va a `ocultarAvisoDeComanda`: la libreta y sus filas quedan. */
+    @Test
+    fun `P1 ocultar el aviso Reintentando no toca la libreta - su reloj y el del replay siguen`() = runTest {
+        assertTrue(storeDePendientes.guardar(comandaX))
+        laImpresoraFallaSiempre()
+        completarCobroEnEfectivo()
+
+        viewModel.ocultarAvisoDeComanda()
+
+        assertEquals(comandaX, storeDePendientes.pendiente.value)
+        coVerify(exactly = 0) { entregaPorWifi.cerrarPorPapel(any(), any(), any()) }
+    }
+
+    /** «Ya la canté» sobre el aviso de OTRA venta (sin trabajo: estación sin impresora) tampoco resuelve la libreta. */
+    @Test
+    fun `P1 Ya la cante sobre el aviso de otra venta no resuelve la comanda de la libreta`() = runTest {
+        assertTrue(storeDePendientes.guardar(comandaX))
+        every { printConfigRepository.getCurrentConfig() } returns cocinaActivaConfig
+        coEvery { comandaPrinter.printComandas(any(), cocinaActivaConfig, any(), any(), any()) } returns ComandaPrinter.Result(
+            attempted = 1, printed = 0, skippedNoPrinter = 1, lastError = null,
+            skippedStations = listOf("Cocina"), failedPlans = emptyList(),
+        )
+        completarCobroEnEfectivo()
+        advanceUntilIdle()
+        val visto = viewModel.comandaWarning.value as EstadoDeComanda.NoSalio
+        assertNull("el aviso de S no trae trabajo", visto.trabajo)
+
+        viewModel.clearComandaWarning()
+
+        assertEquals(comandaX, storeDePendientes.pendiente.value)
+        coVerify(exactly = 0) { entregaPorWifi.cerrarPorPapel(any(), any(), any()) }
+    }
+
+    // ── La MISMA apertura del cobro no lo reinicia (D3, 29-sep) ─────────────────────────────
+    //
+    // Caso medido en la Sunmi D3: cobrar en efectivo, ir a otra pestaña y volver a Cobrar. La
+    // pantalla del cobro se vuelve a componer, relanza su efecto y `startPaymentFlow` arrancaba
+    // un cobro NUEVO con lo que hubiera en el carrito — ya vacío tras cobrar —: «¿Cómo fue tu
+    // experiencia?» otra vez y, dos pasos después, un cobro de $0.00 con «Efectivo $0» activo.
+    // Girar la tablet hacía lo mismo. La apertura (una por cada «Cobrar») dice si es el mismo
+    // cobro; si lo es, se sigue donde iba.
+
+    @Test
+    fun `P1 volver al MISMO cobro ya pagado no lo reinicia con el carrito vacio`() = runTest {
+        coEvery {
+            orderRepository.createOrder(any(), any(), any(), any(), any())
+        } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-apertura")))
+        coEvery {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any())
+        } returns Result.success(OrderRepository.CashPayResult(paymentId = "payment-apertura", receiptAccessKey = null))
+        viewModel.startPaymentFlow(cartConUnProducto(), apertura = "apertura-1")
+        viewModel.confirmCashCustom(1000)
+        advanceUntilIdle()
+        val pagado = viewModel.state.value
+        assertTrue("la venta quedó cobrada: $pagado", pagado is PaymentFlowState.Success)
+
+        // Vuelve a la pestaña: la pantalla relanza su efecto con el carrito que haya (vacío).
+        viewModel.startPaymentFlow(CartState(), apertura = "apertura-1")
+        advanceUntilIdle()
+
+        assertEquals("el recibo sigue ahí; no nace un cobro de $0", pagado, viewModel.state.value)
+    }
+
+    @Test
+    fun `P1 volver al MISMO cobro a medias sigue donde iba`() = runTest {
+        viewModel.startPaymentFlow(cartConUnProducto(), apertura = "apertura-1")
+        advanceUntilIdle()
+        val enCurso = viewModel.state.value
+        // La pantalla pregunta esto antes de repartir y arrancar: sin ello, un cobro dividido
+        // volvía al importe completo al regresar de otra pestaña.
+        assertTrue(viewModel.esElCobroEnCurso("apertura-1"))
+        assertFalse(viewModel.esElCobroEnCurso("apertura-2"))
+
+        viewModel.startPaymentFlow(CartState(), apertura = "apertura-1")
+        advanceUntilIdle()
+
+        assertEquals(enCurso, viewModel.state.value)
+    }
+
+    @Test
+    fun `un Cobrar NUEVO si arranca otro cobro`() = runTest {
+        viewModel.startPaymentFlow(cartConUnProducto(), apertura = "apertura-1")
+        advanceUntilIdle()
+        val primero = viewModel.state.value
+
+        viewModel.startPaymentFlow(CartState(), apertura = "apertura-2")
+        advanceUntilIdle()
+
+        assertTrue("otra apertura es otro cobro: $primero → ${viewModel.state.value}", primero != viewModel.state.value)
+    }
+
+    /** Y cuando el aviso tocado ES la libreta, «Ya la canté» la resuelve y cierra sus entregas (venue + orden + plan). */
+    @Test
+    fun `Ya la cante sobre el aviso de la libreta la resuelve y cierra sus entregas`() = runTest {
+        assertTrue(storeDePendientes.guardar(comandaX))
+        assertEquals(comandaX, viewModel.comandaWarning.value)
+
+        viewModel.clearComandaWarning()
+
+        assertNull(storeDePendientes.pendiente.value)
+        coVerify(timeout = 5_000, exactly = 1) { entregaPorWifi.cerrarPorPapel("venue-1", "XXXX", listOf(planBarraDeX)) }
     }
 }
