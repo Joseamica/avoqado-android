@@ -243,6 +243,9 @@ class KDSViewModel @Inject constructor(
                 publicar(desdeServidor = true)
                 // Después de publicar: la cocina ve el pedido primero, el papel sale enseguida.
                 viewModelScope.launch { imprimirComandasPendientes(delServidor.filterNot { it.id in bumpsVigentes() }) }
+                // Ronda 1: la copia del servidor gana también en el disco. La local pendiente de estos folios sobra; si se
+                // quedara, al terminarla en línea (aquí u otra pantalla) el servidor deja de mandarla y resucitaba.
+                ticketsLocales.retirarPendientes(nuevas.mapNotNull { it.sourceKey })
             },
             onFailure = { e ->
                 // Se CONSERVA lo que ya se veía y se sigue mezclando con lo local: sin red la cocina trabaja con eso (D9).
@@ -360,10 +363,11 @@ class KDSViewModel @Inject constructor(
         val sourceKey = comanda.sourceKey ?: return
         val venueId = kdsRepository.venueIdActual() ?: return
         val stationId = comanda.printStationId ?: (_vista.value as? VistaDeCocina.Tablero)?.estacion?.id ?: return
-        // Room puede fallar (disco lleno): se registra y la marca se encola IGUAL — una excepción aquí tumbaría la app (M14).
-        runCatching { ticketsLocales.marcarLista(comanda, venueId, stationId) }
-            .onFailure { Log.w(TAG, "No se pudo persistir el LISTO de $sourceKey: ${it.message}") }
-        runCatching {
+        // 🔴 Ronda 1: PRIMERO la marca, DESPUÉS `listaEnMillis`. La cola es durable (se escribe antes de tocar la red): si el
+        // proceso muere entre las dos, lo peor es que la comanda se siga viendo hasta que el servidor procese el BUMP. Al
+        // revés, la pantalla la escondía para siempre y el servidor nunca se enteraba: una marca perdida.
+        // Las dos pueden fallar (disco lleno) y ninguna tumba la app (M14).
+        val encolada = runCatching {
             syncOutbox.get().enqueue(
                 venueId,
                 SyncIntentTypes.KDS_TICKET_MARK,
@@ -374,7 +378,11 @@ class KDSViewModel @Inject constructor(
                     put("label", comanda.orderNumber)
                 },
             )
-        }.onFailure { Log.w(TAG, "No se pudo encolar el BUMP de $sourceKey: ${it.message}") }
+        }.onFailure { Log.w(TAG, "No se pudo encolar el BUMP de $sourceKey: ${it.message}") }.isSuccess
+        // Sin marca no se esconde: vuelve a salir en la siguiente lectura y se puede marcar otra vez.
+        if (!encolada) return
+        runCatching { ticketsLocales.marcarLista(comanda, venueId, stationId) }
+            .onFailure { Log.w(TAG, "No se pudo persistir el LISTO de $sourceKey: ${it.message}") }
     }
 
     /** «Marcar todas listas» (la pantalla confirma antes). Nunca un delivery sin aceptar. Sin red: una marca BUMP por comanda con folio. */
@@ -429,6 +437,7 @@ class KDSViewModel @Inject constructor(
 
     /** «Deshacer»: sin optimismo — la comanda sigue en Recientes hasta que el servidor la regresa. */
     fun deshacer(id: String) {
+        val folio = _recientes.value.firstOrNull { it.id == id }?.sourceKey
         viewModelScope.launch {
             kdsRepository.recall(id)
                 .onSuccess {
@@ -436,6 +445,12 @@ class KDSViewModel @Inject constructor(
                     // Ronda 4: LISTO + Deshacer inmediato (antes de que un sondeo confirme el bump) no puede
                     // quedar tapado por el blindaje de M4 — el servidor SÍ va a volver a mandar esta comanda.
                     bumpsRecientes.remove(id)
+                    // Ronda 1 (Task 8): lo mismo con la marca LISTO sin red de este folio, que la escondería 12 h. En
+                    // memoria al instante (se ve ya) y en el disco (sobrevive a cerrar la pantalla).
+                    if (folio != null) {
+                        locales = locales.map { if (it.sourceKey == folio) it.copy(listaEnMillis = null) else it }
+                        ticketsLocales.quitarLista(folio)
+                    }
                     refrescarTablero()
                 }
                 .onFailure { e ->

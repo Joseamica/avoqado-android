@@ -85,6 +85,17 @@ internal object KdsLanSql {
 
     const val PURGAR_TICKETS: String =
         "DELETE FROM kds_tickets_locales WHERE venueId = :venueId AND recibidaEnMillis < :corte"
+
+    /**
+     * D9 (ronda 1 de la Task 8): el servidor ya devolvió estos folios — su copia gana, y la local PENDIENTE sobra. Sin
+     * esto, al marcarla LISTO en línea (aquí o en otra pantalla de la estación) el servidor deja de mandarla y la copia
+     * local resucitaba como «sólo local». Las LISTAS se quedan: esconden la del servidor hasta que procese el BUMP.
+     */
+    const val RETIRAR_PENDIENTES: String =
+        "DELETE FROM kds_tickets_locales WHERE sourceKey IN (:folios) AND listaEnMillis IS NULL"
+
+    /** «Deshacer» en línea: la marca LISTO local deja de esconder la comanda que el servidor regresó. */
+    const val QUITAR_LISTA: String = "UPDATE kds_tickets_locales SET listaEnMillis = NULL WHERE sourceKey = :sourceKey"
 }
 
 /** `encodeDefaults = true` como `LeaseProtocol.json`: nulos y listas vacías van EXPLÍCITOS (`KdsLanMigracionTest` compara el texto). */
@@ -131,6 +142,12 @@ interface KdsTicketsLocalesDao {
 
     @Query(KdsLanSql.PURGAR_TICKETS)
     suspend fun purgar(venueId: String, corte: Long): Int
+
+    @Query(KdsLanSql.RETIRAR_PENDIENTES)
+    suspend fun retirarPendientes(folios: List<String>): Int
+
+    @Query(KdsLanSql.QUITAR_LISTA)
+    suspend fun quitarLista(sourceKey: String): Int
 
     /** Upsert que UNE renglones por `id` y conserva `listaEnMillis` (pegajoso). Atómico. */
     @Transaction

@@ -32,10 +32,17 @@ class KdsLanSqlTest {
 
     private companion object { val PARAMETRO = Regex(":([A-Za-z]+)") }
 
+    /** Una lista se expande a `?,?,?` como hace Room con `IN (:folios)`. */
     private fun preparar(sql: String, valores: Map<String, Any?>): PreparedStatement {
-        val nombres = PARAMETRO.findAll(sql).map { it.groupValues[1] }.toList()
-        val st = db.prepareStatement(PARAMETRO.replace(sql, "?"))
-        nombres.forEachIndexed { i, nombre -> st.setObject(i + 1, valores.getValue(nombre)) }
+        val args = mutableListOf<Any?>()
+        val expandido = PARAMETRO.replace(sql) { m ->
+            when (val v = valores.getValue(m.groupValues[1])) {
+                is List<*> -> { args.addAll(v); v.joinToString(",") { "?" } }
+                else -> { args.add(v); "?" }
+            }
+        }
+        val st = db.prepareStatement(expandido)
+        args.forEachIndexed { i, v -> st.setObject(i + 1, v) }
         return st
     }
 
@@ -94,5 +101,22 @@ class KdsLanSqlTest {
         assertEquals(1, actualizar(KdsLanSql.PURGAR_TICKETS, "venueId" to "venue-1", "corte" to 50L))
         assertEquals(listOf("nueva"), folios(KdsLanSql.TICKETS_DE_LA_ESTACION, "venueId" to "venue-1", "stationId" to "st_barra"))
         assertNull(preparar(KdsLanSql.TICKET_POR_FOLIO, mapOf("sourceKey" to "vieja")).use { st -> st.executeQuery().let { if (it.next()) it.getString("sourceKey") else null } })
+    }
+
+    @Test
+    fun `P1 retirar pendientes borra solo las PENDIENTES que el servidor ya tiene - las listas se quedan`() {
+        ticket("sale:a:st_barra", recibida = 1); ticket("sale:b:st_barra", recibida = 2, lista = 9); ticket("sale:c:st_barra", recibida = 3)
+        assertEquals(1, actualizar(KdsLanSql.RETIRAR_PENDIENTES, "folios" to listOf("sale:a:st_barra", "sale:b:st_barra", "no-existe")))
+        assertEquals(listOf("sale:b:st_barra", "sale:c:st_barra"), folios(KdsLanSql.TICKETS_DE_LA_ESTACION, "venueId" to "venue-1", "stationId" to "st_barra"))
+    }
+
+    @Test
+    fun `quitar la marca LISTO la deja pendiente otra vez`() {
+        ticket("sale:a:st_barra", lista = 9)
+        assertEquals(1, actualizar(KdsLanSql.QUITAR_LISTA, "sourceKey" to "sale:a:st_barra"))
+        // Pendiente otra vez: se puede volver a marcar, y retirar la borra.
+        assertEquals(1, actualizar(KdsLanSql.MARCAR_LISTA, "sourceKey" to "sale:a:st_barra", "ahora" to 100L))
+        assertEquals(1, actualizar(KdsLanSql.QUITAR_LISTA, "sourceKey" to "sale:a:st_barra"))
+        assertEquals(1, actualizar(KdsLanSql.RETIRAR_PENDIENTES, "folios" to listOf("sale:a:st_barra")))
     }
 }

@@ -22,6 +22,7 @@ import com.avoqado.pos.printing.routing.PrintConfigRepository
 import com.avoqado.pos.printing.routing.StationInfo
 import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.coVerifyOrder
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.mockkStatic
@@ -66,7 +67,18 @@ class KDSViewModelTest {
     private val receptorActivo = MutableStateFlow(false)
     private val receptor = mockk<ReceptorDeComandas>(relaxed = true) { every { activo } returns receptorActivo }
     private val locales = MutableStateFlow<List<KdsTicketLocal>>(emptyList())
-    private val ticketsLocales = mockk<KdsTicketsLocalesStore>(relaxed = true) { every { deLaEstacion(any(), any()) } returns locales }
+    private val ticketsLocales = mockk<KdsTicketsLocalesStore>(relaxed = true) {
+        every { deLaEstacion(any(), any()) } returns locales
+        // Como Room: lo que se escribe vuelve a emitir el flujo de la estación.
+        coEvery { retirarPendientes(any()) } answers {
+            val folios = firstArg<Collection<String>>()
+            locales.value = locales.value.filterNot { it.listaEnMillis == null && it.sourceKey in folios }
+        }
+        coEvery { quitarLista(any()) } answers {
+            val folio = firstArg<String>()
+            locales.value = locales.value.map { if (it.sourceKey == folio) it.copy(listaEnMillis = null) else it }
+        }
+    }
     private val cola = mockk<SyncOutbox>(relaxed = true)
 
     private fun local(folio: String, recibida: Long, lista: Long? = null) = KdsTicketLocal(
@@ -427,6 +439,24 @@ class KDSViewModelTest {
         assertEquals("sale:k1:st-barra", marca.captured["sourceKey"]!!.jsonPrimitive.content)
         assertEquals("BUMP", marca.captured["action"]!!.jsonPrimitive.content)
         assertEquals("k1", marca.captured["label"]!!.jsonPrimitive.content)
+        // Ronda 1: la marca durable PRIMERO; esconderla después. Al revés, un proceso muerto entre las dos la escondía
+        // para siempre sin que el servidor se enterara.
+        coVerifyOrder {
+            cola.enqueue("v1", "KDS_TICKET_MARK", any(), any(), false)
+            ticketsLocales.marcarLista(any(), "v1", "st-barra", any())
+        }
+    }
+
+    @Test
+    fun `P1 si la marca BUMP no se pudo encolar la comanda NO se esconde para siempre`() = runTest {
+        coEvery { repo.bumpOrder("k1") } returns Result.failure(IOException("sin red"))
+        coEvery { cola.enqueue(any(), any(), any(), any(), any()) } throws IllegalStateException("disco lleno")
+        val vm = armar()
+
+        vm.listo("k1")
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) { ticketsLocales.marcarLista(any(), any(), any(), any()) }
     }
 
     @Test
@@ -484,6 +514,82 @@ class KDSViewModelTest {
         assertFalse(vm.recibiendoPorWifi.value)
         receptorActivo.value = true
         assertTrue(vm.recibiendoPorWifi.value)
+    }
+
+    // MARK: - Ronda 1: una comanda que llegó por WiFi no resucita, y «Deshacer» la regresa al instante
+
+    /** Llega por el WiFi ANTES que la del servidor, y luego el servidor también la tiene (la operación normal en línea). */
+    private suspend fun kotlinx.coroutines.test.TestScope.conCopiaDelWifiQueElServidorYaTiene(): KDSViewModel {
+        val vm = armar(comandas = listOf(comanda("k2", 2_000)))
+        backgroundScope.launch { vm.mientrasSeVe() }
+        runCurrent()
+        locales.value = listOf(local("sale:k1:st-barra", 900))
+        runCurrent()
+        assertEquals(listOf("lan:sale:k1:st-barra", "k2"), vm.comandas.value.map { it.id })
+        coEvery { repo.fetchOrders(any()) } returns Result.success(listOf(comanda("k1", 1_000), comanda("k2", 2_000)))
+        vm.refrescar()
+        runCurrent()
+        assertEquals("por folio gana el servidor", listOf("k1", "k2"), vm.comandas.value.map { it.id })
+        return vm
+    }
+
+    @Test
+    fun `P1 una comanda del WiFi marcada LISTO en linea no resucita como local`() = runTest {
+        coEvery { repo.bumpOrder("k1") } returns Result.success(Unit)
+        val vm = conCopiaDelWifiQueElServidorYaTiene()
+
+        vm.listo("k1")
+        runCurrent()
+        coEvery { repo.fetchOrders(any()) } returns Result.success(listOf(comanda("k2", 2_000))) // el servidor la terminó
+        vm.refrescar()
+        runCurrent()
+
+        assertEquals(listOf("k2"), vm.comandas.value.map { it.id })
+    }
+
+    @Test
+    fun `P1 una comanda del WiFi en marcar todas en linea no resucita como local`() = runTest {
+        coEvery { repo.bumpBatch(any()) } returns Result.success(2)
+        val vm = conCopiaDelWifiQueElServidorYaTiene()
+        coEvery { repo.fetchOrders(any()) } returns Result.success(emptyList()) // la lectura de después del lote
+
+        vm.marcarTodasListas()
+        runCurrent()
+
+        coVerify { repo.bumpBatch(listOf("k1", "k2")) }
+        assertEquals(emptyList<String>(), vm.comandas.value.map { it.id })
+    }
+
+    @Test
+    fun `P1 una comanda del WiFi que otra pantalla de la estacion marco LISTO no resucita aqui`() = runTest {
+        val vm = conCopiaDelWifiQueElServidorYaTiene()
+
+        coEvery { repo.fetchOrders(any()) } returns Result.success(listOf(comanda("k2", 2_000))) // otra pantalla la terminó
+        vm.refrescar()
+        runCurrent()
+
+        assertEquals(listOf("k2"), vm.comandas.value.map { it.id })
+    }
+
+    @Test
+    fun `P1 deshacer en linea quita la marca LISTO local y la comanda se ve al instante`() = runTest {
+        coEvery { repo.fetchRecientes("st-barra") } returns Result.success(listOf(comanda("k9", 500)))
+        coEvery { repo.recall("k9") } returns Result.success(Unit)
+        val vm = armar()
+        val job = launch { vm.mientrasSeVe() }
+        runCurrent()
+        locales.value = listOf(local("sale:k9:st-barra", 500, lista = 600)) // se marcó LISTO sin red
+        runCurrent()
+        vm.abrirRecientes()
+        runCurrent()
+
+        coEvery { repo.fetchOrders(any()) } returns Result.success(listOf(comanda("k1", 1_000), comanda("k2", 2_000), comanda("k9", 500)))
+        vm.deshacer("k9")
+        runCurrent()
+
+        coVerify(exactly = 1) { ticketsLocales.quitarLista("sale:k9:st-barra") }
+        assertEquals(listOf("k9", "k1", "k2"), vm.comandas.value.map { it.id })
+        job.cancelAndJoin()
     }
 
     @Test

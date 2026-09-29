@@ -69,6 +69,23 @@ class KdsTicketsLocalesStore @Inject constructor(private val dao: KdsTicketsLoca
     fun deLaEstacion(venueId: String, stationId: String): Flow<List<KdsTicketLocal>> =
         dao.deLaEstacion(venueId, stationId).map { filas -> filas.map { it.aDominio() } }
 
+    /**
+     * D9, ronda 1: el servidor ya devolvió estos folios — su copia gana también en el DISCO. Se borran las locales
+     * PENDIENTES (las LISTAS se quedan: esconden la del servidor hasta que procese el BUMP). Sin esto, al marcarla LISTO en
+     * línea el servidor deja de mandarla y la copia del WiFi resucitaba. Nunca lanza: lo peor es que resucite.
+     */
+    suspend fun retirarPendientes(folios: Collection<String>) {
+        if (folios.isEmpty()) return
+        runCatching { dao.retirarPendientes(folios.toList()) }
+            .onFailure { Log.w(TAG, "No se pudieron retirar las comandas que ya tiene el servidor: ${it.message}") }
+    }
+
+    /** «Deshacer» en línea: la marca LISTO local deja de esconder la comanda que el servidor regresó. Nunca lanza. */
+    suspend fun quitarLista(sourceKey: String) {
+        runCatching { dao.quitarLista(sourceKey) }
+            .onFailure { Log.w(TAG, "No se pudo quitar la marca LISTO de $sourceKey: ${it.message}") }
+    }
+
     suspend fun purgar(venueId: String, ahora: Long = System.currentTimeMillis()) {
         runCatching { dao.purgar(venueId, ahora - VIGENCIA_MS) }
     }

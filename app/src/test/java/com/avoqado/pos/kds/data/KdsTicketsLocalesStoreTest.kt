@@ -86,4 +86,28 @@ class KdsTicketsLocalesStoreTest {
         store.purgar("v1", ahora = 100_000_000)
         coVerify { dao.purgar("v1", 100_000_000 - KdsTicketsLocalesStore.VIGENCIA_MS) }
     }
+
+    // MARK: - Ronda 1: el servidor gana también en el disco, y «Deshacer» quita la marca
+
+    @Test
+    fun `retirar pendientes manda los folios que devolvio el servidor, y sin folios no toca el disco`() = runTest {
+        store.retirarPendientes(listOf("sale:a:st-barra", "sale:b:st-barra"))
+        coVerify(exactly = 1) { dao.retirarPendientes(listOf("sale:a:st-barra", "sale:b:st-barra")) }
+        store.retirarPendientes(emptyList())
+        coVerify(exactly = 1) { dao.retirarPendientes(any()) }
+    }
+
+    @Test
+    fun `quitar lista manda el folio`() = runTest {
+        store.quitarLista("sale:k9:st-barra")
+        coVerify(exactly = 1) { dao.quitarLista("sale:k9:st-barra") }
+    }
+
+    @Test
+    fun `P1 un disco que falla al retirar o al quitar la marca no tumba la pantalla`() = runTest {
+        coEvery { dao.retirarPendientes(any()) } throws IllegalStateException("disco lleno")
+        coEvery { dao.quitarLista(any()) } throws IllegalStateException("disco lleno")
+        store.retirarPendientes(listOf("sale:a:st-barra"))
+        store.quitarLista("sale:a:st-barra")
+    }
 }
