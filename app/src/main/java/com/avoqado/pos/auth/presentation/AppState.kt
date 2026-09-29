@@ -130,7 +130,14 @@ class AppState @Inject constructor(
             // Etapa 3 del KDS (3.5, D12): la red local sigue a la sucursal. Idempotente por venue; con otra reinicia.
             if (::lanHubService.isInitialized) lanHubService.sincronizarVenue(venueId)
             if (::transporteLan.isInitialized) transporteLan.iniciar(venueId)
-            if (::replayDeEntregasKds.isInitialized) viewModelScope.launch { replayDeEntregasKds.reproducirAlAbrir(venueId) }
+            if (::replayDeEntregasKds.isInitialized) {
+                viewModelScope.launch {
+                    // Cinturón (I1 de la revisión): el replay ya no lanza, pero una excepción suelta en este ámbito tumba la
+                    // app al abrir — y en cada apertura, si la causa sigue en disco.
+                    runCatching { replayDeEntregasKds.reproducirAlAbrir(venueId) }
+                        .onFailure { android.util.Log.w("AppState", "El replay de entregas KDS tropezó: ${it.message}") }
+                }
+            }
         }
     }
 

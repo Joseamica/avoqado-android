@@ -58,7 +58,28 @@ class ClienteDeComandasTest {
         val inicio = System.currentTimeMillis()
         assertFalse(ClienteDeComandas().entregar(peer, mensaje))
         val tardo = System.currentTimeMillis() - inicio
-        assertTrue("tardó $tardo ms", tardo in 1_000..2_500)
+        assertTrue("tardó $tardo ms", tardo in 1_400..2_000)
+    }
+
+    /**
+     * I3 de la revisión: `soTimeout` sólo acota el silencio de UNA lectura. Una pantalla que gotea un byte cada 300 ms
+     * nunca lo dispara; sin el vigía que cierra el socket la caja se quedaba ~6 s (y con ella todo el despacho).
+     */
+    @Test
+    fun `P1 una pantalla que gotea un byte a la vez no pasa del presupuesto`() = runBlocking {
+        val ss = ServerSocket(0).also { servidores += it }
+        thread(isDaemon = true) {
+            runCatching {
+                ss.accept().use { s ->
+                    LineaAcotada.leer(BufferedInputStream(s.getInputStream()))
+                    repeat(20) { s.getOutputStream().run { write('x'.code); flush() }; Thread.sleep(300) }
+                }
+            }
+        }
+        val inicio = System.currentTimeMillis()
+        assertFalse(ClienteDeComandas().entregar(LanPeer("otro", "127.0.0.1", ss.localPort), mensaje))
+        val tardo = System.currentTimeMillis() - inicio
+        assertTrue("tardó $tardo ms", tardo in 1_400..2_000)
     }
 
     @Test

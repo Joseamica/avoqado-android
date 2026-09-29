@@ -6,7 +6,9 @@ import com.avoqado.pos.core.data.lan.LanPeer
 import com.avoqado.pos.core.data.lan.TransporteLan
 import com.avoqado.pos.kds.data.local.EntregaKdsPendienteEntity
 import com.avoqado.pos.kds.data.local.EntregasKdsPendientesDao
+import com.avoqado.pos.printing.routing.ConsolidatedLine
 import com.avoqado.pos.printing.routing.PrintConfig
+import com.avoqado.pos.printing.routing.TicketPlan
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.coVerifyOrder
@@ -16,6 +18,7 @@ import io.mockk.slot
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
@@ -100,5 +103,28 @@ class EntregaPorWifiTest {
         entrega.cerrar(listOf(EntregaKds(mensaje("st_barra"), trabajo), EntregaKds(mensaje("st_postres"), null)))
         coVerify(exactly = 1) { dao.borrar("sale:ext-1:st_barra") }
         coVerify(exactly = 1) { dao.borrar("sale:ext-1:st_postres") }
+    }
+
+    /** Ronda 1 (I2): el papel de respaldo que sale DESPUÉS («Volver a imprimir», el reloj de la libreta) cierra SU fila. */
+    @Test
+    fun `cerrarPorPapel borra solo las filas de esos planes y de esa orden`() = runTest {
+        val planBarra = TicketPlan("st_barra", false, listOf(ConsolidatedLine("Café", 1, emptyList(), null, listOf("oi_2"))))
+        val otraRonda = TicketPlan("st_barra", false, listOf(ConsolidatedLine("Café", 1, emptyList(), null, listOf("oi_9"))))
+        fun fila(folio: String, orden: String, plan: TicketPlan) = EntregaKdsPendienteEntity(
+            sourceKey = folio, venueId = "venue-1", stationId = "st_barra", mensajeJson = "{}",
+            trabajoJson = Json.encodeToString(TrabajoPendiente.serializer(), trabajo.copy(orderNumber = orden, planes = listOf(plan))),
+            creadaEnMillis = 1,
+        )
+        coEvery { dao.delVenue("venue-1") } returns listOf(
+            fila("round:r1:st_barra", "1234", planBarra),
+            fila("round:r2:st_barra", "1234", otraRonda),
+            fila("sale:otra:st_barra", "9999", planBarra),
+            fila("sale:rota:st_barra", "1234", planBarra).copy(trabajoJson = "{roto"),
+        )
+
+        entrega.cerrarPorPapel("venue-1", "1234", listOf(planBarra))
+
+        coVerify(exactly = 1) { dao.borrar("round:r1:st_barra") }
+        coVerify(exactly = 1) { dao.borrar(any()) }
     }
 }

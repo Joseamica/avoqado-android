@@ -6,12 +6,15 @@ import com.avoqado.pos.core.data.sync.SyncOutbox
 import com.avoqado.pos.core.domain.printing.ComandaDispatcher
 import com.avoqado.pos.kds.data.local.EntregaKdsPendienteEntity
 import com.avoqado.pos.kds.data.local.EntregasKdsPendientesDao
+import com.avoqado.pos.printing.routing.ConsolidatedLine
 import com.avoqado.pos.printing.routing.PrintConfig
+import com.avoqado.pos.printing.routing.TicketPlan
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.slot
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -30,7 +33,10 @@ class ReplayDeEntregasKdsTest {
     private val entregaPorWifi = mockk<EntregaPorWifi>()
     private val despachador = mockk<ComandaDispatcher>()
     private val cola = mockk<SyncOutbox>(relaxed = true)
-    private val pendientes = mockk<ComandasPendientesStore>(relaxed = true)
+    /** La libreta arranca vacía; las pruebas que la necesitan ocupada la re-stubbean. */
+    private val pendientes = mockk<ComandasPendientesStore>(relaxed = true) {
+        every { pendiente } returns MutableStateFlow<EstadoDeComanda.NoSalio?>(null)
+    }
     private val replay = ReplayDeEntregasKds(dao, entregaPorWifi, despachador, cola, pendientes)
 
     private val trabajo = TrabajoPendiente(
@@ -79,8 +85,12 @@ class ReplayDeEntregasKdsTest {
         coVerify(exactly = 1) { cola.enqueue("venue-1", "KDS_TICKET_MARK", any(), any(), false) }
     }
 
+    /**
+     * Ronda 1 (I2/M4): sin papel no se marca y la fila SE QUEDA — la borra el papel cuando por fin sale
+     * (`ComandaDispatcher.reintentar` → `cerrarPorPapel`). El trabajo va a la libreta, cuyo reloj insiste.
+     */
     @Test
-    fun `P1 si el papel NO salio no se marca - se guarda en el almacen de comandas pendientes y su reloj insiste`() = runTest {
+    fun `P1 si el papel NO salio no se marca - va a la libreta y la fila SE QUEDA hasta que el papel salga`() = runTest {
         coEvery { dao.delVenue("venue-1") } returns listOf(fila("sale:vieja:st_barra", 0))
         val noSalio = EstadoDeComanda.NoSalio(listOf("Barra"), "offline", "1234", trabajo)
         coEvery { despachador.reintentar(any(), any()) } returns noSalio
@@ -89,6 +99,31 @@ class ReplayDeEntregasKdsTest {
 
         coVerify(exactly = 0) { cola.enqueue(any(), any(), any(), any(), any()) }
         coVerify(exactly = 1) { pendientes.guardar(noSalio, any()) }
+        coVerify(exactly = 0) { dao.borrar(any()) }
+    }
+
+    /** M4: la libreta es de UNA ranura; si ya guarda otra comanda no se pisa (perdería su reintento). La fila espera. */
+    @Test
+    fun `con la libreta ocupada por otra comanda no se pisa - la fila se queda para la proxima apertura`() = runTest {
+        every { pendientes.pendiente } returns MutableStateFlow(EstadoDeComanda.NoSalio(listOf("Cocina"), "offline", "7777", trabajo.copy(orderNumber = "7777")))
+        coEvery { dao.delVenue("venue-1") } returns listOf(fila("sale:vieja:st_barra", 0))
+        coEvery { despachador.reintentar(any(), any()) } returns EstadoDeComanda.NoSalio(listOf("Barra"), "offline", "1234", trabajo)
+
+        replay.reproducirAlAbrir("venue-1", ahora = 20 * 60_000)
+
+        coVerify(exactly = 0) { pendientes.guardar(any(), any()) }
+        coVerify(exactly = 0) { dao.borrar(any()) }
+    }
+
+    /** Sin ninguna impresora no hay papel que reintentar: decidida, igual que en el despacho. */
+    @Test
+    fun `una estacion sin impresora se da por decidida - se borra sin marca`() = runTest {
+        coEvery { dao.delVenue("venue-1") } returns listOf(fila("sale:vieja:st_barra", 0))
+        coEvery { despachador.reintentar(any(), any()) } returns EstadoDeComanda.NoSalio(listOf("Barra"), "sin impresora", "1234", trabajo = null)
+
+        replay.reproducirAlAbrir("venue-1", ahora = 20 * 60_000)
+
+        coVerify(exactly = 0) { cola.enqueue(any(), any(), any(), any(), any()) }
         coVerify(exactly = 1) { dao.borrar("sale:vieja:st_barra") }
     }
 
@@ -113,5 +148,65 @@ class ReplayDeEntregasKdsTest {
         coVerify(exactly = 0) { despachador.reintentar(any(), any()) }
         coVerify(exactly = 0) { dao.borrar("sale:viva:st_barra") }
         coVerify(exactly = 1) { dao.borrar("sale:muerta:st_barra") }
+    }
+
+    /**
+     * I1: una fila que truena (AIDL de la impresora, la base) no tumba la app al abrir ni frena a las demás; se queda en
+     * disco y se intenta A LO MÁS una vez por apertura (las 2-3 pasadas de `startOfflineOutbox` no la repiten). La
+     * vigencia de 8 h le pone fin.
+     */
+    @Test
+    fun `P1 una fila que truena no tumba la app ni a las demas, y se intenta una sola vez por apertura`() = runTest {
+        coEvery { dao.delVenue("venue-1") } returns listOf(fila("sale:rota:st_barra", 0), fila("sale:buena:st_barra", 0))
+        var llamadas = 0
+        coEvery { despachador.reintentar(any(), any()) } coAnswers {
+            llamadas++
+            if (llamadas == 1) throw RuntimeException("AIDL no conectó") else EstadoDeComanda.Salio
+        }
+
+        replay.reproducirAlAbrir("venue-1", ahora = 20 * 60_000)
+        replay.reproducirAlAbrir("venue-1", ahora = 20 * 60_000)
+
+        coVerify(exactly = 2) { despachador.reintentar(any(), any()) }
+        coVerify(exactly = 0) { dao.borrar("sale:rota:st_barra") }
+        coVerify(exactly = 1) { dao.borrar("sale:buena:st_barra") }
+        coVerify(exactly = 1) { cola.enqueue("venue-1", "KDS_TICKET_MARK", any(), any(), false) }
+    }
+
+    @Test
+    fun `si la base no se deja leer el replay no lanza`() = runTest {
+        coEvery { dao.delVenue("venue-1") } throws IllegalStateException("disco lleno")
+        replay.reproducirAlAbrir("venue-1", ahora = 20 * 60_000)
+        coVerify(exactly = 0) { despachador.reintentar(any(), any()) }
+    }
+
+    /** I4: la comanda de ayer ya se resolvió; imprimirla sola en la cocina manda comida que nadie pidió (vigencia de la libreta). */
+    @Test
+    fun `P1 una entrega de mas de 8 h no se imprime ni se empuja - se borra`() = runTest {
+        val ahora = 10L * 60 * 60 * 1_000
+        coEvery { dao.delVenue("venue-1") } returns listOf(fila("sale:ayer:st_barra", ahora - 9L * 60 * 60 * 1_000))
+
+        replay.reproducirAlAbrir("venue-1", ahora = ahora)
+
+        coVerify(exactly = 0) { entregaPorWifi.empujar(any(), any()) }
+        coVerify(exactly = 0) { despachador.reintentar(any(), any()) }
+        coVerify(exactly = 0) { cola.enqueue(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 1) { dao.borrar("sale:ayer:st_barra") }
+    }
+
+    /** I2: si la libreta ya tiene ESE papel (mismo venue, folio y plan), su reloj lo imprime: el replay no lo duplica. */
+    @Test
+    fun `P1 si la libreta ya tiene ese papel el replay no lo imprime otra vez - la fila espera`() = runTest {
+        val plan = TicketPlan("st_barra", false, listOf(ConsolidatedLine("Café", 1, emptyList(), null, listOf("oi_2"))))
+        val conPlan = trabajo.copy(planes = listOf(plan))
+        every { pendientes.pendiente } returns MutableStateFlow(EstadoDeComanda.NoSalio(listOf("Barra"), "offline", "1234", conPlan))
+        coEvery { dao.delVenue("venue-1") } returns listOf(
+            fila("sale:vieja:st_barra", 0).copy(trabajoJson = Json.encodeToString(TrabajoPendiente.serializer(), conPlan)),
+        )
+
+        replay.reproducirAlAbrir("venue-1", ahora = 20 * 60_000)
+
+        coVerify(exactly = 0) { despachador.reintentar(any(), any()) }
+        coVerify(exactly = 0) { dao.borrar(any()) }
     }
 }

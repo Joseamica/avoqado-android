@@ -7,6 +7,8 @@ import com.avoqado.pos.core.data.lan.KdsLanProtocol
 import com.avoqado.pos.core.data.lan.TransporteLan
 import com.avoqado.pos.kds.data.local.EntregaKdsPendienteEntity
 import com.avoqado.pos.kds.data.local.EntregasKdsPendientesDao
+import com.avoqado.pos.printing.routing.TicketPlan
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -42,7 +44,7 @@ class EntregaPorWifi @Inject constructor(
         // 🔴 ANTES de tocar la red (`todo-funciona-sin-red.md`, pregunta 2): si el proceso muere aquí, al abrir se reintenta o sale en papel.
         for (e in entregas) {
             val trabajo = e.trabajoDeRespaldo ?: continue
-            runCatching {
+            sinTumbar("No se pudo guardar la entrega ${e.mensaje.sourceKey}") {
                 dao.guardar(
                     EntregaKdsPendienteEntity(
                         sourceKey = e.mensaje.sourceKey, venueId = e.mensaje.venueId, stationId = e.mensaje.stationId,
@@ -51,12 +53,12 @@ class EntregaPorWifi @Inject constructor(
                         creadaEnMillis = ahora,
                     ),
                 )
-            }.onFailure { Log.w(TAG, "No se pudo guardar la entrega ${e.mensaje.sourceKey}: ${it.message}") }
+            }
         }
         val acusadas = coroutineScope {
             entregas.map { e -> async { if (empujar(e.mensaje)) e.mensaje.stationId else null } }.awaitAll()
         }.filterNotNull().toSet()
-        for (e in entregas) if (e.mensaje.stationId in acusadas) runCatching { dao.borrar(e.mensaje.sourceKey) }
+        for (e in entregas) if (e.mensaje.stationId in acusadas) sinTumbar("No se pudo borrar ${e.mensaje.sourceKey}") { dao.borrar(e.mensaje.sourceKey) }
         Log.d(TAG, "📡 Empujadas ${entregas.size} · acusaron $acusadas")
         return acusadas
     }
@@ -77,6 +79,34 @@ class EntregaPorWifi @Inject constructor(
 
     /** Las filas de ESTE despacho ya se decidieron (el papel salió, o se decidió que no hacía falta): se borran. */
     suspend fun cerrar(entregas: List<EntregaKds>) {
-        for (e in entregas) runCatching { dao.borrar(e.mensaje.sourceKey) }
+        for (e in entregas) sinTumbar("No se pudo borrar ${e.mensaje.sourceKey}") { dao.borrar(e.mensaje.sourceKey) }
+    }
+
+    /**
+     * Ronda 1 (I2): el papel de respaldo que sale DESPUÉS del despacho («Volver a imprimir», el reloj de la libreta, el
+     * replay) cierra SU fila. El trabajo no lleva el folio, así que se reconoce por venue + orden + plan EXACTO: dos rondas
+     * de la misma mesa comparten orden y estación pero no renglones, y no se confunden.
+     */
+    suspend fun cerrarPorPapel(venueId: String, orderNumber: String, planes: List<TicketPlan>) {
+        if (planes.isEmpty()) return
+        sinTumbar("No se pudieron cerrar las entregas del papel de $orderNumber") {
+            for (fila in dao.delVenue(venueId)) {
+                val trabajo = runCatching { json.decodeFromString(TrabajoPendiente.serializer(), fila.trabajoJson) }.getOrNull() ?: continue
+                if (trabajo.orderNumber == orderNumber && trabajo.planes.isNotEmpty() && trabajo.planes.all { it in planes }) {
+                    dao.borrar(fila.sourceKey)
+                }
+            }
+        }
+    }
+
+    /** M6 de la revisión: `runCatching` se tragaba la cancelación de las llamadas suspendidas a la base. */
+    private inline fun sinTumbar(que: String, bloque: () -> Unit) {
+        try {
+            bloque()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.w(TAG, "$que: ${e.message}")
+        }
     }
 }

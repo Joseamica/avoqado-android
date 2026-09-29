@@ -852,4 +852,129 @@ class ComandaDispatcherTest {
 
         coVerify(exactly = 0) { entrega.entregar(any(), any()) }
     }
+
+    // MARK: - Etapa 3 del KDS (3.5), ronda 1 de la revisión: cuándo se borra la fila de la entrega (I2)
+
+    @Test
+    fun `P1 si insistir truena las filas de la entrega NO se borran - el replay las retoma`() = runTest {
+        every { printConfigRepository.getCurrentConfig() } returns conBarraSoloPantalla
+        coEvery { comandaPrinter.printComandas(any(), any(), any(), any(), any()) } throws RuntimeException("AIDL no conectó")
+
+        val resultado = runCatching {
+            despachadorConCola().dispatch(
+                venueId = "venue-1", lines = listOf(cafe), orderNumber = "1234", orderType = "En tienda",
+                servidorLaTiene = true, origenDelFolio = "sale:ext-1",
+            )
+        }
+
+        assertTrue(resultado.isFailure)
+        coVerify(exactly = 1) { entrega.entregar(any(), any()) }
+        coVerify(exactly = 0) { entrega.cerrar(any()) }
+    }
+
+    @Test
+    fun `P1 la fila del respaldo que TRONO se queda y la del respaldo que SI salio se borra`() = runTest {
+        val postresSoloPantalla = StationInfo(id = "st_postres", name = "Postres", printerId = null, active = true, hasKitchenDisplay = true)
+        every { printConfigRepository.getCurrentConfig() } returns conBarraSoloPantalla.copy(
+            stations = conBarraSoloPantalla.stations + postresSoloPantalla,
+            productOverrides = conBarraSoloPantalla.productOverrides + ProductOverride(productId = "prod_postre", printStationId = "st_postres"),
+        )
+        val postre = RoutableItem(orderItemId = "oi_3", productId = "prod_postre", categoryId = null, productName = "Pastel", quantity = 1)
+        // Barra sale, Postres truena: el plan que truena es EL MISMO que se mandó (ComandaPrinter devuelve sus instancias).
+        coEvery { comandaPrinter.printComandas(any(), any(), any(), any(), any()) } answers {
+            val postres = firstArg<List<TicketPlan>>().filter { it.stationId == "st_postres" }
+            ComandaPrinter.Result(
+                attempted = 2, printed = 1, skippedNoPrinter = 0, lastError = "offline",
+                failedStations = listOf("Postres"), failedPlans = postres,
+            )
+        }
+        val cerradas = slot<List<EntregaKds>>()
+        coEvery { entrega.cerrar(capture(cerradas)) } returns Unit
+
+        val estado = despachadorConCola().dispatch(
+            venueId = "venue-1", lines = listOf(cafe, postre), orderNumber = "1234", orderType = "En tienda",
+            maxIntentos = 1, servidorLaTiene = true, origenDelFolio = "sale:ext-1",
+        )
+
+        assertTrue(estado is EstadoDeComanda.NoSalio)
+        assertEquals(listOf("sale:ext-1:st_barra"), cerradas.captured.map { it.mensaje.sourceKey })
+    }
+
+    /** Decidida: sin impresora no hay papel que reintentar (reenviarla no le inventa una); su pantalla la verá por el servidor. */
+    @Test
+    fun `una estacion solo pantalla sin ninguna impresora a la mano se da por decidida y su fila se borra`() = runTest {
+        every { printConfigRepository.getCurrentConfig() } returns conBarraSoloPantalla
+        coEvery { comandaPrinter.printComandas(any(), any(), any(), any(), any()) } returns ComandaPrinter.Result(
+            attempted = 1, printed = 0, skippedNoPrinter = 1, lastError = null,
+            skippedStations = listOf("Barra"), failedPlans = emptyList(),
+        )
+        val cerradas = slot<List<EntregaKds>>()
+        coEvery { entrega.cerrar(capture(cerradas)) } returns Unit
+
+        despachadorConCola().dispatch(
+            venueId = "venue-1", lines = listOf(cafe), orderNumber = "1234", orderType = "En tienda",
+            servidorLaTiene = true, origenDelFolio = "sale:ext-1",
+        )
+
+        assertEquals(listOf("sale:ext-1:st_barra"), cerradas.captured.map { it.mensaje.sourceKey })
+    }
+
+    /** M9 (a): la promesa de la 3.5 — sin internet, la pantalla acusa por el WiFi del local y no sale papel. */
+    @Test
+    fun `P1 sin red pero con acuse la estacion solo pantalla no se imprime ni se marca`() = runTest {
+        every { printConfigRepository.getCurrentConfig() } returns conBarraSoloPantalla
+        val planes = mutableListOf<List<TicketPlan>>()
+        imprimeTodo(planes, mutableListOf())
+        coEvery { entrega.entregar(any(), any()) } returns setOf("st_barra")
+
+        despachadorConCola().dispatch(
+            venueId = "venue-1", lines = listOf(taco, cafe), orderNumber = "1234", orderType = "En tienda",
+            servidorLaTiene = false, origenDelFolio = "sale:ext-1",
+        )
+
+        assertEquals(listOf("st_cocina"), planes.single().map { it.stationId })
+        coVerify(exactly = 0) { cola.enqueue(any(), any(), any(), any(), any()) }
+    }
+
+    /**
+     * M5 (declarado): en línea y SIN folio no hay nada que empujar ni acuse posible. En la 3.4 la «sólo pantalla» no se
+     * imprimía (el servidor alimenta su pantalla); desde la 3.5 el acuse decide, así que sale en papel de respaldo SIN
+     * marca y la pantalla también la mostrará: duplicado, nunca pérdida.
+     */
+    @Test
+    fun `en linea y sin folio la estacion solo pantalla sale en papel sin marca`() = runTest {
+        every { printConfigRepository.getCurrentConfig() } returns conBarraSoloPantalla
+        val planes = mutableListOf<List<TicketPlan>>()
+        imprimeTodo(planes, mutableListOf())
+
+        despachadorConCola().dispatch(
+            venueId = "venue-1", lines = listOf(cafe), orderNumber = "1234", orderType = "En tienda",
+            servidorLaTiene = true, origenDelFolio = null,
+        )
+
+        assertEquals(listOf("st_barra"), planes.single().map { it.stationId })
+        coVerify(exactly = 0) { entrega.entregar(any(), any()) }
+        coVerify(exactly = 0) { cola.enqueue(any(), any(), any(), any(), any()) }
+    }
+
+    /** El papel de respaldo que por fin sale («Volver a imprimir» o el reloj de la libreta) cierra su fila pendiente. */
+    @Test
+    fun `P1 volver a imprimir cierra la fila del respaldo que por fin salio, y un trabajo sin respaldo no toca nada`() = runTest {
+        every { printConfigRepository.getCurrentConfig() } returns conBarraSoloPantalla
+        imprimeTodo(mutableListOf(), mutableListOf())
+        val planBarra = TicketPlan("st_barra", false, listOf(ConsolidatedLine("Café", 1, emptyList(), null, listOf("oi_2"))))
+        val planCocina = TicketPlan("st_cocina", false, listOf(ConsolidatedLine("Taco", 2, emptyList(), null, listOf("oi_1"))))
+        val trabajo = TrabajoPendiente(
+            planes = listOf(planCocina, planBarra),
+            config = KitchenDeliveryPolicy.conRespaldo(conBarraSoloPantalla, listOf("st_barra")),
+            orderNumber = "1234", orderType = "En tienda", serverName = null, comboNames = emptyMap(),
+            venueId = "venue-1", orderId = null,
+        )
+
+        despachadorConCola().reintentar(trabajo)
+        despachadorConCola().reintentar(trabajo.copy(config = conBarraSoloPantalla))
+
+        coVerify(exactly = 1) { entrega.cerrarPorPapel("venue-1", "1234", listOf(planBarra)) }
+        coVerify(exactly = 1) { entrega.cerrarPorPapel(any(), any(), any()) }
+    }
 }
