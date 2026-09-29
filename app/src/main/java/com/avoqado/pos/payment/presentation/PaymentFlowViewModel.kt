@@ -602,10 +602,13 @@ class PaymentFlowViewModel @Inject constructor(
             enCurso ?: pendiente?.takeIf { it.orderNumber != oculto }
         }.stateIn(viewModelScope, SharingStarted.Eagerly, null)
 
-    /** «Ya la canté»: una PERSONA lo resolvió — deja de perseguirla entre arranques. */
+    /**
+     * «Ya la canté»: una PERSONA lo resolvió — deja de perseguirla entre arranques. `yaLaCante` (no `limpiar`) cierra
+     * además sus entregas por WiFi, para que el replay no la imprima sola después (KDS 3.5, ronda 3 de la Task 6).
+     */
     fun clearComandaWarning() {
         _avisoEnCurso.value = null
-        comandasPendientesStore.limpiar()
+        comandasPendientesStore.yaLaCante()
     }
 
     /**
