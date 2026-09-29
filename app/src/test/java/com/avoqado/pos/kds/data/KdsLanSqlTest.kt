@@ -1,9 +1,19 @@
 package com.avoqado.pos.kds.data
 
 import com.avoqado.pos.kds.data.local.KdsLanSql
+import com.avoqado.pos.kds.data.local.KdsTicketLocalEntity
+import com.avoqado.pos.kds.data.local.KdsTicketsLocalesDao
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
 import org.junit.Before
 import org.junit.Test
@@ -143,5 +153,110 @@ class KdsLanSqlTest {
         assertEquals(1, actualizar(KdsLanSql.MARCAR_LISTA, "sourceKey" to "sale:a:st_barra", "ahora" to 100L))
         assertEquals(1, actualizar(KdsLanSql.QUITAR_LISTA, "sourceKey" to "sale:a:st_barra"))
         assertEquals(1, actualizar(KdsLanSql.RETIRAR_PENDIENTES, "folios" to listOf("sale:a:st_barra")))
+    }
+
+    // MARK: - Ronda 1 (I1): la regla del curso nuevo sobre una fila LISTA, DENTRO de `unir`, ejecutada de verdad
+
+    /**
+     * El DAO REAL sobre SQLite en memoria: `porFolio` y `guardar` corren con las MISMAS constantes de SQL que Room
+     * compila, y `unir` es el `@Transaction` de la interfaz, HEREDADO sin tocar — la lógica que se prueba es la de
+     * producción. Lo que esto fija es que la lectura, la decisión y la escritura viven en ese único método (la
+     * atomicidad la pone Room al envolverlo); un mock del DAO jamás podía ver la regla ni que se conserve la marca.
+     */
+    private inner class DaoSobreSqlite : KdsTicketsLocalesDao {
+        override suspend fun guardar(fila: KdsTicketLocalEntity) {
+            db.prepareStatement("INSERT OR REPLACE INTO kds_tickets_locales (sourceKey, venueId, stationId, orderNumber, orderType, itemsJson, recibidaEnMillis, listaEnMillis) VALUES (?,?,?,?,?,?,?,?)").use {
+                listOf<Any?>(fila.sourceKey, fila.venueId, fila.stationId, fila.orderNumber, fila.orderType, fila.itemsJson, fila.recibidaEnMillis, fila.listaEnMillis)
+                    .forEachIndexed { i, v -> it.setObject(i + 1, v) }
+                it.executeUpdate()
+            }
+        }
+
+        override suspend fun porFolio(sourceKey: String): KdsTicketLocalEntity? =
+            preparar(KdsLanSql.TICKET_POR_FOLIO, mapOf("sourceKey" to sourceKey)).use { st ->
+                val rs = st.executeQuery()
+                if (!rs.next()) null else KdsTicketLocalEntity(
+                    sourceKey = rs.getString("sourceKey"), venueId = rs.getString("venueId"), stationId = rs.getString("stationId"),
+                    orderNumber = rs.getString("orderNumber"), orderType = rs.getString("orderType"), itemsJson = rs.getString("itemsJson"),
+                    recibidaEnMillis = rs.getLong("recibidaEnMillis"), listaEnMillis = rs.getLong("listaEnMillis").takeUnless { rs.wasNull() },
+                )
+            }
+
+        override fun deLaEstacion(venueId: String, stationId: String): Flow<List<KdsTicketLocalEntity>> = throw UnsupportedOperationException()
+        override suspend fun marcarLista(sourceKey: String, ahora: Long): Int = actualizar(KdsLanSql.MARCAR_LISTA, "sourceKey" to sourceKey, "ahora" to ahora)
+        override suspend fun purgar(venueId: String, corte: Long): Int = actualizar(KdsLanSql.PURGAR_TICKETS, "venueId" to venueId, "corte" to corte)
+        override suspend fun retirarPendientes(folios: List<String>): Int = actualizar(KdsLanSql.RETIRAR_PENDIENTES, "folios" to folios)
+        override suspend fun quitarLista(sourceKey: String): Int = actualizar(KdsLanSql.QUITAR_LISTA, "sourceKey" to sourceKey)
+    }
+
+    private val renglonA = """{"id":"a","productName":"Café","quantity":1,"modifiers":[],"notes":null}"""
+    private val renglonB = """{"id":"b","productName":"Pan","quantity":2,"modifiers":[],"notes":null}"""
+    private val folio = "round:r1:st_barra"
+
+    private fun fila(items: String, lista: Long? = null, recibida: Long = 10L, folio: String = this.folio) =
+        KdsTicketLocalEntity(folio, "venue-1", "st_barra", "77", "Mesa 8", items, recibida, lista)
+
+    private fun ids(itemsJson: String): List<String> =
+        Json.parseToJsonElement(itemsJson).jsonArray.map { it.jsonObject["id"]!!.jsonPrimitive.content }
+
+    @Test
+    fun `P1 unir un curso con un renglon NUEVO sobre una fila YA LISTA devuelve false y la fila queda intacta`() = runBlocking {
+        val dao = DaoSobreSqlite()
+        val lista = fila("[$renglonA]", lista = 20L)
+        dao.guardar(lista)
+
+        val guardada = dao.unir(fila("[$renglonA,$renglonB]", recibida = 99L), idsEntrantes = setOf("a", "b"))
+
+        assertFalse("sin acuse: el curso nuevo no se puede esconder detras de la marca LISTO", guardada)
+        // Ni los renglones ni la marca cambian: todo o nada.
+        assertEquals(lista, dao.porFolio(folio))
+    }
+
+    @Test
+    fun `unir un curso nuevo sobre una fila PENDIENTE lo mezcla, la deja pendiente y devuelve true`() = runBlocking {
+        val dao = DaoSobreSqlite()
+        dao.guardar(fila("[$renglonA]"))
+
+        assertTrue(dao.unir(fila("[$renglonB]", recibida = 99L), idsEntrantes = setOf("b")))
+
+        val guardada = dao.porFolio(folio)!!
+        assertEquals(listOf("a", "b"), ids(guardada.itemsJson))
+        assertNull(guardada.listaEnMillis)
+        assertEquals("la hora de llegada es la de la primera entrega", 10L, guardada.recibidaEnMillis)
+    }
+
+    @Test
+    fun `reenviar los MISMOS renglones sobre una fila YA LISTA devuelve true y conserva la marca (sin cambios)`() = runBlocking {
+        val dao = DaoSobreSqlite()
+        val lista = fila("[$renglonA]", lista = 20L)
+        dao.guardar(lista)
+
+        assertTrue(dao.unir(fila("[$renglonA]", recibida = 99L), idsEntrantes = setOf("a")))
+
+        assertEquals(lista, dao.porFolio(folio))
+    }
+
+    @Test
+    fun `sin fila previa unir la inserta tal cual y devuelve true`() = runBlocking {
+        val dao = DaoSobreSqlite()
+        val nueva = fila("[$renglonA]", recibida = 99L)
+
+        assertTrue(dao.unir(nueva, idsEntrantes = setOf("a")))
+
+        assertEquals(nueva, dao.porFolio(folio))
+    }
+
+    /** Lado seguro: si no se puede leer lo que había, TODO lo entrante es «nuevo» y una fila LISTA no acusa. */
+    @Test
+    fun `P1 un JSON previo ilegible sobre una fila YA LISTA no acusa - y sobre una PENDIENTE sigue mezclando`() = runBlocking {
+        val dao = DaoSobreSqlite()
+        val ilegible = fila("no es json", lista = 20L)
+        dao.guardar(ilegible)
+        assertFalse(dao.unir(fila("[$renglonA]"), idsEntrantes = setOf("a")))
+        assertEquals(ilegible, dao.porFolio(folio))
+
+        dao.guardar(fila("no es json"))
+        assertTrue(dao.unir(fila("[$renglonA]"), idsEntrantes = setOf("a")))
+        assertEquals(listOf("a"), ids(dao.porFolio(folio)!!.itemsJson))
     }
 }

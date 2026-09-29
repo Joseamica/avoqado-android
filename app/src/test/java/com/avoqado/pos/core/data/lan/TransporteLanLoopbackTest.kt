@@ -253,6 +253,35 @@ class TransporteLanLoopbackTest {
         assertFalse("cambiar de estación invalida el acuse: $respuesta", KdsLanProtocol.esAcuse(respuesta, "sale:ext-1:st_barra"))
     }
 
+    /**
+     * Ronda 1 (M1): el caso donde la GENERACIÓN es lo único que decide. El Tablero se va a segundo plano y vuelve
+     * (desactivar + re-activar LA MISMA estación) mientras se guarda: al terminar, la estación SÍ está anunciada y hay
+     * un receptor puesto — sólo la generación (dos incrementos) dice que ese guardado ya no es de esta pantalla. Las
+     * otras dos pruebas de invalidación pasan por la pertenencia a la estación y no fijan el mecanismo: sin
+     * `generacion++` en `fijarReceptor`, ésta es la que cae. Hay que dejar viva la red (una estación con pantalla en la
+     * config), como en la de M3, para que soltar el receptor un instante no cierre el socket.
+     */
+    @Test
+    fun `P1 desactivar y re-activar la MISMA estacion mientras se guarda NO acusa - solo la generacion lo decide`() = runBlocking {
+        config.value = PrintConfig(stations = listOf(StationInfo(id = "st_barra", name = "Barra", hasKitchenDisplay = true)))
+        val guardadas = mutableListOf<String>()
+        transporte.iniciar("venue-1")
+        transporte.activarReceptor(setOf("st_barra")) { c ->
+            guardadas += c.sourceKey
+            // El Tablero sale y vuelve: al terminar de guardar la estación sigue anunciada, con un receptor puesto.
+            transporte.desactivarReceptor()
+            transporte.activarReceptor(setOf("st_barra")) { true }
+            true
+        }
+        val puerto = esperarPuerto()
+
+        val barra = KdsComanda(venueId = "venue-1", deviceId = "otro", sourceKey = "sale:ext-1:st_barra", stationId = "st_barra", orderNumber = "1", orderType = "En tienda", createdAtMillis = 1, items = emptyList())
+        val respuesta = enviarLinea(puerto, KdsLanProtocol.encode(barra))
+
+        assertEquals("se guardó", listOf("sale:ext-1:st_barra"), guardadas)
+        assertFalse("desactivar y volver a activar invalida el acuse aunque la estación coincida: $respuesta", KdsLanProtocol.esAcuse(respuesta, "sale:ext-1:st_barra"))
+    }
+
     @Test
     fun `P1 una linea de mas de 64 KiB se corta sin responder`() = runBlocking {
         transporte.iniciar("venue-1")

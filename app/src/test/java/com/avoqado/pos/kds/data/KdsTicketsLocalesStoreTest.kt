@@ -1,5 +1,6 @@
 package com.avoqado.pos.kds.data
 
+import android.util.Log
 import com.avoqado.pos.core.data.lan.KdsComanda
 import com.avoqado.pos.core.data.lan.KdsComandaItem
 import com.avoqado.pos.kds.data.local.KdsTicketLocalEntity
@@ -11,7 +12,10 @@ import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.mockkStatic
 import io.mockk.slot
+import io.mockk.unmockkStatic
+import io.mockk.verify
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
@@ -34,9 +38,9 @@ class KdsTicketsLocalesStoreTest {
 
     @Test
     fun `unir escribe la fila con los renglones en JSON y devuelve true - el acuse sale solo entonces`() = runTest {
-        coEvery { dao.porFolio(comanda.sourceKey) } returns null
         val fila = slot<KdsTicketLocalEntity>()
-        coEvery { dao.unir(capture(fila)) } returns Unit
+        val ids = slot<Set<String>>()
+        coEvery { dao.unir(capture(fila), capture(ids)) } returns true
         assertTrue(store.unir(comanda, ahora = 100))
         assertEquals("round:rk:st-barra", fila.captured.sourceKey)
         assertEquals("st-barra", fila.captured.stationId)
@@ -44,51 +48,36 @@ class KdsTicketsLocalesStoreTest {
         assertEquals(100L, fila.captured.recibidaEnMillis)
         assertNull(fila.captured.listaEnMillis)
         assertTrue(fila.captured.itemsJson, fila.captured.itemsJson.contains("\"productName\":\"Café\""))
+        // Ronda 1 (M4): los ids entrantes salen de los renglones del dominio, sin releer el JSON recién codificado.
+        assertEquals(setOf("a"), ids.captured)
     }
 
     @Test
     fun `P1 si el disco falla unir devuelve false y NO se acusa`() = runTest {
-        coEvery { dao.porFolio(comanda.sourceKey) } returns null
-        coEvery { dao.unir(any()) } throws IllegalStateException("disco lleno")
+        coEvery { dao.unir(any(), any()) } throws IllegalStateException("disco lleno")
         assertFalse(store.unir(comanda))
     }
 
-    // MARK: - Task 8b: un curso nuevo sobre una fila YA LISTA no se guarda ni se acusa (hallazgo de pérdida)
-
-    private fun filaLista(itemsJson: String, listaEnMillis: Long? = 20) = KdsTicketLocalEntity(
-        sourceKey = comanda.sourceKey, venueId = "v1", stationId = "st-barra", orderNumber = "77", orderType = "Mesa 8 · Aperitivos",
-        itemsJson = itemsJson, recibidaEnMillis = 10, listaEnMillis = listaEnMillis,
-    )
+    // MARK: - Task 8b / ronda 1 (I1): la regla del curso nuevo sobre una fila LISTA vive en la transacción del DAO
+    // (`KdsLanSqlTest` la ejecuta contra SQLite de verdad); aquí el store sólo la respeta: false del DAO ⇒ sin acuse.
 
     @Test
-    fun `P1 un curso con un renglon NUEVO sobre una fila YA LISTA no se guarda ni se acusa`() = runTest {
-        coEvery { dao.porFolio(comanda.sourceKey) } returns filaLista("""[{"id":"a","productName":"Café","quantity":2,"modifiers":["Sin azúcar"],"notes":null}]""")
+    fun `P1 si el DAO rechaza un curso con renglon NUEVO sobre una fila YA LISTA el store no acusa y lo deja en el log`() = runTest {
+        val ids = slot<Set<String>>()
+        coEvery { dao.unir(any(), capture(ids)) } returns false
         val conCursoNuevo = comanda.copy(items = comanda.items + KdsComandaItem("b", "Pan", 1, emptyList(), null))
 
-        assertFalse(store.unir(conCursoNuevo, ahora = 100))
-        coVerify(exactly = 0) { dao.unir(any()) }
-    }
-
-    @Test
-    fun `reenviar los MISMOS renglones sobre una fila YA LISTA sigue guardando y acusando (sin cambios)`() = runTest {
-        coEvery { dao.porFolio(comanda.sourceKey) } returns filaLista("""[{"id":"a","productName":"Café","quantity":2,"modifiers":["Sin azúcar"],"notes":null}]""")
-        coEvery { dao.unir(any()) } returns Unit
-
-        assertTrue(store.unir(comanda, ahora = 100))
-        coVerify(exactly = 1) { dao.unir(any()) }
-    }
-
-    @Test
-    fun `un curso nuevo sobre una fila PENDIENTE se sigue mezclando y acusando como hoy`() = runTest {
-        coEvery { dao.porFolio(comanda.sourceKey) } returns filaLista(
-            """[{"id":"a","productName":"Café","quantity":2,"modifiers":["Sin azúcar"],"notes":null}]""",
-            listaEnMillis = null,
-        )
-        coEvery { dao.unir(any()) } returns Unit
-        val conCursoNuevo = comanda.copy(items = comanda.items + KdsComandaItem("b", "Pan", 1, emptyList(), null))
-
-        assertTrue(store.unir(conCursoNuevo, ahora = 100))
-        coVerify(exactly = 1) { dao.unir(any()) }
+        mockkStatic(Log::class)
+        try {
+            every { Log.i(any(), any()) } returns 0
+            assertFalse(store.unir(conCursoNuevo, ahora = 100))
+            verify(exactly = 1) { Log.i(any(), match { it.contains("round:rk:st-barra") && it.contains("LISTA") }) }
+        } finally {
+            unmockkStatic(Log::class)
+        }
+        assertEquals(setOf("a", "b"), ids.captured)
+        // La decisión es del DAO, en UNA transacción: el store ya no lee la fila por su cuenta.
+        coVerify(exactly = 0) { dao.porFolio(any()) }
     }
 
     @Test

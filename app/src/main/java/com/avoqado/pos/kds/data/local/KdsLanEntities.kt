@@ -128,6 +128,11 @@ internal fun unirItemsJson(previos: String, nuevos: String): String {
     return jsonDeItems.encodeToString(serializer, a + b.filter { it.id !in ids })
 }
 
+/** Los ids de los renglones de una fila guardada; un JSON ilegible es «sin renglones» (por eso todo lo que llegue es nuevo). */
+internal fun idsDeItemsJson(itemsJson: String): Set<String> =
+    runCatching { jsonDeItems.decodeFromString(ListSerializer(KdsComandaItem.serializer()), itemsJson) }
+        .getOrDefault(emptyList()).map { it.id }.toSet()
+
 @Dao
 interface EntregasKdsPendientesDao {
     /** `REPLACE`: la misma entrega (mismo folio y mismos renglones) refresca la fila; otro curso es otra fila. */
@@ -167,10 +172,26 @@ interface KdsTicketsLocalesDao {
     @Query(KdsLanSql.QUITAR_LISTA)
     suspend fun quitarLista(sourceKey: String): Int
 
-    /** Upsert que UNE renglones por `id` y conserva `listaEnMillis` (pegajoso). Atómico. */
+    /**
+     * Upsert que UNE renglones por `id` y conserva `listaEnMillis` (pegajoso). Devuelve `true` si la fila quedó guardada.
+     *
+     * Ronda 1 (I1): leer la fila, decidir y escribir van en ESTA transacción — leerla afuera y escribir aquí dejaba una
+     * ventana en la que un LISTO (`marcarLista`) caía entre las dos, el curso se unía a una fila ya oculta y se acusaba
+     * (pérdida). Si la fila previa ya está LISTA y [idsEntrantes] trae algún id que ella no tenía, devuelve `false` SIN
+     * escribir: es un curso nuevo que la cocina nunca vería; sin acuse la caja lo saca en papel. Un reenvío de los mismos
+     * renglones sobre una fila LISTA (nada nuevo) y cualquier curso sobre una PENDIENTE se guardan como siempre. Un JSON
+     * previo ilegible cuenta como «sin renglones»: todo lo entrante es nuevo (el lado seguro). [idsEntrantes] son los ids
+     * de los renglones del dominio — igual que el gemelo de iOS, sin volver a leer el JSON recién codificado.
+     */
     @Transaction
-    suspend fun unir(nueva: KdsTicketLocalEntity) {
+    suspend fun unir(nueva: KdsTicketLocalEntity, idsEntrantes: Set<String>): Boolean {
         val previa = porFolio(nueva.sourceKey)
-        guardar(if (previa == null) nueva else previa.copy(itemsJson = unirItemsJson(previa.itemsJson, nueva.itemsJson)))
+        if (previa == null) {
+            guardar(nueva)
+            return true
+        }
+        if (previa.listaEnMillis != null && (idsEntrantes - idsDeItemsJson(previa.itemsJson)).isNotEmpty()) return false
+        guardar(previa.copy(itemsJson = unirItemsJson(previa.itemsJson, nueva.itemsJson)))
+        return true
     }
 }

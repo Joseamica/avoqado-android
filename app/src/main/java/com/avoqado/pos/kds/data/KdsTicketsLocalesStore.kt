@@ -36,31 +36,28 @@ class KdsTicketsLocalesStore @Inject constructor(private val dao: KdsTicketsLoca
      * renglones que esa fila no tenía NO se guarda ni se acusa — mezclarlo la dejaría LISTA y oculta, y la cocina
      * nunca vería el curso nuevo. Sin acuse la caja imprime el papel de respaldo. Un reenvío de LOS MISMOS renglones
      * (nada nuevo) y cualquier curso sobre una fila PENDIENTE siguen el camino de hoy: se guarda y se acusa.
+     *
+     * Ronda 1 (I1): TODA la regla vive en la transacción del DAO ([KdsTicketsLocalesDao.unir]) — leer la fila, decidir y
+     * escribir en un solo paso. Leerla aquí y escribir en otra transacción dejaba una ventana: un LISTO que cayera
+     * entre las dos escondía el curso ya acusado.
      */
     suspend fun unir(comanda: KdsComanda, ahora: Long = System.currentTimeMillis()): Boolean = try {
-        val nuevoJson = json.encodeToString(items, comanda.items)
-        val previa = dao.porFolio(comanda.sourceKey)
-        if (previa?.listaEnMillis != null && (idsDe(nuevoJson) - idsDe(previa.itemsJson)).isNotEmpty()) {
-            false
-        } else {
-            dao.unir(
-                KdsTicketLocalEntity(
-                    sourceKey = comanda.sourceKey, venueId = comanda.venueId, stationId = comanda.stationId,
-                    orderNumber = comanda.orderNumber, orderType = comanda.orderType,
-                    itemsJson = nuevoJson, recibidaEnMillis = ahora, listaEnMillis = null,
-                ),
-            )
-            true
-        }
+        val guardada = dao.unir(
+            KdsTicketLocalEntity(
+                sourceKey = comanda.sourceKey, venueId = comanda.venueId, stationId = comanda.stationId,
+                orderNumber = comanda.orderNumber, orderType = comanda.orderType,
+                itemsJson = json.encodeToString(items, comanda.items), recibidaEnMillis = ahora, listaEnMillis = null,
+            ),
+            idsEntrantes = comanda.items.map { it.id }.toSet(),
+        )
+        if (!guardada) Log.i(TAG, "${comanda.sourceKey}: curso nuevo sobre una comanda ya LISTA — sin acuse, sale en papel")
+        guardada
     } catch (e: CancellationException) {
         throw e
     } catch (e: Exception) {
         Log.e(TAG, "❌ No se pudo guardar la comanda ${comanda.sourceKey}: ${e.message}")
         false
     }
-
-    private fun idsDe(itemsJson: String): Set<String> =
-        runCatching { json.decodeFromString(items, itemsJson) }.getOrDefault(emptyList()).map { it.id }.toSet()
 
     /**
      * LISTO sin red (D10): se persiste ANTES de encolar la marca. Una comanda que llegó por WiFi ya tiene fila (se marca);
