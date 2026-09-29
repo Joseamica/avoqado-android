@@ -1,5 +1,7 @@
 package com.avoqado.pos.inventory.waste.domain
 
+import com.avoqado.pos.inventory.waste.data.MotivoNoRegistrable
+
 /**
  * Todo texto que el cajero ve en «Registrar merma», en UN archivo.
  *
@@ -24,6 +26,17 @@ object TextosMerma {
     const val NOTA_OBLIGATORIA = "Escribe qué pasó (obligatoria con «Otro»)"
     const val REGISTRAR = "Registrar"
     const val SIN_RESULTADOS = "No encontramos ese artículo."
+
+    const val NO_REGISTRABLES = "Estos productos no aparecen en la lista de merma:"
+    const val MOTIVO_SIN_INVENTARIO =
+        "No lleva inventario. Si lo preparan aquí, registra la merma de sus ingredientes. Si lo compran hecho, pide al dueño o gerente que en el dashboard abra el producto › «Configurar Inventario» › «Rastrear Inventario» › «Seguimiento de Cantidad»."
+    const val MOTIVO_CON_INVENTARIO =
+        "Se descuenta por receta o su inventario está incompleto. Registra la merma de sus ingredientes, o pide al dueño o gerente que revise su inventario en el dashboard («Configurar Inventario»)."
+
+    fun motivoNoRegistrable(m: MotivoNoRegistrable): String = when (m) {
+        MotivoNoRegistrable.SIN_INVENTARIO -> MOTIVO_SIN_INVENTARIO
+        MotivoNoRegistrable.CON_INVENTARIO -> MOTIVO_CON_INVENTARIO
+    }
     const val SIN_CATALOGO = "Sin catálogo guardado. Conéctate a internet para descargarlo."
     const val SIN_RED = "Sin conexión: la merma se guarda en este aparato y se sube sola."
     const val SIN_SESION = "Inicia sesión para registrar mermas."

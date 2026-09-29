@@ -42,3 +42,53 @@ fun buscarEnCatalogo(
 fun plegar(texto: String): String =
     Normalizer.normalize(texto.lowercase(), Normalizer.Form.NFD)
         .filter { Character.getType(it) != Character.NON_SPACING_MARK.toInt() }
+
+/** Lo que el aviso de «no se puede registrar» necesita de un producto del menú (se arma desde `pos.data.model.Product`). */
+data class ProductoDelMenu(
+    val id: String,
+    val name: String,
+    val sku: String?,
+    val type: String?,
+    val trackInventory: Boolean?,
+    val active: Boolean?,
+)
+
+/**
+ * Sólo depende de `trackInventory`, que los DOS cachés sin red guardan. `inventoryMethod` no se usa a
+ * propósito: el caché de iOS no lo guarda y, sin red, las dos apps dirían cosas distintas.
+ */
+enum class MotivoNoRegistrable { SIN_INVENTARIO, CON_INVENTARIO }
+
+data class ProductoNoRegistrable(val id: String, val nombre: String, val motivo: MotivoNoRegistrable)
+
+/** Tipos que el servidor nunca deja llevar inventario (`product.dashboard.service.ts`): no se les dice «actívalo». */
+private val TIPOS_SIN_INVENTARIO = setOf("SERVICE", "APPOINTMENTS_SERVICE", "CLASS", "DIGITAL", "DONATION")
+
+/**
+ * Productos del menú que coinciden con lo buscado pero NO están en el catálogo de merma, para que la
+ * pantalla lo DIGA en vez de «No encontramos ese artículo» (caso Testarudo, 29-sep: el pan de muerto
+ * no llevaba inventario y el cajero concluyó que sólo había ingredientes). Gemela de iOS.
+ */
+fun productosNoRegistrables(
+    productos: List<ProductoDelMenu>,
+    catalogo: List<WasteCatalogEntity>,
+    texto: String,
+    limite: Int,
+): List<ProductoNoRegistrable> {
+    val buscado = plegar(texto.trim())
+    if (buscado.isEmpty()) return emptyList()
+    val enCatalogo = catalogo.filter { it.itemType == "PRODUCT" }.map { it.itemId }.toSet()
+    return productos
+        .asSequence()
+        .filter { it.id !in enCatalogo && it.active != false && (it.type ?: "") !in TIPOS_SIN_INVENTARIO }
+        .map { it to plegar(it.name) }
+        .filter { (p, nombre) -> buscado in nombre || buscado in plegar(p.sku ?: "") }
+        .distinctBy { it.first.id }
+        .sortedWith(compareBy({ it.second }, { it.first.id }))
+        .take(limite)
+        .map { (p, _) ->
+            val motivo = if (p.trackInventory != true) MotivoNoRegistrable.SIN_INVENTARIO else MotivoNoRegistrable.CON_INVENTARIO
+            ProductoNoRegistrable(p.id, p.name, motivo)
+        }
+        .toList()
+}

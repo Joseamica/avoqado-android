@@ -9,11 +9,14 @@ import com.avoqado.pos.inventory.presentation.PriceLabelViewModel.AvisoImpresion
 import com.avoqado.pos.inventory.data.model.StockItem
 import com.avoqado.pos.inventory.waste.data.BloqueoDeMermaPorPlan
 import com.avoqado.pos.inventory.waste.data.CatalogoDeMerma
+import com.avoqado.pos.inventory.waste.data.ProductoDelMenu
+import com.avoqado.pos.inventory.waste.data.ProductoNoRegistrable
 import com.avoqado.pos.inventory.waste.data.WasteCatalogEntity
 import com.avoqado.pos.inventory.waste.data.WasteCatalogItem
 import com.avoqado.pos.inventory.waste.data.SubidaDeMerma
 import com.avoqado.pos.inventory.waste.data.WasteSyncCoordinator
 import com.avoqado.pos.inventory.waste.data.buscarEnCatalogo
+import com.avoqado.pos.inventory.waste.data.productosNoRegistrables
 import com.avoqado.pos.inventory.waste.domain.TOPE_DE_NOTA
 import com.avoqado.pos.inventory.waste.domain.TextosMerma
 import com.avoqado.pos.inventory.waste.domain.WasteReason
@@ -23,6 +26,7 @@ import com.avoqado.pos.inventory.waste.domain.recortarNota
 import com.avoqado.pos.inventory.waste.domain.textoDeConfirmacion
 import com.avoqado.pos.printing.data.ComprobanteDeMerma
 import com.avoqado.pos.printing.data.MermaRegistrada
+import com.avoqado.pos.pos.data.ProductsRepository
 import com.avoqado.pos.printing.data.PrinterService
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
@@ -42,6 +46,8 @@ data class AvisoDeMerma(val titulo: String, val detalle: String? = null)
 data class EstadoDeCaptura(
     val busqueda: String = "",
     val resultados: List<WasteCatalogEntity> = emptyList(),
+    /** Productos del menú que coinciden con lo buscado pero no se pueden registrar (con su motivo). */
+    val noRegistrables: List<ProductoNoRegistrable> = emptyList(),
     /** «Catálogo de hace N h» — sólo cuando lo que se ve puede no estar al día. */
     val antiguedadDelCatalogo: String? = null,
     val articulo: WasteCatalogEntity? = null,
@@ -138,6 +144,7 @@ class LogWasteViewModel @Inject constructor(
     private val red: ConnectivityMonitor,
     private val impresora: PrinterService,
     private val horaDelNegocio: VenueDateTimeFormatter,
+    private val productos: ProductsRepository,
 ) : ViewModel() {
 
     /** Inyectable para las pruebas: la antigüedad del catálogo se mide contra este reloj. */
@@ -147,6 +154,19 @@ class LogWasteViewModel @Inject constructor(
     val estado: StateFlow<EstadoDeCaptura> = _estado.asStateFlow()
 
     private var enMemoria: List<WasteCatalogEntity> = emptyList()
+
+    /** Los productos del menú ya traducidos: se rehace al llegar una lista nueva, no en cada tecla. */
+    private var menu: List<ProductoDelMenu> = emptyList()
+
+    /**
+     * Si alguna vez se guardó un catálogo de merma. Sin él, `enMemoria` está vacío y TODO producto parecería
+     * «no registrable»: mandaría al dueño al asistente de inventario (que puede borrar una receta). Un catálogo
+     * guardado pero vacío (caso Testarudo) sí cuenta como guardado. Por eso NO se usa `enMemoria.isEmpty()`.
+     */
+    private var hayCatalogoGuardado = false
+
+    private fun noRegistrables(texto: String): List<ProductoNoRegistrable> =
+        if (!hayCatalogoGuardado) emptyList() else productosNoRegistrables(menu, enMemoria, texto, LIMITE)
 
     /** El candado del doble toque: el segundo toque llega con el candado puesto y no hace nada. */
     private val registrando = AtomicBoolean(false)
@@ -161,6 +181,13 @@ class LogWasteViewModel @Inject constructor(
                 _estado.update { it.copy(bloqueadaPorPlan = secureStorage.venueId?.let { v -> v in venues } == true) }
             }
         }
+        viewModelScope.launch {
+            productos.products.collect { lista ->
+                menu = lista.map { ProductoDelMenu(it.id, it.name, it.sku, it.type, it.trackInventory, it.active) }
+                _estado.update { it.copy(noRegistrables = noRegistrables(it.busqueda)) }
+            }
+        }
+        // Sin carga aquí a propósito: Cobrar carga los productos al arrancar y al cambiar de negocio; cargarlos desde aquí duplicaba peticiones, podía disparar el aviso de permiso menu:read y nunca reintentaba tras cerrar el formulario (auditoría final, 29-sep).
     }
 
     /**
@@ -185,6 +212,7 @@ class LogWasteViewModel @Inject constructor(
             it.copy(
                 busqueda = "",
                 resultados = buscarEnCatalogo(enMemoria, "", LIMITE),
+                noRegistrables = noRegistrables(""),
                 articulo = null,
                 cantidad = "",
                 motivo = null,
@@ -236,7 +264,7 @@ class LogWasteViewModel @Inject constructor(
     }
 
     fun buscar(texto: String) = _estado.update {
-        it.copy(busqueda = texto, resultados = buscarEnCatalogo(enMemoria, texto, LIMITE))
+        it.copy(busqueda = texto, resultados = buscarEnCatalogo(enMemoria, texto, LIMITE), noRegistrables = noRegistrables(texto))
     }
 
     fun elegirArticulo(articulo: WasteCatalogEntity) {
@@ -395,6 +423,7 @@ class LogWasteViewModel @Inject constructor(
                     it.copy(
                         busqueda = "",
                         resultados = buscarEnCatalogo(enMemoria, "", LIMITE),
+                        noRegistrables = noRegistrables(""),
                         articulo = null,
                         cantidad = "",
                         motivo = null,
@@ -423,11 +452,15 @@ class LogWasteViewModel @Inject constructor(
     }
 
     private suspend fun cargar(venueId: String, recienBajado: Boolean) {
-        enMemoria = catalogo.catalogo(venueId)
+        val lista = catalogo.catalogo(venueId)
         val actualizadoEn = catalogo.catalogoActualizadoEn(venueId)
+        // Sin suspensión entre estas asignaciones: el colector de productos no ve un catálogo nuevo con la bandera vieja.
+        enMemoria = lista
+        hayCatalogoGuardado = actualizadoEn != null
         _estado.update {
             it.copy(
                 resultados = buscarEnCatalogo(enMemoria, it.busqueda, LIMITE),
+                noRegistrables = noRegistrables(it.busqueda),
                 antiguedadDelCatalogo = when {
                     recienBajado -> null
                     actualizadoEn == null -> TextosMerma.SIN_CATALOGO

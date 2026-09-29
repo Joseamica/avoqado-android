@@ -50,6 +50,7 @@ import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.components.SearchPillField
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.inventory.presentation.AvisoDeImpresion
+import com.avoqado.pos.inventory.waste.data.ProductoNoRegistrable
 import com.avoqado.pos.inventory.waste.data.WasteCatalogEntity
 import com.avoqado.pos.inventory.waste.domain.TextosMerma
 import com.avoqado.pos.inventory.waste.domain.WasteReason
@@ -147,10 +148,11 @@ fun LogWasteScreen(
                     modifier = Modifier.fillMaxWidth(),
                 )
                 estado.antiguedadDelCatalogo?.let { TextoSecundario(it) }
-                if (estado.resultados.isEmpty() && estado.busqueda.isNotBlank()) {
+                if (estado.resultados.isEmpty() && estado.noRegistrables.isEmpty() && estado.busqueda.isNotBlank()) {
                     TextoSecundario(TextosMerma.SIN_RESULTADOS)
                 }
                 Resultados(estado.resultados, onElegir = viewModel::elegirArticulo)
+                NoRegistrables(estado.noRegistrables)
             } else {
                 ArticuloElegido(articulo, onCambiar = viewModel::quitarArticulo)
 
@@ -327,6 +329,21 @@ private fun ArticuloElegido(articulo: WasteCatalogEntity, onCambiar: () -> Unit)
                 TextoSecundario(listOf(articulo.sku, etiquetaDeUnidad(articulo.unit)).filter { it.isNotBlank() }.joinToString(" · "))
             }
             TextButton(onClick = onCambiar) { Text(TextosMerma.CAMBIAR) }
+        }
+    }
+}
+
+/** De sólo lectura: por qué un producto del menú no está en la lista (caso Testarudo, 29-sep). */
+@Composable
+private fun NoRegistrables(lista: List<ProductoNoRegistrable>) {
+    if (lista.isEmpty()) return
+    Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+        TextoSecundario(TextosMerma.NO_REGISTRABLES)
+        lista.forEach { p ->
+            Column {
+                Text(p.nombre, style = MaterialTheme.typography.bodyMedium)
+                TextoSecundario(TextosMerma.motivoNoRegistrable(p.motivo))
+            }
         }
     }
 }

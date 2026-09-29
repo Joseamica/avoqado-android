@@ -7,6 +7,8 @@ import com.avoqado.pos.inventory.data.RespuestaHttp
 import com.avoqado.pos.inventory.data.model.StockItem
 import com.avoqado.pos.inventory.waste.data.BloqueoDeMermaPorPlan
 import com.avoqado.pos.inventory.waste.data.EstadoMerma
+import com.avoqado.pos.inventory.waste.data.MotivoNoRegistrable
+import com.avoqado.pos.inventory.waste.data.ProductoNoRegistrable
 import com.avoqado.pos.inventory.waste.data.PendingWasteEntity
 import com.avoqado.pos.inventory.waste.data.TransporteDeMerma
 import com.avoqado.pos.inventory.waste.data.WasteCatalogEntity
@@ -23,6 +25,8 @@ import com.avoqado.pos.inventory.waste.presentation.entradaDeMerma
 import com.avoqado.pos.core.util.VenueDateTimeFormatter
 import com.avoqado.pos.inventory.presentation.PriceLabelViewModel.AvisoImpresion
 import com.avoqado.pos.inventory.waste.domain.TextosMerma
+import com.avoqado.pos.pos.data.ProductsRepository
+import com.avoqado.pos.pos.data.model.Product
 import com.avoqado.pos.printing.data.ComprobanteDeMerma
 import com.avoqado.pos.printing.data.PrinterService
 import io.mockk.coEvery
@@ -111,7 +115,13 @@ class LogWasteViewModelTest {
     private var aperturas = 0L
     private fun sigApertura() = ++aperturas
 
-    private fun vm() = LogWasteViewModel(catalogo, motor, bloqueo, almacen, red, impresora, formato).apply { reloj = { AHORA } }
+    private val productosDelMenu = MutableStateFlow<List<Product>>(emptyList())
+    private val productos = mockk<ProductsRepository> {
+        every { products } returns productosDelMenu
+        coEvery { fetchProducts(any()) } returns Unit
+    }
+
+    private fun vm() = LogWasteViewModel(catalogo, motor, bloqueo, almacen, red, impresora, formato, productos).apply { reloj = { AHORA } }
 
     private fun LogWasteViewModel.capturar(cantidad: String = "3", motivo: WasteReason = WasteReason.SPOILED) {
         elegirArticulo(articulo())
@@ -843,5 +853,58 @@ class LogWasteViewModelTest {
             EntradaDeMerma(habilitada = true, subtitulo = null, insignia = null),
             entradaDeMerma(puedeRegistrar = true, bloqueadaPorPlan = false),
         )
+    }
+
+    @Test
+    fun `buscar un producto sin inventario lo muestra con su motivo, y limpiar la busqueda lo quita`() = runTest {
+        catalogo.porVenue = mapOf(VENUE to listOf(articulo()))
+        productosDelMenu.value = listOf(Product(id = "pm", name = "PAN DE MUERTO", trackInventory = false))
+        val vm = vm()
+        vm.alAbrir().join()
+        advanceUntilIdle()
+
+        vm.buscar("muerto")
+        assertEquals(
+            listOf(ProductoNoRegistrable("pm", "PAN DE MUERTO", MotivoNoRegistrable.SIN_INVENTARIO)),
+            vm.estado.value.noRegistrables,
+        )
+
+        vm.buscar("")
+        assertEquals(emptyList<ProductoNoRegistrable>(), vm.estado.value.noRegistrables)
+    }
+
+    @Test
+    fun `si los productos llegan despues, la busqueda ya escrita se recalcula sola`() = runTest {
+        catalogo.porVenue = mapOf(VENUE to listOf(articulo()))
+        val vm = vm()
+        vm.alAbrir().join()
+        advanceUntilIdle()
+        vm.buscar("muerto")
+        assertEquals(emptyList<ProductoNoRegistrable>(), vm.estado.value.noRegistrables)
+
+        productosDelMenu.value = listOf(Product(id = "pm", name = "PAN DE MUERTO", trackInventory = false))
+        advanceUntilIdle()
+        assertEquals(listOf("pm"), vm.estado.value.noRegistrables.map { it.id })
+    }
+
+    @Test
+    fun `el formulario no pide los productos al repositorio ni con la lista vacia`() = runTest {
+        vm()
+        advanceUntilIdle()
+        coVerify(exactly = 0) { productos.fetchProducts(any()) }
+    }
+
+    /** Sin catálogo guardado `enMemoria` está vacío: mostrar todo como «no registrable» mandaría a activar inventario a ciegas. */
+    @Test
+    fun `sin catalogo guardado no se muestra ningun producto como no registrable`() = runTest {
+        catalogo.porVenue = emptyMap()
+        productosDelMenu.value = listOf(Product(id = "pm", name = "PAN DE MUERTO", trackInventory = false))
+        val vm = vm()
+        vm.alAbrir().join()
+        advanceUntilIdle()
+
+        vm.buscar("muerto")
+
+        assertEquals(emptyList<ProductoNoRegistrable>(), vm.estado.value.noRegistrables)
     }
 }
