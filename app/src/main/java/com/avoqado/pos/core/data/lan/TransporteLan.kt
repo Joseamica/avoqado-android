@@ -2,7 +2,9 @@ package com.avoqado.pos.core.data.lan
 
 import android.content.Context
 import android.net.ConnectivityManager
+import android.net.Network
 import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.os.SystemClock
 import android.util.Log
 import com.avoqado.pos.core.data.sync.SyncOutbox
@@ -86,6 +88,14 @@ class TransporteLan @Inject constructor(
     private var discovery: LanDiscovery? = null
     private val bootedAtMillis = System.currentTimeMillis() - SystemClock.elapsedRealtime()
 
+    /**
+     * I4 (revisión T8): las redes WiFi/Ethernet vivas. `ServerSocket(0)` escucha en 0.0.0.0 y sigue «sirviendo» sólo por
+     * loopback cuando se cae el router: sin ninguna de éstas nadie del local alcanza la pantalla. Se registra UNA vez
+     * (el transporte vive con la app) y cada cambio vuelve a publicar [receptorActivo].
+     */
+    private val redesLocales = mutableSetOf<Network>()
+    private var vigiaDeRed: ConnectivityManager.NetworkCallback? = null
+
     /** Puerto del socket propio, o -1 si la red local está apagada. */
     val puerto: Int get() = serverSocket?.takeIf { !it.isClosed }?.localPort ?: -1
 
@@ -96,6 +106,7 @@ class TransporteLan @Inject constructor(
     fun iniciar(venueId: String) {
         if (this.venueId == venueId && configJob?.isActive == true) return
         detener()
+        vigilarRedLocal()
         this.venueId = venueId
         configJob = scope.launch {
             combine(printConfigRepository.config, _hubConectado, _receptorEnganchado) { config, hub, receptor ->
@@ -187,19 +198,51 @@ class TransporteLan @Inject constructor(
         publicarReceptor()
     }
 
-    /** Sincronizado: el que corre al último lee los dos datos ya escritos (el socket lo cambia el hilo de IO; el enganche, el Tablero). */
+    /**
+     * Sincronizado: el que corre al último lee los datos ya escritos (el socket lo cambia el hilo de IO; el enganche, el
+     * Tablero; la red, el vigía de conectividad). I4: sin WiFi ni Ethernet no se recibe, aunque el socket escuche.
+     */
     @Synchronized
     private fun publicarReceptor() {
-        _receptorActivo.value = _receptorEnganchado.value && puerto > 0
+        _receptorActivo.value = _receptorEnganchado.value && puerto > 0 && redesLocales.isNotEmpty()
     }
 
-    /** El `accept` murió con el socket abierto: se cierra para no aparentar que sirve; la revisión de cada minuto lo reabre. */
+    @Synchronized
+    private fun cambioDeRed(cambio: MutableSet<Network>.() -> Unit) {
+        redesLocales.cambio()
+        publicarReceptor()
+    }
+
+    /** I4: una sola vez por proceso. Sin `ConnectivityManager` (pruebas sin él) no hay red local que anunciar como viva. */
+    @Synchronized
+    private fun vigilarRedLocal() {
+        if (vigiaDeRed != null) return
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return
+        val vigia = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) = cambioDeRed { add(network) }
+            override fun onLost(network: Network) = cambioDeRed { remove(network) }
+        }
+        runCatching {
+            // Sin encadenar: en las pruebas JVM el `Builder` de android.jar devuelve null en cada llamada.
+            val pedido = NetworkRequest.Builder()
+            pedido.addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+            pedido.addTransportType(NetworkCapabilities.TRANSPORT_ETHERNET)
+            // Un WiFi sin internet sigue siendo la red del local: no se exige internet.
+            pedido.removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+            cm.registerNetworkCallback(pedido.build(), vigia)
+            vigiaDeRed = vigia
+        }.onFailure { Log.w(TAG, "No se pudo vigilar la red local: ${it.message} — la banda no dirá que recibe por WiFi") }
+    }
+
+    /**
+     * El `accept` murió con el socket abierto: se apaga la red local entera (M4 de la revisión T8). Cerrar sólo el socket
+     * dejaba el anuncio NSD con el puerto viejo — `anunciar` no re-registra si el TXT no cambia, y el puerto no va en el
+     * TXT —, así que los peers seguían llamando a un puerto muerto. La revisión de cada minuto lo reabre con anuncio nuevo.
+     */
     @Synchronized
     private fun soltarSocket(socket: ServerSocket) {
         if (serverSocket !== socket) return
-        runCatching { socket.close() }; serverSocket = null
-        publicarPeers()
-        publicarReceptor()
+        apagarRed()
     }
 
     /** Cambió el TXT (`kds=` o `hub=`): se vuelve a registrar el servicio (NSD no edita un TXT ya registrado). */
@@ -276,7 +319,12 @@ class TransporteLan @Inject constructor(
             }
             // D3: línea más larga que el tope, nada o plazo vencido ⇒ se corta SIN responder (el que envía: sin acuse).
             if (linea == null || sock.isClosed) return@runCatching
-            val respuesta = EnrutadorLan.responder(linea, venueId, _estacionesAnunciadas.value, hub, receptor)
+            // M3 (revisión T8): la pantalla pudo cerrarse o cambiar de estación MIENTRAS se guardaba. Guardada queda (el
+            // lado seguro: papel y pantalla); el acuse sólo sale si sigue enganchado el MISMO receptor con esa estación.
+            val r = receptor
+            val vigente: (suspend (KdsComanda) -> Boolean)? =
+                if (r == null) null else { c: KdsComanda -> r(c) && receptor === r && c.stationId in _estacionesAnunciadas.value }
+            val respuesta = EnrutadorLan.responder(linea, venueId, _estacionesAnunciadas.value, hub, vigente)
             sock.getOutputStream().run { write((respuesta + "\n").toByteArray(Charsets.UTF_8)); flush() }
         }.onFailure { Log.w(TAG, "conexión fallida: ${it.message}") }
     }

@@ -41,6 +41,7 @@ import com.avoqado.pos.printing.routing.StationInfo
 import com.avoqado.pos.printing.routing.TicketPlan
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -239,13 +240,17 @@ class KDSViewModel @Inject constructor(
                 // M4: un sondeo que arrancó ANTES de un LISTO puede traer todavía esa comanda — se ignora mientras
                 // el bump está en vuelo, o hasta que el servidor confirme que ya no la manda.
                 olvidarBumpsConfirmadosPorElServidor(nuevas)
+                val antes = delServidor
                 delServidor = nuevas
                 publicar(desdeServidor = true)
                 // Después de publicar: la cocina ve el pedido primero, el papel sale enseguida.
                 viewModelScope.launch { imprimirComandasPendientes(delServidor.filterNot { it.id in bumpsVigentes() }) }
                 // Ronda 1: la copia del servidor gana también en el disco. La local pendiente de estos folios sobra; si se
                 // quedara, al terminarla en línea (aquí u otra pantalla) el servidor deja de mandarla y resucitaba.
-                ticketsLocales.retirarPendientes(nuevas.mapNotNull { it.sourceKey })
+                // I1 (revisión T8): también los de la lectura ANTERIOR — si la copia del WiFi llegó después de la lectura
+                // que traía su folio y se terminó antes de la siguiente, un folio que el servidor devolvía y ya no devuelve
+                // está terminado. (El tope de 100 sólo deja fuera folios viejos, cuyas copias ya se retiraron.)
+                ticketsLocales.retirarPendientes((antes + nuevas).mapNotNull { it.sourceKey }.toSet())
             },
             onFailure = { e ->
                 // Se CONSERVA lo que ya se veía y se sigue mezclando con lo local: sin red la cocina trabaja con eso (D9).
@@ -259,11 +264,14 @@ class KDSViewModel @Inject constructor(
         )
     }
 
-    /** D9: `servidor ∪ locales` por folio, menos los bumps en vuelo (M4). Suena sólo si ya hubo un tablero base. */
-    private fun publicar(desdeServidor: Boolean) {
+    /**
+     * D9: `servidor ∪ locales` por folio, menos los bumps en vuelo (M4). Suena sólo si ya hubo un tablero base y [sonar]
+     * (la primera lectura de Room de cada apertura es parte de la base, M2).
+     */
+    private fun publicar(desdeServidor: Boolean, sonar: Boolean = true) {
         val juntas = juntarPorFolio(delServidor, locales).filterNot { it.id in bumpsVigentes() }
         val claves = juntas.map { it.sourceKey ?: it.id }.toSet()
-        if (hasLoadedFromAPI && (claves - previousOrderIds).isNotEmpty()) playNotificationSound()
+        if (sonar && hasLoadedFromAPI && (claves - previousOrderIds).isNotEmpty()) playNotificationSound()
         previousOrderIds = claves
         if (desdeServidor) hasLoadedFromAPI = true
         _comandas.value = juntas
@@ -290,7 +298,14 @@ class KDSViewModel @Inject constructor(
             // Lo de la estación anterior no se mezcla con la nueva mientras llega la primera lectura.
             locales = emptyList()
             localesJob = viewModelScope.launch {
-                ticketsLocales.deLaEstacion(venueId, tablero.estacion.id).collect { locales = it; publicar(desdeServidor = false) }
+                // M2 (revisión T8): Room contesta DESPUÉS de la primera lectura del servidor. Lo que ya estaba guardado es
+                // parte de la línea base de esta apertura, no «comanda nueva»: su primera lectura no suena.
+                var primera = true
+                ticketsLocales.deLaEstacion(venueId, tablero.estacion.id).collect {
+                    locales = it
+                    publicar(desdeServidor = false, sonar = !primera)
+                    primera = false
+                }
             }
         }
     }
@@ -367,7 +382,7 @@ class KDSViewModel @Inject constructor(
         // proceso muere entre las dos, lo peor es que la comanda se siga viendo hasta que el servidor procese el BUMP. Al
         // revés, la pantalla la escondía para siempre y el servidor nunca se enteraba: una marca perdida.
         // Las dos pueden fallar (disco lleno) y ninguna tumba la app (M14).
-        val encolada = runCatching {
+        val fallo = runCatching {
             syncOutbox.get().enqueue(
                 venueId,
                 SyncIntentTypes.KDS_TICKET_MARK,
@@ -378,9 +393,16 @@ class KDSViewModel @Inject constructor(
                     put("label", comanda.orderNumber)
                 },
             )
-        }.onFailure { Log.w(TAG, "No se pudo encolar el BUMP de $sourceKey: ${it.message}") }.isSuccess
-        // Sin marca no se esconde: vuelve a salir en la siguiente lectura y se puede marcar otra vez.
-        if (!encolada) return
+        }.exceptionOrNull()
+        if (fallo is CancellationException) throw fallo
+        if (fallo != null) {
+            // Sin marca no se esconde (el servidor nunca se enteraría). M1 (revisión T8): y se DICE — la comanda regresa
+            // a su lugar ahora con el aviso, en vez de desaparecer callada hasta la siguiente lectura.
+            Log.w(TAG, "No se pudo encolar el BUMP de $sourceKey: ${fallo.message}")
+            if (_comandas.value.none { it.id == comanda.id }) _comandas.value = (_comandas.value + comanda).sortedBy { it.createdAt }
+            _aviso.value = avisoDeFallo(fallo, AccionDeCocina.LISTO)
+            return
+        }
         runCatching { ticketsLocales.marcarLista(comanda, venueId, stationId) }
             .onFailure { Log.w(TAG, "No se pudo persistir el LISTO de $sourceKey: ${it.message}") }
     }

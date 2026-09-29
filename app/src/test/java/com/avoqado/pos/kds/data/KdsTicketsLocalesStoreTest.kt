@@ -66,6 +66,25 @@ class KdsTicketsLocalesStoreTest {
         assertEquals("sale:x:st-barra", fila.captured.sourceKey)
     }
 
+    /**
+     * I2 (revisión T8): la vigencia de 12 h cuenta desde que ESTE aparato guardó la marca, no desde que el servidor creó
+     * la comanda. Con `createdAt`, marcar sin red una comanda de ayer creaba una fila ya vencida: la purga de cada minuto
+     * la borraba y la comanda volvía al tablero, todavía sin red.
+     */
+    @Test
+    fun `P1 la marca LISTO creada para una comanda del servidor cuenta su vigencia desde ahora, no desde su creacion`() = runTest {
+        coEvery { dao.marcarLista("sale:vieja:st-barra", 90_000_000) } returns 0
+        coEvery { dao.porFolio("sale:vieja:st-barra") } returns null
+        val deAyer = KDSOrder(id = "k1", orderNumber = "1", orderType = "En tienda", items = emptyList(), createdAt = 1, status = KDSOrderStatus.NEW, sourceKey = "sale:vieja:st-barra", printStationId = "st-barra")
+        val fila = slot<KdsTicketLocalEntity>()
+        coEvery { dao.guardar(capture(fila)) } returns Unit
+
+        store.marcarLista(deAyer, "v1", "st-barra", ahora = 90_000_000)
+
+        assertEquals(90_000_000L, fila.captured.recibidaEnMillis)
+        assertEquals(90_000_000L, fila.captured.listaEnMillis)
+    }
+
     @Test
     fun `marcar lista de una comanda que llego por WiFi solo marca (la fila ya existe)`() = runTest {
         coEvery { dao.marcarLista("round:rk:st-barra", 50) } returns 1

@@ -1,6 +1,9 @@
 package com.avoqado.pos.kds.presentation
 
 import android.media.RingtoneManager
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.LifecycleRegistry
 import com.avoqado.pos.MainDispatcherRule
 import com.avoqado.pos.core.data.sync.SyncOutbox
 import com.avoqado.pos.core.domain.PlanManager
@@ -33,8 +36,10 @@ import io.mockk.verifyOrder
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
@@ -457,6 +462,9 @@ class KDSViewModelTest {
         advanceUntilIdle()
 
         coVerify(exactly = 0) { ticketsLocales.marcarLista(any(), any(), any(), any()) }
+        // M1 (revisión T8): regresa a su lugar AHORA y se dice, en vez de desaparecer callada hasta la siguiente lectura.
+        assertEquals(listOf("k1", "k2"), vm.comandas.value.map { it.id })
+        assertEquals(AvisoDeCocina(AccionDeCocina.LISTO.generico, esError = true), vm.aviso.value)
     }
 
     @Test
@@ -498,13 +506,17 @@ class KDSViewModelTest {
     @Test
     fun `marcar todas sin red encola una marca por comanda con folio y regresa las que no tienen`() = runTest {
         coEvery { repo.bumpBatch(any()) } returns Result.failure(IOException("sin red"))
-        val vm = armar(comandas = listOf(comanda("k1", 1_000), comanda("u1", 2_000, sourceKey = null)))
+        val marcas = mutableListOf<JsonObject>()
+        coEvery { cola.enqueue("v1", "KDS_TICKET_MARK", capture(marcas), any(), false) } returns "m"
+        val vm = armar(comandas = listOf(comanda("k1", 1_000), comanda("u1", 2_000, sourceKey = null), comanda("k3", 3_000)))
 
         vm.marcarTodasListas()
         advanceUntilIdle()
 
         assertEquals(listOf("u1"), vm.comandas.value.map { it.id })
-        coVerify(exactly = 1) { cola.enqueue("v1", "KDS_TICKET_MARK", any(), any(), false) }
+        // M5 (revisión T8): UNA marca por comanda con folio — dos, no una por lote.
+        coVerify(exactly = 2) { cola.enqueue("v1", "KDS_TICKET_MARK", any(), any(), false) }
+        assertEquals(setOf("sale:k1:st-barra", "sale:k3:st-barra"), marcas.map { it["sourceKey"]!!.jsonPrimitive.content }.toSet())
         assertEquals(AvisoDeCocina(AccionDeCocina.MARCAR_TODAS.sinRed, esError = false), vm.aviso.value)
     }
 
@@ -590,6 +602,98 @@ class KDSViewModelTest {
         coVerify(exactly = 1) { ticketsLocales.quitarLista("sale:k9:st-barra") }
         assertEquals(listOf("k9", "k1", "k2"), vm.comandas.value.map { it.id })
         job.cancelAndJoin()
+    }
+
+    /**
+     * I1 (revisión T8): el otro orden de llegada — el servidor la mandó PRIMERO (nada que retirar todavía), luego llegó
+     * la copia del WiFi, y se terminó antes de la siguiente lectura. Un folio que el servidor devolvía y ya no devuelve
+     * está terminado: su copia pendiente también sobra.
+     */
+    @Test
+    fun `P1 I1 el servidor primero, luego la copia del WiFi, LISTO y una lectura sin ella - no resucita`() = runTest {
+        coEvery { repo.bumpOrder("k1") } returns Result.success(Unit)
+        val vm = armar() // el servidor ya manda k1 y k2; no hay copias locales
+        val job = launch { vm.mientrasSeVe() }
+        runCurrent()
+        locales.value = listOf(local("sale:k1:st-barra", 900)) // la copia del WiFi llega DESPUÉS de esa lectura
+        runCurrent()
+        assertEquals("por folio gana el servidor", listOf("k1", "k2"), vm.comandas.value.map { it.id })
+
+        vm.listo("k1")
+        runCurrent()
+        coEvery { repo.fetchOrders(any()) } returns Result.success(listOf(comanda("k2", 2_000)))
+        vm.refrescar()
+        runCurrent()
+
+        assertEquals(listOf("k2"), vm.comandas.value.map { it.id })
+        job.cancelAndJoin()
+    }
+
+    private class PantallaDePrueba : LifecycleOwner {
+        val registro = LifecycleRegistry.createUnsafe(this)
+        override val lifecycle: Lifecycle get() = registro
+    }
+
+    /**
+     * I3 (revisión T8): con la app en segundo plano o la pantalla apagada NADIE ve el tablero — el receptor se apaga (sin
+     * acuse ⇒ la caja imprime papel) y el sondeo para. Al volver, se reactiva con línea base nueva (M3).
+     */
+    @Test
+    fun `P1 I3 en segundo plano el receptor se apaga y el sondeo para, y al volver se reactiva`() = runTest {
+        val pantalla = PantallaDePrueba()
+        pantalla.registro.currentState = Lifecycle.State.RESUMED
+        val vm = armar() // 1ª lectura
+        val job = launch { vm.mientrasEsteALaVista(pantalla) }
+        runCurrent() // 2ª lectura: abrir
+        verify(atLeast = 1) { receptor.activar("v1", "st-barra") }
+
+        pantalla.registro.currentState = Lifecycle.State.CREATED // ON_STOP: botón de inicio, otra app o pantalla apagada
+        runCurrent()
+        verifyOrder {
+            receptor.activar("v1", "st-barra")
+            receptor.desactivar()
+        }
+        advanceTimeBy(60_000) // un minuto en segundo plano: ni una lectura más (con el sondeo vivo serían 6)
+        coVerify(exactly = 2) { repo.fetchOrders(any()) }
+
+        pantalla.registro.currentState = Lifecycle.State.STARTED // ON_START: vuelve a verse
+        runCurrent()
+        verifyOrder {
+            receptor.activar("v1", "st-barra")
+            receptor.desactivar()
+            receptor.activar("v1", "st-barra")
+        }
+        job.cancelAndJoin()
+    }
+
+    /**
+     * M2 (revisión T8): Room contesta DESPUÉS de la primera lectura del servidor. Lo que ya estaba guardado en el aparato
+     * es parte de la línea base al reabrir, no «comanda nueva». El doble de siempre emite al instante y lo escondía.
+     */
+    @Test
+    fun `P2 M2 reabrir no suena por lo que ya estaba guardado, y lo que llega despues si`() = runTest {
+        mockkStatic(RingtoneManager::class)
+        every { RingtoneManager.getDefaultUri(any()) } returns null
+        every { RingtoneManager.getRingtone(any(), any()) } returns null
+        try {
+            val guardadas = MutableSharedFlow<List<KdsTicketLocal>>()
+            every { ticketsLocales.deLaEstacion(any(), any()) } returns guardadas
+            val vm = armar()
+            val job = launch { vm.mientrasSeVe() }
+            runCurrent() // la base del servidor ya está; Room todavía no contesta
+
+            guardadas.emit(listOf(local("round:rk:st-barra", 3_000))) // la primera lectura de Room, tarde
+            runCurrent()
+            assertEquals(listOf("k1", "k2", "lan:round:rk:st-barra"), vm.comandas.value.map { it.id })
+            verify(exactly = 0) { RingtoneManager.getDefaultUri(any()) }
+
+            guardadas.emit(listOf(local("round:rk:st-barra", 3_000), local("round:nueva:st-barra", 4_000))) // ésta sí es nueva
+            runCurrent()
+            verify(exactly = 1) { RingtoneManager.getDefaultUri(any()) }
+            job.cancelAndJoin()
+        } finally {
+            unmockkStatic(RingtoneManager::class)
+        }
     }
 
     @Test

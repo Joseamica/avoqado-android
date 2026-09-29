@@ -53,6 +53,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import com.avoqado.pos.designsystem.components.AvoqadoDialog
 import com.avoqado.pos.designsystem.components.AvoqadoSuccessToast
 import com.avoqado.pos.designsystem.components.CircleBackButton
@@ -77,6 +81,15 @@ import kotlinx.coroutines.delay
 
 // MARK: - Entry Point
 
+/**
+ * I3 (revisión T8): el sondeo y el receptor viven sólo mientras la pantalla está A LA VISTA (`STARTED`), no mientras
+ * exista la composición — Compose la conserva con la app en segundo plano o la pantalla apagada. Nadie mira el tablero
+ * ahí: en `ON_STOP` se cancela (el `finally` apaga el receptor ⇒ sin acuse, la caja imprime papel) y en `ON_START`
+ * vuelve a empezar, con línea base nueva (M3). Fuera del Composable para poder probarlo.
+ */
+internal suspend fun KDSViewModel.mientrasEsteALaVista(owner: LifecycleOwner) =
+    owner.repeatOnLifecycle(Lifecycle.State.STARTED) { mientrasSeVe() }
+
 @Composable
 fun KDSScreen(
     onDismiss: () -> Unit,
@@ -94,11 +107,12 @@ fun KDSScreen(
     val canalesReparto by viewModel.canalesReparto.collectAsState()
     val config by viewModel.config.collectAsState()
 
-    // 🔴 El sondeo vive MIENTRAS esta pantalla está a la vista: se cancela solo al cerrarla.
-    LaunchedEffect(Unit) { viewModel.mientrasSeVe() }
+    // 🔴 El sondeo vive MIENTRAS esta pantalla está a la vista: se cancela al cerrarla y en segundo plano (I3).
+    val owner = LocalLifecycleOwner.current
+    LaunchedEffect(owner) { viewModel.mientrasEsteALaVista(owner) }
 
-    // Etapa 3 del KDS (3.5, D13): la pantalla de cocina no se apaga sola. Sin esto el aparato duerme, el receptor deja de
-    // acusar y la caja imprime papel.
+    // Etapa 3 del KDS (3.5, D13): la pantalla de cocina no se apaga sola. Si el aparato duerme igual, `ON_STOP` apaga el
+    // receptor (I3): sin acuse, la caja imprime papel.
     val view = LocalView.current
     DisposableEffect(Unit) {
         view.keepScreenOn = true

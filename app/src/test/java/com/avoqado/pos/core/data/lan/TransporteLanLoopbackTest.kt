@@ -1,6 +1,9 @@
 package com.avoqado.pos.core.data.lan
 
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkRequest
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import com.avoqado.pos.core.data.sync.SyncOutbox
@@ -116,29 +119,94 @@ class TransporteLanLoopbackTest {
         assertEquals(setOf("st_barra"), transporte.pantallasDe("st_barra").map { it.kdsStations }.single())
     }
 
+    /** Una fuente de conectividad FALSA: la prueba decide cuándo hay WiFi/Ethernet (I4) invocando al vigía registrado. */
+    private val vigias = mutableListOf<ConnectivityManager.NetworkCallback>()
+    private val wifi = mockk<Network>()
+
+    private fun transporteConRed(): TransporteLan {
+        val cm = mockk<ConnectivityManager>(relaxed = true) {
+            every { registerNetworkCallback(any<NetworkRequest>(), capture(vigias)) } just runs
+        }
+        return TransporteLan(mockk<Context>(relaxed = true) { every { getSystemService(Context.CONNECTIVITY_SERVICE) } returns cm }, outbox, printConfig)
+    }
+
     /**
-     * Paridad con iOS (ronda de la Task 3): «recibiendo» = receptor enganchado Y el socket sirviendo. La pantalla de
-     * cocina dice «recibiendo por el WiFi del local» con esto: enganchado sin socket (red local apagada o reabriéndose)
-     * sería decirle a la cocina que le llegan comandas que en realidad salen en papel.
+     * Paridad con iOS (ronda de la Task 3): «recibiendo» = receptor enganchado Y el socket sirviendo (y, desde I4, con
+     * WiFi o Ethernet). La pantalla de cocina dice «recibiendo por el WiFi del local» con esto: enganchado sin socket (red
+     * local apagada o reabriéndose) sería decirle a la cocina que le llegan comandas que en realidad salen en papel.
      */
     @Test
     fun `P1 receptorActivo exige el socket sirviendo, no solo el receptor enganchado`() = runBlocking {
-        transporte.activarReceptor(setOf("st_barra")) { true } // enganchado, pero el transporte aún no arranca: sin socket
-        assertFalse("enganchado sin socket NO es recibir", transporte.receptorActivo.value)
+        val t = transporteConRed()
+        try {
+            t.activarReceptor(setOf("st_barra")) { true } // enganchado, pero el transporte aún no arranca: sin socket
+            t.iniciar("venue-1")
+            vigias.single().onAvailable(wifi)
+            assertTrue("con el socket sirviendo sí recibe", withTimeout(10_000) { while (!t.receptorActivo.value) delay(25); true })
 
+            t.detener() // la red local se cae con el receptor todavía enganchado
+            assertFalse("socket cerrado: ya no recibe", t.receptorActivo.value)
+
+            t.iniciar("venue-1") // se reabre sola: el receptor sigue enganchado
+            esperarPuerto(t)
+            assertTrue(t.receptorActivo.value)
+
+            t.desactivarReceptor()
+            assertFalse(t.receptorActivo.value)
+        } finally {
+            t.detener()
+        }
+    }
+
+    @Test
+    fun `P1 enganchado sin socket NO es recibir`() {
+        val t = transporteConRed()
+        t.activarReceptor(setOf("st_barra")) { true }
+        assertFalse(t.receptorActivo.value)
+    }
+
+    /**
+     * I4 (revisión T8): `ServerSocket(0)` escucha en 0.0.0.0 y sigue «sirviendo» sólo por loopback cuando se cae el
+     * router. Sin WiFi ni Ethernet nadie del local alcanza la pantalla: la banda NO puede decir que recibe por el WiFi.
+     */
+    @Test
+    fun `P1 I4 sin WiFi ni Ethernet el receptor NO dice que recibe, y al volver la red si`() = runBlocking {
+        val t = transporteConRed()
+        try {
+            t.iniciar("venue-1")
+            t.activarReceptor(setOf("st_barra")) { true }
+            esperarPuerto(t)
+            assertFalse("socket abierto pero sin red local: no recibe", t.receptorActivo.value)
+
+            vigias.single().onAvailable(wifi)
+            assertTrue(t.receptorActivo.value)
+
+            vigias.single().onLost(wifi) // se cae el router
+            assertFalse(t.receptorActivo.value)
+            assertTrue("el socket sigue abierto: es la red la que falta", t.puerto > 0)
+        } finally {
+            t.detener()
+        }
+    }
+
+    /**
+     * M3 (revisión T8): la pantalla se cerró (o cambió de estación) MIENTRAS se guardaba. Guardada queda; el acuse sólo
+     * sale si sigue enganchado el MISMO receptor con esa estación. Sin acuse, la caja imprime el papel: el lado seguro.
+     */
+    @Test
+    fun `P1 M3 si la pantalla se cierra mientras se guarda NO sale el acuse`() = runBlocking {
+        // Una estación con pantalla en la config: la red local sigue viva al soltar el receptor (sin carrera con el cierre).
+        config.value = PrintConfig(stations = listOf(StationInfo(id = "st_barra", name = "Barra", hasKitchenDisplay = true)))
+        val guardadas = mutableListOf<String>()
         transporte.iniciar("venue-1")
-        esperarPuerto() // el socket se publica ANTES que el peer propio, y el estado con él
-        assertTrue("con el socket sirviendo sí recibe", transporte.receptorActivo.value)
+        transporte.activarReceptor(setOf("st_barra")) { guardadas += it.sourceKey; transporte.desactivarReceptor(); true }
+        val puerto = esperarPuerto()
 
-        transporte.detener() // la red local se cae con el receptor todavía enganchado
-        assertFalse("socket cerrado: ya no recibe", transporte.receptorActivo.value)
+        val barra = KdsComanda(venueId = "venue-1", deviceId = "otro", sourceKey = "sale:ext-1:st_barra", stationId = "st_barra", orderNumber = "1", orderType = "En tienda", createdAtMillis = 1, items = emptyList())
+        val respuesta = enviarLinea(puerto, KdsLanProtocol.encode(barra))
 
-        transporte.iniciar("venue-1") // se reabre sola: el receptor sigue enganchado
-        esperarPuerto()
-        assertTrue(transporte.receptorActivo.value)
-
-        transporte.desactivarReceptor()
-        assertFalse(transporte.receptorActivo.value)
+        assertEquals("se guardó", listOf("sale:ext-1:st_barra"), guardadas)
+        assertFalse("pero sin acuse: $respuesta", KdsLanProtocol.esAcuse(respuesta, "sale:ext-1:st_barra"))
     }
 
     @Test

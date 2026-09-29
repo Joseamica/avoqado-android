@@ -59,7 +59,10 @@ class KdsTicketsLocalesStore @Inject constructor(private val dao: KdsTicketsLoca
                     sourceKey = sourceKey, venueId = venueId, stationId = stationId, orderNumber = orden.orderNumber,
                     orderType = orden.orderType,
                     itemsJson = json.encodeToString(items, orden.items.map { KdsComandaItem(it.id, it.productName, it.quantity, it.modifiers, it.notes) }),
-                    recibidaEnMillis = orden.createdAt, listaEnMillis = ahora,
+                    // I2 (revisión T8): la vigencia de 12 h cuenta desde que ESTE aparato guardó la marca. Con el `createdAt`
+                    // del servidor, una comanda de ayer marcada sin red nacía vencida: la purga (cada minuto) la borraba y
+                    // la comanda volvía al tablero. Una fila LISTA nunca se pinta, así que su orden no importa.
+                    recibidaEnMillis = ahora, listaEnMillis = ahora,
                 ),
             )
         }
