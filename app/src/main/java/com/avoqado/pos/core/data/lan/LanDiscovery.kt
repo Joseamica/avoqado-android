@@ -4,11 +4,14 @@ import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import android.net.wifi.WifiManager
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
-import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 
 private const val TAG = "LanDiscovery"
 
@@ -38,11 +41,18 @@ private const val TAG = "LanDiscovery"
  * 4. NO se filtra el propio anuncio por nombre (el SO puede renombrarlo a
  *    "Avoqado-POS (2)" si hay colisión): se filtra por deviceId del TXT, que
  *    es lo único estable.
+ * 5. UN TXT NUEVO NO SE AVISA (QA D1, 29-sep, Android 14): si un servicio ya visto vuelve a registrarse con el MISMO
+ *    nombre y otro TXT (la pantalla entra al Tablero y agrega `kds=`), NSD no manda ni perdido ni encontrado. Por eso
+ *    [refrescar] vuelve a resolver lo conocido: el transporte lo pide en cada revisión y la entrega sin pantalla, ya.
+ * 6. UN RESOLVE PUEDE NO CONTESTAR NUNCA (un servicio que se fue sin despedirse): Android no le pone plazo, y antes de
+ *    Android 14 ni se puede cancelar. [refrescar] suelta el que lleva más de [PLAZO_DE_RESOLVE_MS] para que la cola en
+ *    serie no se trabe para siempre.
  */
 class LanDiscovery(
     private val context: Context,
     private val deviceId: String,
     private val venueId: String,
+    private val ahoraMs: () -> Long = { SystemClock.elapsedRealtime() },
     /** Los peers AJENOS vivos (este aparato lo agrega [TransporteLan]). */
     private val alCambiarPeers: (List<LanPeer>) -> Unit,
 ) {
@@ -66,7 +76,13 @@ class LanDiscovery(
         set(value) { field = value; if (!parado) alCambiarPeers(value) }
 
     private val resolveQueue = ConcurrentLinkedQueue<NsdServiceInfo>()
-    private val resolving = AtomicBoolean(false)
+
+    /** Lo que NSD dijo que existe y no ha dicho que se perdió, por nombre: lo que [refrescar] vuelve a resolver. */
+    private val conocidos = ConcurrentHashMap<String, NsdServiceInfo>()
+
+    /** El resolve en curso (en serie: a lo más uno). Su respuesta sólo libera la cola si sigue siendo ÉSTE (ver [refrescar]). */
+    private class Resolucion(val desdeMs: Long) { @Volatile var listener: NsdManager.ResolveListener? = null }
+    private val enVuelo = AtomicReference<Resolucion?>(null)
 
     /**
      * Anuncia este POS con ese TXT. NSD no edita un registro vivo: si el TXT cambió (`kds=`, `hub=`) se da de baja y
@@ -158,12 +174,14 @@ class LanDiscovery(
             override fun onDiscoveryStarted(type: String) { Log.d(TAG, "🔎 Buscando POS en la red local") }
             override fun onServiceFound(info: NsdServiceInfo) {
                 if (parado || info.serviceType?.contains("avoqado-pos") != true) return
+                conocidos[info.serviceName ?: return] = info
                 resolveQueue.add(info)
                 drainResolveQueue()
             }
             override fun onServiceLost(info: NsdServiceInfo) {
                 // Se cae del plano por NOMBRE porque el TXT ya no viaja aquí (`contains`: el SO puede renombrar a «(2)»).
                 val name = info.serviceName ?: return
+                conocidos.remove(name) // un re-resolve en vuelo o en cola ya no lo revive (ledger T4)
                 peers = peers.filterNot { it.deviceId.isNotEmpty() && name.contains(it.deviceId.take(6)) }
                 Log.d(TAG, "👋 Peer perdido: $name")
             }
@@ -185,6 +203,7 @@ class LanDiscovery(
     fun parar() {
         parado = true
         resolveQueue.clear()
+        conocidos.clear()
         dejarDeAnunciar()
         intentosDeAnuncio = 0
         discoveryListener?.let { runCatching { nsdManager?.stopServiceDiscovery(it) } }
@@ -194,36 +213,57 @@ class LanDiscovery(
     }
 
     /**
+     * Vuelve a resolver lo conocido (detalles 5 y 6 del encabezado), por la MISMA cola en serie; lo que ya está en cola no
+     * se repite. Antes suelta un resolve colgado más de [PLAZO_DE_RESOLVE_MS]. Devuelve si hay algo conocido: sin nada, no
+     * hay a quién esperar.
+     */
+    fun refrescar(): Boolean {
+        if (parado) return false
+        enVuelo.get()?.let { r ->
+            if (ahoraMs() - r.desdeMs > PLAZO_DE_RESOLVE_MS && enVuelo.compareAndSet(r, null)) {
+                Log.w(TAG, "⏱️ Un resolve no contestó en ${PLAZO_DE_RESOLVE_MS / 1_000} s — se suelta y la cola sigue")
+                // Android 14+ sí deja cancelarlo; antes, el siguiente puede fallar con FAILURE_ALREADY_ACTIVE hasta que conteste.
+                if (Build.VERSION.SDK_INT >= 34) r.listener?.let { l -> runCatching { nsdManager?.stopServiceResolution(l) } }
+            }
+        }
+        for ((nombre, info) in conocidos) if (resolveQueue.none { it.serviceName == nombre }) resolveQueue.add(info)
+        drainResolveQueue()
+        return conocidos.isNotEmpty()
+    }
+
+    /**
      * Resuelve de a UNO: resolveService revienta con FAILURE_ALREADY_ACTIVE si hay otro en curso, y en un restaurante
-     * llegan varios servicios de golpe.
+     * llegan varios servicios de golpe. Lo que se perdió mientras esperaba en la cola ya no se pide.
      */
     private fun drainResolveQueue() {
         if (parado) return
-        if (!resolving.compareAndSet(false, true)) return
-        val next = resolveQueue.poll()
+        val turno = Resolucion(ahoraMs())
+        if (!enVuelo.compareAndSet(null, turno)) return
+        var next = resolveQueue.poll()
+        while (next != null && !conocidos.containsKey(next.serviceName)) next = resolveQueue.poll()
         if (next == null) {
-            resolving.set(false)
+            enVuelo.set(null)
             return
         }
-        val manager = nsdManager ?: run { resolving.set(false); return }
+        val manager = nsdManager ?: run { enVuelo.set(null); return }
+        val nombre = next.serviceName
+        // Sólo el turno VIGENTE libera la cola: uno ya soltado por [refrescar] que contesta tarde no arranca otro encima.
+        fun terminar() { if (enVuelo.compareAndSet(turno, null)) drainResolveQueue() }
 
         val listener = object : NsdManager.ResolveListener {
             override fun onResolveFailed(info: NsdServiceInfo, errorCode: Int) {
                 Log.d(TAG, "resolve falló para ${info.serviceName} ($errorCode)")
-                resolving.set(false)
-                drainResolveQueue()
+                terminar()
             }
             override fun onServiceResolved(info: NsdServiceInfo) {
-                onPeerResolved(info)
-                resolving.set(false)
-                drainResolveQueue()
+                // Ledger T4: NSD dijo «perdido» mientras se resolvía ⇒ no revive. Los callbacks de NSD llegan en UN hilo.
+                if (conocidos.containsKey(nombre)) onPeerResolved(info) // `containsKey`: el `in` de un ConcurrentHashMap mira VALORES
+                terminar()
             }
         }
+        turno.listener = listener
         runCatching { manager.resolveService(next, listener) }
-            .onFailure {
-                resolving.set(false)
-                drainResolveQueue()
-            }
+            .onFailure { terminar() }
     }
 
     private fun onPeerResolved(info: NsdServiceInfo) {
@@ -231,7 +271,10 @@ class LanDiscovery(
         val txt = info.attributes.orEmpty().mapValues { (_, v) -> v?.let { String(it) } }
         // El TXT se lee PURO (`LanTxt`): otro venue, este mismo aparato o sin host ⇒ null.
         val peer = LanTxt.peerDesde(txt, info.host?.hostAddress, info.port, deviceId, venueId) ?: return
-        peers = peers.filterNot { it.deviceId == peer.deviceId } + peer
+        val actuales = peers
+        val i = actuales.indexOfFirst { it.deviceId == peer.deviceId }
+        if (i >= 0 && actuales[i] == peer) return // re-resolve sin cambios (cada minuto, por peer): nadie se entera
+        peers = if (i >= 0) actuales.toMutableList().apply { set(i, peer) } else actuales + peer
         Log.i(TAG, "🤝 Peer: ${peer.deviceId.take(6)} en ${peer.host}:${peer.port} kds=${peer.kdsStations} hub=${peer.sirveLeases}")
     }
 
@@ -256,6 +299,8 @@ class LanDiscovery(
     }
 
     companion object {
+        /** Un resolve normal contesta en menos de un segundo; uno que lleva esto sin contestar ya no va a contestar. */
+        const val PLAZO_DE_RESOLVE_MS = 10_000L
         const val MAX_INTENTOS_DE_ANUNCIO = 6
         const val ESPERA_MAXIMA_DE_ANUNCIO_MS = 30_000L
 

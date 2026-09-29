@@ -16,11 +16,17 @@ import io.mockk.coVerifyOrder
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.slot
+import io.mockk.verify
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.currentTime
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 /** La caja guarda ANTES de empujar, empuja en paralelo y sólo borra lo acusado (etapa 3 del KDS, 3.5, D5/D7). */
@@ -34,6 +40,7 @@ class EntregaPorWifiTest {
         every { peers } returns MutableStateFlow(listOf(pantallaBarra))
         every { pantallasDe("st_barra") } returns listOf(pantallaBarra)
         every { pantallasDe("st_postres") } returns emptyList()
+        every { refrescarPeers() } returns false // sin servicios conocidos: nada que re-resolver
     }
     private val dao = mockk<EntregasKdsPendientesDao>(relaxed = true)
     private val cliente = mockk<ClienteDeComandas>()
@@ -99,9 +106,49 @@ class EntregaPorWifiTest {
     }
 
     @Test
-    fun `P1 sin pantallas descubiertas no se espera nada - sin acuse al instante`() = runTest {
+    fun `P1 sin ningun servicio conocido no se espera nada - sin acuse al instante`() = runTest {
         val acusadas = entrega.entregar(listOf(EntregaKds(mensaje("st_postres"), trabajo)))
         assertEquals(emptySet<String>(), acusadas)
+        assertEquals("sin nadie a quien preguntar no se espera", 0L, currentTime)
+        coVerify(exactly = 0) { cliente.entregar(any(), any(), any()) }
+    }
+
+    /**
+     * QA D1 (29-sep): la caja conocía la pantalla desde ANTES de que abriera su Tablero, y NSD no avisa el `kds=` nuevo.
+     * Sin pantalla para la estación, la entrega pide re-resolver lo conocido y espera a que aparezca; lo esperado sale del
+     * presupuesto del envío (1.5 s en total, D5). Tiempo real: el presupuesto se mide con el reloj de verdad.
+     */
+    @Test
+    fun `P1 sin pantalla para la estacion re-resuelve y entrega si la pantalla aparece dentro de la espera`() = runBlocking {
+        val prueba = this
+        val peers = MutableStateFlow(emptyList<LanPeer>())
+        every { transporte.peers } returns peers
+        every { transporte.pantallasDe("st_barra") } answers { peers.value.filter { "st_barra" in it.kdsStations } }
+        every { transporte.refrescarPeers() } answers {
+            prueba.launch { delay(300); peers.value = listOf(pantallaBarra) } // el re-resolve trae el TXT nuevo
+            true
+        }
+        val presupuesto = slot<Long>()
+        coEvery { cliente.entregar(pantallaBarra, any(), capture(presupuesto)) } returns true
+
+        assertEquals(setOf("st_barra"), entrega.entregar(listOf(EntregaKds(mensaje("st_barra"), trabajo))))
+        assertTrue(
+            "lo esperado sale del presupuesto del envio: ${presupuesto.captured}",
+            presupuesto.captured <= ClienteDeComandas.PRESUPUESTO_MS - 300,
+        )
+    }
+
+    /** Si ni así aparece, se rinde al segundo: la espera más el envío nunca pasan de 1.5 s (ahí sale el papel). */
+    @Test
+    fun `P1 si la pantalla no aparece se rinde al segundo, dentro del presupuesto`() = runTest {
+        every { transporte.refrescarPeers() } returns true
+
+        val acusadas = entrega.entregar(listOf(EntregaKds(mensaje("st_postres"), trabajo)))
+
+        assertEquals(emptySet<String>(), acusadas)
+        assertEquals(EntregaPorWifi.ESPERA_AL_REFRESCAR_MS, currentTime)
+        assertTrue(EntregaPorWifi.ESPERA_AL_REFRESCAR_MS < ClienteDeComandas.PRESUPUESTO_MS)
+        verify(exactly = 1) { transporte.refrescarPeers() }
         coVerify(exactly = 0) { cliente.entregar(any(), any(), any()) }
     }
 

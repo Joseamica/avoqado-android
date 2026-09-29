@@ -403,4 +403,44 @@ class TransporteLanLoopbackTest {
             t.detener()
         }
     }
+
+    /**
+     * QA D1 (29-sep): la caja ya conocía la pantalla (sin `kds=`) cuando ésta abrió su Tablero, y NSD no avisa el TXT nuevo.
+     * `refrescarPeers` (lo pide la entrega que no encuentra pantalla; la revisión de cada minuto hace lo mismo) la vuelve a
+     * resolver y la estación aparece. Sin nada conocido contesta `false`: no hay a quién esperar.
+     */
+    @Test
+    fun `P1 refrescarPeers re-resuelve lo conocido y la estacion nueva aparece`() = runBlocking {
+        val busquedas = mutableListOf<NsdManager.DiscoveryListener>()
+        val resoluciones = mutableListOf<NsdManager.ResolveListener>()
+        val nsd = mockk<NsdManager>(relaxed = true) {
+            every { discoverServices(any<String>(), any<Int>(), capture(busquedas)) } just runs
+            every { resolveService(any(), capture(resoluciones)) } just runs
+        }
+        fun pantalla(kds: String?) = mockk<NsdServiceInfo>(relaxed = true) {
+            every { serviceType } returns "._avoqado-pos._tcp."
+            every { serviceName } returns "Avoqado-POS-cpad01"
+            every { attributes } returns mapOf("did" to "cpad01".toByteArray(), "venue" to "venue-1".toByteArray(), "hub" to "0".toByteArray()) +
+                listOfNotNull(kds?.let { "kds" to it.toByteArray() })
+            every { host } returns InetAddress.getByAddress(byteArrayOf(192.toByte(), 168.toByte(), 1, 30))
+            every { port } returns 4321
+        }
+        val t = TransporteLan(mockk<Context>(relaxed = true) { every { getSystemService(Context.NSD_SERVICE) } returns nsd }, outbox, printConfig)
+        try {
+            t.iniciar("venue-1")
+            t.conectarHub(LeaseServer()::respondTo)
+            esperarPuerto(t)
+            assertFalse("sin nada conocido no hay a quien preguntar", t.refrescarPeers())
+            busquedas.first().onServiceFound(pantalla(kds = null))
+            resoluciones.single().onServiceResolved(pantalla(kds = null))
+            assertTrue(t.pantallasDe("qa35-barra").isEmpty())
+
+            assertTrue(t.refrescarPeers())
+            resoluciones.last().onServiceResolved(pantalla(kds = "qa35-barra"))
+
+            assertEquals(listOf("cpad01"), t.pantallasDe("qa35-barra").map { it.deviceId })
+        } finally {
+            t.detener()
+        }
+    }
 }

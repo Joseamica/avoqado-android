@@ -37,7 +37,8 @@ internal fun entregaIdDe(sourceKey: String, planes: List<TicketPlan>): String =
 /**
  * Etapa 3 del KDS (3.5, D5/D7) — la caja le empuja las comandas a las pantallas del local: GUARDA primero (las que
  * tienen trabajo de respaldo), empuja todas en paralelo con el presupuesto del cliente (≤ 1.5 s en total) y devuelve
- * qué estaciones acusaron. Basta UN acuse por estación. Sin pantallas descubiertas para una estación no se espera nada.
+ * qué estaciones acusaron. Basta UN acuse por estación. Sin pantalla para una estación se re-resuelve lo conocido y se
+ * espera ≤ 1 s dentro del mismo presupuesto (QA D1); sin nada conocido no se espera nada.
  *
  * Espejo de avoqado-ios: Printing/Services/EntregaPorWifi.swift.
  */
@@ -88,15 +89,29 @@ class EntregaPorWifi @Inject constructor(
     /**
      * Todas las pantallas de la estación en paralelo; basta UN acuse. [esperarPantallasMs] > 0 (replay al abrir la app:
      * el descubrimiento tarda unos segundos) espera a que aparezca alguna antes de rendirse.
+     *
+     * QA D1 (29-sep): sin pantalla para la estación se le pide al transporte re-resolver lo conocido — NSD no avisa cuando
+     * una pantalla ya vista entra a su Tablero. En vivo (sin espera pedida) se espera a lo más [ESPERA_AL_REFRESCAR_MS] y
+     * SÓLO si hay algo conocido; lo esperado sale del presupuesto del envío, así que el total sigue en ≤ 1.5 s.
      */
     suspend fun empujar(mensaje: KdsComanda, esperarPantallasMs: Long = 0L): Boolean {
+        val inicio = System.nanoTime()
         var pantallas = transporte.pantallasDe(mensaje.stationId)
-        if (pantallas.isEmpty() && esperarPantallasMs > 0) {
-            withTimeoutOrNull(esperarPantallasMs) { transporte.peers.first { peers -> peers.any { mensaje.stationId in it.kdsStations } } }
-            pantallas = transporte.pantallasDe(mensaje.stationId)
+        if (pantallas.isEmpty()) {
+            val hayAQuienPreguntar = transporte.refrescarPeers()
+            val espera = if (esperarPantallasMs > 0) esperarPantallasMs else if (hayAQuienPreguntar) ESPERA_AL_REFRESCAR_MS else 0L
+            if (espera > 0) {
+                withTimeoutOrNull(espera) { transporte.peers.first { peers -> peers.any { mensaje.stationId in it.kdsStations } } }
+                pantallas = transporte.pantallasDe(mensaje.stationId)
+            }
         }
         if (pantallas.isEmpty()) return false
-        return coroutineScope { pantallas.map { p -> async { cliente.entregar(p, mensaje) } }.awaitAll() }.any { it }
+        val presupuesto = if (esperarPantallasMs > 0) {
+            ClienteDeComandas.PRESUPUESTO_MS
+        } else {
+            ClienteDeComandas.PRESUPUESTO_MS - (System.nanoTime() - inicio) / 1_000_000
+        }
+        return coroutineScope { pantallas.map { p -> async { cliente.entregar(p, mensaje, presupuesto) } }.awaitAll() }.any { it }
     }
 
     /** Las filas de ESTE despacho ya se decidieron (el papel salió, o se decidió que no hacía falta): se borran. */
@@ -146,5 +161,10 @@ class EntregaPorWifi @Inject constructor(
         } catch (e: Exception) {
             Log.w(TAG, "$que: ${e.message}")
         }
+    }
+
+    companion object {
+        /** Lo más que la venta en vivo espera a que un re-resolve traiga la pantalla: deja ≥ 0.5 s para el envío (D5). */
+        const val ESPERA_AL_REFRESCAR_MS = 1_000L
     }
 }

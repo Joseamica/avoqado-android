@@ -192,6 +192,14 @@ class TransporteLan @Inject constructor(
     /** Las pantallas que hoy anuncian esa estación — incluido este aparato si la tiene en pantalla. */
     fun pantallasDe(stationId: String): List<LanPeer> = _peers.value.filter { stationId in it.kdsStations }
 
+    /**
+     * QA D1 (29-sep): NSD no avisa cuando una pantalla ya conocida cambia su TXT (entra al Tablero y agrega `kds=`). Esto
+     * re-resuelve lo conocido YA —lo pide la entrega que no encuentra pantalla; la revisión de cada minuto hace lo mismo—.
+     * `true` si hay algo conocido; sin nada, no hay a quién esperar.
+     */
+    @Synchronized
+    fun refrescarPeers(): Boolean = discovery?.refrescar() ?: false
+
     // MARK: - Red
 
     @Synchronized
@@ -205,6 +213,7 @@ class TransporteLan @Inject constructor(
         }
         d.anunciar(port, txt(v))
         d.buscar()
+        d.refrescar() // QA D1: un TXT nuevo de un peer ya conocido se ve a más tardar en una revisión
         publicarPeers()
     }
 
