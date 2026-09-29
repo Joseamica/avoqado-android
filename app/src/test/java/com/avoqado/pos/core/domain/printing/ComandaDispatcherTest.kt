@@ -29,6 +29,7 @@ import io.mockk.mockk
 import io.mockk.slot
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.cancelAndJoin
@@ -993,6 +994,13 @@ class ComandaDispatcherTest {
     fun `P1 si el despacho se cancela a media impresion sus filas se sueltan`() = runTest {
         every { printConfigRepository.getCurrentConfig() } returns conBarraSoloPantalla
         coEvery { comandaPrinter.printComandas(any(), any(), any(), any(), any()) } coAnswers { kotlinx.coroutines.awaitCancellation() }
+        // m2 de la re-revisión 2: el `soltar` real escribe en Room, que en un contexto CANCELADO lanza. El mock hace lo
+        // mismo (`ensureActive`) y sólo cuenta el soltar que TERMINÓ: sin `NonCancellable` esto se queda en 0.
+        var soltadasDeVerdad = 0
+        coEvery { entrega.soltar(any(), any()) } coAnswers {
+            kotlinx.coroutines.currentCoroutineContext().ensureActive()
+            soltadasDeVerdad++
+        }
 
         val despacho = launch {
             despachadorConCola().dispatch(
@@ -1005,5 +1013,6 @@ class ComandaDispatcherTest {
 
         coVerify(exactly = 0) { entrega.cerrar(any()) }
         coVerify(exactly = 1) { entrega.soltar(match { l -> l.map { it.mensaje.sourceKey } == listOf("sale:ext-1:st_barra") }, any()) }
+        assertEquals("el soltar tiene que TERMINAR aunque el despacho esté cancelado", 1, soltadasDeVerdad)
     }
 }

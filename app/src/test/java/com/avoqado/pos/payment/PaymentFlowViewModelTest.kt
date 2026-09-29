@@ -49,6 +49,7 @@ import com.avoqado.pos.printing.data.ReporteDeComandas
 import com.avoqado.pos.printing.data.model.KitchenItem
 import com.avoqado.pos.printing.data.model.KitchenTicketData
 import com.avoqado.pos.printing.data.model.ReceiptData
+import com.avoqado.pos.printing.routing.ConsolidatedLine
 import com.avoqado.pos.printing.routing.PrintConfig
 import com.avoqado.pos.printing.routing.ProductOverride
 import com.avoqado.pos.payment.domain.ManualPaymentChoice
@@ -108,7 +109,8 @@ class PaymentFlowViewModelTest {
 
     /** Visible para poder comprobar CUÁNDO se persiste una comanda que no salió. */
     private val almacenDePendientes = AlmacenEnMemoria()
-    private val storeDePendientes by lazy { ComandasPendientesStore(almacenDePendientes) }
+    /** Con el empuje por WiFi (KDS 3.5): así «Ya la canté» cierra —o NO cierra— las entregas de su comanda. */
+    private val storeDePendientes by lazy { ComandasPendientesStore(almacenDePendientes, entregaPorWifi) }
     /** Etapa 3 del KDS (3.4): la cola donde el despachador deja la marca del papel de respaldo. */
     private val colaDeMarcas = mockk<SyncOutbox>(relaxed = true)
     /**
@@ -3597,5 +3599,84 @@ class PaymentFlowViewModelTest {
             PaymentFlowViewModel.textoCobroQueSiPaso(null),
         )
         assertFalse(PaymentFlowViewModel.textoCobroQueSiPaso(0).contains("\$0.00"))
+    }
+
+    // MARK: - Etapa 3 del KDS (3.5), ronda 4 de la Task 6 (N-I1): sólo el toque EXPLÍCITO sobre la libreta la resuelve
+
+    /** La comanda X de OTRA venta que no salió: en la libreta, con su papel de respaldo (Barra) y su fila por WiFi. */
+    private val planBarraDeX = TicketPlan("st_barra", false, listOf(ConsolidatedLine("Café", 1, emptyList(), null, listOf("oi_x"))))
+    private val comandaX = EstadoDeComanda.NoSalio(
+        estaciones = listOf("Barra"),
+        causa = "La impresora no respondió.",
+        orderNumber = "XXXX",
+        trabajo = com.avoqado.pos.printing.data.TrabajoPendiente(
+            planes = listOf(planBarraDeX),
+            config = com.avoqado.pos.printing.routing.KitchenDeliveryPolicy.conRespaldo(configConBarraSoloPantalla, listOf("st_barra")),
+            orderNumber = "XXXX", orderType = "En tienda", serverName = null, comboNames = emptyMap(),
+            venueId = "venue-1", orderId = "order-x",
+        ),
+    )
+
+    /**
+     * 🔴 N-I1: el toast «Reintentando la comanda» de la venta S se cierra SOLO a los 2.6 s (no tiene botones). Si ese
+     * cierre llegaba a «Ya la canté», soltaba la libreta Y cerraba las entregas de X — una comanda que NADIE resolvió:
+     * con la impresora caída, X no quedaba en ningún lado. Un cierre que no es sobre la libreta sólo OCULTA.
+     */
+    @Test
+    fun `P1 cerrar el aviso Reintentando de OTRA venta no suelta la libreta ni cierra las entregas de X`() = runTest {
+        assertTrue(storeDePendientes.guardar(comandaX))
+        laImpresoraFallaSiempre()
+        completarCobroEnEfectivo()
+        assertTrue(viewModel.comandaWarning.value is EstadoDeComanda.Insistiendo)
+
+        viewModel.clearComandaWarning()
+
+        assertEquals("XXXX", storeDePendientes.pendiente.value?.orderNumber)
+        coVerify(exactly = 0) { entregaPorWifi.cerrarPorPapel(any(), any(), any()) }
+    }
+
+    /** El cierre solo del toast (y Atrás / tocar fuera) va a `ocultarAvisoDeComanda`: la libreta y sus filas quedan. */
+    @Test
+    fun `P1 ocultar el aviso Reintentando no toca la libreta - su reloj y el del replay siguen`() = runTest {
+        assertTrue(storeDePendientes.guardar(comandaX))
+        laImpresoraFallaSiempre()
+        completarCobroEnEfectivo()
+
+        viewModel.ocultarAvisoDeComanda()
+
+        assertEquals(comandaX, storeDePendientes.pendiente.value)
+        coVerify(exactly = 0) { entregaPorWifi.cerrarPorPapel(any(), any(), any()) }
+    }
+
+    /** «Ya la canté» sobre el aviso de OTRA venta (sin trabajo: estación sin impresora) tampoco resuelve la libreta. */
+    @Test
+    fun `P1 Ya la cante sobre el aviso de otra venta no resuelve la comanda de la libreta`() = runTest {
+        assertTrue(storeDePendientes.guardar(comandaX))
+        every { printConfigRepository.getCurrentConfig() } returns cocinaActivaConfig
+        coEvery { comandaPrinter.printComandas(any(), cocinaActivaConfig, any(), any(), any()) } returns ComandaPrinter.Result(
+            attempted = 1, printed = 0, skippedNoPrinter = 1, lastError = null,
+            skippedStations = listOf("Cocina"), failedPlans = emptyList(),
+        )
+        completarCobroEnEfectivo()
+        advanceUntilIdle()
+        val visto = viewModel.comandaWarning.value as EstadoDeComanda.NoSalio
+        assertNull("el aviso de S no trae trabajo", visto.trabajo)
+
+        viewModel.clearComandaWarning()
+
+        assertEquals(comandaX, storeDePendientes.pendiente.value)
+        coVerify(exactly = 0) { entregaPorWifi.cerrarPorPapel(any(), any(), any()) }
+    }
+
+    /** Y cuando el aviso tocado ES la libreta, «Ya la canté» la resuelve y cierra sus entregas (venue + orden + plan). */
+    @Test
+    fun `Ya la cante sobre el aviso de la libreta la resuelve y cierra sus entregas`() = runTest {
+        assertTrue(storeDePendientes.guardar(comandaX))
+        assertEquals(comandaX, viewModel.comandaWarning.value)
+
+        viewModel.clearComandaWarning()
+
+        assertNull(storeDePendientes.pendiente.value)
+        coVerify(timeout = 5_000, exactly = 1) { entregaPorWifi.cerrarPorPapel("venue-1", "XXXX", listOf(planBarraDeX)) }
     }
 }

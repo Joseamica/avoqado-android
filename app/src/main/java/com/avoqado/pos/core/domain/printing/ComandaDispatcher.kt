@@ -328,6 +328,12 @@ class ComandaDispatcher @Inject constructor(
         return estado
     }
 
+    /** El despacho no llegó a decidir el papel (truena o se cancela): todas sus filas guardadas sin acuse se sueltan. */
+    private suspend fun soltarSinPapel(entregas: List<EntregaKds>, acusadas: Set<String>) {
+        val guardadas = entregas.filter { it.entregaId != null && it.mensaje.stationId !in acusadas }
+        if (guardadas.isNotEmpty()) entregaPorWifi?.soltar(guardadas)
+    }
+
     /**
      * Ronda 1 (I2) — D7: la fila de una entrega se borra cuando su papel ya se DECIDIÓ. Las que acusaron ya se borraron;
      * aquí se cierran las de respaldo cuyo papel SALIÓ y las de una estación SIN impresora (insistir no le inventa una:
@@ -336,12 +342,6 @@ class ComandaDispatcher @Inject constructor(
      * sale ([reintentar] → [EntregaPorWifi.cerrarPorPapel]). Ronda 2 (N2): además se SUELTA, para que el reloj del
      * replay la retome en este mismo proceso si la libreta la pierde (su única ranura la pisa otra falla).
      */
-    /** El despacho no llegó a decidir el papel (truena o se cancela): todas sus filas guardadas sin acuse se sueltan. */
-    private suspend fun soltarSinPapel(entregas: List<EntregaKds>, acusadas: Set<String>) {
-        val guardadas = entregas.filter { it.entregaId != null && it.mensaje.stationId !in acusadas }
-        if (guardadas.isNotEmpty()) entregaPorWifi?.soltar(guardadas)
-    }
-
     private suspend fun cerrarLasDecididas(entregas: List<EntregaKds>, acusadas: Set<String>, estado: EstadoDeComanda) {
         val tronaron = (estado as? EstadoDeComanda.NoSalio)?.trabajo?.planes.orEmpty()
         val guardadas = entregas.filter { e -> e.trabajoDeRespaldo != null && e.mensaje.stationId !in acusadas }
