@@ -349,6 +349,23 @@ class CartViewModelReferralTest {
         assertNull(viewModel.cartState.value.orderDiscount)
     }
 
+    @Test
+    fun `P1 cambiar de cliente quita el premio de cartilla del cliente anterior`() = runTest {
+        // El premio es de UN cliente: si viajara con otro, el servidor no lo aplica y el
+        // carrito ya había bajado el total — se cobraría un descuento que no existe.
+        val viewModel = createViewModel()
+        viewModel.setSelectedCustomer("cust-7")
+        viewModel.setPendingStampReward(
+            com.avoqado.pos.loyalty.data.PremioPorAplicar("rw1", "Un café gratis", "FREE_PRODUCT", null),
+        )
+
+        viewModel.setSelectedCustomer("cust-7")
+        assertEquals("el mismo cliente conserva su premio", "rw1", viewModel.cartState.value.pendingStampRewardId)
+
+        viewModel.setSelectedCustomer("cust-other")
+        assertNull(viewModel.cartState.value.pendingStampReward)
+    }
+
     // MARK: - captureReferralOnPayment
 
     @Test

@@ -143,7 +143,8 @@ object CorteTicketBuilder {
         p.setBold(true)
         p.printLine(if (hasServerBreakdown) "RESUMEN DE VENTAS" else "RESUMEN DE VENTAS (EFECTIVO)")
         p.setBold(false)
-        if (showExpected || !isPartial) p.printTwoColumns(if (hasServerBreakdown) "Ventas totales" else "Ventas en efectivo", money(totalSales))
+        // «Netas»: el desglose del server ya resta los reembolsos (una venta de $138 devuelta entera da $0).
+        if (showExpected || !isPartial) p.printTwoColumns(if (hasServerBreakdown) "Ventas netas" else "Ventas en efectivo", money(totalSales))
         // 🔴 `txCount` cuenta SOLO las ventas en efectivo del cajón (es lo único
         // que el cajón conoce), pero `totalSales` incluye tarjeta y otros cuando
         // el server manda el desglose. Sin decirlo, las tres filas se leen como

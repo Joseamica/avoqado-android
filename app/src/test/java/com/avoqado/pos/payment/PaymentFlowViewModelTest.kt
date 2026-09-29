@@ -3686,6 +3686,64 @@ class PaymentFlowViewModelTest {
         coVerify(exactly = 0) { entregaPorWifi.cerrarPorPapel(any(), any(), any()) }
     }
 
+    // ── La MISMA apertura del cobro no lo reinicia (D3, 29-sep) ─────────────────────────────
+    //
+    // Caso medido en la Sunmi D3: cobrar en efectivo, ir a otra pestaña y volver a Cobrar. La
+    // pantalla del cobro se vuelve a componer, relanza su efecto y `startPaymentFlow` arrancaba
+    // un cobro NUEVO con lo que hubiera en el carrito — ya vacío tras cobrar —: «¿Cómo fue tu
+    // experiencia?» otra vez y, dos pasos después, un cobro de $0.00 con «Efectivo $0» activo.
+    // Girar la tablet hacía lo mismo. La apertura (una por cada «Cobrar») dice si es el mismo
+    // cobro; si lo es, se sigue donde iba.
+
+    @Test
+    fun `P1 volver al MISMO cobro ya pagado no lo reinicia con el carrito vacio`() = runTest {
+        coEvery {
+            orderRepository.createOrder(any(), any(), any(), any(), any())
+        } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-apertura")))
+        coEvery {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any())
+        } returns Result.success(OrderRepository.CashPayResult(paymentId = "payment-apertura", receiptAccessKey = null))
+        viewModel.startPaymentFlow(cartConUnProducto(), apertura = "apertura-1")
+        viewModel.confirmCashCustom(1000)
+        advanceUntilIdle()
+        val pagado = viewModel.state.value
+        assertTrue("la venta quedó cobrada: $pagado", pagado is PaymentFlowState.Success)
+
+        // Vuelve a la pestaña: la pantalla relanza su efecto con el carrito que haya (vacío).
+        viewModel.startPaymentFlow(CartState(), apertura = "apertura-1")
+        advanceUntilIdle()
+
+        assertEquals("el recibo sigue ahí; no nace un cobro de $0", pagado, viewModel.state.value)
+    }
+
+    @Test
+    fun `P1 volver al MISMO cobro a medias sigue donde iba`() = runTest {
+        viewModel.startPaymentFlow(cartConUnProducto(), apertura = "apertura-1")
+        advanceUntilIdle()
+        val enCurso = viewModel.state.value
+        // La pantalla pregunta esto antes de repartir y arrancar: sin ello, un cobro dividido
+        // volvía al importe completo al regresar de otra pestaña.
+        assertTrue(viewModel.esElCobroEnCurso("apertura-1"))
+        assertFalse(viewModel.esElCobroEnCurso("apertura-2"))
+
+        viewModel.startPaymentFlow(CartState(), apertura = "apertura-1")
+        advanceUntilIdle()
+
+        assertEquals(enCurso, viewModel.state.value)
+    }
+
+    @Test
+    fun `un Cobrar NUEVO si arranca otro cobro`() = runTest {
+        viewModel.startPaymentFlow(cartConUnProducto(), apertura = "apertura-1")
+        advanceUntilIdle()
+        val primero = viewModel.state.value
+
+        viewModel.startPaymentFlow(CartState(), apertura = "apertura-2")
+        advanceUntilIdle()
+
+        assertTrue("otra apertura es otro cobro: $primero → ${viewModel.state.value}", primero != viewModel.state.value)
+    }
+
     /** Y cuando el aviso tocado ES la libreta, «Ya la canté» la resuelve y cierra sus entregas (venue + orden + plan). */
     @Test
     fun `Ya la cante sobre el aviso de la libreta la resuelve y cierra sus entregas`() = runTest {

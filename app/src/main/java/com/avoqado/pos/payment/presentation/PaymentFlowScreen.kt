@@ -88,7 +88,15 @@ fun PaymentFlowScreen(
         viewModel.attachCustomerToCurrentPayment(customer.id, customer.fullName)
     }
 
+    // 🔴 Una por cada «Cobrar». `rememberSaveable`: sobrevive a cambiar de pestaña y a girar la
+    // tablet (la pantalla se vuelve a componer y relanza el efecto de abajo), y nace nueva cuando
+    // el cobro se cierra y se vuelve a abrir. Sin esto, volver a la pestaña tras cobrar arrancaba
+    // un cobro de $0.00 con el carrito ya vacío (D3, 29-sep) — y el reparto de un cobro dividido
+    // se perdía, porque quien llama lo guarda en un `remember` que no sobrevive al cambio.
+    val aperturaDelCobro = rememberSaveable { java.util.UUID.randomUUID().toString() }
+
     LaunchedEffect(cartState, splitConfig, preselectedCustomerId, preselectedCustomerName, resumeOrderId) {
+        if (viewModel.esElCobroEnCurso(aperturaDelCobro)) return@LaunchedEffect
         viewModel.setSplitConfig(
             type = splitConfig.type.toApiSplitType(),
             selectedItemIds = splitConfig.selectedItemIds,
@@ -100,6 +108,7 @@ fun PaymentFlowScreen(
             customerId = preselectedCustomerId,
             customerName = preselectedCustomerName,
             resumeOrderId = resumeOrderId,
+            apertura = aperturaDelCobro,
         )
     }
 
@@ -380,6 +389,18 @@ fun PaymentFlowScreen(
                     montoDelCobro = viewModel.objetivoDeLaDeclaracion()?.montoCentavos?.let { formatMoneyFromCents(it) },
                 )
             }
+        }
+
+        // 🔴 El premio de cartilla no salió como lo anunció el carrito: el total que se cobra
+        // cambió. Encima de cualquier estado y con «Entendido» (no se esfuma solo): es dinero.
+        val avisoDelPremio by viewModel.avisoDelPremio.collectAsState()
+        avisoDelPremio?.let { aviso ->
+            AvoqadoWarningToast(
+                message = "Revisa el premio",
+                subtitle = aviso,
+                onDismiss = { viewModel.descartarAvisoDelPremio() },
+                secondaryLabel = "Entendido",
+            )
         }
     }
 

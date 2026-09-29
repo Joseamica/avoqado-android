@@ -209,7 +209,10 @@ fun DailyReportView(
             // tarjeta le hace creer al dueño que vendió menos de lo que vendió.
             if (showExpected || !isPartial) {
                 ReportRow(
-                    label = if (hasServerBreakdown) "Ventas totales" else "Ventas en efectivo",
+                    // «Netas»: el desglose del server ya resta los reembolsos. Con «totales», $138
+                    // vendidos y $138 devueltos se leían «Ventas totales $0.00» junto a «Ticket
+                    // promedio en efectivo $69.00» (D3, 29-sep). Mismo texto que el ticket e iOS.
+                    label = if (hasServerBreakdown) "Ventas netas" else "Ventas en efectivo",
                     value = formatCurrency(totalSalesCents),
                 )
             }

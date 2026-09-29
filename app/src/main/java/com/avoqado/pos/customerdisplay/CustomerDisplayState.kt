@@ -308,7 +308,9 @@ class CustomerDisplayState @Inject constructor() {
             CustomerContent.Cart(
                 items = state.items,
                 subtotalCents = state.subtotalCents,
-                discountCents = state.discountCents,
+                // El premio de cartilla también es un descuento para el cliente: sin él, sus
+                // productos sumarían más que el total y nada lo explicaría.
+                discountCents = state.discountCents + state.stampRewardCents,
                 taxCents = state.taxCents,
                 totalCents = state.totalCents,
             )

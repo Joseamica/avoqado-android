@@ -206,7 +206,7 @@ class KdsReglasTest {
     }
 
     @Test
-    fun `con tiempos agrupa en el orden en que aparece cada uno, y lo que no trae va en Inmediato`() {
+    fun `con tiempos agrupa en el orden en que aparece cada uno, y lo que no trae va PRIMERO en Inmediato`() {
         val guac = platillo("Guacamole", "Aperitivos")
         val tacos = platillo("Tacos", "Principales")
         val sopa = platillo("Sopa", "Aperitivos")
@@ -214,9 +214,9 @@ class KdsReglasTest {
 
         val grupos = gruposPorTiempo(listOf(guac, tacos, sopa, agua))
 
-        assertEquals(listOf("Aperitivos", "Principales", "Inmediato"), grupos.map { it.tiempo })
-        assertEquals(listOf(guac, sopa), grupos[0].items)
-        assertEquals(listOf(agua), grupos[2].items)
+        assertEquals(listOf("Inmediato", "Aperitivos", "Principales"), grupos.map { it.tiempo })
+        assertEquals(listOf(agua), grupos[0].items)
+        assertEquals(listOf(guac, sopa), grupos[1].items)
     }
 
     @Test

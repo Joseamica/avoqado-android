@@ -95,13 +95,15 @@ fun idsParaMarcarTodas(comandas: List<KDSOrder>): List<String> =
 data class GrupoDeTiempo(val tiempo: String?, val items: List<KDSOrderItem>)
 
 /**
- * Los platillos agrupados por tiempo, en el orden en que aparece cada uno (la caja los manda en el orden del menú). Sin
- * ningún tiempo ⇒ un grupo sin encabezado: la venta de mostrador se ve como siempre. Con tiempos, lo que no trae va bajo
- * «Inmediato», el mismo nombre del «¡MARCHAR Inmediato!» del papel.
+ * Los platillos agrupados por tiempo. Sin ningún tiempo ⇒ un grupo sin encabezado: la venta de mostrador se ve como
+ * siempre. Con tiempos, lo que no trae va bajo «Inmediato» (el mismo nombre del «¡MARCHAR Inmediato!» del papel) y va
+ * PRIMERO — es lo que la cocina prepara ya (QA 29-sep: salía al final si se agregaba al último); los demás tiempos, en el
+ * orden en que aparece cada uno.
  */
 fun gruposPorTiempo(items: List<KDSOrderItem>): List<GrupoDeTiempo> {
     if (items.none { it.course != null }) return listOf(GrupoDeTiempo(null, items))
     return items.groupBy { it.course ?: TextosDeCocina.INMEDIATO }.map { (tiempo, suyos) -> GrupoDeTiempo(tiempo, suyos) }
+        .sortedByDescending { it.tiempo == TextosDeCocina.INMEDIATO }
 }
 
 // MARK: - Etapa 3 del KDS (3.5, D9): la mezcla por folio

@@ -77,8 +77,12 @@ data class CartState(
      * llega solo hasta la creación de la orden, que es donde el servidor lo aplica. Y
      * se limpia con el carrito, así que no puede arrastrarse a la venta siguiente —
      * que sería regalar un premio dos veces.
+     *
+     * 🔴 DINERO. Como en Square y Toast, el premio es un descuento de la cuenta ANTES de
+     * cobrar: [totalCents] ya lo resta ([stampRewardCents], un estimado). Lo que manda al
+     * cobrar es lo que el servidor confirma — ver `totalACobrarCents`.
      */
-    val pendingStampRewardId: String? = null,
+    val pendingStampReward: com.avoqado.pos.loyalty.data.PremioPorAplicar? = null,
     val orderDiscount: Discount? = null,
     val orderNote: String? = null,
     val orderTaxPercent: Int? = null,
@@ -148,7 +152,28 @@ data class CartState(
             if (percent <= 0 || taxableAmountAfterDiscountCents <= 0) return 0
             return ((taxableAmountAfterDiscountCents * percent) / 100.0).toInt()
         }
-    val totalCents: Int get() = (subtotalCents - discountCents + taxCents).coerceAtLeast(0)
+    val pendingStampRewardId: String? get() = pendingStampReward?.id
+
+    /**
+     * Cuánto baja la cuenta el premio pendiente — ESTIMADO con la regla del servidor, sobre la
+     * cuenta ya descontada. No va en [discountCents]: ese viaja al servidor como `discount`, y
+     * el premio lo canjea el servidor por su cuenta (mandarlo en los dos lo restaría dos veces).
+     */
+    val stampRewardCents: Int
+        get() = pendingStampReward?.takeIf { premioAplica }?.let {
+            com.avoqado.pos.loyalty.data.premioEstimadoCents(it, items, (subtotalCents - discountCents).coerceAtLeast(0))
+        } ?: 0
+
+    /**
+     * 🔴 El premio sólo se canjea en una venta que CREA orden con productos (`confirmPayment` /
+     * `processCashPayment`). El cobro rápido («Otro importe»), la cuenta de mesa y los vales no lo
+     * llevan: restarlo ahí regalaría el descuento sin gastar el premio.
+     */
+    val premioAplica: Boolean
+        get() = items.any { it.type is CartItemType.ProductItem } && items.none { it.locked }
+    val stampRewardDisplay: String get() = formatCents(stampRewardCents)
+
+    val totalCents: Int get() = (subtotalCents - discountCents - stampRewardCents + taxCents).coerceAtLeast(0)
     val isEmpty: Boolean get() = items.isEmpty()
 
     val subtotalDisplay: String get() = formatCents(subtotalCents)
@@ -446,6 +471,17 @@ class CartViewModel @Inject constructor(
      */
     private val _selectedCustomer = MutableStateFlow<SelectedCustomer?>(null)
     val selectedCustomer: StateFlow<SelectedCustomer?> = _selectedCustomer.asStateFlow()
+
+    /**
+     * 🔴 El premio de cartilla no quedó como lo anunció el carrito al diferir la venta («pagar
+     * después»): la cuenta abierta quedó por otro monto. null = nada que decir.
+     */
+    private val _avisoDelPremio = MutableStateFlow<String?>(null)
+    val avisoDelPremio: StateFlow<String?> = _avisoDelPremio.asStateFlow()
+
+    fun descartarAvisoDelPremio() {
+        _avisoDelPremio.value = null
+    }
 
     /// True when a class-seed was skipped because the cart already links a
     /// different reservation — the UI shows a message so the class isn't
@@ -1222,14 +1258,32 @@ class CartViewModel @Inject constructor(
         splitType: String?,
         paidItemIds: Set<String>,
         remainingBalanceCents: Int,
+        /** Lo que el servidor confirmó del premio (0 = lo rechazó); null = la venta no llevaba premio. */
+        premioConfirmadoCents: Int? = null,
     ): CobroAplicado {
         // 🔴 Se fotografía ANTES de tocar nada: cerrar la venta borra la validación,
         // el código y el staff, y la captura corre después. Ver [ReferralPendiente].
         val referralPendiente = snapshotReferralPendiente()
+        // 🔴 El premio ya se canjeó (o no) sobre la ORDEN entera al crearla. Lo que quede por cobrar
+        // descuenta lo que el servidor CONFIRMÓ, nunca un estimado nuevo sobre los renglones que quedan
+        // (hallazgo P1 de Codex, 27-sep): un monto fijo con lo confirmado, o nada si lo rechazó.
+        if (premioConfirmadoCents != null) {
+            _cartState.update { estado ->
+                estado.copy(
+                    pendingStampReward = estado.pendingStampReward
+                        ?.takeIf { premioConfirmadoCents > 0 }
+                        ?.copy(tipo = "FIXED_AMOUNT", valor = premioConfirmadoCents / 100.0),
+                )
+            }
+        }
         val esPorProducto = splitType == "BYPRODUCT" && paidItemIds.isNotEmpty()
         val rama = when {
             esPorProducto -> {
                 paidItemIds.forEach { removeItem(it) }
+                // 🔴 El servidor dice que ya no se debe nada: lo que quede en el carrito ya es parte de esa
+                // orden PAGADA (pasa con un premio mayor que la parte cobrada). Dejarlo permitía cobrarlo
+                // otra vez en una orden nueva (hallazgo P1 de Codex, ronda 2).
+                if (remainingBalanceCents <= 0 && !_cartState.value.isEmpty) clearCart()
                 RamaCobro.RENGLONES_PAGADOS
             }
             remainingBalanceCents > 0 -> {
@@ -1417,12 +1471,21 @@ class CartViewModel @Inject constructor(
     /**
      * Marca (o quita) el premio que se aplicará al cobrar.
      *
-     * El descuento NO se aplica aquí: la orden todavía no existe. El servidor lo
-     * canjea al crearla, y por eso el total que el aparato cobra ya viene descontado.
+     * El carrito resta un ESTIMADO desde ya (como Square y Toast: el premio se ve en la cuenta
+     * antes de cobrar), pero el premio NO se canjea aquí: la orden todavía no existe. El
+     * servidor lo canjea al crearla y el cobro usa el monto que él confirma.
      */
-    fun setPendingStampReward(rewardId: String?) {
-        _cartState.update { it.copy(pendingStampRewardId = rewardId?.takeIf { id -> id.isNotBlank() }) }
+    fun setPendingStampReward(premio: com.avoqado.pos.loyalty.data.PremioPorAplicar?): Boolean {
+        // 🔴 Con una venta a medio cobrar, la orden YA decidió su premio: la parte siguiente cobra contra
+        // ella sin volver a crearla, así que un premio nuevo (o quitarlo) cambiaría lo cobrado sin
+        // canjearse (hallazgo P1 de Codex, ronda 2).
+        if (!puedeCambiarPremio()) return false
+        _cartState.update { it.copy(pendingStampReward = premio?.takeIf { p -> p.id.isNotBlank() }) }
+        return true
     }
+
+    /** false mientras la venta se cobra por partes contra una orden que ya existe. */
+    fun puedeCambiarPremio(): Boolean = _pendingSplitOrder.value == null
 
     fun setSelectedCustomer(customerId: String?, customerName: String? = null) {
         val previous = _selectedCustomer.value?.id
@@ -1431,6 +1494,11 @@ class CartViewModel @Inject constructor(
         if (_selectedCustomer.value == nuevo) return
         _selectedCustomer.value = nuevo
         if (previous == id) return
+        // 🔴 El premio es de UN cliente: con otro, el servidor no lo aplica y el carrito ya
+        // habría bajado el total por un descuento que no existe.
+        if (_cartState.value.pendingStampReward != null) {
+            _cartState.update { it.copy(pendingStampReward = null) }
+        }
         if (previous != null) {
             // Customer changed (incl. switch-to-null). Any cached referral
             // state is for the previous customer, drop it.
@@ -1739,9 +1807,22 @@ class CartViewModel @Inject constructor(
                 customerId = customerId,
                 orderType = "DINE_IN",
                 staffId = currentCart.selectedStaffId,
+                // El carrito ya enseñó el total con el premio: la cuenta que queda abierta tiene
+                // que ser ésa, así que el premio se canjea al crearla.
+                stampRewardId = currentCart.pendingStampRewardId?.takeIf { currentCart.premioAplica },
+                stampRewardExpectedDiscount = currentCart.stampRewardCents.takeIf { it > 0 },
             )
             .fold(
                 onSuccess = { response ->
+                    // Si el servidor no lo confirmó como lo anunció el carrito, se DICE: la cuenta que
+                    // queda abierta no es la que el cliente escuchó.
+                    if (currentCart.pendingStampRewardId != null && currentCart.premioAplica) {
+                        _avisoDelPremio.value = com.avoqado.pos.payment.data.model.cobroConPremio(
+                            currentCart.totalCents,
+                            currentCart.stampRewardCents,
+                            response.data?.stampReward,
+                        ).aviso
+                    }
                     val orderId = response.data?.id
                     if (orderId.isNullOrBlank()) {
                         Result.failure(Exception("No se pudo obtener la orden creada"))
