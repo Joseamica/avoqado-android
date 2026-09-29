@@ -9,8 +9,12 @@ import com.avoqado.pos.kds.data.local.EntregaKdsPendienteEntity
 import com.avoqado.pos.kds.data.local.EntregasKdsPendientesDao
 import com.avoqado.pos.printing.routing.KitchenDeliveryPolicy
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -20,15 +24,18 @@ import javax.inject.Singleton
 private const val TAG = "ReplayDeEntregasKds"
 
 /**
- * Etapa 3 del KDS (3.5, D7) — al abrir la app, las entregas por WiFi que quedaron en disco (el proceso murió a media
- * entrega, o su papel de respaldo no salió): las de < 10 min se reintentan UNA vez por WiFi (esperando a que aparezcan
- * pantallas); las demás y las que no acusen salen en papel con su trabajo congelado y se marcan `FALLBACK_PRINTED`. Las
- * de otro venue se quedan (suspendidas), como en `ComandasPendientesStore`.
+ * Etapa 3 del KDS (3.5, D7) — las entregas por WiFi que quedaron en disco: el proceso murió a media entrega, o su papel
+ * de respaldo no salió. Las de < 10 min se reintentan por WiFi (esperando a que aparezcan pantallas); las demás y las que
+ * no acusen salen en papel con su trabajo congelado y se marcan `FALLBACK_PRINTED`. Las de otro venue se quedan
+ * (suspendidas), como en `ComandasPendientesStore`.
  *
- * Una fila se borra SÓLO cuando su destino ya se decidió (ronda 1 de la revisión): acusó, su papel salió, su estación
- * no tiene impresora, pasó la vigencia de 8 h, o es ilegible. Si el papel no sale, el trabajo va a la libreta (si su
- * única ranura está libre) y la fila se queda: la cierra el papel cuando por fin salga
- * ([EntregaPorWifi.cerrarPorPapel]) o la retoma la próxima apertura.
+ * Una fila se borra SÓLO cuando su destino ya se decidió (ronda 1): acusó, su papel salió, su estación no tiene
+ * impresora, pasó la vigencia de 8 h, o es ilegible. Si el papel no sale, el trabajo va a la libreta (si su única ranura
+ * está libre) y la fila se queda: la cierra el papel cuando por fin sale ([EntregaPorWifi.cerrarPorPapel]).
+ *
+ * Ronda 2 (N2): corre con un RELOJ ([iniciar]) — una pasada al abrir y otra cada minuto, como `ReplayDeComandasPendientes`
+ * — así que una impresora que se cae y regresa saca su papel sin reabrir la app. Cada pasada reintenta lo elegible; la
+ * vigencia de 8 h es la que acota a una fila que no sale nunca.
  */
 @Singleton
 class ReplayDeEntregasKds @Inject constructor(
@@ -40,33 +47,64 @@ class ReplayDeEntregasKds @Inject constructor(
 ) {
     private val json = Json { ignoreUnknownKeys = true }
     private val candado = Mutex()
+    private var reloj: Job? = null
+    @Volatile private var venueDelReloj: String? = null
 
     /**
-     * I1 de la revisión — la regla que acota una fila que truena: se intenta A LO MÁS UNA vez por proceso (las 2-3
-     * pasadas de `startOfflineOutbox` al abrir no la repiten) y la vigencia de 8 h la retira sin imprimir. Así una fila
-     * envenenada no tumba la app ni se reintenta en bucle. Sólo lo toca el lazo, bajo [candado].
-     */
-    private val intentadas = mutableSetOf<String>()
-
-    /**
-     * 🔴 Guarda contra un despacho VIVO: la fila de una entrega en curso existe hasta que `dispatch` decide su papel
-     * (`insistir` puede tardar ~1 min), y `startOfflineOutbox()` corre también en cada `refreshTabs()` (cambio de sucursal
-     * o de modo, refresco tras el login). Sin esto el replay la vería «reciente», la re-empujaría o reimprimiría el
-     * RESPALDO y encolaría otra marca. Sólo se toman filas creadas ANTES de que existiera este objeto: nace con
-     * `AppState`, antes de cualquier venta, así que toda fila más nueva es de ESTE proceso. Sin `SystemClock` a propósito
-     * (las pruebas de la JVM no lo tienen). ponytail: reloj de pared; un reloj que retrocede tras abrir haría ver vivas
-     * como muertas (M2 de la revisión) — el arreglo es un conjunto en memoria de folios en vuelo en [EntregaPorWifi].
+     * 🔴 Guarda contra un despacho VIVO: la fila de una entrega en curso existe mientras `dispatch` decide su papel
+     * (`insistir` puede tardar ~1 min). Se toman las filas creadas ANTES de que existiera este objeto (nace con
+     * `AppState`, antes de cualquier venta: son de un proceso muerto) y las de este proceso que su despacho ya SOLTÓ
+     * (`soltadaEnMillis`, N2). Una fila de este proceso sin soltar es de un despacho en curso: se deja. Sin `SystemClock` a
+     * propósito (las pruebas de la JVM no lo tienen). ponytail: reloj de pared; un reloj que retrocede tras abrir haría
+     * ver vivas como muertas (M2) — el arreglo es un conjunto en memoria de entregas en vuelo en [EntregaPorWifi].
      */
     private val arranqueDelProcesoMillis = System.currentTimeMillis()
 
+    /**
+     * El reloj: una pasada ya y otra cada [INTERVALO_MS]. Idempotente: llamarlo otra vez (`startOfflineOutbox` corre 2-3
+     * veces al abrir y en cada cambio de sucursal) no crea otro reloj, sólo cambia la sucursal a la que apunta.
+     */
+    fun iniciar(scope: CoroutineScope, venueId: String) {
+        venueDelReloj = venueId
+        if (reloj?.isActive == true) return
+        reloj = scope.launch {
+            while (isActive) {
+                venueDelReloj?.let { v ->
+                    try {
+                        reproducirAlAbrir(v)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        Log.w(TAG, "La pasada de entregas tropezó: ${e.message}")
+                    }
+                }
+                delay(INTERVALO_MS)
+            }
+        }
+    }
+
+    /** Al cerrar sesión: sin sesión no se imprime nada de la sucursal anterior. */
+    fun detener() {
+        reloj?.cancel()
+        reloj = null
+        venueDelReloj = null
+    }
+
+    /**
+     * UNA pasada. Una sola a la vez (como `ReplayDeComandasPendientes`): si otra está en curso, ésta se omite — el
+     * siguiente tic la repite. Una fila que truena no tumba la pasada ni la app (I1): se queda y el siguiente tic la
+     * vuelve a intentar.
+     */
     suspend fun reproducirAlAbrir(
         venueId: String,
         ahora: Long = System.currentTimeMillis(),
         arranqueDelProceso: Long = arranqueDelProcesoMillis,
     ) {
-        // M3: sin «si está ocupado, sal»: una pasada de OTRO venue (cambio de sucursal a media pasada) espera su turno en
-        // vez de perderse. Las pasadas repetidas no cuestan: lo resuelto ya se borró y lo intentado se salta.
-        candado.withLock {
+        if (!candado.tryLock()) {
+            Log.d(TAG, "Ya hay una pasada en curso — ésta se omite")
+            return
+        }
+        try {
             val filas = try {
                 dao.delVenue(venueId)
             } catch (e: CancellationException) {
@@ -76,20 +114,20 @@ class ReplayDeEntregasKds @Inject constructor(
                 return
             }
             for (fila in filas) {
-                if (fila.creadaEnMillis >= arranqueDelProceso) {
-                    Log.d(TAG, "⏭️ ${fila.sourceKey} es de un despacho de este proceso: se deja")
+                if (fila.creadaEnMillis >= arranqueDelProceso && fila.soltadaEnMillis == null) {
+                    Log.d(TAG, "⏭️ ${fila.entregaId} es de un despacho en curso: se deja")
                     continue
                 }
-                if (fila.sourceKey in intentadas) continue
                 try {
                     reproducir(fila, venueId, ahora)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    // I1: se queda en disco para la próxima apertura; ésta no la vuelve a intentar.
-                    Log.w(TAG, "La entrega ${fila.sourceKey} tropezó: ${e.message} — se queda para la próxima apertura")
+                    Log.w(TAG, "La entrega ${fila.entregaId} tropezó: ${e.message} — el siguiente tic la vuelve a intentar")
                 }
             }
+        } finally {
+            candado.unlock()
         }
     }
 
@@ -97,43 +135,45 @@ class ReplayDeEntregasKds @Inject constructor(
         // I4: una comanda de hace más de 8 h ya se resolvió (la cocina la preparó, alguien la cantó, el cliente se fue).
         // Imprimirla sola en la cocina manda comida que nadie pidió: se retira sin papel ni marca.
         if (ahora - fila.creadaEnMillis > VIGENCIA_MS) {
-            Log.w(TAG, "🗑️ ${fila.sourceKey} tiene más de 8 h: se descarta sin imprimir")
-            dao.borrar(fila.sourceKey)
+            Log.w(TAG, "🗑️ ${fila.entregaId} tiene más de 8 h: se descarta sin imprimir")
+            dao.borrar(fila.entregaId)
             return
         }
         val mensaje = KdsLanProtocol.decodeComanda(fila.mensajeJson)
         val trabajo = runCatching { json.decodeFromString(TrabajoPendiente.serializer(), fila.trabajoJson) }.getOrNull()
         if (mensaje == null || trabajo == null) {
-            Log.w(TAG, "Entrega ilegible ${fila.sourceKey}: se descarta")
-            dao.borrar(fila.sourceKey)
+            Log.w(TAG, "Entrega ilegible ${fila.entregaId}: se descarta")
+            dao.borrar(fila.entregaId)
             return
         }
         // La libreta ya tiene ESTE papel (se guardó cuando no salió): su reloj lo imprime y cierra la fila. Imprimirlo
-        // aquí también saldría dos veces. La fila espera, y no cuenta como intentada: si la libreta lo suelta, la
-        // siguiente pasada lo toma.
+        // aquí también saldría dos veces. La fila espera: si la libreta lo suelta, el siguiente tic lo toma.
         if (laLibretaLoTiene(trabajo)) {
-            Log.d(TAG, "📒 ${fila.sourceKey} ya está en la libreta: su reloj lo imprime")
+            Log.d(TAG, "📒 ${fila.entregaId} ya está en la libreta: su reloj lo imprime")
             return
         }
-        intentadas += fila.sourceKey
         val reciente = ahora - fila.creadaEnMillis < VENTANA_REINTENTO_MS
         if (reciente && entregaPorWifi.empujar(mensaje, ESPERA_PANTALLAS_MS)) {
-            Log.i(TAG, "📡 ${fila.sourceKey} llegó a la pantalla al reabrir")
-            dao.borrar(fila.sourceKey)
+            Log.i(TAG, "📡 ${fila.entregaId} llegó a la pantalla")
+            dao.borrar(fila.entregaId)
             return
         }
         when (val estado = comandaDispatcher.reintentar(trabajo)) {
             is EstadoDeComanda.Salio -> {
                 marcar(venueId, fila.sourceKey, fila.stationId, trabajo.orderNumber)
-                dao.borrar(fila.sourceKey)
+                dao.borrar(fila.entregaId)
             }
             is EstadoDeComanda.NoSalio -> when {
-                // Sin ninguna impresora: no hay papel que reintentar (reenviarlo no le inventa una). Decidida, sin marca.
-                estado.trabajo == null -> dao.borrar(fila.sourceKey)
+                // Sin ninguna impresora: no hay papel que reintentar (reenviarlo no le inventa una). Decidida, sin marca;
+                // su pantalla la verá cuando el servidor tenga la venta (N5: aceptado, y se deja rastro).
+                estado.trabajo == null -> {
+                    Log.w(TAG, "🧾 ${fila.entregaId}: su estación no tiene impresora — se da por decidida y se borra")
+                    dao.borrar(fila.entregaId)
+                }
                 // 🔴 Sin papel no se marca (escondería una comanda que nadie vio). La libreta es de UNA ranura: sólo se
                 // guarda si está libre (M4: pisarla le quitaría el reintento a otra comanda). La fila se queda.
                 comandasPendientesStore.pendiente.value == null -> comandasPendientesStore.guardar(estado)
-                else -> Log.w(TAG, "🧾 ${fila.sourceKey} no salió y la libreta está ocupada: espera a la próxima apertura")
+                else -> Log.d(TAG, "🧾 ${fila.entregaId} no salió y la libreta está ocupada: el siguiente tic insiste")
             }
             else -> Unit
         }
@@ -168,6 +208,8 @@ class ReplayDeEntregasKds @Inject constructor(
     }
 
     companion object {
+        /** N2: un minuto, como `ReplayDeComandasPendientes` — un intento TCP contra la impresora de la LAN es barato. */
+        const val INTERVALO_MS = 60_000L
         /** Spec §6: «al abrir reintenta las de menos de 10 min y el resto sale en papel». */
         const val VENTANA_REINTENTO_MS = 10L * 60 * 1_000
         /** El descubrimiento mDNS tarda unos segundos al abrir la app: se espera a lo más esto a que aparezca la pantalla. */

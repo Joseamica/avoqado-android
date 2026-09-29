@@ -53,9 +53,13 @@ class KdsLanSqlTest {
         generateSequence { if (rs.next()) rs.getString("sourceKey") else null }.toList()
     }
 
-    private fun entrega(folio: String, venue: String = "venue-1", creada: Long = 0L) {
-        db.prepareStatement("INSERT INTO entregas_kds_pendientes (sourceKey, venueId, stationId, mensajeJson, trabajoJson, creadaEnMillis) VALUES (?,?,?,?,?,?)").use {
-            listOf<Any?>(folio, venue, "st_barra", "{}", "{}", creada).forEachIndexed { i, v -> it.setObject(i + 1, v) }
+    /**
+     * Ronda 2 (N1): la llave es la ENTREGA (`<folio>|<renglones del plan>`), no el folio. `INSERT OR REPLACE` es lo que
+     * corre Room con `@Insert(REPLACE)`.
+     */
+    private fun entrega(folio: String, venue: String = "venue-1", creada: Long = 0L, renglones: String = "") {
+        db.prepareStatement("INSERT OR REPLACE INTO entregas_kds_pendientes (entregaId, sourceKey, venueId, stationId, mensajeJson, trabajoJson, creadaEnMillis) VALUES (?,?,?,?,?,?,?)").use {
+            listOf<Any?>("$folio|$renglones", folio, venue, "st_barra", "{}", "{}", creada).forEachIndexed { i, v -> it.setObject(i + 1, v) }
             it.executeUpdate()
         }
     }
@@ -67,17 +71,38 @@ class KdsLanSqlTest {
         }
     }
 
+    /**
+     * N1 de la revisión: los cursos de una ronda comparten folio (`round:<llave>:<estación>`). Con el folio de llave, el
+     * `REPLACE` del curso 2 pisaba la fila del curso 1 aún sin decidir — y si los dos papeles fallaban, el curso 1 no
+     * quedaba en ningún lado.
+     */
     @Test
-    fun `el folio es la llave de la entrega - un segundo alta del mismo folio no crea otra`() {
-        entrega("sale:ext-1:st_barra")
-        try { entrega("sale:ext-1:st_barra"); fail("se aceptó un segundo alta") } catch (esperado: SQLException) { }
+    fun `P1 dos cursos de la misma ronda que fallan dejan DOS filas - y el mismo plan otra vez sigue siendo una`() {
+        entrega("round:r1:st_cocina", creada = 1, renglones = "oi_1")
+        entrega("round:r1:st_cocina", creada = 2, renglones = "oi_2,oi_3")
+        entrega("round:r1:st_cocina", creada = 3, renglones = "oi_2,oi_3")
+        assertEquals(listOf("round:r1:st_cocina", "round:r1:st_cocina"), folios(KdsLanSql.ENTREGAS_DEL_VENUE, "venueId" to "venue-1"))
+        assertEquals(1, actualizar(KdsLanSql.BORRAR_ENTREGA, "entregaId" to "round:r1:st_cocina|oi_2,oi_3"))
+        assertEquals(listOf("round:r1:st_cocina"), folios(KdsLanSql.ENTREGAS_DEL_VENUE, "venueId" to "venue-1"))
+    }
+
+    /** N2: el despacho vivo SUELTA la fila cuyo papel no salió; el reloj del replay la toma sin esperar a reabrir. */
+    @Test
+    fun `soltar pone la hora solo en esa entrega`() {
+        entrega("round:r1:st_cocina", renglones = "oi_1"); entrega("round:r1:st_cocina", renglones = "oi_2")
+        assertEquals(1, actualizar(KdsLanSql.SOLTAR_ENTREGA, "entregaId" to "round:r1:st_cocina|oi_2", "ahora" to 77L))
+        val soltadas = preparar("SELECT entregaId, soltadaEnMillis FROM entregas_kds_pendientes ORDER BY entregaId", emptyMap()).use { st ->
+            val rs = st.executeQuery()
+            generateSequence { if (rs.next()) rs.getString("entregaId") to (rs.getObject("soltadaEnMillis") as Number?)?.toLong() else null }.toList()
+        }
+        assertEquals(listOf("round:r1:st_cocina|oi_1" to null, "round:r1:st_cocina|oi_2" to 77L), soltadas)
     }
 
     @Test
     fun `las entregas de la sucursal salen en orden de creacion y sin las de otra sucursal`() {
         entrega("b", creada = 2); entrega("a", creada = 1); entrega("ajena", venue = "venue-2", creada = 0)
         assertEquals(listOf("a", "b"), folios(KdsLanSql.ENTREGAS_DEL_VENUE, "venueId" to "venue-1"))
-        assertEquals(1, actualizar(KdsLanSql.BORRAR_ENTREGA, "sourceKey" to "a"))
+        assertEquals(1, actualizar(KdsLanSql.BORRAR_ENTREGA, "entregaId" to "a|"))
         assertEquals(listOf("b"), folios(KdsLanSql.ENTREGAS_DEL_VENUE, "venueId" to "venue-1"))
     }
 

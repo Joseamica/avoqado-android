@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 13,
-    "identityHash": "b0ff6457175e6e21a7fa9cdfecdf7e3f",
+    "identityHash": "d5fe7c02376c203cd80e74b85d8814e5",
     "entities": [
       {
         "tableName": "pending_payments",
@@ -770,8 +770,14 @@
       },
       {
         "tableName": "entregas_kds_pendientes",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`sourceKey` TEXT NOT NULL, `venueId` TEXT NOT NULL, `stationId` TEXT NOT NULL, `mensajeJson` TEXT NOT NULL, `trabajoJson` TEXT NOT NULL, `creadaEnMillis` INTEGER NOT NULL, PRIMARY KEY(`sourceKey`))",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`entregaId` TEXT NOT NULL, `sourceKey` TEXT NOT NULL, `venueId` TEXT NOT NULL, `stationId` TEXT NOT NULL, `mensajeJson` TEXT NOT NULL, `trabajoJson` TEXT NOT NULL, `creadaEnMillis` INTEGER NOT NULL, `soltadaEnMillis` INTEGER, PRIMARY KEY(`entregaId`))",
         "fields": [
+          {
+            "fieldPath": "entregaId",
+            "columnName": "entregaId",
+            "affinity": "TEXT",
+            "notNull": true
+          },
           {
             "fieldPath": "sourceKey",
             "columnName": "sourceKey",
@@ -807,12 +813,17 @@
             "columnName": "creadaEnMillis",
             "affinity": "INTEGER",
             "notNull": true
+          },
+          {
+            "fieldPath": "soltadaEnMillis",
+            "columnName": "soltadaEnMillis",
+            "affinity": "INTEGER"
           }
         ],
         "primaryKey": {
           "autoGenerate": false,
           "columnNames": [
-            "sourceKey"
+            "entregaId"
           ]
         }
       },
@@ -878,7 +889,7 @@
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'b0ff6457175e6e21a7fa9cdfecdf7e3f')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, 'd5fe7c02376c203cd80e74b85d8814e5')"
     ]
   }
 }

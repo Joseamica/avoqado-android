@@ -57,8 +57,9 @@ class EntregaPorWifiTest {
         coVerifyOrder {
             dao.guardar(any())
             cliente.entregar(pantallaBarra, any(), any())
-            dao.borrar("sale:ext-1:st_barra")
+            dao.borrar("sale:ext-1:st_barra|")
         }
+        assertEquals("sale:ext-1:st_barra|", guardada.captured.entregaId)
         assertEquals("sale:ext-1:st_barra", guardada.captured.sourceKey)
         assertEquals("venue-1", guardada.captured.venueId)
         assertEquals(42L, guardada.captured.creadaEnMillis)
@@ -98,11 +99,49 @@ class EntregaPorWifiTest {
         assertEquals(setOf("st_barra"), entrega.entregar(listOf(EntregaKds(mensaje("st_barra"), trabajo))))
     }
 
+    /** Sólo las guardadas tienen fila: la de impresora + pantalla (sin trabajo de respaldo) nunca se escribió. */
     @Test
     fun `cerrar borra las filas de ese despacho`() = runTest {
         entrega.cerrar(listOf(EntregaKds(mensaje("st_barra"), trabajo), EntregaKds(mensaje("st_postres"), null)))
-        coVerify(exactly = 1) { dao.borrar("sale:ext-1:st_barra") }
-        coVerify(exactly = 1) { dao.borrar("sale:ext-1:st_postres") }
+        coVerify(exactly = 1) { dao.borrar("sale:ext-1:st_barra|") }
+        coVerify(exactly = 1) { dao.borrar(any()) }
+    }
+
+    @Test
+    fun `entregaId es el folio mas los renglones del plan, ordenados`() {
+        val plan = TicketPlan(
+            "st_cocina", false,
+            listOf(ConsolidatedLine("Taco", 2, emptyList(), null, listOf("oi_3", "oi_1")), ConsolidatedLine("Sopa", 1, emptyList(), null, listOf("oi_2"))),
+        )
+        val e = EntregaKds(mensaje("st_cocina").copy(sourceKey = "round:r1:st_cocina"), trabajo.copy(planes = listOf(plan)))
+        assertEquals("round:r1:st_cocina|oi_1,oi_2,oi_3", e.entregaId)
+        assertEquals(null, EntregaKds(mensaje("st_cocina"), trabajoDeRespaldo = null).entregaId)
+    }
+
+    /** N1: dos cursos de una ronda van al MISMO folio; cada uno es su propia entrega y su propia fila. */
+    @Test
+    fun `P1 dos cursos de la misma ronda se guardan como DOS entregas`() = runTest {
+        coEvery { cliente.entregar(any(), any(), any()) } returns false
+        val guardadas = mutableListOf<EntregaKdsPendienteEntity>()
+        coEvery { dao.guardar(capture(guardadas)) } returns Unit
+        fun curso(oi: String) = EntregaKds(
+            mensaje("st_barra").copy(sourceKey = "round:r1:st_barra"),
+            trabajo.copy(planes = listOf(TicketPlan("st_barra", false, listOf(ConsolidatedLine("Café", 1, emptyList(), null, listOf(oi)))))),
+        )
+
+        entrega.entregar(listOf(curso("oi_1")))
+        entrega.entregar(listOf(curso("oi_2")))
+
+        assertEquals(listOf("round:r1:st_barra|oi_1", "round:r1:st_barra|oi_2"), guardadas.map { it.entregaId })
+        assertEquals(listOf("round:r1:st_barra", "round:r1:st_barra"), guardadas.map { it.sourceKey })
+    }
+
+    /** N2: el despacho vivo suelta la fila cuyo papel no salió; sólo las guardadas (con trabajo de respaldo). */
+    @Test
+    fun `soltar pone la hora en las entregas guardadas`() = runTest {
+        entrega.soltar(listOf(EntregaKds(mensaje("st_barra"), trabajo), EntregaKds(mensaje("st_postres"), null)), ahora = 99L)
+        coVerify(exactly = 1) { dao.soltar("sale:ext-1:st_barra|", 99L) }
+        coVerify(exactly = 1) { dao.soltar(any(), any()) }
     }
 
     /** Ronda 1 (I2): el papel de respaldo que sale DESPUÉS («Volver a imprimir», el reloj de la libreta) cierra SU fila. */
@@ -111,6 +150,7 @@ class EntregaPorWifiTest {
         val planBarra = TicketPlan("st_barra", false, listOf(ConsolidatedLine("Café", 1, emptyList(), null, listOf("oi_2"))))
         val otraRonda = TicketPlan("st_barra", false, listOf(ConsolidatedLine("Café", 1, emptyList(), null, listOf("oi_9"))))
         fun fila(folio: String, orden: String, plan: TicketPlan) = EntregaKdsPendienteEntity(
+            entregaId = "$folio|${plan.lines.flatMap { it.orderItemIds }.joinToString(",")}",
             sourceKey = folio, venueId = "venue-1", stationId = "st_barra", mensajeJson = "{}",
             trabajoJson = Json.encodeToString(TrabajoPendiente.serializer(), trabajo.copy(orderNumber = orden, planes = listOf(plan))),
             creadaEnMillis = 1,
@@ -124,7 +164,7 @@ class EntregaPorWifiTest {
 
         entrega.cerrarPorPapel("venue-1", "1234", listOf(planBarra))
 
-        coVerify(exactly = 1) { dao.borrar("round:r1:st_barra") }
+        coVerify(exactly = 1) { dao.borrar("round:r1:st_barra|oi_2") }
         coVerify(exactly = 1) { dao.borrar(any()) }
     }
 }

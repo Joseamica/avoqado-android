@@ -1,5 +1,9 @@
 package com.avoqado.pos.core.data.lan
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertFalse
@@ -88,5 +92,28 @@ class ClienteDeComandasTest {
         val inicio = System.currentTimeMillis()
         assertFalse(ClienteDeComandas().entregar(LanPeer("otro", "127.0.0.1", cerrado), mensaje))
         assertTrue(System.currentTimeMillis() - inicio < 1_500)
+    }
+
+    /**
+     * N4 de la revisión: si quien llama se cancela (se cerró la pantalla, se cayó el ámbito), el vigía cierra el socket
+     * YA — antes se cancelaba sin cerrar y la lectura seguía colgada del goteo, reteniendo al llamador ~6 s.
+     */
+    @Test
+    fun `P1 cancelar al que llama cierra el socket en el acto`() = runBlocking {
+        val ss = ServerSocket(0).also { servidores += it }
+        thread(isDaemon = true) {
+            runCatching {
+                ss.accept().use { s ->
+                    LineaAcotada.leer(BufferedInputStream(s.getInputStream()))
+                    repeat(20) { s.getOutputStream().run { write('x'.code); flush() }; Thread.sleep(300) }
+                }
+            }
+        }
+        val trabajo = launch(Dispatchers.Default) { ClienteDeComandas().entregar(LanPeer("otro", "127.0.0.1", ss.localPort), mensaje, presupuestoMs = 10_000) }
+        delay(400)
+        val inicio = System.currentTimeMillis()
+        trabajo.cancelAndJoin()
+        val tardo = System.currentTimeMillis() - inicio
+        assertTrue("tardó $tardo ms en soltar", tardo < 1_000)
     }
 }

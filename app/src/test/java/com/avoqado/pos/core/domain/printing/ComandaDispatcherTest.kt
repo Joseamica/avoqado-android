@@ -870,6 +870,8 @@ class ComandaDispatcherTest {
         assertTrue(resultado.isFailure)
         coVerify(exactly = 1) { entrega.entregar(any(), any()) }
         coVerify(exactly = 0) { entrega.cerrar(any()) }
+        // N2 (ronda 2): se SUELTA para que el reloj del replay la retome en este mismo proceso, sin esperar a reabrir.
+        coVerify(exactly = 1) { entrega.soltar(match { l -> l.map { it.mensaje.sourceKey } == listOf("sale:ext-1:st_barra") }, any()) }
     }
 
     @Test
@@ -898,6 +900,8 @@ class ComandaDispatcherTest {
 
         assertTrue(estado is EstadoDeComanda.NoSalio)
         assertEquals(listOf("sale:ext-1:st_barra"), cerradas.captured.map { it.mensaje.sourceKey })
+        // N2 (ronda 2): la que tronó se queda Y se suelta — el reloj del replay la retoma sin reabrir la app.
+        coVerify(exactly = 1) { entrega.soltar(match { l -> l.map { it.mensaje.sourceKey } == listOf("sale:ext-1:st_postres") }, any()) }
     }
 
     /** Decidida: sin impresora no hay papel que reintentar (reenviarla no le inventa una); su pantalla la verá por el servidor. */

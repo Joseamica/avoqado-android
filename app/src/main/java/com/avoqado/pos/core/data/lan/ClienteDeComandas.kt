@@ -33,10 +33,14 @@ class ClienteDeComandas @Inject constructor() {
     /** Una conexión = una línea = una respuesta. `null` = sin respuesta dentro del presupuesto (o ilegible/excesiva). */
     suspend fun enviar(peer: LanPeer, linea: String, presupuestoMs: Long = PRESUPUESTO_MS): String? = coroutineScope {
         val socket = Socket()
-        // En `Dispatchers.IO` a propósito: ahí `delay` es reloj real también dentro de `runTest`.
+        // En `Dispatchers.IO` a propósito: ahí `delay` es reloj real también dentro de `runTest`. El cierre va en `finally`
+        // (N4 de la revisión): si quien llama se cancela, el vigía se cancela CERRANDO — sin eso la lectura seguía colgada.
         val vigia = launch(Dispatchers.IO) {
-            delay(presupuestoMs)
-            runCatching { socket.close() }
+            try {
+                delay(presupuestoMs)
+            } finally {
+                runCatching { socket.close() }
+            }
         }
         try {
             withContext(Dispatchers.IO) {

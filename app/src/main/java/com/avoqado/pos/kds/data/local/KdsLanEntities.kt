@@ -20,13 +20,25 @@ import kotlinx.serialization.json.Json
  */
 @Entity(tableName = "entregas_kds_pendientes")
 data class EntregaKdsPendienteEntity(
-    @PrimaryKey val sourceKey: String,
+    /**
+     * Ronda 2 de la Task 6 (N1): UNA fila por PLAN — `<sourceKey>|<orderItemIds del plan, ordenados, con coma>`
+     * (`entregaIdDe` en `EntregaPorWifi.kt`). Los cursos de una ronda comparten `sourceKey`; con él de llave, el `REPLACE`
+     * del curso 2 pisaba la fila del curso 1 aún sin decidir.
+     */
+    @PrimaryKey val entregaId: String,
+    /** El folio (para la marca `FALLBACK_PRINTED`). Ninguna consulta filtra por él: sin índice. */
+    val sourceKey: String,
     val venueId: String,
     val stationId: String,
     /** La línea `comanda` tal cual se manda (`KdsLanProtocol.encode`). */
     val mensajeJson: String,
     val trabajoJson: String,
     val creadaEnMillis: Long,
+    /**
+     * Ronda 2 (N2): `null` = un despacho de este proceso la está decidiendo. Con hora = su despacho terminó y el papel NO
+     * salió: el reloj de `ReplayDeEntregasKds` la toma sin esperar a que se reabra la app.
+     */
+    val soltadaEnMillis: Long? = null,
 )
 
 /**
@@ -55,9 +67,9 @@ internal object KdsLanSql {
     /** 🔴 En el formato EXACTO que Room genera para [EntregaKdsPendienteEntity] (lo vigila `KdsLanMigracionTest`). */
     const val CREAR_ENTREGAS: String =
         "CREATE TABLE IF NOT EXISTS `entregas_kds_pendientes` (" +
-            "`sourceKey` TEXT NOT NULL, `venueId` TEXT NOT NULL, `stationId` TEXT NOT NULL, " +
+            "`entregaId` TEXT NOT NULL, `sourceKey` TEXT NOT NULL, `venueId` TEXT NOT NULL, `stationId` TEXT NOT NULL, " +
             "`mensajeJson` TEXT NOT NULL, `trabajoJson` TEXT NOT NULL, `creadaEnMillis` INTEGER NOT NULL, " +
-            "PRIMARY KEY(`sourceKey`))"
+            "`soltadaEnMillis` INTEGER, PRIMARY KEY(`entregaId`))"
 
     /** 🔴 En el formato EXACTO que Room genera para [KdsTicketLocalEntity]. */
     const val CREAR_TICKETS: String =
@@ -70,7 +82,10 @@ internal object KdsLanSql {
     const val ENTREGAS_DEL_VENUE: String =
         "SELECT * FROM entregas_kds_pendientes WHERE venueId = :venueId ORDER BY creadaEnMillis ASC, sourceKey ASC"
 
-    const val BORRAR_ENTREGA: String = "DELETE FROM entregas_kds_pendientes WHERE sourceKey = :sourceKey"
+    const val BORRAR_ENTREGA: String = "DELETE FROM entregas_kds_pendientes WHERE entregaId = :entregaId"
+
+    /** Ronda 2 (N2): el despacho vivo terminó sin papel para esta entrega; el reloj del replay ya la puede tomar. */
+    const val SOLTAR_ENTREGA: String = "UPDATE entregas_kds_pendientes SET soltadaEnMillis = :ahora WHERE entregaId = :entregaId"
 
     const val TICKET_POR_FOLIO: String = "SELECT * FROM kds_tickets_locales WHERE sourceKey = :sourceKey"
 
@@ -115,7 +130,7 @@ internal fun unirItemsJson(previos: String, nuevos: String): String {
 
 @Dao
 interface EntregasKdsPendientesDao {
-    /** `REPLACE`: el mismo folio (un reintento del despacho) refresca la fila. */
+    /** `REPLACE`: la misma entrega (mismo folio y mismos renglones) refresca la fila; otro curso es otra fila. */
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun guardar(fila: EntregaKdsPendienteEntity)
 
@@ -123,7 +138,10 @@ interface EntregasKdsPendientesDao {
     suspend fun delVenue(venueId: String): List<EntregaKdsPendienteEntity>
 
     @Query(KdsLanSql.BORRAR_ENTREGA)
-    suspend fun borrar(sourceKey: String): Int
+    suspend fun borrar(entregaId: String): Int
+
+    @Query(KdsLanSql.SOLTAR_ENTREGA)
+    suspend fun soltar(entregaId: String, ahora: Long): Int
 }
 
 @Dao

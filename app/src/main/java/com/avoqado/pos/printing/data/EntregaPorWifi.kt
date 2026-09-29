@@ -21,7 +21,18 @@ import javax.inject.Singleton
 private const val TAG = "EntregaPorWifi"
 
 /** Una entrega por WiFi: el mensaje y, si la estación es «sólo pantalla», el trabajo de papel que sale si nadie acusa. */
-data class EntregaKds(val mensaje: KdsComanda, val trabajoDeRespaldo: TrabajoPendiente?)
+data class EntregaKds(val mensaje: KdsComanda, val trabajoDeRespaldo: TrabajoPendiente?) {
+    /** La llave de su fila (ronda 2, N1), o `null` si no se guarda (impresora + pantalla: sin trabajo de respaldo). */
+    val entregaId: String? get() = trabajoDeRespaldo?.let { entregaIdDe(mensaje.sourceKey, it.planes) }
+}
+
+/**
+ * Ronda 2 (N1): UNA fila por PLAN — `<folio>|<orderItemIds del plan, ordenados, separados por coma>`. Los cursos de una
+ * ronda comparten folio (`round:<llave>:<estación>`); con el folio de llave, el `REPLACE` del curso 2 pisaba la fila
+ * aún sin decidir del curso 1, y si los dos papeles fallaban el curso 1 no quedaba en ningún lado.
+ */
+internal fun entregaIdDe(sourceKey: String, planes: List<TicketPlan>): String =
+    sourceKey + "|" + planes.flatMap { p -> p.lines.flatMap { it.orderItemIds } }.sorted().joinToString(",")
 
 /**
  * Etapa 3 del KDS (3.5, D5/D7) — la caja le empuja las comandas a las pantallas del local: GUARDA primero (las que
@@ -47,6 +58,7 @@ class EntregaPorWifi @Inject constructor(
             sinTumbar("No se pudo guardar la entrega ${e.mensaje.sourceKey}") {
                 dao.guardar(
                     EntregaKdsPendienteEntity(
+                        entregaId = entregaIdDe(e.mensaje.sourceKey, trabajo.planes),
                         sourceKey = e.mensaje.sourceKey, venueId = e.mensaje.venueId, stationId = e.mensaje.stationId,
                         mensajeJson = KdsLanProtocol.encode(e.mensaje),
                         trabajoJson = json.encodeToString(TrabajoPendiente.serializer(), trabajo),
@@ -58,7 +70,7 @@ class EntregaPorWifi @Inject constructor(
         val acusadas = coroutineScope {
             entregas.map { e -> async { if (empujar(e.mensaje)) e.mensaje.stationId else null } }.awaitAll()
         }.filterNotNull().toSet()
-        for (e in entregas) if (e.mensaje.stationId in acusadas) sinTumbar("No se pudo borrar ${e.mensaje.sourceKey}") { dao.borrar(e.mensaje.sourceKey) }
+        for (e in entregas) if (e.mensaje.stationId in acusadas) borrar(e)
         Log.d(TAG, "📡 Empujadas ${entregas.size} · acusaron $acusadas")
         return acusadas
     }
@@ -79,7 +91,23 @@ class EntregaPorWifi @Inject constructor(
 
     /** Las filas de ESTE despacho ya se decidieron (el papel salió, o se decidió que no hacía falta): se borran. */
     suspend fun cerrar(entregas: List<EntregaKds>) {
-        for (e in entregas) sinTumbar("No se pudo borrar ${e.mensaje.sourceKey}") { dao.borrar(e.mensaje.sourceKey) }
+        for (e in entregas) borrar(e)
+    }
+
+    /**
+     * Ronda 2 (N2): el despacho vivo terminó y el papel de estas NO salió — se quedan, SOLTADAS con su hora. El reloj de
+     * [ReplayDeEntregasKds] las toma en su siguiente tic, sin esperar a que se reabra la app.
+     */
+    suspend fun soltar(entregas: List<EntregaKds>, ahora: Long = System.currentTimeMillis()) {
+        for (e in entregas) {
+            val id = e.entregaId ?: continue
+            sinTumbar("No se pudo soltar la entrega $id") { dao.soltar(id, ahora) }
+        }
+    }
+
+    private suspend fun borrar(e: EntregaKds) {
+        val id = e.entregaId ?: return // sin trabajo de respaldo nunca se guardó
+        sinTumbar("No se pudo borrar la entrega $id") { dao.borrar(id) }
     }
 
     /**
@@ -93,7 +121,7 @@ class EntregaPorWifi @Inject constructor(
             for (fila in dao.delVenue(venueId)) {
                 val trabajo = runCatching { json.decodeFromString(TrabajoPendiente.serializer(), fila.trabajoJson) }.getOrNull() ?: continue
                 if (trabajo.orderNumber == orderNumber && trabajo.planes.isNotEmpty() && trabajo.planes.all { it in planes }) {
-                    dao.borrar(fila.sourceKey)
+                    dao.borrar(fila.entregaId)
                 }
             }
         }

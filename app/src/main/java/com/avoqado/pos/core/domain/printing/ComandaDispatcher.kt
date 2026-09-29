@@ -291,25 +291,33 @@ class ComandaDispatcher @Inject constructor(
         // (todas las líneas con `quantity <= 0`) y regresa `null` sin avisar — cambio aceptado, iOS trae la misma guarda.
         if (reparto.aImprimir.isEmpty()) return null
         // 🔴 Ronda 1 (I2): SIN `finally`. Si `insistir` truena (el bind AIDL, el callback del llamador) o se cancela, las
-        // filas se QUEDAN: no salió papel ni quedó nada en la libreta, y el replay al abrir es lo único que las recupera.
-        val estado = reintentoDeComanda.insistir(
-            plans = reparto.aImprimir,
-            // La config CONGELADA del trabajo lleva marcadas las estaciones de respaldo: `ComandaPrinter` les pone su
-            // encabezado y su impresora, y `TrabajoPendiente` lo conserva para cualquier reintento.
-            config = KitchenDeliveryPolicy.conRespaldo(config, reparto.respaldo),
-            orderNumber = orderNumber,
-            orderType = orderType,
-            serverName = serverName,
-            // COMBOS — el nombre viaja aparte del motor de ruteo (que es espejo byte a byte
-            // del server y no sabe de promociones) y se vuelve a atar por `orderItemId` ya
-            // ruteado, para que cada estación encabece SUS productos con su combo.
-            comboNames = comboNames,
-            maxIntentos = maxIntentos,
-            // «La libreta» (Task 16) — el MISMO venueId que ya se usa arriba para el refresh.
-            venueId = venueId,
-            orderId = orderId,
-            alCambiarEstado = alCambiarEstado,
-        )
+        // filas se QUEDAN: no salió papel ni quedó nada en la libreta. Ronda 2 (N2): si truena, además se SUELTAN para
+        // que el reloj del replay las retome en este mismo proceso; si se cancela, las toma la próxima apertura.
+        val estado = try {
+            reintentoDeComanda.insistir(
+                plans = reparto.aImprimir,
+                // La config CONGELADA del trabajo lleva marcadas las estaciones de respaldo: `ComandaPrinter` les pone su
+                // encabezado y su impresora, y `TrabajoPendiente` lo conserva para cualquier reintento.
+                config = KitchenDeliveryPolicy.conRespaldo(config, reparto.respaldo),
+                orderNumber = orderNumber,
+                orderType = orderType,
+                serverName = serverName,
+                // COMBOS — el nombre viaja aparte del motor de ruteo (que es espejo byte a byte
+                // del server y no sabe de promociones) y se vuelve a atar por `orderItemId` ya
+                // ruteado, para que cada estación encabece SUS productos con su combo.
+                comboNames = comboNames,
+                maxIntentos = maxIntentos,
+                // «La libreta» (Task 16) — el MISMO venueId que ya se usa arriba para el refresh.
+                venueId = venueId,
+                orderId = orderId,
+                alCambiarEstado = alCambiarEstado,
+            )
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            entregaPorWifi?.soltar(entregas.filter { it.entregaId != null && it.mensaje.stationId !in acusadas })
+            throw e
+        }
         if (reparto.respaldo.isNotEmpty()) {
             marcarPapelDeRespaldo(venueId, reparto.respaldo, config, estado, origenDelFolio, orderNumber)
         }
@@ -322,15 +330,15 @@ class ComandaDispatcher @Inject constructor(
      * aquí se cierran las de respaldo cuyo papel SALIÓ y las de una estación SIN impresora (insistir no le inventa una:
      * reintentarla en cada apertura sólo repetiría el mismo «no hay impresora»; su pantalla la verá por el servidor).
      * La que TRONÓ se queda: va en el `NoSalio` que el llamador guarda en la libreta, y la cierra el papel cuando por fin
-     * sale ([reintentar] → [EntregaPorWifi.cerrarPorPapel]); si el proceso muere antes, la retoma el replay al abrir.
+     * sale ([reintentar] → [EntregaPorWifi.cerrarPorPapel]). Ronda 2 (N2): además se SUELTA, para que el reloj del
+     * replay la retome en este mismo proceso si la libreta la pierde (su única ranura la pisa otra falla).
      */
     private suspend fun cerrarLasDecididas(entregas: List<EntregaKds>, acusadas: Set<String>, estado: EstadoDeComanda) {
         val tronaron = (estado as? EstadoDeComanda.NoSalio)?.trabajo?.planes.orEmpty()
-        val decididas = entregas.filter { e ->
-            val respaldo = e.trabajoDeRespaldo ?: return@filter false // impresora + pantalla: nunca se guardó
-            e.mensaje.stationId !in acusadas && respaldo.planes.none { it in tronaron }
-        }
+        val guardadas = entregas.filter { e -> e.trabajoDeRespaldo != null && e.mensaje.stationId !in acusadas }
+        val (retenidas, decididas) = guardadas.partition { e -> e.trabajoDeRespaldo!!.planes.any { it in tronaron } }
         if (decididas.isNotEmpty()) entregaPorWifi?.cerrar(decididas)
+        if (retenidas.isNotEmpty()) entregaPorWifi?.soltar(retenidas)
     }
 
     /** Una entrega por plan con pantalla (D6). Trabajo de respaldo SÓLO para «sólo pantalla»: impresora+pantalla imprime su papel de todos modos. */

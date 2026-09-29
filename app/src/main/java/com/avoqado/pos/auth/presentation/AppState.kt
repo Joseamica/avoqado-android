@@ -84,6 +84,7 @@ class AppState @Inject constructor(
     private fun detenerRedLocal() {
         if (::lanHubService.isInitialized) lanHubService.stop()
         if (::transporteLan.isInitialized) transporteLan.detener()
+        if (::replayDeEntregasKds.isInitialized) replayDeEntregasKds.detener()
     }
 
     private fun notifyDeviceSessionChanged() {
@@ -130,14 +131,10 @@ class AppState @Inject constructor(
             // Etapa 3 del KDS (3.5, D12): la red local sigue a la sucursal. Idempotente por venue; con otra reinicia.
             if (::lanHubService.isInitialized) lanHubService.sincronizarVenue(venueId)
             if (::transporteLan.isInitialized) transporteLan.iniciar(venueId)
-            if (::replayDeEntregasKds.isInitialized) {
-                viewModelScope.launch {
-                    // Cinturón (I1 de la revisión): el replay ya no lanza, pero una excepción suelta en este ámbito tumba la
-                    // app al abrir — y en cada apertura, si la causa sigue en disco.
-                    runCatching { replayDeEntregasKds.reproducirAlAbrir(venueId) }
-                        .onFailure { android.util.Log.w("AppState", "El replay de entregas KDS tropezó: ${it.message}") }
-                }
-            }
+            // Ronda 2 (N2): una pasada al abrir y otra cada minuto, como el reloj de la libreta. Idempotente: con otra
+            // sucursal sólo cambia a cuál apunta. Su lazo atrapa todo menos la cancelación (N6: al cerrar sesión no hay
+            // «tropezó» falso).
+            if (::replayDeEntregasKds.isInitialized) replayDeEntregasKds.iniciar(viewModelScope, venueId)
         }
     }
 
