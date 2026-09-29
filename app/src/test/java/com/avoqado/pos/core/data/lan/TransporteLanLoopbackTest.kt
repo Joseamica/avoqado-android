@@ -282,6 +282,31 @@ class TransporteLanLoopbackTest {
         assertFalse("desactivar y volver a activar invalida el acuse aunque la estación coincida: $respuesta", KdsLanProtocol.esAcuse(respuesta, "sale:ext-1:st_barra"))
     }
 
+    /**
+     * M2 (revisión final, 8b OOS4): cambiar de sucursal en la tablet de cocina reinicia el transporte (`detener` +
+     * `iniciar`) con el receptor todavía enganchado a la MISMA estación. Un guardado que cruzaba ese reinicio conservaba
+     * su acuse y la fila quedaba bajo la sucursal vieja, donde nadie la ve. `detener` sube la generación: sin acuse, la caja
+     * imprime el papel.
+     */
+    @Test
+    fun `P1 M2 reiniciar el transporte mientras se guarda NO acusa`() = runBlocking {
+        val guardadas = mutableListOf<String>()
+        transporte.iniciar("venue-1")
+        transporte.activarReceptor(setOf("st_barra")) { c ->
+            guardadas += c.sourceKey
+            transporte.detener() // cambio de sucursal: el receptor sigue puesto con la misma estación
+            transporte.iniciar("venue-2")
+            true
+        }
+        val puerto = esperarPuerto()
+
+        val barra = KdsComanda(venueId = "venue-1", deviceId = "otro", sourceKey = "sale:ext-1:st_barra", stationId = "st_barra", orderNumber = "1", orderType = "En tienda", createdAtMillis = 1, items = emptyList())
+        val respuesta = enviarLinea(puerto, KdsLanProtocol.encode(barra))
+
+        assertEquals("se guardó", listOf("sale:ext-1:st_barra"), guardadas)
+        assertFalse("reiniciar el transporte invalida el acuse: $respuesta", KdsLanProtocol.esAcuse(respuesta, "sale:ext-1:st_barra"))
+    }
+
     @Test
     fun `P1 una linea de mas de 64 KiB se corta sin responder`() = runBlocking {
         transporte.iniciar("venue-1")

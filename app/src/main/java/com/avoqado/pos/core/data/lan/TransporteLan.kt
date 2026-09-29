@@ -85,8 +85,9 @@ class TransporteLan @Inject constructor(
     @Volatile private var receptor: (suspend (KdsComanda) -> Boolean)? = null
 
     /**
-     * Task 8b (paridad iOS `RuteoLan.generacion`): sube SÓLO al desactivar el receptor o al cambiar de estación —
-     * nunca al re-enganchar la MISMA estación con el receptor ya puesto. `ReceptorDeComandas.activar` crea una lambda
+     * Task 8b (paridad iOS `RuteoLan.generacion`): sube SÓLO al desactivar el receptor, al cambiar de estación o al
+     * reiniciar el transporte ([detener], M2 de la revisión final) — nunca al re-enganchar la MISMA estación con el
+     * receptor ya puesto. `ReceptorDeComandas.activar` crea una lambda
      * NUEVA en cada sondeo de rutina; comparar su identidad (`receptor === r`) le quitaba el acuse a un guardado que
      * cruzaba con esa re-activación (papel de más sin motivo). El acuse compara esto, no la lambda.
      */
@@ -145,6 +146,10 @@ class TransporteLan @Inject constructor(
     fun detener() {
         configJob?.cancel(); configJob = null
         racha.limpiar() // otra sesión u otra sucursal empieza de cero
+        // M2 (revisión final, 8b OOS4): un guardado que cruza el reinicio (cambio de sucursal en la tablet de cocina,
+        // cierre de sesión) ya no es de esta pantalla aunque el receptor siga puesto con la MISMA estación: sin acuse, la
+        // caja saca el papel. Sin esto se acusaba y la fila quedaba bajo la sucursal vieja, donde nadie la ve.
+        generacion++
         apagarRed()
         venueId = null
     }
