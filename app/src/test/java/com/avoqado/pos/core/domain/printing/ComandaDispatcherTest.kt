@@ -30,6 +30,9 @@ import io.mockk.slot
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.test.runCurrent
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.Json
@@ -980,5 +983,27 @@ class ComandaDispatcherTest {
 
         coVerify(exactly = 1) { entrega.cerrarPorPapel("venue-1", "1234", listOf(planBarra)) }
         coVerify(exactly = 1) { entrega.cerrarPorPapel(any(), any(), any()) }
+    }
+
+    /**
+     * Ronda 3 (la duda 2 de la ronda 2): un despacho CANCELADO a media impresión (se cayó su ámbito) también SUELTA sus
+     * filas — bajo `NonCancellable` — para que el reloj del replay las retome en este mismo proceso.
+     */
+    @Test
+    fun `P1 si el despacho se cancela a media impresion sus filas se sueltan`() = runTest {
+        every { printConfigRepository.getCurrentConfig() } returns conBarraSoloPantalla
+        coEvery { comandaPrinter.printComandas(any(), any(), any(), any(), any()) } coAnswers { kotlinx.coroutines.awaitCancellation() }
+
+        val despacho = launch {
+            despachadorConCola().dispatch(
+                venueId = "venue-1", lines = listOf(cafe), orderNumber = "1234", orderType = "En tienda",
+                servidorLaTiene = true, origenDelFolio = "sale:ext-1",
+            )
+        }
+        runCurrent()
+        despacho.cancelAndJoin()
+
+        coVerify(exactly = 0) { entrega.cerrar(any()) }
+        coVerify(exactly = 1) { entrega.soltar(match { l -> l.map { it.mensaje.sourceKey } == listOf("sale:ext-1:st_barra") }, any()) }
     }
 }

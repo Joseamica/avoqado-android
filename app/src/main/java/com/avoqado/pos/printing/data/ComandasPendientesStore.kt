@@ -2,6 +2,11 @@ package com.avoqado.pos.printing.data
 
 import android.content.Context
 import android.util.Log
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -38,7 +43,15 @@ class ComandasPendientesStore @Inject constructor(
      * quedaría sin una sola prueba.
      */
     private val almacen: AlmacenDeTexto,
+    /**
+     * Etapa 3 del KDS (3.5), ronda 3 de la Task 6: con qué se cierran las entregas por WiFi de una comanda que una
+     * persona dio por resuelta ([yaLaCante]). Hilt SIEMPRE la inyecta. ponytail: opcional porque ~20 pruebas construyen
+     * el almacén con un solo argumento; sin ella «Ya la canté» sólo suelta la libreta, como antes.
+     */
+    private val entregaPorWifi: EntregaPorWifi? = null,
 ) {
+    /** Donde corre el cierre de [yaLaCante]: el toque es de la pantalla, el borrado es de la base. */
+    private val fondo = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val json = Json { ignoreUnknownKeys = true }
 
     private val _pendiente = MutableStateFlow<EstadoDeComanda.NoSalio?>(null)
@@ -145,6 +158,28 @@ class ComandasPendientesStore @Inject constructor(
             orderNumber = guardada.orderNumber,
             trabajo = guardada.trabajo,
         )
+    }
+
+    /**
+     * «Ya la canté» (I2 de la revisión de la Task 7): una PERSONA resolvió la comanda. Se suelta la libreta Y se cierran
+     * las entregas por WiFi del papel de RESPALDO de esa comanda (venue + orden + plan exacto, como `cerrarPorPapel`): si
+     * no, el reloj de `ReplayDeEntregasKds` la imprimiría sola en el siguiente tic o en la próxima apertura — el ticket
+     * duplicado que esta libreta existe para evitar.
+     *
+     * 🔴 NO va dentro de [limpiar]: `limpiar` también lo llama un `Salio` de OTRA venta y el reloj de la libreta; cerrar
+     * ahí borraría la fila que recupera la comanda de una ronda de mesa en la próxima apertura (pérdida, no duplicado).
+     *
+     * @return el cierre en curso (las pruebas lo esperan), o `null` si no había nada que cerrar.
+     */
+    fun yaLaCante(): Job? {
+        val trabajo = _pendiente.value?.trabajo
+        limpiar()
+        val entregas = entregaPorWifi ?: return null
+        val venueId = trabajo?.venueId ?: return null
+        val respaldo = trabajo.config.stations.filter { it.respaldoLocal }.map { it.id }.toSet()
+        val planes = trabajo.planes.filter { it.stationId in respaldo }
+        if (planes.isEmpty()) return null
+        return fondo.launch { entregas.cerrarPorPapel(venueId, trabajo.orderNumber, planes) }
     }
 
     fun limpiar() {

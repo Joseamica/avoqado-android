@@ -1,6 +1,7 @@
 package com.avoqado.pos.printing.data
 
 import com.avoqado.pos.printing.routing.ConsolidatedLine
+import com.avoqado.pos.printing.routing.KitchenDeliveryPolicy
 import com.avoqado.pos.printing.routing.PrintConfig
 import com.avoqado.pos.printing.routing.PrinterInfo
 import com.avoqado.pos.printing.routing.StationInfo
@@ -11,6 +12,9 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import io.mockk.coVerify
+import io.mockk.mockk
+import kotlinx.coroutines.runBlocking
 
 /** Almacén en memoria — la costura que permite probar esto sin Robolectric. */
 private class AlmacenFalso(var texto: String? = null) : AlmacenDeTexto {
@@ -232,5 +236,49 @@ class ComandasPendientesStoreTest {
         val sinCargar = ComandasPendientesStore(AlmacenFalso())
         assertTrue(sinCargar.guardar(deOtraSucursal, ahora))
         assertEquals(deOtraSucursal, sinCargar.pendiente.value)
+    }
+
+    // MARK: - Etapa 3 del KDS (3.5), ronda 3 de la Task 6 (I2 de la revisión de la Task 7)
+
+    /**
+     * «Ya la canté»: una PERSONA resolvió la comanda. Además de soltar la libreta, se cierran las entregas por WiFi de ESE
+     * papel de respaldo (venue + orden + plan exacto): si no, el reloj del replay la imprimiría sola en el siguiente tic o
+     * en la próxima apertura — el duplicado que esta libreta existe para evitar.
+     */
+    @Test
+    fun `P1 ya la cante suelta la libreta y cierra las entregas del respaldo de ESA comanda`() = runBlocking {
+        val entrega = mockk<EntregaPorWifi>(relaxed = true)
+        val planCocina = TicketPlan("st_cocina", false, listOf(ConsolidatedLine("Taco", 1, emptyList(), null, listOf("oi_9"))))
+        val conRespaldo = fallo.copy(
+            trabajo = fallo.trabajo!!.copy(
+                planes = listOf(plan, planCocina),
+                config = KitchenDeliveryPolicy.conRespaldo(config, listOf("st_barra")),
+            ),
+        )
+        val store = ComandasPendientesStore(AlmacenFalso(), entrega)
+        store.cargar("venue-1", ahora)
+        assertTrue(store.guardar(conRespaldo, ahora))
+
+        store.yaLaCante()?.join()
+
+        assertNull(store.pendiente.value)
+        // Sólo el plan de la estación de RESPALDO: las demás nunca tuvieron fila.
+        coVerify(exactly = 1) { entrega.cerrarPorPapel("venue-1", "ORD-42", listOf(plan)) }
+    }
+
+    /**
+     * 🔴 `limpiar()` NO cierra entregas: también lo llama un `Salio` de OTRA venta (y el reloj de la libreta). Cerrar ahí
+     * borraría la fila que recupera la comanda de una ronda de mesa en la próxima apertura.
+     */
+    @Test
+    fun `limpiar no cierra entregas`() {
+        val entrega = mockk<EntregaPorWifi>(relaxed = true)
+        val store = ComandasPendientesStore(AlmacenFalso(), entrega)
+        store.cargar("venue-1", ahora)
+        store.guardar(fallo.copy(trabajo = fallo.trabajo!!.copy(config = KitchenDeliveryPolicy.conRespaldo(config, listOf("st_barra")))), ahora)
+
+        store.limpiar()
+
+        coVerify(exactly = 0) { entrega.cerrarPorPapel(any(), any(), any()) }
     }
 }

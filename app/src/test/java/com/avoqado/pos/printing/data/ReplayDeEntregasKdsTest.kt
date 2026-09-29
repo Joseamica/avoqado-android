@@ -2,6 +2,7 @@ package com.avoqado.pos.printing.data
 
 import com.avoqado.pos.core.data.lan.KdsComanda
 import com.avoqado.pos.core.data.lan.KdsLanProtocol
+import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.sync.SyncOutbox
 import com.avoqado.pos.core.domain.printing.ComandaDispatcher
 import com.avoqado.pos.kds.data.local.EntregaKdsPendienteEntity
@@ -39,7 +40,10 @@ class ReplayDeEntregasKdsTest {
     private val pendientes = mockk<ComandasPendientesStore>(relaxed = true) {
         every { pendiente } returns MutableStateFlow<EstadoDeComanda.NoSalio?>(null)
     }
-    private val replay = ReplayDeEntregasKds(dao, entregaPorWifi, despachador, cola, pendientes)
+    /** La sucursal vigente (I1 de la revisión de la Task 7): las pruebas que la cambian a media pasada la re-stubbean. */
+    private var sucursalVigente = "venue-1"
+    private val secureStorage = mockk<SecureStorage>(relaxed = true) { every { venueId } answers { sucursalVigente } }
+    private val replay = ReplayDeEntregasKds(dao, entregaPorWifi, despachador, cola, pendientes, secureStorage)
 
     private val trabajo = TrabajoPendiente(
         planes = emptyList(), config = PrintConfig(), orderNumber = "1234", orderType = "En tienda",
@@ -262,6 +266,56 @@ class ReplayDeEntregasKdsTest {
         replay.reproducirAlAbrir("venue-1", ahora = 20 * 60_000)
 
         coVerify(exactly = 0) { despachador.reintentar(any(), any()) }
+        coVerify(exactly = 0) { dao.borrar(any()) }
+    }
+
+    // MARK: - Ronda 3 (I1 de la revisión de la Task 7): la sucursal se revalida en CADA fila
+
+    /**
+     * El dueño abre en la sucursal A y cambia a B mientras la pasada de A sigue: la fila siguiente de A se SUSPENDE (ni se
+     * imprime en la LAN de B, ni se refresca la config de impresión con la de A, ni se borra). La pasada termina; A la
+     * retoma cuando vuelva a ser la vigente.
+     */
+    @Test
+    fun `P1 si la sucursal cambia a media pasada la fila siguiente se suspende - ni se imprime ni se borra`() = runTest {
+        coEvery { dao.delVenue("venue-1") } returns listOf(fila("sale:uno:st_barra", 0), fila("sale:dos:st_barra", 0))
+        coEvery { despachador.reintentar(any(), any()) } coAnswers {
+            sucursalVigente = "venue-2"
+            EstadoDeComanda.Salio
+        }
+
+        replay.reproducirAlAbrir("venue-1", ahora = 20 * 60_000)
+
+        coVerify(exactly = 1) { despachador.reintentar(any(), any()) }
+        coVerify(exactly = 1) { dao.borrar("sale:uno:st_barra|") }
+        coVerify(exactly = 0) { dao.borrar("sale:dos:st_barra|") }
+        coVerify(exactly = 1) { cola.enqueue(any(), any(), any(), any(), any()) }
+    }
+
+    /** El cambio cae mientras se espera a la pantalla (hasta 3 s): tampoco se reimprime con la config de la otra sucursal. */
+    @Test
+    fun `P1 si la sucursal cambia mientras se espera a la pantalla no se reimprime`() = runTest {
+        coEvery { dao.delVenue("venue-1") } returns listOf(fila("sale:reciente:st_barra", 1_000))
+        coEvery { entregaPorWifi.empujar(any(), any()) } coAnswers {
+            sucursalVigente = "venue-2"
+            false
+        }
+
+        replay.reproducirAlAbrir("venue-1", ahora = 2_000)
+
+        coVerify(exactly = 0) { despachador.reintentar(any(), any()) }
+        coVerify(exactly = 0) { dao.borrar(any()) }
+    }
+
+    @Test
+    fun `una pasada de una sucursal que ya no es la vigente no toca nada`() = runTest {
+        sucursalVigente = "venue-2"
+        coEvery { dao.delVenue("venue-1") } returns listOf(fila("sale:vieja:st_barra", 0))
+
+        replay.reproducirAlAbrir("venue-1", ahora = 20 * 60_000)
+
+        coVerify(exactly = 0) { despachador.reintentar(any(), any()) }
+        coVerify(exactly = 0) { entregaPorWifi.empujar(any(), any()) }
         coVerify(exactly = 0) { dao.borrar(any()) }
     }
 }

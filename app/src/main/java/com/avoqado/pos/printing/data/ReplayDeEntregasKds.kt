@@ -2,6 +2,7 @@ package com.avoqado.pos.printing.data
 
 import android.util.Log
 import com.avoqado.pos.core.data.lan.KdsLanProtocol
+import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.sync.SyncIntentTypes
 import com.avoqado.pos.core.data.sync.SyncOutbox
 import com.avoqado.pos.core.domain.printing.ComandaDispatcher
@@ -44,6 +45,12 @@ class ReplayDeEntregasKds @Inject constructor(
     private val comandaDispatcher: ComandaDispatcher,
     private val syncOutbox: SyncOutbox,
     private val comandasPendientesStore: ComandasPendientesStore,
+    /**
+     * Ronda 3 (I1 de la revisión de la Task 7): la sucursal VIGENTE. Una pasada que se traslapa con un cambio de sucursal
+     * imprimiría las filas de A en la LAN de B (con la config de B, sin encabezado de respaldo) y su `reintentar` pisaría
+     * la config de impresión global con la de A. Por eso se revalida antes de CADA fila y antes de imprimir.
+     */
+    private val secureStorage: SecureStorage,
 ) {
     private val json = Json { ignoreUnknownKeys = true }
     private val candado = Mutex()
@@ -114,6 +121,7 @@ class ReplayDeEntregasKds @Inject constructor(
                 return
             }
             for (fila in filas) {
+                if (!sigueVigente(venueId)) return // las filas que faltan quedan SUSPENDIDAS: su sucursal las retoma
                 if (fila.creadaEnMillis >= arranqueDelProceso && fila.soltadaEnMillis == null) {
                     Log.d(TAG, "⏭️ ${fila.entregaId} es de un despacho en curso: se deja")
                     continue
@@ -158,6 +166,9 @@ class ReplayDeEntregasKds @Inject constructor(
             dao.borrar(fila.entregaId)
             return
         }
+        // I1: la espera a la pantalla (hasta 3 s + el empuje) da tiempo a un cambio de sucursal. `reintentar` refresca la
+        // config de impresión de ESTA sucursal e imprime en la LAN de la vigente: si ya no es ésta, la fila se suspende.
+        if (!sigueVigente(venueId)) return
         when (val estado = comandaDispatcher.reintentar(trabajo)) {
             is EstadoDeComanda.Salio -> {
                 marcar(venueId, fila.sourceKey, fila.stationId, trabajo.orderNumber)
@@ -177,6 +188,14 @@ class ReplayDeEntregasKds @Inject constructor(
             }
             else -> Unit
         }
+    }
+
+    /** I1: si la sucursal ya no es la vigente, se deja todo (nada se borra) y la pasada termina. */
+    private fun sigueVigente(venueId: String): Boolean {
+        val vigente = secureStorage.venueId
+        if (vigente == venueId) return true
+        Log.i(TAG, "🏬 La sucursal cambió ($venueId → $vigente): sus entregas quedan suspendidas hasta que vuelva")
+        return false
     }
 
     /** ¿La libreta guarda el papel de esta fila? Mismo venue, misma orden y el MISMO plan (renglón por renglón). */

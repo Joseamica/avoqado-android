@@ -50,7 +50,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import javax.inject.Inject
@@ -291,8 +293,8 @@ class ComandaDispatcher @Inject constructor(
         // (todas las líneas con `quantity <= 0`) y regresa `null` sin avisar — cambio aceptado, iOS trae la misma guarda.
         if (reparto.aImprimir.isEmpty()) return null
         // 🔴 Ronda 1 (I2): SIN `finally`. Si `insistir` truena (el bind AIDL, el callback del llamador) o se cancela, las
-        // filas se QUEDAN: no salió papel ni quedó nada en la libreta. Ronda 2 (N2): si truena, además se SUELTAN para
-        // que el reloj del replay las retome en este mismo proceso; si se cancela, las toma la próxima apertura.
+        // filas se QUEDAN: no salió papel ni quedó nada en la libreta. Rondas 2 y 3: además se SUELTAN para que el reloj
+        // del replay las retome en este mismo proceso — la cancelación, bajo `NonCancellable` (ya no hay ámbito vivo).
         val estado = try {
             reintentoDeComanda.insistir(
                 plans = reparto.aImprimir,
@@ -313,9 +315,10 @@ class ComandaDispatcher @Inject constructor(
                 alCambiarEstado = alCambiarEstado,
             )
         } catch (e: CancellationException) {
+            withContext(NonCancellable) { soltarSinPapel(entregas, acusadas) }
             throw e
         } catch (e: Exception) {
-            entregaPorWifi?.soltar(entregas.filter { it.entregaId != null && it.mensaje.stationId !in acusadas })
+            soltarSinPapel(entregas, acusadas)
             throw e
         }
         if (reparto.respaldo.isNotEmpty()) {
@@ -333,6 +336,12 @@ class ComandaDispatcher @Inject constructor(
      * sale ([reintentar] → [EntregaPorWifi.cerrarPorPapel]). Ronda 2 (N2): además se SUELTA, para que el reloj del
      * replay la retome en este mismo proceso si la libreta la pierde (su única ranura la pisa otra falla).
      */
+    /** El despacho no llegó a decidir el papel (truena o se cancela): todas sus filas guardadas sin acuse se sueltan. */
+    private suspend fun soltarSinPapel(entregas: List<EntregaKds>, acusadas: Set<String>) {
+        val guardadas = entregas.filter { it.entregaId != null && it.mensaje.stationId !in acusadas }
+        if (guardadas.isNotEmpty()) entregaPorWifi?.soltar(guardadas)
+    }
+
     private suspend fun cerrarLasDecididas(entregas: List<EntregaKds>, acusadas: Set<String>, estado: EstadoDeComanda) {
         val tronaron = (estado as? EstadoDeComanda.NoSalio)?.trabajo?.planes.orEmpty()
         val guardadas = entregas.filter { e -> e.trabajoDeRespaldo != null && e.mensaje.stationId !in acusadas }
