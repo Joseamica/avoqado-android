@@ -2,6 +2,8 @@ package com.avoqado.pos.printing.data
 
 import android.util.Log
 import com.avoqado.pos.core.data.lan.KdsLanProtocol
+import com.avoqado.pos.core.data.lan.RachaSinAcuse
+import com.avoqado.pos.core.data.lan.TransporteLan
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.sync.SyncIntentTypes
 import com.avoqado.pos.core.data.sync.SyncOutbox
@@ -51,6 +53,8 @@ class ReplayDeEntregasKds @Inject constructor(
      * la config de impresión global con la de A. Por eso se revalida antes de CADA fila y antes de imprimir.
      */
     private val secureStorage: SecureStorage,
+    /** M1 de la revisión de la Task 10: el acuse del replay limpia la racha de esa estación ([RachaSinAcuse]). */
+    private val transporte: TransporteLan,
 ) {
     private val json = Json { ignoreUnknownKeys = true }
     private val candado = Mutex()
@@ -176,6 +180,9 @@ class ReplayDeEntregasKds @Inject constructor(
         val reciente = ahora - fila.creadaEnMillis < VENTANA_REINTENTO_MS
         if (reciente && entregaPorWifi.empujar(mensaje, ESPERA_PANTALLAS_MS)) {
             Log.i(TAG, "📡 ${fila.entregaId} llegó a la pantalla")
+            // M1: SÓLO se registra el acuse — un empuje sin acuse del replay nunca cuenta como fallo (ya lo cuenta el
+            // envío en vivo de EntregaPorWifi.entregar; contarlo aquí también duplicaría la racha).
+            transporte.racha.registrar(setOf(fila.stationId), setOf(fila.stationId))
             dao.borrar(fila.entregaId)
             return
         }

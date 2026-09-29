@@ -2,6 +2,8 @@ package com.avoqado.pos.printing.data
 
 import com.avoqado.pos.core.data.lan.KdsComanda
 import com.avoqado.pos.core.data.lan.KdsLanProtocol
+import com.avoqado.pos.core.data.lan.RachaSinAcuse
+import com.avoqado.pos.core.data.lan.TransporteLan
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.sync.SyncOutbox
 import com.avoqado.pos.core.domain.printing.ComandaDispatcher
@@ -49,7 +51,10 @@ class ReplayDeEntregasKdsTest {
     /** La sucursal vigente (I1 de la revisión de la Task 7): las pruebas que la cambian a media pasada la re-stubbean. */
     private var sucursalVigente = "venue-1"
     private val secureStorage = mockk<SecureStorage>(relaxed = true) { every { venueId } answers { sucursalVigente } }
-    private val replay = ReplayDeEntregasKds(dao, entregaPorWifi, despachador, cola, pendientes, secureStorage)
+    /** M1 de la revisión de la Task 10: la racha real de `RachaSinAcuse` — el replay debe limpiarla al acusar. */
+    private val rachaDeLaCaja = RachaSinAcuse()
+    private val transporte = mockk<TransporteLan> { every { racha } returns rachaDeLaCaja }
+    private val replay = ReplayDeEntregasKds(dao, entregaPorWifi, despachador, cola, pendientes, secureStorage, transporte)
 
     private val trabajo = TrabajoPendiente(
         planes = emptyList(), config = PrintConfig(), orderNumber = "1234", orderType = "En tienda",
@@ -97,6 +102,35 @@ class ReplayDeEntregasKdsTest {
 
         coVerify(exactly = 1) { despachador.reintentar(any(), any(), false) }
         coVerify(exactly = 1) { cola.enqueue("venue-1", "KDS_TICKET_MARK", any(), any(), false) }
+    }
+
+    /** M1 de la revisión de la Task 10: un acuse del replay limpia la racha de esa estación — no espera a la siguiente venta. */
+    @Test
+    fun `P1 un acuse del replay limpia la racha de la estacion`() = runTest {
+        repeat(3) { rachaDeLaCaja.registrar(setOf("st_barra"), emptySet()) }
+        assertEquals(setOf("st_barra"), rachaDeLaCaja.sinAlcance.value)
+        coEvery { dao.delVenue("venue-1") } returns listOf(fila("sale:reciente:st_barra", 1_000))
+        coEvery { entregaPorWifi.empujar(any(), any()) } returns true
+
+        replay.reproducirAlAbrir("venue-1", ahora = 2_000)
+
+        assertEquals(emptySet<String>(), rachaDeLaCaja.sinAlcance.value)
+    }
+
+    /** M1: el replay NO cuenta un fallo — sólo limpia con el acuse. Sin esto, el replay duplicaría el conteo del envío en vivo. */
+    @Test
+    fun `una entrega del replay que NO acusa no cuenta como fallo de la racha`() = runTest {
+        rachaDeLaCaja.registrar(setOf("st_barra"), emptySet())
+        rachaDeLaCaja.registrar(setOf("st_barra"), emptySet())
+        coEvery { dao.delVenue("venue-1") } returns listOf(fila("sale:reciente:st_barra", 1_000))
+        coEvery { entregaPorWifi.empujar(any(), any()) } returns false
+        coEvery { despachador.reintentar(any(), any(), false) } returns EstadoDeComanda.Salio
+
+        replay.reproducirAlAbrir("venue-1", ahora = 2_000)
+
+        assertEquals(emptySet<String>(), rachaDeLaCaja.sinAlcance.value)
+        rachaDeLaCaja.registrar(setOf("st_barra"), emptySet())
+        assertEquals("si el replay hubiera contado el fallo, esta ya habría llegado a 3", setOf("st_barra"), rachaDeLaCaja.sinAlcance.value)
     }
 
     /**

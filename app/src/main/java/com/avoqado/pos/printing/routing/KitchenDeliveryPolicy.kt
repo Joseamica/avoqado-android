@@ -148,9 +148,16 @@ object KitchenDeliveryPolicy {
         return "Las comandas de ${lista(nombres)} salen en papel si la pantalla no contesta"
     }
 
-    /** Racha (D11): tras 3 entregas seguidas sin acuse a una estación, se dice fijo — con o sin internet. `null` = ninguna. */
+    /**
+     * Racha (D11): tras 3 entregas seguidas sin acuse a una estación, se dice fijo — con o sin internet. `null` = ninguna.
+     *
+     * 🔴 I1 de la revisión de la Task 10: sólo nombra estaciones ACTIVAS con pantalla (mismo predicado que decide a
+     * quién se empuja, [planesConPantalla]). Si el dueño apaga la pantalla de una estación después de que la caja
+     * avisó, esa estación ya no vuelve a acusar — sin este filtro el aviso se quedaría pegado para siempre aunque ya
+     * no haya pantalla que alcanzar.
+     */
     fun avisoDeRacha(sinAlcance: Set<String>, config: PrintConfig): String? {
-        val nombres = config.stations.filter { it.id in sinAlcance }.map { it.name }
+        val nombres = config.stations.filter { it.id in sinAlcance && it.active && it.hasKitchenDisplay }.map { it.name }
         if (nombres.isEmpty()) return null
         return if (nombres.size == 1) {
             "La pantalla de ${nombres.single()} no se alcanza por el WiFi"

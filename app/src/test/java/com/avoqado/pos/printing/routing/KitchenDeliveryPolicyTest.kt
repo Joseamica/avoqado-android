@@ -183,6 +183,24 @@ class KitchenDeliveryPolicyTest {
     }
 
     @Test
+    fun `P1 el aviso de racha ignora una estacion cuya pantalla se apago`() {
+        val c = config(cocina, barraSoloPantalla.copy(hasKitchenDisplay = false))
+        assertNull(KitchenDeliveryPolicy.avisoDeRacha(setOf("st_barra"), c))
+    }
+
+    @Test
+    fun `P1 el aviso de racha ignora una estacion desactivada`() {
+        val c = config(cocina, barraSoloPantalla.copy(active = false))
+        assertNull(KitchenDeliveryPolicy.avisoDeRacha(setOf("st_barra"), c))
+    }
+
+    @Test
+    fun `el aviso de racha sigue avisando cuando la estacion esta activa y con pantalla`() {
+        val c = config(cocina, barraSoloPantalla)
+        assertEquals("La pantalla de Barra no se alcanza por el WiFi", KitchenDeliveryPolicy.avisoDeRacha(setOf("st_barra"), c))
+    }
+
+    @Test
     fun `respaldoLocal no viene del servidor - una config sin el campo lo deja apagado`() {
         val json = Json { ignoreUnknownKeys = true }
         val estacion = json.decodeFromString(StationInfo.serializer(), """{"id":"st_barra","name":"Barra","hasKitchenDisplay":true}""")
