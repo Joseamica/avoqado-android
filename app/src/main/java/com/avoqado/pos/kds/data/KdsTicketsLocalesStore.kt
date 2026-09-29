@@ -60,25 +60,24 @@ class KdsTicketsLocalesStore @Inject constructor(private val dao: KdsTicketsLoca
     }
 
     /**
-     * LISTO sin red (D10): se persiste ANTES de encolar la marca. Una comanda que llegó por WiFi ya tiene fila (se marca);
-     * una del servidor no (se crea con la marca puesta, para que un sondeo no la resucite).
+     * LISTO sin red (D10). Una comanda que llegó por WiFi ya tiene fila (se marca); una del servidor no (se crea la sombra
+     * con la marca puesta, para que un sondeo no la resucite). Revisión final (I2): marcar, leer y crear van en UNA
+     * transacción del DAO ([KdsTicketsLocalesDao.marcarListaOCrear]) — aquí sólo se arma la sombra. Espejo de iOS.
      */
     suspend fun marcarLista(orden: KDSOrder, venueId: String, stationId: String, ahora: Long = System.currentTimeMillis()) {
         val sourceKey = orden.sourceKey ?: return
-        // Sin REPLACE sobre una fila ya LISTA (cambiaría hora y renglones): sólo se crea si no existe. Espejo de iOS.
-        if (dao.marcarLista(sourceKey, ahora) == 0 && dao.porFolio(sourceKey) == null) {
-            dao.guardar(
-                KdsTicketLocalEntity(
-                    sourceKey = sourceKey, venueId = venueId, stationId = stationId, orderNumber = orden.orderNumber,
-                    orderType = orden.orderType,
-                    itemsJson = json.encodeToString(items, orden.items.map { KdsComandaItem(it.id, it.productName, it.quantity, it.modifiers, it.notes) }),
-                    // I2 (revisión T8): la vigencia de 12 h cuenta desde que ESTE aparato guardó la marca. Con el `createdAt`
-                    // del servidor, una comanda de ayer marcada sin red nacía vencida: la purga (cada minuto) la borraba y
-                    // la comanda volvía al tablero. Una fila LISTA nunca se pinta, así que su orden no importa.
-                    recibidaEnMillis = ahora, listaEnMillis = ahora,
-                ),
-            )
-        }
+        dao.marcarListaOCrear(
+            KdsTicketLocalEntity(
+                sourceKey = sourceKey, venueId = venueId, stationId = stationId, orderNumber = orden.orderNumber,
+                orderType = orden.orderType,
+                itemsJson = json.encodeToString(items, orden.items.map { KdsComandaItem(it.id, it.productName, it.quantity, it.modifiers, it.notes) }),
+                // I2 (revisión T8): la vigencia de 12 h cuenta desde que ESTE aparato guardó la marca. Con el `createdAt`
+                // del servidor, una comanda de ayer marcada sin red nacía vencida: la purga (cada minuto) la borraba y
+                // la comanda volvía al tablero. Una fila LISTA nunca se pinta, así que su orden no importa.
+                recibidaEnMillis = ahora, listaEnMillis = ahora,
+            ),
+            ahora,
+        )
     }
 
     /** Pendientes Y listas de la estación (la mezcla necesita las dos), en orden de llegada. */

@@ -259,4 +259,45 @@ class KdsLanSqlTest {
         assertTrue(dao.unir(fila("[$renglonA]"), idsEntrantes = setOf("a")))
         assertEquals(listOf("a"), ids(dao.porFolio(folio)!!.itemsJson))
     }
+
+    // MARK: - Revisión final (I2): el LISTO sin red es UNA transacción del DAO, ejecutada de verdad
+
+    /**
+     * Antes eran tres transacciones (marcar, leer, `REPLACE`): un `unir` que insertaba entre la lectura y el `REPLACE`
+     * quedaba pisado por la sombra, con el curso ya acusado escondido 12 h. Ahora todo vive en `marcarListaOCrear`, y la
+     * sombra sólo se INSERTA donde no había fila — nunca reemplaza una.
+     */
+    @Test
+    fun `P1 marcar lista sobre una fila PENDIENTE con mas renglones solo pone la hora y conserva los renglones`() = runBlocking {
+        val dao = DaoSobreSqlite()
+        dao.guardar(fila("[$renglonA,$renglonB]"))
+
+        dao.marcarListaOCrear(fila("[$renglonA]", lista = 50L, recibida = 50L), ahora = 50L)
+
+        val guardada = dao.porFolio(folio)!!
+        assertEquals("los renglones que llegaron por el WiFi no se pisan con los de la sombra", listOf("a", "b"), ids(guardada.itemsJson))
+        assertEquals(50L, guardada.listaEnMillis)
+        assertEquals("la hora de llegada no cambia", 10L, guardada.recibidaEnMillis)
+    }
+
+    @Test
+    fun `marcar lista sin fila inserta la sombra LISTA`() = runBlocking {
+        val dao = DaoSobreSqlite()
+        val sombra = fila("[$renglonA]", lista = 50L, recibida = 50L)
+
+        dao.marcarListaOCrear(sombra, ahora = 50L)
+
+        assertEquals(sombra, dao.porFolio(folio))
+    }
+
+    @Test
+    fun `P1 marcar lista sobre una fila LISTA no cambia la hora ni los renglones`() = runBlocking {
+        val dao = DaoSobreSqlite()
+        val lista = fila("[$renglonA,$renglonB]", lista = 20L)
+        dao.guardar(lista)
+
+        dao.marcarListaOCrear(fila("[$renglonA]", lista = 50L, recibida = 50L), ahora = 50L)
+
+        assertEquals(lista, dao.porFolio(folio))
+    }
 }

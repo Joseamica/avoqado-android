@@ -194,4 +194,15 @@ interface KdsTicketsLocalesDao {
         guardar(previa.copy(itemsJson = unirItemsJson(previa.itemsJson, nueva.itemsJson)))
         return true
     }
+
+    /**
+     * LISTO sin red (D10) en UNA transacción (revisión final de la 3.5, I2): marca la fila si está PENDIENTE; si no hay
+     * NINGUNA, inserta [sombra] (ya LISTA, para que un sondeo no resucite la copia del servidor). Una fila ya LISTA no
+     * cambia, y una existente nunca se reemplaza. En tres transacciones, un `unir` que insertaba un curso entre la lectura y
+     * el `REPLACE` quedaba pisado por la sombra: el curso ya acusado, escondido 12 h. Espejo de iOS (un solo `writer.write`).
+     */
+    @Transaction
+    suspend fun marcarListaOCrear(sombra: KdsTicketLocalEntity, ahora: Long) {
+        if (marcarLista(sombra.sourceKey, ahora) == 0 && porFolio(sombra.sourceKey) == null) guardar(sombra)
+    }
 }

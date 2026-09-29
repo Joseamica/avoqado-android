@@ -80,19 +80,26 @@ class KdsTicketsLocalesStoreTest {
         coVerify(exactly = 0) { dao.porFolio(any()) }
     }
 
+    /**
+     * Revisión final (I2): el LISTO sin red es UNA transacción del DAO ([KdsTicketsLocalesDao.marcarListaOCrear]; su SQL
+     * lo ejecuta `KdsLanSqlTest`). Leer y escribir desde el store en tres pasos dejaba colarse un `unir` entre la lectura y
+     * el `REPLACE`, que pisaba el curso ya acusado con la sombra.
+     */
     @Test
-    fun `marcar lista de una comanda del servidor crea la fila con listaEnMillis (no la habia)`() = runTest {
-        coEvery { dao.marcarLista("sale:x:st-barra", 50) } returns 0
-        // «No la había»: explícito — un mock relajado de MockK devuelve un objeto, no `null`, para un retorno anulable.
-        coEvery { dao.porFolio("sale:x:st-barra") } returns null
+    fun `P1 marcarLista delega en UNA transaccion del DAO - el store nunca lee ni escribe por su cuenta`() = runTest {
         val orden = KDSOrder(id = "k1", orderNumber = "1", orderType = "En tienda", items = listOf(KDSOrderItem("i", "Taco", 1)), createdAt = 1, status = KDSOrderStatus.NEW, sourceKey = "sale:x:st-barra", printStationId = "st-barra")
-        val fila = slot<KdsTicketLocalEntity>()
-        coEvery { dao.guardar(capture(fila)) } returns Unit
+        val sombra = slot<KdsTicketLocalEntity>()
+        coEvery { dao.marcarListaOCrear(capture(sombra), 50) } returns Unit
 
         store.marcarLista(orden, "v1", "st-barra", ahora = 50)
 
-        assertEquals(50L, fila.captured.listaEnMillis)
-        assertEquals("sale:x:st-barra", fila.captured.sourceKey)
+        assertEquals(50L, sombra.captured.listaEnMillis)
+        assertEquals("sale:x:st-barra", sombra.captured.sourceKey)
+        assertEquals("st-barra", sombra.captured.stationId)
+        assertTrue(sombra.captured.itemsJson, sombra.captured.itemsJson.contains("\"productName\":\"Taco\""))
+        coVerify(exactly = 0) { dao.guardar(any()) }
+        coVerify(exactly = 0) { dao.porFolio(any()) }
+        coVerify(exactly = 0) { dao.marcarLista(any(), any()) }
     }
 
     /**
@@ -102,24 +109,14 @@ class KdsTicketsLocalesStoreTest {
      */
     @Test
     fun `P1 la marca LISTO creada para una comanda del servidor cuenta su vigencia desde ahora, no desde su creacion`() = runTest {
-        coEvery { dao.marcarLista("sale:vieja:st-barra", 90_000_000) } returns 0
-        coEvery { dao.porFolio("sale:vieja:st-barra") } returns null
         val deAyer = KDSOrder(id = "k1", orderNumber = "1", orderType = "En tienda", items = emptyList(), createdAt = 1, status = KDSOrderStatus.NEW, sourceKey = "sale:vieja:st-barra", printStationId = "st-barra")
-        val fila = slot<KdsTicketLocalEntity>()
-        coEvery { dao.guardar(capture(fila)) } returns Unit
+        val sombra = slot<KdsTicketLocalEntity>()
+        coEvery { dao.marcarListaOCrear(capture(sombra), 90_000_000) } returns Unit
 
         store.marcarLista(deAyer, "v1", "st-barra", ahora = 90_000_000)
 
-        assertEquals(90_000_000L, fila.captured.recibidaEnMillis)
-        assertEquals(90_000_000L, fila.captured.listaEnMillis)
-    }
-
-    @Test
-    fun `marcar lista de una comanda que llego por WiFi solo marca (la fila ya existe)`() = runTest {
-        coEvery { dao.marcarLista("round:rk:st-barra", 50) } returns 1
-        val orden = KDSOrder(id = "lan:round:rk:st-barra", orderNumber = "77", orderType = "Mesa 8", items = emptyList(), createdAt = 1, status = KDSOrderStatus.NEW, sourceKey = "round:rk:st-barra", printStationId = "st-barra")
-        store.marcarLista(orden, "v1", "st-barra", ahora = 50)
-        coVerify(exactly = 0) { dao.guardar(any()) }
+        assertEquals(90_000_000L, sombra.captured.recibidaEnMillis)
+        assertEquals(90_000_000L, sombra.captured.listaEnMillis)
     }
 
     @Test
