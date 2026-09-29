@@ -1,6 +1,8 @@
 package com.avoqado.pos.core.domain
 
 import com.avoqado.pos.core.data.local.SecureStorage
+import kotlinx.serialization.Serializable
+import java.time.Instant
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -23,6 +25,28 @@ enum class PlanTier(val rank: Int, val displayLabel: String) {
             return entries.firstOrNull { it.name == normalized }
         }
     }
+}
+
+/** Server observation persisted as one venue-scoped record, including exact paid capabilities. */
+@Serializable
+data class PlanSnapshot(
+    val tier: String? = null,
+    val grandfathered: Boolean = false,
+    val exempt: Boolean = false,
+    val accessSchemaVersion: Int? = null,
+    val accessObservedAt: String? = null,
+    val grantedFeatureCodes: List<String>? = null,
+)
+
+fun retainNewestPlan(previous: PlanSnapshot?, next: PlanSnapshot?): PlanSnapshot? {
+    if (next == null || PlanTier.fromStorage(next.tier) == null) return previous
+    if (next.accessSchemaVersion == null) return if (previous?.accessSchemaVersion == 1) previous else next
+    if (next.accessSchemaVersion != 1) return previous
+    val codes = next.grantedFeatureCodes ?: return previous
+    if (codes.size > 100 || codes.distinct().size != codes.size || codes.any { !it.matches(Regex("[A-Z][A-Z0-9_]{0,63}")) }) return previous
+    val observed = runCatching { Instant.parse(next.accessObservedAt) }.getOrNull() ?: return previous
+    val priorTime = runCatching { Instant.parse(previous?.accessObservedAt) }.getOrNull()
+    return if (priorTime != null && !observed.isAfter(priorTime)) previous else next
 }
 
 /**
@@ -56,9 +80,13 @@ class PlanManager @Inject constructor(
      * - otherwise → tier rank comparison (FREE < PRO < PREMIUM < ENTERPRISE)
      */
     fun hasFeature(code: String): Boolean {
-        if (isExempt) return true
-        val currentTier = tier ?: return true
         val requiredTier = FEATURE_REQUIRED_TIER[code] ?: return true
+        val snapshot = secureStorage.planSnapshot
+        if (snapshot?.exempt ?: isExempt) return true
+        snapshot?.takeIf { it.accessSchemaVersion == 1 }?.let {
+            return code in it.grantedFeatureCodes.orEmpty()
+        }
+        val currentTier = PlanTier.fromStorage(snapshot?.tier) ?: tier ?: return true
         return currentTier.rank >= requiredTier.rank
     }
 
@@ -78,6 +106,8 @@ class PlanManager @Inject constructor(
         // PREMIUM: INVENTORY_TRACKING, CFDI.
         val FEATURE_REQUIRED_TIER: Map<String, PlanTier> = mapOf(
             "RESERVATIONS" to PlanTier.PRO,
+            "TABLE_SERVICE" to PlanTier.PRO,
+            "OFFLINE_LAN_HUB" to PlanTier.PREMIUM,
             "PROMOTIONS" to PlanTier.PRO,
             "REFERRAL_PROGRAM" to PlanTier.PRO,
             "ADVANCED_REPORTS" to PlanTier.PRO,

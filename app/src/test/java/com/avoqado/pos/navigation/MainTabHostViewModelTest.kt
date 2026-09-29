@@ -22,6 +22,7 @@ class MainTabHostViewModelTest {
         val storage: SecureStorage = if (relaxed) mockk(relaxed = true) else mockk()
         every { storage.reservationsEnabled } returns reservationsEnabled
         every { storage.venueMode } returns venueMode
+        every { storage.planSnapshot } returns null
         every { storage.planTier } returns planTier
         every { storage.planExempt } returns planExempt
         return storage

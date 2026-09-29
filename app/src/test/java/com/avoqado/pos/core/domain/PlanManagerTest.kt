@@ -8,6 +8,8 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.encodeToString
 
 class PlanManagerTest {
 
@@ -17,6 +19,15 @@ class PlanManagerTest {
     private fun stubPlan(tier: String?, exempt: Boolean = false) {
         every { secureStorage.planTier } returns tier
         every { secureStorage.planExempt } returns exempt
+        every { secureStorage.planSnapshot } returns null
+    }
+
+    @Test
+    fun `table service and offline hub respect exact paid access`() {
+        stubPlan("PREMIUM")
+        every { secureStorage.planSnapshot } returns PlanSnapshot(tier = "PREMIUM", accessSchemaVersion = 1, grantedFeatureCodes = emptyList())
+        assertFalse(planManager.hasFeature("TABLE_SERVICE"))
+        assertFalse(planManager.hasFeature("OFFLINE_LAN_HUB"))
     }
 
     // MARK: - Fail-open (THE LAW: a gating bug must never brick a POS)
@@ -179,5 +190,25 @@ class PlanManagerTest {
     @Test
     fun `requiredTierLabel is null for ungated codes`() {
         assertNull(planManager.requiredTierLabel("ORDERS"))
+    }
+
+    @Test
+    fun `exact grants survive serialization and ignore missing old and unsupported snapshots`() {
+        val json = Json { ignoreUnknownKeys = true }
+        val paid = json.decodeFromString<PlanSnapshot>("""{"tier":"FREE","accessSchemaVersion":1,"accessObservedAt":"2026-09-27T10:00:00.000Z","grantedFeatureCodes":["CFDI"]}""")
+        val restarted = json.decodeFromString<PlanSnapshot>(json.encodeToString(paid))
+        stubPlan("FREE")
+        every { secureStorage.planSnapshot } returns restarted
+        assertTrue(planManager.hasFeature("CFDI"))
+        assertFalse(planManager.hasFeature("INVENTORY_TRACKING"))
+        assertTrue(planManager.hasFeature("ORDERS"))
+        assertEquals(paid, retainNewestPlan(paid, null))
+        assertEquals(paid, retainNewestPlan(paid, PlanSnapshot(tier = "PREMIUM")))
+        assertEquals(paid, retainNewestPlan(paid, paid.copy(accessSchemaVersion = 2)))
+        assertEquals(paid, retainNewestPlan(paid, paid.copy(accessObservedAt = "2026-09-27T09:00:00.000Z", grantedFeatureCodes = emptyList())))
+        assertEquals(paid, retainNewestPlan(paid, paid.copy(accessObservedAt = "invalid")))
+        val next = paid.copy(tier = "PREMIUM", accessObservedAt = "2026-09-27T11:00:00.000Z", grantedFeatureCodes = emptyList())
+        every { secureStorage.planSnapshot } returns retainNewestPlan(paid, next)
+        assertFalse(planManager.hasFeature("CFDI"))
     }
 }

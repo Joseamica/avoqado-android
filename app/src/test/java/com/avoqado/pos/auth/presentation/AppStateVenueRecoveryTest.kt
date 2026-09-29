@@ -24,6 +24,8 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.advanceTimeBy
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Rule
@@ -119,6 +121,29 @@ class AppStateVenueRecoveryTest {
         assertEquals(listOf("inventory-stop", "inventory-start"), events)
     }
 
+    @Test
+    fun `reconnect refreshes paid access without rebuilding the checkout or refreshing after logout`() = runTest {
+        val connected = MutableStateFlow(false)
+        var refreshes = 0
+        val state = createAppState(true, {}, {}, {}, onOutboxStart = {}, connected = connected,
+            onSettingsRefresh = { refreshes++ })
+        advanceUntilIdle()
+        val initial = refreshes
+        val checkoutKey = state.mainNavigation.value.contentKey
+        connected.value = true
+        advanceTimeBy(1100)
+        runCurrent()
+        assertEquals(initial + 1, refreshes)
+        assertEquals(checkoutKey, state.mainNavigation.value.contentKey)
+        state.onLogout()
+        advanceUntilIdle()
+        connected.value = false
+        connected.value = true
+        advanceTimeBy(1100)
+        runCurrent()
+        assertEquals(initial + 1, refreshes)
+    }
+
     private fun createAppState(
         repairResult: Boolean,
         onRepair: () -> Unit,
@@ -126,6 +151,8 @@ class AppStateVenueRecoveryTest {
         onInventoryStart: () -> Unit,
         onInventoryStop: () -> Unit = {},
         onOutboxStart: () -> Unit,
+        connected: MutableStateFlow<Boolean> = MutableStateFlow(true),
+        onSettingsRefresh: () -> Unit = {},
     ): AppState {
         val secureStorage = mockk<SecureStorage>(relaxed = true) {
             every { isLoggedIn } returns true
@@ -157,10 +184,10 @@ class AppStateVenueRecoveryTest {
         }
         val tpvSettingsRepository = mockk<TpvSettingsRepository>(relaxed = true) {
             every { terminalNavigation } returns MutableStateFlow(TerminalNavigationSettings.DEFAULT)
-            coEvery { refreshSettings() } returns Unit
+            coEvery { refreshSettings() } coAnswers { onSettingsRefresh() }
         }
         val connectivityMonitor = mockk<ConnectivityMonitor>(relaxed = true) {
-            every { isConnected } returns MutableStateFlow(true)
+            every { isConnected } returns connected
             every { isServerReachable } returns MutableStateFlow(true)
         }
         val inventorySync = mockk<InventoryCountSyncCoordinator>(relaxed = true) {

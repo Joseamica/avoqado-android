@@ -32,6 +32,7 @@ class ActivateReservationsViewModelTest {
 
     private fun storageWith(planTier: String?, planExempt: Boolean = false): SecureStorage {
         val storage: SecureStorage = mockk(relaxed = true)
+        every { storage.planSnapshot } returns null
         every { storage.planTier } returns planTier
         every { storage.planExempt } returns planExempt
         return storage

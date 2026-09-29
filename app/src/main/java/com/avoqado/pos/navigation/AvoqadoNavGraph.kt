@@ -3,6 +3,10 @@ package com.avoqado.pos.navigation
 import android.app.Activity
 import androidx.compose.animation.core.tween
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.DisposableEffect
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -107,6 +111,14 @@ fun AvoqadoNavGraph(
     windowSizeClass: WindowSizeClass,
     appState: AppState = hiltViewModel(),
 ) {
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    DisposableEffect(lifecycle, appState) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) appState.refreshPaidAccess()
+        }
+        lifecycle.addObserver(observer)
+        onDispose { lifecycle.removeObserver(observer) }
+    }
     val isLoggedIn by appState.isLoggedIn.collectAsState()
     val pendingPaymentCount by appState.pendingPaymentCount.collectAsState()
     val showOfflineBanner by appState.showOfflineBanner.collectAsState()

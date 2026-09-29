@@ -481,12 +481,8 @@ class TpvSettingsRepository internal constructor(
                 }
             }
 
-            // Plan gating (Phase ①): persist the OPTIONAL plan block. Absent
-            // field (old server) → null tier → PlanManager fails OPEN. Only
-            // written on a successful response so a transient error never
-            // wipes a previously-known plan.
-            secureStorage.planTier = result.data?.plan?.tier
-            secureStorage.planExempt = result.data?.plan?.exempt == true
+            // Missing/unsupported/stale responses preserve the last complete snapshot.
+            secureStorage.storePlanSnapshot(venueId, result.data?.plan)
             Log.d("📦", "Plan: tier=${result.data?.plan?.tier ?: "none"} exempt=${result.data?.plan?.exempt == true}")
 
             // PIN de autorización de gerente. Igual que el plan: SÓLO en el
@@ -806,9 +802,4 @@ internal fun VenueSettingsData?.toTerminalNavigationSettings(): TerminalNavigati
  * Optional plan block in the venue-settings response. Every field defaults so
  * old servers (field absent) and partial payloads parse fine → fail-open.
  */
-@Serializable
-internal data class VenuePlanDto(
-    val tier: String? = null,
-    val grandfathered: Boolean = false,
-    val exempt: Boolean = false,
-)
+internal typealias VenuePlanDto = com.avoqado.pos.core.domain.PlanSnapshot

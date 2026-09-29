@@ -45,6 +45,7 @@ class ArticlesViewModelTest {
     /** Default: plan unknown → fail-open (promotions management available). */
     private fun createViewModel(planTier: String? = null): ArticlesViewModel {
         val storage = mockk<SecureStorage>()
+        every { storage.planSnapshot } returns null
         every { storage.planTier } returns planTier
         every { storage.planExempt } returns false
         val refreshGateFactory = mockk<com.avoqado.pos.core.domain.refresh.RefreshGateFactory>()

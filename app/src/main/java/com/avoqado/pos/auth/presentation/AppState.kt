@@ -24,9 +24,14 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import javax.inject.Inject
 
 @HiltViewModel
@@ -110,11 +115,24 @@ class AppState @Inject constructor(
      * tab recompute once it lands. Never blocks login/startup; errors are
      * swallowed inside the repository → plan stays as-is → fail-open.
      */
-    private fun refreshPlanAndSettings() {
-        viewModelScope.launch {
+    private var settingsRefreshJob: Job? = null
+
+    private fun refreshPlanAndSettings(rebuildNavigation: Boolean = true) {
+        if (settingsRefreshJob?.isActive == true) return
+        settingsRefreshJob = viewModelScope.launch {
             tpvSettingsRepository.refreshSettings()
-            refreshTabs()
+            if (_isLoggedIn.value) {
+                if (rebuildNavigation) refreshTabs() else {
+                    _reservationsEnabled.value = secureStorage.reservationsEnabled
+                    _accessVersion.value += 1
+                }
+            }
         }
+    }
+
+    /** A refreshed entitlement must not change the NavHost key or discard the current sale. */
+    fun refreshPaidAccess() {
+        if (_isLoggedIn.value) refreshPlanAndSettings(rebuildNavigation = false)
     }
 
     private val _isLoggedIn = MutableStateFlow(secureStorage.isLoggedIn)
@@ -210,12 +228,14 @@ class AppState @Inject constructor(
     // Bumped on login/logout/venue-switch so the visibleTabs combine re-emits
     // even when reservations/venueMode didn't change but the role did.
     private val _roleVersion = MutableStateFlow(0)
+    private val _accessVersion = MutableStateFlow(0)
 
     val visibleTabs: StateFlow<List<MainTab>> = combine(
         _reservationsEnabled,
         _roleVersion,
         posModeManager.currentMode,
-    ) { enabled, _, posMode -> computeVisibleTabs(enabled, posMode) }
+        _accessVersion,
+    ) { enabled, _, posMode, _ -> computeVisibleTabs(enabled, posMode) }
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.Eagerly,
@@ -259,6 +279,16 @@ class AppState @Inject constructor(
         )
 
     init {
+        viewModelScope.launch {
+            combine(connectivityMonitor.isConnected, connectivityMonitor.isServerReachable) { connected, reachable ->
+                connected && reachable
+            }.distinctUntilChanged().drop(1).collectLatest { ready ->
+                if (ready) {
+                    delay(1000)
+                    refreshPaidAccess()
+                }
+            }
+        }
         if (secureStorage.isLoggedIn) {
             viewModelScope.launch {
                 // Versiones anteriores podían persistir el venue nuevo junto a

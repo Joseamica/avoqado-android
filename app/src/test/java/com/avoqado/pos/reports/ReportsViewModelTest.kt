@@ -37,6 +37,7 @@ class ReportsViewModelTest {
     /** Default: plan unknown → fail-open (full history, today's behavior). */
     private fun createViewModel(planTier: String? = null, planExempt: Boolean = false): ReportsViewModel {
         val storage = mockk<SecureStorage>()
+        every { storage.planSnapshot } returns null
         every { storage.planTier } returns planTier
         every { storage.planExempt } returns planExempt
         val refreshGateFactory = mockk<com.avoqado.pos.core.domain.refresh.RefreshGateFactory>()

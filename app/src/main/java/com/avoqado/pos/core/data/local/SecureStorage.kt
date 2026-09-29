@@ -2,9 +2,12 @@ package com.avoqado.pos.core.data.local
 
 import android.content.Context
 import android.content.SharedPreferences
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 import com.avoqado.pos.payment.domain.PendientesDeTarjeta
+import com.avoqado.pos.core.domain.PlanSnapshot
+import com.avoqado.pos.core.domain.retainNewestPlan
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -159,8 +162,34 @@ class SecureStorage @Inject constructor(
      * behavior exactly.
      */
     var planTier: String?
-        get() = prefs.getString(KEY_PLAN_TIER, null)
+        get() = planSnapshot?.tier ?: prefs.getString(KEY_PLAN_TIER, null)
         set(value) = prefs.edit().putString(KEY_PLAN_TIER, value).apply()
+
+    private val planRevision = mutableIntStateOf(0)
+
+    val planSnapshot: PlanSnapshot?
+        get() {
+            // Track reads from Composables, including gates accessed through ViewModel getters.
+            planRevision.intValue
+            return venueId?.let(::readPlanSnapshot)
+        }
+
+    private fun readPlanSnapshot(venueId: String): PlanSnapshot? =
+        prefs.getString("planSnapshot.$venueId", null)?.let {
+            runCatching { json.decodeFromString<PlanSnapshot>(it) }.getOrNull()
+        }
+
+    @Synchronized
+    fun storePlanSnapshot(venueId: String, observed: PlanSnapshot?) {
+        val previous = readPlanSnapshot(venueId)
+        val next = retainNewestPlan(previous, observed) ?: return
+        if (next != previous) {
+            check(prefs.edit().putString("planSnapshot.$venueId", json.encodeToString(next)).commit()) {
+                "Could not persist venue access"
+            }
+            planRevision.intValue += 1
+        }
+    }
 
     /**
      * Sucursales donde el servidor contestó que la merma no está en el plan (403 con `featureCode`).
@@ -172,7 +201,7 @@ class SecureStorage @Inject constructor(
 
     /** Exempt venues (grandfathered legacy / demo) bypass all plan gates. */
     var planExempt: Boolean
-        get() = prefs.getBoolean(KEY_PLAN_EXEMPT, false)
+        get() = planSnapshot?.exempt ?: prefs.getBoolean(KEY_PLAN_EXEMPT, false)
         set(value) { prefs.edit().putBoolean(KEY_PLAN_EXEMPT, value).apply() }
 
     /**
