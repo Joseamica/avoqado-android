@@ -1,5 +1,6 @@
 package com.avoqado.pos.core.data.lan
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
@@ -44,15 +45,21 @@ private const val TAG = "LanDiscovery"
  * 5. UN TXT NUEVO NO SE AVISA (QA D1, 29-sep, Android 14): si un servicio ya visto vuelve a registrarse con el MISMO
  *    nombre y otro TXT (la pantalla entra al Tablero y agrega `kds=`), NSD no manda ni perdido ni encontrado. Por eso
  *    [refrescar] vuelve a resolver lo conocido: el transporte lo pide en cada revisión y la entrega sin pantalla, ya.
- * 6. UN RESOLVE PUEDE NO CONTESTAR NUNCA (un servicio que se fue sin despedirse): Android no le pone plazo, y antes de
- *    Android 14 ni se puede cancelar. [refrescar] suelta el que lleva más de [PLAZO_DE_RESOLVE_MS] para que la cola en
- *    serie no se trabe para siempre.
+ * 6. UN RESOLVE PUEDE NO CONTESTAR NUNCA (un servicio que se fue sin despedirse): Android no le pone plazo. En Android 14+
+ *    se suelta el que lleva más de [PLAZO_DE_RESOLVE_MS] (y se cancela) para que la cola en serie no se trabe para siempre.
+ * 7. ABAJO DE ANDROID 14 NO SE RE-RESUELVE (revisión del QA D1, I1): allá un resolve no se puede cancelar y el NsdService
+ *    admite UNO por cliente. Re-pedir cada minuto lo conocido incluye a un aparato que se fue sin despedirse (NSD tarda
+ *    ~75 min en decir «perdido»): su resolve nunca contesta y, desde ahí, todo `resolveService` del proceso falla con
+ *    FAILURE_ALREADY_ACTIVE hasta que ese aparato vuelva. Por eso [refrescar] no hace nada abajo de [API_CON_STOP_DE_RESOLVE]
+ *    y el descubrimiento se comporta como antes del refresco.
  */
 class LanDiscovery(
     private val context: Context,
     private val deviceId: String,
     private val venueId: String,
     private val ahoraMs: () -> Long = { SystemClock.elapsedRealtime() },
+    /** [Build.VERSION.SDK_INT]; inyectable para probar las dos ramas (en la JVM de las pruebas vale 0). */
+    private val apiNivel: Int = Build.VERSION.SDK_INT,
     /** Los peers AJENOS vivos (este aparato lo agrega [TransporteLan]). */
     private val alCambiarPeers: (List<LanPeer>) -> Unit,
 ) {
@@ -212,23 +219,36 @@ class LanDiscovery(
         peers = emptyList()
     }
 
+    /** Este aparato: NSD también descubre su propio anuncio (detalle 4). `contains`, por el «(2)» del renombrado. */
+    private fun esPropio(nombre: String) = deviceId.isNotEmpty() && nombre.contains(deviceId.take(6))
+
     /**
-     * Vuelve a resolver lo conocido (detalles 5 y 6 del encabezado), por la MISMA cola en serie; lo que ya está en cola no
-     * se repite. Antes suelta un resolve colgado más de [PLAZO_DE_RESOLVE_MS]. Devuelve si hay algo conocido: sin nada, no
-     * hay a quién esperar.
+     * Vuelve a resolver lo AJENO conocido (detalles 5 a 7), por la MISMA cola en serie; lo que ya está en cola no se repite.
+     * Abajo de Android 14 no hace nada. Devuelve si hay algún otro aparato conocido: sin nadie, no hay a quién esperar
+     * (el propio anuncio no cuenta: una caja sola esperaría en cada venta).
      */
     fun refrescar(): Boolean {
-        if (parado) return false
-        enVuelo.get()?.let { r ->
-            if (ahoraMs() - r.desdeMs > PLAZO_DE_RESOLVE_MS && enVuelo.compareAndSet(r, null)) {
-                Log.w(TAG, "⏱️ Un resolve no contestó en ${PLAZO_DE_RESOLVE_MS / 1_000} s — se suelta y la cola sigue")
-                // Android 14+ sí deja cancelarlo; antes, el siguiente puede fallar con FAILURE_ALREADY_ACTIVE hasta que conteste.
-                if (Build.VERSION.SDK_INT >= 34) r.listener?.let { l -> runCatching { nsdManager?.stopServiceResolution(l) } }
-            }
-        }
-        for ((nombre, info) in conocidos) if (resolveQueue.none { it.serviceName == nombre }) resolveQueue.add(info)
+        if (parado || apiNivel < API_CON_STOP_DE_RESOLVE) return false
+        soltarSiVencio()
+        val ajenos = conocidos.filterKeys { !esPropio(it) }
+        for ((nombre, info) in ajenos) if (resolveQueue.none { it.serviceName == nombre }) resolveQueue.add(info)
         drainResolveQueue()
-        return conocidos.isNotEmpty()
+        return ajenos.isNotEmpty()
+    }
+
+    /**
+     * Suelta el resolve que lleva más de [PLAZO_DE_RESOLVE_MS] sin contestar y lo cancela, para que la cola siga. No hay un
+     * reloj que lo vigile: se mira cada vez que la cola arranca (un servicio nuevo, un callback, [refrescar]). Sólo desde
+     * Android 14 (detalle 7). `NewApi`: el nivel viene inyectado, y lint sólo entiende `Build.VERSION.SDK_INT` a secas.
+     */
+    @SuppressLint("NewApi")
+    private fun soltarSiVencio() {
+        if (apiNivel < API_CON_STOP_DE_RESOLVE) return
+        val r = enVuelo.get() ?: return
+        if (ahoraMs() - r.desdeMs > PLAZO_DE_RESOLVE_MS && enVuelo.compareAndSet(r, null)) {
+            Log.w(TAG, "⏱️ Un resolve no contestó en ${PLAZO_DE_RESOLVE_MS / 1_000} s — se cancela y la cola sigue")
+            r.listener?.let { l -> runCatching { nsdManager?.stopServiceResolution(l) } }
+        }
     }
 
     /**
@@ -237,17 +257,21 @@ class LanDiscovery(
      */
     private fun drainResolveQueue() {
         if (parado) return
+        soltarSiVencio()
         val turno = Resolucion(ahoraMs())
         if (!enVuelo.compareAndSet(null, turno)) return
         var next = resolveQueue.poll()
         while (next != null && !conocidos.containsKey(next.serviceName)) next = resolveQueue.poll()
         if (next == null) {
             enVuelo.set(null)
+            // Wakeup perdido (M2): [refrescar] drena desde otro hilo que el de NSD. Un servicio que llegó entre el `poll` vacío y
+            // este `set` vio el turno puesto y no arrancó nada; sin esto se queda varado hasta el siguiente disparador.
+            if (resolveQueue.isNotEmpty()) drainResolveQueue()
             return
         }
         val manager = nsdManager ?: run { enVuelo.set(null); return }
         val nombre = next.serviceName
-        // Sólo el turno VIGENTE libera la cola: uno ya soltado por [refrescar] que contesta tarde no arranca otro encima.
+        // Sólo el turno VIGENTE libera la cola: uno ya soltado por [soltarSiVencio] que contesta tarde no arranca otro encima.
         fun terminar() { if (enVuelo.compareAndSet(turno, null)) drainResolveQueue() }
 
         val listener = object : NsdManager.ResolveListener {
@@ -301,6 +325,9 @@ class LanDiscovery(
     companion object {
         /** Un resolve normal contesta en menos de un segundo; uno que lleva esto sin contestar ya no va a contestar. */
         const val PLAZO_DE_RESOLVE_MS = 10_000L
+
+        /** Android 14: aparece `stopServiceResolution` (y el backend de NSD deja de ser el legacy de un resolve por cliente). */
+        const val API_CON_STOP_DE_RESOLVE = 34
         const val MAX_INTENTOS_DE_ANUNCIO = 6
         const val ESPERA_MAXIMA_DE_ANUNCIO_MS = 30_000L
 

@@ -5,6 +5,7 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
+import android.os.Build
 import android.os.SystemClock
 import android.util.Log
 import com.avoqado.pos.core.data.sync.SyncOutbox
@@ -98,6 +99,9 @@ class TransporteLan @Inject constructor(
     private var acceptJob: Job? = null
     private var configJob: Job? = null
     private var discovery: LanDiscovery? = null
+
+    /** El nivel de API que ve [LanDiscovery]; inyectable en pruebas (en la JVM vale 0 y abajo de 34 el re-resolve no corre). */
+    internal var apiNivel: Int = Build.VERSION.SDK_INT
     private val bootedAtMillis = System.currentTimeMillis() - SystemClock.elapsedRealtime()
 
     /**
@@ -195,7 +199,8 @@ class TransporteLan @Inject constructor(
     /**
      * QA D1 (29-sep): NSD no avisa cuando una pantalla ya conocida cambia su TXT (entra al Tablero y agrega `kds=`). Esto
      * re-resuelve lo conocido YA —lo pide la entrega que no encuentra pantalla; la revisión de cada minuto hace lo mismo—.
-     * `true` si hay algo conocido; sin nada, no hay a quién esperar.
+     * `true` si hay otro aparato conocido; sin nadie —el propio anuncio no cuenta— o abajo de Android 14 (donde no se
+     * re-resuelve, ver el detalle 7 de [LanDiscovery]) es `false`: no hay a quién esperar.
      */
     @Synchronized
     fun refrescarPeers(): Boolean = discovery?.refrescar() ?: false
@@ -208,7 +213,7 @@ class TransporteLan @Inject constructor(
         val port = abrirSocket() ?: return
         val d = discovery ?: run {
             lateinit var nueva: LanDiscovery
-            nueva = LanDiscovery(context, deviceId, v) { lista -> alCambiarAjenos(nueva, lista) }
+            nueva = LanDiscovery(context, deviceId, v, apiNivel = apiNivel) { lista -> alCambiarAjenos(nueva, lista) }
             nueva.also { discovery = it }
         }
         d.anunciar(port, txt(v))

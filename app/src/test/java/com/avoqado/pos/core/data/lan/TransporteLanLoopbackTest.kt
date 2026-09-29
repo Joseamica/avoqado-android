@@ -7,6 +7,7 @@ import android.net.NetworkRequest
 import android.net.nsd.NsdManager
 import android.net.nsd.NsdServiceInfo
 import com.avoqado.pos.core.data.sync.SyncOutbox
+import com.avoqado.pos.printing.data.EntregaPorWifi
 import com.avoqado.pos.printing.routing.PrintConfig
 import com.avoqado.pos.printing.routing.PrintConfigRepository
 import com.avoqado.pos.printing.routing.StationInfo
@@ -426,6 +427,7 @@ class TransporteLanLoopbackTest {
             every { port } returns 4321
         }
         val t = TransporteLan(mockk<Context>(relaxed = true) { every { getSystemService(Context.NSD_SERVICE) } returns nsd }, outbox, printConfig)
+        t.apiNivel = 34 // el re-resolve sólo corre en Android 14+ (I1); en la JVM el nivel vale 0
         try {
             t.iniciar("venue-1")
             t.conectarHub(LeaseServer()::respondTo)
@@ -439,6 +441,50 @@ class TransporteLanLoopbackTest {
             resoluciones.last().onServiceResolved(pantalla(kds = "qa35-barra"))
 
             assertEquals(listOf("cpad01"), t.pantallasDe("qa35-barra").map { it.deviceId })
+        } finally {
+            t.detener()
+        }
+    }
+
+    /**
+     * I2 (revisión del QA D1): NSD también descubre el anuncio de ESTE aparato. Contarlo como «conocido» hacía que
+     * `refrescarPeers` dijera `true` siempre y una caja sola esperara 1 s en CADA venta antes de imprimir. Con sólo el
+     * propio servicio: `false`, ningún resolve de más y la entrega sin pantalla sale al instante (1 s de espera pura ⇒ 900 ms
+     * de margen, con el reloj de verdad porque `empujar` mide el presupuesto con él).
+     */
+    @Test
+    fun `P1 I2 con solo el propio anuncio descubierto refrescarPeers dice false y empujar no espera`() = runBlocking {
+        val busquedas = mutableListOf<NsdManager.DiscoveryListener>()
+        val resoluciones = mutableListOf<NsdManager.ResolveListener>()
+        val nsd = mockk<NsdManager>(relaxed = true) {
+            every { discoverServices(any<String>(), any<Int>(), capture(busquedas)) } just runs
+            every { resolveService(any(), capture(resoluciones)) } just runs
+        }
+        val propio = mockk<NsdServiceInfo>(relaxed = true) {
+            every { serviceType } returns "._avoqado-pos._tcp."
+            every { serviceName } returns "Avoqado-POS-tablet" // "tablet-prueba".take(6)
+            every { attributes } returns mapOf("did" to "tablet-prueba".toByteArray(), "venue" to "venue-1".toByteArray(), "hub" to "1".toByteArray())
+            every { host } returns InetAddress.getByAddress(byteArrayOf(192.toByte(), 168.toByte(), 1, 40))
+            every { port } returns 4321
+        }
+        val t = TransporteLan(mockk<Context>(relaxed = true) { every { getSystemService(Context.NSD_SERVICE) } returns nsd }, outbox, printConfig)
+        t.apiNivel = 34
+        try {
+            t.iniciar("venue-1")
+            t.conectarHub(LeaseServer()::respondTo)
+            esperarPuerto(t)
+            busquedas.first().onServiceFound(propio)
+            resoluciones.single().onServiceResolved(propio)
+
+            assertFalse("sólo se conoce a sí mismo: no hay a quien preguntar", t.refrescarPeers())
+            assertEquals("ni gasta un resolve en sí mismo", 1, resoluciones.size)
+
+            val barra = KdsComanda(venueId = "venue-1", deviceId = "tablet-prueba", sourceKey = "sale:ext-1:st_barra", stationId = "st_barra", orderNumber = "1", orderType = "En tienda", createdAtMillis = 1, items = emptyList())
+            val entrega = EntregaPorWifi(t, mockk(relaxed = true), mockk())
+            val inicio = System.nanoTime()
+            assertFalse("sin pantalla el papel sale", entrega.empujar(barra))
+            val ms = (System.nanoTime() - inicio) / 1_000_000
+            assertTrue("no debe esperar la 1 s del refresco ($ms ms)", ms < 900)
         } finally {
             t.detener()
         }

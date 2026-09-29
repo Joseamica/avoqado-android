@@ -109,7 +109,8 @@ class EntregaPorWifi @Inject constructor(
         val presupuesto = if (esperarPantallasMs > 0) {
             ClienteDeComandas.PRESUPUESTO_MS
         } else {
-            ClienteDeComandas.PRESUPUESTO_MS - (System.nanoTime() - inicio) / 1_000_000
+            // Al menos 1 ms (M4): un plazo ≤ 0 no es «ya no queda», y `soTimeout = 0` es infinito.
+            (ClienteDeComandas.PRESUPUESTO_MS - (System.nanoTime() - inicio) / 1_000_000).coerceAtLeast(1)
         }
         return coroutineScope { pantallas.map { p -> async { cliente.entregar(p, mensaje, presupuesto) } }.awaitAll() }.any { it }
     }

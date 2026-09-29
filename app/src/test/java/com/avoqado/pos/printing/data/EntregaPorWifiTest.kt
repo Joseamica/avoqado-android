@@ -138,6 +138,23 @@ class EntregaPorWifiTest {
         )
     }
 
+    /**
+     * M4 (revisión del QA D1): si re-resolver ya se comió el presupuesto entero (el monitor del transporte tardó más de 1.5 s),
+     * el envío no recibe un plazo ≤ 0 — `soTimeout = 0` es infinito — sino 1 ms.
+     */
+    @Test
+    fun `P1 M4 si el refresco ya gasto todo el presupuesto el envio recibe al menos 1 ms`() = runBlocking {
+        var resuelto = false
+        every { transporte.pantallasDe("st_barra") } answers { if (resuelto) listOf(pantallaBarra) else emptyList() }
+        every { transporte.refrescarPeers() } answers { Thread.sleep(ClienteDeComandas.PRESUPUESTO_MS + 100); resuelto = true; true }
+        val presupuesto = slot<Long>()
+        coEvery { cliente.entregar(pantallaBarra, any(), capture(presupuesto)) } returns true
+
+        assertTrue(entrega.empujar(mensaje("st_barra")))
+
+        assertEquals(1L, presupuesto.captured)
+    }
+
     /** Si ni así aparece, se rinde al segundo: la espera más el envío nunca pasan de 1.5 s (ahí sale el papel). */
     @Test
     fun `P1 si la pantalla no aparece se rinde al segundo, dentro del presupuesto`() = runTest {
