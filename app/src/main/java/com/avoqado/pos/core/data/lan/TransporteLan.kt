@@ -77,6 +77,9 @@ class TransporteLan @Inject constructor(
     private val _hubConectado = MutableStateFlow(false)
     val hubConectado: StateFlow<Boolean> = _hubConectado.asStateFlow()
 
+    /** D11: entregas seguidas sin acuse por estación ([EntregaPorWifi] la alimenta; la banda de la caja la dice). */
+    val racha = RachaSinAcuse()
+
     @Volatile private var venueId: String? = null
     @Volatile private var hub: ((String) -> LeaseResponse)? = null
     @Volatile private var receptor: (suspend (KdsComanda) -> Boolean)? = null
@@ -133,6 +136,7 @@ class TransporteLan @Inject constructor(
     @Synchronized
     fun detener() {
         configJob?.cancel(); configJob = null
+        racha.limpiar() // otra sesión u otra sucursal empieza de cero
         apagarRed()
         venueId = null
     }

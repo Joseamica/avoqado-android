@@ -39,9 +39,11 @@ fun ConnectivityBanner(
      * mientras dure (`KitchenDeliveryPolicy.avisoSinRed`). `null` = el venue no tiene estaciones «sólo pantalla».
      */
     avisoDeCocina: String? = null,
+    /** 3.5, D11: la racha («La pantalla de Barra no se alcanza por el WiFi») se ve CON o sin internet. */
+    avisoDeRacha: String? = null,
 ) {
     AnimatedVisibility(
-        visible = visible || avisoDeLaCaja != null,
+        visible = visible || avisoDeLaCaja != null || avisoDeRacha != null,
         enter = slideInVertically { -it },
         exit = slideOutVertically { -it },
         modifier = modifier,
@@ -55,10 +57,7 @@ fun ConnectivityBanner(
             contentAlignment = Alignment.Center,
         ) {
             Text(
-                text = when {
-                    !visible && avisoDeLaCaja != null -> avisoDeLaCaja
-                    else -> textoSinRed(pendingSync, avisoDeCocina)
-                },
+                text = textoDeLaBanda(visible, pendingSync, avisoDeLaCaja, avisoDeCocina, avisoDeRacha),
                 color = Color.White,
                 style = MaterialTheme.typography.labelMedium,
                 fontWeight = FontWeight.SemiBold,
@@ -74,6 +73,14 @@ fun ConnectivityBanner(
         }
     }
 }
+
+/** Qué dice la banda. PURA: con red, la caja retenida gana a la racha; sin red, la racha reemplaza al aviso de papel. */
+internal fun textoDeLaBanda(visible: Boolean, pendingSync: Int, avisoDeLaCaja: String?, avisoDeCocina: String?, avisoDeRacha: String?): String =
+    when {
+        !visible && avisoDeLaCaja != null -> avisoDeLaCaja
+        !visible && avisoDeRacha != null -> avisoDeRacha
+        else -> textoSinRed(pendingSync, avisoDeRacha ?: avisoDeCocina)
+    }
 
 /** El texto de la banda cuando NO hay red. Puro para probarlo; espejo de `ConnectivityBannerView.textoSinRed` (iOS). */
 internal fun textoSinRed(pendingSync: Int, avisoDeCocina: String?): String {

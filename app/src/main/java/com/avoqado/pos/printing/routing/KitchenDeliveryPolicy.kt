@@ -138,13 +138,27 @@ object KitchenDeliveryPolicy {
     }
 
     /**
-     * La línea que la banda de «Sin conexión» agrega: mientras no haya red, estas estaciones salen en papel. En el orden
-     * de la config (el servidor ya la manda por `displayOrder`). `null` = no hay estaciones «sólo pantalla».
+     * La línea que la banda de «Sin conexión» agrega (3.5, D11): sin red, estas estaciones salen en papel SI LA PANTALLA
+     * NO CONTESTA por el WiFi. En el orden de la config (el servidor ya la manda por `displayOrder`). `null` = no hay
+     * estaciones «sólo pantalla».
      */
     fun avisoSinRed(config: PrintConfig): String? {
         val nombres = config.stations.filter { esSoloPantalla(it) }.map { it.name }
         if (nombres.isEmpty()) return null
-        val lista = if (nombres.size == 1) nombres.single() else nombres.dropLast(1).joinToString(", ") + " y " + nombres.last()
-        return "Las comandas de $lista salen en papel"
+        return "Las comandas de ${lista(nombres)} salen en papel si la pantalla no contesta"
     }
+
+    /** Racha (D11): tras 3 entregas seguidas sin acuse a una estación, se dice fijo — con o sin internet. `null` = ninguna. */
+    fun avisoDeRacha(sinAlcance: Set<String>, config: PrintConfig): String? {
+        val nombres = config.stations.filter { it.id in sinAlcance }.map { it.name }
+        if (nombres.isEmpty()) return null
+        return if (nombres.size == 1) {
+            "La pantalla de ${nombres.single()} no se alcanza por el WiFi"
+        } else {
+            "Las pantallas de ${lista(nombres)} no se alcanzan por el WiFi"
+        }
+    }
+
+    private fun lista(nombres: List<String>): String =
+        if (nombres.size == 1) nombres.single() else nombres.dropLast(1).joinToString(", ") + " y " + nombres.last()
 }

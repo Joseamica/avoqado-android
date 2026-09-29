@@ -4,11 +4,14 @@ import com.avoqado.pos.core.data.local.PayloadCache
 import com.avoqado.pos.core.data.network.ApiService
 import com.avoqado.pos.core.di.NetworkModule
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.mockk
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -176,5 +179,54 @@ class PrintConfigRepositoryTest {
         repository.refreshConTope("venue-1", topeMs = 50)
 
         assertEquals(listOf("st_cocina"), repository.getCurrentConfig().stations.map { it.id })
+    }
+
+    // MARK: - Etapa 3 del KDS (3.5, paridad con la ronda 1 de la Task 7 de iOS)
+
+    /**
+     * El refresh NO se cancela al vencer el tope, así que el de la sucursal ANTERIOR (el replay de entregas, una venta al
+     * cambiar de local) puede contestar DESPUÉS del de la vigente. Esa respuesta tardía no pisa la config — gana la última
+     * sucursal pedida — pero sí se guarda en SU copia en disco, que es por sucursal. Sin esto, las ventas del local nuevo
+     * se ruteaban con las estaciones e impresoras del viejo.
+     */
+    @Test
+    fun `P1 una respuesta tardia de la sucursal anterior no pisa la config de la vigente`() = runTest {
+        val puertaAnterior = CompletableDeferred<Unit>()
+        val anterior = configConEstacion().copy(stations = listOf(StationInfo(id = "st_anterior", name = "Anterior")))
+        val vigente = configConEstacion().copy(stations = listOf(StationInfo(id = "st_vigente", name = "Vigente")))
+        coEvery { apiService.getPrintConfig("venue-anterior") } coAnswers {
+            puertaAnterior.await()
+            PrintConfigResponse(success = true, data = anterior)
+        }
+        coEvery { apiService.getPrintConfig("venue-vigente") } returns PrintConfigResponse(success = true, data = vigente)
+
+        val tardia = launch { repository.refresh("venue-anterior") }
+        runCurrent()
+        repository.refresh("venue-vigente")
+        puertaAnterior.complete(Unit)
+        tardia.join()
+
+        assertEquals(listOf("st_vigente"), repository.getCurrentConfig().stations.map { it.id })
+        coVerify(exactly = 1) { payloadCache.save(PayloadCache.TYPE_PRINT_CONFIG, "venue-anterior", any()) }
+    }
+
+    /** Lo mismo cuando la anterior FALLA tarde: no hidrata su copia en disco encima de la sucursal vigente. */
+    @Test
+    fun `una falla tardia de la sucursal anterior no hidrata su cache sobre la vigente`() = runTest {
+        val puertaAnterior = CompletableDeferred<Unit>()
+        coEvery { apiService.getPrintConfig("venue-anterior") } coAnswers {
+            puertaAnterior.await()
+            throw RuntimeException("sin red")
+        }
+        coEvery { apiService.getPrintConfig("venue-vigente") } throws RuntimeException("sin red")
+        coEvery { payloadCache.load(any(), any()) } returns null
+
+        val tardia = launch { repository.refresh("venue-anterior") }
+        runCurrent()
+        repository.refresh("venue-vigente")
+        puertaAnterior.complete(Unit)
+        tardia.join()
+
+        coVerify(exactly = 0) { payloadCache.load(PayloadCache.TYPE_PRINT_CONFIG, "venue-anterior") }
     }
 }

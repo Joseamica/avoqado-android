@@ -13,7 +13,9 @@ import com.avoqado.pos.printing.routing.TicketPlan
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
+import io.mockk.just
 import io.mockk.mockk
+import io.mockk.Runs
 import io.mockk.slot
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.advanceTimeBy
@@ -34,7 +36,11 @@ class ReplayDeEntregasKdsTest {
 
     private val dao = mockk<EntregasKdsPendientesDao>(relaxed = true)
     private val entregaPorWifi = mockk<EntregaPorWifi>()
-    private val despachador = mockk<ComandaDispatcher>()
+    /**
+     * Estricto: el replay refresca la config POR SU CUENTA (`refrescarConfig`, para revalidar la sucursal antes y después)
+     * y le pide a `reintentar` que NO refresque otra vez (`refrescar = false`): una llamada con `true` no tiene respuesta.
+     */
+    private val despachador = mockk<ComandaDispatcher> { coEvery { refrescarConfig(any()) } just Runs }
     private val cola = mockk<SyncOutbox>(relaxed = true)
     /** La libreta arranca vacía; las pruebas que la necesitan ocupada la re-stubbean. */
     private val pendientes = mockk<ComandasPendientesStore>(relaxed = true) {
@@ -66,14 +72,14 @@ class ReplayDeEntregasKdsTest {
         val ahora = 1_000_000L
         coEvery { dao.delVenue("venue-1") } returns listOf(fila("sale:reciente:st_barra", ahora - 5 * 60_000), fila("sale:vieja:st_barra", ahora - 20 * 60_000))
         coEvery { entregaPorWifi.empujar(match { it.sourceKey == "sale:reciente:st_barra" }, any()) } returns true
-        coEvery { despachador.reintentar(any(), any()) } returns EstadoDeComanda.Salio
+        coEvery { despachador.reintentar(any(), any(), false) } returns EstadoDeComanda.Salio
         val marca = slot<JsonObject>()
         coEvery { cola.enqueue("venue-1", "KDS_TICKET_MARK", capture(marca), any(), false) } returns "m-1"
 
         replay.reproducirAlAbrir("venue-1", ahora)
 
         coVerify(exactly = 1) { entregaPorWifi.empujar(any(), ReplayDeEntregasKds.ESPERA_PANTALLAS_MS) }
-        coVerify(exactly = 1) { despachador.reintentar(any(), any()) }
+        coVerify(exactly = 1) { despachador.reintentar(any(), any(), false) }
         assertEquals("sale:vieja:st_barra", marca.captured["sourceKey"]!!.jsonPrimitive.content)
         assertEquals("FALLBACK_PRINTED", marca.captured["action"]!!.jsonPrimitive.content)
         assertEquals("1234", marca.captured["label"]!!.jsonPrimitive.content)
@@ -85,11 +91,11 @@ class ReplayDeEntregasKdsTest {
     fun `una reciente que NO acusa tambien sale en papel`() = runTest {
         coEvery { dao.delVenue("venue-1") } returns listOf(fila("sale:reciente:st_barra", 1_000))
         coEvery { entregaPorWifi.empujar(any(), any()) } returns false
-        coEvery { despachador.reintentar(any(), any()) } returns EstadoDeComanda.Salio
+        coEvery { despachador.reintentar(any(), any(), false) } returns EstadoDeComanda.Salio
 
         replay.reproducirAlAbrir("venue-1", ahora = 2_000)
 
-        coVerify(exactly = 1) { despachador.reintentar(any(), any()) }
+        coVerify(exactly = 1) { despachador.reintentar(any(), any(), false) }
         coVerify(exactly = 1) { cola.enqueue("venue-1", "KDS_TICKET_MARK", any(), any(), false) }
     }
 
@@ -101,7 +107,7 @@ class ReplayDeEntregasKdsTest {
     fun `P1 si el papel NO salio no se marca - va a la libreta y la fila SE QUEDA hasta que el papel salga`() = runTest {
         coEvery { dao.delVenue("venue-1") } returns listOf(fila("sale:vieja:st_barra", 0))
         val noSalio = EstadoDeComanda.NoSalio(listOf("Barra"), "offline", "1234", trabajo)
-        coEvery { despachador.reintentar(any(), any()) } returns noSalio
+        coEvery { despachador.reintentar(any(), any(), false) } returns noSalio
 
         replay.reproducirAlAbrir("venue-1", ahora = 20 * 60_000)
 
@@ -115,7 +121,7 @@ class ReplayDeEntregasKdsTest {
     fun `con la libreta ocupada por otra comanda no se pisa - la fila se queda para la proxima apertura`() = runTest {
         every { pendientes.pendiente } returns MutableStateFlow(EstadoDeComanda.NoSalio(listOf("Cocina"), "offline", "7777", trabajo.copy(orderNumber = "7777")))
         coEvery { dao.delVenue("venue-1") } returns listOf(fila("sale:vieja:st_barra", 0))
-        coEvery { despachador.reintentar(any(), any()) } returns EstadoDeComanda.NoSalio(listOf("Barra"), "offline", "1234", trabajo)
+        coEvery { despachador.reintentar(any(), any(), false) } returns EstadoDeComanda.NoSalio(listOf("Barra"), "offline", "1234", trabajo)
 
         replay.reproducirAlAbrir("venue-1", ahora = 20 * 60_000)
 
@@ -127,7 +133,7 @@ class ReplayDeEntregasKdsTest {
     @Test
     fun `una estacion sin impresora se da por decidida - se borra sin marca`() = runTest {
         coEvery { dao.delVenue("venue-1") } returns listOf(fila("sale:vieja:st_barra", 0))
-        coEvery { despachador.reintentar(any(), any()) } returns EstadoDeComanda.NoSalio(listOf("Barra"), "sin impresora", "1234", trabajo = null)
+        coEvery { despachador.reintentar(any(), any(), false) } returns EstadoDeComanda.NoSalio(listOf("Barra"), "sin impresora", "1234", trabajo = null)
 
         replay.reproducirAlAbrir("venue-1", ahora = 20 * 60_000)
 
@@ -139,7 +145,7 @@ class ReplayDeEntregasKdsTest {
     fun `una fila ilegible se descarta sin tumbar el resto`() = runTest {
         coEvery { dao.delVenue("venue-1") } returns listOf(fila("sale:vieja:st_barra", 0).copy(trabajoJson = "{roto"))
         replay.reproducirAlAbrir("venue-1", ahora = 20 * 60_000)
-        coVerify(exactly = 0) { despachador.reintentar(any(), any()) }
+        coVerify(exactly = 0) { despachador.reintentar(any(), any(), any()) }
         coVerify(exactly = 1) { dao.borrar("sale:vieja:st_barra|") }
     }
 
@@ -153,7 +159,7 @@ class ReplayDeEntregasKdsTest {
 
         coVerify(exactly = 1) { entregaPorWifi.empujar(match { it.sourceKey == "sale:muerta:st_barra" }, any()) }
         coVerify(exactly = 0) { entregaPorWifi.empujar(match { it.sourceKey == "sale:viva:st_barra" }, any()) }
-        coVerify(exactly = 0) { despachador.reintentar(any(), any()) }
+        coVerify(exactly = 0) { despachador.reintentar(any(), any(), any()) }
         coVerify(exactly = 0) { dao.borrar("sale:viva:st_barra|") }
         coVerify(exactly = 1) { dao.borrar("sale:muerta:st_barra|") }
     }
@@ -169,7 +175,7 @@ class ReplayDeEntregasKdsTest {
             listOf(fila("sale:rota:st_barra", 0)),
         )
         var llamadas = 0
-        coEvery { despachador.reintentar(any(), any()) } coAnswers {
+        coEvery { despachador.reintentar(any(), any(), false) } coAnswers {
             llamadas++
             if (llamadas == 1) throw RuntimeException("AIDL no conectó") else EstadoDeComanda.Salio
         }
@@ -179,7 +185,7 @@ class ReplayDeEntregasKdsTest {
         coVerify(exactly = 1) { dao.borrar("sale:buena:st_barra|") }
 
         replay.reproducirAlAbrir("venue-1", ahora = 21 * 60_000)
-        coVerify(exactly = 3) { despachador.reintentar(any(), any()) }
+        coVerify(exactly = 3) { despachador.reintentar(any(), any(), false) }
         coVerify(exactly = 1) { dao.borrar("sale:rota:st_barra|") }
         coVerify(exactly = 2) { cola.enqueue("venue-1", "KDS_TICKET_MARK", any(), any(), false) }
     }
@@ -189,11 +195,11 @@ class ReplayDeEntregasKdsTest {
     fun `P1 una fila soltada por un despacho de este proceso se retoma, y una viva no`() = runTest {
         coEvery { dao.delVenue("venue-1") } returns listOf(fila("sale:viva:st_barra", 5_000), fila("sale:suelta:st_barra", 5_000, soltada = 5_500))
         coEvery { entregaPorWifi.empujar(any(), any()) } returns false
-        coEvery { despachador.reintentar(any(), any()) } returns EstadoDeComanda.Salio
+        coEvery { despachador.reintentar(any(), any(), false) } returns EstadoDeComanda.Salio
 
         replay.reproducirAlAbrir("venue-1", ahora = 6_000, arranqueDelProceso = 4_000)
 
-        coVerify(exactly = 1) { despachador.reintentar(any(), any()) }
+        coVerify(exactly = 1) { despachador.reintentar(any(), any(), false) }
         coVerify(exactly = 1) { dao.borrar("sale:suelta:st_barra|") }
         coVerify(exactly = 0) { dao.borrar("sale:viva:st_barra|") }
     }
@@ -209,7 +215,7 @@ class ReplayDeEntregasKdsTest {
         every { pendientes.pendiente } returns MutableStateFlow(EstadoDeComanda.NoSalio(listOf("Cocina"), "offline", "7777", trabajo.copy(orderNumber = "7777")))
         coEvery { dao.delVenue("venue-1") } returns listOf(fila("sale:suelta:st_barra", ahora, soltada = ahora))
         coEvery { entregaPorWifi.empujar(any(), any()) } returns false
-        coEvery { despachador.reintentar(any(), any()) } returnsMany listOf(
+        coEvery { despachador.reintentar(any(), any(), false) } returnsMany listOf(
             EstadoDeComanda.NoSalio(listOf("Barra"), "offline", "1234", trabajo),
             EstadoDeComanda.Salio,
         )
@@ -217,26 +223,26 @@ class ReplayDeEntregasKdsTest {
         replay.iniciar(backgroundScope, "venue-1")
         replay.iniciar(backgroundScope, "venue-1")
         runCurrent()
-        coVerify(exactly = 1) { despachador.reintentar(any(), any()) }
+        coVerify(exactly = 1) { despachador.reintentar(any(), any(), false) }
         coVerify(exactly = 0) { dao.borrar(any()) }
 
         advanceTimeBy(ReplayDeEntregasKds.INTERVALO_MS + 1)
         runCurrent()
-        coVerify(exactly = 2) { despachador.reintentar(any(), any()) }
+        coVerify(exactly = 2) { despachador.reintentar(any(), any(), false) }
         coVerify(exactly = 1) { cola.enqueue("venue-1", "KDS_TICKET_MARK", any(), any(), false) }
         coVerify(exactly = 1) { dao.borrar("sale:suelta:st_barra|") }
 
         replay.detener()
         advanceTimeBy(ReplayDeEntregasKds.INTERVALO_MS + 1)
         runCurrent()
-        coVerify(exactly = 2) { despachador.reintentar(any(), any()) }
+        coVerify(exactly = 2) { despachador.reintentar(any(), any(), false) }
     }
 
     @Test
     fun `si la base no se deja leer el replay no lanza`() = runTest {
         coEvery { dao.delVenue("venue-1") } throws IllegalStateException("disco lleno")
         replay.reproducirAlAbrir("venue-1", ahora = 20 * 60_000)
-        coVerify(exactly = 0) { despachador.reintentar(any(), any()) }
+        coVerify(exactly = 0) { despachador.reintentar(any(), any(), any()) }
     }
 
     /** I4: la comanda de ayer ya se resolvió; imprimirla sola en la cocina manda comida que nadie pidió (vigencia de la libreta). */
@@ -248,7 +254,7 @@ class ReplayDeEntregasKdsTest {
         replay.reproducirAlAbrir("venue-1", ahora = ahora)
 
         coVerify(exactly = 0) { entregaPorWifi.empujar(any(), any()) }
-        coVerify(exactly = 0) { despachador.reintentar(any(), any()) }
+        coVerify(exactly = 0) { despachador.reintentar(any(), any(), any()) }
         coVerify(exactly = 0) { cola.enqueue(any(), any(), any(), any(), any()) }
         coVerify(exactly = 1) { dao.borrar("sale:ayer:st_barra|") }
     }
@@ -265,7 +271,7 @@ class ReplayDeEntregasKdsTest {
 
         replay.reproducirAlAbrir("venue-1", ahora = 20 * 60_000)
 
-        coVerify(exactly = 0) { despachador.reintentar(any(), any()) }
+        coVerify(exactly = 0) { despachador.reintentar(any(), any(), any()) }
         coVerify(exactly = 0) { dao.borrar(any()) }
     }
 
@@ -279,14 +285,14 @@ class ReplayDeEntregasKdsTest {
     @Test
     fun `P1 si la sucursal cambia a media pasada la fila siguiente se suspende - ni se imprime ni se borra`() = runTest {
         coEvery { dao.delVenue("venue-1") } returns listOf(fila("sale:uno:st_barra", 0), fila("sale:dos:st_barra", 0))
-        coEvery { despachador.reintentar(any(), any()) } coAnswers {
+        coEvery { despachador.reintentar(any(), any(), false) } coAnswers {
             sucursalVigente = "venue-2"
             EstadoDeComanda.Salio
         }
 
         replay.reproducirAlAbrir("venue-1", ahora = 20 * 60_000)
 
-        coVerify(exactly = 1) { despachador.reintentar(any(), any()) }
+        coVerify(exactly = 1) { despachador.reintentar(any(), any(), false) }
         coVerify(exactly = 1) { dao.borrar("sale:uno:st_barra|") }
         coVerify(exactly = 0) { dao.borrar("sale:dos:st_barra|") }
         coVerify(exactly = 1) { cola.enqueue(any(), any(), any(), any(), any()) }
@@ -303,7 +309,8 @@ class ReplayDeEntregasKdsTest {
 
         replay.reproducirAlAbrir("venue-1", ahora = 2_000)
 
-        coVerify(exactly = 0) { despachador.reintentar(any(), any()) }
+        coVerify(exactly = 0) { despachador.refrescarConfig(any()) }
+        coVerify(exactly = 0) { despachador.reintentar(any(), any(), any()) }
         coVerify(exactly = 0) { dao.borrar(any()) }
     }
 
@@ -314,8 +321,51 @@ class ReplayDeEntregasKdsTest {
 
         replay.reproducirAlAbrir("venue-1", ahora = 20 * 60_000)
 
-        coVerify(exactly = 0) { despachador.reintentar(any(), any()) }
+        coVerify(exactly = 0) { despachador.refrescarConfig(any()) }
+        coVerify(exactly = 0) { despachador.reintentar(any(), any(), any()) }
         coVerify(exactly = 0) { entregaPorWifi.empujar(any(), any()) }
         coVerify(exactly = 0) { dao.borrar(any()) }
+    }
+
+    // MARK: - Paridad con la ronda 1 de la Task 7 de iOS
+
+    /**
+     * El refresco de la config (hasta 1.5 s de tope) también da tiempo a un cambio de sucursal. Se revalida DESPUÉS: si ya
+     * no es la vigente, no se reimprime (la config en memoria podría ser ya la de la otra sucursal y el papel saldría en su
+     * cocina), no se marca y la fila se queda suspendida. Y el refresco es de la sucursal de la fila, la vigente al pedirlo.
+     */
+    @Test
+    fun `P1 si la sucursal cambia mientras se refresca la config no se reimprime - la fila queda suspendida`() = runTest {
+        coEvery { dao.delVenue("venue-1") } returns listOf(fila("sale:uno:st_barra", 0), fila("sale:dos:st_barra", 0))
+        coEvery { despachador.refrescarConfig("venue-1") } coAnswers { sucursalVigente = "venue-2" }
+
+        replay.reproducirAlAbrir("venue-1", ahora = 20 * 60_000)
+
+        coVerify(exactly = 1) { despachador.refrescarConfig("venue-1") }
+        coVerify(exactly = 0) { despachador.reintentar(any(), any(), any()) }
+        coVerify(exactly = 0) { cola.enqueue(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { dao.borrar(any()) }
+    }
+
+    /**
+     * El papel SALIÓ pero la fila no se pudo borrar (disco): con el reloj de 60 s sería un papel repetido por minuto
+     * durante 8 h. El replay recuerda que ya salió: el siguiente tic sólo reintenta BORRARLA — ni reimprime ni remarca.
+     */
+    @Test
+    fun `P1 un papel que salio pero cuya fila no se pudo borrar no se reimprime en el siguiente tic`() = runTest {
+        val laFila = listOf(fila("sale:vieja:st_barra", 0))
+        coEvery { dao.delVenue("venue-1") } returnsMany listOf(laFila, laFila, laFila, emptyList())
+        coEvery { despachador.reintentar(any(), any(), false) } returns EstadoDeComanda.Salio
+        var borrados = 0
+        coEvery { dao.borrar("sale:vieja:st_barra|") } coAnswers {
+            if (++borrados <= 2) throw IllegalStateException("disco lleno")
+            1
+        }
+
+        repeat(4) { tic -> replay.reproducirAlAbrir("venue-1", ahora = (20L + tic) * 60_000) }
+
+        coVerify(exactly = 1) { despachador.reintentar(any(), any(), any()) }
+        coVerify(exactly = 1) { cola.enqueue("venue-1", "KDS_TICKET_MARK", any(), any(), false) }
+        coVerify(exactly = 3) { dao.borrar("sale:vieja:st_barra|") }
     }
 }

@@ -39,6 +39,14 @@ class PrintConfigRepository @Inject constructor(
     fun getCurrentConfig(): PrintConfig = _config.value
 
     /**
+     * La sucursal del ÚLTIMO refresh pedido. Etapa 3 del KDS (3.5, paridad con la ronda 1 de la Task 7 de iOS): el refresh
+     * no se cancela al vencer el tope ([refreshConTope]), así que el de la sucursal ANTERIOR puede contestar después del de
+     * la vigente; esa respuesta tardía no pisa la config. Bajo [candado]: los refresh corren en hilos de IO.
+     */
+    private var ultimoVenuePedido: String? = null
+    private val candado = Any()
+
+    /**
      * 🔴 OFFLINE-FIRST (bug encontrado en el smoke de impresión, 2026-07-25):
      * antes, un refresh fallido PISABA la config buena con `PrintConfig()` vacío
      * → cero estaciones → la comanda NO se imprimía. Dos consecuencias reales:
@@ -53,10 +61,10 @@ class PrintConfigRepository @Inject constructor(
      * Mismo patrón cache-first del Corte A (mesas/productos/menús).
      */
     suspend fun refresh(venueId: String) {
+        synchronized(candado) { ultimoVenuePedido = venueId }
         try {
             val response = apiService.getPrintConfig(venueId)
-            _config.value = response.data
-            Log.d(TAG, "✅ Print config loaded: ${response.data.stations.size} station(s)")
+            // La copia en disco es POR SUCURSAL: se guarda aunque la respuesta llegue tarde.
             runCatching {
                 payloadCache.save(
                     com.avoqado.pos.core.data.local.PayloadCache.TYPE_PRINT_CONFIG,
@@ -64,9 +72,18 @@ class PrintConfigRepository @Inject constructor(
                     cacheJson.encodeToString(PrintConfig.serializer(), response.data),
                 )
             }
+            val aplicada = synchronized(candado) {
+                (ultimoVenuePedido == venueId).also { if (it) _config.value = response.data }
+            }
+            if (!aplicada) {
+                Log.i(TAG, "⏭️ Print config de $venueId llegó tarde: ya se pidió la de otra sucursal — no se aplica")
+                return
+            }
+            Log.d(TAG, "✅ Print config loaded: ${response.data.stations.size} station(s)")
         } catch (e: Exception) {
             Log.w(TAG, "⚠️ Print config sin red (${e.message}) — conservo la vigente / hidrato del cache")
             if (_config.value.stations.isNotEmpty()) return // ya tengo una buena: NO la piso
+            if (synchronized(candado) { ultimoVenuePedido != venueId }) return // otra sucursal ya pidió la suya
             hydrateFromCache(venueId)
         }
     }

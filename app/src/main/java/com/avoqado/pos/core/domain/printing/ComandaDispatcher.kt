@@ -443,6 +443,11 @@ class ComandaDispatcher @Inject constructor(
     suspend fun reintentar(
         trabajo: TrabajoPendiente,
         alCambiarEstado: (EstadoDeComanda) -> Unit = {},
+        /**
+         * `false` = quien llama ya refrescó con [refrescarConfig]. El replay de entregas (KDS 3.5, paridad con iOS) lo
+         * hace aparte para revalidar la sucursal ANTES y DESPUÉS del refresco: aquí no se vuelve a refrescar.
+         */
+        refrescar: Boolean = true,
     ): EstadoDeComanda {
         // 🔴 Se congela QUÉ imprimir, no DÓNDE. La config vieja llevaba la dirección de la
         // impresora en el momento del fallo, así que corregir la IP en Ajustes y tocar «Volver
@@ -451,7 +456,7 @@ class ComandaDispatcher @Inject constructor(
         //
         // El refresh falla abierto (conserva la config vigente), así que sin red esto es
         // exactamente lo de antes: se reimprime con lo último que el aparato sabía.
-        trabajo.venueId?.let { printConfigRepository.refreshConTope(it) }
+        if (refrescar) trabajo.venueId?.let { refrescarConfig(it) }
         // Etapa 3 del KDS (3.4): la config vigente, pero con las estaciones que iban de RESPALDO marcadas otra vez — si
         // no, «Volver a imprimir» sacaría la hoja sin su encabezado y sin la impresora de la default.
         val configVigente = KitchenDeliveryPolicy.heredarRespaldo(de = trabajo.config, en = printConfigRepository.getCurrentConfig())
@@ -461,6 +466,11 @@ class ComandaDispatcher @Inject constructor(
         )
         cerrarPapelQueSalio(trabajo, estado)
         return estado
+    }
+
+    /** El refresco con tope de [reintentar], suelto: falla abierto (sin red conserva la config vigente). */
+    suspend fun refrescarConfig(venueId: String) {
+        printConfigRepository.refreshConTope(venueId)
     }
 
     /**

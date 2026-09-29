@@ -201,16 +201,23 @@ class AppState @Inject constructor(
         )
 
     /**
-     * Etapa 3 del KDS (3.4): sin red, las estaciones «sólo pantalla» salen en papel de respaldo. La banda de «Sin
-     * conexión» lo dice fijo mientras dure — nunca en rojo, nunca un aviso por comanda.
+     * Etapa 3 del KDS (3.5, D11): sin red, las estaciones «sólo pantalla» salen en papel si la pantalla no contesta; la
+     * banda lo dice fijo — nunca en rojo, nunca un aviso por comanda — SALVO en la tablet que ES la pantalla (receptor
+     * vivo): ahí es cierto para las cajas y confuso para la cocina.
+     * `by lazy`: combina con [transporteLan], que Hilt inyecta por miembro DESPUÉS del constructor.
      */
-    val avisoDeCocinaSinRed: StateFlow<String?> = printConfigRepository.config
-        .map { com.avoqado.pos.printing.routing.KitchenDeliveryPolicy.avisoSinRed(it) }
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.WhileSubscribed(5_000),
-            initialValue = null,
-        )
+    val avisoDeCocinaSinRed: StateFlow<String?> by lazy {
+        combine(printConfigRepository.config, transporteLan.receptorActivo) { config, esPantalla ->
+            if (esPantalla) null else com.avoqado.pos.printing.routing.KitchenDeliveryPolicy.avisoSinRed(config)
+        }.stateIn(scope = viewModelScope, started = SharingStarted.WhileSubscribed(5_000), initialValue = null)
+    }
+
+    /** D11: tras 3 entregas seguidas sin acuse a una estación, «La pantalla de Barra no se alcanza por el WiFi», con o sin internet. */
+    val avisoDeRacha: StateFlow<String?> by lazy {
+        combine(printConfigRepository.config, transporteLan.racha.sinAlcance) { config, sinAlcance ->
+            com.avoqado.pos.printing.routing.KitchenDeliveryPolicy.avisoDeRacha(sinAlcance, config)
+        }.stateIn(scope = viewModelScope, started = SharingStarted.WhileSubscribed(5_000), initialValue = null)
+    }
 
     val showOfflineBanner: StateFlow<Boolean> = combine(
         connectivityMonitor.isConnected,

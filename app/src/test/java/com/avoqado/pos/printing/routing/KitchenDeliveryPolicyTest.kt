@@ -162,15 +162,24 @@ class KitchenDeliveryPolicyTest {
     }
 
     @Test
-    fun `el aviso sin red nombra las estaciones solo pantalla en el orden de la config`() {
+    fun `el aviso sin red nombra las estaciones solo pantalla en el orden de la config - y dice que es si la pantalla no contesta`() {
         assertNull(KitchenDeliveryPolicy.avisoSinRed(config(cocina, barraConImpresora)))
-        assertEquals("Las comandas de Barra salen en papel", KitchenDeliveryPolicy.avisoSinRed(config(cocina, barraSoloPantalla)))
+        assertEquals("Las comandas de Barra salen en papel si la pantalla no contesta", KitchenDeliveryPolicy.avisoSinRed(config(cocina, barraSoloPantalla)))
         val tres = config(
             barraSoloPantalla,
             StationInfo(id = "st_p", name = "Postres", hasKitchenDisplay = true),
             StationInfo(id = "st_c", name = "Café", hasKitchenDisplay = true),
         )
-        assertEquals("Las comandas de Barra, Postres y Café salen en papel", KitchenDeliveryPolicy.avisoSinRed(tres))
+        assertEquals("Las comandas de Barra, Postres y Café salen en papel si la pantalla no contesta", KitchenDeliveryPolicy.avisoSinRed(tres))
+    }
+
+    @Test
+    fun `el aviso de racha nombra las pantallas que no se alcanzan, y nada si ninguna`() {
+        val c = config(cocina, barraSoloPantalla, StationInfo(id = "st_p", name = "Postres", hasKitchenDisplay = true))
+        assertNull(KitchenDeliveryPolicy.avisoDeRacha(emptySet(), c))
+        assertEquals("La pantalla de Barra no se alcanza por el WiFi", KitchenDeliveryPolicy.avisoDeRacha(setOf("st_barra"), c))
+        assertEquals("Las pantallas de Barra y Postres no se alcanzan por el WiFi", KitchenDeliveryPolicy.avisoDeRacha(setOf("st_p", "st_barra"), c))
+        assertNull("una estación que ya no existe en la config no se nombra", KitchenDeliveryPolicy.avisoDeRacha(setOf("st_borrada"), c))
     }
 
     @Test

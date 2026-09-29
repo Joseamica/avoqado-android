@@ -58,6 +58,14 @@ class ReplayDeEntregasKds @Inject constructor(
     @Volatile private var venueDelReloj: String? = null
 
     /**
+     * Paridad con iOS (ronda 1 de la Task 7): filas cuyo papel SALIÓ en este proceso pero no se pudieron borrar (disco).
+     * La siguiente pasada sólo reintenta BORRARLAS; sin esto, con el reloj de 60 s, sería un papel repetido por minuto
+     * durante 8 h. Sólo se toca dentro de una pasada, bajo [candado]. ponytail: en memoria — si el proceso muere antes
+     * de borrarla, la siguiente apertura la imprime UNA vez más (duplicado, nunca pérdida).
+     */
+    private val yaSalieron = mutableSetOf<String>()
+
+    /**
      * 🔴 Guarda contra un despacho VIVO: la fila de una entrega en curso existe mientras `dispatch` decide su papel
      * (`insistir` puede tardar ~1 min). Se toman las filas creadas ANTES de que existiera este objeto (nace con
      * `AppState`, antes de cualquier venta: son de un proceso muerto) y las de este proceso que su despacho ya SOLTÓ
@@ -140,6 +148,11 @@ class ReplayDeEntregasKds @Inject constructor(
     }
 
     private suspend fun reproducir(fila: EntregaKdsPendienteEntity, venueId: String, ahora: Long) {
+        if (fila.entregaId in yaSalieron) {
+            dao.borrar(fila.entregaId) // si vuelve a tronar, se queda en el conjunto y el siguiente tic insiste
+            yaSalieron.remove(fila.entregaId)
+            return
+        }
         // I4: una comanda de hace más de 8 h ya se resolvió (la cocina la preparó, alguien la cantó, el cliente se fue).
         // Imprimirla sola en la cocina manda comida que nadie pidió: se retira sin papel ni marca.
         if (ahora - fila.creadaEnMillis > VIGENCIA_MS) {
@@ -166,13 +179,21 @@ class ReplayDeEntregasKds @Inject constructor(
             dao.borrar(fila.entregaId)
             return
         }
-        // I1: la espera a la pantalla (hasta 3 s + el empuje) da tiempo a un cambio de sucursal. `reintentar` refresca la
-        // config de impresión de ESTA sucursal e imprime en la LAN de la vigente: si ya no es ésta, la fila se suspende.
+        // I1: la espera a la pantalla (hasta 3 s + el empuje) da tiempo a un cambio de sucursal, y el refresco de la config
+        // (hasta 1.5 s) también. Se revalida ANTES — nunca se refresca la config de una sucursal que ya no es la vigente —
+        // y DESPUÉS: la config en memoria podría ser ya la de la otra y el papel saldría en su cocina. Paridad con iOS.
         if (!sigueVigente(venueId)) return
-        when (val estado = comandaDispatcher.reintentar(trabajo)) {
+        comandaDispatcher.refrescarConfig(venueId)
+        if (!sigueVigente(venueId)) return
+        when (val estado = comandaDispatcher.reintentar(trabajo, refrescar = false)) {
             is EstadoDeComanda.Salio -> {
                 marcar(venueId, fila.sourceKey, fila.stationId, trabajo.orderNumber)
-                dao.borrar(fila.entregaId)
+                try {
+                    dao.borrar(fila.entregaId)
+                } catch (e: Throwable) {
+                    yaSalieron += fila.entregaId // el papel ya salió: el siguiente tic sólo reintenta borrarla
+                    throw e
+                }
             }
             is EstadoDeComanda.NoSalio -> when {
                 // Sin ninguna impresora: no hay papel que reintentar (reenviarlo no le inventa una). Decidida, sin marca;

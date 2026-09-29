@@ -2,6 +2,8 @@ package com.avoqado.pos.auth.presentation
 
 import com.avoqado.pos.MainDispatcherRule
 import com.avoqado.pos.auth.data.AuthRepository
+import com.avoqado.pos.core.data.lan.RachaSinAcuse
+import com.avoqado.pos.core.data.lan.TransporteLan
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.sync.SyncOutbox
 import com.avoqado.pos.core.domain.PlanManager
@@ -9,6 +11,7 @@ import com.avoqado.pos.core.domain.RoleManager
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.inventory.data.InventoryCountSyncCoordinator
 import com.avoqado.pos.payment.data.PaymentSyncService
+import com.avoqado.pos.printing.routing.StationInfo
 import com.avoqado.pos.reservations.data.ReservationRepository
 import com.avoqado.pos.settings.domain.PosMode
 import com.avoqado.pos.settings.domain.PosModeManager
@@ -22,6 +25,9 @@ import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
@@ -249,5 +255,33 @@ class AppStateVenueRecoveryTest {
         // tarea (ver AppState.kt) — exactly(1) es un falso rojo. atLeast(1) con los args exactos sigue
         // cayendo si la precarga se quita.
         io.mockk.coVerify(atLeast = 1) { printConfig.refreshConTope("venue-atole", 0L) }
+    }
+
+    /** Etapa 3 del KDS (3.5, D11): en la tablet que ES la pantalla la banda no dice lo del papel; la racha se dice con o sin red. */
+    @Test
+    fun `P1 con el receptor vivo la banda calla lo del papel, y tras 3 sin acuse dice que la pantalla no se alcanza`() {
+        val barra = StationInfo(id = "st_barra", name = "Barra", hasKitchenDisplay = true)
+        val printConfig = mockk<com.avoqado.pos.printing.routing.PrintConfigRepository>(relaxed = true) {
+            every { config } returns MutableStateFlow(com.avoqado.pos.printing.routing.PrintConfig(stations = listOf(barra)))
+        }
+        val receptorActivo = MutableStateFlow(false)
+        val racha = RachaSinAcuse()
+        val transporte = mockk<TransporteLan>(relaxed = true) {
+            every { this@mockk.receptorActivo } returns receptorActivo
+            every { this@mockk.racha } returns racha
+        }
+        val appState = createAppState(repairResult = true, onRepair = {}, onPaymentStart = {}, onInventoryStart = {}, onOutboxStart = {}, printConfigRepository = printConfig)
+        appState.transporteLan = transporte
+
+        // Con tope: si la banda nunca llega al texto esperado, la prueba falla en vez de colgar la corrida entera.
+        runBlocking {
+            withTimeout(10_000) {
+                assertEquals("Las comandas de Barra salen en papel si la pantalla no contesta", appState.avisoDeCocinaSinRed.first { it != null })
+                receptorActivo.value = true
+                assertEquals(null, appState.avisoDeCocinaSinRed.first { it == null })
+                repeat(3) { racha.registrar(setOf("st_barra"), emptySet()) }
+                assertEquals("La pantalla de Barra no se alcanza por el WiFi", appState.avisoDeRacha.first { it != null })
+            }
+        }
     }
 }

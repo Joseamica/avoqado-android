@@ -3,6 +3,7 @@ package com.avoqado.pos.printing.data
 import com.avoqado.pos.core.data.lan.ClienteDeComandas
 import com.avoqado.pos.core.data.lan.KdsComanda
 import com.avoqado.pos.core.data.lan.LanPeer
+import com.avoqado.pos.core.data.lan.RachaSinAcuse
 import com.avoqado.pos.core.data.lan.TransporteLan
 import com.avoqado.pos.kds.data.local.EntregaKdsPendienteEntity
 import com.avoqado.pos.kds.data.local.EntregasKdsPendientesDao
@@ -26,8 +27,10 @@ import org.junit.Test
 class EntregaPorWifiTest {
 
     private val pantallaBarra = LanPeer("cpad", "10.0.0.5", 9000, kdsStations = setOf("st_barra"))
+    private val rachaDeLaCaja = RachaSinAcuse()
     private val transporte = mockk<TransporteLan> {
         every { deviceId } returns "tablet-1"
+        every { racha } returns rachaDeLaCaja
         every { peers } returns MutableStateFlow(listOf(pantallaBarra))
         every { pantallasDe("st_barra") } returns listOf(pantallaBarra)
         every { pantallasDe("st_postres") } returns emptyList()
@@ -63,6 +66,22 @@ class EntregaPorWifiTest {
         assertEquals("sale:ext-1:st_barra", guardada.captured.sourceKey)
         assertEquals("venue-1", guardada.captured.venueId)
         assertEquals(42L, guardada.captured.creadaEnMillis)
+    }
+
+    /** 3.5, D11: cada entrega cuenta en la racha — por ESTACIÓN; tres seguidas sin acuse la dejan «sin alcance». */
+    @Test
+    fun `P1 cada entrega alimenta la racha - tres sin acuse dejan la estacion sin alcance y un acuse la limpia`() = runTest {
+        coEvery { cliente.entregar(pantallaBarra, any(), any()) } returns false
+        val ambas = listOf(EntregaKds(mensaje("st_barra"), trabajo), EntregaKds(mensaje("st_postres"), trabajo))
+
+        repeat(2) { entrega.entregar(ambas) }
+        assertEquals(emptySet<String>(), rachaDeLaCaja.sinAlcance.value)
+        entrega.entregar(ambas)
+        assertEquals(setOf("st_barra", "st_postres"), rachaDeLaCaja.sinAlcance.value)
+
+        coEvery { cliente.entregar(pantallaBarra, any(), any()) } returns true
+        entrega.entregar(ambas)
+        assertEquals(setOf("st_postres"), rachaDeLaCaja.sinAlcance.value)
     }
 
     @Test

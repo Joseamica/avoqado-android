@@ -70,6 +70,8 @@ class EntregaPorWifi @Inject constructor(
         val acusadas = coroutineScope {
             entregas.map { e -> async { if (empujar(e.mensaje)) e.mensaje.stationId else null } }.awaitAll()
         }.filterNotNull().toSet()
+        // D11: por ESTACIÓN — 3 seguidas sin acuse y la banda de la caja lo dice fijo; el primer acuse lo limpia.
+        transporte.racha.registrar(entregas.map { it.mensaje.stationId }.toSet(), acusadas)
         for (e in entregas) if (e.mensaje.stationId in acusadas) borrar(e)
         Log.d(TAG, "📡 Empujadas ${entregas.size} · acusaron $acusadas")
         return acusadas
