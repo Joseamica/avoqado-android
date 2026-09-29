@@ -83,6 +83,14 @@ class TransporteLan @Inject constructor(
     @Volatile private var venueId: String? = null
     @Volatile private var hub: ((String) -> LeaseResponse)? = null
     @Volatile private var receptor: (suspend (KdsComanda) -> Boolean)? = null
+
+    /**
+     * Task 8b (paridad iOS `RuteoLan.generacion`): sube SÓLO al desactivar el receptor o al cambiar de estación —
+     * nunca al re-enganchar la MISMA estación con el receptor ya puesto. `ReceptorDeComandas.activar` crea una lambda
+     * NUEVA en cada sondeo de rutina; comparar su identidad (`receptor === r`) le quitaba el acuse a un guardado que
+     * cruzaba con esa re-activación (papel de más sin motivo). El acuse compara esto, no la lambda.
+     */
+    @Volatile private var generacion = 0
     @Volatile private var ajenos: List<LanPeer> = emptyList()
     /** `@Volatile`: [puerto] lo lee cualquier hilo (revisión M1). */
     @Volatile private var serverSocket: ServerSocket? = null
@@ -157,18 +165,21 @@ class TransporteLan @Inject constructor(
      * El receptor de cocina: SÓLO mientras un Tablero de esas estaciones está en pantalla. [alRecibir] corre en el hilo
      * del socket y tiene que GUARDAR antes de devolver `true` (D8): el acuse sale sólo entonces.
      */
-    fun activarReceptor(estaciones: Set<String>, alRecibir: suspend (KdsComanda) -> Boolean) {
-        receptor = alRecibir
+    fun activarReceptor(estaciones: Set<String>, alRecibir: suspend (KdsComanda) -> Boolean) = fijarReceptor(estaciones, alRecibir)
+
+    fun desactivarReceptor() = fijarReceptor(emptySet(), null)
+
+    /**
+     * Task 8b: la generación sube sólo si cambia el conjunto de estaciones o si el receptor pasa de enganchado a
+     * suelto (o viceversa) — nunca al re-enganchar la MISMA estación con el receptor ya puesto. Espejo de
+     * `RuteoLan.fijar(estaciones:receptor:)` de iOS.
+     */
+    @Synchronized
+    private fun fijarReceptor(estaciones: Set<String>, r: (suspend (KdsComanda) -> Boolean)?) {
+        if (estaciones != _estacionesAnunciadas.value || (r == null) != (receptor == null)) generacion++
+        receptor = r
         _estacionesAnunciadas.value = estaciones
         _receptorEnganchado.value = estaciones.isNotEmpty()
-        publicarReceptor()
-        reanunciar()
-    }
-
-    fun desactivarReceptor() {
-        receptor = null
-        _estacionesAnunciadas.value = emptySet()
-        _receptorEnganchado.value = false
         publicarReceptor()
         reanunciar()
     }
@@ -326,8 +337,9 @@ class TransporteLan @Inject constructor(
             // M3 (revisión T8): la pantalla pudo cerrarse o cambiar de estación MIENTRAS se guardaba. Guardada queda (el
             // lado seguro: papel y pantalla); el acuse sólo sale si sigue enganchado el MISMO receptor con esa estación.
             val r = receptor
+            val g = generacion
             val vigente: (suspend (KdsComanda) -> Boolean)? =
-                if (r == null) null else { c: KdsComanda -> r(c) && receptor === r && c.stationId in _estacionesAnunciadas.value }
+                if (r == null) null else { c: KdsComanda -> r(c) && generacion == g && c.stationId in _estacionesAnunciadas.value }
             val respuesta = EnrutadorLan.responder(linea, venueId, _estacionesAnunciadas.value, hub, vigente)
             sock.getOutputStream().run { write((respuesta + "\n").toByteArray(Charsets.UTF_8)); flush() }
         }.onFailure { Log.w(TAG, "conexión fallida: ${it.message}") }

@@ -209,6 +209,50 @@ class TransporteLanLoopbackTest {
         assertFalse("pero sin acuse: $respuesta", KdsLanProtocol.esAcuse(respuesta, "sale:ext-1:st_barra"))
     }
 
+    /**
+     * Task 8b (paridad iOS `RuteoLan.fijar`): `sincronizarReceptor()` re-llama `ReceptorDeComandas.activar` en CADA
+     * lectura de rutina con una lambda NUEVA. Comparar identidad (`receptor === r`) le quitaba el acuse a un guardado
+     * que cruzaba con esa re-activación de la MISMA estación: papel de más sin motivo. Con generación, una
+     * re-activación que NO cambia de estación (y el receptor ya estaba puesto) no sube la generación y el acuse sale.
+     */
+    @Test
+    fun `P1 una reactivacion de rutina con la MISMA estacion mientras se guarda SI acusa`() = runBlocking {
+        val guardadas = mutableListOf<String>()
+        transporte.iniciar("venue-1")
+        transporte.activarReceptor(setOf("st_barra")) { c ->
+            guardadas += c.sourceKey
+            // Lambda NUEVA, misma estación: lo que hace `ReceptorDeComandas.activar` en cada sondeo.
+            transporte.activarReceptor(setOf("st_barra")) { true }
+            true
+        }
+        val puerto = esperarPuerto()
+
+        val barra = KdsComanda(venueId = "venue-1", deviceId = "otro", sourceKey = "sale:ext-1:st_barra", stationId = "st_barra", orderNumber = "1", orderType = "En tienda", createdAtMillis = 1, items = emptyList())
+        val respuesta = enviarLinea(puerto, KdsLanProtocol.encode(barra))
+
+        assertEquals("se guardó", listOf("sale:ext-1:st_barra"), guardadas)
+        assertTrue("re-activar con la MISMA estación no debe invalidar el acuse: $respuesta", KdsLanProtocol.esAcuse(respuesta, "sale:ext-1:st_barra"))
+    }
+
+    /** Complemento del anterior: un CAMBIO de estación mientras se guarda sigue sin acusar (la estación ya no coincide). */
+    @Test
+    fun `P1 un cambio de estacion mientras se guarda NO acusa`() = runBlocking {
+        val guardadas = mutableListOf<String>()
+        transporte.iniciar("venue-1")
+        transporte.activarReceptor(setOf("st_barra")) { c ->
+            guardadas += c.sourceKey
+            transporte.activarReceptor(setOf("st_cocina")) { true }
+            true
+        }
+        val puerto = esperarPuerto()
+
+        val barra = KdsComanda(venueId = "venue-1", deviceId = "otro", sourceKey = "sale:ext-1:st_barra", stationId = "st_barra", orderNumber = "1", orderType = "En tienda", createdAtMillis = 1, items = emptyList())
+        val respuesta = enviarLinea(puerto, KdsLanProtocol.encode(barra))
+
+        assertEquals("se guardó", listOf("sale:ext-1:st_barra"), guardadas)
+        assertFalse("cambiar de estación invalida el acuse: $respuesta", KdsLanProtocol.esAcuse(respuesta, "sale:ext-1:st_barra"))
+    }
+
     @Test
     fun `P1 una linea de mas de 64 KiB se corta sin responder`() = runBlocking {
         transporte.iniciar("venue-1")

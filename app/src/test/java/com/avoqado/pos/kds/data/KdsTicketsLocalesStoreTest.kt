@@ -34,6 +34,7 @@ class KdsTicketsLocalesStoreTest {
 
     @Test
     fun `unir escribe la fila con los renglones en JSON y devuelve true - el acuse sale solo entonces`() = runTest {
+        coEvery { dao.porFolio(comanda.sourceKey) } returns null
         val fila = slot<KdsTicketLocalEntity>()
         coEvery { dao.unir(capture(fila)) } returns Unit
         assertTrue(store.unir(comanda, ahora = 100))
@@ -47,8 +48,47 @@ class KdsTicketsLocalesStoreTest {
 
     @Test
     fun `P1 si el disco falla unir devuelve false y NO se acusa`() = runTest {
+        coEvery { dao.porFolio(comanda.sourceKey) } returns null
         coEvery { dao.unir(any()) } throws IllegalStateException("disco lleno")
         assertFalse(store.unir(comanda))
+    }
+
+    // MARK: - Task 8b: un curso nuevo sobre una fila YA LISTA no se guarda ni se acusa (hallazgo de pérdida)
+
+    private fun filaLista(itemsJson: String, listaEnMillis: Long? = 20) = KdsTicketLocalEntity(
+        sourceKey = comanda.sourceKey, venueId = "v1", stationId = "st-barra", orderNumber = "77", orderType = "Mesa 8 · Aperitivos",
+        itemsJson = itemsJson, recibidaEnMillis = 10, listaEnMillis = listaEnMillis,
+    )
+
+    @Test
+    fun `P1 un curso con un renglon NUEVO sobre una fila YA LISTA no se guarda ni se acusa`() = runTest {
+        coEvery { dao.porFolio(comanda.sourceKey) } returns filaLista("""[{"id":"a","productName":"Café","quantity":2,"modifiers":["Sin azúcar"],"notes":null}]""")
+        val conCursoNuevo = comanda.copy(items = comanda.items + KdsComandaItem("b", "Pan", 1, emptyList(), null))
+
+        assertFalse(store.unir(conCursoNuevo, ahora = 100))
+        coVerify(exactly = 0) { dao.unir(any()) }
+    }
+
+    @Test
+    fun `reenviar los MISMOS renglones sobre una fila YA LISTA sigue guardando y acusando (sin cambios)`() = runTest {
+        coEvery { dao.porFolio(comanda.sourceKey) } returns filaLista("""[{"id":"a","productName":"Café","quantity":2,"modifiers":["Sin azúcar"],"notes":null}]""")
+        coEvery { dao.unir(any()) } returns Unit
+
+        assertTrue(store.unir(comanda, ahora = 100))
+        coVerify(exactly = 1) { dao.unir(any()) }
+    }
+
+    @Test
+    fun `un curso nuevo sobre una fila PENDIENTE se sigue mezclando y acusando como hoy`() = runTest {
+        coEvery { dao.porFolio(comanda.sourceKey) } returns filaLista(
+            """[{"id":"a","productName":"Café","quantity":2,"modifiers":["Sin azúcar"],"notes":null}]""",
+            listaEnMillis = null,
+        )
+        coEvery { dao.unir(any()) } returns Unit
+        val conCursoNuevo = comanda.copy(items = comanda.items + KdsComandaItem("b", "Pan", 1, emptyList(), null))
+
+        assertTrue(store.unir(conCursoNuevo, ahora = 100))
+        coVerify(exactly = 1) { dao.unir(any()) }
     }
 
     @Test
