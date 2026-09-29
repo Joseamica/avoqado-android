@@ -38,6 +38,8 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
@@ -742,5 +744,117 @@ class KDSViewModelTest {
         } finally {
             unmockkStatic(RingtoneManager::class)
         }
+    }
+
+    // MARK: - Revisión final de la rama (3.5): M1, M3 y M4
+
+    /**
+     * M1: un tablero puede mostrar una comanda del servidor de OTRA estación. Su fila sombra (el LISTO sin red) se guardaba
+     * con la estación de la comanda, pero el tablero sólo lee las filas de SU estación: la comanda regresaba hasta que el
+     * servidor procesara el BUMP. La sombra va con la estación del TABLERO; el BUMP sigue llevando la de la comanda.
+     */
+    @Test
+    fun `P1 el LISTO sin red de una comanda de OTRA estacion la esconde en este tablero`() = runTest {
+        // Como Room: cada tablero lee sólo las filas de SU estación, y la sombra se guarda con la estación que se le pasa.
+        every { ticketsLocales.deLaEstacion(any(), any()) } answers {
+            val estacion = secondArg<String>()
+            locales.map { filas -> filas.filter { it.stationId == estacion } }
+        }
+        coEvery { ticketsLocales.marcarLista(any(), any(), any(), any()) } answers {
+            val orden = firstArg<KDSOrder>()
+            locales.value = locales.value +
+                KdsTicketLocal(orden.sourceKey!!, secondArg(), thirdArg(), orden.orderNumber, orden.orderType, orden.items, 5_000, 5_000)
+        }
+        coEvery { repo.bumpOrder("k1") } returns Result.failure(IOException("sin red"))
+        val marca = slot<JsonObject>()
+        coEvery { cola.enqueue("v1", "KDS_TICKET_MARK", capture(marca), any(), false) } returns "m-1"
+        val deCocina = comanda("k1", 1_000, sourceKey = "sale:k1:st-cocina").copy(printStationId = "st-cocina")
+        val vm = armar(comandas = listOf(deCocina, comanda("k2", 2_000)))
+        val job = launch { vm.mientrasSeVe() }
+        runCurrent()
+
+        vm.listo("k1")
+        runCurrent()
+        coEvery { repo.fetchOrders(any()) } returns Result.failure(IOException("sin red"))
+        vm.refrescar() // sin red se conserva lo del servidor y se vuelve a mezclar con lo local
+        runCurrent()
+
+        assertEquals("la sombra LISTA la esconde en ESTE tablero", listOf("k2"), vm.comandas.value.map { it.id })
+        assertEquals("el BUMP sigue llevando la estación de la comanda", "st-cocina", marca.captured["stationId"]!!.jsonPrimitive.content)
+        job.cancelAndJoin()
+    }
+
+    /**
+     * M3: LISTO sobre una comanda del WiFi la quita al instante, pero hasta que el disco avisa, su fila sigue PENDIENTE en
+     * memoria: un sondeo en ese hueco la hacía reaparecer un instante. Queda protegida como un bump en vuelo.
+     */
+    @Test
+    fun `P2 M3 LISTO sobre una comanda del WiFi no parpadea si un sondeo cae antes de que el disco avise`() = runTest {
+        val puerta = CompletableDeferred<Unit>()
+        coEvery { cola.enqueue(any(), any(), any(), any(), any()) } coAnswers { puerta.await(); "m-1" }
+        val vm = armar()
+        val job = launch { vm.mientrasSeVe() }
+        runCurrent()
+        locales.value = listOf(local("round:rk:st-barra", 3_000))
+        runCurrent()
+
+        vm.listo("lan:round:rk:st-barra")
+        runCurrent()
+        coEvery { repo.fetchOrders(any()) } returns Result.failure(IOException("sin red"))
+        vm.refrescar() // un sondeo cae mientras la marca todavía se guarda
+        runCurrent()
+
+        assertEquals(listOf("k1", "k2"), vm.comandas.value.map { it.id })
+        puerta.complete(Unit)
+        runCurrent()
+        job.cancelAndJoin()
+    }
+
+    /** M3, la otra cara: si la marca no se pudo encolar, la comanda del WiFi regresa y la protección no la vuelve a esconder. */
+    @Test
+    fun `P1 M3 si la marca de una comanda del WiFi no se encola regresa y un sondeo no la vuelve a esconder`() = runTest {
+        coEvery { cola.enqueue(any(), any(), any(), any(), any()) } throws IllegalStateException("disco lleno")
+        val vm = armar()
+        val job = launch { vm.mientrasSeVe() }
+        runCurrent()
+        locales.value = listOf(local("round:rk:st-barra", 3_000))
+        runCurrent()
+
+        vm.listo("lan:round:rk:st-barra")
+        runCurrent()
+        coEvery { repo.fetchOrders(any()) } returns Result.failure(IOException("sin red"))
+        vm.refrescar()
+        runCurrent()
+
+        assertEquals(listOf("k1", "k2", "lan:round:rk:st-barra"), vm.comandas.value.map { it.id })
+        job.cancelAndJoin()
+    }
+
+    /**
+     * M4 (paridad con iOS, m2 de la T9): si la observación de lo guardado se cae, el receptor se APAGA (sin acuse, la caja
+     * saca papel) en vez de tumbar la app; la siguiente sincronización la recrea y lo vuelve a prender.
+     */
+    @Test
+    fun `P1 M4 si la observacion local falla se apaga el receptor sin tumbar la app y la siguiente lectura lo recupera`() = runTest {
+        var encendido = false
+        every { receptor.activar(any(), any()) } answers { encendido = true }
+        every { receptor.desactivar() } answers { encendido = false }
+        var rota = true
+        every { ticketsLocales.deLaEstacion(any(), any()) } answers {
+            if (rota) flow<List<KdsTicketLocal>> { throw IllegalStateException("base rota") } else locales
+        }
+        val vm = armar()
+        val job = launch { vm.mientrasSeVe() }
+        runCurrent()
+        assertFalse("sin observación viva no se acusa: el receptor queda apagado", encendido)
+
+        rota = false
+        locales.value = listOf(local("round:rk:st-barra", 3_000))
+        vm.refrescar() // la siguiente lectura la recrea
+        runCurrent()
+
+        assertTrue("la observación volvió: el receptor también", encendido)
+        assertEquals(listOf("k1", "k2", "lan:round:rk:st-barra"), vm.comandas.value.map { it.id })
+        job.cancelAndJoin()
     }
 }

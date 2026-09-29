@@ -47,6 +47,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -301,11 +302,20 @@ class KDSViewModel @Inject constructor(
                 // M2 (revisión T8): Room contesta DESPUÉS de la primera lectura del servidor. Lo que ya estaba guardado es
                 // parte de la línea base de esta apertura, no «comanda nueva»: su primera lectura no suena.
                 var primera = true
-                ticketsLocales.deLaEstacion(venueId, tablero.estacion.id).collect {
-                    locales = it
-                    publicar(desdeServidor = false, sonar = !primera)
-                    primera = false
-                }
+                ticketsLocales.deLaEstacion(venueId, tablero.estacion.id)
+                    // M4 (revisión final, paridad con iOS m2 de la T9): si la observación de lo guardado se cae, el receptor
+                    // se APAGA en vez de tumbar la app — acusar lo que la pantalla ya no pinta es peor que el papel. La
+                    // siguiente `sincronizarReceptor` (la lectura de cada minuto, elegir estación, volver al frente) la
+                    // recrea y lo vuelve a prender; aquí no se recrea: un error que persiste giraría sin fin.
+                    .catch { e ->
+                        Log.w(TAG, "La observación de lo guardado se cayó: ${e.message} — receptor apagado hasta la siguiente lectura")
+                        receptor.desactivar()
+                    }
+                    .collect {
+                        locales = it
+                        publicar(desdeServidor = false, sonar = !primera)
+                        primera = false
+                    }
             }
         }
     }
@@ -351,6 +361,9 @@ class KDSViewModel @Inject constructor(
         _comandas.value = _comandas.value.filterNot { it.id == id }
         if (esLocal(id)) {
             // Sólo existe aquí: no hay id del servidor que «bumpear». La marca por folio lo resuelve al sincronizar.
+            // M3 (revisión final): protegida como un bump en vuelo hasta que el disco avise — un sondeo en ese hueco la
+            // pintaba otra vez un instante, con su fila todavía pendiente en memoria.
+            bumpsRecientes[id] = System.currentTimeMillis()
             viewModelScope.launch { marcarListaSinServidor(comanda) }
             return
         }
@@ -377,7 +390,8 @@ class KDSViewModel @Inject constructor(
     private suspend fun marcarListaSinServidor(comanda: KDSOrder) {
         val sourceKey = comanda.sourceKey ?: return
         val venueId = kdsRepository.venueIdActual() ?: return
-        val stationId = comanda.printStationId ?: (_vista.value as? VistaDeCocina.Tablero)?.estacion?.id ?: return
+        val tablero = (_vista.value as? VistaDeCocina.Tablero)?.estacion?.id
+        val stationId = comanda.printStationId ?: tablero ?: return
         // 🔴 Ronda 1: PRIMERO la marca, DESPUÉS `listaEnMillis`. La cola es durable (se escribe antes de tocar la red): si el
         // proceso muere entre las dos, lo peor es que la comanda se siga viendo hasta que el servidor procese el BUMP. Al
         // revés, la pantalla la escondía para siempre y el servidor nunca se enteraba: una marca perdida.
@@ -399,11 +413,15 @@ class KDSViewModel @Inject constructor(
             // Sin marca no se esconde (el servidor nunca se enteraría). M1 (revisión T8): y se DICE — la comanda regresa
             // a su lugar ahora con el aviso, en vez de desaparecer callada hasta la siguiente lectura.
             Log.w(TAG, "No se pudo encolar el BUMP de $sourceKey: ${fallo.message}")
+            bumpsRecientes.remove(comanda.id) // M3: sin marca no hay nada que proteger; la siguiente lectura la sigue mostrando
             if (_comandas.value.none { it.id == comanda.id }) _comandas.value = (_comandas.value + comanda).sortedBy { it.createdAt }
             _aviso.value = avisoDeFallo(fallo, AccionDeCocina.LISTO)
             return
         }
-        runCatching { ticketsLocales.marcarLista(comanda, venueId, stationId) }
+        // M1 (revisión final): la sombra va con la estación del TABLERO donde se tocó LISTO — la que este tablero lee
+        // (`deLaEstacion`). Con la de una comanda de OTRA estación, la comanda regresaba aquí hasta que el servidor procesara
+        // el BUMP. El BUMP, arriba, sí lleva la estación de la comanda.
+        runCatching { ticketsLocales.marcarLista(comanda, venueId, tablero ?: stationId) }
             .onFailure { Log.w(TAG, "No se pudo persistir el LISTO de $sourceKey: ${it.message}") }
     }
 
@@ -414,10 +432,11 @@ class KDSViewModel @Inject constructor(
         val quitadas = _comandas.value.filter { it.id in ids }
         _comandas.value = _comandas.value.filterNot { it.id in ids }
         val (localesIds, delServidorIds) = ids.partition { esLocal(it) }
+        val ahora = System.currentTimeMillis()
+        localesIds.forEach { bumpsRecientes[it] = ahora } // M3 (revisión final): como en listo()
         viewModelScope.launch { quitadas.filter { it.id in localesIds }.forEach { marcarListaSinServidor(it) } }
         if (delServidorIds.isEmpty()) return
         // M4/Ronda 3: mismo blindaje que listo() — un sondeo que ya estaba en vuelo no puede resucitar el lote.
-        val ahora = System.currentTimeMillis()
         delServidorIds.forEach { bumpsRecientes[it] = ahora }
         viewModelScope.launch {
             kdsRepository.bumpBatch(delServidorIds)
