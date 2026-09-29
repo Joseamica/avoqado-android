@@ -172,7 +172,12 @@ No depende del hub Premium: viaja por el MISMO transporte. Espejo en iOS con los
 
 - **La caja** (`ComandaDispatcher` + `printing/data/EntregaPorWifi`): si quien llama reparte por pantalla (mostrador y
   rondas; Uber, vales y reimpresiones no) empuja cada plan con pantalla a TODAS las pantallas que anuncian esa estación,
-  en paralelo (conectar ≤ 1 s, total ≤ 1.5 s). Acuse estricto `{"v":1,"status":"ok","sourceKey":<el mismo>}`; cualquier
+  en paralelo (conectar ≤ 1 s, total ≤ 1.5 s). 🔴 El `kds=` de una pantalla CAMBIA (sólo lo anuncia con el Tablero a
+  la vista) y Android NSD **no avisa** un cambio de TXT de un servicio ya conocido (QA 29-sep: la caja se quedaba con
+  `kds=[]` y todo salía en papel hasta reiniciarla). Por eso `LanDiscovery.refrescar()` re-resuelve los conocidos en cada
+  revisión (60 s) y cuando una entrega no encuentra pantalla (espera ≤ 1 s dentro del presupuesto) — SÓLO en Android 14+:
+  abajo no se puede cancelar un resolve colgado y un aparato ido trabaría el resolver del sistema. El anuncio propio no
+  cuenta como conocido. Acuse estricto `{"v":1,"status":"ok","sourceKey":<el mismo>}`; cualquier
   otra cosa = sin acuse. El acuse decide el papel de las «sólo pantalla»: sin acuse ⇒ papel de respaldo + marca
   `FALLBACK_PRINTED`, con o sin internet. «Impresora + pantalla» imprime siempre.
 - **Se guarda ANTES de tocar la red:** cada entrega «sólo pantalla» va a `entregas_kds_pendientes` (una fila por plan:
