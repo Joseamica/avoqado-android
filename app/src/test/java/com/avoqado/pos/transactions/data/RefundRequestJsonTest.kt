@@ -89,6 +89,44 @@ class RefundRequestJsonTest {
     }
 
     /**
+     * Reembolso por ARTÍCULOS con la casilla «Incluir propina» marcada: la propina restante viaja en
+     * `tipRefundCents` JUNTO a los artículos, y `amount` sigue sin viajar (el servidor lo calcula de
+     * los renglones; mandar los dos es un 400).
+     */
+    @Test
+    fun `articulos con propina marcada mandan tipRefundCents y no mandan amount`() {
+        val body = cuerpo(
+            AssociatedRefundRequest(
+                items = listOf(AssociatedRefundItem(orderItemId = "oi-1", quantity = 2)),
+                reason = "RETURNED_GOODS",
+                tipRefundCents = 1_450,
+            ),
+        )
+
+        assertFalse("El cuerpo lleva `null` explícito: $body", body.contains("null"))
+        val obj = Json.parseToJsonElement(body) as kotlinx.serialization.json.JsonObject
+        assertEquals("1450", obj["tipRefundCents"]!!.jsonPrimitive.content)
+        assertFalse("Con artículos no debe viajar `amount`: $body", obj.containsKey("amount"))
+        assertTrue(body.contains("\"orderItemId\":\"oi-1\""))
+    }
+
+    /** Casilla desmarcada (o cobro sin propina): la llave NO aparece y el servidor devuelve sólo los artículos. */
+    @Test
+    fun `articulos con la casilla desmarcada no mandan la llave tipRefundCents`() {
+        val body = cuerpo(
+            AssociatedRefundRequest(
+                items = listOf(AssociatedRefundItem(orderItemId = "oi-1", quantity = 2)),
+                reason = "RETURNED_GOODS",
+                tipRefundCents = null,
+            ),
+        )
+
+        assertFalse("El cuerpo lleva `null` explícito: $body", body.contains("null"))
+        assertFalse("Desmarcada, la llave no debe viajar: $body", body.contains("tipRefundCents"))
+        assertFalse(body.contains("\"amount\""))
+    }
+
+    /**
      * El MISMO defecto vivía en el segundo cuerpo del archivo — el reembolso NO asociado,
      * que va a `POST /mobile/venues/:id/refunds`. Arreglar sólo el que dolió habría dejado
      * el otro esperando a que alguien le escribiera un guard con la misma forma.
