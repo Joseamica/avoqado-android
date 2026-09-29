@@ -52,7 +52,23 @@ class EntregaPorWifi @Inject constructor(
     val deviceId: String get() = transporte.deviceId
 
     suspend fun entregar(entregas: List<EntregaKds>, ahora: Long = System.currentTimeMillis()): Set<String> {
-        // 🔴 ANTES de tocar la red (`todo-funciona-sin-red.md`, pregunta 2): si el proceso muere aquí, al abrir se reintenta o sale en papel.
+        guardar(entregas, ahora)
+        val acusadas = coroutineScope {
+            entregas.map { e -> async { if (empujar(e.mensaje)) e.mensaje.stationId else null } }.awaitAll()
+        }.filterNotNull().toSet()
+        // D11: por ESTACIÓN — 3 seguidas sin acuse y la banda de la caja lo dice fijo; el primer acuse lo limpia.
+        transporte.racha.registrar(entregas.map { it.mensaje.stationId }.toSet(), acusadas)
+        for (e in entregas) if (e.mensaje.stationId in acusadas) borrar(e)
+        Log.d(TAG, "📡 Empujadas ${entregas.size} · acusaron $acusadas")
+        return acusadas
+    }
+
+    /**
+     * 🔴 ANTES de tocar la red (`todo-funciona-sin-red.md`, pregunta 2): si el proceso muere después, al abrir se reintenta
+     * o sale en papel. Sólo las que llevan trabajo de respaldo. [entregar] lo hace solo; una ronda con cursos lo hace para
+     * TODOS antes del primer empuje (revisión final, I3). Guardar la misma entrega otra vez la refresca (`REPLACE`).
+     */
+    suspend fun guardar(entregas: List<EntregaKds>, ahora: Long = System.currentTimeMillis()) {
         for (e in entregas) {
             val trabajo = e.trabajoDeRespaldo ?: continue
             sinTumbar("No se pudo guardar la entrega ${e.mensaje.sourceKey}") {
@@ -67,14 +83,6 @@ class EntregaPorWifi @Inject constructor(
                 )
             }
         }
-        val acusadas = coroutineScope {
-            entregas.map { e -> async { if (empujar(e.mensaje)) e.mensaje.stationId else null } }.awaitAll()
-        }.filterNotNull().toSet()
-        // D11: por ESTACIÓN — 3 seguidas sin acuse y la banda de la caja lo dice fijo; el primer acuse lo limpia.
-        transporte.racha.registrar(entregas.map { it.mensaje.stationId }.toSet(), acusadas)
-        for (e in entregas) if (e.mensaje.stationId in acusadas) borrar(e)
-        Log.d(TAG, "📡 Empujadas ${entregas.size} · acusaron $acusadas")
-        return acusadas
     }
 
     /**

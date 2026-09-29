@@ -1,9 +1,18 @@
 package com.avoqado.pos.core.domain.printing
 
+import com.avoqado.pos.core.data.lan.ClienteDeComandas
+import com.avoqado.pos.core.data.lan.LanPeer
+import com.avoqado.pos.core.data.lan.RachaSinAcuse
+import com.avoqado.pos.core.data.lan.TransporteLan
+import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.sync.SyncOutbox
+import com.avoqado.pos.kds.data.local.EntregaKdsPendienteEntity
+import com.avoqado.pos.kds.data.local.EntregasKdsPendientesDao
 import com.avoqado.pos.printing.data.ComandaPrinter
+import com.avoqado.pos.printing.data.ComandasPendientesStore
 import com.avoqado.pos.printing.data.EntregaKds
 import com.avoqado.pos.printing.data.EntregaPorWifi
+import com.avoqado.pos.printing.data.ReplayDeEntregasKds
 import com.avoqado.pos.printing.data.ResultadoLegado
 import com.avoqado.pos.printing.data.EstadoDeComanda
 import com.avoqado.pos.printing.data.PoliticaDeReintento
@@ -27,9 +36,13 @@ import io.mockk.coVerifyOrder
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.slot
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.cancelAndJoin
@@ -41,6 +54,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -1014,5 +1028,123 @@ class ComandaDispatcherTest {
         coVerify(exactly = 0) { entrega.cerrar(any()) }
         coVerify(exactly = 1) { entrega.soltar(match { l -> l.map { it.mensaje.sourceKey } == listOf("sale:ext-1:st_barra") }, any()) }
         assertEquals("el soltar tiene que TERMINAR aunque el despacho esté cancelado", 1, soltadasDeVerdad)
+    }
+
+    // MARK: - Revisión final de la rama (3.5): I1 e I3, con la EntregaPorWifi REAL sobre una tabla en memoria
+
+    /** La tabla de entregas en memoria. Como Room, lanza si el contexto ya está cancelado (sin `NonCancellable` no escribe). */
+    private class EntregasEnMemoria : EntregasKdsPendientesDao {
+        val filas = java.util.concurrent.ConcurrentHashMap<String, EntregaKdsPendienteEntity>()
+        override suspend fun guardar(fila: EntregaKdsPendienteEntity) {
+            currentCoroutineContext().ensureActive()
+            filas[fila.entregaId] = fila
+        }
+        override suspend fun delVenue(venueId: String) = filas.values.filter { it.venueId == venueId }.sortedBy { it.creadaEnMillis }
+        override suspend fun borrar(entregaId: String): Int {
+            currentCoroutineContext().ensureActive()
+            return if (filas.remove(entregaId) != null) 1 else 0
+        }
+        override suspend fun soltar(entregaId: String, ahora: Long): Int {
+            currentCoroutineContext().ensureActive()
+            val fila = filas[entregaId] ?: return 0
+            filas[entregaId] = fila.copy(soltadaEnMillis = ahora)
+            return 1
+        }
+    }
+
+    private val pantallaBarra = LanPeer("cpad", "10.0.0.5", 9000, kdsStations = setOf("st_barra"))
+    private val transporteLan = mockk<TransporteLan> {
+        every { deviceId } returns "tablet-1"
+        every { racha } returns RachaSinAcuse()
+        every { pantallasDe("st_barra") } returns listOf(pantallaBarra)
+    }
+
+    private fun despachadorConWifi(wifi: EntregaPorWifi) = ComandaDispatcher(
+        printConfigRepository,
+        ReintentoDeComanda(comandaPrinter, reporteDeComandas = mockk<ReporteDeComandas>(relaxed = true)),
+        printerService,
+        cola,
+        wifi,
+    )
+
+    /**
+     * I1: el empuje vivía FUERA del `try` que protege a `insistir`. Cancelar el despacho mientras empuja (el cajero sale
+     * de la pantalla de cobro) dejaba la fila «en curso» (`soltadaEnMillis` nulo): el replay la saltaba en cada tic y a
+     * las 8 h la tiraba sin papel. Ahora se SUELTA —bajo `NonCancellable`— y el reloj del replay la retoma.
+     */
+    @Test
+    fun `P1 cancelar el despacho durante el empuje suelta las filas guardadas y el replay las retoma`() = runTest {
+        every { printConfigRepository.getCurrentConfig() } returns conBarraSoloPantalla
+        val tabla = EntregasEnMemoria()
+        val cliente = mockk<ClienteDeComandas> { coEvery { entregar(pantallaBarra, any(), any()) } coAnswers { awaitCancellation() } }
+        val wifi = EntregaPorWifi(transporteLan, tabla, cliente)
+        val despachador = despachadorConWifi(wifi)
+
+        val despacho = launch {
+            despachador.dispatch(
+                venueId = "venue-1", lines = listOf(cafe), orderNumber = "1234", orderType = "En tienda",
+                servidorLaTiene = false, origenDelFolio = "sale:ext-1",
+            )
+        }
+        runCurrent()
+        assertNull("empujando: la fila es de un despacho en curso", tabla.filas.values.single().soltadaEnMillis)
+        despacho.cancelAndJoin()
+
+        val fila = tabla.filas.values.single()
+        assertNotNull("cancelado a media entrega: la fila se SUELTA para que el replay la retome", fila.soltadaEnMillis)
+        coVerify(exactly = 0) { comandaPrinter.printComandas(any(), any(), any(), any(), any()) }
+
+        // El reloj del replay la toma en este mismo proceso (no la salta como «despacho en curso») y la pantalla acusa.
+        coEvery { cliente.entregar(pantallaBarra, any(), any()) } returns true
+        val libreta = mockk<ComandasPendientesStore>(relaxed = true) {
+            every { pendiente } returns MutableStateFlow<EstadoDeComanda.NoSalio?>(null)
+        }
+        val sesion = mockk<SecureStorage>(relaxed = true) { every { venueId } returns "venue-1" }
+        val replay = ReplayDeEntregasKds(tabla, wifi, despachador, cola, libreta, sesion, transporteLan)
+        replay.reproducirAlAbrir("venue-1", ahora = fila.creadaEnMillis + 1_000, arranqueDelProceso = 0L)
+
+        assertTrue("el replay la empujó y la pantalla acusó: la fila se cierra", tabla.filas.isEmpty())
+    }
+
+    /**
+     * I3: los cursos de una ronda comparten folio y se despachan uno tras otro. Si el proceso moría entre el acuse del
+     * curso 1 y el despacho del curso 2, el curso 2 no tenía fila (ni WiFi ni papel al reabrir), y un LISTO sin red sobre
+     * el curso 1 cerraba el folio entero en el servidor. Ahora TODOS los cursos quedan en disco antes del primer empuje.
+     */
+    @Test
+    fun `P1 con dos cursos la fila del segundo queda en disco antes de que el primero toque la red`() {
+        every { printConfigRepository.getCurrentConfig() } returns conBarraSoloPantalla
+        imprimeTodo(mutableListOf(), mutableListOf())
+        val tabla = EntregasEnMemoria()
+        val empujando = CompletableDeferred<Unit>()
+        val puerta = CompletableDeferred<Boolean>()
+        val cliente = mockk<ClienteDeComandas> {
+            coEvery { entregar(pantallaBarra, any(), any()) } coAnswers { empujando.complete(Unit); puerta.await() }
+        }
+        val limonada = RoutableItem(orderItemId = "oi_4", productId = "prod_cafe", categoryId = null, productName = "Limonada", quantity = 1)
+
+        despachadorConWifi(EntregaPorWifi(transporteLan, tabla, cliente)).despacharEnFondo(
+            venueId = "venue-1",
+            orderNumber = "1234",
+            pedidos = listOf(
+                ComandaDispatcher.Pedido(listOf(cafe), "Mesa 5 · Aperitivos"),
+                ComandaDispatcher.Pedido(listOf(limonada), "Mesa 5 · Principales"),
+            ),
+            servidorLaTiene = false,
+            origenDelFolio = "round:rk",
+        )
+        try {
+            runBlocking { withTimeout(5_000) { empujando.await() } }
+            assertEquals(
+                "mientras el curso 1 empuja, el curso 2 ya está en disco",
+                setOf("round:rk:st_barra|oi_2", "round:rk:st_barra|oi_4"),
+                tabla.filas.keys.toSet(),
+            )
+        } finally {
+            puerta.complete(false)
+        }
+
+        // Sin acuse, los dos cursos salen en papel de respaldo y ninguna fila se queda atrás.
+        runBlocking { withTimeout(5_000) { while (tabla.filas.isNotEmpty()) delay(10) } }
     }
 }

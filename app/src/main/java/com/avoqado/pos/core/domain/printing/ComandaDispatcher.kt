@@ -140,6 +140,7 @@ class ComandaDispatcher @Inject constructor(
         origenDelFolio: String? = null,
         alCambiarEstado: (EstadoDeComanda) -> Unit = {},
     ): Job = fondo.launch {
+        val guardadasAntes = guardarLaRonda(venueId, orderNumber, pedidos, orderId, servidorLaTiene, origenDelFolio)
         for (pedido in pedidos) {
             // I-2 de la revisión (ronda 1): sin esta guarda, un `dispatch` que revienta se llevaba entre pies a
             // TODOS los pedidos que seguían — el `for` moría ahí y el único rastro quedaba en el log del
@@ -156,6 +157,7 @@ class ComandaDispatcher @Inject constructor(
                     servidorLaTiene = servidorLaTiene,
                     origenDelFolio = origenDelFolio,
                     alCambiarEstado = alCambiarEstado,
+                    refrescar = guardadasAntes == null,
                 )
             } catch (e: CancellationException) {
                 throw e
@@ -174,7 +176,54 @@ class ComandaDispatcher @Inject constructor(
                 }
             }
         }
+        // Ya no hay despacho vivo de este lote: una fila guardada de antemano que su curso no reusó (la config cambió en
+        // medio, o el curso tronó antes de empujar) se SUELTA para que el replay la decida — duplicado, nunca pérdida. Las
+        // que su curso ya cerró no existen: soltarlas no toca nada.
+        guardadasAntes?.let { entregaPorWifi?.soltar(it) }
     }
+
+    /**
+     * Revisión final de la 3.5 (I3): los cursos de una ronda comparten folio y salen uno tras otro. Las entregas de TODOS
+     * quedan en disco ANTES de que el primero toque la red (`todo-funciona-sin-red.md`, pregunta 2, aplicada al lote, no al
+     * curso): si el proceso muere entre dos cursos, el replay empuja o imprime el que faltaba. Sin esto el curso 2 no
+     * existía en ningún lado, y un LISTO sin red sobre el curso 1 cerraba el folio entero en el servidor: pérdida.
+     *
+     * Refresca la config UNA vez (cada curso se despacha sin volver a refrescar: mismos planes, mismas filas). Cada curso
+     * vuelve a guardar la suya al despachar (`REPLACE` por `entregaId`, inocuo). `null` = el lote no reparte por pantalla
+     * (o no se pudo preparar): cada curso sigue como antes, con su propio refresco.
+     */
+    private suspend fun guardarLaRonda(
+        venueId: String?,
+        orderNumber: String,
+        pedidos: List<Pedido>,
+        orderId: String?,
+        servidorLaTiene: Boolean?,
+        origen: String?,
+    ): List<EntregaKds>? {
+        val wifi = entregaPorWifi ?: return null
+        if (servidorLaTiene == null || venueId == null || origen == null) return null
+        return try {
+            printConfigRepository.refreshConTope(venueId)
+            val config = printConfigRepository.getCurrentConfig()
+            val entregas = pedidos.flatMap { p ->
+                entregasPorWifi(
+                    venueId, PrintRoutingMapper.buildComandas(p.lines, config), config, orderNumber, p.orderType,
+                    serverName = null, comboNames = comboNamesDe(p.lines), orderId = orderId, origen = origen,
+                )
+            }
+            wifi.guardar(entregas)
+            entregas
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // Preparar el lote nunca puede impedir que salgan los cursos: sin esto, cada uno guarda la suya como antes.
+            Log.w(TAG, "No se pudieron guardar de antemano los cursos de $orderNumber: ${e.message}")
+            null
+        }
+    }
+
+    private fun comboNamesDe(lines: List<RoutableItem>): Map<String, String> =
+        lines.mapNotNull { line -> line.comboName?.let { line.orderItemId to it } }.toMap()
 
     /**
      * Dispara las comandas de [lines]. Es la MISMA secuencia de siempre, en el mismo orden:
@@ -230,6 +279,8 @@ class ComandaDispatcher @Inject constructor(
         servidorLaTiene: Boolean? = null,
         origenDelFolio: String? = null,
         alCambiarEstado: (EstadoDeComanda) -> Unit = {},
+        /** `false` = quien llama ya refrescó ([despacharEnFondo] con cursos que se guardaron antes, I3): no se repite. */
+        refrescar: Boolean = true,
     ): EstadoDeComanda? {
         // Sin renglones no hay nada que imprimir — y nos ahorramos hasta el refresh, igual que el
         // mostrador, que salía antes de tocar la red. No es un guard de configuración: es que
@@ -239,7 +290,7 @@ class ComandaDispatcher @Inject constructor(
         // El refresh nunca lanza (falla abierto y conserva la config vigente), así que una red lenta
         // o caída sólo significa "imprime con lo último que sabías" — jamás "no imprimas". Con tope de
         // 1.5 s (spec §5, H2): si la red tarda, se decide con la guardada y la descarga sigue sola.
-        venueId?.let { printConfigRepository.refreshConTope(it) }
+        if (refrescar) venueId?.let { printConfigRepository.refreshConTope(it) }
         val config = printConfigRepository.getCurrentConfig()
 
         val legacy = noStationsFallback as? NoStationsFallback.LegacySingleTicket
@@ -276,7 +327,7 @@ class ComandaDispatcher @Inject constructor(
         }
 
         val plans = PrintRoutingMapper.buildComandas(lines, config)
-        val comboNames = lines.mapNotNull { line -> line.comboName?.let { line.orderItemId to it } }.toMap()
+        val comboNames = comboNamesDe(lines)
         // Etapa 3 del KDS (3.5, D6): «WiFi primero». Sólo si el llamador reparte por pantalla (`servidorLaTiene != null`:
         // mostrador y rondas; Uber y vales no) y hay folio (sin folio no hay `sourceKey` que empujar). La entrega se
         // GUARDA antes de conectar; el acuse por ESTACIÓN es lo que decide el papel de las «sólo pantalla».
@@ -285,22 +336,26 @@ class ComandaDispatcher @Inject constructor(
         } else {
             emptyList()
         }
-        val acusadas = if (entregas.isEmpty()) emptySet() else entregaPorWifi?.entregar(entregas).orEmpty()
-        val reparto = servidorLaTiene?.let { KitchenDeliveryPolicy.decidir(plans, config, acusadas) }
-            ?: KitchenDeliveryPolicy.Reparto(plans, emptyList())
-        // Todo iba a pantallas que acusaron: no hay papel que mandar ni que reportar a «la libreta» (y sus filas ya se
-        // borraron al acusar). M-3 de la revisión (3.4): con `servidorLaTiene = null` esto también puede vaciar `plans`
-        // (todas las líneas con `quantity <= 0`) y regresa `null` sin avisar — cambio aceptado, iOS trae la misma guarda.
-        if (reparto.aImprimir.isEmpty()) return null
-        // 🔴 Ronda 1 (I2): SIN `finally`. Si `insistir` truena (el bind AIDL, el callback del llamador) o se cancela, las
-        // filas se QUEDAN: no salió papel ni quedó nada en la libreta. Rondas 2 y 3: además se SUELTAN para que el reloj
-        // del replay las retome en este mismo proceso — la cancelación, bajo `NonCancellable` (ya no hay ámbito vivo).
-        val estado = try {
-            reintentoDeComanda.insistir(
-                plans = reparto.aImprimir,
+        // 🔴 Ronda 1 (I2): SIN `finally`. Si algo truena (el bind AIDL, el callback del llamador) o se cancela antes de
+        // decidir el papel, las filas se QUEDAN: no salió papel ni quedó nada en la libreta. Rondas 2 y 3: además se
+        // SUELTAN para que el reloj del replay las retome en este mismo proceso — la cancelación, bajo `NonCancellable`
+        // (ya no hay ámbito vivo). Revisión final (I1): el EMPUJE también va aquí adentro. Afuera, cancelar a media entrega
+        // (el cajero sale de la pantalla de cobro) dejaba las filas «en curso» —el replay las salta— hasta reiniciar, y a
+        // las 8 h se tiraban sin papel. Cancelado mientras empuja, `acusadas` sigue vacío: se sueltan todas.
+        var acusadas = emptySet<String>()
+        val (reparto, estado) = try {
+            if (entregas.isNotEmpty()) acusadas = entregaPorWifi?.entregar(entregas).orEmpty()
+            val decidido = servidorLaTiene?.let { KitchenDeliveryPolicy.decidir(plans, config, acusadas) }
+                ?: KitchenDeliveryPolicy.Reparto(plans, emptyList())
+            // Todo iba a pantallas que acusaron: no hay papel que mandar ni que reportar a «la libreta» (y sus filas ya se
+            // borraron al acusar). M-3 de la revisión (3.4): con `servidorLaTiene = null` esto también puede vaciar `plans`
+            // (todas las líneas con `quantity <= 0`) y regresa `null` sin avisar — cambio aceptado, iOS trae la misma guarda.
+            if (decidido.aImprimir.isEmpty()) return null
+            decidido to reintentoDeComanda.insistir(
+                plans = decidido.aImprimir,
                 // La config CONGELADA del trabajo lleva marcadas las estaciones de respaldo: `ComandaPrinter` les pone su
                 // encabezado y su impresora, y `TrabajoPendiente` lo conserva para cualquier reintento.
-                config = KitchenDeliveryPolicy.conRespaldo(config, reparto.respaldo),
+                config = KitchenDeliveryPolicy.conRespaldo(config, decidido.respaldo),
                 orderNumber = orderNumber,
                 orderType = orderType,
                 serverName = serverName,
