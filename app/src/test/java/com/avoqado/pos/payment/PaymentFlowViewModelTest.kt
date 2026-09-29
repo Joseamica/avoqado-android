@@ -1618,6 +1618,24 @@ class PaymentFlowViewModelTest {
         assertNull(viewModel.comandaWarning.value)
     }
 
+    /**
+     * P1: el despacho de la comanda corre en un `viewModelScope.launch` suelto. Si `dispatch` lanzaba
+     * (una lectura de disco, el bind de la impresora, el propio aviso), la excepción no tenía quién la
+     * atrapara y tumbaba la caja justo después de cobrar. `runTest` falla con cualquier excepción no
+     * atrapada de una coroutine (medido: sin el arreglo esta prueba truena con «disco lleno»).
+     */
+    @Test
+    fun `P1 si el despacho de la comanda lanza, la caja no se cae y el cajero ve No salio la comanda`() = runTest {
+        every { printConfigRepository.getCurrentConfig() } throws IllegalStateException("disco lleno")
+
+        completarCobroEnEfectivo()
+        advanceUntilIdle()
+
+        assertTrue(viewModel.state.value is PaymentFlowState.Success)
+        val aviso = viewModel.comandaWarning.value as EstadoDeComanda.NoSalio
+        assertEquals("disco lleno", aviso.causa)
+    }
+
     // MARK: - Ronda de arreglo 1: dos ventas en vuelo a la vez (el reintento estiró la ventana)
 
     /**

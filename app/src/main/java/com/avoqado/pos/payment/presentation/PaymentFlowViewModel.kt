@@ -2770,56 +2770,70 @@ class PaymentFlowViewModel @Inject constructor(
         // vale de área (§5.6). Mover el mecanismo no cambió ni una llamada de este camino:
         // mismos argumentos, mismo orden, mismo ticket legado (con su `category`) — lo fijan
         // PaymentFlowViewModelTest y ComandaDispatcherTest.
-        comandaDispatcher.dispatch(
-            venueId = secureStorage.venueId,
-            lines = realItems.map { item ->
-                RoutableItem(
-                    orderItemId = item.id,
-                    productId = (item.type as? CartItemType.ProductItem)?.productId,
-                    categoryId = item.categoryId,
-                    productName = item.name,
-                    quantity = item.quantity,
-                    modifiers = item.selectedModifiers.map { it.modifierName },
-                    notes = item.itemNote,
-                    // COMBOS — el nombre viaja con la línea para que cada estación
-                    // pueda encabezar SUS productos con el combo al que pertenecen.
-                    comboName = item.promotionInstanceId?.let { item.promotionName ?: "Combo" },
-                )
-            },
-            orderNumber = orderNumber,
-            orderType = "En tienda",
-            // «La libreta» (Task 16) — el id REAL de la orden, para que el reporte al servidor
-            // no dependa del `orderNumber` truncado/aleatorio de arriba.
-            orderId = createdOrderId,
-            // Sin estaciones configuradas: EXACTAMENTE lo de antes — un solo ticket de cocina
-            // abanicado a todas las impresoras con rol KITCHEN.
-            noStationsFallback = NoStationsFallback.LegacySingleTicket(
-                // COMBOS — en la comanda la llave es el NOMBRE (ver ComboPrintLines):
-                // los productos del mismo combo van juntos bajo un encabezado.
-                ComboPrintLines.kitchen(
-                    realItems.map { item ->
-                        val comboName = item.promotionInstanceId?.let { item.promotionName ?: "Combo" }
-                        val tag = comboName?.let { ComboPrintLines.Tag(key = it, name = it) }
-                        tag to KitchenItem(
-                            name = item.name,
-                            quantity = item.quantity,
-                            modifiers = item.selectedModifiers.map { it.modifierName }.ifEmpty { null },
-                            note = item.itemNote,
-                            category = item.subtitle,
-                        )
-                    },
+        // 🔴 Esto corre en un `viewModelScope.launch` suelto, DESPUÉS de cobrar: una excepción aquí
+        // (lectura de disco, bind de la impresora) no tenía quién la atrapara y cerraba la app con el
+        // cliente enfrente. Se dice como «No salió la comanda» —sin botón: no hay trabajo que reenviar—
+        // y sólo la cancelación se propaga.
+        try {
+            comandaDispatcher.dispatch(
+                venueId = secureStorage.venueId,
+                lines = realItems.map { item ->
+                    RoutableItem(
+                        orderItemId = item.id,
+                        productId = (item.type as? CartItemType.ProductItem)?.productId,
+                        categoryId = item.categoryId,
+                        productName = item.name,
+                        quantity = item.quantity,
+                        modifiers = item.selectedModifiers.map { it.modifierName },
+                        notes = item.itemNote,
+                        // COMBOS — el nombre viaja con la línea para que cada estación
+                        // pueda encabezar SUS productos con el combo al que pertenecen.
+                        comboName = item.promotionInstanceId?.let { item.promotionName ?: "Combo" },
+                    )
+                },
+                orderNumber = orderNumber,
+                orderType = "En tienda",
+                // «La libreta» (Task 16) — el id REAL de la orden, para que el reporte al servidor
+                // no dependa del `orderNumber` truncado/aleatorio de arriba.
+                orderId = createdOrderId,
+                // Sin estaciones configuradas: EXACTAMENTE lo de antes — un solo ticket de cocina
+                // abanicado a todas las impresoras con rol KITCHEN.
+                noStationsFallback = NoStationsFallback.LegacySingleTicket(
+                    // COMBOS — en la comanda la llave es el NOMBRE (ver ComboPrintLines):
+                    // los productos del mismo combo van juntos bajo un encabezado.
+                    ComboPrintLines.kitchen(
+                        realItems.map { item ->
+                            val comboName = item.promotionInstanceId?.let { item.promotionName ?: "Combo" }
+                            val tag = comboName?.let { ComboPrintLines.Tag(key = it, name = it) }
+                            tag to KitchenItem(
+                                name = item.name,
+                                quantity = item.quantity,
+                                modifiers = item.selectedModifiers.map { it.modifierName }.ifEmpty { null },
+                                note = item.itemNote,
+                                category = item.subtitle,
+                            )
+                        },
+                    ),
                 ),
-            ),
-            // Una comanda que sigue reintentando o que se rindió se DICE, con la estación por
-            // nombre y la CAUSA REAL que reportó la impresora — nunca un texto genérico.
-            // Una comanda que sigue reintentando o que se rindió se DICE, con la estación por
-            // nombre y la CAUSA REAL que reportó la impresora — nunca un texto genérico. La regla
-            // de "de qué venta habla este aviso" vive en UN solo sitio: [aplicarEstadoDeComanda].
-            // Etapa 3 del KDS (3.4): la caja decide por estación — ver `KitchenDeliveryPolicy`.
-            servidorLaTiene = servidorLaTiene,
-            origenDelFolio = origenDelFolio,
-            alCambiarEstado = { estado -> aplicarEstadoDeComanda(estado, orderNumber) },
-        )
+                // Una comanda que sigue reintentando o que se rindió se DICE, con la estación por
+                // nombre y la CAUSA REAL que reportó la impresora — nunca un texto genérico.
+                // Una comanda que sigue reintentando o que se rindió se DICE, con la estación por
+                // nombre y la CAUSA REAL que reportó la impresora — nunca un texto genérico. La regla
+                // de "de qué venta habla este aviso" vive en UN solo sitio: [aplicarEstadoDeComanda].
+                // Etapa 3 del KDS (3.4): la caja decide por estación — ver `KitchenDeliveryPolicy`.
+                servidorLaTiene = servidorLaTiene,
+                origenDelFolio = origenDelFolio,
+                alCambiarEstado = { estado -> aplicarEstadoDeComanda(estado, orderNumber) },
+            )
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            Log.e("🍳", "❌ La comanda del pedido $orderNumber reventó al despacharse: ${e.message}", e)
+            aplicarEstadoDeComanda(
+                EstadoDeComanda.NoSalio(listOf("Cocina"), e.message, orderNumber, trabajo = null),
+                orderNumber,
+            )
+        }
     }
 
     private val _reintentandoComandaManualmente = MutableStateFlow(false)
