@@ -735,7 +735,9 @@ fun IssueRefundSheet(
                                         item.id?.let { id ->
                                             AssociatedRefundItem(
                                                 orderItemId = id,
-                                                quantity = refundQtyByItem[id] ?: item.quantity,
+                                                // Lo que QUEDA de la línea: con la original, una
+                                                // línea ya devuelta en parte rebotaba con 400.
+                                                quantity = refundQtyByItem[id] ?: item.refundableQty,
                                             )
                                         }
                                     },
