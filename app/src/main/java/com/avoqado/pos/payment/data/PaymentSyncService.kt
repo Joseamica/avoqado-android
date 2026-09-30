@@ -434,7 +434,10 @@ class PaymentSyncService @Inject constructor(
 
     /** Lectura persistida para impedir logout/cambio de venue con trabajo oculto. */
     suspend fun blockingWorkCount(): Int =
-        dao.getUnsyncedPayments().size + dao.getFailedPayments().size
+        dao.getUnsyncedPayments().size + dao.getFailedPayments().size +
+            // Un cobro interrumpido (la app murió a media petición) tampoco puede irse con la sesión:
+            // nadie ha decidido todavía si ese dinero entró.
+            dao.enVueloCount()
 
     private fun calculateBackoff(retryCount: Int): Long {
         return minOf(

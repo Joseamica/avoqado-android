@@ -200,6 +200,9 @@ class SyncOutbox @Inject constructor(
      * @param retenido `true` = red de seguridad de un intento EN LÍNEA: se escribe pero no sale —y nada detrás sale—
      *   hasta [soltar] o [descartar].
      */
+    /** El estado en vivo de un intent (lo mira la pantalla de resultado de un cobro encolado). */
+    fun observarEstado(id: String): kotlinx.coroutines.flow.Flow<String?> = dao.observarEstado(id)
+
     suspend fun enqueue(
         venueId: String,
         type: String,

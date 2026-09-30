@@ -57,6 +57,7 @@ fun QuarantineSheet(
     val successMessage by viewModel.successMessage.collectAsState()
     val errorMessage by viewModel.errorMessage.collectAsState()
     val retryingPaymentId by viewModel.retryingPaymentId.collectAsState()
+    val cobrosInterrumpidos by viewModel.cobrosInterrumpidos.collectAsState()
     // Cancelaciones de cobro que no se pudieron confirmar: viven fuera del flujo de pago, así que
     // sin esta sección el cajero salía de la venta y nadie volvía a enterarse.
     val cancelacionesViewModel: com.avoqado.pos.payment.presentation.CancelacionesPendientesViewModel = hiltViewModel()
@@ -91,7 +92,9 @@ fun QuarantineSheet(
             )
             Spacer(Modifier.height(AvoqadoTheme.spacing.md))
 
-            if (items.isEmpty() && failedPayments.isEmpty() && failedReservations.isEmpty() && cancelaciones.isEmpty()) {
+            if (items.isEmpty() && failedPayments.isEmpty() && failedReservations.isEmpty() && cancelaciones.isEmpty() &&
+                cobrosInterrumpidos.isEmpty()
+            ) {
                 Text(
                     "No hay operaciones pendientes de revisión.",
                     style = MaterialTheme.typography.bodyMedium,
@@ -100,6 +103,55 @@ fun QuarantineSheet(
                 )
             } else {
                 LazyColumn(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                    // Primero: son dinero que puede no estar registrado en ningún lado.
+                    if (cobrosInterrumpidos.isNotEmpty()) {
+                        item {
+                            Text(
+                                "Cobros interrumpidos",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                        }
+                    }
+                    items(cobrosInterrumpidos, key = { "interrumpido-${it.id}" }) { cobro ->
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(AvoqadoTheme.spacing.md))
+                                .background(MaterialTheme.colorScheme.surfaceVariant)
+                                .padding(AvoqadoTheme.spacing.md),
+                            verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.xs),
+                        ) {
+                            Text(
+                                "Efectivo · ${formatMoney(cobro.amountCents + cobro.tipCents)}",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            Text(
+                                "La app se cerró mientras registraba este cobro. ¿El cliente pagó?",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            Text(
+                                formatTime(cobro.createdAt),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                            if (viewModel.canResolve) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm, Alignment.End),
+                                ) {
+                                    OutlinedButton(onClick = { viewModel.descartarCobroInterrumpido(cobro.id) }) {
+                                        Text("No se cobró")
+                                    }
+                                    OutlinedButton(onClick = { viewModel.confirmarCobroInterrumpido(cobro.id) }) {
+                                        Text("Sí, se cobró")
+                                    }
+                                }
+                            }
+                        }
+                    }
                     if (cancelaciones.isNotEmpty()) {
                         item {
                             Text(
@@ -327,7 +379,7 @@ fun QuarantineSheet(
                     }
                 }
             }
-            if (!viewModel.canResolve && (items.isNotEmpty() || failedPayments.isNotEmpty())) {
+            if (!viewModel.canResolve && (items.isNotEmpty() || failedPayments.isNotEmpty() || cobrosInterrumpidos.isNotEmpty())) {
                 Spacer(Modifier.height(AvoqadoTheme.spacing.md))
                 Text(
                     "Pide a un gerente que revise y resuelva estas operaciones.",

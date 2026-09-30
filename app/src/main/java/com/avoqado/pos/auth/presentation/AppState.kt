@@ -262,16 +262,29 @@ class AppState @Inject constructor(
      * las listaría, pero nadie tendría motivo para abrirla — que es como se
      * perdían antes.
      */
-    val reconciliationCount: StateFlow<Int> = combine(
-        syncOutbox.rejectedCount,
-        paymentSyncService.failedCount,
-        reservationRepository.quarantinedCount,
-    ) { rejected, failed, reservas -> rejected + failed + reservas }
-        .stateIn(
-            scope = viewModelScope,
-            started = SharingStarted.WhileSubscribed(5_000),
-            initialValue = 0,
-        )
+    val reconciliationCount: StateFlow<Int> by lazy {
+        // Los cobros en efectivo interrumpidos (la app murió a media petición) también piden a una persona.
+        val interrumpidos = if (::cashPaymentRepositoryParaAvisos.isInitialized) {
+            cashPaymentRepositoryParaAvisos.observarSinConfirmar().map { it.size }
+        } else {
+            kotlinx.coroutines.flow.flowOf(0)
+        }
+        combine(
+            syncOutbox.rejectedCount,
+            paymentSyncService.failedCount,
+            reservationRepository.quarantinedCount,
+            interrumpidos,
+        ) { rejected, failed, reservas, cobros -> rejected + failed + reservas + cobros }
+            .stateIn(
+                scope = viewModelScope,
+                started = SharingStarted.WhileSubscribed(5_000),
+                initialValue = 0,
+            )
+    }
+
+    /** Por miembro, como [deviceCapabilitySyncCoordinator]: no rompe a quien construye este ViewModel a mano. */
+    @Inject
+    lateinit var cashPaymentRepositoryParaAvisos: com.avoqado.pos.payment.data.CashPaymentRepository
 
     private val _sessionGuardMessage = MutableStateFlow<String?>(null)
     val sessionGuardMessage: StateFlow<String?> = _sessionGuardMessage.asStateFlow()

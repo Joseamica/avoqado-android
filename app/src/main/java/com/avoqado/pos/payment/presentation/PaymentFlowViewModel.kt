@@ -55,6 +55,10 @@ import com.avoqado.pos.tpvsettings.data.TpvSettingsRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -205,6 +209,38 @@ class PaymentFlowViewModel @Inject constructor(
         paymentIdempotencyKey ?: java.util.UUID.randomUUID().toString().also { paymentIdempotencyKey = it }
 
     /**
+     * La llave del cobro en efectivo que se guardó en el aparato ANTES de mandarlo (ver
+     * `reservarEfectivo`). Se suelta en cuanto el cobro deja de estar «Procesando»: registrado,
+     * encolado, rechazado o cancelado. Si el proceso muere antes, la fila queda «sin confirmar».
+     */
+    private var reservaDeEfectivo: String? = null
+
+    /**
+     * Qué dice la pantalla de resultado de un cobro encolado, EN VIVO (30-sep-2026: «Se sincronizará
+     * cuando haya conexión» se quedaba pegado aunque la cola ya hubiera subido la venta).
+     */
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    val sincronizacionDelCobro: StateFlow<com.avoqado.pos.payment.data.model.SincronizacionDelCobro> =
+        _state
+            .map { (it as? PaymentFlowState.Success)?.takeIf { exito -> exito.isQueued } }
+            .distinctUntilChanged()
+            .flatMapLatest { exito ->
+                val cola = exito?.colaDelCobro
+                when {
+                    exito == null -> flowOf(com.avoqado.pos.payment.data.model.SincronizacionDelCobro.NINGUNA)
+                    cola is com.avoqado.pos.payment.data.model.ColaDelCobro.Pagos ->
+                        cashPaymentRepository.observarEstado(cola.id)
+                            .map(com.avoqado.pos.payment.data.model.SincronizacionDelCobro::dePago)
+                    cola is com.avoqado.pos.payment.data.model.ColaDelCobro.Outbox ->
+                        syncOutbox.observarEstado(cola.intentId)
+                            .map(com.avoqado.pos.payment.data.model.SincronizacionDelCobro::deIntent)
+                    // Encolado sin fila que mirar: se queda como hasta hoy, pendiente.
+                    else -> flowOf(com.avoqado.pos.payment.data.model.SincronizacionDelCobro.PENDIENTE)
+                }
+            }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, com.avoqado.pos.payment.data.model.SincronizacionDelCobro.NINGUNA)
+
+    /**
      * 🔴 Un 4xx al crear la orden NO significa "no pasó nada".
      *
      * Con promociones el server crea la orden PRIMERO y aplica el combo después:
@@ -224,6 +260,59 @@ class PaymentFlowViewModel @Inject constructor(
     private fun estrenarLlaveTrasRechazoDeOrden(error: Throwable) {
         val esRechazoDeNegocio = error is OrderRepository.ServerException && error.code in 400..499
         if (esRechazoDeNegocio) paymentIdempotencyKey = null
+    }
+
+    /**
+     * 🔴 Guarda el cobro en efectivo en el aparato ANTES de mandarlo (regla «se persiste antes de tocar
+     * la red», `.claude/rules/todo-funciona-sin-red.md` pregunta 2). Con la MISMA llave que el intento
+     * en línea, la creación de la orden y la cola: si la app muere a media petición, al reabrir el
+     * cobro aparece «sin confirmar» y, si alguien dice que sí se cobró, se manda con esa llave y el
+     * servidor deduplica en vez de crear otra venta.
+     *
+     * No se reserva donde no hay cola que lo pueda reproducir: fichas de área (su cobro no se encola),
+     * mesa abierta sin red (va por el outbox, que ya guarda antes) y venta con premio de lealtad (el
+     * canje es en línea a propósito).
+     */
+    private suspend fun reservarEfectivo(cart: CartState?, total: Int, cashReceivedCents: Int, changeCents: Int) {
+        soltarReservaDeEfectivo() // una reserva vieja nunca sobrevive a un cobro nuevo
+        if (cart == null) return
+        if (areaTicketRepository.session.current() != null) return
+        if (tableSession.current()?.isProvisional == true) return
+        if (cart.pendingStampRewardId != null && cart.premioAplica) return
+        val llave = sessionIdempotencyKey()
+        val ordenExistente = createdOrderId?.takeIf { it.isNotBlank() }
+        val pedido = buildOrderRequest(cart)
+        try {
+            cashPaymentRepository.reservarCobro(
+                // Con orden ya creada se registra lo que se cobra; sin orden, el pedido tal cual (así lo
+                // encola el camino sin red).
+                orderRequest = if (ordenExistente != null) pedido.copy(total = total, tip = currentTipCents) else pedido,
+                staffId = selectedStaffId(),
+                cashTenderedCents = cashReceivedCents,
+                changeCents = changeCents,
+                rating = currentRating,
+                orderId = ordenExistente,
+                // La MISMA identidad con que se crea la orden en línea: si la creación sí llegó, el
+                // reintento la encuentra en vez de crear otra.
+                orderExternalId = if (ordenExistente == null) llave else null,
+                customerId = attachedCustomerId,
+                idempotencyKey = llave,
+                manualMethod = manualMethod,
+                tenderType = selectedTender,
+            )
+            reservaDeEfectivo = llave
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // Guardar en el aparato nunca puede impedir un cobro: se sigue como hasta hoy.
+            Log.w("💵", "No se pudo reservar el cobro en el aparato: ${e.message}")
+        }
+    }
+
+    private fun soltarReservaDeEfectivo() {
+        val llave = reservaDeEfectivo ?: return
+        reservaDeEfectivo = null
+        viewModelScope.launch(kotlinx.coroutines.NonCancellable) { cashPaymentRepository.soltarReserva(llave) }
     }
 
     /// Invalidates in-flight terminal sends: cancel() bumps it, and a late
@@ -299,9 +388,19 @@ class PaymentFlowViewModel @Inject constructor(
                 if (st is PaymentFlowState.Success) {
                     paymentIdempotencyKey = null
                 }
+                // El intento de efectivo terminó, sea cual sea la salida (registrado, encolado —la cola ya
+                // reemplazó la reserva con la misma llave—, rechazado, premio que no alcanza, cancelado).
+                if (st !is PaymentFlowState.Processing) soltarReservaDeEfectivo()
                 mirrorToCustomerDisplay(st)
             }
         }
+    }
+
+    override fun onCleared() {
+        // La pantalla se fue con un cobro en efectivo en vuelo: el desenlace es incierto, así que se
+        // queda guardado y aparece «sin confirmar» en vez de esconderse hasta reiniciar la app.
+        reservaDeEfectivo?.let { cashPaymentRepository.olvidarReservaEnMemoria(it) }
+        super.onCleared()
     }
 
     /** Los mensajes de éxito de envío contienen "enviado"; los de error, no. */
@@ -1445,7 +1544,7 @@ class PaymentFlowViewModel @Inject constructor(
                                             source = PaymentErrorSource.NETWORK,
                                         )
                                     } else if (isQueueable) {
-                                        cashPaymentRepository.queueCashPayment(
+                                        val idEnCola = cashPaymentRepository.queueCashPayment(
                                             orderRequest = orderRequest,
                                             staffId = selectedStaffId(),
                                             customerId = attachedCustomerId,
@@ -1465,6 +1564,7 @@ class PaymentFlowViewModel @Inject constructor(
                                             method = PaymentMethod.CASH,
                                             changeAmount = 0,
                                             isQueued = true,
+                                            colaDelCobro = com.avoqado.pos.payment.data.model.ColaDelCobro.Pagos(idEnCola),
                                         )
                                         autoPrintAfterPayment(PaymentMethod.CASH)
                                     } else {
@@ -1635,7 +1735,7 @@ class PaymentFlowViewModel @Inject constructor(
                                 (error is OrderRepository.ServerException && OrderRepository.isQueueableHttpCode(error.code))
                             val cart = cartState
                             if (isQueueable && cart != null && areaTicketRepository.session.current() == null) {
-                                cashPaymentRepository.queueCashPayment(
+                                val idEnCola = cashPaymentRepository.queueCashPayment(
                                     orderRequest = buildOrderRequest(cart),
                                     staffId = selectedStaffId(),
                                     customerId = attachedCustomerId,
@@ -1652,6 +1752,7 @@ class PaymentFlowViewModel @Inject constructor(
                                     totalAmount = total,
                                     method = PaymentMethod.CASH,
                                     isQueued = true,
+                                    colaDelCobro = com.avoqado.pos.payment.data.model.ColaDelCobro.Pagos(idEnCola),
                                 )
                                 autoPrintAfterPayment(PaymentMethod.CASH)
                             } else {
@@ -1708,6 +1809,8 @@ class PaymentFlowViewModel @Inject constructor(
                         )
                         return@launch
                     }
+                    // 🔴 Antes de la primera llamada de red (crear la orden o registrar el cobro).
+                    reservarEfectivo(cart, total, cashReceivedCents, result.changeCents)
                     val hasRealProducts = cart?.let(::hasProductItems) ?: false
 
                     // TABLE_SERVICE: a preset createdOrderId (PAYING table session)
@@ -1808,7 +1911,7 @@ class PaymentFlowViewModel @Inject constructor(
                                             source = PaymentErrorSource.NETWORK,
                                         )
                                     } else if (isQueueable) {
-                                        cashPaymentRepository.queueCashPayment(
+                                        val idEnCola = cashPaymentRepository.queueCashPayment(
                                             orderRequest = orderRequest,
                                             staffId = selectedStaffId(),
                                             customerId = attachedCustomerId,
@@ -1828,6 +1931,7 @@ class PaymentFlowViewModel @Inject constructor(
                                             method = PaymentMethod.CASH,
                                             changeAmount = result.changeCents,
                                             isQueued = true,
+                                            colaDelCobro = com.avoqado.pos.payment.data.model.ColaDelCobro.Pagos(idEnCola),
                                         )
                                         autoPrintAfterPayment(PaymentMethod.CASH, result.changeCents)
                                     } else {
@@ -1899,7 +2003,7 @@ class PaymentFlowViewModel @Inject constructor(
                                 if (isQueueable) {
                                     // FIX B1: Actually queue the fast-cash payment for offline sync
                                     // FIX B4: Also record cash sale in drawer
-                                    if (cart != null) {
+                                    val idEnCola = if (cart != null) {
                                         cashPaymentRepository.queueCashPayment(
                                             orderRequest = buildOrderRequest(cart),
                                             staffId = selectedStaffId(),
@@ -1912,6 +2016,8 @@ class PaymentFlowViewModel @Inject constructor(
                                             manualMethod = manualMethod,
                                             tenderType = selectedTender,
                                         )
+                                    } else {
+                                        null
                                     }
                                     recordCashSale(total, null)
                                     // 🔴 Mismo hueco de D16 que arriba, camino encolado: sin esto
@@ -1924,6 +2030,7 @@ class PaymentFlowViewModel @Inject constructor(
                                         method = PaymentMethod.CASH,
                                         changeAmount = result.changeCents,
                                         isQueued = true,
+                                        colaDelCobro = idEnCola?.let { com.avoqado.pos.payment.data.model.ColaDelCobro.Pagos(it) },
                                     )
                                 } else {
                                     _state.value = PaymentFlowState.Error(
@@ -1962,7 +2069,7 @@ class PaymentFlowViewModel @Inject constructor(
         if (provisionalSession != null) {
             val vId = secureStorage.venueId
             if (vId != null) {
-                syncOutbox.enqueue(
+                val idEnCola = syncOutbox.enqueue(
                     vId,
                     com.avoqado.pos.core.data.sync.SyncIntentTypes.PAY_CASH,
                     kotlinx.serialization.json.buildJsonObject {
@@ -1983,6 +2090,7 @@ class PaymentFlowViewModel @Inject constructor(
                     method = PaymentMethod.CASH,
                     changeAmount = changeCents,
                     isQueued = true,
+                    colaDelCobro = com.avoqado.pos.payment.data.model.ColaDelCobro.Outbox(idEnCola),
                 )
                 autoPrintAfterPayment(PaymentMethod.CASH, changeCents)
                 return
@@ -2058,7 +2166,7 @@ class PaymentFlowViewModel @Inject constructor(
                 val isQueueable = OrderRepository.isQueueableError(error) ||
                     (error is OrderRepository.ServerException && OrderRepository.isQueueableHttpCode(error.code))
                 if (isQueueable && areaTicketRepository.session.current() == null) {
-                    cashPaymentRepository.queueCashPayment(
+                    val idEnCola = cashPaymentRepository.queueCashPayment(
                         // 🔴 Lo que se COBRÓ, no el estimado del carrito: con un premio rechazado se
                         // cobraron $100 y el pedido traía $70 — la cola registraría $70 al sincronizar.
                         orderRequest = orderRequest.copy(total = total, tip = currentTipCents),
@@ -2078,6 +2186,7 @@ class PaymentFlowViewModel @Inject constructor(
                         method = PaymentMethod.CASH,
                         changeAmount = changeCents,
                         isQueued = true,
+                        colaDelCobro = com.avoqado.pos.payment.data.model.ColaDelCobro.Pagos(idEnCola),
                     )
                     autoPrintAfterPayment(PaymentMethod.CASH, changeCents)
                 } else {

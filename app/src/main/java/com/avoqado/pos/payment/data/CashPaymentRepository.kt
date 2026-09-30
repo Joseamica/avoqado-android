@@ -6,7 +6,10 @@ import com.avoqado.pos.core.data.local.database.PendingPaymentDao
 import com.avoqado.pos.core.data.local.database.PendingPaymentEntity
 import com.avoqado.pos.core.data.local.database.PaymentSyncStatus
 import com.avoqado.pos.payment.data.model.CreateOrderRequest
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -91,10 +94,119 @@ class CashPaymentRepository @Inject constructor(
          */
         tenderType: com.avoqado.pos.payment.domain.TenderTypeOption? = null,
     ): String {
+        val entity = construirFila(
+            orderRequest, staffId, cashTenderedCents, changeCents, rating, orderId, orderExternalId,
+            customerId, idempotencyKey, manualMethod, tenderType, PaymentSyncStatus.PENDING,
+        )
+        // REPLACE: si este cobro se había reservado (`reservarCobro`, misma llave) la reserva se
+        // vuelve la fila de la cola, con los datos finales del intento.
+        pendingPaymentDao.insert(entity)
+        Log.d("💵", "💾 Cash payment queued offline: ${entity.id} (${entity.paymentType})")
+        return entity.id
+    }
+
+    // MARK: - Cobro en vuelo (se guarda ANTES de tocar la red)
+
+    /**
+     * Los cobros que ESTE proceso reservó y todavía no suelta. Una fila `EN_VUELO` que no está
+     * aquí es de un proceso que murió a media petición: ésa es la «sin confirmar».
+     */
+    private val reservasDeEsteProceso: MutableSet<String> = ConcurrentHashMap.newKeySet()
+
+    /**
+     * 🔴 Guarda el cobro en efectivo ANTES del POST (regla «se persiste antes de tocar la red»).
+     *
+     * Antes la fila nacía en el `onFailure`, hasta 15 s después del toque: si la app moría en
+     * medio, el cobro no quedaba en ningún lado, y si el POST sí había llegado, el cajero lo
+     * rehacía con otra llave (dos ventas por un billete). La reserva lleva la MISMA llave que el
+     * intento en línea y que la cola; se suelta al terminar el intento (`soltarReserva`).
+     *
+     * Queda `EN_VUELO`: la cola no la reproduce sola y el cajón no la cuenta, porque si el proceso
+     * muere no se sabe si la venta se completó. Eso lo decide una persona al reabrir.
+     */
+    suspend fun reservarCobro(
+        orderRequest: CreateOrderRequest,
+        staffId: String,
+        cashTenderedCents: Int?,
+        changeCents: Int?,
+        rating: Int?,
+        orderId: String? = null,
+        orderExternalId: String? = null,
+        customerId: String? = null,
+        idempotencyKey: String,
+        manualMethod: com.avoqado.pos.payment.domain.ManualPaymentMethod? = null,
+        tenderType: com.avoqado.pos.payment.domain.TenderTypeOption? = null,
+    ) {
+        val entity = construirFila(
+            orderRequest, staffId, cashTenderedCents, changeCents, rating, orderId, orderExternalId,
+            customerId, idempotencyKey, manualMethod, tenderType, PaymentSyncStatus.EN_VUELO,
+        )
+        // Primero la marca en memoria y DESPUÉS la fila: quien observe la tabla nunca ve este
+        // cobro como «sin confirmar» mientras va en vuelo.
+        reservasDeEsteProceso += entity.id
+        pendingPaymentDao.insert(entity)
+    }
+
+    /** El intento terminó (bien, encolado, rechazado o cancelado): la reserva sobra. */
+    suspend fun soltarReserva(id: String) {
+        pendingPaymentDao.borrarSiEnVuelo(id)
+        reservasDeEsteProceso -= id
+    }
+
+    /**
+     * La pantalla que llevaba este cobro se cerró con el POST en vuelo: ya nadie va a soltar la
+     * reserva y no se sabe si el servidor la recibió. Deja de esconderse: aparece «sin confirmar».
+     */
+    fun olvidarReservaEnMemoria(id: String) {
+        reservasDeEsteProceso -= id
+    }
+
+    /** Cobros de un proceso que murió a media petición, del local actual. */
+    suspend fun cobrosSinConfirmar(): List<PendingPaymentEntity> {
+        val venueId = secureStorage.venueId ?: return emptyList()
+        return pendingPaymentDao.enVueloDelVenue(venueId).filter { it.id !in reservasDeEsteProceso }
+    }
+
+    /** Lo mismo, en vivo, para el aviso y la cuarentena. */
+    fun observarSinConfirmar(): Flow<List<PendingPaymentEntity>> =
+        pendingPaymentDao.observarEnVuelo().map { filas ->
+            val venueId = secureStorage.venueId
+            filas.filter { it.venueId == venueId && it.id !in reservasDeEsteProceso }
+        }
+
+    /** «Sí se cobró»: a la cola con la MISMA llave. Si el POST sí había llegado, el servidor deduplica. */
+    suspend fun confirmarQueSeCobro(id: String) {
+        pendingPaymentDao.enVueloAPendiente(id)
+        Log.w("💵", "Cobro sin confirmar $id: el cajero dice que SÍ se cobró — se manda a la cola")
+    }
+
+    /** «No se cobró»: se borra, y sólo si seguía sin confirmar. */
+    suspend fun descartarPorqueNoSeCobro(id: String) {
+        pendingPaymentDao.borrarSiEnVuelo(id)
+        Log.w("💵", "Cobro sin confirmar $id: el cajero dice que NO se cobró — se descarta")
+    }
+
+    /** El estado en vivo de un cobro encolado (null = ya no está: la cola lo sincronizó y lo limpió). */
+    fun observarEstado(id: String): Flow<String?> = pendingPaymentDao.observarEstado(id)
+
+    private fun construirFila(
+        orderRequest: CreateOrderRequest,
+        staffId: String,
+        cashTenderedCents: Int?,
+        changeCents: Int?,
+        rating: Int?,
+        orderId: String?,
+        orderExternalId: String?,
+        customerId: String?,
+        idempotencyKey: String?,
+        manualMethod: com.avoqado.pos.payment.domain.ManualPaymentMethod?,
+        tenderType: com.avoqado.pos.payment.domain.TenderTypeOption?,
+        estado: PaymentSyncStatus,
+    ): PendingPaymentEntity {
         val localId = idempotencyKey?.takeIf { it.isNotBlank() } ?: UUID.randomUUID().toString()
         val hasOrderItems = OrderRepository.hasProductItems(orderRequest)
         val paymentType = if (orderId != null || hasOrderItems) "ORDER" else "FAST"
-        val entity = PendingPaymentEntity(
+        return PendingPaymentEntity(
             id = localId,
             venueId = secureStorage.venueId ?: "",
             staffId = staffId,
@@ -131,14 +243,10 @@ class CashPaymentRepository @Inject constructor(
             } else {
                 null
             },
-            syncStatus = PaymentSyncStatus.PENDING.name,
+            syncStatus = estado.name,
             retryCount = 0,
             createdAt = System.currentTimeMillis(),
         )
-
-        pendingPaymentDao.insert(entity)
-        Log.d("💵", "💾 Cash payment queued offline: $localId ($paymentType)")
-        return localId
     }
 }
 

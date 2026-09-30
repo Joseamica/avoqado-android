@@ -68,6 +68,29 @@ interface PendingPaymentDao {
     @Query("DELETE FROM pending_payments WHERE syncStatus = 'SYNCED' AND createdAt < :olderThan")
     suspend fun deleteSynced(olderThan: Long)
 
+    // MARK: - Cobro en vuelo (guardado ANTES de tocar la red; ver `CashPaymentRepository.reservarCobro`)
+
+    /** Suelta una reserva. Condicionado a EN_VUELO: una fila que la cola ya volvió PENDING (sin red) no se toca. */
+    @Query("DELETE FROM pending_payments WHERE id = :id AND syncStatus = 'EN_VUELO'")
+    suspend fun borrarSiEnVuelo(id: String): Int
+
+    /** «Sí se cobró»: la reserva pasa a la cola con su MISMA llave (el servidor deduplica si ya la tenía). */
+    @Query("UPDATE pending_payments SET syncStatus = 'PENDING' WHERE id = :id AND syncStatus = 'EN_VUELO'")
+    suspend fun enVueloAPendiente(id: String): Int
+
+    @Query("SELECT * FROM pending_payments WHERE venueId = :venueId AND syncStatus = 'EN_VUELO' ORDER BY createdAt ASC")
+    suspend fun enVueloDelVenue(venueId: String): List<PendingPaymentEntity>
+
+    @Query("SELECT * FROM pending_payments WHERE syncStatus = 'EN_VUELO' ORDER BY createdAt ASC")
+    fun observarEnVuelo(): Flow<List<PendingPaymentEntity>>
+
+    @Query("SELECT COUNT(*) FROM pending_payments WHERE syncStatus = 'EN_VUELO'")
+    suspend fun enVueloCount(): Int
+
+    /** El estado de UN cobro encolado, en vivo. Lo mira la pantalla de resultado para no mentir. */
+    @Query("SELECT syncStatus FROM pending_payments WHERE id = :id")
+    fun observarEstado(id: String): Flow<String?>
+
     @Query("SELECT COUNT(*) FROM pending_payments WHERE syncStatus = 'PENDING'")
     fun getPendingCount(): Flow<Int>
 

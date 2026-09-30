@@ -144,6 +144,10 @@ interface SyncIntentDao {
     @Query("DELETE FROM pos_sync_intents WHERE id = :id")
     suspend fun dismiss(id: String)
 
+    /** El estado de UN intent, en vivo. Lo mira la pantalla de resultado de un cobro encolado. */
+    @Query("SELECT status FROM pos_sync_intents WHERE id = :id")
+    fun observarEstado(id: String): kotlinx.coroutines.flow.Flow<String?>
+
     @Query("SELECT COALESCE(MAX(seq), 0) FROM pos_sync_intents")
     suspend fun maxSeq(): Long
 
