@@ -106,8 +106,6 @@ class PlanManager @Inject constructor(
         // se permite en cualquier plan. PlanManagerTest barre el código fuente y lo exige.
         val FEATURE_REQUIRED_TIER: Map<String, PlanTier> = mapOf(
             "RESERVATIONS" to PlanTier.PRO,
-            "TABLE_SERVICE" to PlanTier.PRO,
-            "OFFLINE_LAN_HUB" to PlanTier.PREMIUM,
             "PROMOTIONS" to PlanTier.PRO,
             "REFERRAL_PROGRAM" to PlanTier.PRO,
             "ADVANCED_REPORTS" to PlanTier.PRO,
@@ -127,8 +125,8 @@ class PlanManager @Inject constructor(
             "SCALE_INTEGRATION" to PlanTier.PREMIUM,
             // Hub LAN sin internet (2026-09-27). PREMIUM_ONLY_CODES en el server, pero no tiene
             // ruta allá: este mapa es su ÚNICO candado. Faltaba y se regalaba en todo plan.
-            // ⚠️ Una venta suelta (VenueFeature propia) de un código Premium a un venue Pro NO
-            // llega al POS: el payload móvil sólo trae tier + exempt. Hoy no existe ninguna.
+            // Una función comprada suelta SÍ llega: con `accessSchemaVersion == 1` la app obedece la lista
+            // `grantedFeatureCodes` que confirma el servidor, no este mapa (ver hasFeature).
             "OFFLINE_LAN_HUB" to PlanTier.PREMIUM,
         )
     }
