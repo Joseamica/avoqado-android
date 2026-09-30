@@ -343,7 +343,7 @@ red y sin config de estaciones (2026-07-28). Cuarentena visible para rechazos.
 la red** (Home con comanda empujada, SIM + WiFi sin internet, pantalla en segundo plano, cambio de estación a
 media entrega, WiFi que aísla aparatos). Límites declarados: con un WiFi que aísla aparatos todo lo «sólo pantalla» sale
 en papel (sin perder nada, y la caja lo dice); los planes «Sin estación» no se empujan (el servidor los pone en todas las
-pantallas); cambiar de sucursal sin red conserva la config anterior (`switchVenue` es una llamada al servidor); lo
+pantallas); cambiar de sucursal sin red (`switchVenue` NO se aborta sin red) usa la config de impresión GUARDADA de la nueva, o ninguna (ticket legado) si el aparato nunca la vio — nunca la de la anterior (Codex 3.6 #3); una ronda en fondo sale entera con la config con que se ruteó (#4); lo
 marcado LISTO sin red no aparece en «Recientes» y «Deshacer» sigue sólo en línea.
 
 **NO está hecho:**

@@ -150,7 +150,16 @@ class ComandaDispatcher @Inject constructor(
         origenDelFolio: String? = null,
         alCambiarEstado: (EstadoDeComanda) -> Unit = {},
     ): Job = fondo.launch {
-        val guardadasAntes = guardarLaRonda(venueId, orderNumber, pedidos, orderId, servidorLaTiene, origenDelFolio)
+        val guardada = guardarLaRonda(venueId, orderNumber, pedidos, orderId, servidorLaTiene, origenDelFolio)
+        val guardadasAntes = guardada?.entregas
+        // Codex 3.6 (#4): UNA config para toda la ronda, la misma con que se guardó. El tiempo 1 puede insistir ~1 min y en
+        // ese minuto se puede cambiar de sucursal: si cada tiempo releyera la global, el 2 saldría por las impresoras de la
+        // otra (y su papel, si no salía, se perdía). La tablet sigue en la sucursal de la ronda. No se detiene el despacho:
+        // un tiempo «sólo impresora» no tiene fila en disco, detenerlo sería perderlo.
+        val configDeLaRonda = guardada?.config ?: run {
+            venueId?.let { printConfigRepository.refreshConTope(it) }
+            printConfigRepository.getCurrentConfig()
+        }
         // Codex 3.6 (#1): los tiempos comparten folio y la marca de papel esconde el folio ENTERO en el servidor. El papel de
         // un tiempo no cubre un folio que va en más de un tiempo: si otro tiempo llegó a la pantalla sin papel, la marca lo
         // borraría de la cocina. Esos folios no se marcan (papel Y pantalla: duplicado, nunca pérdida). Sin guardado previo no
@@ -176,7 +185,7 @@ class ComandaDispatcher @Inject constructor(
                     servidorLaTiene = servidorLaTiene,
                     origenDelFolio = origenDelFolio,
                     alCambiarEstado = alCambiarEstado,
-                    refrescar = guardadasAntes == null,
+                    configDeLaRonda = configDeLaRonda,
                     etiquetaPantalla = pedido.etiquetaPantalla,
                     curso = pedido.curso,
                     noMarcar = noMarcar,
@@ -210,9 +219,9 @@ class ComandaDispatcher @Inject constructor(
      * curso): si el proceso muere entre dos cursos, el replay empuja o imprime el que faltaba. Sin esto el curso 2 no
      * existía en ningún lado, y un LISTO sin red sobre el curso 1 cerraba el folio entero en el servidor: pérdida.
      *
-     * Refresca la config UNA vez (cada curso se despacha sin volver a refrescar: mismos planes, mismas filas). Cada curso
+     * Refresca la config UNA vez y la devuelve: cada curso se despacha con ELLA (mismos planes, mismas filas). Cada curso
      * vuelve a guardar la suya al despachar (`REPLACE` por `entregaId`, inocuo). `null` = el lote no reparte por pantalla
-     * (o no se pudo preparar): cada curso sigue como antes, con su propio refresco.
+     * (o no se pudo preparar): [despacharEnFondo] lee la config una vez por su cuenta.
      */
     private suspend fun guardarLaRonda(
         venueId: String?,
@@ -221,7 +230,7 @@ class ComandaDispatcher @Inject constructor(
         orderId: String?,
         servidorLaTiene: Boolean?,
         origen: String?,
-    ): List<EntregaKds>? {
+    ): RondaGuardada? {
         val wifi = entregaPorWifi ?: return null
         if (servidorLaTiene == null || venueId == null || origen == null) return null
         return try {
@@ -235,7 +244,7 @@ class ComandaDispatcher @Inject constructor(
                 )
             }
             wifi.guardar(entregas)
-            entregas
+            RondaGuardada(entregas, config)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -244,6 +253,9 @@ class ComandaDispatcher @Inject constructor(
             null
         }
     }
+
+    /** Lo que [guardarLaRonda] dejó en disco y la config con que lo ruteó (la de toda la ronda, Codex 3.6 #4). */
+    private data class RondaGuardada(val entregas: List<EntregaKds>, val config: PrintConfig)
 
     private fun comboNamesDe(lines: List<RoutableItem>): Map<String, String> =
         lines.mapNotNull { line -> line.comboName?.let { line.orderItemId to it } }.toMap()
@@ -302,8 +314,8 @@ class ComandaDispatcher @Inject constructor(
         servidorLaTiene: Boolean? = null,
         origenDelFolio: String? = null,
         alCambiarEstado: (EstadoDeComanda) -> Unit = {},
-        /** `false` = quien llama ya refrescó ([despacharEnFondo] con cursos que se guardaron antes, I3): no se repite. */
-        refrescar: Boolean = true,
+        /** La config de toda la ronda ([despacharEnFondo], Codex 3.6 #4): no se refresca ni se relee la vigente. */
+        configDeLaRonda: PrintConfig? = null,
         /** Lo que lee la pantalla de cocina arriba («Mesa 8»); `null` = [orderType]. Ver [Pedido]. */
         etiquetaPantalla: String? = null,
         /** El tiempo de estos renglones en la pantalla de cocina («Aperitivos»). */
@@ -319,8 +331,8 @@ class ComandaDispatcher @Inject constructor(
         // El refresh nunca lanza (falla abierto y conserva la config vigente), así que una red lenta
         // o caída sólo significa "imprime con lo último que sabías" — jamás "no imprimas". Con tope de
         // 1.5 s (spec §5, H2): si la red tarda, se decide con la guardada y la descarga sigue sola.
-        if (refrescar) venueId?.let { printConfigRepository.refreshConTope(it) }
-        val config = printConfigRepository.getCurrentConfig()
+        if (configDeLaRonda == null) venueId?.let { printConfigRepository.refreshConTope(it) }
+        val config = configDeLaRonda ?: printConfigRepository.getCurrentConfig()
 
         val legacy = noStationsFallback as? NoStationsFallback.LegacySingleTicket
         if (legacy != null && config.stations.none { it.active }) {

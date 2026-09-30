@@ -772,7 +772,8 @@ class ComandaDispatcherTest {
         runBlocking { withTimeout(5_000) { while (estados.size < 2) delay(10) } }
         assertEquals(listOf(EstadoDeComanda.Salio, EstadoDeComanda.Salio), estados.toList())
         assertEquals(listOf("Mesa 5 · Aperitivos", "Mesa 5 · Principales"), encabezados.toList())
-        coVerify(exactly = 2) { printConfigRepository.refreshConTope("venue-1", any()) }
+        // Codex 3.6 (#4): UNA config para toda la ronda — se refresca una vez, no una por tiempo.
+        coVerify(exactly = 1) { printConfigRepository.refreshConTope("venue-1", any()) }
     }
 
     /**
@@ -1253,5 +1254,75 @@ class ComandaDispatcherTest {
         runBlocking { withTimeout(5_000) { ronda.join() } }
 
         coVerify(exactly = 0) { cola.enqueue(any(), any(), any(), any(), any()) }
+    }
+
+    // MARK: - Codex 3.6 (#4): una sola config para toda la ronda
+
+    private val deA = PrintConfig(
+        stations = listOf(StationInfo(id = "st_a", name = "Cocina A", printerId = "pr_a", active = true)),
+        defaultStationId = "st_a",
+    )
+    private val deB = PrintConfig(
+        stations = listOf(StationInfo(id = "st_b", name = "Cocina B", printerId = "pr_b", active = true)),
+        defaultStationId = "st_b",
+    )
+
+    /** La config vigente pasa a la de la OTRA sucursal después de la primera lectura (el mesero cambió de local). */
+    private fun laSucursalCambiaTrasLaPrimeraLectura() {
+        var lecturas = 0
+        every { printConfigRepository.getCurrentConfig() } answers { if (lecturas++ == 0) deA else deB }
+    }
+
+    /**
+     * El tiempo 1 puede insistir ~1 min contra una impresora apagada, y en ese minuto se puede cambiar de sucursal. Antes
+     * cada tiempo releía la config global y el tiempo 2 salía por las impresoras de la otra sucursal (y su papel, si no
+     * salía, se perdía sin «Volver a imprimir»). La tablet sigue físicamente en la sucursal de la ronda: toda la ronda sale
+     * con la config con que se ruteó.
+     */
+    @Test
+    fun `P2 sin pantallas un cambio de sucursal a media ronda no manda el segundo tiempo a la otra`() {
+        laSucursalCambiaTrasLaPrimeraLectura()
+        val planes = mutableListOf<List<TicketPlan>>()
+        imprimeTodo(planes, mutableListOf())
+        val sinWifi = ComandaDispatcher(
+            printConfigRepository,
+            ReintentoDeComanda(comandaPrinter, reporteDeComandas = mockk<ReporteDeComandas>(relaxed = true)),
+            printerService,
+            cola,
+        )
+
+        val ronda = sinWifi.despacharEnFondo(
+            venueId = "venue-1",
+            orderNumber = "1234",
+            pedidos = listOf(
+                ComandaDispatcher.Pedido(listOf(taco), "Mesa 5 · Aperitivos"),
+                ComandaDispatcher.Pedido(listOf(limonada), "Mesa 5 · Principales"),
+            ),
+        )
+        runBlocking { withTimeout(5_000) { ronda.join() } }
+
+        assertEquals(listOf(listOf("st_a"), listOf("st_a")), planes.map { p -> p.map { it.stationId } })
+    }
+
+    @Test
+    fun `P2 con la ronda guardada de antemano el segundo tiempo sale con la misma config que el primero`() {
+        laSucursalCambiaTrasLaPrimeraLectura()
+        val planes = mutableListOf<List<TicketPlan>>()
+        imprimeTodo(planes, mutableListOf())
+        val cliente = mockk<ClienteDeComandas> { coEvery { entregar(any(), any(), any()) } returns false }
+
+        val ronda = despachadorConWifi(EntregaPorWifi(transporteLan, EntregasEnMemoria(), cliente)).despacharEnFondo(
+            venueId = "venue-1",
+            orderNumber = "1234",
+            pedidos = listOf(
+                ComandaDispatcher.Pedido(listOf(taco), "Mesa 5 · Aperitivos"),
+                ComandaDispatcher.Pedido(listOf(limonada), "Mesa 5 · Principales"),
+            ),
+            servidorLaTiene = true,
+            origenDelFolio = "round:rk",
+        )
+        runBlocking { withTimeout(5_000) { ronda.join() } }
+
+        assertEquals(listOf(listOf("st_a"), listOf("st_a")), planes.map { p -> p.map { it.stationId } })
     }
 }

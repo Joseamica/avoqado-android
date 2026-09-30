@@ -229,4 +229,59 @@ class PrintConfigRepositoryTest {
 
         coVerify(exactly = 0) { payloadCache.load(PayloadCache.TYPE_PRINT_CONFIG, "venue-anterior") }
     }
+
+    // MARK: - Codex 3.6 (#3): cambiar de sucursal sin red
+
+    private fun enDisco(config: PrintConfig) = PayloadCache.Cached(
+        json = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }.encodeToString(PrintConfig.serializer(), config),
+        updatedAt = System.currentTimeMillis() - 60_000L,
+    )
+
+    /**
+     * `switchVenue` NO se aborta sin red (el POS tiene que vender igual). Antes la memoria traía las estaciones de A, así
+     * que `refreshConTope(B)` no hidrataba la copia de B y el fallo de la red conservaba la de A: una venta de B salía
+     * por la impresora de A.
+     */
+    @Test
+    fun `P2 cambiar de sucursal sin red usa la config guardada de la nueva`() = runTest {
+        val deA = configConEstacion().copy(stations = listOf(StationInfo(id = "st_a", name = "Cocina A")))
+        val deB = configConEstacion().copy(stations = listOf(StationInfo(id = "st_b", name = "Cocina B")))
+        coEvery { apiService.getPrintConfig("venue-a") } returns PrintConfigResponse(success = true, data = deA)
+        repository.refresh("venue-a")
+        coEvery { apiService.getPrintConfig("venue-b") } throws RuntimeException("sin red")
+        coEvery { payloadCache.load(PayloadCache.TYPE_PRINT_CONFIG, "venue-b") } returns enDisco(deB)
+
+        repository.refreshConTope("venue-b", topeMs = 0)
+
+        assertEquals(listOf("st_b"), repository.getCurrentConfig().stations.map { it.id })
+        repository.refresh("venue-b") // la red sigue caída: no regresa la de A
+        assertEquals(listOf("st_b"), repository.getCurrentConfig().stations.map { it.id })
+    }
+
+    /** Una sucursal que este aparato nunca vio queda sin ruteo (ticket legado), nunca con las estaciones de otra. */
+    @Test
+    fun `P2 cambiar a una sucursal nunca vista sin red no conserva las estaciones de la anterior`() = runTest {
+        coEvery { apiService.getPrintConfig("venue-a") } returns PrintConfigResponse(success = true, data = configConEstacion())
+        repository.refresh("venue-a")
+        coEvery { apiService.getPrintConfig("venue-b") } throws RuntimeException("sin red")
+        coEvery { payloadCache.load(PayloadCache.TYPE_PRINT_CONFIG, "venue-b") } returns null
+
+        repository.refreshConTope("venue-b", topeMs = 0)
+        repository.refresh("venue-b")
+
+        assertTrue(repository.getCurrentConfig().stations.isEmpty())
+    }
+
+    /** Regresión: en la MISMA sucursal un bache de red sigue sin tocar la config en memoria. */
+    @Test
+    fun `refreshConTope de la misma sucursal no rehidrata encima de la vigente`() = runTest {
+        coEvery { apiService.getPrintConfig("venue-a") } returns PrintConfigResponse(success = true, data = configConEstacion())
+        repository.refresh("venue-a")
+        coEvery { apiService.getPrintConfig("venue-a") } throws RuntimeException("sin red")
+
+        repository.refreshConTope("venue-a", topeMs = 0)
+
+        coVerify(exactly = 0) { payloadCache.load(any(), any()) }
+        assertEquals(listOf("st_cocina"), repository.getCurrentConfig().stations.map { it.id })
+    }
 }
