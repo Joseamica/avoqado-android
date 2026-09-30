@@ -175,8 +175,10 @@ No depende del hub Premium: viaja por el MISMO transporte. Espejo en iOS con los
   en paralelo (conectar ≤ 1 s, total ≤ 1.5 s). 🔴 El `kds=` de una pantalla CAMBIA (sólo lo anuncia con el Tablero a
   la vista) y Android NSD **no avisa** un cambio de TXT de un servicio ya conocido (QA 29-sep: la caja se quedaba con
   `kds=[]` y todo salía en papel hasta reiniciarla). Por eso `LanDiscovery.refrescar()` re-resuelve los conocidos en cada
-  revisión (60 s) y cuando una entrega no encuentra pantalla (espera ≤ 1 s dentro del presupuesto) — SÓLO en Android 14+:
-  abajo no se puede cancelar un resolve colgado y un aparato ido trabaría el resolver del sistema. El anuncio propio no
+  revisión (60 s) y cuando una entrega no encuentra pantalla (espera ≤ 1 s dentro del presupuesto). Abajo de Android 14
+  un resolve colgado no se puede cancelar y un aparato ido trabaría el resolver del sistema: ahí sólo se re-resuelve a
+  quien ya se resolvió y ACEPTA un TCP en 300 ms (sondeo en su hilo, nunca en quien llama; QA 3.6 con la N86 en Android 9:
+  sin esto la caja se quedaba con `kds=[]` hasta reiniciarse). El anuncio propio no
   cuenta como conocido. Acuse estricto `{"v":1,"status":"ok","sourceKey":<el mismo>}`; cualquier
   otra cosa = sin acuse. El acuse decide el papel de las «sólo pantalla»: sin acuse ⇒ papel de respaldo + marca
   `FALLBACK_PRINTED`, con o sin internet. «Impresora + pantalla» imprime siempre.

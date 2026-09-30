@@ -199,8 +199,8 @@ class TransporteLan @Inject constructor(
     /**
      * QA D1 (29-sep): NSD no avisa cuando una pantalla ya conocida cambia su TXT (entra al Tablero y agrega `kds=`). Esto
      * re-resuelve lo conocido YA —lo pide la entrega que no encuentra pantalla; la revisión de cada minuto hace lo mismo—.
-     * `true` si hay otro aparato conocido; sin nadie —el propio anuncio no cuenta— o abajo de Android 14 (donde no se
-     * re-resuelve, ver el detalle 7 de [LanDiscovery]) es `false`: no hay a quién esperar.
+     * `true` si hay otro aparato a quién esperar; sin nadie —el propio anuncio no cuenta— es `false`. Abajo de Android 14
+     * sólo cuenta quien ya se resolvió, y se re-resuelve sólo si contesta por TCP (detalles 7 y 8 de [LanDiscovery]).
      */
     @Synchronized
     fun refrescarPeers(): Boolean = discovery?.refrescar() ?: false

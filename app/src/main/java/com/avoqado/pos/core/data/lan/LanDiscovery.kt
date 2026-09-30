@@ -10,6 +10,8 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
+import java.net.InetSocketAddress
+import java.net.Socket
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicReference
@@ -47,11 +49,14 @@ private const val TAG = "LanDiscovery"
  *    [refrescar] vuelve a resolver lo conocido: el transporte lo pide en cada revisión y la entrega sin pantalla, ya.
  * 6. UN RESOLVE PUEDE NO CONTESTAR NUNCA (un servicio que se fue sin despedirse): Android no le pone plazo. En Android 14+
  *    se suelta el que lleva más de [PLAZO_DE_RESOLVE_MS] (y se cancela) para que la cola en serie no se trabe para siempre.
- * 7. ABAJO DE ANDROID 14 NO SE RE-RESUELVE (revisión del QA D1, I1): allá un resolve no se puede cancelar y el NsdService
- *    admite UNO por cliente. Re-pedir cada minuto lo conocido incluye a un aparato que se fue sin despedirse (NSD tarda
- *    ~75 min en decir «perdido»): su resolve nunca contesta y, desde ahí, todo `resolveService` del proceso falla con
- *    FAILURE_ALREADY_ACTIVE hasta que ese aparato vuelva. Por eso [refrescar] no hace nada abajo de [API_CON_STOP_DE_RESOLVE]
- *    y el descubrimiento se comporta como antes del refresco.
+ * 7. ABAJO DE ANDROID 14 NO SE RE-RESUELVE A CIEGAS (revisión del QA D1, I1): allá un resolve no se puede cancelar y el
+ *    NsdService admite UNO por cliente. Re-pedir cada minuto lo conocido incluye a un aparato que se fue sin despedirse (NSD
+ *    tarda ~75 min en decir «perdido»): su resolve nunca contesta y, desde ahí, todo `resolveService` del proceso falla con
+ *    FAILURE_ALREADY_ACTIVE hasta que ese aparato vuelva.
+ * 8. …PERO SÍ A QUIEN CONTESTA (QA 3.6, 30-sep, N86 con Android 9): sin re-resolver, la caja se quedaba con el `kds=[]` de
+ *    una pantalla que abrió su Tablero después, hasta reiniciarse. Abajo de [API_CON_STOP_DE_RESOLVE], [refrescar] re-resuelve
+ *    SÓLO a quien ya se resolvió y acepta un TCP en [PLAZO_DE_SONDEO_MS] en su puerto: un aparato que se fue no contesta y
+ *    no se le pide nada. El sondeo corre en [enFondo], nunca en quien llama (la entrega tiene presupuesto).
  */
 class LanDiscovery(
     private val context: Context,
@@ -60,6 +65,10 @@ class LanDiscovery(
     private val ahoraMs: () -> Long = { SystemClock.elapsedRealtime() },
     /** [Build.VERSION.SDK_INT]; inyectable para probar las dos ramas (en la JVM de las pruebas vale 0). */
     private val apiNivel: Int = Build.VERSION.SDK_INT,
+    /** Detalle 8: ¿ese aparato acepta una conexión YA? Inyectable: en la JVM de las pruebas no hay red. */
+    private val alcanzable: (host: String, port: Int) -> Boolean = { host, port -> aceptaConexion(host, port) },
+    /** Dónde corre el sondeo del detalle 8. */
+    private val enFondo: (Runnable) -> Unit = { Thread(it, "lan-sondeo").start() },
     /** Los peers AJENOS vivos (este aparato lo agrega [TransporteLan]). */
     private val alCambiarPeers: (List<LanPeer>) -> Unit,
 ) {
@@ -228,17 +237,36 @@ class LanDiscovery(
     private fun esPropio(nombre: String) = deviceId.isNotEmpty() && nombre.contains(deviceId.take(6))
 
     /**
-     * Vuelve a resolver lo AJENO conocido (detalles 5 a 7), por la MISMA cola en serie; lo que ya está en cola no se repite.
-     * Abajo de Android 14 no hace nada. Devuelve si hay algún otro aparato conocido: sin nadie, no hay a quién esperar
+     * Vuelve a resolver lo AJENO conocido (detalles 5 a 8), por la MISMA cola en serie; lo que ya está en cola no se repite.
+     * Abajo de Android 14, sólo a quien contesta por TCP (detalle 8). Devuelve si hay algún otro aparato a quién esperar
      * (el propio anuncio no cuenta: una caja sola esperaría en cada venta).
      */
     fun refrescar(): Boolean {
-        if (parado || apiNivel < API_CON_STOP_DE_RESOLVE) return false
+        if (parado) return false
+        if (apiNivel < API_CON_STOP_DE_RESOLVE) return refrescarSiContestan()
         soltarSiVencio()
         val ajenos = conocidos.filterKeys { !esPropio(it) }
-        for ((nombre, info) in ajenos) if (resolveQueue.none { it.serviceName == nombre }) resolveQueue.add(info)
+        for ((nombre, info) in ajenos) encolarSiFalta(nombre, info)
         drainResolveQueue()
         return ajenos.isNotEmpty()
+    }
+
+    /** Detalle 8. Sin resolve previo no hay a dónde sondear: ése lo hace el found de NSD, como siempre. */
+    private fun refrescarSiContestan(): Boolean {
+        val vivos = peers
+        val candidatos = conocidos.mapNotNull { (nombre, info) ->
+            vivos.firstOrNull { it.deviceId.isNotEmpty() && nombre.contains(it.deviceId.take(6)) }?.let { Triple(nombre, info, it) }
+        }
+        for ((nombre, info, peer) in candidatos) enFondo(Runnable {
+            if (parado || !alcanzable(peer.host, peer.port)) return@Runnable
+            encolarSiFalta(nombre, info)
+            drainResolveQueue()
+        })
+        return candidatos.isNotEmpty()
+    }
+
+    private fun encolarSiFalta(nombre: String, info: NsdServiceInfo) {
+        if (resolveQueue.none { it.serviceName == nombre }) resolveQueue.add(info)
     }
 
     /**
@@ -333,6 +361,12 @@ class LanDiscovery(
 
         /** Android 14: aparece `stopServiceResolution` (y el backend de NSD deja de ser el legacy de un resolve por cliente). */
         const val API_CON_STOP_DE_RESOLVE = 34
+
+        /** Detalle 8: en la misma red un aparato vivo acepta en milisegundos; esto sobra y cabe en la espera de la entrega (1 s). */
+        const val PLAZO_DE_SONDEO_MS = 300
+
+        fun aceptaConexion(host: String, port: Int): Boolean =
+            runCatching { Socket().use { it.connect(InetSocketAddress(host, port), PLAZO_DE_SONDEO_MS) } }.isSuccess
         const val MAX_INTENTOS_DE_ANUNCIO = 6
         const val ESPERA_MAXIMA_DE_ANUNCIO_MS = 30_000L
 

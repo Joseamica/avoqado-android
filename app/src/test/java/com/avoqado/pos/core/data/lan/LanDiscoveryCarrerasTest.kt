@@ -38,12 +38,12 @@ class LanDiscoveryCarrerasTest {
     private val txtHub = mapOf("did" to "yo-123456", "venue" to "venue-1", "hub" to "1")
     private val txtSinHub = mapOf("did" to "yo-123456", "venue" to "venue-1", "hub" to "0")
 
-    private fun servicio(did: String, kds: String? = null, nombre: String = "Avoqado-POS-${did.take(6)}") = mockk<NsdServiceInfo>(relaxed = true) {
+    private fun servicio(did: String, kds: String? = null, nombre: String = "Avoqado-POS-${did.take(6)}", ip: Byte = 20) = mockk<NsdServiceInfo>(relaxed = true) {
         every { serviceType } returns "._avoqado-pos._tcp."
         every { serviceName } returns nombre
         every { attributes } returns mapOf("did" to did.toByteArray(), "venue" to "venue-1".toByteArray(), "hub" to "1".toByteArray()) +
             listOfNotNull(kds?.let { "kds" to it.toByteArray() })
-        every { host } returns InetAddress.getByAddress(byteArrayOf(192.toByte(), 168.toByte(), 1, 20))
+        every { host } returns InetAddress.getByAddress(byteArrayOf(192.toByte(), 168.toByte(), 1, ip))
         every { port } returns 4321
     }
 
@@ -197,12 +197,16 @@ class LanDiscoveryCarrerasTest {
     /**
      * I1: antes de Android 14 un resolve NO se puede cancelar, y el NsdService de esas versiones admite UNO por cliente. Un
      * aparato que se fue sin despedirse dejaba su resolve sin contestar y, desde ahí, todo `resolveService` del proceso
-     * fallaba con FAILURE_ALREADY_ACTIVE (ningún aparato nuevo se veía). Abajo de 34 el refresco no hace nada: como antes.
+     * fallaba con FAILURE_ALREADY_ACTIVE (ningún aparato nuevo se veía). Abajo de 34 el colgado nunca se suelta: lo que el
+     * refresco pida espera en la cola detrás de él, como antes.
      */
     @Test
-    fun `P1 I1 abajo de Android 14 refrescar no hace nada - ni re-resuelve ni suelta al colgado`() {
+    fun `P1 I1 abajo de Android 14 el refresco no suelta al colgado - lo pedido espera en la cola`() {
         var ahora = 0L
-        val d = LanDiscovery(contexto, "yo-123456", "venue-1", ahoraMs = { ahora }, apiNivel = 33) { recibidos += it }
+        val d = LanDiscovery(
+            contexto, "yo-123456", "venue-1", ahoraMs = { ahora }, apiNivel = 33,
+            alcanzable = { _, _ -> true }, enFondo = { it.run() },
+        ) { recibidos += it }
         d.buscar()
         busquedas.single().onServiceFound(servicio("cpad01"))
         resoluciones.single().onServiceResolved(servicio("cpad01"))
@@ -211,11 +215,40 @@ class LanDiscoveryCarrerasTest {
         assertEquals(2, resoluciones.size)
 
         ahora = LanDiscovery.PLAZO_DE_RESOLVE_MS + 1
-        assertFalse("abajo de 34 no hay a quien preguntar", d.refrescar())
+        d.refrescar()
         busquedas.single().onServiceFound(servicio("otro04")) // ni siquiera un found nuevo suelta al colgado
 
         assertEquals("ni un resolve más: la cola espera al colgado, como antes del refresco", 2, resoluciones.size)
         verify(exactly = 0) { nsd.stopServiceResolution(any()) }
+    }
+
+    /**
+     * QA 3.6 (30-sep, N86 con Android 9 como caja y D3 como pantalla): la caja vio la pantalla ANTES de que abriera su
+     * Tablero y se quedó con `kds=[]` hasta reiniciarse — toda comanda «sólo pantalla» sin acuse (papel, o nada si la
+     * estación no tiene impresora). Abajo de 14 se re-resuelve SÓLO a quien ya se resolvió y acepta un TCP ya: un aparato
+     * que se fue no contesta, no se le pide nada y su resolve no puede colgar al resolver del proceso.
+     */
+    @Test
+    fun `abajo de Android 14 se re-resuelve solo al conocido que contesta por TCP`() {
+        val sondeados = mutableListOf<String>()
+        val d = LanDiscovery(
+            contexto, "yo-123456", "venue-1", apiNivel = 28,
+            alcanzable = { host, port -> sondeados += "$host:$port"; host == "192.168.1.20" }, enFondo = { it.run() },
+        ) { recibidos += it }
+        assertFalse("sin nada conocido no hay a quien preguntar", d.refrescar())
+        d.buscar()
+        busquedas.single().onServiceFound(servicio("cpad01"))
+        resoluciones.single().onServiceResolved(servicio("cpad01"))
+        busquedas.single().onServiceFound(servicio("ipad02", ip = 30)) // se fue: no contesta el TCP
+        resoluciones[1].onServiceResolved(servicio("ipad02", ip = 30))
+
+        assertTrue("hay una que contesta: vale la pena esperarla", d.refrescar())
+        assertEquals(setOf("192.168.1.20:4321", "192.168.1.30:4321"), sondeados.toSet())
+        assertEquals("sólo la que contestó se vuelve a resolver", 3, resoluciones.size)
+        resoluciones[2].onServiceResolved(servicio("cpad01", kds = "cocina"))
+
+        assertEquals(setOf("cocina"), peersVistos().single { it.deviceId == "cpad01" }.kdsStations)
+        assertEquals("la que no contestó no se pide ni después (la cola es en serie)", 3, resoluciones.size)
     }
 
     /** I1, la otra rama: en 34+ el resolve colgado SÍ se cancela (`stopServiceResolution`) al soltarlo. */
