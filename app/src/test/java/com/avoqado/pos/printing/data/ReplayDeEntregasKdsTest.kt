@@ -104,6 +104,24 @@ class ReplayDeEntregasKdsTest {
         coVerify(exactly = 1) { cola.enqueue("venue-1", "KDS_TICKET_MARK", any(), any(), false) }
     }
 
+    /**
+     * Codex 3.6 (#1): los tiempos de una ronda comparten folio y el servidor esconde el folio ENTERO con la marca. Una fila
+     * suelta no sabe si su folio tenía otros tiempos (uno ya en la pantalla, sin papel): sale en papel SIN marca. `sale:`
+     * sigue marcando (prueba de arriba).
+     */
+    @Test
+    fun `P1 una fila de ronda sale en papel SIN marca - no sabe si su folio tenia otros tiempos`() = runTest {
+        coEvery { dao.delVenue("venue-1") } returns listOf(fila("round:rk:st_barra", 1_000))
+        coEvery { entregaPorWifi.empujar(any(), any()) } returns false
+        coEvery { despachador.reintentar(any(), any(), false) } returns EstadoDeComanda.Salio
+
+        replay.reproducirAlAbrir("venue-1", ahora = 2_000)
+
+        coVerify(exactly = 1) { despachador.reintentar(any(), any(), false) }
+        coVerify(exactly = 0) { cola.enqueue(any(), any(), any(), any(), any()) }
+        coVerify(exactly = 1) { dao.borrar("round:rk:st_barra|") }
+    }
+
     /** M1 de la revisión de la Task 10: un acuse del replay limpia la racha de esa estación — no espera a la siguiente venta. */
     @Test
     fun `P1 un acuse del replay limpia la racha de la estacion`() = runTest {

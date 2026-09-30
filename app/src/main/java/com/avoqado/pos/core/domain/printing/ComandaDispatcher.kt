@@ -151,6 +151,15 @@ class ComandaDispatcher @Inject constructor(
         alCambiarEstado: (EstadoDeComanda) -> Unit = {},
     ): Job = fondo.launch {
         val guardadasAntes = guardarLaRonda(venueId, orderNumber, pedidos, orderId, servidorLaTiene, origenDelFolio)
+        // Codex 3.6 (#1): los tiempos comparten folio y la marca de papel esconde el folio ENTERO en el servidor. El papel de
+        // un tiempo no cubre un folio que va en más de un tiempo: si otro tiempo llegó a la pantalla sin papel, la marca lo
+        // borraría de la cocina. Esos folios no se marcan (papel Y pantalla: duplicado, nunca pérdida). Sin guardado previo no
+        // se sabe qué folios comparten: con más de un tiempo, no se marca ninguno.
+        val noMarcar: (String) -> Boolean = when {
+            guardadasAntes != null -> guardadasAntes.groupingBy { it.mensaje.sourceKey }.eachCount().filterValues { it > 1 }.keys::contains
+            pedidos.size > 1 -> { _ -> true }
+            else -> { _ -> false }
+        }
         for (pedido in pedidos) {
             // I-2 de la revisión (ronda 1): sin esta guarda, un `dispatch` que revienta se llevaba entre pies a
             // TODOS los pedidos que seguían — el `for` moría ahí y el único rastro quedaba en el log del
@@ -170,6 +179,7 @@ class ComandaDispatcher @Inject constructor(
                     refrescar = guardadasAntes == null,
                     etiquetaPantalla = pedido.etiquetaPantalla,
                     curso = pedido.curso,
+                    noMarcar = noMarcar,
                 )
             } catch (e: CancellationException) {
                 throw e
@@ -298,6 +308,8 @@ class ComandaDispatcher @Inject constructor(
         etiquetaPantalla: String? = null,
         /** El tiempo de estos renglones en la pantalla de cocina («Aperitivos»). */
         curso: String? = null,
+        /** Folios cuyo papel de respaldo NO se marca: van en más de un tiempo de la ronda ([despacharEnFondo], Codex 3.6 #1). */
+        noMarcar: (String) -> Boolean = { false },
     ): EstadoDeComanda? {
         // Sin renglones no hay nada que imprimir — y nos ahorramos hasta el refresh, igual que el
         // mostrador, que salía antes de tocar la red. No es un guard de configuración: es que
@@ -394,7 +406,7 @@ class ComandaDispatcher @Inject constructor(
             throw e
         }
         if (reparto.respaldo.isNotEmpty()) {
-            marcarPapelDeRespaldo(venueId, reparto.respaldo, config, estado, origenDelFolio, orderNumber)
+            marcarPapelDeRespaldo(venueId, reparto.respaldo, config, estado, origenDelFolio, orderNumber, noMarcar)
         }
         cerrarLasDecididas(entregas, acusadas, estado)
         return estado
@@ -472,11 +484,14 @@ class ComandaDispatcher @Inject constructor(
         estado: EstadoDeComanda,
         origen: String?,
         label: String,
+        noMarcar: (String) -> Boolean,
     ) {
         val vId = venueId ?: return
         val cola = syncOutbox ?: return
         val sinPapel = (estado as? EstadoDeComanda.NoSalio)?.estaciones.orEmpty()
-        val marcas = KitchenDeliveryPolicy.marcasDeRespaldo(respaldo, config, sinPapel, origen, label)
+        val (compartidas, marcas) = KitchenDeliveryPolicy.marcasDeRespaldo(respaldo, config, sinPapel, origen, label)
+            .partition { noMarcar(it.sourceKey) }
+        if (compartidas.isNotEmpty()) Log.i(TAG, "🧾 Papel de un tiempo sin marca: ${compartidas.map { it.sourceKey }} va en otros tiempos")
         if (marcas.isEmpty()) Log.w(TAG, "🧾 Respaldo sin marca (origen=$origen, sin papel=$sinPapel)")
         for (m in marcas) {
             try {

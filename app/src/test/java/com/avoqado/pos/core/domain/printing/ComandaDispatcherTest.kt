@@ -1166,4 +1166,92 @@ class ComandaDispatcherTest {
         // Sin acuse, los dos cursos salen en papel de respaldo y ninguna fila se queda atrás.
         runBlocking { withTimeout(5_000) { while (tabla.filas.isNotEmpty()) delay(10) } }
     }
+
+    // MARK: - Codex 3.6 (#1): el papel de UN tiempo no puede esconder la ronda entera
+
+    private val limonada = RoutableItem(orderItemId = "oi_4", productId = "prod_cafe", categoryId = null, productName = "Limonada", quantity = 1)
+
+    /**
+     * Los tiempos de una ronda comparten folio (`round:<llave>:<estación>`) y el servidor esconde el folio ENTERO con la
+     * marca. El tiempo 1 llegó a la pantalla (sin papel); el tiempo 2 salió en papel de respaldo. Si su marca escondiera el
+     * folio, el tiempo 1 desaparecería de la pantalla sin haber salido nunca en papel: pérdida. Sin marca, el tiempo 2 se ve
+     * en papel Y en la pantalla (duplicado, nunca pérdida).
+     */
+    @Test
+    fun `P1 una ronda de dos tiempos con acuse solo en el primero saca el segundo en papel SIN marcar el folio de la ronda`() {
+        every { printConfigRepository.getCurrentConfig() } returns conBarraSoloPantalla
+        val planes = mutableListOf<List<TicketPlan>>()
+        imprimeTodo(planes, mutableListOf())
+        val cliente = mockk<ClienteDeComandas> {
+            coEvery { entregar(pantallaBarra, match { m -> m.items.any { it.id == "oi_2" } }, any()) } returns true
+            coEvery { entregar(pantallaBarra, match { m -> m.items.any { it.id == "oi_4" } }, any()) } returns false
+        }
+
+        val ronda = despachadorConWifi(EntregaPorWifi(transporteLan, EntregasEnMemoria(), cliente)).despacharEnFondo(
+            venueId = "venue-1",
+            orderNumber = "1234",
+            pedidos = listOf(
+                ComandaDispatcher.Pedido(listOf(cafe), "Mesa 5 · Aperitivos"),
+                ComandaDispatcher.Pedido(listOf(limonada), "Mesa 5 · Principales"),
+            ),
+            servidorLaTiene = true,
+            origenDelFolio = "round:rk",
+        )
+        runBlocking { withTimeout(5_000) { ronda.join() } }
+
+        assertEquals("el tiempo 2 salió en papel de respaldo", listOf(listOf("st_barra")), planes.map { p -> p.map { it.stationId } })
+        coVerify(exactly = 0) { cola.enqueue(any(), any(), any(), any(), any()) }
+    }
+
+    /** Una ronda de UN solo tiempo sí cubre su folio entero con el papel: se marca igual que hoy. */
+    @Test
+    fun `P1 una ronda de un solo tiempo sin acuse sale en papel y SI marca su folio`() {
+        every { printConfigRepository.getCurrentConfig() } returns conBarraSoloPantalla
+        imprimeTodo(mutableListOf(), mutableListOf())
+        val cliente = mockk<ClienteDeComandas> { coEvery { entregar(pantallaBarra, any(), any()) } returns false }
+        val marca = slot<JsonObject>()
+        coEvery { cola.enqueue("venue-1", "KDS_TICKET_MARK", capture(marca), any(), false) } returns "m-1"
+
+        val ronda = despachadorConWifi(EntregaPorWifi(transporteLan, EntregasEnMemoria(), cliente)).despacharEnFondo(
+            venueId = "venue-1",
+            orderNumber = "1234",
+            pedidos = listOf(ComandaDispatcher.Pedido(listOf(cafe, limonada), "Mesa 5")),
+            servidorLaTiene = true,
+            origenDelFolio = "round:rk",
+        )
+        runBlocking { withTimeout(5_000) { ronda.join() } }
+
+        assertEquals("round:rk:st_barra", marca.captured["sourceKey"]!!.jsonPrimitive.content)
+        coVerify(exactly = 1) { cola.enqueue(any(), any(), any(), any(), any()) }
+    }
+
+    /**
+     * Sin guardado previo (sin WiFi de pantallas) no se sabe qué folios comparten los tiempos: con más de uno, no se marca.
+     * Si no, el papel del tiempo 1 marcaba el folio y un papel del tiempo 2 que no saliera quedaba escondido de la pantalla.
+     */
+    @Test
+    fun `P1 sin guardado previo una ronda de dos tiempos no marca`() {
+        every { printConfigRepository.getCurrentConfig() } returns conBarraSoloPantalla
+        imprimeTodo(mutableListOf(), mutableListOf())
+        val sinWifi = ComandaDispatcher(
+            printConfigRepository,
+            ReintentoDeComanda(comandaPrinter, reporteDeComandas = mockk<ReporteDeComandas>(relaxed = true)),
+            printerService,
+            cola,
+        )
+
+        val ronda = sinWifi.despacharEnFondo(
+            venueId = "venue-1",
+            orderNumber = "1234",
+            pedidos = listOf(
+                ComandaDispatcher.Pedido(listOf(cafe), "Mesa 5 · Aperitivos"),
+                ComandaDispatcher.Pedido(listOf(limonada), "Mesa 5 · Principales"),
+            ),
+            servidorLaTiene = false,
+            origenDelFolio = "round:rk",
+        )
+        runBlocking { withTimeout(5_000) { ronda.join() } }
+
+        coVerify(exactly = 0) { cola.enqueue(any(), any(), any(), any(), any()) }
+    }
 }

@@ -194,7 +194,9 @@ class ReplayDeEntregasKds @Inject constructor(
         if (!sigueVigente(venueId)) return
         when (val estado = comandaDispatcher.reintentar(trabajo, refrescar = false)) {
             is EstadoDeComanda.Salio -> {
-                marcar(venueId, fila.sourceKey, fila.stationId, trabajo.orderNumber)
+                // Codex 3.6 (#1): una fila de RONDA no sabe si su folio tenía otros tiempos (uno ya en la pantalla, sin
+                // papel), y la marca esconde el folio ENTERO: sale en papel sin marca (duplicado, nunca pérdida).
+                if (!fila.sourceKey.startsWith("round:")) marcar(venueId, fila.sourceKey, fila.stationId, trabajo.orderNumber)
                 try {
                     dao.borrar(fila.entregaId)
                 } catch (e: Throwable) {
