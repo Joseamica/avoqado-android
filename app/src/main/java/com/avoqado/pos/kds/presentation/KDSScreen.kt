@@ -769,7 +769,7 @@ private fun RecientesSheet(
                         horizontalArrangement = Arrangement.SpaceBetween,
                     ) {
                         Text(
-                            text = "#${orden.orderNumber} · ${orden.items.size} platillos",
+                            text = "#${orden.orderNumber} · ${orden.items.size} ${if (orden.items.size == 1) "platillo" else "platillos"}",
                             style = MaterialTheme.typography.bodyLarge,
                             color = MaterialTheme.colorScheme.onSurface,
                         )
