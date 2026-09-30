@@ -1,0 +1,76 @@
+name: Escritorio (Windows)
+
+# Verifica que el POS de Windows (`desktop/`, un build de Gradle APARTE que compila `app/src/main` tal cual)
+# siga compilando y pasando sus pruebas con el código de Android de ESTE commit. Así, una funcionalidad nueva de
+# Android que use algo que no existe en Windows se nota el mismo día, no al armar el paquete.
+#
+# NO publica nada, NO usa secretos y NO frena la publicación de Android (release.yml no depende de este
+# workflow): Windows avisa, no bloquea a Android. Detalle: docs/proyectos/avoqado-android-en-windows.md del workspace.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'app/src/main/**'
+      - 'desktop/**'
+      - 'gradle/**'
+      - '.github/workflows/desktop.yml'
+  pull_request:
+    paths:
+      - 'app/src/main/**'
+      - 'desktop/**'
+      - 'gradle/**'
+      - '.github/workflows/desktop.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  verificar:
+    name: Compilación + pruebas de escritorio
+    # macOS ARM64 a propósito: el Skia de las pruebas está fijado a `desktop-jvm-macos-arm64`
+    # (desktop/plataforma y desktop/pos). El paquete de Windows lleva el suyo (tarea empaquetarWindows).
+    runs-on: macos-14
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # El runner tiene 7 GB; desktop/gradle.properties pide 4 GB para Gradle y 4 GB para Kotlin (pensado para la
+      # Mac). Se acota desde GRADLE_USER_HOME, que gana sobre el del proyecto, igual que en ci.yml.
+      - name: Acotar memoria al tamaño del runner
+        run: |
+          mkdir -p ~/.gradle
+          cat >> ~/.gradle/gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx3g -XX:MaxMetaspaceSize=768m -Dfile.encoding=UTF-8
+          kotlin.daemon.jvmargs=-Xmx2g
+          org.gradle.workers.max=2
+          org.gradle.daemon=false
+          EOF
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: ${{ github.ref != 'refs/heads/main' }}
+
+      # El E2E (CobroSinRedE2E) NO corre aquí: necesita el backend y la base locales.
+      - name: Compilar y probar escritorio
+        run: ./gradlew -p desktop :pos:verificarExcluidos :plataforma:test :pos:test --console=plain
+
+      - name: Reportes de pruebas (si falla)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reportes-escritorio
+          path: desktop/*/build/reports/tests/
+          retention-days: 7

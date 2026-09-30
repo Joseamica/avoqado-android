@@ -1,0 +1,21 @@
+# Archivos de ../app/src/main/java que NO se compilan en escritorio. Ruta relativa a esa carpeta.
+# «sin reemplazo» = entrada de Android que nadie más usa. «reemplazo» = existe el MISMO paquete/nombre en pos/src/main/kotlin.
+com/avoqado/pos/AvoqadoApp.kt                                   # sin reemplazo: Application de Android; su onCreate se replica en escritorio/Arranque.kt
+com/avoqado/pos/MainActivity.kt                                 # sin reemplazo: su setContent se replica en escritorio/AppEscritorio.kt
+com/avoqado/pos/customerdisplay/CustomerDisplayActivity.kt      # sin reemplazo: Activity de la segunda pantalla
+com/avoqado/pos/kiosk/system/KioskBootReceiver.kt               # sin reemplazo: arranque al encender la tablet
+com/avoqado/pos/core/data/local/database/AvoqadoDatabaseMigrations.kt   # sin reemplazo: SupportSQLiteDatabase; sólo lo usa DatabaseModule
+com/avoqado/pos/core/di/DatabaseModule.kt                       # reemplazo: Room con BundledSQLiteDriver en la carpeta de datos, sin migraciones
+com/avoqado/pos/auth/data/BiometricAuthManager.kt               # reemplazo: sin biometría en escritorio
+com/avoqado/pos/auth/presentation/LandingScreen.kt              # reemplazo: fondo fijo en vez del video (VideoView)
+com/avoqado/pos/customerdisplay/CustomerDisplayPresentation.kt  # sin reemplazo: Presentation de Android (segunda pantalla); sólo la usa CustomerDisplayManager
+com/avoqado/pos/customerdisplay/CustomerDisplayManager.kt       # reemplazo: segunda pantalla, fase siguiente
+com/avoqado/pos/customerdisplay/CashierDisplayGuard.kt          # reemplazo: DisplayManager/Activity en otro display
+com/avoqado/pos/customerdisplay/CustomerTouchBridge.kt          # sin reemplazo: InputManager de Android; sólo lo usa CustomerDisplayManager
+com/avoqado/pos/customerdisplay/DisplayRoles.kt                 # reemplazo: roles de displays de Android
+com/avoqado/pos/printing/data/SunmiInnerPrinter.kt              # reemplazo: impresora interna Sunmi (hardware)
+com/avoqado/pos/printing/data/UsbPrinterManager.kt              # reemplazo: USB host de Android
+com/avoqado/pos/printing/data/AreaTicketPdfGenerator.kt         # reemplazo: android.graphics.pdf
+com/avoqado/pos/scale/UsbSerialScaleManager.kt                  # reemplazo: báscula por usb-serial-for-android
+com/avoqado/pos/pos/presentation/scanner/BarcodeScannerView.kt  # reemplazo: CameraX + ML Kit
+com/avoqado/pos/settings/domain/ScreenPinningManager.kt         # reemplazo: fijar pantalla (modo kiosco) de Android

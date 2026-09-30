@@ -1,0 +1,8 @@
+@echo off
+rem Avoqado POS (prueba) - la app de Android compilada para Windows.
+rem Backend: el backend local de la Mac del founder, por ngrok (funciona desde cualquier red).
+rem Misma red o Tailscale (mas rapido): set AVOQADO_API=http://@IP_DE_LA_MAC@:3000/api/v1
+rem Sin Tailscale, en la red del local: usa la IP de la Mac en esa red, con el mismo :3000/api/v1
+set AVOQADO_API=https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1
+set AVOQADO_DASHBOARD=http://@IP_DE_LA_MAC@:5173
+start "" "%~dp0jre\bin\javaw.exe" -cp "%~dp0lib\*" com.avoqado.pos.escritorio.MainKt
