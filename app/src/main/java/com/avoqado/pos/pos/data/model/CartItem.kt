@@ -141,6 +141,13 @@ data class CartItem(
             "${formatWeightKg(it)} kg × $${String.format(java.util.Locale.US, "%.2f", effectiveUnitPrice / 100.0)}/kg"
         }
 
+    /**
+     * Nombre del renglón en la comanda (papel y pantalla): «Arrachera (0.750 kg)». Codex 3.6 (S6): la línea pesada va con
+     * `quantity = 1` y la cocina leía «×1» sin saber cuánto servir. Mismo texto que `nombreEnCocina` del servidor.
+     */
+    val nombreEnCocina: String
+        get() = weightKg?.let { "$name (${formatWeightKg(it)} kg)" } ?: name
+
     /** Línea nacida de una promoción: no se edita suelta y se quita con sus hermanas. */
     val isPromotionLine: Boolean
         get() = promotionInstanceId != null
