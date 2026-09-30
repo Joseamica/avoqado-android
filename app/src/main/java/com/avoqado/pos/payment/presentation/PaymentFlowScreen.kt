@@ -271,6 +271,7 @@ fun PaymentFlowScreen(
                     val printSending by viewModel.printSending.collectAsState()
                     val printResult by viewModel.printResult.collectAsState()
                     val canPrintOnTerminal by viewModel.canPrintOnTerminal.collectAsState()
+                    val sincronizacion by viewModel.sincronizacionDelCobro.collectAsState()
 
                     PaymentResultScreen(
                         totalCents = currentState.totalAmount,
@@ -278,6 +279,7 @@ fun PaymentFlowScreen(
                         method = currentState.method,
                         changeCents = currentState.changeAmount,
                         isQueued = currentState.isQueued,
+                        sincronizacion = sincronizacion,
                         paymentId = currentState.paymentId,
                         canSendReceipt = !currentState.paymentId.isNullOrBlank() || !currentState.receiptAccessKey.isNullOrBlank(),
                         isSendingWhatsApp = whatsAppSending,

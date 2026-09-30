@@ -14,6 +14,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -30,7 +31,38 @@ class QuarantineViewModel @Inject constructor(
     private val paymentSyncService: PaymentSyncService,
     private val reservationRepository: ReservationRepository,
     private val roleManager: RoleManager,
+    private val cashPaymentRepository: com.avoqado.pos.payment.data.CashPaymentRepository,
 ) : ViewModel() {
+
+    /**
+     * Cobros en efectivo que la app guardó ANTES de mandarlos y cuyo intento quedó interrumpido (la
+     * app se cerró o murió a media petición). No se sabe si la venta se completó: una persona decide.
+     */
+    val cobrosInterrumpidos: StateFlow<List<PendingPaymentEntity>> =
+        cashPaymentRepository.observarSinConfirmar()
+            .stateIn(viewModelScope, kotlinx.coroutines.flow.SharingStarted.Eagerly, emptyList())
+
+    /**
+     * «Sí, se cobró»: se manda con la MISMA llave del intento. Si el servidor ya lo tenía, lo reconoce
+     * y no crea otra venta; si no, lo registra.
+     */
+    fun confirmarCobroInterrumpido(id: String) {
+        if (!canResolve) return
+        viewModelScope.launch {
+            cashPaymentRepository.confirmarQueSeCobro(id)
+            paymentSyncService.syncNow()
+            _successMessage.value = "Cobro enviado a sincronizar"
+        }
+    }
+
+    /** «No se cobró»: el cliente no pagó, así que no hay venta que registrar. */
+    fun descartarCobroInterrumpido(id: String) {
+        if (!canResolve) return
+        viewModelScope.launch {
+            cashPaymentRepository.descartarPorqueNoSeCobro(id)
+            _successMessage.value = "Cobro descartado"
+        }
+    }
 
     private val _items = MutableStateFlow<List<SyncOutbox.QuarantinedIntent>>(emptyList())
     val items: StateFlow<List<SyncOutbox.QuarantinedIntent>> = _items.asStateFlow()

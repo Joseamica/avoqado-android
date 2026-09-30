@@ -20,6 +20,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.CloudOff
 import androidx.compose.material.icons.filled.Email
@@ -64,6 +65,7 @@ import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Success
 import com.avoqado.pos.designsystem.theme.Warning
 import com.avoqado.pos.payment.data.model.PaymentMethod
+import com.avoqado.pos.payment.data.model.SincronizacionDelCobro
 import com.avoqado.pos.payment.domain.CancelacionDeCobro
 
 @Composable
@@ -78,6 +80,12 @@ fun PaymentResultScreen(
     methodLabel: String? = null,
     changeCents: Int = 0,
     isQueued: Boolean = false,
+    /**
+     * Lo que la cola dice HOY de este cobro. Sin esto el aviso «Se sincronizará…» se quedaba pegado
+     * después de que la venta subió (30-sep-2026) y el cajero la volvía a cobrar.
+     */
+    sincronizacion: SincronizacionDelCobro =
+        if (isQueued) SincronizacionDelCobro.PENDIENTE else SincronizacionDelCobro.NINGUNA,
     paymentId: String? = null,
     canSendReceipt: Boolean = paymentId != null,
     isSendingWhatsApp: Boolean = false,
@@ -174,10 +182,24 @@ fun PaymentResultScreen(
                 .verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            // Offline queued banner
-            if (isQueued) {
+            // Cobro hecho sin red: lo que la cola dice de él AHORA, no lo que decía al cobrar.
+            val avisoDeCola = when (sincronizacion) {
+                SincronizacionDelCobro.NINGUNA -> null
+                SincronizacionDelCobro.PENDIENTE ->
+                    Triple(Icons.Filled.CloudOff, Warning, "Se sincronizará cuando haya conexión")
+                SincronizacionDelCobro.SINCRONIZADA ->
+                    Triple(Icons.Filled.CheckCircle, com.avoqado.pos.designsystem.theme.Success, "Venta sincronizada")
+                SincronizacionDelCobro.RECHAZADA ->
+                    Triple(
+                        Icons.Filled.Error,
+                        com.avoqado.pos.designsystem.theme.Error,
+                        "No se pudo sincronizar esta venta. Revísala en Pendientes.",
+                    )
+            }
+            if (avisoDeCola != null) {
+                val (icono, color, texto) = avisoDeCola
                 Surface(
-                    color = Warning.copy(alpha = 0.15f),
+                    color = color.copy(alpha = 0.15f),
                     shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.md),
                     modifier = Modifier
                         .fillMaxWidth()
@@ -189,15 +211,15 @@ fun PaymentResultScreen(
                         horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
                     ) {
                         Icon(
-                            Icons.Filled.CloudOff,
+                            icono,
                             contentDescription = null,
-                            tint = Warning,
+                            tint = color,
                             modifier = Modifier.size(20.dp),
                         )
                         Text(
-                            text = "Se sincronizará cuando haya conexión",
+                            text = texto,
                             style = MaterialTheme.typography.bodySmall,
-                            color = Warning,
+                            color = color,
                         )
                     }
                 }

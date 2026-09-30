@@ -15,6 +15,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.TestCoroutineScheduler
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -52,6 +53,7 @@ class QuarantineResolveGateTest {
     private val secureStorage: SecureStorage = mockk(relaxed = true)
     private val paymentSyncService: PaymentSyncService = mockk(relaxed = true)
     private val reservationRepository: ReservationRepository = mockk(relaxed = true)
+    private val cashPaymentRepository: com.avoqado.pos.payment.data.CashPaymentRepository = mockk(relaxed = true)
 
     private fun buildViewModel(rol: String, permisos: List<String>): QuarantineViewModel {
         every { syncOutbox.rejectedCount } returns MutableStateFlow(0)
@@ -64,6 +66,7 @@ class QuarantineResolveGateTest {
             paymentSyncService = paymentSyncService,
             reservationRepository = reservationRepository,
             roleManager = RoleManager(secureStorage),
+            cashPaymentRepository = cashPaymentRepository,
         )
     }
 
@@ -96,6 +99,29 @@ class QuarantineResolveGateTest {
         vm.dismissPayment("pago-1")
 
         coVerify(exactly = 0) { paymentSyncService.dismissFailedPayment(any()) }
+    }
+
+    /** Un cobro interrumpido tampoco lo decide el cajero: «no se cobró» borra el registro. */
+    @Test
+    fun `ni confirmar ni descartar un cobro interrumpido`() = runTest(scheduler) {
+        val vm = buildViewModel("CASHIER", PermisosRealesDelServer.CASHIER)
+
+        vm.confirmarCobroInterrumpido("llave-A")
+        vm.descartarCobroInterrumpido("llave-A")
+        advanceUntilIdle()
+
+        coVerify(exactly = 0) { cashPaymentRepository.confirmarQueSeCobro(any()) }
+        coVerify(exactly = 0) { cashPaymentRepository.descartarPorqueNoSeCobro(any()) }
+    }
+
+    @Test
+    fun `el GERENTE si decide un cobro interrumpido`() = runTest(scheduler) {
+        val vm = buildViewModel("MANAGER", PermisosRealesDelServer.MANAGER)
+
+        vm.confirmarCobroInterrumpido("llave-A")
+        advanceUntilIdle()
+
+        coVerify(exactly = 1) { cashPaymentRepository.confirmarQueSeCobro("llave-A") }
     }
 
     /** Las otras tres acciones locales, por el mismo gate. */

@@ -38,6 +38,7 @@ class CuarentenaCobroVivoTest {
             paymentSyncService = mockk<PaymentSyncService>(relaxed = true),
             reservationRepository = mockk<ReservationRepository>(relaxed = true),
             roleManager = RoleManager(secureStorage),
+            cashPaymentRepository = mockk(relaxed = true),
         )
     }
 

@@ -14,6 +14,43 @@ enum class PaymentErrorSource {
     UNKNOWN,
 }
 
+/** En qué cola quedó un cobro hecho sin red. Son dos: la de cobros y el outbox de mesas provisionales. */
+sealed interface ColaDelCobro {
+    /** `pending_payments` — el id es la llave del cobro. */
+    data class Pagos(val id: String) : ColaDelCobro
+
+    /** `pos_sync_intents` (intent `PAY_CASH` de una mesa abierta sin red). */
+    data class Outbox(val intentId: String) : ColaDelCobro
+}
+
+/** Lo que la pantalla de resultado dice de un cobro encolado, en vivo. */
+enum class SincronizacionDelCobro {
+    /** No se encoló: el servidor lo tiene desde el principio. */
+    NINGUNA,
+    PENDIENTE,
+    SINCRONIZADA,
+
+    /** El servidor lo rechazó: está en «Pendientes» y alguien tiene que verlo. */
+    RECHAZADA,
+    ;
+
+    companion object {
+        /** Estado de una fila de `pending_payments`. null = ya no está: la cola la subió y la limpió. */
+        fun dePago(syncStatus: String?): SincronizacionDelCobro = when (syncStatus) {
+            null, "SYNCED" -> SINCRONIZADA
+            "FAILED" -> RECHAZADA
+            else -> PENDIENTE
+        }
+
+        /** Estado de un intent del outbox. null = ya no está (sólo se limpian los ACKED). */
+        fun deIntent(status: String?): SincronizacionDelCobro = when (status) {
+            null, "ACKED" -> SINCRONIZADA
+            "REJECTED" -> RECHAZADA
+            else -> PENDIENTE
+        }
+    }
+}
+
 sealed class PaymentFlowState {
     data object Loading : PaymentFlowState()
     data class SelectingPaymentMethod(val amount: Int) : PaymentFlowState()
@@ -33,6 +70,12 @@ sealed class PaymentFlowState {
         val method: PaymentMethod,
         val changeAmount: Int = 0,
         val isQueued: Boolean = false,  // true when payment was queued offline
+        /**
+         * La fila de la cola que lleva ESTE cobro encolado. La pantalla de resultado la observa para
+         * cambiar «Se sincronizará…» por «Venta sincronizada» cuando la cola la confirme (30-sep-2026:
+         * el aviso se quedaba pegado y el cajero creía que la venta no había subido).
+         */
+        val colaDelCobro: ColaDelCobro? = null,
         val paymentId: String? = null,
         val receiptAccessKey: String? = null,
         /**

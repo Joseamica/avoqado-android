@@ -8,6 +8,14 @@ enum class PaymentSyncStatus {
     SYNCING,
     SYNCED,
     FAILED,
+
+    /**
+     * Cobro en efectivo guardado ANTES de mandarlo al servidor (30-sep-2026). Nadie lo reproduce
+     * solo y el cajón no lo cuenta: si el proceso muere a media petición no se sabe si la venta
+     * se completó, así que al reabrir aparece como «sin confirmar» y una persona decide.
+     * Ver `CashPaymentRepository.reservarCobro`.
+     */
+    EN_VUELO,
 }
 
 @Entity(tableName = "pending_payments")
