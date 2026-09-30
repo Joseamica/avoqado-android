@@ -1,5 +1,7 @@
 package com.avoqado.pos.kds.presentation
 
+import android.content.Context
+import android.content.SharedPreferences
 import android.media.RingtoneManager
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
@@ -25,8 +27,10 @@ import com.avoqado.pos.printing.routing.PrintConfigRepository
 import com.avoqado.pos.printing.routing.StationInfo
 import io.mockk.coEvery
 import io.mockk.coVerify
+import io.mockk.Runs
 import io.mockk.coVerifyOrder
 import io.mockk.every
+import io.mockk.just
 import io.mockk.mockk
 import io.mockk.mockkStatic
 import io.mockk.slot
@@ -104,26 +108,49 @@ class KDSViewModelTest {
             createdAt = creada, status = KDSOrderStatus.NEW, sourceKey = sourceKey, printStationId = "st-barra",
         )
 
+    /**
+     * @param kdsPrefs `prefs` (el doble) salvo en las pruebas de la foto del tablero, que usan un [prefsEnDisco] REAL.
+     * @param lectura lo que contesta el servidor a la lectura del tablero.
+     */
     private suspend fun armar(
         guardada: String? = "st-barra",
         comandas: List<KDSOrder> = listOf(comanda("k1", 1_000), comanda("k2", 2_000)),
+        kdsPrefs: KdsPrefs = prefs,
+        lectura: Result<List<KDSOrder>> = Result.success(comandas),
     ): KDSViewModel {
         every { repo.venueIdActual() } returns "v1"
         every { printConfig.getCurrentConfig() } answers { config }
         every { prefs.estacion("v1") } returns guardada
         every { prefs.sonido } returns true
         every { prefs.letraGrande } returns false
+        every { prefs.foto(any(), any(), any()) } returns null
         every { roleManager.role } returns "MANAGER"
         every { roleManager.canManagePrinters } returns true
         every { planManager.hasFeature("KITCHEN_DISPLAY") } returns true
-        coEvery { repo.fetchOrders(any()) } returns Result.success(comandas)
+        coEvery { repo.fetchOrders(any()) } returns lectura
         coEvery { repo.fetchDeliveryChannels() } returns Result.success(emptyList())
         return KDSViewModel(
             repo, mockk(relaxed = true), mockk(relaxed = true), printConfig, Provider { cola },
-            prefs, roleManager, planManager, mockk(relaxed = true),
+            kdsPrefs, roleManager, planManager, mockk(relaxed = true),
             receptor, ticketsLocales,
         ).also { it.refrescar() }
     }
+
+    /** Codex 3.6 (#2): un `KdsPrefs` REAL sobre un disco en memoria (patrón de `KdsPrefsTest`): sobrevive al ViewModel. */
+    private fun prefsEnDisco(estacion: String = "st-barra"): KdsPrefs {
+        val guardado = mutableMapOf<String, Any?>()
+        val editor = mockk<SharedPreferences.Editor>()
+        val sp = mockk<SharedPreferences>()
+        every { sp.getString(any(), any()) } answers { guardado[firstArg<String>()] as String? ?: secondArg<String?>() }
+        every { sp.getBoolean(any(), any()) } answers { guardado[firstArg<String>()] as Boolean? ?: secondArg<Boolean>() }
+        every { sp.edit() } returns editor
+        every { editor.putString(any(), any()) } answers { guardado[firstArg<String>()] = secondArg<String?>(); editor }
+        every { editor.apply() } just Runs
+        val context = mockk<Context> { every { getSharedPreferences("avoqado_kds", Context.MODE_PRIVATE) } returns sp }
+        return KdsPrefs(context).also { it.guardarEstacion("v1", estacion) }
+    }
+
+    private val sinInternet = Result.failure<List<KDSOrder>>(IOException("sin internet"))
 
     @Test
     fun `P1 abrir la pantalla nunca la prende`() = runTest {
@@ -629,6 +656,57 @@ class KDSViewModelTest {
 
         assertEquals(listOf("k2"), vm.comandas.value.map { it.id })
         job.cancelAndJoin()
+    }
+
+    // MARK: - Codex 3.6 (#2): reabrir la pantalla sin internet no la deja sin las comandas pendientes
+
+    /**
+     * La cadena del hallazgo: la lectura buena retira la copia local de lo que el servidor devuelve (la caja ya borró su
+     * entrega al acusar). Se cae el internet y la tablet se reinicia: el ViewModel (y el proceso) es nuevo y su lectura
+     * falla. Sin la foto del aparato, k1 y k2 no estaban en ningún lado (ni papel ni pantalla) hasta que volviera el internet.
+     */
+    @Test
+    fun `P1 reabrir sin internet conserva las comandas que el servidor ya habia devuelto`() = runTest {
+        val disco = prefsEnDisco()
+        val antes = armar(kdsPrefs = disco) // lectura buena: k1 y k2
+        locales.value = listOf(local("sale:k1:st-barra", 900)) // la copia del WiFi de k1
+        antes.refrescar()
+        assertTrue("la lectura buena retira la copia local", locales.value.isEmpty())
+
+        val despues = armar(kdsPrefs = disco, lectura = sinInternet) // tablet reiniciada, sin internet
+
+        assertEquals(listOf("k1", "k2"), despues.comandas.value.map { it.id })
+        assertTrue(despues.sinConexion.value)
+    }
+
+    @Test
+    fun `P1 la foto de otra estacion o de mas de 12 h no se usa al abrir sin internet`() = runTest {
+        config = PrintConfig(stations = listOf(barra, StationInfo(id = "st-cocina", name = "Cocina", hasKitchenDisplay = true)), version = "v1")
+        val disco = prefsEnDisco()
+        armar(kdsPrefs = disco) // foto de Barra: k1 y k2
+
+        disco.guardarEstacion("v1", "st-cocina")
+        val cocina = armar(kdsPrefs = disco, lectura = sinInternet)
+        assertEquals("la foto de Barra no se pinta en Cocina", emptyList<String>(), cocina.comandas.value.map { it.id })
+
+        disco.guardarEstacion("v1", "st-barra")
+        disco.guardarFoto("v1", "st-barra", listOf(comanda("k1", 1_000)), tomadaEnMillis = System.currentTimeMillis() - 13 * 60 * 60 * 1_000L)
+        val vieja = armar(kdsPrefs = disco, lectura = sinInternet)
+        assertEquals("una foto de hace 13 h ya no es la cocina de hoy", emptyList<String>(), vieja.comandas.value.map { it.id })
+    }
+
+    /** Lo terminado EN LÍNEA no puede regresar de la foto al reabrir sin internet: la cocina lo volvería a preparar. */
+    @Test
+    fun `P1 lo marcado LISTO en linea no regresa de la foto al reabrir sin internet`() = runTest {
+        coEvery { repo.bumpOrder("k1") } returns Result.success(Unit)
+        val disco = prefsEnDisco()
+        val antes = armar(kdsPrefs = disco)
+        antes.listo("k1")
+        runCurrent()
+
+        val despues = armar(kdsPrefs = disco, lectura = sinInternet)
+
+        assertEquals(listOf("k2"), despues.comandas.value.map { it.id })
     }
 
     private class PantallaDePrueba : LifecycleOwner {

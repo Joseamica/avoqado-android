@@ -1,7 +1,10 @@
 package com.avoqado.pos.kds.data
 
 import android.content.Context
+import com.avoqado.pos.kds.domain.KDSOrder
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -20,6 +23,29 @@ class KdsPrefs @Inject constructor(@ApplicationContext context: Context) {
     fun guardarEstacion(venueId: String, stationId: String) {
         prefs.edit().putString("station_$venueId", stationId).apply()
     }
+
+    /**
+     * Codex 3.6 (#2): la última lista buena del servidor para ESTA sucursal y estación. Al abrir sin internet (tablet
+     * reiniciada), el tablero arranca con ella: lo que el servidor ya devolvía y la copia local ya retiró no desaparece de la
+     * cocina. Una lectura buena la reescribe. Espejo de `KDSPrefs.guardarFoto` de iOS.
+     */
+    fun guardarFoto(venueId: String, stationId: String, comandas: List<KDSOrder>, tomadaEnMillis: Long = System.currentTimeMillis()) {
+        prefs.edit().putString(llaveDeFoto(venueId, stationId), json.encodeToString(FotoDelTablero.serializer(), FotoDelTablero(tomadaEnMillis, comandas))).apply()
+    }
+
+    /** La foto de esa sucursal y estación si tiene menos de 12 h (el horizonte del LISTO local); `null` si no hay, venció o es ilegible. */
+    fun foto(venueId: String, stationId: String, ahora: Long = System.currentTimeMillis()): List<KDSOrder>? {
+        val texto = prefs.getString(llaveDeFoto(venueId, stationId), null) ?: return null
+        val foto = runCatching { json.decodeFromString(FotoDelTablero.serializer(), texto) }.getOrNull() ?: return null
+        return foto.comandas.takeIf { ahora - foto.tomadaEnMillis in 0 until KdsTicketsLocalesStore.VIGENCIA_MS }
+    }
+
+    @Serializable
+    private data class FotoDelTablero(val tomadaEnMillis: Long, val comandas: List<KDSOrder>)
+
+    private fun llaveDeFoto(venueId: String, stationId: String) = "board_${venueId}_$stationId"
+
+    private val json = Json { ignoreUnknownKeys = true }
 
     var sonido: Boolean
         get() = prefs.getBoolean(SONIDO, true)

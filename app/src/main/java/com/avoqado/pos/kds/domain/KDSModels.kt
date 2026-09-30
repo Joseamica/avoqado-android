@@ -1,7 +1,11 @@
 package com.avoqado.pos.kds.domain
 
+import kotlinx.serialization.Serializable
+
 // MARK: - Domain Models
 
+/** `@Serializable` por la foto del tablero en el aparato (`KdsPrefs.guardarFoto`, Codex 3.6 #2). */
+@Serializable
 data class KDSOrder(
     val id: String,
     /**
@@ -38,6 +42,7 @@ data class KDSOrder(
     val printStationId: String? = null,
 )
 
+@Serializable
 data class KDSOrderItem(
     val id: String,
     val productName: String,
