@@ -156,6 +156,11 @@ class KDSViewModel @Inject constructor(
     private var estacionObservada: String? = null
     /** Sólo mientras `mientrasSeVe()` corre: el receptor NO puede acusar con la pantalla cerrada (D8). */
     private var pantallaVisible = false
+    /**
+     * Codex 3.6 (#6), espejo de iOS m1: cada apertura del tablero suma uno. El `finally` de una apertura que tardó en
+     * desenrollarse (una lectura colgada no se cancela a medias) sólo apaga si sigue siendo la vigente.
+     */
+    private var aperturas = 0
 
     /** D11: sin internet pero recibiendo por el WiFi — la banda lo dice distinto. */
     val recibiendoPorWifi: StateFlow<Boolean> get() = receptor.activo
@@ -178,6 +183,8 @@ class KDSViewModel @Inject constructor(
         // M3: este ViewModel sigue vivo con la pantalla cerrada, así que sin esto lo que llegó mientras tanto sonaba
         // como «comanda nueva». El primer tablero de ESTA apertura es la línea base — nunca suena.
         hasLoadedFromAPI = false
+        aperturas++
+        val mia = aperturas
         pantallaVisible = true
         try {
             refrescar()
@@ -193,9 +200,23 @@ class KDSViewModel @Inject constructor(
             }
         } finally {
             // Al cerrar la pantalla el receptor se apaga: una comanda acusada aquí sin nadie mirando sería una comanda perdida.
-            pantallaVisible = false
-            sincronizarReceptor()
+            // Si ya se apagó en el acto ([alOcultarse]) y quizá volvió a abrirse, esta apertura ya no es la vigente.
+            if (aperturas == mia) {
+                pantallaVisible = false
+                sincronizarReceptor()
+            }
         }
+    }
+
+    /**
+     * Codex 3.6 (#6): `ON_STOP` y cerrar el tablero apagan el receptor EN EL ACTO. La lectura del tablero puede quedarse
+     * colgada hasta 30 s con el internet caído y el WiFi vivo, y mientras tanto el `finally` de [mientrasSeVe] no corre: el
+     * receptor seguía acusando sin nadie mirando y la caja no imprimía. Espejo de iOS (m1 de la T9).
+     */
+    fun alOcultarse() {
+        aperturas++
+        pantallaVisible = false
+        sincronizarReceptor()
     }
 
     /** Relee la config (cache-first), decide qué enseñar y, si es tablero, trae sus comandas. */
@@ -237,7 +258,14 @@ class KDSViewModel @Inject constructor(
 
     private suspend fun refrescarTablero() {
         val tablero = _vista.value as? VistaDeCocina.Tablero ?: return
-        kdsRepository.fetchOrders(tablero.estacion.id).fold(
+        val venueId = kdsRepository.venueIdActual()
+        val lectura = kdsRepository.fetchOrders(tablero.estacion.id)
+        // Codex 3.6 (#7): si mientras tanto eligieron OTRA estación (o cambió la sucursal), esta respuesta es de la anterior:
+        // no se pinta bajo el encabezado nuevo, ni se guarda como su foto, ni retira copias locales. La nueva trae la suya.
+        val sigue = (_vista.value as? VistaDeCocina.Tablero)?.estacion?.id == tablero.estacion.id &&
+            kdsRepository.venueIdActual() == venueId
+        if (!sigue) return
+        lectura.fold(
             onSuccess = { nuevas ->
                 _sinConexion.value = false
                 // M4: un sondeo que arrancó ANTES de un LISTO puede traer todavía esa comanda — se ignora mientras

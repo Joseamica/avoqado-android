@@ -25,6 +25,7 @@ import com.avoqado.pos.kds.domain.TextosDeCocina
 import com.avoqado.pos.printing.routing.PrintConfig
 import com.avoqado.pos.printing.routing.PrintConfigRepository
 import com.avoqado.pos.printing.routing.StationInfo
+import io.mockk.clearMocks
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.Runs
@@ -39,6 +40,9 @@ import io.mockk.verify
 import io.mockk.verifyOrder
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -934,5 +938,67 @@ class KDSViewModelTest {
         assertTrue("la observación volvió: el receptor también", encendido)
         assertEquals(listOf("k1", "k2", "lan:round:rk:st-barra"), vm.comandas.value.map { it.id })
         job.cancelAndJoin()
+    }
+
+    // MARK: - Codex 3.6 (#6 y #7)
+
+    /**
+     * #6: la lectura del tablero puede quedarse colgada hasta 30 s con el internet caído y el WiFi vivo, y no se cancela
+     * a medias. Antes el receptor seguía acusando todo ese tiempo con el tablero oculto (la caja no imprimía y nadie lo
+     * veía). Ahora `ON_STOP` lo apaga en el acto, y el final tardío de esa apertura no apaga la siguiente. Espejo de iOS m1.
+     */
+    @Test
+    fun `P2 al ocultar el tablero el receptor se apaga en el acto aunque la lectura siga colgada`() = runTest {
+        val pantalla = PantallaDePrueba()
+        pantalla.registro.currentState = Lifecycle.State.RESUMED
+        val vm = armar()
+        coEvery { repo.fetchOrders(any()) } coAnswers {
+            withContext(NonCancellable) { delay(30_000) }
+            Result.success(emptyList())
+        }
+        val job = launch { vm.mientrasEsteALaVista(pantalla) }
+        runCurrent()
+        verify(atLeast = 1) { receptor.activar("v1", "st-barra") }
+        clearMocks(receptor, answers = false)
+
+        pantalla.registro.currentState = Lifecycle.State.CREATED // ON_STOP con la lectura colgada
+        runCurrent()
+        verify(exactly = 1) { receptor.desactivar() }
+
+        pantalla.registro.currentState = Lifecycle.State.STARTED // vuelve a verse
+        runCurrent()
+        advanceTimeBy(31_000) // termina la lectura de la apertura vieja: su final no apaga la nueva
+        runCurrent()
+        verifyOrder {
+            receptor.desactivar()
+            receptor.activar("v1", "st-barra")
+        }
+        verify(exactly = 1) { receptor.desactivar() }
+        job.cancelAndJoin()
+    }
+
+    /**
+     * #7: la lectura de la estación anterior que contesta DESPUÉS de elegir otra no pinta sus comandas bajo el encabezado
+     * nuevo (ni retira copias locales por ella). La cocina podía marcar LISTO lo que «no era suyo».
+     */
+    @Test
+    fun `P2 una lectura atrasada de la estacion anterior no pisa el tablero de la nueva`() = runTest {
+        val cocina = StationInfo(id = "st-cocina", name = "Cocina", hasKitchenDisplay = true)
+        config = PrintConfig(stations = listOf(barra, cocina), version = "v1")
+        val vm = armar()
+        val puerta = CompletableDeferred<Unit>()
+        coEvery { repo.fetchOrders("st-barra") } coAnswers { puerta.await(); Result.success(listOf(comanda("vieja", 3_000))) }
+        coEvery { repo.fetchOrders("st-cocina") } returns
+            Result.success(listOf(comanda("c1", 4_000, sourceKey = "sale:c1:st-cocina")))
+        val enVuelo = launch { vm.refrescar() }
+        runCurrent()
+
+        vm.elegirEstacion("st-cocina")
+        runCurrent()
+        puerta.complete(Unit)
+        enVuelo.join()
+
+        assertEquals(listOf("c1"), vm.comandas.value.map { it.id })
+        coVerify(exactly = 0) { ticketsLocales.retirarPendientes(match { "sale:vieja:st-barra" in it }) }
     }
 }

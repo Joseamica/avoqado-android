@@ -54,6 +54,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
@@ -87,8 +88,17 @@ import kotlinx.coroutines.delay
  * ahí: en `ON_STOP` se cancela (el `finally` apaga el receptor ⇒ sin acuse, la caja imprime papel) y en `ON_START`
  * vuelve a empezar, con línea base nueva (M3). Fuera del Composable para poder probarlo.
  */
-internal suspend fun KDSViewModel.mientrasEsteALaVista(owner: LifecycleOwner) =
-    owner.repeatOnLifecycle(Lifecycle.State.STARTED) { mientrasSeVe() }
+internal suspend fun KDSViewModel.mientrasEsteALaVista(owner: LifecycleOwner) {
+    // Codex 3.6 (#6): el `finally` de `mientrasSeVe` puede tardar (una lectura colgada no se cancela a medias): `ON_STOP`
+    // apaga el receptor YA, sin esperarlo.
+    val alParar = LifecycleEventObserver { _, evento -> if (evento == Lifecycle.Event.ON_STOP) alOcultarse() }
+    owner.lifecycle.addObserver(alParar)
+    try {
+        owner.repeatOnLifecycle(Lifecycle.State.STARTED) { mientrasSeVe() }
+    } finally {
+        owner.lifecycle.removeObserver(alParar)
+    }
+}
 
 @Composable
 fun KDSScreen(
@@ -110,6 +120,8 @@ fun KDSScreen(
     // 🔴 El sondeo vive MIENTRAS esta pantalla está a la vista: se cancela al cerrarla y en segundo plano (I3).
     val owner = LocalLifecycleOwner.current
     LaunchedEffect(owner) { viewModel.mientrasEsteALaVista(owner) }
+    // Codex 3.6 (#6): cerrar el tablero apaga el receptor en el acto (la cancelación del sondeo puede tardar hasta 30 s).
+    DisposableEffect(Unit) { onDispose { viewModel.alOcultarse() } }
 
     // Etapa 3 del KDS (3.5, D13): la pantalla de cocina no se apaga sola. Si el aparato duerme igual, `ON_STOP` apaga el
     // receptor (I3): sin acuse, la caja imprime papel.
