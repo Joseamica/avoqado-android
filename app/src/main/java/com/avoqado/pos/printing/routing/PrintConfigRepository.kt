@@ -47,6 +47,12 @@ class PrintConfigRepository @Inject constructor(
     private val candado = Any()
 
     /**
+     * De qué sucursal es la config en memoria (Codex 3.6 #3). `switchVenue` NO se aborta sin red, así que la memoria puede
+     * traer las estaciones de la sucursal anterior: nunca se usan como si fueran de la nueva. Bajo [candado].
+     */
+    private var venueDeLaConfig: String? = null
+
+    /**
      * 🔴 OFFLINE-FIRST (bug encontrado en el smoke de impresión, 2026-07-25):
      * antes, un refresh fallido PISABA la config buena con `PrintConfig()` vacío
      * → cero estaciones → la comanda NO se imprimía. Dos consecuencias reales:
@@ -73,7 +79,12 @@ class PrintConfigRepository @Inject constructor(
                 )
             }
             val aplicada = synchronized(candado) {
-                (ultimoVenuePedido == venueId).also { if (it) _config.value = response.data }
+                (ultimoVenuePedido == venueId).also {
+                    if (it) {
+                        _config.value = response.data
+                        venueDeLaConfig = venueId
+                    }
+                }
             }
             if (!aplicada) {
                 Log.i(TAG, "⏭️ Print config de $venueId llegó tarde: ya se pidió la de otra sucursal — no se aplica")
@@ -82,7 +93,8 @@ class PrintConfigRepository @Inject constructor(
             Log.d(TAG, "✅ Print config loaded: ${response.data.stations.size} station(s)")
         } catch (e: Exception) {
             Log.w(TAG, "⚠️ Print config sin red (${e.message}) — conservo la vigente / hidrato del cache")
-            if (_config.value.stations.isNotEmpty()) return // ya tengo una buena: NO la piso
+            // Ya tengo una buena DE ESTA sucursal: NO la piso. La de otra sucursal no cuenta (Codex 3.6 #3).
+            if (_config.value.stations.isNotEmpty() && synchronized(candado) { venueDeLaConfig == venueId }) return
             if (synchronized(candado) { ultimoVenuePedido != venueId }) return // otra sucursal ya pidió la suya
             hydrateFromCache(venueId)
         }
@@ -99,7 +111,13 @@ class PrintConfigRepository @Inject constructor(
      * config vacía (ticket legado / «SIN ESTACIÓN»). `topeMs = 0` = no espera a la red (precarga de `AppState`).
      */
     suspend fun refreshConTope(venueId: String, topeMs: Long = TOPE_REFRESCO_MS) {
-        if (_config.value.stations.isEmpty()) hydrateFromCache(venueId)
+        // Codex 3.6 (#3): al cambiar de sucursal la memoria trae la config de la anterior — también se hidrata la de ésta.
+        // Se pide ANTES de hidratar: una respuesta tardía de la anterior ya no pisa lo hidratado.
+        val deOtra = synchronized(candado) {
+            ultimoVenuePedido = venueId
+            venueDeLaConfig != venueId
+        }
+        if (_config.value.stations.isEmpty() || deOtra) hydrateFromCache(venueId)
         val enCurso = fondo.launch { refresh(venueId) }
         withTimeoutOrNull(topeMs) { enCurso.join() }
     }
@@ -108,15 +126,28 @@ class PrintConfigRepository @Inject constructor(
         val cached = payloadCache.load(
             com.avoqado.pos.core.data.local.PayloadCache.TYPE_PRINT_CONFIG,
             venueId,
-        ) ?: run {
-            Log.w(TAG, "Sin cache de print config: este dispositivo nunca la ha visto (no habrá ruteo)")
-            return
+        )
+        val blob = cached?.let {
+            runCatching { cacheJson.decodeFromString(PrintConfig.serializer(), it.json) }
+                .onFailure { e -> Log.e(TAG, "❌ Cache de print config corrupto: ${e.message}") }
+                .getOrNull()
         }
-        runCatching {
-            val blob = cacheJson.decodeFromString(PrintConfig.serializer(), cached.json)
-            _config.value = blob
-            Log.d(TAG, "🗂️ Print config hidratada del cache: ${blob.stations.size} estación(es) (hace ${cached.ageMinutes} min)")
-        }.onFailure { Log.e(TAG, "❌ Cache de print config corrupto: ${it.message}") }
+        synchronized(candado) {
+            if (blob != null) {
+                _config.value = blob
+                venueDeLaConfig = venueId
+            } else if (venueDeLaConfig != venueId) {
+                // Codex 3.6 (#3): la memoria es de otra sucursal y de ésta no hay copia: sin ruteo (ticket legado), nunca con
+                // las estaciones e impresoras de la anterior.
+                _config.value = PrintConfig()
+                venueDeLaConfig = venueId
+            }
+        }
+        if (blob != null) {
+            Log.d(TAG, "🗂️ Print config hidratada del cache: ${blob.stations.size} estación(es) (hace ${cached?.ageMinutes} min)")
+        } else {
+            Log.w(TAG, "Sin cache de print config: este dispositivo nunca la ha visto (no habrá ruteo)")
+        }
     }
 
     companion object {

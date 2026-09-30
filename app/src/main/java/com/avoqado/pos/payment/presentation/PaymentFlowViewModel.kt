@@ -2886,7 +2886,7 @@ class PaymentFlowViewModel @Inject constructor(
                         orderItemId = item.id,
                         productId = (item.type as? CartItemType.ProductItem)?.productId,
                         categoryId = item.categoryId,
-                        productName = item.name,
+                        productName = item.nombreEnCocina,
                         quantity = item.quantity,
                         modifiers = item.selectedModifiers.map { it.modifierName },
                         notes = item.itemNote,
@@ -2910,7 +2910,7 @@ class PaymentFlowViewModel @Inject constructor(
                             val comboName = item.promotionInstanceId?.let { item.promotionName ?: "Combo" }
                             val tag = comboName?.let { ComboPrintLines.Tag(key = it, name = it) }
                             tag to KitchenItem(
-                                name = item.name,
+                                name = item.nombreEnCocina,
                                 quantity = item.quantity,
                                 modifiers = item.selectedModifiers.map { it.modifierName }.ifEmpty { null },
                                 note = item.itemNote,

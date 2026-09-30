@@ -180,6 +180,10 @@ No depende del hub Premium: viaja por el MISMO transporte. Espejo en iOS con los
   cuenta como conocido. Acuse estricto `{"v":1,"status":"ok","sourceKey":<el mismo>}`; cualquier
   otra cosa = sin acuse. El acuse decide el papel de las «sólo pantalla»: sin acuse ⇒ papel de respaldo + marca
   `FALLBACK_PRINTED`, con o sin internet. «Impresora + pantalla» imprime siempre.
+- 🔴 **El papel de UN tiempo no marca la ronda (Codex 3.6 #1):** la marca esconde el folio ENTERO y los tiempos lo
+  comparten. Si el folio va en más de un tiempo (se cuenta con las entregas guardadas de antemano), su papel sale SIN marca;
+  sin guardado previo y con más de un tiempo, ninguno marca; el replay no marca filas `round:`. Costo aceptado: ese tiempo
+  se ve en papel Y en la pantalla (duplicado, nunca pérdida). Mostrador (`sale:`) y ronda de un tiempo marcan como siempre.
 - **Se guarda ANTES de tocar la red:** cada entrega «sólo pantalla» va a `entregas_kds_pendientes` (una fila por plan:
   `<folio>|<orderItemIds>`). Una fila se borra sólo cuando su papel se DECIDIÓ (acusó, salió, o la estación no tiene
   impresora). Si el despacho truena o se cancela —también a media entrega—, sus filas se SUELTAN (`soltadaEnMillis`, bajo
@@ -198,6 +202,10 @@ No depende del hub Premium: viaja por el MISMO transporte. Espejo en iOS con los
   por tiempo: «Inmediato» (sin tiempo) primero y los demás en orden de aparición; sin ningún tiempo se ve como siempre.
 - **Mezcla por folio** (`juntarPorFolio`): la copia del servidor gana; una local sin copia se ve como `lan:<folio>`; un
   folio LISTO local esconde la copia del servidor hasta 12 h (o hasta que el servidor deje de mandarlo).
+- **Foto del servidor al reabrir sin red (Codex 3.6 #2):** cada lectura buena guarda la lista en el aparato (`KdsPrefs`, por
+  sucursal + estación, con su hora). Si la lectura falla y este ViewModel aún no tiene nada de la estación (tablet
+  reiniciada), el tablero arranca con esa foto si tiene < 12 h: lo que la copia local ya retiró no desaparece de la cocina.
+  Lo terminado en línea sale de la foto; el retiro de la copia local no cambió.
 - **LISTO sin red:** `KDS_TICKET_MARK BUMP` por la cola PRIMERO y DESPUÉS `listaEnMillis`, en UNA transacción del DAO
   (`marcarListaOCrear`: marca la fila pendiente o, si no hay ninguna, inserta la sombra LISTA; nunca reemplaza una fila).
   La sombra va con la estación del TABLERO donde se tocó; el BUMP, con la de la comanda.
@@ -335,7 +343,7 @@ red y sin config de estaciones (2026-07-28). Cuarentena visible para rechazos.
 la red** (Home con comanda empujada, SIM + WiFi sin internet, pantalla en segundo plano, cambio de estación a
 media entrega, WiFi que aísla aparatos). Límites declarados: con un WiFi que aísla aparatos todo lo «sólo pantalla» sale
 en papel (sin perder nada, y la caja lo dice); los planes «Sin estación» no se empujan (el servidor los pone en todas las
-pantallas); cambiar de sucursal sin red conserva la config anterior (`switchVenue` es una llamada al servidor); lo
+pantallas); cambiar de sucursal sin red (`switchVenue` NO se aborta sin red) usa la config de impresión GUARDADA de la nueva, o ninguna (ticket legado) si el aparato nunca la vio — nunca la de la anterior (Codex 3.6 #3); una ronda en fondo sale entera con la config con que se ruteó (#4); lo
 marcado LISTO sin red no aparece en «Recientes» y «Deshacer» sigue sólo en línea.
 
 **NO está hecho:**

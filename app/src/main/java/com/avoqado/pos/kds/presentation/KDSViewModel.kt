@@ -149,11 +149,18 @@ class KDSViewModel @Inject constructor(
 
     // Etapa 3 del KDS (3.5, D9): las dos fuentes de la mezcla por folio.
     private var delServidor: List<KDSOrder> = emptyList()
+    /** Codex 3.6 (#2): la estación de la que viene [delServidor] (lectura buena o foto del aparato); `null` = nada todavía. */
+    private var estacionDelServidor: String? = null
     private var locales: List<KdsTicketLocal> = emptyList()
     private var localesJob: Job? = null
     private var estacionObservada: String? = null
     /** Sólo mientras `mientrasSeVe()` corre: el receptor NO puede acusar con la pantalla cerrada (D8). */
     private var pantallaVisible = false
+    /**
+     * Codex 3.6 (#6), espejo de iOS m1: cada apertura del tablero suma uno. El `finally` de una apertura que tardó en
+     * desenrollarse (una lectura colgada no se cancela a medias) sólo apaga si sigue siendo la vigente.
+     */
+    private var aperturas = 0
 
     /** D11: sin internet pero recibiendo por el WiFi — la banda lo dice distinto. */
     val recibiendoPorWifi: StateFlow<Boolean> get() = receptor.activo
@@ -176,6 +183,8 @@ class KDSViewModel @Inject constructor(
         // M3: este ViewModel sigue vivo con la pantalla cerrada, así que sin esto lo que llegó mientras tanto sonaba
         // como «comanda nueva». El primer tablero de ESTA apertura es la línea base — nunca suena.
         hasLoadedFromAPI = false
+        aperturas++
+        val mia = aperturas
         pantallaVisible = true
         try {
             refrescar()
@@ -191,9 +200,23 @@ class KDSViewModel @Inject constructor(
             }
         } finally {
             // Al cerrar la pantalla el receptor se apaga: una comanda acusada aquí sin nadie mirando sería una comanda perdida.
-            pantallaVisible = false
-            sincronizarReceptor()
+            // Si ya se apagó en el acto ([alOcultarse]) y quizá volvió a abrirse, esta apertura ya no es la vigente.
+            if (aperturas == mia) {
+                pantallaVisible = false
+                sincronizarReceptor()
+            }
         }
+    }
+
+    /**
+     * Codex 3.6 (#6): `ON_STOP` y cerrar el tablero apagan el receptor EN EL ACTO. La lectura del tablero puede quedarse
+     * colgada hasta 30 s con el internet caído y el WiFi vivo, y mientras tanto el `finally` de [mientrasSeVe] no corre: el
+     * receptor seguía acusando sin nadie mirando y la caja no imprimía. Espejo de iOS (m1 de la T9).
+     */
+    fun alOcultarse() {
+        aperturas++
+        pantallaVisible = false
+        sincronizarReceptor()
     }
 
     /** Relee la config (cache-first), decide qué enseñar y, si es tablero, trae sus comandas. */
@@ -235,7 +258,14 @@ class KDSViewModel @Inject constructor(
 
     private suspend fun refrescarTablero() {
         val tablero = _vista.value as? VistaDeCocina.Tablero ?: return
-        kdsRepository.fetchOrders(tablero.estacion.id).fold(
+        val venueId = kdsRepository.venueIdActual()
+        val lectura = kdsRepository.fetchOrders(tablero.estacion.id)
+        // Codex 3.6 (#7): si mientras tanto eligieron OTRA estación (o cambió la sucursal), esta respuesta es de la anterior:
+        // no se pinta bajo el encabezado nuevo, ni se guarda como su foto, ni retira copias locales. La nueva trae la suya.
+        val sigue = (_vista.value as? VistaDeCocina.Tablero)?.estacion?.id == tablero.estacion.id &&
+            kdsRepository.venueIdActual() == venueId
+        if (!sigue) return
+        lectura.fold(
             onSuccess = { nuevas ->
                 _sinConexion.value = false
                 // M4: un sondeo que arrancó ANTES de un LISTO puede traer todavía esa comanda — se ignora mientras
@@ -243,6 +273,8 @@ class KDSViewModel @Inject constructor(
                 olvidarBumpsConfirmadosPorElServidor(nuevas)
                 val antes = delServidor
                 delServidor = nuevas
+                estacionDelServidor = tablero.estacion.id
+                guardarFoto()
                 publicar(desdeServidor = true)
                 // Después de publicar: la cocina ve el pedido primero, el papel sale enseguida.
                 viewModelScope.launch { imprimirComandasPendientes(delServidor.filterNot { it.id in bumpsVigentes() }) }
@@ -256,6 +288,13 @@ class KDSViewModel @Inject constructor(
             onFailure = { e ->
                 // Se CONSERVA lo que ya se veía y se sigue mezclando con lo local: sin red la cocina trabaja con eso (D9).
                 if (esSinRed(e)) _sinConexion.value = true
+                // Codex 3.6 (#2): abrir sin internet (tablet reiniciada: proceso y ViewModel nuevos) arranca con la última
+                // lista buena del servidor guardada en el aparato (≤ 12 h). Sin ella, lo que el servidor devolvía —y cuya
+                // copia local ya se retiró— no estaba en ningún lado hasta que volviera el internet.
+                if (estacionDelServidor != tablero.estacion.id) {
+                    delServidor = kdsRepository.venueIdActual()?.let { prefs.foto(it, tablero.estacion.id) }.orEmpty()
+                    estacionDelServidor = tablero.estacion.id
+                }
                 publicar(desdeServidor = false)
                 // M3 sin internet: lo que se ve ahora ES la línea base. Sin esto, con la pantalla abierta sin red, lo que
                 // llega por el WiFi del local nunca sonaba (la base sólo la ponía una lectura buena del servidor).
@@ -263,6 +302,18 @@ class KDSViewModel @Inject constructor(
                 Log.d(TAG, "No se pudo leer el tablero (se conserva lo que había): ${e.message}")
             },
         )
+    }
+
+    /**
+     * Codex 3.6 (#2): la foto del aparato = lo que la pantalla muestra del servidor: lo último que devolvió, menos los LISTO
+     * en vuelo o recién confirmados (M4). Una comanda terminada en línea que regresara de la foto al reabrir sin internet, la
+     * cocina la volvería a preparar. Se reescribe en cada lectura buena y al confirmar un LISTO.
+     */
+    private fun guardarFoto() {
+        val estacion = estacionDelServidor ?: return
+        val venueId = kdsRepository.venueIdActual() ?: return
+        val enVuelo = bumpsVigentes()
+        prefs.guardarFoto(venueId, estacion, delServidor.filterNot { it.id in enVuelo })
     }
 
     /**
@@ -343,6 +394,7 @@ class KDSViewModel @Inject constructor(
         hasLoadedFromAPI = false
         _vista.value = vistaPara(id)
         delServidor = emptyList()
+        estacionDelServidor = null
         sincronizarReceptor()
         viewModelScope.launch { refrescarTablero() }
     }
@@ -370,7 +422,7 @@ class KDSViewModel @Inject constructor(
         // M4: protege contra un sondeo que ya estaba en vuelo y todavía no sabe de este bump.
         bumpsRecientes[id] = System.currentTimeMillis()
         viewModelScope.launch {
-            kdsRepository.bumpOrder(id).onFailure { e ->
+            kdsRepository.bumpOrder(id).onSuccess { guardarFoto() }.onFailure { e ->
                 bumpsRecientes.remove(id)
                 if (esSinRed(e) && comanda.sourceKey != null) {
                     // D10: sin red, con folio ⇒ marca BUMP por la cola + `listaEnMillis`. Sale de la pantalla y NO dice error.
@@ -440,7 +492,10 @@ class KDSViewModel @Inject constructor(
         delServidorIds.forEach { bumpsRecientes[it] = ahora }
         viewModelScope.launch {
             kdsRepository.bumpBatch(delServidorIds)
-                .onSuccess { refrescarTablero() }
+                .onSuccess {
+                    guardarFoto()
+                    refrescarTablero()
+                }
                 .onFailure { e ->
                     // El lote no aplicó: se sueltan del blindaje también, o un sondeo real que SÍ las trae de
                     // vuelta (porque siguen pendientes de verdad) las escondería por hasta 15 s.

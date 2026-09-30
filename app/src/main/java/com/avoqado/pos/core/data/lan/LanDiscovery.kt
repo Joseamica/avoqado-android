@@ -193,7 +193,12 @@ class LanDiscovery(
                 Log.d(TAG, "👋 Peer perdido: $name")
             }
             override fun onDiscoveryStopped(type: String) {}
-            override fun onStartDiscoveryFailed(type: String, errorCode: Int) { Log.e(TAG, "❌ Descubrimiento falló ($errorCode) — modo isla") }
+            override fun onStartDiscoveryFailed(type: String, errorCode: Int) {
+                // Sin soltarlo, la guarda de `buscar` dejaba la caja sin buscar pantallas hasta reiniciar (Codex 3.6).
+                // Un fallo tardío de un intento ya reemplazado no toca al vigente.
+                synchronized(this@LanDiscovery) { if (discoveryListener === this) discoveryListener = null }
+                Log.e(TAG, "❌ Descubrimiento falló ($errorCode) — se reintenta en la siguiente revisión (≤ 1 min)")
+            }
             override fun onStopDiscoveryFailed(type: String, errorCode: Int) {}
         }
         discoveryListener = listener

@@ -64,4 +64,16 @@ class CartWeightTest {
         assertEquals(2, state.itemCount) // cada línea pesada cuenta como 1
         assertEquals(18270 + 21504, state.subtotalCents)
     }
+
+    // Codex 3.6 (S6): la comanda (papel y pantalla) llevaba «Jamón serrano ×1» sin el peso. Mismo texto que el servidor.
+    @Test
+    fun `la comanda de una linea pesada lleva el peso en el nombre`() {
+        assertEquals("Jamón serrano (0.750 kg)", weightItem("jamon", 42000, 0.75).nombreEnCocina)
+    }
+
+    @Test
+    fun `la comanda de una linea normal lleva su nombre tal cual`() {
+        val normal = CartItem(type = CartItemType.ProductItem("burger"), name = "Hamburguesa", unitPrice = 15000, quantity = 2)
+        assertEquals("Hamburguesa", normal.nombreEnCocina)
+    }
 }

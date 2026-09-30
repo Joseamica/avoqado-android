@@ -23,6 +23,29 @@ import java.net.URL
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/**
+ * Las redes con internet que el sistema reporta vivas. `registerNetworkCallback` avisa POR RED:
+ * perder el WiFi no deja al aparato sin red si siguen los datos del SIM. Medido en la N86 (29-sep):
+ * `onLost` del WiFi ponía «sin conexión», los pings al servidor se detenían y el aviso se quedó
+ * pegado ~10 min con el servidor contestando por datos. Espejo de iOS, que mira la ruta completa del
+ * aparato (`NWPathMonitor`, conectado si CUALQUIER interfaz sirve).
+ */
+internal class RedesVivas {
+    private val redes = mutableSetOf<Any>()
+
+    @Synchronized
+    fun agregar(red: Any) {
+        redes.add(red)
+    }
+
+    /** true si queda alguna red viva. */
+    @Synchronized
+    fun quitar(red: Any): Boolean {
+        redes.remove(red)
+        return redes.isNotEmpty()
+    }
+}
+
 @Singleton
 class ConnectivityMonitor @Inject constructor(
     @ApplicationContext context: Context,
@@ -32,6 +55,7 @@ class ConnectivityMonitor @Inject constructor(
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var retryJob: Job? = null
+    private val redesVivas = RedesVivas()
 
     private val _isConnected = MutableStateFlow(checkCurrentConnectivity())
     val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
@@ -56,6 +80,7 @@ class ConnectivityMonitor @Inject constructor(
 
         connectivityManager.registerNetworkCallback(request, object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
+                redesVivas.agregar(network)
                 val wasDisconnected = !_isConnected.value
                 _isConnected.value = true
                 if (wasDisconnected) {
@@ -69,8 +94,9 @@ class ConnectivityMonitor @Inject constructor(
             }
 
             override fun onLost(network: Network) {
-                _isConnected.value = false
-                Log.d("📡", "Network lost")
+                val quedaRed = redesVivas.quitar(network)
+                _isConnected.value = quedaRed
+                Log.d("📡", if (quedaRed) "Network lost — otra red sigue viva" else "Network lost")
             }
         })
     }

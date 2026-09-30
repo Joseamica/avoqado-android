@@ -77,6 +77,20 @@ class LanDiscoveryCarrerasTest {
     }
 
     @Test
+    fun `P2 una busqueda que no arranco se vuelve a intentar en la siguiente revision`() {
+        discovery.buscar()
+        busquedas.single().onStartDiscoveryFailed("_avoqado-pos._tcp.", NsdManager.FAILURE_INTERNAL_ERROR)
+
+        discovery.buscar() // la revisión de 60 s del transporte
+        assertEquals("sin esto la caja no volvía a buscar pantallas hasta reiniciar la app", 2, busquedas.size)
+
+        // El fallo tardío del intento viejo no suelta al vigente (sería una segunda búsqueda en paralelo).
+        busquedas.first().onStartDiscoveryFailed("_avoqado-pos._tcp.", NsdManager.FAILURE_INTERNAL_ERROR)
+        discovery.buscar()
+        assertEquals(2, busquedas.size)
+    }
+
+    @Test
     fun `P1 un resolve en vuelo de una instancia parada no publica peers y la cola se vacia`() {
         discovery.buscar()
         busquedas.single().onServiceFound(servicio("otro-aaa"))
