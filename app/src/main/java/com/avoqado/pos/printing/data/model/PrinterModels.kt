@@ -374,6 +374,11 @@ data class ReceiptItem(
     /** COMBOS — producto que pertenece al combo del renglón de arriba. Se imprime
      *  indentado y SIN precio (su importe ya está en el renglón del combo). */
     val isComboComponent: Boolean = false,
+    /**
+     * Caja externa: los códigos que la pistola de la OTRA caja lee para este renglón, ya
+     * repetidos uno por pieza (producto y extras). Vacío fuera de caja externa.
+     */
+    val externalCodes: List<String> = emptyList(),
 ) {
     val formattedPrice: String
         get() = when {
@@ -417,6 +422,13 @@ data class AreaTicketData(
      * dice al cliente si tiene que volver por su producto o ya se lo llevó.
      */
     val holdsProduct: Boolean = true,
+    /**
+     * Caja externa: el vale lo cobra OTRO POS. Cambia el cuerpo (extras + un código por pieza),
+     * el total («Importe de referencia»), el código del vale (QR) y el pie. false = el vale de siempre.
+     */
+    val externalRoute: Boolean = false,
+    /** Reimpresión: en caja externa sale «*** COPIA ***» (spec D14). El vale normal la ignora. */
+    val isReprint: Boolean = false,
 ) {
     val formattedTotal: String
         get() = String.format(Locale.US, "$%.2f", totalCents / 100.0)

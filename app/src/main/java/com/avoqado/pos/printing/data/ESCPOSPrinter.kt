@@ -5,6 +5,7 @@ import com.avoqado.pos.printing.data.model.KitchenTicketData
 import com.avoqado.pos.printing.data.model.MonoRaster
 import com.avoqado.pos.printing.data.model.PaperWidth
 import com.avoqado.pos.printing.data.model.ReceiptData
+import com.avoqado.pos.printing.data.model.ReceiptItem
 import com.avoqado.pos.core.util.VenueTimeZone
 import com.avoqado.pos.printing.receiptlayout.Align
 import com.avoqado.pos.printing.receiptlayout.CanonicalLayout
@@ -129,6 +130,9 @@ class ESCPOSPrinter(
 
         /** ~20 mm a 203 dpi. Un código bajito sólo se lee si la pistola entra derecha. */
         const val DEFAULT_BARCODE_HEIGHT_DOTS = 162
+
+        /** Códigos por pieza del vale de caja externa: la misma altura de las etiquetas de precio. */
+        const val EXTERNAL_CODE_HEIGHT_DOTS = 100
 
         /** Default de ESC/POS. Con 10 dígitos en CODE128-C cabe en 58 mm. */
         const val DEFAULT_MODULE_WIDTH = 3
@@ -784,6 +788,14 @@ class ESCPOSPrinter(
         // distinguirlos de un vistazo.
         printTitle(ticket.areaName.uppercase(Locale("es", "MX")), bold = true)
 
+        // D14: si el primer papel sí salió, el cajero de la otra caja ve que éste es la copia.
+        if (ticket.externalRoute && ticket.isReprint) {
+            setBold(true)
+            printLine("*** COPIA ***")
+            setBold(false)
+            printLine("Sustituye al vale ${ticket.areaTicketCode}")
+        }
+
         printDoubleDivider()
 
         setAlignment(TextAlignment.LEFT)
@@ -802,38 +814,72 @@ class ESCPOSPrinter(
             // Granel: "0.435 kg × $420.00/kg" bajo el nombre, igual que en el recibo.
             item.weightSummary?.let { printLine("   $it") }
             item.note?.let { printLine("   Nota: $it") }
+            if (ticket.externalRoute) printExternalLineCodes(item)
         }
 
         if (ticket.showPrices) {
             printDivider()
             setBold(true)
             setDoubleHeight(true)
-            printTwoColumns("TOTAL", ticket.formattedTotal)
+            // Caja externa: Avoqado no cobra; su total es una referencia (spec 2026-09-30 D8).
+            printTwoColumns(if (ticket.externalRoute) "Importe de referencia" else "TOTAL", ticket.formattedTotal)
             setDoubleHeight(false)
             setBold(false)
         }
 
         printDoubleDivider()
 
-        // El código, en barras y en grande. Ver el punto 1 del KDoc.
+        // El código, en barras y en grande. Ver el punto 1 del KDoc. En caja externa va en QR:
+        // la pistola 1D de la otra caja no lo levanta y no lo busca como producto (D7).
         setAlignment(TextAlignment.CENTER)
-        printBarcode(ticket.areaTicketCode, symbology = symbology)
+        if (ticket.externalRoute) {
+            printQr(ticket.areaTicketCode, moduleSize = 6)
+        } else {
+            printBarcode(ticket.areaTicketCode, symbology = symbology)
+        }
         printLine()
         printTitle(ticket.areaTicketCode, bold = true)
 
         printLine()
-        printLine("Presenta este vale en caja")
+        if (ticket.externalRoute) {
+            printLine("No es comprobante de pago.")
+            printLine("Pásalo en la caja principal.")
+        } else {
+            printLine("Presenta este vale en caja")
+        }
         if (ticket.holdsProduct) {
             setBold(true)
             printLine("Tu producto te espera aquí")
             setBold(false)
-            printLine("Regresa con el ticket pagado")
+            printLine(if (ticket.externalRoute) "Regresa con tu ticket de la caja" else "Regresa con el ticket pagado")
         }
 
         printDoubleDivider()
         cut()
 
         return getData()
+    }
+
+    /**
+     * Caja externa (spec 2026-09-30 D6/D15): bajo el renglón, sus extras y un código por pieza —
+     * CODE128-C si es numérico par, si no B, si no texto — y SÓLO si las barras caben al ancho
+     * mínimo: `fittingModuleWidth` imprime al mínimo aunque no quepa, y unas barras cortadas ni se
+     * leen ni caen al texto. Un renglón en blanco entre códigos para que la pistola no lea dos.
+     */
+    private fun printExternalLineCodes(item: ReceiptItem) {
+        item.modifiers?.forEach { printLine("   + $it") }
+        if (item.externalCodes.isEmpty()) return
+        setAlignment(TextAlignment.CENTER)
+        for (code in item.externalCodes) {
+            val symbology = listOf(BarcodeSymbology.CODE128_C, BarcodeSymbology.CODE128_B).firstOrNull {
+                encodeBarcodeData(code, it) != null &&
+                    barcodeWidthInModules(code, it) * MIN_MODULE_WIDTH <= paperWidth.dots
+            }
+            val dibujado = symbology != null && printBarcode(code, symbology, heightDots = EXTERNAL_CODE_HEIGHT_DOTS)
+            if (!dibujado) printLine(code)
+            printLine()
+        }
+        setAlignment(TextAlignment.LEFT)
     }
 
     // MARK: - Price Labels

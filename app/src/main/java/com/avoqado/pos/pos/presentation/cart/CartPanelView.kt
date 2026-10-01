@@ -134,6 +134,8 @@ fun CartPanelView(
     // Plan gate (REFERRAL_PROGRAM, Pro). Default true = fail-open.
     referralPlanAllowed: Boolean = true,
     primaryActionLabel: String? = null,
+    /** false mientras se emite un vale (Codex final #3): el botón dice «Emitiendo vale…» y no se toca. */
+    primaryActionEnabled: Boolean = true,
 ) {
     val useDenseTabletLayout = AvoqadoTheme.adaptive.sizeClass != AvoqadoAdaptiveSizeClass.Compact
     val sectionOuterPadding = if (useDenseTabletLayout) AvoqadoTheme.spacing.md else AvoqadoTheme.spacing.lg
@@ -476,6 +478,7 @@ fun CartPanelView(
                         text = primaryActionLabel ?: "Cobrar ${cartState.totalDisplay}",
                         onClick = onCharge,
                         modifier = Modifier.weight(1f),
+                        enabled = primaryActionEnabled,
                     )
                 }
             }

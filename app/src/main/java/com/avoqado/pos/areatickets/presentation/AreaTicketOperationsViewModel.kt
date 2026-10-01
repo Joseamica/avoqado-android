@@ -3,22 +3,21 @@ package com.avoqado.pos.areatickets.presentation
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.areatickets.data.AreaTicket
+import com.avoqado.pos.areatickets.data.AreaTicketException
 import com.avoqado.pos.areatickets.data.AreaTicketRepository
 import com.avoqado.pos.areatickets.data.AreaTicketSettingsData
 import com.avoqado.pos.areatickets.data.IssueAreaTicketLineRequest
-import com.avoqado.pos.areatickets.data.moneyToCents
+import com.avoqado.pos.areatickets.data.PendingAreaTicketPrintRecord
+import com.avoqado.pos.areatickets.data.SETTLEMENT_ROUTE_EXTERNAL
+import com.avoqado.pos.areatickets.data.toAreaTicketData
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.pos.data.model.CartItemType
 import com.avoqado.pos.pos.presentation.cart.CartState
 import com.avoqado.pos.printing.data.ESCPOSPrinter.BarcodeSymbology
 import com.avoqado.pos.printing.data.AreaTicketPdfGenerator
 import com.avoqado.pos.printing.data.PrinterService
-import com.avoqado.pos.printing.data.model.AreaTicketData
 import com.avoqado.pos.printing.data.model.PrinterRole
-import com.avoqado.pos.printing.data.model.ReceiptItem
 import dagger.hilt.android.lifecycle.HiltViewModel
-import java.time.Instant
-import java.util.Date
 import java.util.Locale
 import java.util.UUID
 import javax.inject.Inject
@@ -29,13 +28,20 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.Json
 
 data class AreaTicketPdfExport(
     val ticketId: String,
     val code: String,
     val fileName: String,
     val bytes: ByteArray,
+    /** El negocio al PREPARAR el PDF: su registro pendiente va a ese negocio aunque la sesión cambie mientras se guarda. */
+    val venueId: String?,
 )
 
 data class AreaTicketOperationsState(
@@ -80,6 +86,13 @@ data class AreaTicketOperationsState(
 
     val checkoutBlockingError: String?
         get() = error.takeIf { settings != null || pendingReprintCode != null }
+
+    /**
+     * Codex final #3: se está emitiendo (o reimprimiendo) un vale desde el modo de vales. El vale sale con la foto del
+     * carrito del toque y al terminar se vacía el carrito: Checkout no deja tocar catálogo, carrito ni escaneos mientras.
+     */
+    val issuing: Boolean
+        get() = issueWorkspace && submitting
 }
 
 @HiltViewModel
@@ -95,6 +108,20 @@ class AreaTicketOperationsViewModel @Inject constructor(
     private var issueIdempotencyKey = secureStorage.pendingAreaTicketIssueKey
         ?: UUID.randomUUID().toString().also { secureStorage.pendingAreaTicketIssueKey = it }
 
+    // D12. Antes del `init`: su `refresh()` ya manda los registros pendientes.
+    private val pendingRecordsJson = Json { ignoreUnknownKeys = true }
+    private val pendingRecordsSerializer = ListSerializer(PendingAreaTicketPrintRecord.serializer())
+    private val flushMutex = Mutex()
+
+    /** Codex final #2: UN envío de pendientes a la vez, compartido; quien espera con tope suelta la espera, no el envío. */
+    private var flushJob: Job? = null
+
+    /**
+     * Codex r4: el aviso de disco de ESTA operación gana sobre su mensaje de éxito. Los tres cierres
+     * (emitir, reimprimir, PDF) usan `message = consumeOutputWarning() ?: "<su mensaje de siempre>"`.
+     */
+    private var outputWarning: String? = null
+
     init {
         _state.value = _state.value.copy(
             pendingReprintCode = secureStorage.pendingAreaTicketPrintCode.takeIf {
@@ -107,6 +134,9 @@ class AreaTicketOperationsViewModel @Inject constructor(
 
     fun refresh(loadPendingDelivery: Boolean = false): Job {
         val requestId = ++refreshRequestId
+        // D12: en su propia corrutina, no delante de la configuración: con un WiFi sin salida cada registro espera
+        // su timeout, y mientras tanto la terminal de área se quedaría sin su modo de vales.
+        retryPendingPrintRecords()
         return viewModelScope.launch {
             _state.value = _state.value.copy(loading = true, error = null)
             val settings = try {
@@ -168,8 +198,25 @@ class AreaTicketOperationsViewModel @Inject constructor(
             )
             return
         }
+        areaTicketIssueBlocker(cart)?.let { motivo ->
+            _state.value = _state.value.copy(error = motivo)
+            return
+        }
+        // El negocio de ESTE vale, leído al tocar: la sesión puede cerrarse desde el hilo de OkHttp mientras sale el papel.
+        val venueId = secureStorage.venueId
         viewModelScope.launch {
             _state.value = _state.value.copy(submitting = true, error = null)
+            // Codex r2 #3: DESPUÉS de `submitting`; si no, mientras esto espera a la red un segundo toque emitiría otro vale.
+            runCatching { flushWithinBudget() }
+            // Task 13: si en esa espera se cambió de negocio, el vale nacería en el NUEVO y su registro y su reimpresión
+            // irían al viejo. No se crea nada; la llave sigue para el reintento.
+            if (secureStorage.venueId != venueId) {
+                _state.value = _state.value.copy(
+                    submitting = false,
+                    error = "Cambiaste de negocio mientras se emitía el vale. Vuelve a intentarlo.",
+                )
+                return@launch
+            }
             runCatching {
                 val lines = cart.items.map { item ->
                     IssueAreaTicketLineRequest(
@@ -186,7 +233,7 @@ class AreaTicketOperationsViewModel @Inject constructor(
                 // Primero persiste la recuperación: si la app muere al limpiar el
                 // carrito, el mismo vale todavía puede reimprimirse al volver.
                 secureStorage.pendingAreaTicketPrintCode = ticket.code
-                secureStorage.pendingAreaTicketPrintVenueId = secureStorage.venueId
+                secureStorage.pendingAreaTicketPrintVenueId = venueId
                 _state.value = _state.value.copy(pendingReprintCode = ticket.code)
                 // La llave protege la creación, no la impresión. Una vez que el
                 // servidor aceptó este vale, el siguiente carrito necesita otra
@@ -197,7 +244,7 @@ class AreaTicketOperationsViewModel @Inject constructor(
                 // puede seguir cobrable aunque falle la salida en papel: imprimir es una
                 // recuperación secundaria del mismo vale, no parte de su creación.
                 onIssued()
-                printAndRecord(ticket, reprint = false)
+                printAndRecord(ticket, reprint = false, venueId)
                 ticket
             }.onSuccess { ticket ->
                 secureStorage.pendingAreaTicketPrintCode = null
@@ -205,12 +252,21 @@ class AreaTicketOperationsViewModel @Inject constructor(
                 _state.value = _state.value.copy(
                     submitting = false,
                     pendingReprintCode = null,
-                    message = "Vale ${ticket.code} emitido correctamente.",
+                    message = consumeOutputWarning() ?: "Vale ${ticket.code} emitido correctamente.",
                 )
             }.onFailure { error ->
+                if ((error as? AreaTicketException)?.code == "AREA_TICKET_IDEMPOTENCY_CONFLICT") {
+                    // Esta llave ya creó un vale con OTRO carrito (respuesta perdida o la app murió y el
+                    // carrito se rearmó). Sin rotarla, ningún vale nuevo saldría jamás (spec §4.2).
+                    issueIdempotencyKey = UUID.randomUUID().toString()
+                    secureStorage.pendingAreaTicketIssueKey = issueIdempotencyKey
+                }
                 _state.value = _state.value.copy(
                     submitting = false,
-                    error = error.message ?: "No se pudo emitir el vale.",
+                    error = areaTicketIssueFailureMessage(
+                        error,
+                        externalArea = _state.value.settings?.terminal?.fulfillmentArea?.settlementRoute == SETTLEMENT_ROUTE_EXTERNAL,
+                    ),
                 )
             }
         }
@@ -219,13 +275,14 @@ class AreaTicketOperationsViewModel @Inject constructor(
     fun reprintPending(onIssued: () -> Unit = {}) {
         val code = _state.value.pendingReprintCode ?: return
         if (_state.value.submitting || _state.value.preparingPdf) return
+        val venueId = secureStorage.venueId
         viewModelScope.launch {
             _state.value = _state.value.copy(submitting = true, error = null)
             runCatching {
                 val resolution = repository.resolveCheckoutScan(code)
                 val ticket = resolution.ticket
                     ?: throw IllegalStateException("No se encontró el vale $code para reimpresión.")
-                printAndRecord(ticket, reprint = true)
+                printAndRecord(ticket, reprint = true, venueId)
                 ticket
             }.onSuccess { ticket ->
                 issueIdempotencyKey = UUID.randomUUID().toString()
@@ -235,7 +292,7 @@ class AreaTicketOperationsViewModel @Inject constructor(
                 _state.value = _state.value.copy(
                     submitting = false,
                     pendingReprintCode = null,
-                    message = "Vale ${ticket.code} reimpreso correctamente.",
+                    message = consumeOutputWarning() ?: "Vale ${ticket.code} reimpreso correctamente.",
                 )
                 onIssued()
             }.onFailure { error ->
@@ -250,6 +307,7 @@ class AreaTicketOperationsViewModel @Inject constructor(
     fun preparePendingPdf() {
         val code = _state.value.pendingReprintCode ?: return
         if (_state.value.submitting || _state.value.preparingPdf) return
+        val venueId = secureStorage.venueId
         viewModelScope.launch {
             _state.value = _state.value.copy(preparingPdf = true, error = null)
             runCatching {
@@ -264,6 +322,7 @@ class AreaTicketOperationsViewModel @Inject constructor(
                     code = ticket.code,
                     fileName = "vale-area-${ticket.code}.pdf",
                     bytes = bytes,
+                    venueId = venueId,
                 )
             }.onSuccess { export ->
                 _state.value = _state.value.copy(
@@ -298,12 +357,7 @@ class AreaTicketOperationsViewModel @Inject constructor(
         viewModelScope.launch {
             _state.value = _state.value.copy(submitting = true, error = null)
             runCatching {
-                repository.recordPrint(
-                    ticketId = export.ticketId,
-                    printed = true,
-                    reprint = false,
-                    reason = "Vale guardado como PDF por el operador.",
-                )
+                recordOutput(export.venueId, export.ticketId, export.code, reprint = false, reason = "Vale guardado como PDF por el operador.")
             }.onSuccess {
                 issueIdempotencyKey = UUID.randomUUID().toString()
                 secureStorage.pendingAreaTicketIssueKey = issueIdempotencyKey
@@ -313,7 +367,7 @@ class AreaTicketOperationsViewModel @Inject constructor(
                     submitting = false,
                     pendingReprintCode = null,
                     pdfExport = null,
-                    message = "Vale ${export.code} guardado como PDF.",
+                    message = consumeOutputWarning() ?: "Vale ${export.code} guardado como PDF.",
                 )
                 onIssued()
             }.onFailure { error ->
@@ -397,6 +451,15 @@ class AreaTicketOperationsViewModel @Inject constructor(
         _state.value = _state.value.copy(message = null, error = null)
     }
 
+    /** Codex r2 #5: el ViewModel sobrevive a la navegación; Checkout lo llama al volver a la pantalla. */
+    fun retryPendingPrintRecords() {
+        launchFlush()
+    }
+
+    private fun launchFlush(): Job =
+        flushJob?.takeIf { it.isActive }
+            ?: viewModelScope.launch { runCatching { flushPendingPrintRecords() } }.also { flushJob = it }
+
     fun dismissPendingReprint() {
         // Keep the persisted code so a process restart can offer recovery again.
         // Dismissing only releases the current screen after a printer outage.
@@ -473,16 +536,10 @@ class AreaTicketOperationsViewModel @Inject constructor(
         return parts.joinToString(" ")
     }
 
-    private suspend fun printAndRecord(ticket: AreaTicket, reprint: Boolean) {
+    private suspend fun printAndRecord(ticket: AreaTicket, reprint: Boolean, venueId: String?) {
         val printer = printerService.getDefaultPrinterWithHardwareFallback(PrinterRole.RECEIPT)
         if (printer == null) {
-            repository.recordPrint(
-                ticketId = ticket.id,
-                printed = false,
-                reprint = reprint,
-                reason = "No hay impresora de recibos configurada.",
-                errorCode = "PRINTER_NOT_CONFIGURED",
-            )
+            recordFailedPrint(ticket, reprint, "No hay impresora de recibos configurada.", "PRINTER_NOT_CONFIGURED")
             throw IllegalStateException(
                 areaTicketPrintFailureMessage(
                     code = ticket.code,
@@ -490,19 +547,13 @@ class AreaTicketOperationsViewModel @Inject constructor(
                 ),
             )
         }
-        val printable = ticket.toPrintable()
+        val printable = ticket.toPrintable(reprint)
         runCatching {
             printerService.printAreaTicket(printable, printer, configuredSymbology())
         }
-            .onSuccess { repository.recordPrint(ticket.id, printed = true, reprint = reprint) }
+            .onSuccess { recordOutput(venueId, ticket.id, ticket.code, reprint) }
             .onFailure { error ->
-                repository.recordPrint(
-                    ticket.id,
-                    printed = false,
-                    reprint = reprint,
-                    reason = error.message,
-                    errorCode = "PRINT_FAILED",
-                )
+                recordFailedPrint(ticket, reprint, error.message, "PRINT_FAILED")
                 throw IllegalStateException(
                     areaTicketPrintFailureMessage(ticket.code, error),
                     error,
@@ -510,32 +561,129 @@ class AreaTicketOperationsViewModel @Inject constructor(
             }
     }
 
-    private fun AreaTicket.toPrintable() = AreaTicketData(
-        areaTicketCode = code,
-        areaName = fulfillmentArea.name,
-        items = lines.map { line ->
-            ReceiptItem(
-                name = line.productNameSnapshot,
-                quantity = line.quantity.toBigDecimalOrNull()?.toInt() ?: 1,
-                unitPrice = line.unitPrice.moneyToCents(),
-                totalPrice = line.total.moneyToCents(),
-                note = line.notes,
-                weightSummary = line.weightKg?.let {
-                    "$it kg × $${String.format(Locale.US, "%.2f", line.unitPrice.toDoubleOrNull() ?: 0.0)}/kg"
-                },
-            )
-        },
-        totalCents = total.moneyToCents(),
-        venueName = secureStorage.venueDisplayName,
-        timestamp = runCatching { Date.from(Instant.parse(issuedAt)) }.getOrDefault(Date()),
-        holdsProduct = fulfillmentArea.fulfillmentMode == "HOLD_UNTIL_PAID",
-    )
+    /**
+     * P1 de duplicado (Task 12): registrar un intento FALLIDO es auditoría y nunca tapa la falla de impresión. Si se
+     * colara su error de red, en caja externa la pantalla diría «no se puede emitir» de un vale YA emitido, y con la
+     * llave ya rotada, volver a emitir crearía un segundo vale.
+     */
+    private suspend fun recordFailedPrint(ticket: AreaTicket, reprint: Boolean, reason: String?, errorCode: String) {
+        runCatching {
+            repository.recordPrint(ticket.id, printed = false, reprint = reprint, reason = reason, errorCode = errorCode)
+        }.onFailure { android.util.Log.w(TAG, "No se pudo registrar el intento fallido del vale ${ticket.code}", it) }
+    }
+
+    /**
+     * D12: la salida (papel o PDF) ya ocurrió. Primero disco —la lista y soltar el pendiente de reimpresión, en UN
+     * commit—, después red. Un registro que falla no es una impresión que falló: sólo lanza si no hay negocio.
+     *
+     * [venueId] es el del INICIO de la operación. Un registro sin negocio nunca se mandaría (la cola se filtra por
+     * negocio) y ya habría soltado la reimpresión: en ese caso no se guarda y queda lo de antes —el error de «sin local»
+     * y la reimpresión ofrecida—.
+     */
+    private suspend fun recordOutput(venueId: String?, ticketId: String, code: String, reprint: Boolean, reason: String? = null) {
+        if (venueId.isNullOrBlank()) {
+            throw AreaTicketException("VENUE_REQUIRED", "Selecciona un local antes de continuar.", false)
+        }
+        val record = PendingAreaTicketPrintRecord(
+            venueId = venueId,
+            ticketId = ticketId,
+            code = code,
+            reprint = reprint,
+            idempotencyKey = UUID.randomUUID().toString(),
+            reason = reason,
+        )
+        val persisted = commitPendingRecords(readPendingRecords() + record, clearPendingReprint = true)
+        _state.value = _state.value.copy(pendingReprintCode = null)
+        if (persisted) {
+            flushWithinBudget()
+            return
+        }
+        // Codex r3 #2: el disco no lo guardó y no se finge. Se suelta el pendiente de reimpresión ANTES de la red (si
+        // la app muere esperando, al volver tampoco ofrece un segundo papel), se manda ya con SU llave y se avisa.
+        secureStorage.pendingAreaTicketPrintCode = null
+        secureStorage.pendingAreaTicketPrintVenueId = null
+        runCatching {
+            repository.recordPrint(ticketId, printed = true, reprint = reprint, reason = reason, idempotencyKey = record.idempotencyKey)
+        }
+        outputWarning = "El vale salió, pero este aparato no pudo guardar su registro. No lo reimprimas."
+    }
+
+    private fun consumeOutputWarning(): String? = outputWarning.also { outputWarning = null }
+
+    private fun readPendingRecords(): List<PendingAreaTicketPrintRecord> =
+        secureStorage.pendingAreaTicketPrintRecords
+            ?.let { raw -> runCatching { pendingRecordsJson.decodeFromString(pendingRecordsSerializer, raw) }.getOrNull() }
+            .orEmpty()
+
+    /** @return false si el disco no aceptó la escritura (Codex r3 #2: no se finge persistencia). */
+    private fun commitPendingRecords(records: List<PendingAreaTicketPrintRecord>, clearPendingReprint: Boolean): Boolean {
+        val json = records.takeIf { it.isNotEmpty() }?.let { pendingRecordsJson.encodeToString(pendingRecordsSerializer, it) }
+        return secureStorage.commitAreaTicketPrintRecords(json, clearPendingReprint).also { ok ->
+            if (!ok) android.util.Log.w(TAG, "No se pudo guardar en disco el registro de impresión pendiente")
+        }
+    }
+
+    /**
+     * Lo que espera el cajero —antes de emitir y después del papel— va con tope: con WiFi sin salida cada registro tarda
+     * un timeout entero de OkHttp (30 s), y la espera incluye la de un reintento que ya iba. Al vencer el tope se suelta
+     * la ESPERA, no el envío (Codex final #2): el envío compartido sigue y también manda lo que estaba detrás de una
+     * cabeza lenta. Nada se borra por cortar: lo pendiente sigue en disco.
+     */
+    private suspend fun flushWithinBudget() {
+        withTimeoutOrNull(FLUSH_BUDGET_MS) { launchFlush().join() }
+    }
+
+    /**
+     * Manda cada pendiente de ESTE negocio con SU llave. Se borra sólo al lograrlo o si el vale ya no existe.
+     * Relee el disco en cada vuelta: lo que `recordOutput` agrega mientras este envío sigue vivo sale en la misma
+     * corrida. Cada registro se intenta una vez por corrida; el que falla espera al siguiente reintento.
+     */
+    private suspend fun flushPendingPrintRecords() = flushMutex.withLock {
+        val venueId = secureStorage.venueId ?: return@withLock
+        val intentados = mutableSetOf<String>()
+        while (true) {
+            val record = readPendingRecords()
+                .firstOrNull { it.venueId == venueId && it.idempotencyKey !in intentados } ?: break
+            intentados += record.idempotencyKey
+            // Codex r3 #1: el repositorio lee el negocio en cada petición; si cambió a media cola, se detiene.
+            if (secureStorage.venueId != record.venueId) break
+            val done = try {
+                repository.recordPrint(
+                    record.ticketId,
+                    printed = true,
+                    reprint = record.reprint,
+                    reason = record.reason,
+                    idempotencyKey = record.idempotencyKey,
+                )
+                true
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: AreaTicketException) {
+                // Sólo «el vale ya no existe» borra, y sólo si se preguntó al MISMO negocio. Sesión, permisos, 5xx o red: se conserva.
+                error.code == "AREA_TICKET_NOT_FOUND" && secureStorage.venueId == record.venueId
+            } catch (error: Exception) {
+                false
+            }
+            if (done) {
+                commitPendingRecords(readPendingRecords().filterNot { it.idempotencyKey == record.idempotencyKey }, clearPendingReprint = false)
+            } else {
+                android.util.Log.w(TAG, "Registro de impresión del vale ${record.code} sigue pendiente")
+            }
+        }
+    }
+
+    private fun AreaTicket.toPrintable(reprint: Boolean = false) = toAreaTicketData(secureStorage.venueDisplayName, isReprint = reprint)
 
     private fun configuredSymbology() =
         when (_state.value.settings?.areaTickets?.codeSymbology) {
             "CODE39" -> BarcodeSymbology.CODE39
             else -> BarcodeSymbology.CODE128_C
         }
+
+    private companion object {
+        const val TAG = "AreaTicketOps"
+        const val FLUSH_BUDGET_MS = 5_000L
+    }
 }
 
 @Suppress("UNUSED_PARAMETER")
@@ -545,4 +693,35 @@ internal fun areaTicketPrintFailureMessage(code: String, error: Throwable): Stri
     return "No pudimos imprimir el vale $code, pero ya quedó creado y pendiente de reimpresión. " +
         "Verifica que la impresora esté encendida y conectada a la misma red, o configúrala en Más → Impresora. " +
         "También puedes guardarlo como PDF."
+}
+
+/**
+ * D13: lo que el vale NO puede representar. El vale sólo manda producto, cantidad, peso, nota, extras y
+ * descuento por renglón (su id de catálogo); todo lo demás —cortesía, precio manual, promoción y lo de la
+ * cuenta: descuento, premio, impuesto agregado— se perdería en silencio y la caja cobraría otro importe.
+ * Espejo (ampliado) de la guarda de iOS (`CheckoutView.issueAreaTicket`).
+ */
+internal fun areaTicketIssueBlocker(cart: CartState): String? {
+    val renglon = cart.items.any { it.isCortesia || it.priceAdjustment != null || it.promotionInstanceId != null }
+    val cuenta = cart.orderDiscount != null || cart.pendingStampReward != null || cart.orderTaxPercent != null
+    return if (renglon || cuenta) {
+        "El vale sólo puede llevar productos del área a su precio. Quita cortesías, precios manuales, " +
+            "promociones, descuentos de cuenta, impuestos agregados o premios; se aplican al cobrar."
+    } else {
+        null
+    }
+}
+
+internal fun areaTicketIssueFailureMessage(error: Throwable, externalArea: Boolean): String {
+    val code = (error as? AreaTicketException)?.code
+    return when {
+        code == "AREA_TICKET_IDEMPOTENCY_CONFLICT" ->
+            "Un vale anterior pudo quedar creado sin imprimirse. Revísalo en el dashboard antes de cobrarlo " +
+                "otra vez; ya puedes emitir este de nuevo."
+        // Sin red en caja externa: decir qué hacer, no prometer «el POS normal» (ahí cobra otra caja).
+        externalArea && code == "AREA_TICKETS_REQUIRE_CONNECTION" ->
+            "Sin conexión con Avoqado no se puede emitir el vale. Reintenta cuando vuelva la conexión; " +
+                "mientras, la caja principal puede capturar los productos a mano."
+        else -> error.message ?: "No se pudo emitir el vale."
+    }
 }

@@ -56,6 +56,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import com.avoqado.pos.printing.data.EstadoDeComanda
 import com.avoqado.pos.loyalty.data.comoPremioPorAplicar
 import com.avoqado.pos.areatickets.presentation.AreaTicketOperationsViewModel
@@ -138,6 +139,12 @@ fun CheckoutScreen(
     val referralUiState by cartViewModel.referralValidation.collectAsState()
     val areaTicketOperations: AreaTicketOperationsViewModel = hiltViewModel()
     val areaOperationsState by areaTicketOperations.state.collectAsState()
+    // D12 (Codex r2 #5): el ViewModel sobrevive a la navegación y su `init` no vuelve a correr; al volver a la
+    // pantalla se reintentan los registros de impresión de vales que salieron sin poder avisarse a Avoqado.
+    LifecycleResumeEffect(Unit) {
+        areaTicketOperations.retryPendingPrintRecords()
+        onPauseOrDispose { }
+    }
     val scaleCaptureViewModel: ScaleCaptureViewModel = hiltViewModel()
     val scaleState by scaleCaptureViewModel.state.collectAsState()
 
@@ -526,6 +533,13 @@ fun CheckoutScreen(
         }
     }
 
+    // Codex final #3: mientras se emite, el botón lo dice y no se toca; el velo del final bloquea lo demás.
+    val etiquetaDelVale = when {
+        areaOperationsState.issuing -> "Emitiendo vale…"
+        areaOperationsState.issueWorkspace -> "Emitir vale ${cartState.totalDisplay}"
+        else -> null
+    }
+
     fun runPrimaryAction(closePhoneCart: Boolean = false) {
         if (areaOperationsState.issueWorkspace) {
             areaTicketOperations.issue(cartState) {
@@ -784,11 +798,8 @@ fun CheckoutScreen(
                             // so future work just flips the `enabled` flag.
                         },
                         referralPlanAllowed = cartViewModel.referralPlanAllowed,
-                        primaryActionLabel = if (areaOperationsState.issueWorkspace) {
-                            "Emitir vale ${cartState.totalDisplay}"
-                        } else {
-                            null
-                        },
+                        primaryActionLabel = etiquetaDelVale,
+                        primaryActionEnabled = !areaOperationsState.issuing,
                     )
                 }
             }
@@ -1115,11 +1126,8 @@ fun CheckoutScreen(
             onForceOverrideReferral = { /* v1 placeholder */ },
             referralPlanAllowed = cartViewModel.referralPlanAllowed,
             onDismiss = { showIPhoneCart = false },
-            primaryActionLabel = if (areaOperationsState.issueWorkspace) {
-                "Emitir vale ${cartState.totalDisplay}"
-            } else {
-                null
-            },
+            primaryActionLabel = etiquetaDelVale,
+            primaryActionEnabled = !areaOperationsState.issuing,
         )
     }
 
@@ -1147,7 +1155,9 @@ fun CheckoutScreen(
     // 🔴 UN solo manejador para la cámara y para el lector de pistola: el `when` sobre
     // `ScannedBarcodeResult` vive aquí una vez. Duplicarlo por canal de entrada es
     // exactamente el defecto que tuvo el servidor con los sellos (tarjeta sí, efectivo no).
-    val manejarCodigo: (String) -> Unit = { barcode ->
+    val manejarCodigo: (String) -> Unit = manejar@{ barcode ->
+        // Codex final #3: mientras se emite un vale, lo escaneado no entra; al terminar se vacía el carrito y se perdería.
+        if (areaOperationsState.issuing) return@manejar
         showBarcodeScanner = false
         checkoutScope.launch {
             when (val result = cartViewModel.resolveScannedBarcode(barcode)) {
@@ -1970,6 +1980,39 @@ fun CheckoutScreen(
             }
         }
     }
+
+    // Codex final #3: mientras se emite el vale, nada del catálogo ni del carrito se toca. El vale lleva la foto del
+    // carrito del toque y al terminar `finalizarVenta()` lo vacía: lo agregado a media emisión se perdería sin aviso.
+    // Va AL FINAL para quedar encima de todo lo de esta pantalla; los diálogos son ventanas y siguen por encima.
+    if (areaOperationsState.issuing) {
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.28f))
+                .clickable(
+                    indication = null,
+                    interactionSource = remember { MutableInteractionSource() },
+                    onClick = {},
+                ),
+            contentAlignment = Alignment.Center,
+        ) {
+            Row(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.xl))
+                    .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                    .padding(AvoqadoTheme.spacing.xl),
+                horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                CircularProgressIndicator()
+                Text(
+                    text = "Emitiendo vale…",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+            }
+        }
+    }
 }
 
 private fun CartState.paymentSnapshot(): CartState = copy(
@@ -2033,6 +2076,7 @@ private fun IPhoneCartSheet(
     referralPlanAllowed: Boolean = true,
     onDismiss: () -> Unit,
     primaryActionLabel: String? = null,
+    primaryActionEnabled: Boolean = true,
 ) {
     Box(
         modifier = Modifier
@@ -2105,6 +2149,7 @@ private fun IPhoneCartSheet(
                 onForceOverrideReferral = onForceOverrideReferral,
                 referralPlanAllowed = referralPlanAllowed,
                 primaryActionLabel = primaryActionLabel,
+                primaryActionEnabled = primaryActionEnabled,
             )
         }
     }

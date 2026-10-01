@@ -46,6 +46,8 @@ data class AreaTicketArea(
     val name: String,
     val fulfillmentMode: String,
     val active: Boolean = true,
+    /** Ruta VIGENTE del área ("AVOQADO" | "EXTERNAL"); sólo para el mensaje sin red. La del vale va congelada en [AreaTicket.settlementRoute]. */
+    val settlementRoute: String = "AVOQADO",
 )
 
 @Serializable
@@ -96,6 +98,16 @@ data class VariableWeightBarcodeSettings(
 )
 
 @Serializable
+data class AreaTicketModifierSnapshot(
+    val modifierId: String? = null,
+    val name: String,
+    val quantity: Int = 1,
+    val price: String = "0.00",
+    /** SKU del extra en la OTRA caja (caja externa), congelado al emitir. Null en vales viejos o extras sin código. */
+    val sku: String? = null,
+)
+
+@Serializable
 data class AreaTicketLine(
     val id: String,
     val clientLineId: String,
@@ -110,6 +122,7 @@ data class AreaTicketLine(
     val taxAmount: String = "0.00",
     val total: String,
     val notes: String? = null,
+    val modifiersSnapshot: List<AreaTicketModifierSnapshot> = emptyList(),
 )
 
 @Serializable
@@ -130,6 +143,8 @@ data class AreaTicket(
     val orderId: String? = null,
     val checkoutSessionId: String? = null,
     val lines: List<AreaTicketLine> = emptyList(),
+    /** Ruta CONGELADA al emitir ("AVOQADO" | "EXTERNAL"). Un vale viejo no la trae: se lee como AVOQADO. */
+    val settlementRoute: String = "AVOQADO",
 )
 
 @Serializable
@@ -223,6 +238,17 @@ data class IssueAreaTicketRequest(
 
 @Serializable
 data class IssuedTicketData(val ticket: AreaTicket)
+
+/** D12: la salida (papel o PDF) YA ocurrió; sólo falta que Avoqado lo sepa. Llave estable para no duplicar. */
+@Serializable
+data class PendingAreaTicketPrintRecord(
+    val venueId: String,
+    val ticketId: String,
+    val code: String,
+    val reprint: Boolean,
+    val idempotencyKey: String,
+    val reason: String? = null,
+)
 
 @Serializable
 data class PrintAttemptRequest(

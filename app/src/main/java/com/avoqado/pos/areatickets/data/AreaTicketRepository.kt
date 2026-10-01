@@ -342,6 +342,7 @@ class AreaTicketRepository @Inject constructor(
         reprint: Boolean = false,
         reason: String? = null,
         errorCode: String? = null,
+        idempotencyKey: String = UUID.randomUUID().toString(),
     ) {
         val auditReason = normalizeAreaTicketPrintReason(reprint, reason)
         request {
@@ -349,7 +350,7 @@ class AreaTicketRepository @Inject constructor(
                 venueId(),
                 ticketId,
                 PrintAttemptRequest(
-                    idempotencyKey = UUID.randomUUID().toString(),
+                    idempotencyKey = idempotencyKey,
                     status = if (printed) "PRINTED" else "FAILED",
                     kind = if (reprint) "REPRINT" else "ORIGINAL",
                     reason = auditReason,

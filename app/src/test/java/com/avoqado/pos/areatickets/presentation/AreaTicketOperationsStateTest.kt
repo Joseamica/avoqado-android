@@ -177,6 +177,20 @@ class AreaTicketOperationsStateTest {
     }
 
     @Test
+    fun `P2 emitiendo solo con el modo de vales y un envio en curso a la vez`() {
+        // Codex final #3: mientras se emite, Checkout bloquea catálogo, carrito y escaneos.
+        val vales = settings(defaultWorkspace = "AREA_OPERATIONS")
+
+        assertTrue(AreaTicketOperationsState(loading = false, settings = vales, submitting = true).issuing)
+        assertFalse(AreaTicketOperationsState(loading = false, settings = vales, submitting = false).issuing)
+        assertFalse(
+            "En el POS normal no hay vale que esperar",
+            AreaTicketOperationsState(loading = false, settings = settings(defaultWorkspace = "STANDARD_POS"), submitting = true).issuing,
+        )
+        assertFalse(AreaTicketOperationsState(loading = false, submitting = true).issuing)
+    }
+
+    @Test
     fun `issued ticket consumes cart even when no printer is configured`() = runTest {
         val repository = mockk<AreaTicketRepository>()
         val printerService = mockk<PrinterService>()
@@ -191,6 +205,7 @@ class AreaTicketOperationsStateTest {
                 reprint = false,
                 reason = "No hay impresora de recibos configurada.",
                 errorCode = "PRINTER_NOT_CONFIGURED",
+                idempotencyKey = any(),
             )
         } returns Unit
         val viewModel = AreaTicketOperationsViewModel(
@@ -231,7 +246,7 @@ class AreaTicketOperationsStateTest {
             ticket(code = if (issuedKeys.size == 1) "9340048086" else "9340048087")
         }
         coEvery { printerService.getDefaultPrinterWithHardwareFallback(PrinterRole.RECEIPT) } returns null
-        coEvery { repository.recordPrint(any(), any(), any(), any(), any()) } returns Unit
+        coEvery { repository.recordPrint(any(), any(), any(), any(), any(), any()) } returns Unit
         val viewModel = AreaTicketOperationsViewModel(
             repository = repository,
             printerService = printerService,
@@ -346,6 +361,7 @@ class AreaTicketOperationsStateTest {
         val pdfGenerator = mockk<AreaTicketPdfGenerator>()
         every { secureStorage.pendingAreaTicketPrintCode } returns code
         every { secureStorage.venueDisplayName } returns "Restaurante El Atole"
+        respaldarDisco(secureStorage)
         coEvery { repository.settings() } returns settings(defaultWorkspace = "AREA_OPERATIONS")
         coEvery { repository.resolveCheckoutScan(code) } returns AreaTicketScanData(
             type = "AREA_TICKET",
@@ -359,6 +375,7 @@ class AreaTicketOperationsStateTest {
                 printed = true,
                 reprint = false,
                 reason = "Vale guardado como PDF por el operador.",
+                idempotencyKey = any(),
             )
         } returns Unit
 
@@ -388,8 +405,12 @@ class AreaTicketOperationsStateTest {
                 printed = true,
                 reprint = false,
                 reason = "Vale guardado como PDF por el operador.",
+                idempotencyKey = any(),
             )
         }
+        // La salida entró a la cola en disco y, ya registrada, salió de ella.
+        verify { secureStorage.commitAreaTicketPrintRecords(match<String> { it.contains("ticket-1") }, true) }
+        assertNull(guardado)
     }
 
     @Test
@@ -400,6 +421,7 @@ class AreaTicketOperationsStateTest {
         val secureStorage = mockk<SecureStorage>(relaxed = true)
         every { secureStorage.pendingAreaTicketPrintCode } returns code
         every { secureStorage.venueDisplayName } returns "Restaurante El Atole"
+        respaldarDisco(secureStorage)
         coEvery { repository.settings() } returns settings(defaultWorkspace = "AREA_OPERATIONS")
         coEvery { repository.resolveCheckoutScan(code) } returns AreaTicketScanData(
             type = "AREA_TICKET",
@@ -409,7 +431,7 @@ class AreaTicketOperationsStateTest {
         coEvery { printerService.getDefaultPrinterWithHardwareFallback(PrinterRole.RECEIPT) } returns
             mockk<SavedPrinter>(relaxed = true)
         coEvery { printerService.printAreaTicket(any(), any(), any()) } returns Unit
-        coEvery { repository.recordPrint(any(), any(), any(), any(), any()) } returns Unit
+        coEvery { repository.recordPrint(any(), any(), any(), any(), any(), any()) } returns Unit
 
         val viewModel = AreaTicketOperationsViewModel(
             repository = repository,
@@ -425,6 +447,9 @@ class AreaTicketOperationsStateTest {
         assertNull(viewModel.state.value.pendingReprintCode)
         assertEquals("Vale $code reimpreso correctamente.", viewModel.state.value.message)
         verify { secureStorage.pendingAreaTicketPrintCode = null }
+        // El registro de la reimpresión entró a la cola en disco y, ya registrado, salió de ella.
+        verify { secureStorage.commitAreaTicketPrintRecords(match<String> { it.contains("ticket-1") }, true) }
+        assertNull(guardado)
     }
 
     @Test
@@ -651,6 +676,24 @@ class AreaTicketOperationsStateTest {
         assertTrue(viewModel.state.value.error != null)
         assertNull(viewModel.state.value.message)
         coVerify(exactly = 0) { repository.fulfill(any(), any()) }
+    }
+
+    /** La cola de registros de impresión pendientes (Task 13), respaldada por [respaldarDisco]. */
+    private var guardado: String? = null
+
+    /**
+     * Respalda la cola con una variable: el mock relajado la lee como "" (no es una lista) y su `commit` devuelve
+     * false, que es «el disco no guardó». Fija también el negocio del pendiente de reimpresión: el "" del mock relajado
+     * no coincide con "v1" y el init lo descartaría.
+     */
+    private fun respaldarDisco(secureStorage: SecureStorage) {
+        every { secureStorage.venueId } returns "v1"
+        every { secureStorage.pendingAreaTicketPrintVenueId } returns "v1"
+        every { secureStorage.pendingAreaTicketPrintRecords } answers { guardado }
+        every { secureStorage.commitAreaTicketPrintRecords(any(), any()) } answers {
+            guardado = firstArg()
+            true
+        }
     }
 
     private fun ticket(

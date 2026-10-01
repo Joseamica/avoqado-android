@@ -141,6 +141,25 @@ class SecureStorage @Inject constructor(
         get() = prefs.getString(KEY_PENDING_AREA_TICKET_PRINT_VENUE_ID, null)
         set(value) = prefs.edit().putString(KEY_PENDING_AREA_TICKET_PRINT_VENUE_ID, value).apply()
 
+    /** D12: registros de impresión pendientes (JSON de una lista). Sólo lectura: se escribe con [commitAreaTicketPrintRecords]. */
+    val pendingAreaTicketPrintRecords: String?
+        get() = prefs.getString(KEY_PENDING_AREA_TICKET_PRINT_RECORDS, null)
+
+    /**
+     * D12: la salida (papel o PDF) YA ocurrió. En UN `commit()` (síncrono, como `escribirPendientes`) se guarda la
+     * lista y, si [clearPendingReprint], se suelta el «pendiente de reimpresión»: si la app muere justo después, al
+     * volver NO ofrece reimprimir (sería un segundo papel) y el registro sigue en la lista.
+     */
+    fun commitAreaTicketPrintRecords(json: String?, clearPendingReprint: Boolean): Boolean {
+        val editor = prefs.edit()
+        if (json == null) editor.remove(KEY_PENDING_AREA_TICKET_PRINT_RECORDS) else editor.putString(KEY_PENDING_AREA_TICKET_PRINT_RECORDS, json)
+        if (clearPendingReprint) {
+            editor.remove(KEY_PENDING_AREA_TICKET_PRINT_CODE)
+            editor.remove(KEY_PENDING_AREA_TICKET_PRINT_VENUE_ID)
+        }
+        return editor.commit()
+    }
+
     /**
      * Contextos de vales que no deben quedar huérfanos por logout/cambio de
      * venue. `venueId == null` consulta todos (logout); con venue filtra el
@@ -614,6 +633,7 @@ class SecureStorage @Inject constructor(
         private const val KEY_PENDING_AREA_TICKET_ISSUE_KEY = "pendingAreaTicketIssueKey"
         private const val KEY_PENDING_AREA_TICKET_PRINT_CODE = "pendingAreaTicketPrintCode"
         private const val KEY_PENDING_AREA_TICKET_PRINT_VENUE_ID = "pendingAreaTicketPrintVenueId"
+        private const val KEY_PENDING_AREA_TICKET_PRINT_RECORDS = "pendingAreaTicketPrintRecords"
         private const val KEY_PLAN_TIER = "planTier"
         private const val KEY_PLAN_EXEMPT = "planExempt"
         private const val KEY_WASTE_PLAN_BLOCKED = "wastePlanBlockedVenues"

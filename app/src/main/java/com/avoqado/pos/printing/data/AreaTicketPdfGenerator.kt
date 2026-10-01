@@ -11,6 +11,8 @@ import com.avoqado.pos.printing.data.model.AreaTicketData
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.MultiFormatWriter
+import com.google.zxing.common.BitMatrix
+import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
 import java.io.ByteArrayOutputStream
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -21,6 +23,10 @@ import javax.inject.Inject
  *
  * El PDF conserva el mismo código inmutable que el papel. Es una salida operativa alternativa
  * dentro de AREA_TICKETS; no intenta emular bytes ESC/POS ni certifica ancho/corte de impresora.
+ *
+ * Caja externa (`ticket.externalRoute`): el vale lo cobra OTRO POS, así que el PDF sale con lo mismo
+ * que el papel — extras, un código por pieza, «Importe de referencia», el vale en QR y el pie propio.
+ * Fuera de ella el PDF es el de siempre, al punto.
  */
 class AreaTicketPdfGenerator @Inject constructor() {
     fun generate(
@@ -32,6 +38,17 @@ class AreaTicketPdfGenerator @Inject constructor() {
         val itemNameLines = ticket.items.map { item ->
             wrapText(item.name, bodyPaint, nameWidth)
         }
+        // Caja externa: los extras salen como «+ nombre», partidos UNA sola vez, aquí. El alto de la
+        // página y el dibujo leen estas mismas líneas, así que la página no puede quedar más chica que
+        // lo dibujado (un extra largo ocupa varias líneas, no una).
+        val extraPaint = paint(size = 8f)
+        val itemExtraLines = ticket.items.map { item ->
+            if (ticket.externalRoute) {
+                item.modifiers.orEmpty().flatMap { extra -> wrapText("+ $extra", extraPaint, nameWidth) }
+            } else {
+                emptyList()
+            }
+        }
         val itemsHeight = ticket.items.indices.sumOf { index ->
             val item = ticket.items[index]
             (itemNameLines[index].size * 12) +
@@ -39,7 +56,24 @@ class AreaTicketPdfGenerator @Inject constructor() {
                 (if (item.note != null) 13 else 0) +
                 7
         }
-        val pageHeight = maxOf(420, 286 + itemsHeight + if (ticket.showPrices) 30 else 0)
+        // Caja externa: 34 fijos (20 de más del QR de 72 contra las barras de 52, y 14 de la segunda
+        // línea del pie) + 8 de seguro sobre «Generado por Avoqado» más, por renglón, una línea por cada
+        // línea de extra y un bloque por código. Los 8 son margen para un caso que hoy no se da: el
+        // presupuesto base reserva 30 para el bloque TOTAL y éste dibuja 34, y con la línea «Atendió:»
+        // (sólo si el vale trae nombre de cajero; `toAreaTicketData()` hoy no lo llena) el pie se montaría
+        // en «Generado por Avoqado». El vale normal conserva su alto al punto (le pasaría lo mismo ese día).
+        val extraExterno = if (ticket.externalRoute) {
+            34 + 8 + ticket.items.indices.sumOf { index ->
+                (itemExtraLines[index].size * EXTRA_LINE_HEIGHT) +
+                    (ticket.items[index].externalCodes.size * CODE_BLOCK_HEIGHT)
+            }
+        } else {
+            0
+        }
+        val pageHeight = maxOf(
+            420,
+            286 + itemsHeight + (if (ticket.showPrices) 30 else 0) + extraExterno,
+        )
         val document = PdfDocument()
         val pageInfo = PdfDocument.PageInfo.Builder(PAGE_WIDTH, pageHeight, 1).create()
         val page = document.startPage(pageInfo)
@@ -50,6 +84,7 @@ class AreaTicketPdfGenerator @Inject constructor() {
                 ticket = ticket,
                 symbology = symbology,
                 itemNameLines = itemNameLines,
+                itemExtraLines = itemExtraLines,
                 pageHeight = pageHeight,
             )
             document.finishPage(page)
@@ -67,6 +102,7 @@ class AreaTicketPdfGenerator @Inject constructor() {
         ticket: AreaTicketData,
         symbology: BarcodeSymbology,
         itemNameLines: List<List<String>>,
+        itemExtraLines: List<List<String>>,
         pageHeight: Int,
     ) {
         canvas.drawColor(Color.WHITE)
@@ -131,13 +167,29 @@ class AreaTicketPdfGenerator @Inject constructor() {
                 canvas.drawText("Nota: $note", nameX, y, paint(size = 8f))
                 y += 13f
             }
+            if (ticket.externalRoute) {
+                itemExtraLines[index].forEach { line ->
+                    canvas.drawText(line, nameX, y, paint(size = 8f))
+                    y += EXTRA_LINE_HEIGHT
+                }
+                item.externalCodes.forEach { code ->
+                    drawExternalCode(canvas, code, top = y)
+                    y += CODE_BLOCK_HEIGHT
+                }
+            }
             y += 7f
         }
 
         if (ticket.showPrices) {
             canvas.drawDivider(y)
             y += 18f
-            canvas.drawText("TOTAL", MARGIN, y, paint(size = 13f, bold = true))
+            // Caja externa: Avoqado no cobra; su total es sólo una referencia.
+            canvas.drawText(
+                if (ticket.externalRoute) "Importe de referencia" else "TOTAL",
+                MARGIN,
+                y,
+                paint(size = 13f, bold = true),
+            )
             canvas.drawText(
                 ticket.formattedTotal,
                 PAGE_WIDTH - MARGIN,
@@ -149,24 +201,45 @@ class AreaTicketPdfGenerator @Inject constructor() {
 
         canvas.drawDivider(y, double = true)
         y += 13f
-        drawBarcode(
-            canvas = canvas,
-            code = ticket.areaTicketCode,
-            symbology = symbology,
-            left = MARGIN + 3f,
-            top = y,
-            width = PAGE_WIDTH - ((MARGIN + 3f) * 2),
-            height = 52f,
-        )
-        y += 67f
+        if (ticket.externalRoute) {
+            // Caja externa: el vale va en QR (la pistola 1D de la otra caja no lo levanta ni lo busca como producto).
+            drawQr(canvas, ticket.areaTicketCode, top = y, size = QR_SIZE)
+            y += QR_SIZE + 15f
+        } else {
+            drawBarcode(
+                canvas = canvas,
+                code = ticket.areaTicketCode,
+                symbology = symbology,
+                left = MARGIN + 3f,
+                top = y,
+                width = PAGE_WIDTH - ((MARGIN + 3f) * 2),
+                height = 52f,
+            )
+            y += 67f
+        }
         canvas.drawCenteredText(ticket.areaTicketCode, y, paint(size = 15f, bold = true))
         y += 21f
-        canvas.drawCenteredText("Presenta este vale en caja", y, paint(size = 9f, bold = true))
-        y += 14f
+        if (ticket.externalRoute) {
+            canvas.drawCenteredText("No es comprobante de pago.", y, paint(size = 9f, bold = true))
+            y += 14f
+            canvas.drawCenteredText("Pásalo en la caja principal.", y, paint(size = 9f, bold = true))
+            y += 14f
+        } else {
+            canvas.drawCenteredText("Presenta este vale en caja", y, paint(size = 9f, bold = true))
+            y += 14f
+        }
         if (ticket.holdsProduct) {
-            canvas.drawCenteredText("Tu producto te espera en el área", y, paint(size = 8f))
+            canvas.drawCenteredText(
+                if (ticket.externalRoute) "Tu producto te espera aquí" else "Tu producto te espera en el área",
+                y,
+                paint(size = 8f),
+            )
             y += 12f
-            canvas.drawCenteredText("Regresa con el comprobante pagado", y, paint(size = 8f))
+            canvas.drawCenteredText(
+                if (ticket.externalRoute) "Regresa con tu ticket de la caja" else "Regresa con el comprobante pagado",
+                y,
+                paint(size = 8f),
+            )
         }
 
         canvas.drawCenteredText(
@@ -219,6 +292,69 @@ class AreaTicketPdfGenerator @Inject constructor() {
             )
         }
     }
+
+    /**
+     * Caja externa: UN código de pieza — barras de 26 y el código en texto debajo ([CODE_BLOCK_HEIGHT]
+     * en total). Si no se puede codificar en barras (acentos, vacío), queda sólo el texto: un código
+     * sin barras todavía se teclea en la otra caja; un vale que no sale, no.
+     */
+    private fun drawExternalCode(canvas: Canvas, code: String, top: Float) {
+        try {
+            drawBarcode(
+                canvas = canvas,
+                code = code,
+                symbology = BarcodeSymbology.CODE128_B,
+                left = MARGIN + 30f,
+                top = top,
+                width = PAGE_WIDTH - ((MARGIN + 30f) * 2),
+                height = 26f,
+            )
+        } catch (e: Exception) {
+            // zxing lanza IllegalArgumentException ANTES de dibujar nada: no queda media barra en la página.
+        }
+        canvas.drawCenteredText(code, top + 37f, paint(size = 8f))
+    }
+
+    /**
+     * Caja externa: el código del vale como QR, dibujado celda por celda en un cuadro de [size] centrado.
+     * La matriz de zxing ya trae su zona de silencio de 4 módulos, que queda DENTRO del cuadro.
+     */
+    private fun drawQr(canvas: Canvas, code: String, top: Float, size: Float) {
+        val matrix = qrMatrix(code)
+        val paint = Paint().apply {
+            color = Color.BLACK
+            style = Paint.Style.FILL
+        }
+        val cell = size / matrix.width
+        val left = (PAGE_WIDTH - size) / 2f
+        for (row in 0 until matrix.height) {
+            var col = 0
+            while (col < matrix.width) {
+                if (!matrix[col, row]) {
+                    col++
+                    continue
+                }
+                val start = col
+                while (col < matrix.width && matrix[col, row]) col++
+                canvas.drawRect(
+                    left + (start * cell),
+                    top + (row * cell),
+                    left + (col * cell),
+                    top + ((row + 1) * cell),
+                    paint,
+                )
+            }
+        }
+    }
+
+    /** El QR del vale con corrección M, la misma que el papel (`ESCPOSPrinter.printQr`); el tamaño no cambia (29×29). */
+    internal fun qrMatrix(code: String): BitMatrix = MultiFormatWriter().encode(
+        code,
+        BarcodeFormat.QR_CODE,
+        0,
+        0,
+        mapOf(EncodeHintType.ERROR_CORRECTION to ErrorCorrectionLevel.M),
+    )
 
     private fun Canvas.drawCenteredText(text: String, y: Float, paint: Paint) {
         drawText(text, PAGE_WIDTH / 2f, y, paint.apply { textAlign = Paint.Align.CENTER })
@@ -280,5 +416,15 @@ class AreaTicketPdfGenerator @Inject constructor() {
     private companion object {
         const val PAGE_WIDTH = 227
         const val MARGIN = 14f
+
+        // Caja externa. El alto de la página (generate) y el dibujo (drawTicket) leen las MISMAS constantes.
+        /** Una línea de extra («+ nombre», 8 pt). */
+        const val EXTRA_LINE_HEIGHT = 13
+
+        /** Un código de pieza: barras de 26 + el texto debajo + aire. */
+        const val CODE_BLOCK_HEIGHT = 44
+
+        /** Lado del cuadro del QR del vale (las barras de hoy miden 52 de alto). */
+        const val QR_SIZE = 72f
     }
 }
