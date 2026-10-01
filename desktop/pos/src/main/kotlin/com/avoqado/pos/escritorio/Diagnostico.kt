@@ -1,5 +1,7 @@
 package com.avoqado.pos.escritorio
 
+import com.avoqado.pos.escritorio.diagnostico.leerDatosDelEquipo
+import com.avoqado.pos.escritorio.diagnostico.veredicto
 import java.lang.management.ManagementFactory
 import java.nio.file.Files
 import java.nio.file.Path
@@ -12,7 +14,7 @@ object Diagnostico {
         val rt = Runtime.getRuntime()
         Files.writeString(
             Files.createDirectories(carpeta.resolve("logs")).resolve("diagnostico.txt"),
-            """
+            veredicto(leerDatosDelEquipo(carpeta, motor, arranqueMs, toque)).comoTexto() + "\n\n" + """
             |Fecha: ${java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))}
             |Avoqado POS (prueba de escritorio) ${com.avoqado.pos.BuildConfig.VERSION_NAME}
             |Primer cuadro dibujado: $arranqueMs ms desde que arrancó Java (después vienen 1.35 s de splash, igual que en Android)
