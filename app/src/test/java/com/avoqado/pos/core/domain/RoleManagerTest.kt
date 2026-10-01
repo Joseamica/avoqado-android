@@ -503,6 +503,42 @@ class RoleManagerTest {
         assertFalse(roleManager.canIssueRefund)
     }
 
+    // MARK: - Devolver en EFECTIVO un cobro que no fue en efectivo (founder, 1-oct-2026)
+    //
+    // Espejo de `payments:refund-to-cash`: gerencia sí, el cajero no — aunque el cajero sí reembolsa. Sin el permiso
+    // no se bloquea: el servidor da el 403 y el teclado del encargado lo autoriza esa vez.
+
+    @Test
+    fun `el GERENTE devuelve en efectivo porque el server le da el permiso`() {
+        every { secureStorage.userRole } returns "MANAGER"
+        every { secureStorage.venuePermissions } returns PermisosRealesDelServer.MANAGER
+        assertTrue(roleManager.canRefundToCash)
+    }
+
+    @Test
+    fun `el CAJERO reembolsa pero no devuelve en efectivo sin el permiso`() {
+        every { secureStorage.userRole } returns "CASHIER"
+        every { secureStorage.venuePermissions } returns permisosDeCajero
+        assertTrue(roleManager.canIssueRefund)
+        assertFalse(roleManager.canRefundToCash)
+    }
+
+    @Test
+    fun `un cajero al que el negocio le dio el permiso devuelve en efectivo`() {
+        every { secureStorage.userRole } returns "CASHIER"
+        every { secureStorage.venuePermissions } returns permisosDeCajero + "payments:refund-to-cash"
+        assertTrue(roleManager.canRefundToCash)
+    }
+
+    @Test
+    fun `con un server viejo sin lista, devolver en efectivo cae al rol`() {
+        every { secureStorage.venuePermissions } returns emptyList()
+        every { secureStorage.userRole } returns "MANAGER"
+        assertTrue(roleManager.canRefundToCash)
+        every { secureStorage.userRole } returns "CASHIER"
+        assertFalse(roleManager.canRefundToCash)
+    }
+
     /**
      * Cómo se PINTA el botón, ahora que el permiso manda. Con el switch del
      * local apagado sigue desapareciendo igual que hoy: adelantar el PIN no

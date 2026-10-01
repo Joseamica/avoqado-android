@@ -54,6 +54,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
@@ -65,10 +67,17 @@ import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.transactions.data.AssociatedRefundItem
 import com.avoqado.pos.transactions.data.RefundApiException
 import com.avoqado.pos.transactions.data.RefundRepository
+import com.avoqado.pos.transactions.data.model.OpcionDeDevolucion
 import com.avoqado.pos.transactions.data.model.RefundAmountCalculator
+import com.avoqado.pos.transactions.data.model.avisoDeSoloRegistro
 import com.avoqado.pos.transactions.data.model.centavosDelImporte
 import com.avoqado.pos.transactions.data.model.importeAjustadoAlTope
+import com.avoqado.pos.transactions.data.model.leyendaDeDevolucion
+import com.avoqado.pos.transactions.data.model.opcionesParaDevolver
 import com.avoqado.pos.transactions.data.model.propinaMarcadaPorDefecto
+import com.avoqado.pos.transactions.data.model.seDevuelveEnTerminal
+import com.avoqado.pos.transactions.data.model.textoDeAutorizacionParaEfectivo
+import com.avoqado.pos.transactions.data.model.textoDeSinPermisoParaReembolsar
 import com.avoqado.pos.transactions.data.model.tipRefundCentsParaEnvio
 import com.avoqado.pos.transactions.data.model.tipRefundCentsPorArticulos
 import com.avoqado.pos.transactions.data.model.topeReembolsable
@@ -99,6 +108,10 @@ fun IssueRefundSheet(
     // el SERVIDOR (ver el comentario en `onSuccess`); volver a pasar el repositorio
     // aquí es el primer paso para que alguien reinstale el doble descuento.
     terminalPaymentService: com.avoqado.pos.payment.data.TerminalPaymentService,
+    /** `payments:refund-to-cash` de quien inició sesión: sin él, escoger efectivo avisa que lo hace un encargado. */
+    puedeDevolverEnEfectivo: Boolean,
+    /** Switch del local `managerPinOverrideEnabled`: decide si el aviso promete el código del encargado. */
+    codigoDeEncargadoActivo: Boolean,
     onDismiss: () -> Unit,
     onRefunded: () -> Unit,
 ) {
@@ -182,6 +195,17 @@ fun IssueRefundSheet(
     // refund pulls 100% from the sale, leaving the staff tip intact.
     val paymentTipAmount = transaction.tipAmount
     var includeTip by remember(transaction.id) { mutableStateOf(true) }
+
+    // Sólo la tarjeta que cobró NUESTRA terminal se devuelve allá; lo demás se reembolsa como el efectivo.
+    val enTerminal = seDevuelveEnTerminal(transaction.refundOnTerminal, transaction.method)
+
+    // «Devolver con»: null = por el mismo medio. Sólo hay selector si el servidor lo dice (`canChooseRefundMethod`).
+    var devolverCon by remember(transaction.id) { mutableStateOf<String?>(null) }
+    val opcionesDeDevolucion = if (transaction.canChooseRefundMethod == true) {
+        opcionesParaDevolver(transaction.method, transaction.tenderLabel)
+    } else {
+        emptyList()
+    }
 
     val parsedAmount = amountStr.replace(',', '.').toDoubleOrNull() ?: 0.0
     val selectedItems = transaction.items.filter { item ->
@@ -320,6 +344,8 @@ fun IssueRefundSheet(
         // cede su sitio donde es prescindible: en importe, donde su único contenido es un
         // aviso que el pie ya repite palabra por palabra.
         val apretado = tab == RefundTab.AMOUNT && maxHeight < 640.dp
+        // En un celular, el aviso de la terminal en un renglón dejaría el texto en ~100 dp: ahí se apila.
+        val avisoEnRenglon = maxWidth >= 480.dp
         Column(
             modifier = Modifier
                 .fillMaxWidth()
@@ -388,15 +414,19 @@ fun IssueRefundSheet(
                     .verticalScroll(bandaScroll),
                 verticalArrangement = Arrangement.spacedBy(spacing.md),
             ) {
-            // 🔴 Un cobro con TARJETA no se devuelve desde aquí.
+            // 🔴 Un cobro con TARJETA de la terminal no se devuelve desde aquí.
             //
-            // La devolución a la tarjeta la hace la TERMINAL, con su propia
-            // función; no hay API para ello. Y el server registra TODO reembolso
-            // como efectivo (`method: 'CASH'` forzado en refund.mobile.service).
-            // Sin este aviso, un gerente devuelve un cobro con tarjeta desde el
-            // POS, el sistema lo da por hecho, y el cliente no recibe nada —
-            // además de sacar del cajón un dinero que nunca entró ahí.
-            if (!transaction.method.equals("CASH", ignoreCase = true)) {
+            // La devolución a la tarjeta la hace la TERMINAL, con su propia función; no hay API para ello.
+            // Aquí sólo se registra, con el método del cobro original. Sin este aviso, un gerente devuelve
+            // un cobro con tarjeta desde el POS, el sistema lo da por hecho, y el cliente no recibe nada.
+            //
+            // Todo lo demás —transferencia, tipos de pago del negocio, tarjeta de otra terminal— se reembolsa
+            // como el efectivo, sin aviso (regla del founder, 30-sep-2026; antes bastaba «no es CASH» y una
+            // transferencia pedía la terminal).
+            //
+            // Compacto a propósito: título y botón en un renglón cuando cabe. Apilado medía ~180 dp y en la
+            // D3 horizontal la banda sólo tenía ~90: se veía medio botón (Testarudo, 30-sep).
+            if (enTerminal) {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -404,38 +434,51 @@ fun IssueRefundSheet(
                         .clip(RoundedCornerShape(spacing.md))
                         .background(Warning.copy(alpha = 0.12f))
                         .padding(spacing.md),
-                    verticalArrangement = Arrangement.spacedBy(spacing.xxs),
+                    verticalArrangement = Arrangement.spacedBy(spacing.xs),
                 ) {
-                    Text(
-                        text = "Este cobro no fue en efectivo",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.SemiBold,
-                    )
-                    Text(
-                        text = "La devolución a la tarjeta se hace en la terminal. Ábrela desde " +
-                            "aquí; sólo falta que alguien la confirme con la tarjeta.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-
-                    Spacer(modifier = Modifier.height(spacing.xs))
-                    if (terminalAbierta) {
-                        // Lo que el cajero necesita saber: qué pasó, qué falta, y
-                        // que todavía NO se ha devuelto el dinero.
-                        Text(
-                            text = "Abierta en la terminal. Falta que la confirmen ahí con la " +
-                                "tarjeta — hasta entonces no se ha devuelto nada. Cuando se " +
-                                "haga, la venta se actualiza sola.",
-                            style = MaterialTheme.typography.bodySmall,
-                            fontWeight = FontWeight.Medium,
-                        )
-                    } else {
+                    val textoDelAviso: @Composable (Modifier) -> Unit = { mod ->
+                        Column(modifier = mod, verticalArrangement = Arrangement.spacedBy(spacing.xxs)) {
+                            Text(
+                                text = "Este cobro fue con tarjeta",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                            // Lo que el cajero necesita saber: qué pasó, qué falta, y que
+                            // todavía NO se ha devuelto el dinero.
+                            Text(
+                                text = if (terminalAbierta) {
+                                    "Abierta en la terminal. Falta que la confirmen ahí con la tarjeta — hasta " +
+                                        "entonces no se ha devuelto nada. Cuando se haga, la venta se actualiza sola."
+                                } else {
+                                    "La devolución a la tarjeta se hace en la terminal. Ábrela desde aquí y que la " +
+                                        "confirmen con la tarjeta."
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                    val botonDeTerminal: @Composable (Modifier) -> Unit = { mod ->
                         PrimaryButton(
                             text = if (enviandoATerminal) "Abriendo…" else "Abrir en la terminal",
                             onClick = { abrirEnTerminal() },
                             enabled = !enviandoATerminal && !submitting,
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = mod,
                         )
+                    }
+                    when {
+                        terminalAbierta -> textoDelAviso(Modifier.fillMaxWidth())
+                        avisoEnRenglon -> Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(spacing.md),
+                        ) {
+                            textoDelAviso(Modifier.weight(1f))
+                            botonDeTerminal(Modifier)
+                        }
+                        else -> {
+                            textoDelAviso(Modifier.fillMaxWidth())
+                            botonDeTerminal(Modifier.fillMaxWidth())
+                        }
                     }
                     terminalMsg?.let { msg ->
                         Text(
@@ -444,27 +487,6 @@ fun IssueRefundSheet(
                             color = MaterialTheme.colorScheme.error,
                         )
                     }
-
-                    // 🔴 Aquí vivían dos pastillas ("En efectivo" / "En la terminal") que
-                    // decidían si esta app mandaba el egreso al cajón. Ya no lo manda —lo
-                    // manda el servidor— así que el control se quedó SIN EFECTO: tocarlo
-                    // no cambiaba nada y la leyenda "Saldrá del efectivo de la caja" pasó a
-                    // ser mentira. Un control muerto miente más que no tener control.
-                    //
-                    // Y el hueco es real, no se está escondiendo: el servidor decide con la
-                    // semántica del cobro ORIGINAL, así que una venta con tarjeta devuelta
-                    // en efectivo NO baja del cajón. Cerrarlo de verdad exige mandarle al
-                    // servidor CÓMO se entregó el dinero (`issueAssociatedRefund` no lleva
-                    // método) y que él lo honre: cambio de servidor + cliente, pendiente y
-                    // anotado. Mientras tanto se dice en voz alta y con qué hacer, en vez de
-                    // dejar que el cajero crea que ya quedó.
-                    Spacer(modifier = Modifier.height(spacing.sm))
-                    Text(
-                        text = "Si le entregas efectivo de la caja, regístralo como retiro en " +
-                            "Caja: el sistema no lo descuenta solo.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
                 }
             }
 
@@ -565,7 +587,6 @@ fun IssueRefundSheet(
                 AmountBody(
                     amountStr = amountStr,
                     onAmountChange = { amountStr = it },
-                    maxRefundable = topeActual,
                     modifier = Modifier.padding(top = spacing.md),
                 )
             }
@@ -599,6 +620,21 @@ fun IssueRefundSheet(
                     includeTip = propinaArticulosMarcada,
                     onIncludeTipChange = { propinaArticulosAMano = it },
                     porArticulos = true,
+                    modifier = Modifier.padding(top = spacing.md),
+                )
+            }
+
+            if (opcionesDeDevolucion.isNotEmpty()) {
+                FilaDevolverCon(
+                    opciones = opcionesDeDevolucion,
+                    escogido = devolverCon,
+                    leyenda = leyendaDeDevolucion(transaction.method, devolverCon),
+                    avisoDeAutorizacion = textoDeAutorizacionParaEfectivo(devolverCon, puedeDevolverEnEfectivo, codigoDeEncargadoActivo),
+                    onEscoger = {
+                        devolverCon = it
+                        errorMsg = null // el rechazo era de la opción anterior
+                    },
+                    enabled = !submitting,
                     modifier = Modifier.padding(top = spacing.md),
                 )
             }
@@ -752,9 +788,19 @@ fun IssueRefundSheet(
             // que puede quedar fuera de vista justo cuando se toca el botón. Este
             // renglón repite lo único que no se puede malentender: esto NO le
             // devuelve el dinero a la tarjeta.
-            if (!transaction.method.equals("CASH", ignoreCase = true)) {
+            if (enTerminal) {
                 Text(
                     text = "Esto no devuelve el dinero a la tarjeta: eso se hace en la terminal.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    fontWeight = FontWeight.Medium,
+                    modifier = Modifier.padding(top = spacing.xxs),
+                )
+            }
+
+            if (avisoDeSoloRegistro(enTerminal, opcionesDeDevolucion.isNotEmpty(), transaction.method)) {
+                Text(
+                    text = "Esto sólo lo registra: devuélvele el dinero por el mismo medio con que pagó.",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontWeight = FontWeight.Medium,
@@ -803,6 +849,7 @@ fun IssueRefundSheet(
                                         .filter { restockItemIds.contains(it) },
                                     // null ⇒ el campo no viaja (casilla desmarcada): sólo artículos.
                                     tipRefundCents = propinaArticulosCents,
+                                    refundMethod = devolverCon.takeIf { opcionesDeDevolucion.isNotEmpty() },
                                 )
                             } else {
                                 // When the user unchecks "Incluir propina" and
@@ -816,6 +863,7 @@ fun IssueRefundSheet(
                                     reason = chosenReason.code,
                                     amountCents = centavosDelImporte(parsedAmount),
                                     tipRefundCents = tipRefundCentsParaEnvio(paymentTipAmount, includeTip),
+                                    refundMethod = devolverCon.takeIf { opcionesDeDevolucion.isNotEmpty() },
                                 )
                             }
 
@@ -849,7 +897,7 @@ fun IssueRefundSheet(
                                     onRefunded()
                                 },
                                 onFailure = { throwable ->
-                                    errorMsg = formatRefundError(throwable)
+                                    errorMsg = formatRefundError(throwable, devolverCon.takeIf { opcionesDeDevolucion.isNotEmpty() })
                                 },
                             )
                         }
@@ -1152,7 +1200,6 @@ private fun StepperButton(
 private fun AmountBody(
     amountStr: String,
     onAmountChange: (String) -> Unit,
-    maxRefundable: Double,
     modifier: Modifier = Modifier,
 ) {
     val spacing = AvoqadoTheme.spacing
@@ -1162,20 +1209,11 @@ private fun AmountBody(
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.SemiBold,
         )
-        Text(
-            text = "Máximo reembolsable: ${formatMoney(maxRefundable)}",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
         // 🔴 Componente de la casa, no `OutlinedTextField` crudo: su etiqueta
         // flotante "Importe" se montaba sobre el borde y se veía CORTADA, con
-        // dos contornos encimados (medido en la D3, 2026-08-17). Aquí la
-        // etiqueta vive fuera del campo y dentro sólo va el número.
-        Text(
-            text = "Importe",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        // dos contornos encimados (medido en la D3, 2026-08-17). La etiqueta es
+        // el título de arriba; el tope ya lo dice «Disponible» junto al total, así
+        // que no se repite aquí (cada renglón de más le quitaba alto al aviso).
         AvoqadoPillTextField(
             value = amountStr,
             onValueChange = onAmountChange,
@@ -1239,13 +1277,57 @@ private fun TabPill(
     }
 }
 
-private fun formatRefundError(throwable: Throwable): String {
+private fun formatRefundError(throwable: Throwable, refundMethod: String?): String {
     val apiError = throwable as? RefundApiException
     return when (apiError?.statusCode) {
-        403 -> "No tienes permiso para emitir reembolsos"
+        403 -> textoDeSinPermisoParaReembolsar(refundMethod)
         400, 422 -> apiError.message.ifBlank { "Revisa los datos del reembolso" }
         in 500..599 -> "No se pudo emitir el reembolso. Intenta de nuevo."
         else -> throwable.message ?: "Error al emitir reembolso"
+    }
+}
+
+/** «Devolver con»: una pastilla por medio posible y la leyenda de lo que pasa con el dinero. */
+@Composable
+private fun FilaDevolverCon(
+    opciones: List<OpcionDeDevolucion>,
+    escogido: String?,
+    leyenda: String,
+    avisoDeAutorizacion: String?,
+    onEscoger: (String?) -> Unit,
+    enabled: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    val spacing = AvoqadoTheme.spacing
+    Column(modifier = modifier, verticalArrangement = Arrangement.spacedBy(spacing.xs)) {
+        Text(
+            text = "Devolver con",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(horizontalArrangement = Arrangement.spacedBy(spacing.sm)) {
+            opciones.forEach { op ->
+                TabPill(
+                    label = op.label,
+                    active = op.refundMethod == escogido,
+                    modifier = Modifier.weight(1f).semantics { selected = op.refundMethod == escogido },
+                    enabled = enabled,
+                    onClick = { onEscoger(op.refundMethod) },
+                )
+            }
+        }
+        Text(
+            text = leyenda,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (avisoDeAutorizacion != null) {
+            Text(
+                text = avisoDeAutorizacion,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 

@@ -2,7 +2,7 @@
   "generatedFrom": {
     "repo": "avoqado-server",
     "fn": "getEffectiveRolePermissions(role, null)",
-    "digest": "562be29f2f9b0d5f"
+    "digest": "1ac6f0c7412a5e22"
   },
   "roles": {
     "SUPERADMIN": {
@@ -683,6 +683,7 @@
         "payments:read",
         "payments:reconcile-uncharged",
         "payments:refund",
+        "payments:refund-to-cash",
         "payments:resolve-no-instrument",
         "payments:routing-read",
         "printers:manage",
@@ -826,6 +827,7 @@
         "payments:read",
         "payments:reconcile-uncharged",
         "payments:refund",
+        "payments:refund-to-cash",
         "payments:resolve-no-instrument",
         "payments:routing-read",
         "printers:manage",
@@ -1308,6 +1310,7 @@
       "payments:create",
       "payments:read",
       "payments:refund",
+      "payments:refund-to-cash",
       "printers:manage",
       "reports:read",
       "reservations:update",

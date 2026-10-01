@@ -76,4 +76,20 @@ class TransactionDecodeNullsTest {
 
         assertNull(transaccion.items[0].modifiers[0].name)
     }
+
+    @Test
+    fun `canChooseRefundMethod y tenderLabel se decodifican y su ausencia es null`() {
+        val con = json.decodeFromString<Transaction>(
+            """{ "id": "p1", "amount": 10, "tipAmount": 0, "method": "OTHER", "status": "COMPLETED",
+                "canChooseRefundMethod": true, "tenderLabel": "Vale de despensa" }""",
+        )
+        assertEquals(true, con.canChooseRefundMethod)
+        assertEquals("Vale de despensa", con.tenderLabel)
+
+        val sin = json.decodeFromString<Transaction>(
+            """{ "id": "p2", "amount": 10, "tipAmount": 0, "method": "CASH", "status": "COMPLETED" }""",
+        )
+        assertNull(sin.canChooseRefundMethod)
+        assertNull(sin.tenderLabel)
+    }
 }

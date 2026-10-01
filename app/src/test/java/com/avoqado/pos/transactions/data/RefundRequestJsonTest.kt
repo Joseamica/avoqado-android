@@ -162,4 +162,12 @@ class RefundRequestJsonTest {
         assertEquals(null, sinLlave.refundId)
         assertEquals("ok", conNull.message)
     }
+
+    @Test
+    fun `refundMethod nulo no viaja y CASH viaja`() {
+        val sin = cuerpo(AssociatedRefundRequest(amount = 5_000, reason = "RETURNED_GOODS"))
+        assertFalse("La llave no debe viajar: $sin", sin.contains("refundMethod"))
+        val con = cuerpo(AssociatedRefundRequest(amount = 5_000, reason = "RETURNED_GOODS", refundMethod = "CASH"))
+        assertTrue(con.contains("\"refundMethod\":\"CASH\""))
+    }
 }

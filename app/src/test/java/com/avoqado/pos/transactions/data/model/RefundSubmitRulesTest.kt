@@ -215,4 +215,131 @@ class RefundSubmitRulesTest {
     fun `sin total restante conocido se comporta como antes`() {
         assertEquals(1450, tipRefundCentsPorArticulos(true, 14.5, null, 145.0))
     }
+
+    // ── ¿Se abre en la terminal o se reembolsa como el efectivo? ─────────────────────
+
+    /**
+     * P1 Testarudo, 30-sep-2026: una transferencia de $10,334 pedía «Abrir en la terminal». Regla del
+     * founder: sólo la tarjeta presente en NUESTRA terminal va a la terminal; todo lo demás (transferencia,
+     * tipos de pago del negocio, tarjeta de otra terminal) se reembolsa como el efectivo. Manda el servidor.
+     */
+    @Test
+    fun `manda el veredicto del servidor, diga lo que diga el metodo`() {
+        assertTrue(seDevuelveEnTerminal(refundOnTerminal = true, method = "DEBIT_CARD"))
+        // «Tarjeta de crédito» registrada a mano: el método dice tarjeta, la terminal nunca la cobró.
+        assertFalse(seDevuelveEnTerminal(refundOnTerminal = false, method = "CREDIT_CARD"))
+    }
+
+    @Test
+    fun `servidor anterior sin el campo cae a la regla vieja del servidor solo tarjeta`() {
+        assertTrue(seDevuelveEnTerminal(refundOnTerminal = null, method = "CREDIT_CARD"))
+        assertTrue(seDevuelveEnTerminal(refundOnTerminal = null, method = "DEBIT_CARD"))
+        listOf("CASH", "BANK_TRANSFER", "TRANSFER", "OTHER", "DIGITAL_WALLET", "CRYPTOCURRENCY", null).forEach {
+            assertFalse("$it no se abre en la terminal", seDevuelveEnTerminal(refundOnTerminal = null, method = it))
+        }
+    }
+
+    // ── Devolver con (30-sep-2026) ─────────────────────────────────────────────────────
+
+    @Test
+    fun `efectivo ofrece efectivo de la caja y transferencia`() {
+        assertEquals(
+            listOf(OpcionDeDevolucion(null, "Efectivo de la caja"), OpcionDeDevolucion("BANK_TRANSFER", "Transferencia")),
+            opcionesParaDevolver("CASH", null),
+        )
+    }
+
+    @Test
+    fun `transferencia ofrece transferencia y efectivo de la caja`() {
+        assertEquals(
+            listOf(OpcionDeDevolucion(null, "Transferencia"), OpcionDeDevolucion("CASH", "Efectivo de la caja")),
+            opcionesParaDevolver("BANK_TRANSFER", "Transferencia"),
+        )
+    }
+
+    @Test
+    fun `un metodo propio ofrece su nombre mas las dos`() {
+        assertEquals(
+            listOf(
+                OpcionDeDevolucion(null, "Vale de despensa"),
+                OpcionDeDevolucion("CASH", "Efectivo de la caja"),
+                OpcionDeDevolucion("BANK_TRANSFER", "Transferencia"),
+            ),
+            opcionesParaDevolver("OTHER", "Vale de despensa"),
+        )
+        // Sin nombre del negocio: la etiqueta de siempre del método.
+        assertEquals("Otro", opcionesParaDevolver("OTHER", null).first().label)
+    }
+
+    @Test
+    fun `la leyenda dice si sale de la caja`() {
+        assertEquals("Sale de la caja: el corte lo descuenta solo.", leyendaDeDevolucion("BANK_TRANSFER", "CASH"))
+        assertEquals("Sale de la caja: el corte lo descuenta solo.", leyendaDeDevolucion("CASH", null))
+        assertEquals("Tú le haces la transferencia; aquí sólo queda registrado.", leyendaDeDevolucion("CASH", "BANK_TRANSFER"))
+        assertEquals("Se devuelve por el mismo medio con que se pagó.", leyendaDeDevolucion("OTHER", null))
+        // Transferencia original sin cambiar: la leyenda va por el método EFECTIVO (Codex P2 #8).
+        assertEquals("Tú le haces la transferencia; aquí sólo queda registrado.", leyendaDeDevolucion("BANK_TRANSFER", null))
+    }
+
+    @Test
+    fun `el aviso de solo registro sale cuando no hay terminal ni selector ni es efectivo`() {
+        assertEquals(false, avisoDeSoloRegistro(enTerminal = false, hayOpciones = false, method = "CASH"))
+        assertEquals(false, avisoDeSoloRegistro(enTerminal = true, hayOpciones = false, method = "CREDIT_CARD"))
+        assertEquals(false, avisoDeSoloRegistro(enTerminal = false, hayOpciones = true, method = "BANK_TRANSFER"))
+        assertEquals(true, avisoDeSoloRegistro(enTerminal = false, hayOpciones = false, method = "CREDIT_CARD"))
+        assertEquals(true, avisoDeSoloRegistro(enTerminal = false, hayOpciones = false, method = "BANK_TRANSFER"))
+    }
+
+    @Test
+    fun `una etiqueta del negocio igual a una opcion fija pasa a original`() {
+        val opciones = opcionesParaDevolver("OTHER", "Efectivo de la caja")
+        assertEquals("Efectivo de la caja (original)", opciones.first().label)
+        assertEquals(opciones.size, opciones.map { it.label }.toSet().size)
+        assertEquals("transferencia (original)", opcionesParaDevolver("OTHER", " transferencia ").first().label)
+    }
+
+    // ── Devolver en efectivo un cobro que no fue en efectivo: qué se le avisa a quien no tiene el permiso (1-oct-2026) ──
+
+    @Test
+    fun `escoger efectivo sin el permiso y con el codigo del encargado activo avisa que el encargado lo autoriza`() {
+        assertEquals(
+            "Necesitarás que un encargado lo autorice con su código.",
+            textoDeAutorizacionParaEfectivo(refundMethod = "CASH", puede = false, codigoDeEncargadoActivo = true),
+        )
+    }
+
+    @Test
+    fun `escoger efectivo sin el permiso y con el codigo del encargado apagado no promete un teclado que no existe`() {
+        assertEquals(
+            "Sólo un encargado puede devolver en efectivo: pídele que lo haga desde su usuario.",
+            textoDeAutorizacionParaEfectivo(refundMethod = "CASH", puede = false, codigoDeEncargadoActivo = false),
+        )
+    }
+
+    @Test
+    fun `con el permiso no hay aviso, con el codigo prendido o apagado`() {
+        assertNull(textoDeAutorizacionParaEfectivo(refundMethod = "CASH", puede = true, codigoDeEncargadoActivo = true))
+        assertNull(textoDeAutorizacionParaEfectivo(refundMethod = "CASH", puede = true, codigoDeEncargadoActivo = false))
+    }
+
+    @Test
+    fun `sin escoger efectivo no hay aviso aunque falte el permiso`() {
+        assertNull(textoDeAutorizacionParaEfectivo(refundMethod = "BANK_TRANSFER", puede = false, codigoDeEncargadoActivo = true))
+        assertNull(textoDeAutorizacionParaEfectivo(refundMethod = null, puede = false, codigoDeEncargadoActivo = false))
+    }
+
+    // QA en la CPad (1-oct): el cajero SÍ puede reembolsar; el 403 de efectivo decía «No tienes permiso para emitir reembolsos».
+    @Test
+    fun `el 403 de efectivo dice que lo que falta es devolver en efectivo y ofrece la salida`() {
+        assertEquals(
+            "No tienes permiso para devolver en efectivo. Devuélvelo por el mismo medio o pídele a un encargado que lo haga.",
+            textoDeSinPermisoParaReembolsar(refundMethod = "CASH"),
+        )
+    }
+
+    @Test
+    fun `el 403 sin efectivo sigue siendo el de reembolsar`() {
+        assertEquals("No tienes permiso para emitir reembolsos", textoDeSinPermisoParaReembolsar(refundMethod = null))
+        assertEquals("No tienes permiso para emitir reembolsos", textoDeSinPermisoParaReembolsar(refundMethod = "BANK_TRANSFER"))
+    }
 }

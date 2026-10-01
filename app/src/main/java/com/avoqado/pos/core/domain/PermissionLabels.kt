@@ -54,6 +54,7 @@ object PermissionLabels {
         "payments:read" to "ver los cobros",
         "payments:create" to "cobrar",
         "payments:refund" to "hacer un reembolso",
+        "payments:refund-to-cash" to "devolver en efectivo un cobro que no fue en efectivo",
         "payments:routing-read" to "ver por dónde se procesa cada cobro",
         "payments:routing-manage" to "cambiar por dónde se procesa cada cobro",
         "payment:create-manual" to "registrar un cobro a mano",

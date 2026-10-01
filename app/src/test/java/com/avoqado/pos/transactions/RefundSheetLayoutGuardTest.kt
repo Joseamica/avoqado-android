@@ -130,6 +130,33 @@ class RefundSheetLayoutGuardTest {
         )
     }
 
+    @Test
+    fun `devolver con vive en el pie fijo y el envio manda refundMethod`() {
+        val fuente = leerFuente(hoja)
+        val pieFijo = fuente.substringAfter("=== FIN DE LA BANDA DESPLAZABLE ===").substringBefore("private fun ItemsBody(")
+        assertTrue("`FilaDevolverCon(` ya no se INVOCA en el pie fijo.", pieFijo.contains("FilaDevolverCon("))
+        assertTrue(
+            "El envío no pasa `refundMethod = devolverCon` (sólo si hay opciones).",
+            leerCodigoSinComentarios(hoja).contains("refundMethod = devolverCon.takeIf { opcionesDeDevolucion.isNotEmpty() }"),
+        )
+    }
+
+    /**
+     * El aviso de efectivo sale de la regla probada, del permiso real y del switch del código del encargado — no de un
+     * rol en línea, y sin prometer un teclado que con el switch apagado no existe.
+     */
+    @Test
+    fun `el aviso de efectivo usa la regla probada, el permiso y el switch del codigo del encargado`() {
+        val codigo = leerCodigoSinComentarios(hoja)
+        assertTrue("La hoja ya no llama `textoDeAutorizacionParaEfectivo(...)`.", codigo.contains("textoDeAutorizacionParaEfectivo("))
+        val quienAbre = leerCodigoSinComentarios("app/src/main/java/com/avoqado/pos/transactions/presentation/TransactionDetailSheet.kt")
+        assertTrue("Quien abre la hoja ya no le pasa `canRefundToCash`.", quienAbre.contains("roleManager.canRefundToCash"))
+        assertTrue(
+            "Quien abre la hoja ya no le pasa el switch `managerPinOverrideEnabled`.",
+            quienAbre.contains("codigoDeEncargadoActivo = "),
+        )
+    }
+
     /**
      * Las dos reglas de dinero viven fuera del Composable para que alguien pueda
      * probarlas. Si vuelven a escribirse en línea dentro del `onClick`, se pierde eso.

@@ -98,6 +98,8 @@ internal data class AssociatedRefundRequest(
      * =amount => refund only the tip (accidental tip charge case).
      */
     val tipRefundCents: Int? = null,
+    /** «CASH» | «BANK_TRANSFER»; null => por el mismo medio (la llave no viaja). */
+    val refundMethod: String? = null,
 )
 
 @Serializable
@@ -160,6 +162,7 @@ class RefundRepository @Inject constructor(
         restockItemIds: List<String>? = null,
         note: String? = null,
         tipRefundCents: Int? = null,
+        refundMethod: String? = null,
     ): Result<AssociatedRefundData> {
         val venueId = secureStorage.venueId
             ?: return Result.failure(Exception("No venue ID"))
@@ -174,6 +177,7 @@ class RefundRepository @Inject constructor(
                     reason = reason,
                     note = note,
                     tipRefundCents = tipRefundCents,
+                    refundMethod = refundMethod,
                 ),
             )
 

@@ -26,7 +26,7 @@ package com.avoqado.pos.core.domain
  * venue con Permission Sets (`VenueRolePermission`) manda otra cosa; aquí sale la
  * matriz por default (`customPermissions = null`), que es la de la mayoría.
  *
- * Derivado de avoqado-server · huella 562be29f2f9b0d5f.
+ * Derivado de avoqado-server · huella 1ac6f0c7412a5e22.
  */
 object PermisosRealesDelServer {
 
@@ -203,7 +203,7 @@ object PermisosRealesDelServer {
         "upsells:read",
     )
 
-    /** MANAGER — 148 permisos efectivos (134 declarados + 14 implícitos: discounts:apply, discounts:read, estimates:create, features:update, orders:cancel-unpaid, orders:comp, orders:void, products:read, tables:pay-any, tpv-reports:read, tpv-settings:read, tpv-settings:update, tpv-shifts:close, tpv-shifts:create). */
+    /** MANAGER — 149 permisos efectivos (135 declarados + 14 implícitos: discounts:apply, discounts:read, estimates:create, features:update, orders:cancel-unpaid, orders:comp, orders:void, products:read, tables:pay-any, tpv-reports:read, tpv-settings:read, tpv-settings:update, tpv-shifts:close, tpv-shifts:create). */
     val MANAGER = listOf(
         "accounting:read",
         "analytics:export",
@@ -279,6 +279,7 @@ object PermisosRealesDelServer {
         "payments:read",
         "payments:reconcile-uncharged",
         "payments:refund",
+        "payments:refund-to-cash",
         "payments:resolve-no-instrument",
         "payments:routing-read",
         "printers:manage",

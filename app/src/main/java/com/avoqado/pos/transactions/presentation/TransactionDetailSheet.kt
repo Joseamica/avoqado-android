@@ -473,11 +473,14 @@ private fun LoadedDetailView(
 
     // Refund sheet (Square-style: items or amount)
     if (showRefundSheet) {
+        val codigoDeEncargadoActivo by viewModel.tpvSettingsRepository.managerPinOverrideEnabled.collectAsState()
         IssueRefundSheet(
             transaction = transaction,
             maxRefundable = transaction.remainingRefundable,
             refundRepository = viewModel.refundRepository,
             terminalPaymentService = viewModel.terminalPaymentService,
+            puedeDevolverEnEfectivo = viewModel.roleManager.canRefundToCash,
+            codigoDeEncargadoActivo = codigoDeEncargadoActivo,
             onDismiss = { viewModel.dismissIssueRefundSheet() },
             onRefunded = {
                 viewModel.dismissIssueRefundSheet()
@@ -599,9 +602,9 @@ private fun RefundHistorySection(
                         fontWeight = FontWeight.SemiBold,
                     )
                 }
-                refund.createdAt?.let {
+                refund.dateShortDisplay?.let {
                     Text(
-                        text = it.replace("T", " ").take(16),
+                        text = it,
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )

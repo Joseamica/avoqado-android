@@ -60,6 +60,12 @@ data class Transaction(
      */
     val remainingRefundableSale: Double? = null,
     val remainingRefundableTip: Double? = null,
+    /** ¿La devolución se abre en la terminal? (servidor, aditivo, 30-sep-2026). `null` = servidor anterior. */
+    val refundOnTerminal: Boolean? = null,
+    /** ¿El cajero puede escoger con qué devolver? (servidor, aditivo, 30-sep-2026). `null` = servidor anterior. */
+    val canChooseRefundMethod: Boolean? = null,
+    /** Nombre del método del negocio («Vale de despensa»), para la pastilla «mismo medio». */
+    val tenderLabel: String? = null,
     val customerName: String? = null,
     val createdAt: String? = null,
     val staffName: String? = null,
@@ -161,6 +167,11 @@ data class TransactionRefund(
     val status: String = "COMPLETED",
 ) {
     val formattedAmount: String get() = "-${formatMoney(amount)}"
+
+    /** "01/10/26, 10:54" en la zona del negocio (el servidor manda UTC). */
+    val dateShortDisplay: String?
+        get() = VenueDateTimeFormatter.parseIso(createdAt)?.atZone(VenueTimeZone.zoneId())
+            ?.format(DateTimeFormatter.ofPattern("dd/MM/yy, HH:mm"))
 
     val reasonDisplay: String
         get() = when (reason) {

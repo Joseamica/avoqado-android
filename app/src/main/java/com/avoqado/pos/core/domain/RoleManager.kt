@@ -183,6 +183,16 @@ class RoleManager @Inject constructor(
         get() = hasVenuePermission("payments:refund", fallbackRoles = MANAGER_UP)
 
     /**
+     * Devolver en EFECTIVO un cobro que no fue en efectivo — espejo EXACTO de `payments:refund-to-cash`
+     * (founder, 1-oct-2026). De fábrica MANAGER+; el cajero reembolsa pero esto no.
+     *
+     * NO bloquea: sin el permiso la hoja sólo avisa que un encargado lo autoriza con su código; el 403 del
+     * servidor abre el teclado. Decide quien inició sesión, nunca el «Vendiendo» de Cobrar.
+     */
+    val canRefundToCash: Boolean
+        get() = hasVenuePermission("payments:refund-to-cash", fallbackRoles = MANAGER_UP)
+
+    /**
      * Liquidar el cheque de OTRO mesero — espejo EXACTO de `tables:pay-any`.
      *
      * 🔴 Es el gate que dejaba al CAJERO sin hacer su trabajo. Con la propiedad de

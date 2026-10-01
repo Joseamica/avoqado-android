@@ -12,6 +12,10 @@ class PermissionLabelsTest {
     fun `traduce los permisos que el piso puede encontrarse`() {
         assertEquals("fusionar cuentas", PermissionLabels.of("orders:merge"))
         assertEquals("hacer un reembolso", PermissionLabels.of("payments:refund"))
+        assertEquals(
+            "devolver en efectivo un cobro que no fue en efectivo",
+            PermissionLabels.of("payments:refund-to-cash"),
+        )
         assertEquals("cancelar la cuenta", PermissionLabels.of("orders:cancel"))
         assertEquals("dar una cortesía", PermissionLabels.of("orders:comp"))
         assertEquals("anular artículos", PermissionLabels.of("orders:void"))

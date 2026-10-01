@@ -113,3 +113,80 @@ fun tipRefundCentsPorArticulos(
     }
     return cabe.takeIf { it > 0 }
 }
+
+/**
+ * ¿La devolución de este cobro se abre en la TERMINAL? Si no, se reembolsa como el efectivo: aquí se registra y
+ * el dinero se le entrega al cliente por fuera.
+ *
+ * 🔴 Regla del founder (30-sep-2026): sólo la tarjeta presente en NUESTRA terminal. Transferencia, tipos de pago que
+ * crea el negocio y «Tarjeta (terminal externa)» van como el efectivo. Antes la hoja preguntaba «¿no es CASH?» y una
+ * transferencia de Testarudo pedía «Abrir en la terminal», que el servidor rechaza.
+ *
+ * Manda el servidor (`refundOnTerminal`, aditivo desde el 30-sep): el método solo no basta, hay CREDIT_CARD que la
+ * terminal nunca cobró. Un servidor anterior no lo manda: se cae a su regla de entonces (sólo crédito o débito).
+ */
+fun seDevuelveEnTerminal(refundOnTerminal: Boolean?, method: String?): Boolean =
+    refundOnTerminal ?: (method == "CREDIT_CARD" || method == "DEBIT_CARD")
+
+/** Una pastilla de «Devolver con». `refundMethod = null` es «por el mismo medio» (no viaja al servidor). */
+data class OpcionDeDevolucion(val refundMethod: String?, val label: String)
+
+private fun esEfectivo(method: String?) = method == "CASH"
+private fun esTransferencia(method: String?) = method == "BANK_TRANSFER" || method == "TRANSFER"
+
+/**
+ * Las pastillas de «Devolver con» (spec 2026-09-30): el método original primero (marcado), más «Efectivo de la
+ * caja» y «Transferencia» sin repetir. Sólo se pintan si el servidor dijo `canChooseRefundMethod`.
+ */
+fun opcionesParaDevolver(method: String?, tenderLabel: String?): List<OpcionDeDevolucion> {
+    val original = when {
+        esEfectivo(method) -> "Efectivo de la caja"
+        esTransferencia(method) -> "Transferencia"
+        else -> tenderLabel?.takeIf { it.isNotBlank() } ?: PaymentMethodDisplay.label(method)
+    }
+    val agregaEfectivo = !esEfectivo(method)
+    val agregaTransferencia = !esTransferencia(method)
+    // Un método del negocio que se llama igual que una pastilla fija se distingue como «(original)».
+    val choca = original.trim().let {
+        (agregaEfectivo && it.equals("Efectivo de la caja", ignoreCase = true)) ||
+            (agregaTransferencia && it.equals("Transferencia", ignoreCase = true))
+    }
+    return buildList {
+        add(OpcionDeDevolucion(null, if (choca) "${original.trim()} (original)" else original))
+        if (agregaEfectivo) add(OpcionDeDevolucion("CASH", "Efectivo de la caja"))
+        if (agregaTransferencia) add(OpcionDeDevolucion("BANK_TRANSFER", "Transferencia"))
+    }
+}
+
+/**
+ * ¿Avisar «esto sólo lo registra»? Un cobro que no se abre en la terminal, sin selector y que no es efectivo
+ * (tarjeta registrada a mano, transferencia vieja): el cajero tiene que saber que el dinero lo devuelve él.
+ */
+fun avisoDeSoloRegistro(enTerminal: Boolean, hayOpciones: Boolean, method: String?): Boolean =
+    !enTerminal && !hayOpciones && method != "CASH"
+
+/**
+ * Qué avisar bajo «Devolver con» al escoger efectivo sin `payments:refund-to-cash` (1-oct-2026); `null` = nada.
+ * No bloquea: el servidor da el 403. Con el código del encargado prendido (`managerPinOverrideEnabled`) ese 403 abre
+ * el teclado; apagado (el default) es un «no» seco, así que no se promete un teclado que no va a salir.
+ */
+fun textoDeAutorizacionParaEfectivo(refundMethod: String?, puede: Boolean, codigoDeEncargadoActivo: Boolean): String? = when {
+    refundMethod != "CASH" || puede -> null
+    codigoDeEncargadoActivo -> "Necesitarás que un encargado lo autorice con su código."
+    else -> "Sólo un encargado puede devolver en efectivo: pídele que lo haga desde su usuario."
+}
+
+/** El 403 al reembolsar: si se pidió efectivo, lo que falta es ESE permiso, no el de reembolsar. */
+fun textoDeSinPermisoParaReembolsar(refundMethod: String?): String =
+    if (refundMethod == "CASH") {
+        "No tienes permiso para devolver en efectivo. Devuélvelo por el mismo medio o pídele a un encargado que lo haga."
+    } else {
+        "No tienes permiso para emitir reembolsos"
+    }
+
+/** La línea bajo las pastillas: qué pasa con el dinero según lo escogido. */
+fun leyendaDeDevolucion(method: String?, refundMethod: String?): String = when {
+    refundMethod == "CASH" || (refundMethod == null && esEfectivo(method)) -> "Sale de la caja: el corte lo descuenta solo."
+    refundMethod == "BANK_TRANSFER" || (refundMethod == null && esTransferencia(method)) -> "Tú le haces la transferencia; aquí sólo queda registrado."
+    else -> "Se devuelve por el mismo medio con que se pagó."
+}
