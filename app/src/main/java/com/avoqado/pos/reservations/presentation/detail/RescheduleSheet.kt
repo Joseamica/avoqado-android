@@ -31,11 +31,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import com.avoqado.pos.core.util.FechaDelCalendario
 import com.avoqado.pos.reservations.data.ReservationRepository
 import com.avoqado.pos.reservations.domain.ReservationAction
 import com.avoqado.pos.designsystem.components.AvoqadoDialog
 import com.avoqado.pos.designsystem.components.PrimaryButton
-import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.ZoneId
@@ -71,14 +71,15 @@ fun RescheduleSheet(
 
     if (showDatePicker) {
         val datePickerState = rememberDatePickerState(
-            initialSelectedDateMillis = date.atStartOfDay(venueTimezone).toInstant().toEpochMilli(),
+            initialSelectedDateMillis = FechaDelCalendario.aMilisDelPicker(date),
         )
         DatePickerDialog(
             onDismissRequest = { showDatePicker = false },
             confirmButton = {
                 TextButton(onClick = {
                     datePickerState.selectedDateMillis?.let { ms ->
-                        date = Instant.ofEpochMilli(ms).atZone(venueTimezone).toLocalDate()
+                        // El DatePicker habla en medianoche UTC; la zona del negocio entra al armar la hora.
+                        date = FechaDelCalendario.deMilisDelPicker(ms)
                     }
                     showDatePicker = false
                 }) { Text("Aceptar") }

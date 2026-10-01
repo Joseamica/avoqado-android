@@ -21,6 +21,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import com.avoqado.pos.core.util.FechaDelCalendario
 import com.avoqado.pos.designsystem.components.CircleBackButton
 import androidx.compose.material.icons.automirrored.filled.TrendingUp
 import androidx.compose.material.icons.filled.AttachMoney
@@ -434,9 +435,7 @@ private fun CustomDatePickerSection(
                             DatePickerDialog(
                                 context,
                                 { _, year, month, day ->
-                                    val newCal = Calendar.getInstance(tz)
-                                    newCal.set(year, month, day, 0, 0, 0)
-                                    onStartDateChanged(newCal.timeInMillis)
+                                    onStartDateChanged(FechaDelCalendario.inicioDelDia(year, month, day, tz))
                                 },
                                 cal.get(Calendar.YEAR),
                                 cal.get(Calendar.MONTH),
@@ -480,9 +479,7 @@ private fun CustomDatePickerSection(
                             DatePickerDialog(
                                 context,
                                 { _, year, month, day ->
-                                    val newCal = Calendar.getInstance(tz)
-                                    newCal.set(year, month, day, 23, 59, 59)
-                                    onEndDateChanged(newCal.timeInMillis)
+                                    onEndDateChanged(FechaDelCalendario.finDelDia(year, month, day, tz))
                                 },
                                 cal.get(Calendar.YEAR),
                                 cal.get(Calendar.MONTH),

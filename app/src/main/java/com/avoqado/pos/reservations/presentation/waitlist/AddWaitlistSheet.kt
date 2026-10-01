@@ -44,6 +44,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.avoqado.pos.core.util.FechaDelCalendario
 import com.avoqado.pos.designsystem.components.AvoqadoDialog
 import com.avoqado.pos.designsystem.components.AvoqadoPhoneInput
 import com.avoqado.pos.designsystem.components.AvoqadoPillTextField
@@ -53,7 +54,6 @@ import com.avoqado.pos.designsystem.components.SearchPillField
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.customers.data.model.Customer
 import com.avoqado.pos.reservations.data.model.AddToWaitlistRequest
-import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
 import java.time.ZoneId
@@ -253,14 +253,15 @@ fun AddWaitlistSheet(
 
             if (showDatePicker) {
                 val pickerState = rememberDatePickerState(
-                    initialSelectedDateMillis = date.atStartOfDay(zone).toInstant().toEpochMilli(),
+                    initialSelectedDateMillis = FechaDelCalendario.aMilisDelPicker(date),
                 )
                 DatePickerDialog(
                     onDismissRequest = { showDatePicker = false },
                     confirmButton = {
                         TextButton(onClick = {
                             pickerState.selectedDateMillis?.let { ms ->
-                                date = Instant.ofEpochMilli(ms).atZone(zone).toLocalDate()
+                                // El DatePicker habla en medianoche UTC; la zona del negocio entra al armar la hora.
+                                date = FechaDelCalendario.deMilisDelPicker(ms)
                             }
                             showDatePicker = false
                         }) { Text("Aceptar") }
