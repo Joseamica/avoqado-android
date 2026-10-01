@@ -47,8 +47,8 @@ object Arranque {
             configuracionDeAndroid(TAMANO_INICIAL.width, TAMANO_INICIAL.height, densidadDeLaPantalla()),
         )
         val inyector = Inyector.crear(actividad)   // la actividad, no un Context suelto: findActivity() la busca (ScreenPinningSheet)
-        // Room abre la base hasta la primera consulta. Se abre aquí para que una base de otra versión (no hay migraciones)
-        // truene DENTRO del arranque, con aviso, y no en una corrutina a media venta.
+        // Room abre la base hasta la primera consulta. Se abre aquí (y migra, con respaldo previo) para que una migración
+        // que falle truene DENTRO del arranque, con aviso, y no en una corrutina a media venta.
         runBlocking { inyector.getInstance(AvoqadoDatabase::class.java).useReaderConnection { it.usePrepared("SELECT 1") { s -> s.step() } } }
         Escritorio.instalar(actividad, inyector)
         iniciar(inyector, RaizDeEscritorio.lifecycle)
@@ -96,7 +96,8 @@ fun mensajeDeArranqueFallido(t: Throwable, carpeta: Path?, alAbrir: Boolean = tr
     val texto = when {
         propio == null -> causa.javaClass.simpleName
         causa is FileSystemException -> "${causa.javaClass.simpleName}: $propio"   // su mensaje es sólo la ruta
-        causa is IllegalStateException && "migration" in propio -> "La base de datos del aparato es de otra versión de la app. $propio"
+        causa is IllegalStateException && propio.contains("migration", ignoreCase = true) ->
+            "La base de datos del aparato no se pudo actualizar a esta versión de la app. $propio"
         else -> propio
     }
     val detalle = carpeta?.let { " Detalle en ${it.resolve("logs")}" }.orEmpty()

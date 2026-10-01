@@ -5,6 +5,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.windowsizeclass.ExperimentalMaterial3WindowSizeClassApi
 import androidx.compose.material3.windowsizeclass.WindowSizeClass
@@ -28,6 +29,9 @@ import com.avoqado.escritorio.ConfiguracionDeAndroid
 import com.avoqado.pos.designsystem.components.AvoqadoLaunchSplash
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.navigation.AvoqadoNavGraph
+import com.avoqado.pos.escritorio.teclado.ConTecladoEnPantalla
+import com.avoqado.pos.escritorio.teclado.TecladoDeLaVentana
+import com.avoqado.pos.escritorio.teclado.TecladoEnPantalla
 import kotlinx.coroutines.delay
 
 /** El dueño de ViewModels y ciclo de vida de la raíz, como la Activity en Android. */
@@ -51,7 +55,12 @@ fun AppEscritorio() = BoxWithConstraints(Modifier.fillMaxSize()) {
             LaunchedEffect(Unit) { delay(1_350L); splash = false }
             AvoqadoTheme(windowSizeClass = windowSizeClass) {
                 Box(Modifier.fillMaxSize()) {
-                    AvoqadoNavGraph(windowSizeClass = windowSizeClass)
+                    // Teclado híbrido: sólo con un dedo sobre un campo de texto; el contenido se encoge y las teclas van en un Popup.
+                    ConTecladoEnPantalla(
+                        visible = TecladoDeLaVentana.visible.value,
+                        generacion = TecladoDeLaVentana.generacion.value,
+                        teclado = { TecladoEnPantalla(TecladoDeLaVentana::alPresionar, TecladoDeLaVentana.estado, Modifier.fillMaxWidth()) },
+                    ) { AvoqadoNavGraph(windowSizeClass = windowSizeClass) }
                     AnimatedVisibility(visible = splash, exit = fadeOut(tween(220))) { AvoqadoLaunchSplash() }
                 }
             }

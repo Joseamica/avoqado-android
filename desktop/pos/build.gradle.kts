@@ -29,9 +29,11 @@ dependencies {
     implementation("androidx.sqlite:sqlite-bundled:2.6.2")
     ksp("androidx.room:room-compiler:2.8.4")
     implementation("com.google.zxing:core:3.5.3")
+    implementation("net.java.dev.jna:jna-platform:5.19.1")   // puente táctil de Windows (WM_POINTER); no-op fuera de Windows
     runtimeOnly("org.jetbrains.compose.desktop:desktop-jvm-macos-arm64:$cmp")   // Skia nativo para la Mac; Windows usa su propio artefacto (tarea 9)
 
     testImplementation(kotlin("test-junit"))
+    testImplementation("androidx.room:room-testing:2.8.4")
     testImplementation("org.jetbrains.compose.ui:ui-test-junit4:$cmp")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
 }
@@ -65,6 +67,49 @@ val generarBuildConfig by tasks.registering {
     }
 }
 
+// --- Migraciones de Room: las MISMAS de Android. Se copian con dos imports cambiados (Migration/SupportSQLiteDatabase no existen en Room JVM) ---
+// -Pavoqado.migracionesDeAndroid=<ruta>: sólo para PROBAR la tarea con una copia alterada; por defecto, la de Android.
+val migracionesOriginal = providers.gradleProperty("avoqado.migracionesDeAndroid").map { File(it) }
+    .getOrElse(fuentesAndroid.resolve("com/avoqado/pos/core/data/local/database/AvoqadoDatabaseMigrations.kt"))
+val baseDeAndroid = fuentesAndroid.resolve("com/avoqado/pos/core/data/local/database/AvoqadoDatabase.kt")
+val copiarMigracionesDeAndroid by tasks.registering {
+    val origen = migracionesOriginal
+    val fuenteBase = baseDeAndroid
+    val destino = layout.buildDirectory.file("generated/migraciones/com/avoqado/pos/core/data/local/database/AvoqadoDatabaseMigrations.kt")
+    val destinoVersion = layout.buildDirectory.file("generated/migraciones/com/avoqado/pos/escritorio/base/VersionDeLaBase.kt")
+    inputs.file(origen)
+    inputs.file(fuenteBase)
+    outputs.files(destino, destinoVersion)
+    doLast {
+        val reemplazos = mapOf(
+            "import androidx.room.migration.Migration" to "import com.avoqado.pos.escritorio.base.MigracionDeAndroid as Migration",
+            "import androidx.sqlite.db.SupportSQLiteDatabase" to "import com.avoqado.pos.escritorio.base.BaseDeAndroid as SupportSQLiteDatabase",
+        )
+        val lineas = origen.readLines().toMutableList()
+        for ((original, nuevo) in reemplazos) {
+            val donde = lineas.indices.filter { lineas[it] == original }
+            check(donde.size == 1) {
+                "AvoqadoDatabaseMigrations.kt de Android cambió sus imports: revisa la copia de escritorio (falta: $original)"
+            }
+            lineas[donde.single()] = nuevo
+        }
+        check(lineas.none { it.startsWith("import androidx.room") || it.startsWith("import androidx.sqlite") }) {
+            "AvoqadoDatabaseMigrations.kt de Android cambió sus imports: revisa la copia de escritorio (queda un import de androidx)"
+        }
+        // La versión REAL de Room sale de @Database(version = N); las migraciones automáticas no se soportan (ni se descubrirían).
+        val textoBase = fuenteBase.readText()
+        check("autoMigrations" !in textoBase) {
+            "AvoqadoDatabase.kt de Android declara autoMigrations: el POS de escritorio todavía no las soporta (migraciones y respaldo sólo cubren las manuales)"
+        }
+        val version = Regex("""version\s*=\s*(\d+)""").findAll(textoBase).map { it.groupValues[1] }.toList().singleOrNull()
+            ?: error("No se encontró un único `version = N` en la anotación @Database de AvoqadoDatabase.kt")
+        destino.get().asFile.apply { parentFile.mkdirs() }.writeText(lineas.joinToString("\n", postfix = "\n"))
+        destinoVersion.get().asFile.apply { parentFile.mkdirs() }.writeText(
+            "package com.avoqado.pos.escritorio.base\n\n/** Generado: la version de @Database en AvoqadoDatabase.kt de Android. */\nconst val VERSION_DE_LA_BASE: Int = $version\n",
+        )
+    }
+}
+
 val verificarExcluidos by tasks.registering {
     val faltan = excluidos.filterNot { fuentesAndroid.resolve(it).isFile }
     doLast {
@@ -75,11 +120,12 @@ val verificarExcluidos by tasks.registering {
 sourceSets.main {
     kotlin.srcDir(fuentesAndroid)
     kotlin.srcDir(layout.buildDirectory.dir("generated/buildconfig"))
+    kotlin.srcDir(layout.buildDirectory.dir("generated/migraciones"))
     // Se filtra por RUTA ABSOLUTA: un patrón relativo excluiría también nuestro reemplazo con el mismo nombre.
     kotlin.exclude { el -> el.file.startsWith(fuentesAndroid) && el.relativePath.pathString in excluidos }
 }
 
-tasks.named("compileKotlin") { dependsOn(generarBuildConfig, verificarExcluidos) }
+tasks.named("compileKotlin") { dependsOn(generarBuildConfig, copiarMigracionesDeAndroid, verificarExcluidos) }
 
 ksp {
     // 🔴 Sin esto Room buscaría dónde exportar el esquema y podría escribir en ../app/schemas.
@@ -87,7 +133,7 @@ ksp {
     arg("room.generateKotlin", "true")
 }
 tasks.matching { it.name == "kspKotlin" }.configureEach {
-    dependsOn(generarBuildConfig)
+    dependsOn(generarBuildConfig, copiarMigracionesDeAndroid)
     // -PsinKsp: durante el ciclo de compilación de la tarea 6, para que un error de KSP no tape los de Kotlin.
     enabled = !providers.gradleProperty("sinKsp").isPresent
 }
@@ -105,6 +151,10 @@ val evidencia = providers.gradleProperty("avoqado.evidencia")
 tasks.test {
     systemProperty("java.awt.headless", "true")
     systemProperty("avoqado.api", "http://127.0.0.1:9/api/v1")    // puerto cerrado: ninguna prueba unitaria llega a un servidor
+    systemProperty("avoqado.esquemas", appAndroid.resolve("schemas").absolutePath)   // los JSON que exporta Android (3.json…)
+    inputs.dir(appAndroid.resolve("schemas"))
+        .withPropertyName("esquemasAndroid")
+        .withPathSensitivity(PathSensitivity.RELATIVE)
     systemProperty("avoqado.clasesMain", sourceSets.main.get().output.classesDirs.asPath)
     evidencia.orNull?.let { systemProperty("avoqado.evidencia", it) }
     filter { excludeTestsMatching("*E2E") }

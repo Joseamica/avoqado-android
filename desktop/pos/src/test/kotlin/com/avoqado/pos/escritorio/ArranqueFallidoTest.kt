@@ -60,7 +60,15 @@ class ArranqueFallidoTest {
     @Test fun `una base de otra version se dice en español antes del texto de Room`() {
         val room = IllegalStateException("A migration from 999 to 13 was required but not found.")
         assertEquals(
-            "No se pudo abrir Avoqado POS: La base de datos del aparato es de otra versión de la app. ${room.message}$pie",
+            "No se pudo abrir Avoqado POS: La base de datos del aparato no se pudo actualizar a esta versión de la app. ${room.message}$pie",
+            mensajeDeArranqueFallido(ProvisionException("Unable to provision", room), carpeta),
+        )
+    }
+
+    @Test fun `una migración que no deja el esquema esperado también se dice en español`() {
+        val room = IllegalStateException("Migration didn't properly handle: pending_payments(com.avoqado.pos.core.data.local.database.PendingPaymentEntity).")
+        assertEquals(
+            "No se pudo abrir Avoqado POS: La base de datos del aparato no se pudo actualizar a esta versión de la app. ${room.message}$pie",
             mensajeDeArranqueFallido(ProvisionException("Unable to provision", room), carpeta),
         )
     }
@@ -80,7 +88,7 @@ class ArranqueFallidoTest {
         // Contra la causa, no contra el mensaje: la carpeta temporal lleva dígitos al azar y podría traer un «999».
         assertTrue(causaRaiz(error).message.orEmpty().contains("migration from 999"), mensaje)
         assertTrue(
-            mensaje.startsWith("No se pudo abrir Avoqado POS: La base de datos del aparato es de otra versión de la app. A migration from 999"),
+            mensaje.startsWith("No se pudo abrir Avoqado POS: La base de datos del aparato no se pudo actualizar a esta versión de la app. A migration from 999"),
             mensaje,
         )
 

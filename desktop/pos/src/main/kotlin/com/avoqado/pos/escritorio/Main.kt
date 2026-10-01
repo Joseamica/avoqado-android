@@ -2,6 +2,7 @@ package com.avoqado.pos.escritorio
 
 import android.util.Log
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.ExperimentalComposeUiApi
@@ -17,6 +18,9 @@ import com.avoqado.escritorio.CandadoDeInstancia
 import com.avoqado.escritorio.CarpetaDeDatos
 import com.avoqado.escritorio.Urls
 import com.avoqado.pos.BuildConfig
+import com.avoqado.pos.escritorio.tactil.EscenaDeVentana
+import com.avoqado.pos.escritorio.tactil.PuenteTactilWindows
+import com.avoqado.pos.escritorio.teclado.TecladoDeLaVentana
 import java.awt.GraphicsEnvironment
 import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicBoolean
@@ -70,10 +74,22 @@ fun main() {
                 ) {
                     LaunchedEffect(Unit) {
                         withFrameNanos { }   // el primer cuadro se compone…
-                        withFrameNanos { }   // …y ya se dibujó
-                        runCatching { Diagnostico.escribir(carpeta, window.renderApi.name, Diagnostico.arranqueMs()) }
+                        withFrameNanos { }   // …y ya se dibujó (el lienzo nativo ya existe)
+                        // El dedo como DEDO en Windows (Compose 1.7.3 no lo trae): si no se puede, sigue como mouse.
+                        val toque = runCatching {
+                            PuenteTactilWindows.instalar(window) { motivo ->
+                                runCatching { Diagnostico.anotar(carpeta, "Toque con el dedo: apagado: $motivo") }
+                            }
+                        }.getOrElse { "omitido: ${it.javaClass.simpleName}: ${it.message}" }
+                        Log.i("Toque", "Puente táctil: $toque")
+                        // Teclado en pantalla para el dedo; si no se puede instalar, la app sigue con el teclado físico.
+                        runCatching { TecladoDeLaVentana.instalar(EscenaDeVentana.de(window).getOrThrow(), window) }
+                            .onSuccess { Log.i("Teclado", "Teclado híbrido instalado") }
+                            .onFailure { Log.w("Teclado", "Teclado híbrido omitido: ${it.javaClass.simpleName}: ${it.message}") }
+                        runCatching { Diagnostico.escribir(carpeta, window.renderApi.name, Diagnostico.arranqueMs(), toque) }
                             .onFailure { Log.w("Arranque", "No se pudo escribir el diagnóstico", it) }
                     }
+                    DisposableEffect(window) { onDispose { TecladoDeLaVentana.desinstalar() } }
                     AppEscritorio()
                 }
             }
