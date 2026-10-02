@@ -19,6 +19,7 @@ public final class NsdServiceInfo {
     public int getPort() { return port; }
     public void setPort(int p) { port = p; }
     public InetAddress getHost() { return host; }
+    public void setHost(InetAddress h) { host = h; }
     public void setAttribute(String key, String value) { attributes.put(key, value == null ? null : value.getBytes(StandardCharsets.UTF_8)); }
     public Map<String, byte[]> getAttributes() { return attributes; }
 }

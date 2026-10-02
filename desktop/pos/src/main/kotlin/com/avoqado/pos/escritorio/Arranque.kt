@@ -5,8 +5,10 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.room.useReaderConnection
 import com.avoqado.escritorio.ActividadDeEscritorio
+import com.avoqado.escritorio.CarpetaDeDatos
 import com.avoqado.escritorio.Escritorio
 import com.avoqado.escritorio.configuracionDeAndroid
+import com.avoqado.pos.BuildConfig
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.local.database.AvoqadoDatabase
 import com.avoqado.pos.core.util.VenueTimeZone
@@ -38,9 +40,13 @@ object Arranque {
 
     /**
      * Lo que en Android hacen el sistema, Hilt y AvoqadoApp.onCreate antes de la primera pantalla.
-     * Lanza si lo guardado no se puede leer (preferencias ilegibles, base de otra versión): Main lo DICE y sale sin borrar.
+     * Lanza si lo guardado no se puede leer (preferencias ilegibles, base de otra versión) o si la carpeta es del otro
+     * modo ([com.avoqado.escritorio.CarpetaDeOtroModo]): Main lo DICE y sale sin borrar.
      */
-    fun abrir(carpeta: Path) {
+    fun abrir(carpeta: Path, produccion: Boolean = BuildConfig.PRODUCCION) {
+        // 🔴 Lo primero, antes de abrir preferencias o la base: una carpeta del OTRO modo (producción ↔ prueba) no se abre.
+        // Quien llama ya tomó el candado (Main, FasesE2E): nadie más la está marcando.
+        CarpetaDeDatos.comprobarModo(carpeta, produccion)
         val actividad = ActividadDeEscritorio(carpeta)
         // 🔴 ANTES de la red: DeviceHeadersInterceptor lee smallestScreenWidthDp UNA vez (by lazy); con 0 diría PHONE toda la sesión.
         actividad.resources.configuration.copiarDe(

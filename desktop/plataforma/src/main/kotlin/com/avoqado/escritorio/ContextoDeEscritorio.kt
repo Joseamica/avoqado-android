@@ -21,12 +21,20 @@ import java.util.concurrent.ConcurrentHashMap
 /** El Context de escritorio: todo cuelga de la carpeta de datos del usuario. */
 class ContextoDeEscritorio(private val carpeta: Path) : Context() {
     private val preferencias = ConcurrentHashMap<String, PreferenciasEnArchivo>()
+    private val cifradas = ConcurrentHashMap<String, SharedPreferences>()
     private val servicios = ConcurrentHashMap<String, Any>()
     private val recursos = Resources()
     private val contenido = ContentResolver()
 
     override fun getSharedPreferences(name: String, mode: Int): SharedPreferences =
         preferencias.computeIfAbsent(name) { PreferenciasEnArchivo(carpeta.resolve("shared_prefs").resolve("$it.json")) }
+
+    /**
+     * EncryptedSharedPreferences en Windows: la MISMA carpeta `shared_prefs`, una instancia por nombre (como
+     * getSharedPreferences). [codec] se pide sólo al abrir por primera vez. Lanza PreferenciasIlegibles.
+     */
+    fun getPreferenciasCifradas(name: String, codec: () -> CodecDePreferencias): SharedPreferences =
+        cifradas.computeIfAbsent(name) { preferenciasCifradas(carpeta.resolve("shared_prefs"), it, codec()) }
     override fun getSystemService(name: String): Any? =
         servicios.computeIfAbsent(name) { ServiciosDeSistema.crear(it) ?: NINGUNO }.takeUnless { it === NINGUNO }
     override fun getApplicationContext(): Context = this

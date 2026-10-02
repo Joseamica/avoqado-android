@@ -23,6 +23,7 @@ dependencies {
     api("com.google.dagger:hilt-core:2.57.2")     // sólo por @InstallIn/SingletonComponent/@EntryPoint
     api("androidx.datastore:datastore-preferences-core:1.1.1")
     api("org.json:json:20231013")                  // la misma que usan las pruebas de Android
+    implementation("net.java.dev.jna:jna-platform:5.19.1")   // DPAPI (Crypt32Util) de las preferencias cifradas; la MISMA de :pos
     testImplementation(kotlin("test-junit"))
     testRuntimeOnly("org.jetbrains.compose.desktop:desktop-jvm-macos-arm64:$cmp")
 }

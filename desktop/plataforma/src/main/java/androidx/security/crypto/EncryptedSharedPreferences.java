@@ -2,11 +2,12 @@ package androidx.security.crypto;
 
 import android.content.Context;
 import android.content.SharedPreferences;
-import android.util.Log;
+import com.avoqado.escritorio.PreferenciasSeguras;
 
 /**
- * 🔴 Sustituto SIN CIFRAR: devuelve las preferencias normales del archivo con ese nombre. El token de sesión queda en
- * claro en la carpeta de datos del usuario. Cifrarlo con DPAPI (Windows) / Keychain (Mac) es de la fase siguiente.
+ * Sustituto de escritorio. En Windows: `<carpeta>/shared_prefs/<fileName>.cifrado` con DPAPI del usuario, convertido
+ * y verificado desde el `.json` en claro (ver preferenciasCifradas); si algo no se puede leer o verificar lanza
+ * PreferenciasIlegibles y la app NO arranca. Fuera de Windows (desarrollo): las preferencias normales, SIN cifrar.
  */
 public final class EncryptedSharedPreferences {
     public enum PrefKeyEncryptionScheme { AES256_SIV }
@@ -17,7 +18,6 @@ public final class EncryptedSharedPreferences {
     public static SharedPreferences create(Context context, String fileName, MasterKey masterKey,
                                            PrefKeyEncryptionScheme prefKeyEncryptionScheme,
                                            PrefValueEncryptionScheme prefValueEncryptionScheme) {
-        Log.w("Escritorio", "No disponible en Windows todavía: preferencias cifradas; «" + fileName + "» se guarda SIN cifrar");
-        return context.getSharedPreferences(fileName, Context.MODE_PRIVATE);
+        return PreferenciasSeguras.abrir(context, fileName);
     }
 }

@@ -38,7 +38,7 @@ import kotlin.system.exitProcess
 fun main(args: Array<String>) {
     // El mismo arranque que Main.kt, menos la ventana.
     Thread.setDefaultUncaughtExceptionHandler { _, e -> Log.e("SinCapturar", "Excepción no atrapada", e) }
-    val carpeta = CarpetaDeDatos.resolver().also(Bitacora::iniciar)
+    val carpeta = CarpetaDeDatos.resolver(produccion = false).also(Bitacora::iniciar)
     // Tras un kill -9 el sistema tiene que soltar el candado: si no, «reabrir» no abriría.
     if (!CandadoDeInstancia.tomar(carpeta)) { avisar("FASE_FALLO candado ocupado"); exitProcess(3) }
     if (System.getProperty("avoqado.version") == null) System.setProperty("avoqado.version", BuildConfig.VERSION_NAME)

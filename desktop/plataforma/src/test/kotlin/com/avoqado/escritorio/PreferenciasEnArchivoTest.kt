@@ -7,6 +7,7 @@ import java.nio.file.Path
 import java.nio.file.attribute.PosixFilePermissions
 import kotlin.concurrent.thread
 import kotlin.test.Test
+import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
@@ -74,6 +75,16 @@ class PreferenciasEnArchivoTest {
         assertTrue(huerfanos(destino.parent).isEmpty(), "quedaron temporales: ${huerfanos(destino.parent)}")
     }
 
+    @Test fun `un surrogate suelto no se guarda cambiado por un signo de interrogacion - commit da false y el archivo anterior queda intacto`() {
+        val archivo = carpeta.resolve("shared_prefs/avoqado prefs.json")
+        val p = abrir()
+        assertTrue(p.edit().putString("cliente", "bien").commit())
+        val antes = Files.readAllBytes(archivo)
+        assertFalse(p.edit().putString("cliente", "emoji roto \uD83D").commit(), "se guardó algo distinto de lo que hay en memoria")
+        assertContentEquals(antes, Files.readAllBytes(archivo))
+        assertEquals("bien", abrir().getString("cliente", null))
+    }
+
     @Test fun `un archivo truncado se aparta como corrupto y la app abre vacia`() {
         val archivo = carpeta.resolve("shared_prefs/avoqado prefs.json")
         Files.createDirectories(archivo.parent)
@@ -135,6 +146,77 @@ class PreferenciasEnArchivoTest {
         }
         assertEquals(original, Files.readString(archivo))
         assertEquals("cobro-1", PreferenciasEnArchivo(archivo).getString("pendientes", null))
+    }
+
+    @Test fun `un guardado que falla no se queda en memoria - el valor anterior sigue, la llave nueva no aparece y no se avisa`() {
+        val dir = Files.createDirectories(carpeta.resolve("falla al guardar"))
+        val archivo = dir.resolve("prefs.json")
+        val p = PreferenciasEnArchivo(archivo)
+        assertTrue(p.edit().putString("cola", "[op-1]").putInt("n", 1).commit())
+        val avisos = mutableListOf<String?>()
+        p.registerOnSharedPreferenceChangeListener { _, llave -> avisos += llave }
+        val (_, bitacora) = bitacoraDe {
+            sinEscrituraEn(dir) {
+                assertFalse(p.edit().putString("cola", "[op-1,op-2-SECRETO]").putString("nueva", "x").remove("n").commit())
+                assertEquals("[op-1]", p.getString("cola", null))
+                assertFalse(p.contains("nueva"))
+                assertEquals(1, p.getInt("n", -1))
+                assertEquals(mapOf<String, Any>("cola" to "[op-1]", "n" to 1), p.all)
+                assertFalse(p.edit().clear().commit(), "un clear() que no quedó en disco tampoco vacía la memoria")
+                assertEquals("[op-1]", p.getString("cola", null))
+            }
+        }
+        assertTrue(avisos.isEmpty(), "avisó a los oyentes de un cambio que no quedó en disco: $avisos")
+        assertTrue("No se pudo guardar" in bitacora && "prefs.json" in bitacora && "AccessDeniedException" in bitacora, bitacora)
+        assertFalse("SECRETO" in bitacora, "el valor llegó a la bitácora: $bitacora")
+        // Al volver los permisos, un editor nuevo de la MISMA instancia guarda bien.
+        assertTrue(p.edit().putString("cola", "[op-1,op-2]").commit())
+        assertEquals(listOf<String?>("cola"), avisos)
+        val releida = PreferenciasEnArchivo(archivo)
+        assertEquals("[op-1,op-2]", releida.getString("cola", null))
+        assertEquals(1, releida.getInt("n", -1))
+    }
+
+    @Test fun `el patron de la cola del cajon - guardar ignorando el booleano y releer - ve el valor viejo si el disco falla`() {
+        // CashDrawerRepository.encolar: guarda con commit() (SecureStorage descarta el booleano) y RELEE para saber si quedó.
+        val dir = Files.createDirectories(carpeta.resolve("cola del cajon"))
+        val archivo = dir.resolve("avoqado_secure_prefs.json")
+        val p = PreferenciasEnArchivo(archivo)
+        fun encolar(op: String): Boolean {
+            val lista = p.getString("pendingDrawerOps.v1", null)?.split(",").orEmpty() + op
+            p.edit().putString("pendingDrawerOps.v1", lista.joinToString(",")).commit()
+            return p.getString("pendingDrawerOps.v1", null)?.split(",")?.contains(op) == true
+        }
+        assertTrue(encolar("retiro-1"))
+        sinEscrituraEn(dir) { assertFalse(encolar("retiro-2"), "la relectura dijo «guardado» sin nada en disco") }
+        assertEquals("retiro-1", PreferenciasEnArchivo(archivo).getString("pendingDrawerOps.v1", null))
+        assertTrue(encolar("retiro-2"))
+        assertEquals("retiro-1,retiro-2", PreferenciasEnArchivo(archivo).getString("pendingDrawerOps.v1", null))
+    }
+
+    @Test fun `cifrado - un guardado que falla tampoco se queda en memoria ni toca el disco`() {
+        val c = Carpeta()
+        val p = c.abrir()
+        assertTrue(p.edit().putString("pendingDrawerOps.v1", "retiro-1").commit())
+        val antes = c.foto()
+        c.sinEscritura {
+            assertFalse(p.edit().putString("pendingDrawerOps.v1", "retiro-1,retiro-2").commit())
+            assertEquals("retiro-1", p.getString("pendingDrawerOps.v1", null))
+        }
+        assertEquals(antes, c.foto())
+        assertTrue(p.edit().putString("pendingDrawerOps.v1", "retiro-1,retiro-2").commit())
+        assertEquals("retiro-1,retiro-2", c.abrir().getString("pendingDrawerOps.v1", null))   // releído del disco
+    }
+
+    /** Corre [bloque] con [dir] sin permiso de escritura (no se puede crear ni reemplazar nada dentro). */
+    private fun sinEscrituraEn(dir: Path, bloque: () -> Unit) {
+        Files.setPosixFilePermissions(dir, PosixFilePermissions.fromString("r-x------"))
+        try {
+            Assume.assumeFalse("corre como root: no hay carpeta sin permiso", Files.isWritable(dir))
+            bloque()
+        } finally {
+            Files.setPosixFilePermissions(dir, PosixFilePermissions.fromString("rwx------"))
+        }
     }
 
     @Test fun `reusar un Editor tras commit no repite sus cambios`() {

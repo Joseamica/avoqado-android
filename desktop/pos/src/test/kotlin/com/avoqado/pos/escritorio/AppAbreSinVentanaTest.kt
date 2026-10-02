@@ -21,6 +21,8 @@ class AppAbreSinVentanaTest {
         val carpeta = Files.createTempDirectory("Avoqado POS humo ñ")
         Bitacora.iniciar(carpeta)
         Arranque.abrir(carpeta)   // lo mismo que hace Main.kt antes de abrir la ventana (incluye AvoqadoApp.onCreate)
+        // Una carpeta nueva queda marcada con el modo del build (las pruebas son de PRUEBA): producción ya no la abriría.
+        assertEquals("prueba", Files.readString(carpeta.resolve(".modo-de-datos")).trim())
         // Sembrada ANTES de la primera petición: DeviceHeadersInterceptor la lee una sola vez (con 0 diría PHONE).
         assertEquals(800, Escritorio.contexto.resources.configuration.smallestScreenWidthDp)
 

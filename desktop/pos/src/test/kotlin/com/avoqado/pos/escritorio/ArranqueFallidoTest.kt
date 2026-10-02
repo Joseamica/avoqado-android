@@ -3,6 +3,7 @@ package com.avoqado.pos.escritorio
 import androidx.sqlite.driver.bundled.BundledSQLiteDriver
 import com.avoqado.escritorio.Bitacora
 import com.avoqado.escritorio.ContextoDeEscritorio
+import com.avoqado.escritorio.PreferenciasIlegibles
 import com.google.inject.ProvisionException
 import java.io.IOException
 import java.lang.reflect.InvocationTargetException
@@ -28,6 +29,15 @@ class ArranqueFallidoTest {
         )
         val envuelto = ProvisionException("Unable to provision", InvocationTargetException(UndeclaredThrowableException(prefs)))
         assertEquals("No se pudo abrir Avoqado POS: ${prefs.message}$pie", mensajeDeArranqueFallido(envuelto, carpeta))
+    }
+
+    @Test fun `preferencias cifradas ilegibles (DPAPI) - dice el motivo bajo las envolturas de Guice`() {
+        val ilegibles = PreferenciasIlegibles(
+            "Preferencias ilegibles: «avoqado_secure_prefs.cifrado» no se pudo descifrar: ¿otro usuario de Windows o se restableció su contraseña?",
+            RuntimeException("Win32Exception: la clave no es válida"),
+        )
+        val envuelto = ProvisionException("Unable to provision", InvocationTargetException(ilegibles))
+        assertEquals("No se pudo abrir Avoqado POS: ${ilegibles.motivo}$pie", mensajeDeArranqueFallido(envuelto, carpeta))
     }
 
     @Test fun `si la causa sólo trae una ruta, dice qué clase de error es`() {

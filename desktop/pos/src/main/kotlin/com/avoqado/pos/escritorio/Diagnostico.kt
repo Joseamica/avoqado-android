@@ -16,7 +16,7 @@ object Diagnostico {
             Files.createDirectories(carpeta.resolve("logs")).resolve("diagnostico.txt"),
             veredicto(leerDatosDelEquipo(carpeta, motor, arranqueMs, toque)).comoTexto() + "\n\n" + """
             |Fecha: ${java.time.LocalDateTime.now().format(java.time.format.DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))}
-            |Avoqado POS (prueba de escritorio) ${com.avoqado.pos.BuildConfig.VERSION_NAME}
+            |Avoqado POS (${if (com.avoqado.pos.BuildConfig.PRODUCCION) "producción" else "prueba"} de escritorio) ${com.avoqado.pos.BuildConfig.VERSION_NAME}
             |Primer cuadro dibujado: $arranqueMs ms desde que arrancó Java (después vienen 1.35 s de splash, igual que en Android)
             |Motor de dibujo (resuelto): $motor
             |Toque con el dedo: $toque

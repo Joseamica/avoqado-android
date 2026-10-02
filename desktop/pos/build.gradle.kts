@@ -1,3 +1,4 @@
+import java.util.zip.ZipFile
 plugins {
     kotlin("jvm")
     kotlin("plugin.compose")
@@ -41,12 +42,23 @@ dependencies {
 // --- BuildConfig: los 4 campos que la app lee (BASE_URL, DASHBOARD_URL, DEBUG, VERSION_NAME) ---
 val versionAndroid = Regex("""versionName\s*=\s*"([^"]+)"""")
     .find(appAndroid.resolve("build.gradle.kts").readText())?.groupValues?.get(1) ?: "0.0.0"
-val apiPorDefecto = providers.gradleProperty("avoqado.api").getOrElse("http://localhost:3000/api/v1")
-val dashboardPorDefecto = providers.gradleProperty("avoqado.dashboard").getOrElse("http://localhost:5173")
+// -Pavoqado.produccion=true: build de PRODUCCIÓN (DEBUG=false, hosts fijos de avoqado.io, carpeta de datos segura). Por defecto, PRUEBA.
+val produccion = providers.gradleProperty("avoqado.produccion").map {
+    when (it) {
+        "true" -> true
+        "false" -> false
+        else -> throw GradleException("avoqado.produccion sólo acepta true o false (recibí «$it»). Sin la propiedad, el build es de PRUEBA.")
+    }
+}.getOrElse(false)
+val apiPorDefecto = if (produccion) "https://api.avoqado.io/api/v1"
+    else providers.gradleProperty("avoqado.api").getOrElse("http://localhost:3000/api/v1")
+val dashboardPorDefecto = if (produccion) "https://dashboard.avoqado.io"
+    else providers.gradleProperty("avoqado.dashboard").getOrElse("http://localhost:5173")
 
 val generarBuildConfig by tasks.registering {
     val archivo = layout.buildDirectory.file("generated/buildconfig/com/avoqado/pos/BuildConfig.kt")
     inputs.property("version", versionAndroid)
+    inputs.property("produccion", produccion)
     inputs.property("api", apiPorDefecto)
     inputs.property("dashboard", dashboardPorDefecto)
     outputs.file(archivo)
@@ -55,12 +67,13 @@ val generarBuildConfig by tasks.registering {
             """
             |package com.avoqado.pos
             |
-            |/** Generado por desktop/pos/build.gradle.kts: los 4 campos que la app lee del BuildConfig de Android. */
+            |/** Generado por desktop/pos/build.gradle.kts: los campos que la app lee del BuildConfig de Android (+ PRODUCCION). */
             |object BuildConfig {
-            |    const val DEBUG: Boolean = true
+            |    const val PRODUCCION: Boolean = $produccion
+            |    const val DEBUG: Boolean = ${!produccion}
             |    const val VERSION_NAME: String = "$versionAndroid-escritorio"
-            |    val BASE_URL: String = com.avoqado.escritorio.Urls.api(porDefecto = "$apiPorDefecto")
-            |    val DASHBOARD_URL: String = com.avoqado.escritorio.Urls.dashboard(porDefecto = "$dashboardPorDefecto")
+            |    val BASE_URL: String = com.avoqado.escritorio.Urls.api(porDefecto = "$apiPorDefecto", produccion = PRODUCCION)
+            |    val DASHBOARD_URL: String = com.avoqado.escritorio.Urls.dashboard(porDefecto = "$dashboardPorDefecto", produccion = PRODUCCION)
             |}
             |""".trimMargin(),
         )
@@ -176,7 +189,7 @@ val e2e by tasks.registering(Test::class) {
 }
 
 // --- Paquete portátil para Windows: jar + dependencias con el Skia de Windows + JRE 17 + Iniciar.bat ---
-// -Pavoqado.jreWindows=<JRE de Windows ya descomprimido> -Pavoqado.salida=<ruta ABSOLUTA del árbol real> -Pavoqado.ipMac=<IP>
+// -Pavoqado.jreWindows=<JRE de Windows ya descomprimido> -Pavoqado.salida=<ruta ABSOLUTA del árbol real> -Pavoqado.ipMac=<IP> (sólo en prueba)
 val runtimeWindows by configurations.creating {
     extendsFrom(configurations.runtimeClasspath.get())
     isCanBeConsumed = false
@@ -187,23 +200,62 @@ val runtimeWindows by configurations.creating {
 }
 dependencies { runtimeWindows("org.jetbrains.compose.desktop:desktop-jvm-windows-x64:$cmp") }
 
+// Una DLL de SQLite NATIVA para Windows va en jre/bin del paquete: androidx.sqlite la busca ahí ANTES de copiarla a %TEMP%.
+// (No existe para ARM64: en una Windows ARM se usa este JRE x64 bajo emulación.)
+val rutaDeLaDll = "natives/windows_x64/sqliteJni.dll"
+// -Pavoqado.prefijoJarSqlite: sólo para PROBAR el mensaje cuando el jar falta (un prefijo que no existe).
+val prefijoDelJarDeSqlite = providers.gradleProperty("avoqado.prefijoJarSqlite").getOrElse("sqlite-bundled-jvm")
+// Perezoso: si el jar falta, el error en español sale AQUÍ (y no el «provider has no value» de Gradle).
+val jarDeSqlite = provider {
+    runtimeWindows.files.firstOrNull { it.name.startsWith(prefijoDelJarDeSqlite) }
+        ?: throw GradleException("No encontré $prefijoDelJarDeSqlite entre las dependencias de Windows: sin su DLL nativa, SQLite se copiaría a %TEMP% en cada arranque")
+}
+
+// -Pavoqado.produccion=true: lanzador sin `set` (hosts de producción, sin -Pavoqado.ipMac) y ZIP «…-produccion.zip».
 val empaquetarWindows by tasks.registering(Zip::class) {
     val jre = providers.gradleProperty("avoqado.jreWindows")        // carpeta del JRE ya descomprimido
     val salida = providers.gradleProperty("avoqado.salida")
     val ipMac = providers.gradleProperty("avoqado.ipMac")
-    archiveFileName.set("avoqado-pos-windows-prueba.zip")
+    archiveFileName.set(if (produccion) "avoqado-pos-windows-produccion.zip" else "avoqado-pos-windows-prueba.zip")
     destinationDirectory.set(layout.dir(salida.map { File(it) }))
+    doFirst {
+        val jar = jarDeSqlite.get()
+        val trae = ZipFile(jar).use { it.getEntry(rutaDeLaDll) != null }
+        if (!trae) throw GradleException("${jar.name} no trae $rutaDeLaDll: sin ella SQLite se copiaría a %TEMP% en cada arranque")
+    }
     into("Avoqado POS") {
         from(tasks.jar) { into("lib") }
         from(runtimeWindows) { into("lib") }
         from(jre) { into("jre") }
-        from("windows/Diagnostico.bat")
-        from("windows/Iniciar.bat.plantilla") {
-            rename { "Iniciar.bat" }
-            filter { it.replace("@IP_DE_LA_MAC@", ipMac.get()) }
-            // El filtro por renglón de Gradle deja LF (medido: run-avoqado-android.ul3Vwv); cmd.exe quiere CRLF.
+        from(jarDeSqlite.map { zipTree(it) }) {
+            include(rutaDeLaDll)
+            eachFile { relativePath = RelativePath(true, "Avoqado POS", "jre", "bin", "sqliteJni.dll") }
+            includeEmptyDirs = false
+        }
+        // Diagnóstico y «qué ve Windows» miran SÓLO la carpeta de datos de este modo (la misma que resuelve CarpetaDeDatos).
+        val carpetaBat = if (produccion) "%USERPROFILE%\\.avoqado-pos" else "%APPDATA%\\Avoqado POS"
+        val carpetaPs = if (produccion) "Join-Path \$env:USERPROFILE '.avoqado-pos'" else "Join-Path \$env:APPDATA 'Avoqado POS'"
+        from("windows/Diagnostico.bat") {
+            filter { it.replace("@CARPETA_DE_DATOS@", carpetaBat) }
             filter(org.apache.tools.ant.filters.FixCrLfFilter::class, "eol" to org.apache.tools.ant.filters.FixCrLfFilter.CrLf.newInstance("crlf"))
             filteringCharset = "UTF-8"
+        }
+        from("windows/QueVeWindows.bat")   // qué impresoras, COM y pantallas ve Windows (sólo lee)
+        from("windows/QueVeWindows.ps1") {
+            filter { it.replace("@CARPETA_DE_DATOS_PS@", carpetaPs) }
+            filter(org.apache.tools.ant.filters.FixCrLfFilter::class, "eol" to org.apache.tools.ant.filters.FixCrLfFilter.CrLf.newInstance("crlf"))
+            filteringCharset = "UTF-8"
+        }
+        if (produccion) {
+            from("windows/Iniciar-produccion.bat") { rename { "Iniciar.bat" } }
+        } else {
+            from("windows/Iniciar.bat.plantilla") {
+                rename { "Iniciar.bat" }
+                filter { it.replace("@IP_DE_LA_MAC@", ipMac.get()) }
+                // El filtro por renglón de Gradle deja LF (medido: run-avoqado-android.ul3Vwv); cmd.exe quiere CRLF.
+                filter(org.apache.tools.ant.filters.FixCrLfFilter::class, "eol" to org.apache.tools.ant.filters.FixCrLfFilter.CrLf.newInstance("crlf"))
+                filteringCharset = "UTF-8"
+            }
         }
     }
 }

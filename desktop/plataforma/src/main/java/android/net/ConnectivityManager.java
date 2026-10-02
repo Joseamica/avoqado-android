@@ -1,15 +1,21 @@
 package android.net;
 
 import android.util.Log;
+import java.net.Inet4Address;
 import java.net.InetAddress;
+import java.net.InterfaceAddress;
 import java.net.NetworkInterface;
+import java.util.ArrayList;
 import java.util.Collections;
+import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.function.BooleanSupplier;
+import java.util.regex.Pattern;
 
 /**
  * Sustituto con comportamiento real: hay red si alguna interfaz física arriba tiene una dirección que no es
@@ -44,7 +50,87 @@ public class ConnectivityManager {
     }
 
     public Network getActiveNetwork() { return arriba ? Network.UNICA : null; }
-    public NetworkCapabilities getNetworkCapabilities(Network network) { return network == null ? null : new NetworkCapabilities(); }
+    /** La red activa ({@link Network#UNICA}): cable con internet, como siempre. Una interfaz: sus transportes reales. */
+    public NetworkCapabilities getNetworkCapabilities(Network network) {
+        if (network == null) return null;
+        if (network.interfaz == null) return new NetworkCapabilities();
+        NetworkInterface i = interfazDe(network);
+        return i == null ? null : capacidadesDe(i);
+    }
+
+    // --- Una red por interfaz: para la app que barre la red del local (BuscadorDeImpresoraEnLan) ---
+
+    /** Una por interfaz activa, que no es loopback y tiene al menos una IPv4 con prefijo válido (también las virtuales). */
+    public Network[] getAllNetworks() {
+        List<Network> redes = new ArrayList<>();
+        try {
+            for (NetworkInterface i : Collections.list(NetworkInterface.getNetworkInterfaces())) {
+                if (i.isUp() && !i.isLoopback() && !direccionesIPv4(i).isEmpty()) redes.add(new Network(i.getName()));
+            }
+        } catch (Exception e) {
+            Log.w("ConnectivityManager", "No se pudieron leer las interfaces de red: " + e.getClass().getSimpleName());
+        }
+        return redes.toArray(new Network[0]);
+    }
+
+    /** De {@link Network#UNICA}: null (no es una interfaz). De una interfaz que ya no está: null. */
+    public LinkProperties getLinkProperties(Network network) {
+        NetworkInterface i = interfazDe(network);
+        return i == null ? null : new LinkProperties(direccionesIPv4(i));
+    }
+
+    private static NetworkInterface interfazDe(Network network) {
+        if (network == null || network.interfaz == null) return null;
+        try {
+            NetworkInterface i = NetworkInterface.getByName(network.interfaz);
+            return i != null && i.isUp() ? i : null;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** Sólo IPv4, sin loopback y con prefijo de 1 a 32 (en Windows Java a veces reporta un prefijo imposible: se omite). */
+    private static List<LinkAddress> direccionesIPv4(NetworkInterface i) {
+        List<LinkAddress> lista = new ArrayList<>();
+        for (InterfaceAddress d : i.getInterfaceAddresses()) {
+            InetAddress a = d.getAddress();
+            int prefijo = d.getNetworkPrefixLength();
+            if (a instanceof Inet4Address && !a.isLoopbackAddress() && prefijo >= 1 && prefijo <= 32) lista.add(new LinkAddress(a, prefijo));
+        }
+        return lista;
+    }
+
+    private static NetworkCapabilities capacidadesDe(NetworkInterface i) {
+        boolean conMac;
+        try {
+            byte[] mac = i.getHardwareAddress();
+            conMac = mac != null && mac.length > 0;
+        } catch (Exception e) {
+            conMac = false;
+        }
+        return new NetworkCapabilities(transportesDe(i.getName(), i.getDisplayName(), i.isVirtual(), conMac));
+    }
+
+    private static final Pattern VIRTUAL = Pattern.compile(
+        "vEthernet|Hyper-V|\\bWSL\\b|VirtualBox|VMware|Tailscale|\\bTAP\\b|WireGuard|Bluetooth|Loopback|Virtual|VPN|Tunnel",
+        Pattern.CASE_INSENSITIVE);
+    private static final Pattern INALAMBRICO = Pattern.compile("Wi-?Fi|WLAN|Wireless|802\\.11", Pattern.CASE_INSENSITIVE);
+
+    /**
+     * Qué transportes tiene una interfaz, por su nombre (Windows: «Wi-Fi», o el corto de Java: «wlan0», «eth3») y su
+     * descripción (la del adaptador: «Intel(R) Wi-Fi 6 AX201»). Función pura.
+     * - VIRTUAL ⇒ ninguno: `isVirtual`, sin dirección física (MAC), o nombre/descripción de máquina virtual, VPN o
+     *   Bluetooth (vEthernet, Hyper-V, WSL, VirtualBox, VMware, Tailscale, TAP, WireGuard, Bluetooth, Loopback, Virtual,
+     *   VPN, Tunnel). Gana sobre WiFi: «Wi-Fi Direct Virtual Adapter» no es la red del local.
+     * - inalámbrica (Wi-Fi, WLAN, Wireless, 802.11) ⇒ WiFi;
+     * - cualquier otra tarjeta física ⇒ cable.
+     */
+    static Set<Integer> transportesDe(String nombre, String descripcion, boolean virtual, boolean conMac) {
+        String texto = (nombre == null ? "" : nombre) + " " + (descripcion == null ? "" : descripcion);
+        if (virtual || !conMac || VIRTUAL.matcher(texto).find()) return Set.of();
+        if (INALAMBRICO.matcher(texto).find()) return Set.of(NetworkCapabilities.TRANSPORT_WIFI);
+        return Set.of(NetworkCapabilities.TRANSPORT_ETHERNET);
+    }
 
     public void registerNetworkCallback(NetworkRequest request, NetworkCallback callback) {
         oyentes.put(callback, Boolean.FALSE);

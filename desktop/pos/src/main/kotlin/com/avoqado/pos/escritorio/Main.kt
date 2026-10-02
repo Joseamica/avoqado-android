@@ -16,6 +16,7 @@ import androidx.compose.ui.window.rememberWindowState
 import com.avoqado.escritorio.Bitacora
 import com.avoqado.escritorio.CandadoDeInstancia
 import com.avoqado.escritorio.CarpetaDeDatos
+import com.avoqado.escritorio.RecursosDeImagen
 import com.avoqado.escritorio.Urls
 import com.avoqado.pos.BuildConfig
 import com.avoqado.pos.escritorio.tactil.EscenaDeVentana
@@ -29,14 +30,19 @@ import kotlin.system.exitProcess
 
 @OptIn(ExperimentalComposeUiApi::class)
 fun main() {
+    // Producción: la bitácora no guarda Log.d (detalle de depuración). Lo primero, antes de cualquier Log.
+    Bitacora.soloInformativo = BuildConfig.PRODUCCION
+    // Los ids de R.drawable.* que el ticket pide por BitmapFactory (el isotipo del pie) salen de la misma tabla que painterResource.
+    RecursosDeImagen.rutaDe = ::rutaDeRecurso
+    aplicarIdiomaDeLaApp()
     // Lo que se escapa de appScope/viewModelScope: sin consola (javaw) la pila sólo sobrevive en la bitácora.
     Thread.setDefaultUncaughtExceptionHandler { _, e -> Log.e("SinCapturar", "Excepción no atrapada", e) }
     // Sin carpeta o sin bitácora, el aviso no apunta a unos logs que no existen.
-    val carpeta = protegido(carpeta = null) { CarpetaDeDatos.resolver().also(Bitacora::iniciar) }
+    val carpeta = protegido(carpeta = null) { CarpetaDeDatos.resolver(BuildConfig.PRODUCCION).also(Bitacora::iniciar) }
     protegido(carpeta) {
         // Esta URL la lee la app por su cuenta (KDS/Waste/Inventory con DEBUG) y no pasa por Urls.api: mismo candado.
         System.getProperty("avoqado.test.baseUrl")?.let { url ->
-            runCatching { Urls.validar(url) }.onFailure { salir(4, it.message ?: "avoqado.test.baseUrl no es válida", JOptionPane.ERROR_MESSAGE) }
+            runCatching { Urls.validar(url, BuildConfig.PRODUCCION) }.onFailure { salir(4, it.message ?: "avoqado.test.baseUrl no es válida", JOptionPane.ERROR_MESSAGE) }
         }
         if (!CandadoDeInstancia.tomar(carpeta)) {
             salir(3, "Avoqado POS ya está abierto en esta computadora.", JOptionPane.INFORMATION_MESSAGE)

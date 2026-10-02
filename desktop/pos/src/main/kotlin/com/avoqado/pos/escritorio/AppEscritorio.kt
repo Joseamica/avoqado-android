@@ -26,6 +26,7 @@ import androidx.lifecycle.ViewModelStoreOwner
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
 import com.avoqado.escritorio.ConfiguracionDeAndroid
+import com.avoqado.escritorio.calendario.CalendarioPendiente
 import com.avoqado.pos.designsystem.components.AvoqadoLaunchSplash
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.navigation.AvoqadoNavGraph
@@ -61,6 +62,8 @@ fun AppEscritorio() = BoxWithConstraints(Modifier.fillMaxSize()) {
                         generacion = TecladoDeLaVentana.generacion.value,
                         teclado = { TecladoEnPantalla(TecladoDeLaVentana::alPresionar, TecladoDeLaVentana.estado, Modifier.fillMaxWidth()) },
                     ) { AvoqadoNavGraph(windowSizeClass = windowSizeClass) }
+                    CalendarioPendiente()   // android.app.DatePickerDialog de Reportes (sustituto en desktop/plataforma)
+                    AvisoDeFallaDeGuardado()   // el disco no guardó (antivirus, disco lleno): se le DICE al cajero
                     AnimatedVisibility(visible = splash, exit = fadeOut(tween(220))) { AvoqadoLaunchSplash() }
                 }
             }

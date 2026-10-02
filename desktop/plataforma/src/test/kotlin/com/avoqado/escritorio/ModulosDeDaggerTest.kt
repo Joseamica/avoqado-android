@@ -17,6 +17,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertNotSame
 import kotlin.test.assertSame
+import kotlin.test.assertTrue
 
 interface Saludo { fun hola(): String }
 class SaludoReal @Inject constructor(@Named("nombre") private val nombre: String) : Saludo {
@@ -87,5 +88,22 @@ class ModulosDeDaggerTest {
         assertFailsWith<CreationException> {
             Guice.createInjector(ModulosDeDagger(ModuloObjeto::class.java), com.google.inject.Module { it.getProvider(NecesitaAlgo::class.java) })
         }
+    }
+
+    @Test fun `ajustar recibe lo que sale de cada Provides y su resultado es lo que se inyecta, una vez por singleton`() {
+        val vistos = mutableListOf<Any>()
+        val ajustado = Contador()
+        val inyector = Guice.createInjector(
+            ModulosDeDagger(ModuloObjeto::class.java, ModuloAbstracto::class.java) { objeto ->
+                vistos += objeto
+                if (objeto is Contador) ajustado else objeto
+            },
+        )
+        assertSame(ajustado, inyector.getInstance(Contador::class.java))
+        assertSame(ajustado, inyector.getInstance(Contador::class.java))
+        assertEquals(1, vistos.count { it is Contador }, "un singleton se ajusta una sola vez")
+        assertEquals("hola Avoqado", inyector.getInstance(Saludo::class.java).hola())   // lo demás pasa tal cual
+        assertEquals(7, inyector.getInstance(Int::class.javaObjectType))                // también los del Companion
+        assertTrue(vistos.any { it == 7 })
     }
 }

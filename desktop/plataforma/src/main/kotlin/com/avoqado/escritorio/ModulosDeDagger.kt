@@ -18,8 +18,11 @@ import javax.inject.Singleton
  * - `object` → sus métodos @Provides sobre la instancia única.
  * - clase abstracta o interfaz → @Binds (parámetro → tipo de retorno) y, si tiene, su `Companion` con @Provides.
  * Respeta @Singleton y los calificadores (@Named, @ApplicationContext). Sin multibindings: la app no usa ninguno (medido 29-sep).
+ *
+ * [ajustar] recibe lo que devuelve cada @Provides (una vez por singleton) y lo que devuelve es lo que se inyecta: así
+ * escritorio le pone su guarda de red al OkHttpClient de la app sin copiar la firma de su @Provides. Por omisión, tal cual.
  */
-class ModulosDeDagger(private vararg val modulos: Class<*>) : AbstractModule() {
+class ModulosDeDagger(private vararg val modulos: Class<*>, private val ajustar: (Any) -> Any = { it }) : AbstractModule() {
     override fun configure() {
         for (modulo in modulos) {
             // La instancia de un `object` por reflexión de JAVA: `KClass.objectInstance` exige kotlin-reflect.
@@ -45,8 +48,9 @@ class ModulosDeDagger(private vararg val modulos: Class<*>) : AbstractModule() {
             val enlace = bind(llave(metodo.genericReturnType, metodo.annotations)).toProvider(
                 Provider {
                     // Sin desenvolver, Guice sólo diría «InvocationTargetException» y taparía la causa real del @Provides.
-                    try { metodo.invoke(instancia, *parametros.map { it.get() }.toTypedArray()) }
+                    val valor = try { metodo.invoke(instancia, *parametros.map { it.get() }.toTypedArray()) }
                     catch (e: InvocationTargetException) { throw e.targetException }
+                    valor?.let(ajustar)
                 },
             )
             if (metodo.isAnnotationPresent(Singleton::class.java)) enlace.`in`(Scopes.SINGLETON)

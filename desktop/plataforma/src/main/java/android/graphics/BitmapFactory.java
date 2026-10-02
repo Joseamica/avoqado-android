@@ -7,6 +7,7 @@ import java.awt.image.BufferedImage;
 import java.io.ByteArrayInputStream;
 import java.io.File;
 import java.io.IOException;
+import java.io.InputStream;
 import javax.imageio.ImageIO;
 
 /** Sustituto con ImageIO (PNG, JPEG, GIF, BMP). Como en Android, lo que no se puede leer devuelve null. */
@@ -19,8 +20,26 @@ public class BitmapFactory {
         try { return envolver(ImageIO.read(new ByteArrayInputStream(data, offset, length))); } catch (IOException e) { return null; }
     }
 
-    /** Los ids de R viven en :pos (tarea 4); aquí no hay de dónde leerlos todavía. */
+    /**
+     * La ruta del recurso la da la tabla que :pos registra en RecursosDeImagen (los ids de R viven allá). Como en Android,
+     * lo que no se puede decodificar devuelve null: nunca lanza.
+     */
     public static Bitmap decodeResource(Resources res, int id) {
+        try {
+            String ruta = com.avoqado.escritorio.RecursosDeImagen.rutaDe.invoke(id);
+            if (ruta != null) {
+                ClassLoader cargador = Thread.currentThread().getContextClassLoader();
+                if (cargador == null) cargador = BitmapFactory.class.getClassLoader();
+                try (InputStream flujo = cargador.getResourceAsStream(ruta)) {
+                    if (flujo != null) {
+                        Bitmap bitmap = envolver(ImageIO.read(flujo));
+                        if (bitmap != null) return bitmap;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            // se cae al aviso de abajo
+        }
         Log.w("Escritorio", "No disponible en Windows todavía: imagen de recurso " + id + " (el ticket sale sin ella)");
         return null;
     }

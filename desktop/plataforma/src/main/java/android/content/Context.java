@@ -15,6 +15,24 @@ public abstract class Context {
 
     public abstract SharedPreferences getSharedPreferences(String name, int mode);
     public abstract Object getSystemService(String name);
+
+    /**
+     * Como en Android: traduce la clase al nombre del servicio y pide ESE ({@link #getSystemService(String)}), así por
+     * clase y por nombre se recibe la misma instancia. Una clase que no es servicio del sistema ⇒ null.
+     */
+    public final <T> T getSystemService(Class<T> serviceClass) {
+        String nombre = getSystemServiceName(serviceClass);
+        return nombre == null ? null : serviceClass.cast(getSystemService(nombre));
+    }
+
+    /** Los servicios que escritorio atiende por nombre (ContextoDeEscritorio / ServiciosDeSistema). */
+    public String getSystemServiceName(Class<?> serviceClass) {
+        if (serviceClass == android.net.ConnectivityManager.class) return CONNECTIVITY_SERVICE;
+        if (serviceClass == android.net.nsd.NsdManager.class) return NSD_SERVICE;
+        if (serviceClass == android.net.wifi.WifiManager.class) return WIFI_SERVICE;
+        if (serviceClass == android.bluetooth.BluetoothManager.class) return BLUETOOTH_SERVICE;
+        return null;
+    }
     public abstract Context getApplicationContext();
     public abstract File getFilesDir();
     public abstract File getDatabasePath(String name);   // lo usa el DatabaseModule de escritorio (tarea 5)

@@ -7,17 +7,13 @@ import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.platform.LocalDensity
-import com.avoqado.pos.R
+import com.avoqado.pos.escritorio.rutaDeRecurso
 import org.xml.sax.InputSource
 
 /** painterResource(Int) de Android: busca el archivo copiado de ../app/src/main/res (tarea 1, processResources). */
 @Composable
 fun painterResource(id: Int): Painter {
-    val ruta = when (id) {
-        R.drawable.avoqado_logo_mark -> "android-res/drawable-nodpi/avoqado_logo_mark.png"
-        R.drawable.ic_whatsapp -> "android-res/drawable/ic_whatsapp.xml"
-        else -> error("Recurso $id sin archivo en escritorio")
-    }
+    val ruta = checkNotNull(rutaDeRecurso(id)) { "Recurso $id sin archivo en escritorio" }
     val flujo = { checkNotNull(Thread.currentThread().contextClassLoader.getResourceAsStream(ruta)) { "falta $ruta" } }
     return if (ruta.endsWith(".xml")) {
         val densidad = LocalDensity.current
