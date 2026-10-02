@@ -256,7 +256,7 @@ fun CalendarTabHost(
                     },
                 ),
                 ActionSheetItem(
-                    label = "Registrar walk-in",
+                    label = "Registrar sin cita",
                     onClick = {
                         pendingSlot = null
                         showSheetForNow = false

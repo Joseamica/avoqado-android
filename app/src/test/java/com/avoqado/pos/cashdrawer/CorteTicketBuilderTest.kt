@@ -121,6 +121,20 @@ class CorteTicketBuilderTest {
         assertTrue("cuadre exacto", t.contains("Diferencia"))
     }
 
+    /**
+     * Un retiro más grande que el fondo deja el esperado en negativo. Antes el papel decía
+     * «$-100.00»; la pantalla ya decía «-$100.00». Ahora los dos dicen lo mismo.
+     */
+    @Test
+    fun `P2 un esperado negativo lleva el signo antes del simbolo`() {
+        val t = papel(
+            session = cerrada.copy(startingAmountCents = 0, actualAmountCents = 0),
+            events = listOf(evento(CashDrawerEventType.PAY_OUT, 10_000)),
+        )
+        assertTrue(t, t.contains("-\$100.00"))
+        assertFalse(t, t.contains("\$-"))
+    }
+
     @Test
     fun `un faltante se nombra faltante`() {
         val t = papel(session = cerrada.copy(actualAmountCents = 54_000))

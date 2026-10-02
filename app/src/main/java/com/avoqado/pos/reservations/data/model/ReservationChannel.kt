@@ -19,7 +19,7 @@ enum class ReservationChannel {
         PHONE -> "Teléfono"
         WHATSAPP -> "WhatsApp"
         APP -> "App"
-        WALK_IN -> "Walk-in"
+        WALK_IN -> "Sin cita"
         THIRD_PARTY -> "Externo"
     }
 }

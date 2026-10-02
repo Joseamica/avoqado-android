@@ -1333,10 +1333,8 @@ private fun ClosedSessionCard(
 
 // MARK: - Helpers
 
-fun formatCurrency(cents: Int): String {
-    val pesos = cents / 100.0
-    return "$${String.format(Locale.US, "%,.2f", pesos)}"
-}
+/** `-12900` → `"-$129.00"`: el signo va ANTES del símbolo (`formatMoneyFromCents`). */
+fun formatCurrency(cents: Int): String = com.avoqado.pos.core.util.formatMoneyFromCents(cents)
 
 /**
  * "Quién lo abrió y desde qué aparato" (Task 6, plan turno-de-caja fase 2-3). `openedByName` y

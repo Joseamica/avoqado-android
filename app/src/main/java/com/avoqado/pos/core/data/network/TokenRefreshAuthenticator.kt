@@ -301,8 +301,10 @@ class TokenRefreshAuthenticator @Inject constructor(
             RefreshOutcome.NetworkFailure
         } catch (e: Exception) {
             // JSON corrupto u otro tropiezo que tampoco es el servidor
-            // afirmando que la sesión murió.
-            Log.e("🔐", "Token refresh unexpected error: ${e.message}")
+            // afirmando que la sesión murió. Sólo el TIPO: el mensaje de
+            // kotlinx.serialization trae el cuerpo tras «JSON input:», y ahí
+            // viajan los tokens de la sesión — no van a logcat.
+            Log.e("🔐", "Token refresh unexpected error: ${e.javaClass.simpleName}")
             RefreshOutcome.NetworkFailure
         }
     }

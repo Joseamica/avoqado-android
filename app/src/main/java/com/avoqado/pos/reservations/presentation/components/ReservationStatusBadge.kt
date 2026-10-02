@@ -18,7 +18,7 @@ val ReservationStatus.displayLabel: String
         ReservationStatus.CHECKED_IN -> "En curso"
         ReservationStatus.COMPLETED -> "Completada"
         ReservationStatus.CANCELLED -> "Cancelada"
-        ReservationStatus.NO_SHOW -> "No-show"
+        ReservationStatus.NO_SHOW -> "No se presentó"
     }
 
 val ReservationStatus.accentColor: Color

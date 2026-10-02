@@ -246,7 +246,11 @@ data class OrderPaymentInfo(
     val methodLabel: String = when (method.uppercase()) {
         "CASH" -> "Efectivo"
         "CARD", "CREDIT_CARD", "DEBIT_CARD" -> "Tarjeta"
-        "TRANSFER" -> "Transferencia"
+        // El server manda BANK_TRANSFER (enum PaymentMethod); sin esto el detalle lo mostraba crudo.
+        "TRANSFER", "BANK_TRANSFER" -> "Transferencia"
+        "DIGITAL_WALLET" -> "Cartera digital"
+        "CRYPTOCURRENCY" -> "Criptomoneda"
+        "OTHER" -> "Otro"
         else -> method
     }
 

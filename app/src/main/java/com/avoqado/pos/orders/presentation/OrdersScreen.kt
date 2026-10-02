@@ -1005,7 +1005,7 @@ private fun OrderRow(
                     modifier = Modifier.weight(1f),
                 )
                 Text(
-                    text = Plurales.articulos(order.itemCount),
+                    text = Plurales.articulosDelPedido(order.itemCount),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

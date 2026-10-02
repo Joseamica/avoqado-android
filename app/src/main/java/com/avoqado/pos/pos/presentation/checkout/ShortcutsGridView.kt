@@ -250,7 +250,7 @@ private fun ShortcutsMainGrid(
     val shortcuts = listOfNotNull(
         ShortcutItem(
             id = "giftcard",
-            name = "Gift Card",
+            name = "Tarjeta de regalo",
             icon = Icons.Filled.CardGiftcard,
             color = ActionColors.giftCard,
             screen = ShortcutsScreen.MAIN,
@@ -319,7 +319,7 @@ private fun ShortcutsMainGrid(
                 .padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.md),
         ) {
             Text(
-                text = "Shortcuts",
+                text = "Atajos",
                 style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.Bold,
             )
@@ -418,9 +418,10 @@ private fun ShortcutTile(
                 contentDescription = null,
                 tint = if (shortcut.enabled) Color.White.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier
-                    .size(iconSize)
+                    // El margen va ANTES del tamaño: al revés, el padding se comía el ícono (22 − 14 = 8 dp).
                     .align(Alignment.TopStart)
-                    .padding(start = innerPad, top = innerPad),
+                    .padding(start = innerPad, top = innerPad)
+                    .size(iconSize),
             )
 
             // Name at bottom-left
@@ -546,7 +547,7 @@ private fun BreadcrumbHeader(
                 horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
             ) {
                 Text(
-                    text = "Shortcuts",
+                    text = "Atajos",
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

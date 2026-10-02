@@ -15,6 +15,13 @@ object Plurales {
     fun articulos(cantidad: Int): String =
         if (cantidad == 1) "1 artículo" else "$cantidad artículos"
 
+    /**
+     * Lo que dice un pedido de la lista. Un cobro de importe libre (teclado, sin productos) crea un
+     * pedido SIN renglones: «0 artículos» parecía un pedido vacío o roto.
+     */
+    fun articulosDelPedido(cantidad: Int): String =
+        if (cantidad == 0) "Importe libre" else articulos(cantidad)
+
     /** "1 persona" · "2 personas" */
     fun personas(cantidad: Int): String =
         if (cantidad == 1) "1 persona" else "$cantidad personas"

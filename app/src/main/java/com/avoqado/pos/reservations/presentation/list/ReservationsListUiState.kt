@@ -8,7 +8,7 @@ enum class ReservationListTab(val label: String, val statusFilter: List<Reservat
     HOY("Hoy", listOf(ReservationStatus.PENDING, ReservationStatus.CONFIRMED, ReservationStatus.CHECKED_IN)),
     PENDIENTES("Pendientes", listOf(ReservationStatus.PENDING)),
     CONFIRMADAS("Confirmadas", listOf(ReservationStatus.CONFIRMED)),
-    NO_SHOW("No-show", listOf(ReservationStatus.NO_SHOW)),
+    NO_SHOW("No se presentó", listOf(ReservationStatus.NO_SHOW)),
     TODAS("Todas", emptyList()),
 }
 

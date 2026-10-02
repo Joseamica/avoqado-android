@@ -104,7 +104,7 @@ import kotlinx.coroutines.withContext
 
 enum class InputTab(val label: String) {
     KEYPAD("Teclado"),
-    SHORTCUTS("Shortcuts"),
+    SHORTCUTS("Atajos"),
     PRODUCTS("Todos los productos"),
     /**
      * Promociones. 🔴 Sólo aparece cuando el modo resuelto del panel es `TAB`:

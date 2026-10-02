@@ -345,15 +345,30 @@ private fun MainScaffold(
     var showTimeClock by remember { mutableStateOf(false) }
     var moreTabReselectionTick by remember { mutableIntStateOf(0) }
 
+    // La pestaña que marca la barra: la de la ruta actual o, si la pantalla no es pestaña (lista de
+    // espera, «Mi clase ahora»…), la última en la que estuvo el cajero. Ver `PestanaDeLaBarra`.
+    val pestanaDeLaRuta = graphVisibleTabs.firstOrNull { tab ->
+        currentDestination?.hierarchy?.any { it.route == tab.route } == true
+    }
+    var ultimaPestana by remember { mutableStateOf(startTab) }
+    LaunchedEffect(pestanaDeLaRuta) { if (pestanaDeLaRuta != null) ultimaPestana = pestanaDeLaRuta }
+    val pestanaMarcada = PestanaDeLaBarra.marcada(pestanaDeLaRuta, ultimaPestana, graphVisibleTabs, startTab)
+    fun tocarPestana(tab: MainTab) {
+        if (tab == MainTab.MORE && tab == pestanaMarcada) moreTabReselectionTick++
+        when (PestanaDeLaBarra.alTocar(tab, pestanaMarcada, enUnaPestana = pestanaDeLaRuta != null)) {
+            PestanaDeLaBarra.AlTocar.VOLVER_A_SU_RAIZ ->
+                if (!navController.popBackStack(tab.route, inclusive = false)) navigateToTab(tab)
+            PestanaDeLaBarra.AlTocar.NAVEGAR -> navigateToTab(tab)
+        }
+    }
+
     if (isTablet) {
         // iPad-style: custom capsule tab bar at bottom.
         // 🔴 DERIVADO de la navegación real (como ya hacía la barra de teléfono):
         // con un `remember` paralelo, cambiar de modo/sucursal navegaba al tab
         // nuevo pero la píldora se quedaba en el tab viejo ("Más" resaltado
         // sobre la pantalla de Mesas).
-        val selectedTab = graphVisibleTabs.firstOrNull { tab ->
-            currentDestination?.hierarchy?.any { it.route == tab.route } == true
-        } ?: startTab
+        val selectedTab = pestanaMarcada
 
         Scaffold(
             contentWindowInsets = WindowInsets.statusBars,
@@ -378,12 +393,7 @@ private fun MainScaffold(
                 if (!isPaying) TabletTabBar(
                     visibleTabs = graphVisibleTabs,
                     selectedTab = selectedTab,
-                    onTabSelected = { tab ->
-                        if (tab == MainTab.MORE && selectedTab == MainTab.MORE) {
-                            moreTabReselectionTick++
-                        }
-                        navigateToTab(tab)
-                    },
+                    onTabSelected = { tab -> tocarPestana(tab) },
                     onClockTap = { showTimeClock = true },
                     pendingPaymentCount = pendingPaymentCount,
                 )
@@ -663,15 +673,10 @@ private fun MainScaffold(
                 // muestra, porque asoma por debajo del diálogo del pago.
                 if (!isPaying) NavigationBar {
                     graphVisibleTabs.forEach { tab ->
-                        val selected = currentDestination?.hierarchy?.any { it.route == tab.route } == true
+                        val selected = tab == pestanaMarcada
                         NavigationBarItem(
                             selected = selected,
-                            onClick = {
-                                if (tab == MainTab.MORE && selected) {
-                                    moreTabReselectionTick++
-                                }
-                                navigateToTab(tab)
-                            },
+                            onClick = { tocarPestana(tab) },
                             icon = {
                                 val icon = if (selected) tab.selectedIcon else tab.unselectedIcon
                                 when {

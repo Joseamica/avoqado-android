@@ -177,7 +177,7 @@ private fun ActionBar(
             ActionPill("Confirmar", state.isAllowed(ReservationAction.CONFIRM), pending == ReservationAction.CONFIRM, onConfirm, Modifier.weight(1f))
             ActionPill("Check-in", state.isAllowed(ReservationAction.CHECK_IN), pending == ReservationAction.CHECK_IN, onCheckIn, Modifier.weight(1f))
             ActionPill("Completar", state.isAllowed(ReservationAction.COMPLETE), pending == ReservationAction.COMPLETE, onComplete, Modifier.weight(1f))
-            ActionPill("No-show", state.isAllowed(ReservationAction.NO_SHOW), pending == ReservationAction.NO_SHOW, onNoShow, Modifier.weight(1f))
+            ActionPill("No se presentó", state.isAllowed(ReservationAction.NO_SHOW), pending == ReservationAction.NO_SHOW, onNoShow, Modifier.weight(1f))
             ActionPill("Reagendar", state.isAllowed(ReservationAction.RESCHEDULE), false, onReschedule, Modifier.weight(1f))
             ActionPill("Editar", state.isAllowed(ReservationAction.UPDATE), false, onEdit, Modifier.weight(1f))
             ActionPill("Cancelar", state.isAllowed(ReservationAction.CANCEL), false, onCancel, Modifier.weight(1f), destructive = true)

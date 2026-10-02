@@ -77,7 +77,8 @@ object CorteTicketBuilder {
         val zone = com.avoqado.pos.core.util.VenueTimeZone.zoneId()
         val fecha = java.time.format.DateTimeFormatter.ofPattern("dd MMM yyyy", java.util.Locale("es", "MX"))
         val hora = java.time.format.DateTimeFormatter.ofPattern("HH:mm", java.util.Locale("es", "MX"))
-        fun money(cents: Int) = "$" + String.format(java.util.Locale.US, "%.2f", cents / 100.0)
+        // El signo va ANTES del símbolo («-$129.00»), como en pantalla (`formatMoneyFromCents`).
+        fun money(cents: Int) = com.avoqado.pos.core.util.formatMoneyFromCents(cents)
         fun at(millis: Long) = java.time.Instant.ofEpochMilli(millis).atZone(zone)
 
         fun sumOf(type: CashDrawerEventType) =

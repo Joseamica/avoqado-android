@@ -49,7 +49,8 @@ import java.util.Locale
 private val WarnColor = Color(0xFFE8A33D)
 private val OkColor = Color(0xFF10B981)
 
-private fun money(cents: Int): String = "$${String.format(Locale.US, "%.2f", cents / 100.0)}"
+// El signo va ANTES del símbolo («-$129.00»), como en el resto de la app (`formatMoneyFromCents`).
+private fun money(cents: Int): String = com.avoqado.pos.core.util.formatMoneyFromCents(cents)
 
 /** Human label for a PaymentMethod enum value. Compartido con el corte de caja. */
 internal fun tenderLabel(method: String): String = when (method) {

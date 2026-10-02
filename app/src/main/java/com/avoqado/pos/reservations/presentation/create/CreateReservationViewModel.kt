@@ -213,7 +213,7 @@ class CreateReservationViewModel @Inject constructor(
                 date = date ?: d.date,
                 time = time ?: if (isWalkIn) nextQuarterHour(LocalTime.now(zone)) else d.time,
                 isGuest = if (isWalkIn) true else d.isGuest,
-                guestName = if (isWalkIn) "Walk-in" else d.guestName,
+                guestName = if (isWalkIn) "Sin cita" else d.guestName,
                 channel = if (isWalkIn) ReservationChannel.WALK_IN else d.channel,
             )
         }
