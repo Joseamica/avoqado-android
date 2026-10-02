@@ -288,7 +288,7 @@ private fun ShortcutsMainGrid(
         ),
         ShortcutItem(
             id = "cortesia",
-            name = "Cortesia",
+            name = "Cortesía",
             icon = Icons.Filled.Favorite,
             color = ActionColors.cortesia,
             screen = ShortcutsScreen.CORTESIA,
@@ -1134,7 +1134,7 @@ private fun CortesiaSubView(
     var showConfirmation by remember { mutableStateOf(false) }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        BreadcrumbHeader(title = "Cortesia", onBack = onBack)
+        BreadcrumbHeader(title = "Cortesía", onBack = onBack)
 
         Column(
             modifier = Modifier
@@ -1222,7 +1222,7 @@ private fun CortesiaSubView(
                         showConfirmation = false
                         val discount = Discount(
                             id = "cortesia_${System.currentTimeMillis()}",
-                            name = "Cortesia",
+                            name = "Cortesía",
                             value = 100.0,
                             type = "PERCENTAGE",
                             scope = "ORDER",

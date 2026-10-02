@@ -807,7 +807,7 @@ private fun CartItemRow(
                 )
                 if (item.isCortesia) {
                     Text(
-                        text = "Cortesia",
+                        text = "Cortesía",
                         style = MaterialTheme.typography.labelSmall,
                         color = Color.White,
                         modifier = Modifier

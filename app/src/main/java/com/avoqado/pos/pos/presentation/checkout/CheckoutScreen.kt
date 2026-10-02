@@ -2419,7 +2419,7 @@ private fun CartItemDetailContent(
                     if (item.isCortesia) {
                         onToggleCortesia(false, null)
                     } else {
-                        onToggleCortesia(true, "Cortesia del administrador")
+                        onToggleCortesia(true, "Cortesía del administrador")
                     }
                 }
                 .padding(horizontal = AvoqadoTheme.spacing.xl, vertical = AvoqadoTheme.spacing.lg),
@@ -2434,7 +2434,7 @@ private fun CartItemDetailContent(
             Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.md))
             Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = "Cortesia",
+                    text = "Cortesía",
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 if (item.isCortesia) {
