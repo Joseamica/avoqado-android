@@ -207,6 +207,14 @@ interface ApiService {
         @Body request: SyncPrintJobsRequest,
     ): SyncPrintJobsResponse // { success, data: { upserted, errors, newlyFailed, registered } }
 
+    /** La tablet encontró una impresora de red en otra dirección (DHCP) o aprendió su identidad. */
+    @POST("mobile/venues/{venueId}/printers/{printerId}/observed")
+    suspend fun reportarImpresoraObservada(
+        @Path("venueId") venueId: String,
+        @Path("printerId") printerId: String,
+        @Body request: com.avoqado.pos.printing.routing.ImpresoraObservadaRequest,
+    ): com.avoqado.pos.printing.routing.ImpresoraObservadaResponse
+
     @POST("mobile/venues/{venueId}/print-gateway/heartbeat")
     suspend fun gatewayHeartbeat(
         @Path("venueId") venueId: String,

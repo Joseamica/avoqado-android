@@ -261,6 +261,13 @@ sealed class PrinterException(message: String) : Exception(message) {
      */
     class OutOfPaper : PrinterException("La impresora no tiene papel")
     class Timeout : PrinterException("Tiempo de espera agotado")
+
+    /**
+     * La impresora de red no está en su dirección y no se pudo encontrar sola, o hay varias
+     * candidatas. El mensaje YA viene en palabras de cajero (ver [com.avoqado.pos.printing.data.ImpresoraMovida]):
+     * sin el prefijo «Error de conexión:» ni el texto del sistema en inglés.
+     */
+    class NoEstaEnSuDireccion(mensaje: String) : PrinterException(mensaje)
     class PrinterNotFound : PrinterException("Impresora no encontrada")
     class BluetoothUnavailable : PrinterException("Bluetooth no disponible")
     class NetworkUnavailable : PrinterException("Red no disponible")

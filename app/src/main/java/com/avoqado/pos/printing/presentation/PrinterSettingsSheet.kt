@@ -18,8 +18,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -71,6 +71,8 @@ import kotlinx.coroutines.launch
 fun PrinterSettingsSheet(
     printerService: PrinterService,
     onDismiss: () -> Unit,
+    /** La config del panel: sus impresoras (las de las estaciones) se enseñan aparte. */
+    printConfig: com.avoqado.pos.printing.routing.PrintConfig = com.avoqado.pos.printing.routing.PrintConfig(),
 ) {
     val savedPrinters by printerService.savedPrinters.collectAsState()
     val statuses by printerService.printerStatuses.collectAsState()
@@ -118,6 +120,10 @@ fun PrinterSettingsSheet(
         printerService.startDiscovery()
         printerService.probarTodas()
     }
+    // Las del panel se comprueban aparte (y se buscan si se movieron): pueden tardar más.
+    LaunchedEffect(printConfig.printers) {
+        printerService.probarDelPanel(printConfig.printers)
+    }
 
     // 🔴 La conexion con la impresora NO se queda abierta al salir. Muchas impresoras de
     // puerto 9100 aceptan UNA sola conexion: dejarla colgada es el telefono descolgado, y la
@@ -152,6 +158,12 @@ fun PrinterSettingsSheet(
                 // a su ventana, asi que el ajuste va en el contenido.
                 .imePadding()
                 .fillMaxWidth()
+                // 🔴 UN solo scroll para toda la hoja. Antes la lista de encontradas era un
+                // LazyColumn metido en esta columna SIN scroll: con muchas impresoras en la red
+                // (una oficina con HP, Kyocera, Ricoh…) la lista se quedaba con todo el alto y
+                // el alta manual por IP quedaba debajo de la pantalla, imposible de alcanzar
+                // —justo la salida para una ticketera que no se anuncia (Testarudo, 2-oct).
+                .verticalScroll(rememberScrollState())
                 .padding(AvoqadoTheme.spacing.lg),
         ) {
             Text(
@@ -197,6 +209,39 @@ fun PrinterSettingsSheet(
                     HorizontalDivider()
                 }
 
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
+            }
+
+            // 🔴 Las impresoras del PANEL (las de las estaciones). Antes no salían aquí y el local
+            // creía que «Cocina no está conectada» mientras imprimía perfecto (Testarudo, 2-oct).
+            val delPanel = printConfig.printers.filter { info ->
+                info.active && savedPrinters.none { it.id == info.id }
+            }
+            if (delPanel.isNotEmpty()) {
+                Text(
+                    text = "Impresoras del panel",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Text(
+                    text = "Se configuran en el panel web. Si cambian de dirección, la app las encuentra sola.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+                delPanel.forEach { info ->
+                    PanelPrinterRow(
+                        info = info,
+                        estaciones = printConfig.stations.filter { it.active && it.printerId == info.id }.map { it.name },
+                        status = statuses[info.id],
+                        direccionVigente = info.address?.let { raw ->
+                            val host = raw.substringBeforeLast(':').takeIf { raw.substringAfterLast(':').toIntOrNull() != null } ?: raw
+                            printerService.direccionVigente(info.id, host)
+                        },
+                    )
+                    HorizontalDivider()
+                }
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
             }
 
@@ -302,8 +347,8 @@ fun PrinterSettingsSheet(
                     )
                 }
             } else {
-                LazyColumn {
-                    items(disponibles) { printer ->
+                Column {
+                    disponibles.forEach { printer ->
                         DiscoveredPrinterRow(
                             printer = printer,
                             onClick = {
@@ -330,6 +375,93 @@ fun PrinterSettingsSheet(
             }
 
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxxl))
+        }
+    }
+}
+
+// MARK: - Panel Printer Row
+
+/**
+ * Una impresora de la config del panel. Sólo lectura: se edita en el panel web. Dice si responde
+ * y, si la app la encontró en otra dirección, cuál («el panel dice …»).
+ */
+@Composable
+private fun PanelPrinterRow(
+    info: com.avoqado.pos.printing.routing.PrinterInfo,
+    estaciones: List<String>,
+    status: PrinterStatus?,
+    direccionVigente: String?,
+) {
+    val esDeRed = info.connectionType.trim().uppercase() == "NETWORK"
+    val responde = status?.isConnected == true
+    val direccionDelPanel = info.address?.let { raw ->
+        raw.substringBeforeLast(':').takeIf { raw.substringAfterLast(':').toIntOrNull() != null } ?: raw
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = AvoqadoTheme.spacing.md),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            modifier = Modifier
+                .size(44.dp)
+                .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
+                .background(if (responde) Success.copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                if (esDeRed) Icons.Filled.Wifi else Icons.Filled.Print,
+                contentDescription = null,
+                tint = if (responde) Success else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.size(24.dp),
+            )
+        }
+        Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.md))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(text = info.name, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
+            if (esDeRed) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.xs),
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .background(
+                                when (status) {
+                                    is PrinterStatus.Connected, is PrinterStatus.Printing -> Success
+                                    is PrinterStatus.Connecting -> MaterialTheme.colorScheme.tertiary
+                                    null -> MaterialTheme.colorScheme.outlineVariant
+                                    else -> MaterialTheme.colorScheme.error
+                                },
+                                CircleShape,
+                            ),
+                    )
+                    Text(
+                        text = when (status) {
+                            null, PrinterStatus.Connecting -> "Comprobando…"
+                            else -> if (responde) "Responde" else "No responde"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            val detalle = buildList {
+                if (estaciones.isNotEmpty()) add(estaciones.joinToString(", "))
+                direccionVigente?.let { add(it) }
+            }.joinToString(" · ")
+            if (detalle.isNotEmpty()) {
+                Text(text = detalle, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+            if (direccionVigente != null && direccionDelPanel != null && direccionVigente != direccionDelPanel) {
+                Text(
+                    text = "La app la encontró en $direccionVigente (el panel dice $direccionDelPanel)",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
 }

@@ -191,6 +191,15 @@ class ComandaPrinter @Inject constructor(
             null
         }
 
+        // Las direcciones de las impresoras de red de la config: si una se mueve, la búsqueda
+        // sabe que la de Barra es de Barra y no la confunde con la de Cocina.
+        val deRed = config.printers.filter { it.active && it.connectionType.trim().uppercase() == "NETWORK" && !it.address.isNullOrBlank() }
+        printerService.conocerImpresorasDeRed(
+            deRed.associate { it.id to hostDe(it.address!!.trim()) },
+            // La identidad que el servidor ya aprendió (`stableKey`): con ella no se confunde con otra.
+            deRed.mapNotNull { info -> info.stableKey?.takeIf { it.isNotBlank() }?.let { info.id to it } }.toMap(),
+        )
+
         var printed = 0
         var lastError: String? = null
         val failedStations = mutableListOf<String>()
@@ -260,6 +269,13 @@ class ComandaPrinter @Inject constructor(
             failedPlans = failedPlans,
             copiasPendientes = copiasQueFaltan,
         )
+    }
+
+    /** "host:puerto" → host, con la misma regla que [toKitchenSavedPrinter]. */
+    private fun hostDe(raw: String): String {
+        val separatorIdx = raw.lastIndexOf(':')
+        val parsedPort = if (separatorIdx > 0) raw.substring(separatorIdx + 1).toIntOrNull() else null
+        return if (parsedPort != null) raw.substring(0, separatorIdx) else raw
     }
 
     private fun ConsolidatedLine.toKitchenItem(): KitchenItem = KitchenItem(

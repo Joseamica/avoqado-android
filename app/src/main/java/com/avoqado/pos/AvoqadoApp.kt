@@ -31,6 +31,12 @@ class AvoqadoApp : Application() {
     @Inject lateinit var cancelacionDeCobroCoordinator:
         com.avoqado.pos.payment.data.CancelacionDeCobroCoordinator
 
+    /**
+     * «La impresora que se encuentra sola»: revisa que cada impresora de red siga siendo la misma en
+     * su dirección (DHCP) y le avisa al servidor cuando se mueve. Desde el arranque del proceso.
+     */
+    @Inject lateinit var vigilanteDeImpresoras: com.avoqado.pos.printing.data.VigilanteDeImpresoras
+
     private val appScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     override fun onCreate() {
@@ -43,6 +49,7 @@ class AvoqadoApp : Application() {
         VenueTimeZone.set(secureStorage.venueTimezone)
         reservationActionsRetrier.start(appScope)
         cancelacionDeCobroCoordinator.start()
+        vigilanteDeImpresoras.start()
 
         // El kiosco: el interruptor del aparato manda, y el motor sólo se
         // enchufa una vez. Apagado (lo normal) esto no hace absolutamente

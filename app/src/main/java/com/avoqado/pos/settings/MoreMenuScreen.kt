@@ -1120,9 +1120,11 @@ fun MoreMenuScreen(
 
     // Printer Settings Sheet
     if (showPrinter) {
+        val printConfig by viewModel.printConfigRepository.config.collectAsState()
         PrinterSettingsSheet(
             printerService = viewModel.printerService,
             onDismiss = { showPrinter = false },
+            printConfig = printConfig,
         )
     }
 

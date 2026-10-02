@@ -290,6 +290,29 @@ descubrir impresoras: si alguien lo rechaza en la instalación, la lista sale
 vacía y —sin alta manual— el local se queda sin imprimir.
 
 
+### 4.2 La impresora que se encuentra sola (Testarudo, 2-oct-2026)
+
+La ticketera de cocina tiene DHCP: el módem le cambió la IP y le dio la vieja (.64) a la tablet. Nadie del local
+tiene que fijar IPs ni tocar el módem; la app lo resuelve sola, sin internet (todo pasa en el WiFi del local):
+
+- **Al fallar una comanda** (o si la IP guardada es la de la propia tablet) se busca la impresora: por su
+  **identidad** si ya se conoce, luego por su **nombre de Bonjour**, y al final barriendo la red. Sólo se adopta
+  una dirección sin identidad si hay **una sola** ticketera libre; con dos, se pregunta.
+- **Identidad** (`Printer.stableKey`): `mac:…` de las genéricas con chip W5500 (su página `/w5500.js`, sólo
+  lectura) o `mdns:<nombre>` de las de marca. Es lo único que distingue dos ticketeras que se **intercambian**
+  la IP. Se aprende sola y se avisa al servidor.
+- 🔴 **Nunca se le manda un byte al 9100 de un aparato con 631 o 515 abiertos** (impresoras de oficina: imprimen
+  basura). Una Epson TM también los tiene: por eso a las de marca se les busca por su nombre.
+- **El vigilante** (`VigilanteDeImpresoras`) revisa al abrir la app, cuando vuelve la red y cada 10 min que cada
+  impresora siga siendo la misma en su dirección; si otra ocupó su lugar, busca la suya por identidad. Si la suya
+  no aparece en ningún lado, la de su dirección es su reemplazo (adopta su identidad en vez de dejar de imprimir).
+- **El aviso al servidor** (`POST /mobile/venues/:id/printers/:printerId/observed`) se guarda en el aparato ANTES
+  de tocar la red; el servidor sólo acepta si su dirección sigue siendo la que la tablet vio (CAS) y audita
+  `PRINTER_ADDRESS_AUTO_UPDATED`. La mudanza se ancla a la dirección CONFIGURADA, no a la intermedia.
+- La pantalla de Impresoras enseña también las **impresoras del panel** (las de las estaciones), con su dirección
+  real: antes el local creía que «Cocina no está conectada» mientras imprimía.
+- El **gateway** de impresión (`PrintGateway.address`) NO se usa para imprimir: cada aparato imprime directo.
+
 ## 5. Qué es online-only A PROPÓSITO
 
 No "se nos olvidó": quitar descuento/cargo ya aplicado, cortesía de UN item ya

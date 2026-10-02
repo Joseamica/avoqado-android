@@ -78,6 +78,22 @@ private const val PROBE_TIMEOUT_MS = 2_500
  *  "finishes" on its own, so without this the UI spinner spins forever. */
 private const val DISCOVERY_WINDOW_MS = 12_000L
 
+/**
+ * Tras buscar una impresora movida sin éxito, cuánto esperar antes de volver a barrer la red.
+ * El reintento de comandas insiste 6 veces en ~50 s; barrer en cada intento ahogaría el WiFi.
+ */
+private const val ESPERA_ENTRE_BUSQUEDAS_MS = 20_000L
+
+/**
+ * Una impresora cuya identidad no aparece en ningún lado sólo se da por REEMPLAZADA si la otra que
+ * ocupa su lugar se ve en dos rondas separadas por al menos esto: una apagada o arrancando no es un
+ * reemplazo (auditoría del 2-oct, A3).
+ */
+private const val REEMPLAZO_CONFIRMADO_MS = 9 * 60_000L
+
+/** Cuánto se espera a que la impresora aparezca por su nombre en mDNS antes de barrer la red. */
+private const val MDNS_POR_NOMBRE_MS = 3_000L
+
 /** Respiro antes de reintentar un resolve que chocó dentro del SO. */
 private const val RESOLVE_RETRY_MS = 250L
 
@@ -227,6 +243,61 @@ class PrinterService @Inject constructor(
     private var discoveryTimeoutJob: Job? = null
 
     private val json = Json { ignoreUnknownKeys = true }
+
+    // MARK: - La impresora que se encuentra sola
+
+    /**
+     * Quién barre la red buscando ticketeras. `internal var` para que las pruebas pongan uno
+     * falso sin sockets (no va en el constructor: Hilt y varias pruebas ya construyen éste).
+     */
+    internal var buscador: BuscadorDeImpresora = BuscadorDeImpresoraEnLan(context)
+
+    /** Mudanzas recordadas por id de impresora (también las de la config del servidor). */
+    private val mudanzas = RegistroEnPrefs(context, json, "avoqado_printer_moves", Mudanza.serializer())
+
+    /** Direcciones de las impresoras de la config del servidor, por id. Ver [conocerImpresorasDeRed]. */
+    private val impresorasDeLaConfig = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    /** Identidades (`mac:…`/`mdns:…`) que trae la config del servidor (`Printer.stableKey`), por id. */
+    private val identidadesDeLaConfig = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    /** Identidades aprendidas en ESTA tablet (ganan a las del servidor: son más recientes). */
+    private val identidades = RegistroEnPrefs(context, json, "avoqado_printer_identities", kotlinx.serialization.serializer<String>())
+
+    /**
+     * Avisos al servidor que faltan por mandar («Cocina ahora está en .67», «su identidad es mac:…»),
+     * guardados ANTES de tocar la red: sobreviven a un reinicio y a horas sin internet. Los manda
+     * [VigilanteDeImpresoras]. Uno por impresora; `previousAddress` es la dirección que el servidor tenía.
+     */
+    internal val avisosPendientes = RegistroEnPrefs(context, json, "avoqado_printer_reports", AvisoDeImpresora.serializer())
+
+    /** La sucursal actual, para fechar los avisos. La pone [VigilanteDeImpresoras]. */
+    @Volatile internal var venueActual: () -> String? = { null }
+
+    /** Avisa que hay un aviso nuevo para el servidor, para mandarlo pronto. Lo pone [VigilanteDeImpresoras]. */
+    @Volatile internal var alEncolarAviso: () -> Unit = {}
+
+    /** Una búsqueda a la vez: dos comandas fallando juntas no barren la red dos veces. */
+    private val busquedaMutex = Mutex()
+
+    /** Una ronda del vigilante a la vez. NO es [busquedaMutex]: una ronda larga no detiene una comanda (M1). */
+    private val vigilanteMutex = Mutex()
+
+    /** Lecturas de páginas que no se esperan enteras (una que no contesta no frena a las demás). */
+    private val fondo = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /** El reloj, para que las pruebas confirmen un reemplazo sin esperar 9 minutos. */
+    internal var reloj: () -> Long = { System.currentTimeMillis() }
+
+    /**
+     * Direcciones donde el vigilante vio OTRA impresora conocida (id → dirección). Una comanda no se
+     * manda ahí: busca la suya. Sin esto la de Cocina salía en Barra mientras tanto (auditoría A3).
+     */
+    private val conOtraImpresora = java.util.concurrent.ConcurrentHashMap<String, String>()
+
+    /** Reemplazo en observación: id → (identidad vista en su lugar, cuándo se vio por primera vez). */
+    private val reemplazoEnObservacion = java.util.concurrent.ConcurrentHashMap<String, Pair<String, Long>>()
+    private val ultimaBusquedaFallida = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
     init {
         loadSavedPrinters()
@@ -621,7 +692,9 @@ class PrinterService @Inject constructor(
      */
     suspend fun sendPrintData(data: ByteArray, printer: SavedPrinter) = sendData(data, printer)
 
-    private suspend fun sendData(data: ByteArray, printer: SavedPrinter, requierePapel: Boolean = true) {
+    private suspend fun sendData(data: ByteArray, configurada: SavedPrinter, requierePapel: Boolean = true) {
+        // Si esta impresora ya se encontró en otra dirección, se intenta directo ahí.
+        var printer = conDireccionVigente(configurada)
         // Auto-connect if not connected, or if the cached socket is stale: the
         // status says "connected" but it was opened for a different endpoint
         // (e.g. the printer's IP was edited and the config was refetched) or the
@@ -638,7 +711,7 @@ class PrinterService @Inject constructor(
                 // we're overriding a "connected" status that turned out stale.
                 disconnect(printer)
             }
-            connect(printer)
+            printer = conectarOEncontrar(printer)
         }
 
         updateStatus(printer.id, PrinterStatus.Printing)
@@ -660,6 +733,364 @@ class PrinterService @Inject constructor(
             }
             updateStatus(printer.id, PrinterStatus.Error(e.message ?: "Error al imprimir"))
             throw PrinterException.PrintFailed(e.message ?: "Error desconocido")
+        }
+    }
+
+    /**
+     * Las impresoras de red de la config del servidor (id → dirección), para que la búsqueda
+     * sepa cuáles direcciones ya son de OTRA impresora. Lo llama [ComandaPrinter] antes de imprimir.
+     */
+    fun conocerImpresorasDeRed(direccionesPorId: Map<String, String>, identidadesPorId: Map<String, String> = emptyMap()) {
+        // REEMPLAZA, no acumula: siempre llega la config completa, y una impresora borrada,
+        // apagada o de otra sucursal no debe seguir contando como «ocupada».
+        impresorasDeLaConfig.keys.retainAll(direccionesPorId.keys)
+        impresorasDeLaConfig.putAll(direccionesPorId)
+        identidadesDeLaConfig.keys.retainAll(identidadesPorId.keys)
+        identidadesDeLaConfig.putAll(identidadesPorId)
+    }
+
+    /** Las identidades de las OTRAS impresoras conocidas: una candidata con una de éstas no es la nuestra. */
+    private fun identidadesDeLasOtras(idImpresora: String): Set<String> =
+        (impresorasDeLaConfig.keys + _savedPrinters.value.map { it.id })
+            .filter { it != idImpresora }
+            .mapNotNull { identidadDe(it) }
+            .toSet()
+
+    /** La identidad conocida de una impresora: la aprendida aquí, o la que trae el servidor. */
+    internal fun identidadDe(idImpresora: String): String? =
+        identidades.todas()[idImpresora] ?: identidadesDeLaConfig[idImpresora]
+
+    /** La dirección con la que de verdad se le habla a una impresora (con su mudanza, si la hubo). */
+    fun direccionVigente(idImpresora: String, direccionConfigurada: String): String =
+        ImpresoraMovida.direccionVigente(mudanzas.todas(), idImpresora, direccionConfigurada)
+
+    /**
+     * Comprueba las impresoras de RED que vienen de la config del panel (las de las estaciones,
+     * como «Cocina»), y si alguna no contesta la BUSCA en la red — la misma búsqueda que una
+     * comanda. El resultado queda en [printerStatuses] bajo el id de cada una.
+     *
+     * 🔴 Existe porque la pantalla de Impresoras sólo enseñaba las guardadas en la tablet:
+     * Testarudo (2-oct) veía «Cocina no está conectada» mientras Cocina imprimía perfecto,
+     * porque Cocina vive en el panel. Siempre suelta el puerto: no deja el teléfono descolgado.
+     */
+    suspend fun probarDelPanel(impresoras: List<com.avoqado.pos.printing.routing.PrinterInfo>) = coroutineScope {
+        val deRed = impresoras.filter { it.active }.mapNotNull { info ->
+            val raw = info.address?.trim()
+            if (info.connectionType.trim().uppercase() != "NETWORK" || raw.isNullOrEmpty()) return@mapNotNull null
+            val separador = raw.lastIndexOf(':')
+            val puerto = if (separador > 0) raw.substring(separador + 1).toIntOrNull() else null
+            SavedPrinter(
+                id = info.id,
+                name = info.name,
+                connectionType = PrinterConnectionType.WIFI.value,
+                address = if (puerto != null) raw.substring(0, separador) else raw,
+                port = puerto ?: DEFAULT_PORT,
+                roles = listOf(PrinterRole.KITCHEN.value),
+            )
+        }
+        conocerImpresorasDeRed(
+            deRed.associate { it.id to it.address },
+            impresoras.mapNotNull { info -> info.stableKey?.takeIf { it.isNotBlank() }?.let { info.id to it } }.toMap(),
+        )
+        deRed.map { printer ->
+            async(Dispatchers.IO) {
+                // Imprimiendo o conectando para una comanda: no se toca (auditoría M5).
+                val antes = _printerStatuses.value[printer.id]
+                if (antes == PrinterStatus.Printing || antes == PrinterStatus.Connecting) return@async
+                // Se prueba con un socket PROPIO que se cierra al instante: nunca pisa la conexión de
+                // una comanda (el caché de conexiones es sólo de quien imprime).
+                val p = conDireccionVigente(printer)
+                val puerto = p.port ?: DEFAULT_PORT
+                val esLaDeEstaTablet = buscador.direccionesPropias().any { it.ip == p.address }
+                val respondio = (!esLaDeEstaTablet && conOtraImpresora[p.id] != p.address && abre(p.address, puerto)) ||
+                    (runCatching { encontrarEnLaRed(p, esLaDeEstaTablet) }.getOrNull()?.let { abre(it, puerto) } ?: false)
+                val ahora = _printerStatuses.value[printer.id]
+                if (ahora != PrinterStatus.Printing && ahora != PrinterStatus.Connecting) {
+                    updateStatus(printer.id, if (respondio) PrinterStatus.Connected else PrinterStatus.Disconnected)
+                }
+            }
+        }.awaitAll()
+    }
+
+    private fun abre(host: String, puerto: Int): Boolean = try {
+        Socket().use { it.connect(InetSocketAddress(host, puerto), PROBE_TIMEOUT_MS) }
+        true
+    } catch (_: Exception) {
+        false
+    }
+
+    private fun conDireccionVigente(printer: SavedPrinter): SavedPrinter {
+        if (printer.connectionTypeEnum != PrinterConnectionType.WIFI) return printer
+        val vigente = ImpresoraMovida.direccionVigente(mudanzas.todas(), printer.id, printer.address)
+        return if (vigente == printer.address) printer else printer.copy(address = vigente)
+    }
+
+    /**
+     * Conecta; y si una impresora de RED no contesta, la busca en la red del local.
+     *
+     * 🔴 El caso que lo originó (Testarudo, 2-oct-2026): la ticketera de cocina tiene DHCP y el
+     * módem (Telmex) le dio su vieja dirección, 192.168.1.64, a la TABLET. Cada comanda tocaba
+     * la puerta de la propia tablet y tronaba con ECONNREFUSED, con la impresora sana en la .67.
+     * Si la dirección guardada ES la de esta tablet ni se intenta: se busca directo.
+     *
+     * Devuelve la impresora con la dirección con la que SÍ conectó.
+     */
+    private suspend fun conectarOEncontrar(printer: SavedPrinter): SavedPrinter {
+        if (printer.connectionTypeEnum != PrinterConnectionType.WIFI) {
+            connect(printer)
+            return printer
+        }
+        val esLaDeEstaTablet = buscador.direccionesPropias().any { it.ip == printer.address }
+        if (conOtraImpresora[printer.id] == printer.address) {
+            Log.w(TAG, "📍 En la dirección de ${printer.name} (${printer.address}) está OTRA impresora — busco la suya")
+        } else if (!esLaDeEstaTablet) {
+            try {
+                connect(printer)
+                return printer
+            } catch (e: PrinterException.ConnectionFailed) {
+                Log.w(TAG, "📍 ${printer.name} no contesta en ${printer.address} — la busco en la red")
+            }
+        } else {
+            Log.w(TAG, "📍 ${printer.name} tiene la dirección de ESTA tablet (${printer.address}) — la busco en la red")
+        }
+        val nueva = encontrarEnLaRed(printer, esLaDeEstaTablet)
+        val movida = printer.copy(address = nueva)
+        connect(movida)
+        return movida
+    }
+
+    private suspend fun encontrarEnLaRed(printer: SavedPrinter, esLaDeEstaTablet: Boolean): String =
+        busquedaMutex.withLock {
+            // Otra comanda pudo encontrarla mientras ésta esperaba el candado.
+            val yaEncontrada = conDireccionVigente(printer).address
+            if (yaEncontrada != printer.address) return@withLock yaEncontrada
+
+            val noEncontrada = PrinterException.NoEstaEnSuDireccion(
+                if (esLaDeEstaTablet) ImpresoraMovida.avisoDireccionPropia(printer.address)
+                else ImpresoraMovida.avisoNinguna(printer.address),
+            )
+            val ahora = System.currentTimeMillis()
+            val anterior = ultimaBusquedaFallida[printer.id]
+            if (anterior != null && ahora - anterior < ESPERA_ENTRE_BUSQUEDAS_MS) throw noEncontrada
+
+            val ocupadas = direccionesDeLasOtras(printer.id)
+            // 0) Por su IDENTIDAD, si ya se conoce: es la única forma de no confundirla con otra.
+            //    🔴 Y si se conoce y NO aparece, no se adivina con el barrido: tras reiniciarse el
+            //    módem, «la única libre» suele ser OTRA impresora que ya arrancó (auditoría A2).
+            if (identidadDe(printer.id) != null) {
+                val encontrada = buscarPorIdentidad(printer, ocupadas)
+                if (encontrada == null) {
+                    ultimaBusquedaFallida[printer.id] = ahora
+                    throw noEncontrada
+                }
+                ultimaBusquedaFallida.remove(printer.id)
+                recordarMudanza(printer, encontrada)
+                return@withLock encontrada
+            }
+            // 1) Por su NOMBRE en la red (Epson, Star…: se anuncian). Es su identidad: mDNS no
+            //    deja repetir nombres, así que no hay que adivinar.
+            buscador.anunciadaConNombre(printer.name, MDNS_POR_NOMBRE_MS)
+                ?.takeIf { it !in ocupadas }
+                ?.let { anunciada ->
+                    ultimaBusquedaFallida.remove(printer.id)
+                    recordarMudanza(printer, anunciada)
+                    aprenderIdentidad(printer.id, IdentidadDeImpresora.deNombre(printer.name))
+                    return@withLock anunciada
+                }
+            // 2) Barrido de la red (genéricas que no se anuncian, como la de Testarudo).
+            val ticketeras = buscador.ticketerasEnLaRed(printer.port ?: DEFAULT_PORT, noTocar = ocupadas)
+            when (val eleccion = ImpresoraMovida.elegir(ticketeras, ocupadas)) {
+                is Eleccion.Una -> {
+                    // Si su página dice que es OTRA impresora conocida (Barra), no es la nuestra.
+                    val suMac = buscador.leerMac(eleccion.direccion)
+                    if (suMac != null && suMac in identidadesDeLasOtras(printer.id)) {
+                        ultimaBusquedaFallida[printer.id] = ahora
+                        throw noEncontrada
+                    }
+                    ultimaBusquedaFallida.remove(printer.id)
+                    recordarMudanza(printer, eleccion.direccion)
+                    aprenderIdentidad(printer.id, suMac)
+                    eleccion.direccion
+                }
+                is Eleccion.Varias -> {
+                    ultimaBusquedaFallida[printer.id] = ahora
+                    throw PrinterException.NoEstaEnSuDireccion(
+                        ImpresoraMovida.avisoVarias(printer.address, eleccion.direcciones.size),
+                    )
+                }
+                Eleccion.Ninguna -> {
+                    ultimaBusquedaFallida[printer.id] = ahora
+                    throw noEncontrada
+                }
+            }
+        }
+
+    /**
+     * La ronda del vigilante: revisa que cada impresora de red conocida siga siendo la MISMA en su
+     * dirección, y aprende la identidad de las que no la tienen. Devuelve cuántas corrigió.
+     *
+     * 🔴 Es lo que detecta que dos ticketeras genéricas se INTERCAMBIARON la IP (el módem se reinicia
+     * y reparte direcciones al azar): ambas contestan, así que imprimir no lo nota; sólo su identidad
+     * lo dice. Corre al abrir la app, cuando vuelve la red (un módem que se reinicia tira el WiFi) y
+     * cada 10 min — ver [VigilanteDeImpresoras]. Nunca bloquea una comanda.
+     *
+     * Si en nuestra dirección hay OTRA impresora y la nuestra no aparece en ningún lado, la de ahí es
+     * su reemplazo (alguien cambió el aparato): se adopta su identidad en vez de dejar de imprimir.
+     */
+    suspend fun vigilar(): Int = vigilanteMutex.withLock {
+        var corregidas = 0
+        var anunciadas: Map<String, String>? = null
+        val guardadas = _savedPrinters.value
+            .filter { it.connectionTypeEnum == PrinterConnectionType.WIFI }
+            .associate { it.id to (it.address to (it.port ?: DEFAULT_PORT)) }
+        val conocidas = impresorasDeLaConfig.mapValues { (_, d) -> d to DEFAULT_PORT } + guardadas
+        for ((id, datos) in conocidas) {
+            val (configurada, puerto) = datos
+            val vigente = direccionVigente(id, configurada)
+            val enSuLugar = SavedPrinter(id = id, name = id, connectionType = PrinterConnectionType.WIFI.value, address = vigente, port = puerto)
+            val identidad = identidadDe(id)
+            try {
+                if (identidad == null) {
+                    val todas = anunciadas ?: buscador.anunciadas(MDNS_POR_NOMBRE_MS).also { anunciadas = it }
+                    aprenderIdentidad(id, todas[vigente]?.let { IdentidadDeImpresora.deNombre(it) } ?: buscador.leerMac(vigente))
+                    continue
+                }
+                val nombre = IdentidadDeImpresora.nombreAnunciado(identidad)
+                if (nombre != null) {
+                    val ip = buscador.anunciadaConNombre(nombre, MDNS_POR_NOMBRE_MS)
+                    if (ip != null && ip != vigente) { recordarMudanza(enSuLugar, ip); corregidas++ }
+                    continue
+                }
+                val ahi = buscador.leerMac(vigente) ?: continue // no contesta: la comanda la buscará
+                if (ahi == identidad) {
+                    conOtraImpresora.remove(id)
+                    reemplazoEnObservacion.remove(id)
+                    continue
+                }
+                Log.w(TAG, "🪪 En la dirección de $id ($vigente) ahora hay OTRA impresora ($ahi) — busco la suya")
+                val suya = buscarPorIdentidad(enSuLugar, direccionesDeLasOtras(id))
+                if (suya != null) {
+                    recordarMudanza(enSuLugar, suya)
+                    corregidas++
+                    continue
+                }
+                if (ahi in identidadesDeLasOtras(id)) {
+                    // Es la de OTRA impresora conocida: nunca su reemplazo. La comanda no va ahí.
+                    conOtraImpresora[id] = vigente
+                    Log.w(TAG, "🪪 En el lugar de $id está otra impresora conocida ($ahi): no se le manda su comanda")
+                    continue
+                }
+                // ¿Reemplazo? Sólo si la misma desconocida sigue ahí en otra ronda, ≥ 9 min después.
+                val visto = reemplazoEnObservacion[id]
+                val ahora = reloj()
+                if (visto == null || visto.first != ahi) {
+                    reemplazoEnObservacion[id] = ahi to ahora
+                } else if (ahora - visto.second >= REEMPLAZO_CONFIRMADO_MS) {
+                    identidades.poner(id, ahi)
+                    reemplazoEnObservacion.remove(id)
+                    conOtraImpresora.remove(id)
+                    Log.w(TAG, "🪪 $identidad no aparece en la red: la impresora de $vigente es su reemplazo ($ahi)")
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "Vigilante: no se pudo revisar $id (${e.message})")
+            }
+        }
+        corregidas
+    }
+
+    /** Las direcciones (ya con sus mudanzas) de las OTRAS impresoras de red conocidas. */
+    private fun direccionesDeLasOtras(idImpresora: String): Set<String> {
+        val registro = mudanzas.todas()
+        val guardadas = _savedPrinters.value
+            .filter { it.connectionTypeEnum == PrinterConnectionType.WIFI && it.id != idImpresora }
+            .associate { it.id to it.address }
+        return (impresorasDeLaConfig.filterKeys { it != idImpresora } + guardadas)
+            .map { (id, direccion) -> ImpresoraMovida.direccionVigente(registro, id, direccion) }
+            .toSet()
+    }
+
+    /**
+     * Dónde está la impresora según su IDENTIDAD, o null si no tiene o no apareció.
+     *
+     * - `mdns:<nombre>` → quien se anuncia con ese nombre.
+     * - `mac:…` → la ticketera cuya página dice esa MAC. Se revisan también las direcciones de las
+     *   OTRAS impresoras conocidas: si dos se intercambiaron la IP, la nuestra está justo ahí.
+     *   Leer su página no toca el puerto de impresión, así que no estorba a una comanda en curso.
+     */
+    private suspend fun buscarPorIdentidad(printer: SavedPrinter, ocupadas: Set<String>): String? {
+        val identidad = identidadDe(printer.id) ?: return null
+        IdentidadDeImpresora.nombreAnunciado(identidad)?.let { nombre ->
+            return buscador.anunciadaConNombre(nombre, MDNS_POR_NOMBRE_MS)
+        }
+        if (!IdentidadDeImpresora.esMac(identidad)) return null
+        val candidatas = (buscador.ticketerasEnLaRed(printer.port ?: DEFAULT_PORT, noTocar = ocupadas) + ocupadas).distinct()
+        if (candidatas.isEmpty()) return null
+        // La PRIMERA que coincida gana: no se espera a la página más lenta (auditoría M2). Las
+        // lecturas corren aparte y se acaban solas con su plazo.
+        val hallada = kotlinx.coroutines.CompletableDeferred<String?>()
+        val pendientes = java.util.concurrent.atomic.AtomicInteger(candidatas.size)
+        candidatas.forEach { ip ->
+            fondo.launch {
+                val esElla = runCatching { buscador.leerMac(ip) == identidad }.getOrDefault(false)
+                if (esElla) hallada.complete(ip)
+                if (pendientes.decrementAndGet() == 0) hallada.complete(null)
+            }
+        }
+        return hallada.await()
+    }
+
+    /**
+     * Guarda la identidad aprendida de una impresora (si no tenía) y, si es del panel, se la avisa
+     * al servidor. Nunca reemplaza una identidad: eso lo decide [vigilar] con evidencia.
+     */
+    private fun aprenderIdentidad(idImpresora: String, identidad: String?) {
+        if (identidad == null || identidadDe(idImpresora) != null) return
+        identidades.poner(idImpresora, identidad)
+        Log.i(TAG, "🪪 Impresora $idImpresora aprendió su identidad: $identidad")
+        encolarAviso(idImpresora)
+    }
+
+    /** Deja (o actualiza) el aviso al servidor de una impresora del panel. Se manda después, con o sin red. */
+    private fun encolarAviso(idImpresora: String) {
+        val configurada = impresorasDeLaConfig[idImpresora] ?: return // las guardadas sólo en esta tablet no se avisan
+        val venue = venueActual() ?: return
+        val previo = avisosPendientes.todas()[idImpresora]
+        avisosPendientes.poner(
+            idImpresora,
+            AvisoDeImpresora(
+                venueId = previo?.venueId ?: venue,
+                // La dirección que el servidor TENÍA: es la que acepta como «anterior».
+                previousAddress = previo?.previousAddress ?: configurada,
+                address = direccionVigente(idImpresora, configurada),
+                stableKey = identidadDe(idImpresora),
+            ),
+        )
+        runCatching { alEncolarAviso() }
+    }
+
+    private fun recordarMudanza(printer: SavedPrinter, nueva: String) {
+        if (nueva == printer.address) return
+        // 🔴 La mudanza se ancla SIEMPRE a la dirección CONFIGURADA (la del servidor o la guardada),
+        // no a la intermedia ni a una mudanza vieja: si se muda dos veces antes de que el servidor se
+        // entere (.64 → .67 → .70), o REGRESA a una dirección que ya tuvo después de que el servidor
+        // aceptó la anterior, la app no puede volver a buscarla donde no está (auditoría A1).
+        val configurada = impresorasDeLaConfig[printer.id]
+            ?: _savedPrinters.value.firstOrNull { it.id == printer.id }?.address
+            ?: mudanzas.todas()[printer.id]?.takeIf { it.nueva == printer.address }?.original
+            ?: printer.address
+        if (nueva == configurada) mudanzas.quitar(printer.id) else mudanzas.poner(printer.id, Mudanza(original = configurada, nueva = nueva))
+        conOtraImpresora.remove(printer.id)
+        encolarAviso(printer.id)
+        // Si es una guardada en ESTA tablet, se corrige su dirección de una vez (y su nombre,
+        // si era el automático «Impresora 192.168.1.64»).
+        _savedPrinters.value.firstOrNull { it.id == printer.id }?.let { guardada ->
+            val nombre = if (guardada.name == "Impresora ${printer.address}") "Impresora $nueva" else guardada.name
+            updatePrinter(guardada.copy(address = nueva, name = nombre))
+        }
+        Log.w(TAG, "📍 ${printer.name} se movió de ${printer.address} a $nueva — se recuerda")
+        runCatching {
+            com.google.firebase.crashlytics.FirebaseCrashlytics.getInstance()
+                .log("Impresora ${printer.id} se movió de ${printer.address} a $nueva")
         }
     }
 
@@ -913,6 +1344,7 @@ class PrinterService @Inject constructor(
         addInternalPrinter()
         startUsbDiscovery()
         startNetworkDiscovery()
+        startTicketeraDiscovery()
         startBluetoothDiscovery()
 
         // Auto-stop after a window: mDNS browsing never completes by itself, so
@@ -972,6 +1404,33 @@ class PrinterService @Inject constructor(
             _discoveredPrinters.value = current
         } catch (e: Exception) {
             Log.e(TAG, "USB discovery error: ${e.message}")
+        }
+    }
+
+    /**
+     * Las ticketeras genéricas (Xprinter, 3nStar, Rongta…) casi nunca se anuncian por mDNS:
+     * por eso la de cocina de Testarudo no aparecía en «Impresoras disponibles» y había que
+     * teclear su IP. Aquí se barre la red del local y cada ticketera que contesta se ofrece
+     * como «Ticketera de red». No toca las guardadas: pueden estar imprimiendo.
+     */
+    private fun startTicketeraDiscovery() {
+        serviceScope.launch {
+            val guardadas = _savedPrinters.value
+                .filter { it.connectionTypeEnum == PrinterConnectionType.WIFI }
+                .map { it.address }
+                .toSet()
+            val ticketeras = runCatching { buscador.ticketerasEnLaRed(DEFAULT_PORT, noTocar = guardadas) }
+                .getOrDefault(emptyList())
+            ticketeras.forEach { ip ->
+                val encontrada = DiscoveredPrinter(
+                    id = "ticketera-$ip",
+                    name = "Ticketera de red",
+                    connectionType = PrinterConnectionType.WIFI,
+                    address = ip,
+                    port = DEFAULT_PORT,
+                )
+                mergeResolvedWifiPrinter(_discoveredPrinters.value, encontrada)?.let { _discoveredPrinters.value = it }
+            }
         }
     }
 
@@ -1310,4 +1769,66 @@ internal fun puedeSoltarseLaConexion(status: PrinterStatus?): Boolean = status !
  */
 data class ResultadoLegado(val intentadas: Int, val fallidas: List<String>) {
     val salio: Boolean get() = intentadas > 0 && fallidas.isEmpty()
+}
+
+/**
+ * Un aviso al servidor pendiente de mandar. `previousAddress` es la dirección que el servidor tenía:
+ * el servidor sólo acepta el cambio si sigue siendo ésa (nunca pisa una corrección más nueva).
+ */
+@kotlinx.serialization.Serializable
+data class AvisoDeImpresora(
+    val venueId: String,
+    val previousAddress: String,
+    val address: String,
+    val stableKey: String? = null,
+)
+
+/**
+ * Un mapa «id de impresora → valor» guardado en el aparato: mudanzas, identidades y avisos pendientes.
+ *
+ * En memoria y en disco: se lee del disco UNA vez y cada cambio se escribe enseguida, así que
+ * sobrevive a un reinicio sin decodificar el archivo en cada comanda. Incluye las impresoras de la
+ * config del SERVIDOR, que no viven en esta tablet.
+ */
+internal class RegistroEnPrefs<T>(
+    context: Context,
+    private val json: Json,
+    nombre: String,
+    valor: kotlinx.serialization.KSerializer<T>,
+) {
+    private val prefs = context.getSharedPreferences(nombre, Context.MODE_PRIVATE)
+    private val serializer = kotlinx.serialization.builtins.MapSerializer(kotlinx.serialization.serializer<String>(), valor)
+    private var cache: Map<String, T>? = null
+
+    @Synchronized
+    fun todas(): Map<String, T> = cache ?: (
+        try {
+            prefs.getString(KEY, null)?.let { json.decodeFromString(serializer, it) } ?: emptyMap()
+        } catch (e: Exception) {
+            emptyMap()
+        }
+        ).also { cache = it }
+
+    @Synchronized
+    fun poner(id: String, v: T) = guardar(todas() + (id to v))
+
+    @Synchronized
+    fun quitar(id: String) = guardar(todas() - id)
+
+    /** Quita sólo si sigue siendo `esperado` (no borra uno más nuevo que llegó mientras tanto). */
+    @Synchronized
+    fun quitarSi(id: String, esperado: T) {
+        if (todas()[id] == esperado) guardar(todas() - id)
+    }
+
+    private fun guardar(nuevo: Map<String, T>) {
+        cache = nuevo
+        // commit (no apply): queda en disco ANTES de seguir — un aviso o una mudanza no se pierde si
+        // el proceso muere enseguida. El archivo es chico.
+        prefs.edit().putString(KEY, json.encodeToString(serializer, nuevo)).commit()
+    }
+
+    private companion object {
+        const val KEY = "v1"
+    }
 }

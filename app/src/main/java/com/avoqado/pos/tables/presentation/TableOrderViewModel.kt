@@ -1313,6 +1313,8 @@ class TableOrderViewModel @Inject constructor(
      */
     private fun motivoImpresora(raw: String?): String = when {
         raw == null -> "Revisa que la impresora esté encendida y en la misma red."
+        // Ya viene en palabras de cajero (la búsqueda de la impresora movida): se dice tal cual.
+        com.avoqado.pos.printing.data.ImpresoraMovida.esAvisoParaCajero(raw) -> raw
         raw.contains("failed to connect", ignoreCase = true) ||
             raw.contains("Error de conexión", ignoreCase = true) ||
             raw.contains("timeout", ignoreCase = true) ||

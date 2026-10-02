@@ -91,3 +91,26 @@ data class GatewayHeartbeatResult(
     val registered: Boolean = false,
     val printersUpdated: Int = 0,
 )
+
+/**
+ * POST mobile/venues/{venueId}/printers/{printerId}/observed — «la impresora que se encuentra sola».
+ * `previousAddress` es la dirección que la tablet tenía del servidor: el servidor sólo la cambia si sigue siendo ésa.
+ */
+@Serializable
+data class ImpresoraObservadaRequest(
+    val previousAddress: String,
+    val address: String,
+    val stableKey: String? = null,
+)
+
+@Serializable
+data class ImpresoraObservadaResponse(val success: Boolean = true, val data: ImpresoraObservadaResult? = null)
+
+@Serializable
+data class ImpresoraObservadaResult(
+    val updated: Boolean = false,
+    /** ACTUALIZADA · SIN_CAMBIOS · DIRECCION_YA_CAMBIO · OTRA_IDENTIDAD */
+    val motivo: String? = null,
+    val address: String? = null,
+    val stableKey: String? = null,
+)

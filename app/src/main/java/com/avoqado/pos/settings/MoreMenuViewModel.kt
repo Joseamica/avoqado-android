@@ -33,6 +33,8 @@ class MoreMenuViewModel @Inject constructor(
     private val authRepository: AuthRepository,
     val timeEntryRepository: TimeEntryRepository,
     val printerService: PrinterService,
+    /** La config de impresión del panel (cache-first): la pantalla de Impresoras enseña sus impresoras. */
+    val printConfigRepository: com.avoqado.pos.printing.routing.PrintConfigRepository,
     private val roleManager: RoleManager,
     private val planManager: PlanManager,
     val posModeManager: PosModeManager,
