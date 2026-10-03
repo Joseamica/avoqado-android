@@ -182,9 +182,20 @@ fun PrinterSettingsSheet(
             // "Desconectada" y abajo la misma impresora salía con palomita verde.
             // Se puede explicar el duplicado con etiquetas, pero la solución real
             // es no producirlo.
-            val disponibles = remember(discoveredPrinters, savedPrinters) {
+            // 🔴 Tampoco se repite una impresora que ya está en el PANEL (la de una estación): darla
+            // de alta otra vez aquí la duplica y la comanda puede salir dos veces. Se encontró
+            // haciendo la guía de impresoras (2-oct): la Epson de «Cocina» salía como disponible.
+            val delPanelPorDireccion = remember(printConfig.printers) {
+                printConfig.printers.filter { it.active }.mapNotNull { info ->
+                    info.address?.trim()?.takeIf { it.isNotEmpty() }?.let { raw ->
+                        val host = raw.substringBeforeLast(':').takeIf { raw.substringAfterLast(':').toIntOrNull() != null } ?: raw
+                        listOf(host, printerService.direccionVigente(info.id, host))
+                    }
+                }.flatten().toSet()
+            }
+            val disponibles = remember(discoveredPrinters, savedPrinters, delPanelPorDireccion) {
                 discoveredPrinters.filter { encontrada ->
-                    savedPrinters.none { it.address == encontrada.address }
+                    savedPrinters.none { it.address == encontrada.address } && encontrada.address !in delPanelPorDireccion
                 }
             }
 

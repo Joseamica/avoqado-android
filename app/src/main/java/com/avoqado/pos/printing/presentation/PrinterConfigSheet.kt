@@ -206,7 +206,7 @@ fun PrinterConfigSheet(
             // -- FUNCIONES (Roles) --
             SectionHeader("Funciones")
             Text(
-                "Selecciona para que tipo de impresiones usar esta impresora.",
+                "Selecciona para qué tipo de impresiones usar esta impresora.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
