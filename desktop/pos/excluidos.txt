@@ -1,21 +1,31 @@
 # Archivos de ../app/src/main/java que NO se compilan en escritorio. Ruta relativa a esa carpeta.
 # «sin reemplazo» = entrada de Android que nadie más usa. «reemplazo» = existe el MISMO paquete/nombre en pos/src/main/kotlin.
-com/avoqado/pos/AvoqadoApp.kt                                   # sin reemplazo: Application de Android; su onCreate se replica en escritorio/Arranque.kt
-com/avoqado/pos/MainActivity.kt                                 # sin reemplazo: su setContent se replica en escritorio/AppEscritorio.kt
-com/avoqado/pos/customerdisplay/CustomerDisplayActivity.kt      # sin reemplazo: Activity de la segunda pantalla
-com/avoqado/pos/kiosk/system/KioskBootReceiver.kt               # sin reemplazo: arranque al encender la tablet
-com/avoqado/pos/core/data/local/database/AvoqadoDatabaseMigrations.kt   # reemplazo: copia generada con los imports cambiados (build/generated/migraciones)
-com/avoqado/pos/core/di/DatabaseModule.kt                       # reemplazo: Room con BundledSQLiteDriver en la carpeta de datos, con las migraciones de Android y respaldo previo
-com/avoqado/pos/auth/data/BiometricAuthManager.kt               # reemplazo: sin biometría en escritorio
-com/avoqado/pos/auth/presentation/LandingScreen.kt              # reemplazo: fondo fijo en vez del video (VideoView)
-com/avoqado/pos/customerdisplay/CustomerDisplayPresentation.kt  # sin reemplazo: Presentation de Android (segunda pantalla); sólo la usa CustomerDisplayManager
-com/avoqado/pos/customerdisplay/CustomerDisplayManager.kt       # reemplazo: segunda pantalla, fase siguiente
-com/avoqado/pos/customerdisplay/CashierDisplayGuard.kt          # reemplazo: DisplayManager/Activity en otro display
-com/avoqado/pos/customerdisplay/CustomerTouchBridge.kt          # sin reemplazo: InputManager de Android; sólo lo usa CustomerDisplayManager
-com/avoqado/pos/customerdisplay/DisplayRoles.kt                 # reemplazo: roles de displays de Android
-com/avoqado/pos/printing/data/SunmiInnerPrinter.kt              # reemplazo: impresora interna Sunmi (hardware)
-com/avoqado/pos/printing/data/UsbPrinterManager.kt              # reemplazo: USB host de Android
-com/avoqado/pos/printing/data/AreaTicketPdfGenerator.kt         # reemplazo: android.graphics.pdf
-com/avoqado/pos/scale/UsbSerialScaleManager.kt                  # reemplazo: báscula por usb-serial-for-android
-com/avoqado/pos/pos/presentation/scanner/BarcodeScannerView.kt  # reemplazo: CameraX + ML Kit
-com/avoqado/pos/settings/domain/ScreenPinningManager.kt         # reemplazo: fijar pantalla (modo kiosco) de Android
+#
+# 🔴 Paridad en el tiempo: «| huella: …» es el SHA-256 (con CRLF → LF) del archivo de Android con el que se reconcilió su
+# reemplazo de escritorio. Si Android lo cambia, `:pos:verificarExcluidos` (antes de compilar y en el CI «Escritorio
+# (Windows)») truena y dice cuál. Entonces: lee el cambio (`git log -p -- app/src/main/java/<ruta>`), pon al día el
+# reemplazo (o anota lo que escritorio todavía no tiene) y SÓLO DESPUÉS corre `./gradlew -p desktop :pos:actualizarHuellas`.
+# Un renglón sin huella también truena. Prueba de las alarmas: desktop/herramientas/probar-huellas.sh.
+com/avoqado/pos/AvoqadoApp.kt                                   # sin reemplazo: Application de Android; su onCreate se replica en escritorio/Arranque.kt | huella: 211ec7038ac81df0d86049592715f178f88897c58676ab44b4185095d37d551d
+com/avoqado/pos/MainActivity.kt                                 # sin reemplazo: su setContent se replica en escritorio/AppEscritorio.kt | huella: 1bc7862586f7baee8df828208026b02fb91870c25e393143fe51b22351aaa38a
+com/avoqado/pos/customerdisplay/CustomerDisplayActivity.kt      # sin reemplazo: Activity de la segunda pantalla | huella: bfd0eae749c91ef16171f63282092c9fafb081c8a74c53d68bc46527dea15c33
+com/avoqado/pos/kiosk/system/KioskBootReceiver.kt               # sin reemplazo: arranque al encender la tablet | huella: 9d77ee128ab6ce7793b8f3a68b2443d64de86b2b0ae23f20aec63b80d741d72a
+com/avoqado/pos/core/data/local/database/AvoqadoDatabaseMigrations.kt   # reemplazo: copia generada con los imports cambiados (build/generated/migraciones) | huella: 76a24502d0f6170663024d97116f1de0b17f324df78dda516636a697df4b2c71
+com/avoqado/pos/core/di/DatabaseModule.kt                       # reemplazo: Room con BundledSQLiteDriver en la carpeta de datos, con las migraciones de Android y respaldo previo | huella: 7fffd1e5cd442ef0509654b2afac7ebb796935ced624a78f0fbc04341d963f6a
+com/avoqado/pos/auth/data/BiometricAuthManager.kt               # reemplazo: sin biometría en escritorio | huella: e0ccd4d268b356bb4d0b4765510c62ebaa8f53252ec3fae247808c7679723cb2
+com/avoqado/pos/auth/presentation/LandingScreen.kt              # reemplazo: fondo fijo en vez del video (VideoView) | huella: 26090b8c018e6549408d185ca7ae260508cc64d0abba072bbb5198bdb8acd230
+com/avoqado/pos/customerdisplay/CustomerDisplayPresentation.kt  # sin reemplazo: Presentation de Android (segunda pantalla); sólo la usa CustomerDisplayManager | huella: 8f212a0724fff66aa578d5887bc2e2746bebfc132fc642b4c8f6eedce9ca0a78
+com/avoqado/pos/customerdisplay/CustomerDisplayManager.kt       # reemplazo: segunda pantalla, fase siguiente | huella: f3fd9f880b04dbfafc4a367c510b649477101c05a399a32dbb948f231158e06d
+com/avoqado/pos/customerdisplay/CashierDisplayGuard.kt          # reemplazo: DisplayManager/Activity en otro display | huella: 5a075646fb8e24d65733154fec879a615d20e88f915cdaa66dbf4782e83fd01c
+com/avoqado/pos/customerdisplay/CustomerTouchBridge.kt          # sin reemplazo: InputManager de Android; sólo lo usa CustomerDisplayManager | huella: 4a0f2bd67fff71fe80d09dd1599b3d0eac0d797e200c1297f6c7d3f8bfe94d74
+com/avoqado/pos/customerdisplay/DisplayRoles.kt                 # reemplazo: roles de displays de Android | huella: 1cbaafe6086cd2ff3aba87af3fecf20c6526f30adf4474a46dcd781e9e8eae04
+com/avoqado/pos/printing/data/SunmiInnerPrinter.kt              # reemplazo: impresora interna Sunmi (hardware) | huella: f20cb3509b758e9d789f40d9a90f092ff0fe0dd6b2f6c720f100d319ea78888f
+com/avoqado/pos/printing/data/UsbPrinterManager.kt              # reemplazo: USB host de Android | huella: 82dd226e018f2f21e39ab95bc9ca3d59b750f07d423724fa4e4739fbf53c2b5e
+com/avoqado/pos/printing/data/AreaTicketPdfGenerator.kt         # reemplazo: android.graphics.pdf | huella: ac74ef821023d8dfbfcf6ceb35acb05701f4697529a105b8a70cb68a4fea8646
+com/avoqado/pos/scale/UsbSerialScaleManager.kt                  # reemplazo: báscula por usb-serial-for-android | huella: cabd0b26eccb941d6a13653e652af981e1f7328627a2ebe20f9a8e447cc1bc63
+com/avoqado/pos/pos/presentation/scanner/BarcodeScannerView.kt  # reemplazo: CameraX + ML Kit | huella: 41a8e5a7bc5ec6b01c2c0f1b07654392c492cc39469a9d25f4bfb78ed19f4abf
+com/avoqado/pos/settings/domain/ScreenPinningManager.kt         # reemplazo: fijar pantalla (modo kiosco) de Android | huella: d23efb3da30e0a9846ac6f9183d9b6504d24ed380120d25a604d577a8e240228
+#
+# No se excluye de nada: sólo se vigila. Lo que Android declara aquí (servicios, receptores de arranque, permisos) lo da el
+# sistema; en escritorio se replica a mano en escritorio/Arranque.kt o se declara «no disponible en Windows».
+@manifiesto app/src/main/AndroidManifest.xml | huella: 795af42a0155011921fafbf394f3a6036649cf9450b2d461d240c1ea2c6fbc95

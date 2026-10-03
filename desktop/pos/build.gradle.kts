@@ -1,3 +1,5 @@
+import java.io.ByteArrayOutputStream
+import java.security.MessageDigest
 import java.util.zip.ZipFile
 plugins {
     kotlin("jvm")
@@ -13,8 +15,9 @@ val cmp = "1.7.3"
 val appAndroid = rootDir.resolve("../app").canonicalFile
 val fuentesAndroid = appAndroid.resolve("src/main/java")
 
+// Los renglones «@manifiesto …» no se excluyen de nada: sólo se vigilan (ver Paridad, abajo).
 val excluidos: Set<String> = file("excluidos.txt").readLines()
-    .map { it.substringBefore('#').trim() }.filter { it.isNotEmpty() }.toSet()
+    .map { it.substringBefore('#').trim() }.filter { it.isNotEmpty() && !it.startsWith("@") }.toSet()
 
 dependencies {
     implementation(project(":plataforma"))
@@ -123,10 +126,126 @@ val copiarMigracionesDeAndroid by tasks.registering {
     }
 }
 
+// --- Paridad en el tiempo: cada renglón de excluidos.txt lleva la huella SHA-256 del archivo de Android con el que se
+// reconcilió su reemplazo de escritorio. Si Android lo cambia, verificarExcluidos truena (antes de compilar y en el CI de
+// escritorio) y dice cuál y qué hacer; actualizarHuellas las reescribe A PROPÓSITO, tras poner al día el reemplazo. ---
+object Paridad {
+    const val MANIFIESTO = "@manifiesto"
+    const val COMO_ACTUALIZAR = "./gradlew -p desktop :pos:actualizarHuellas"
+    private val HUELLA = Regex("""\|\s*huella:\s*(\S*)""")
+    private val HEX = Regex("[0-9a-f]{64}")
+
+    /**
+     * Un renglón que vigila un archivo de Android. [ruta] es como la escribe excluidos.txt; [rutaGit], relativa a la raíz
+     * de avoqado-android (para el `git log`); [huella], la anotada (null si falta o no son 64 hex en minúscula).
+     */
+    class Vigilado(val renglon: Int, val ruta: String, val rutaGit: String, val archivo: File, val nota: String, val huella: String?)
+
+    /**
+     * Lee los renglones de excluidos.txt: comentarios (#) y vacíos se ignoran; `<ruta> # <tipo>: <nota> | huella: <hex>`
+     * vigila app/src/main/java/<ruta>; `@manifiesto <ruta> | huella: <hex>` vigila <ruta> desde la raíz de Android.
+     */
+    fun leer(renglones: List<String>, raizAndroid: File): List<Vigilado> = renglones.mapIndexedNotNull { i, renglon ->
+        val texto = renglon.trim()
+        if (texto.isEmpty() || texto.startsWith("#")) return@mapIndexedNotNull null
+        val anotada = HUELLA.find(texto)?.groupValues?.get(1)
+        val sinHuella = HUELLA.replace(texto, "").trim()
+        val cabeza = sinHuella.substringBefore('#').trim()
+        val nota = sinHuella.substringAfter('#', "").trim()
+        val huella = anotada?.takeIf { HEX.matches(it) }
+        if (cabeza.startsWith("@")) {
+            val directiva = cabeza.substringBefore(' ')
+            if (directiva != MANIFIESTO) {
+                throw GradleException("excluidos.txt, renglón ${i + 1}: no conozco «$directiva» (sólo $MANIFIESTO)")
+            }
+            val ruta = cabeza.removePrefix(MANIFIESTO).trim()
+            Vigilado(i, ruta, ruta, raizAndroid.resolve(ruta), nota.ifEmpty {
+                "servicios, receptores y permisos: lo que el sistema arranca en Android, escritorio lo replica a mano en escritorio/Arranque.kt"
+            }, huella)
+        } else {
+            Vigilado(i, cabeza, "app/src/main/java/$cabeza", raizAndroid.resolve("app/src/main/java/$cabeza"), nota, huella)
+        }
+    }
+
+    /** SHA-256 del CONTENIDO con CRLF → LF: un archivo con otro fin de línea (git en Windows) no es un cambio de Android. */
+    fun huella(archivo: File): String {
+        val bytes = archivo.readBytes()
+        val normal = ByteArrayOutputStream(bytes.size)
+        for (i in bytes.indices) {
+            if (bytes[i] == '\r'.code.toByte() && i + 1 < bytes.size && bytes[i + 1] == '\n'.code.toByte()) continue
+            normal.write(bytes[i].toInt())
+        }
+        return MessageDigest.getInstance("SHA-256").digest(normal.toByteArray()).joinToString("") { "%02x".format(it) }
+    }
+
+    /** El mismo renglón con [huella] en su campo `huella:` (lo agrega al final si no lo tenía). Nada más cambia. */
+    fun conHuella(renglon: String, huella: String): String = when {
+        HUELLA.containsMatchIn(renglon) -> HUELLA.replace(renglon) { "| huella: $huella" }
+        renglon.trimStart().startsWith("@") || '#' in renglon -> "${renglon.trimEnd()} | huella: $huella"
+        else -> "${renglon.trimEnd()}  # | huella: $huella"
+    }
+
+    fun faltantes(vigilados: List<Vigilado>): List<String> = vigilados.filterNot { it.archivo.isFile }.map { it.ruta }
+
+    /** Un mensaje por renglón cuya huella falta o ya no es la del archivo de Android. Todos, no sólo el primero. */
+    fun diferencias(vigilados: List<Vigilado>): List<String> = vigilados.filter { it.archivo.isFile }.mapNotNull { v ->
+        val actual = huella(v.archivo)
+        val anotada = v.huella
+        when {
+            anotada == null ->
+                "${v.ruta} no tiene huella en excluidos.txt. Revisa que su reemplazo de escritorio esté al día (${v.nota}) y corre `$COMO_ACTUALIZAR`."
+            anotada != actual ->
+                "Android cambió ${v.ruta} (huella ${anotada.take(8)}… → ${actual.take(8)}…). Revisa el cambio (`git log -p -- ${v.rutaGit}`), " +
+                    "pon al día su reemplazo de escritorio (${v.nota}) y corre `$COMO_ACTUALIZAR`."
+            else -> null
+        }
+    }
+}
+
+// -Pavoqado.paridad.excluidos / -Pavoqado.paridad.android: sólo para PROBAR las alarmas con un árbol de prueba
+// (desktop/herramientas/probar-huellas.sh). No cambian qué se compila: la exclusión de arriba lee SIEMPRE excluidos.txt.
+val excluidosDeParidad = providers.gradleProperty("avoqado.paridad.excluidos").map { File(it) }.getOrElse(file("excluidos.txt"))
+val raizAndroidDeParidad = providers.gradleProperty("avoqado.paridad.android").map { File(it) }.getOrElse(appAndroid.parentFile)
+
 val verificarExcluidos by tasks.registering {
-    val faltan = excluidos.filterNot { fuentesAndroid.resolve(it).isFile }
+    description = "Que cada archivo de Android que escritorio reemplaza (o vigila) exista y conserve la huella de excluidos.txt."
+    val archivo = excluidosDeParidad
+    val raiz = raizAndroidDeParidad
     doLast {
-        check(faltan.isEmpty()) { "Estos archivos de excluidos.txt ya no existen en app/ (¿los movieron o renombraron?): $faltan" }
+        val vigilados = Paridad.leer(archivo.readLines(), raiz)
+        val faltan = Paridad.faltantes(vigilados)
+        val avisos = buildList {
+            if (faltan.isNotEmpty()) add("Estos archivos de excluidos.txt ya no existen en app/ (¿los movieron o renombraron?): $faltan")
+            addAll(Paridad.diferencias(vigilados))
+        }
+        if (avisos.isNotEmpty()) {
+            throw GradleException(
+                "El POS de Windows se quedó atrás de Android en ${avisos.size} punto(s) (desktop/pos/excluidos.txt):\n" +
+                    avisos.joinToString("\n") { "  • $it" },
+            )
+        }
+    }
+}
+
+val actualizarHuellas by tasks.registering {
+    description = "Reescribe el campo «huella:» de cada renglón de excluidos.txt con la del archivo de Android de hoy. Sólo tras revisar."
+    val archivo = excluidosDeParidad
+    val raiz = raizAndroidDeParidad
+    doLast {
+        val renglones = archivo.readLines()
+        val vigilados = Paridad.leer(renglones, raiz)
+        val faltan = Paridad.faltantes(vigilados)
+        if (faltan.isNotEmpty()) {
+            throw GradleException("No puedo poner la huella de archivos que ya no existen en Android (quítalos o corrige la ruta en excluidos.txt): $faltan")
+        }
+        val nuevos = renglones.toMutableList()
+        val cambiaron = vigilados.mapNotNull { v ->
+            val huella = Paridad.huella(v.archivo)
+            nuevos[v.renglon] = Paridad.conHuella(renglones[v.renglon], huella)
+            v.ruta.takeIf { v.huella != huella }
+        }
+        archivo.writeText(nuevos.joinToString("\n", postfix = "\n"))
+        logger.lifecycle("Huellas al día: ${vigilados.size}. Cambiaron: ${cambiaron.ifEmpty { listOf("ninguna") }.joinToString(", ")}")
     }
 }
 

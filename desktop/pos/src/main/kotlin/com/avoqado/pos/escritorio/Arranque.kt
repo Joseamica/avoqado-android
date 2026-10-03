@@ -17,6 +17,7 @@ import com.avoqado.pos.kiosk.domain.KioskDriver
 import com.avoqado.pos.kiosk.domain.KioskPrefs
 import com.avoqado.pos.kiosk.domain.KioskState
 import com.avoqado.pos.payment.data.CancelacionDeCobroCoordinator
+import com.avoqado.pos.printing.data.VigilanteDeImpresoras
 import com.avoqado.pos.reservations.data.ReservationActionsRetrier
 import com.google.inject.CreationException
 import com.google.inject.Injector
@@ -66,6 +67,9 @@ object Arranque {
         VenueTimeZone.set(inyector.getInstance(SecureStorage::class.java).venueTimezone)
         inyector.getInstance(ReservationActionsRetrier::class.java).start(appScope)
         inyector.getInstance(CancelacionDeCobroCoordinator::class.java).start()
+        // «La impresora que se encuentra sola» (Android 3cef2f4, 2-oct): al abrir, al volver la red y cada 10 min revisa que
+        // cada impresora de red siga en su dirección y avisa al servidor si se movió. En Windows corre igual (red 9100).
+        inyector.getInstance(VigilanteDeImpresoras::class.java).start()
         inyector.getInstance(KioskDriver::class.java).attach()
         val kioskPrefs = inyector.getInstance(KioskPrefs::class.java)
         val kioskState = inyector.getInstance(KioskState::class.java)
