@@ -93,7 +93,9 @@ class UsbPrinterManagerDeEscritorioTest {
                 }
                 override fun close() {
                     if (cerrado) return
-                    cerrado = true; puertosAbiertos -= puerto; eventos += "cerrar $puerto"
+                    // Primero se anota y DESPUÉS se suelta el puerto: quien espera «ya no está abierto» (esperarHasta) ve
+                    // también el «cerrar». Al revés, en el runner lento de GitHub la prueba leía la lista entre los dos pasos.
+                    cerrado = true; eventos += "cerrar $puerto"; puertosAbiertos -= puerto
                 }
             }
         }

@@ -8,6 +8,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -52,10 +53,21 @@ class TecladoEnLaEscenaTest {
         cuadros(5)
     }
 
-    private fun ImageComposeScene.teclas() = EscritorDeTeclas(object : java.awt.Component() {}) { sendKeyEvent(teclaDeCompose(it)); cuadros() }
+    /**
+     * Cada tecla espera a que el campo se VUELVA A COMPONER con el texto nuevo antes de la siguiente, como pasa con un
+     * cajero real (entre dos toques hay decenas de cuadros). Sin esto, en el runner lento de GitHub la tecla siguiente se
+     * aplicaba sobre el texto viejo y se «perdían» letras: «Hol andú» en vez de «Hola ñandú» (run 37054232000).
+     */
+    private fun ImageComposeScene.teclas(caja: Caja) = EscritorDeTeclas(object : java.awt.Component() {}) {
+        sendKeyEvent(teclaDeCompose(it))
+        cuadros()
+        var vueltas = 0
+        while (caja.compuesto != caja.texto && vueltas++ < 200) { Thread.sleep(2); cuadros() }
+        check(caja.compuesto == caja.texto) { "el campo no se recompuso: compuesto=«${caja.compuesto}» texto=«${caja.texto}»" }
+    }
 
 
-    private class Caja { var texto = ""; var hecho = 0 }
+    private class Caja { @Volatile var texto = ""; @Volatile var compuesto = ""; var hecho = 0 }
 
     private fun conCampo(caja: Caja, panel: Boolean, estado: EstadoDeTeclas = EstadoDeTeclas(), prueba: (ImageComposeScene, EscritorDeTeclas?) -> Unit) {
         lateinit var escena: ImageComposeScene
@@ -75,11 +87,12 @@ class TecladoEnLaEscenaTest {
                         keyboardActions = KeyboardActions(onDone = { caja.hecho++ }),
                         modifier = Modifier.fillMaxWidth().height(40.dp),
                     )
+                    SideEffect { caja.compuesto = v }
                 }
             }
         }
         try {
-            escritor = escena.teclas()
+            escritor = escena.teclas(caja)
             escena.cuadros(2)
             prueba(escena, escritor)
         } finally { escena.close() }
@@ -129,12 +142,13 @@ class TecladoEnLaEscenaTest {
                             value = v, onValueChange = { v = it; caja.texto = it },
                             modifier = Modifier.width(300.dp).height(60.dp),
                         )
+                        SideEffect { caja.compuesto = v }
                     }
                 }
             }
         }
         try {
-            escritor = escena.teclas()
+            escritor = escena.teclas(caja)
             escena.cuadros(3)
             escena.tocar(300, 280)   // el campo del diálogo (centrado)
             escena.cuadros(3)

@@ -211,6 +211,25 @@ val jarDeSqlite = provider {
         ?: throw GradleException("No encontré $prefijoDelJarDeSqlite entre las dependencias de Windows: sin su DLL nativa, SQLite se copiaría a %TEMP% en cada arranque")
 }
 
+// --- MSIX: el ZIP lleva msix/ (manifiesto sellado por modo, logo, version.txt y los scripts de PowerShell) ---
+// Versión MSIX = versionName de Android + «.0» (2.21.1 → 2.21.1.0); cada parte 0-65535. Perezosa: sólo truena al empaquetar.
+val versionMsix: Provider<String> = provider {
+    val partes = versionAndroid.split('.')
+    val numeros = partes.map { parte -> parte.takeIf { it.matches(Regex("""\d{1,5}""")) }?.toInt()?.takeIf { it in 0..65535 } }
+    if (partes.size != 3 || numeros.any { it == null }) {
+        throw GradleException("La versión de Android «$versionAndroid» no se puede convertir a versión MSIX X.Y.Z.0")
+    }
+    numeros.joinToString(".") + ".0"
+}
+val nombreMsix = if (produccion) "Avoqado.POS" else "Avoqado.POS.Prueba"
+val nombreVisibleMsix = if (produccion) "Avoqado POS" else "Avoqado POS (prueba)"
+val generarVersionMsix by tasks.registering {
+    val archivo = layout.buildDirectory.file("generated/msix/version.txt")
+    inputs.property("versionMsix", versionMsix)
+    outputs.file(archivo)
+    doLast { archivo.get().asFile.apply { parentFile.mkdirs() }.writeText(versionMsix.get()) }   // sin salto de línea
+}
+
 // -Pavoqado.produccion=true: lanzador sin `set` (hosts de producción, sin -Pavoqado.ipMac) y ZIP «…-produccion.zip».
 val empaquetarWindows by tasks.registering(Zip::class) {
     val jre = providers.gradleProperty("avoqado.jreWindows")        // carpeta del JRE ya descomprimido
@@ -257,5 +276,18 @@ val empaquetarWindows by tasks.registering(Zip::class) {
                 filteringCharset = "UTF-8"
             }
         }
+        // msix/: lo que armar-msix.ps1 necesita en Windows. @EDITOR@ NO se sella aquí: lo pone Windows (certificado o la Store).
+        into("msix") {
+            from("windows/msix/AppxManifest.plantilla.xml") {
+                rename { "AppxManifest.xml" }
+                filter { it.replace("@NOMBRE_VISIBLE@", nombreVisibleMsix).replace("@NOMBRE@", nombreMsix).replace("@VERSION@", versionMsix.get()) }
+                filteringCharset = "UTF-8"
+            }
+            from(appAndroid.resolve("src/main/res/drawable-nodpi/avoqado_logo_mark.png")) { rename { "logo.png" } }
+            from(generarVersionMsix)
+            from("windows/msix") { include("*.ps1") }   // herramientas, certificado-de-prueba y armar-msix
+        }
     }
+    inputs.property("produccion", produccion)
+    inputs.property("versionMsix", versionMsix)
 }
