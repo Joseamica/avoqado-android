@@ -32,6 +32,7 @@ import org.junit.Test
 import java.io.BufferedInputStream
 import java.net.InetAddress
 import java.net.InetSocketAddress
+import java.net.ServerSocket
 import java.net.Socket
 import java.net.SocketTimeoutException
 
@@ -317,14 +318,22 @@ class TransporteLanLoopbackTest {
         assertEquals(null, runCatching { enviarLinea(puerto, enorme) }.getOrNull())
     }
 
+    /**
+     * Lo que se comprueba es que `detener` cierre SU socket, sobre el objeto mismo. Antes se comprobaba conectándose al
+     * puerto viejo y esperando el rechazo, y en el runner de GitHub esa conexión a veces SÍ entraba (5 de 9 corridas del
+     * CI del 1 al 3-oct) con el socket ya cerrado; en Mac y Linux (Alienware) nunca: 8/8 la clase sola y 3346/0 la suite
+     * completa en las dos (3-oct). Un puerto efímero recién soltado no es nuestro: qué más escuche ahí no dice nada de esto.
+     */
     @Test
     fun `detener cierra el socket y cambiar de venue reinicia`() = runBlocking {
         transporte.iniciar("venue-1")
         transporte.conectarHub(LeaseServer()::respondTo)
-        val p1 = esperarPuerto()
+        esperarPuerto()
+        val socketViejo = TransporteLan::class.java.getDeclaredField("serverSocket")
+            .apply { isAccessible = true }.get(transporte) as ServerSocket
         transporte.detener()
         assertEquals(-1, transporte.puerto)
-        assertTrue(runCatching { enviarLinea(p1, "{}") }.isFailure)
+        assertTrue("detener tiene que cerrar el socket que escuchaba", socketViejo.isClosed)
 
         transporte.iniciar("venue-2")
         transporte.conectarHub(LeaseServer()::respondTo)
