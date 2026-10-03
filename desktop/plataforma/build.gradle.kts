@@ -24,8 +24,13 @@ dependencies {
     api("androidx.datastore:datastore-preferences-core:1.1.1")
     api("org.json:json:20231013")                  // la misma que usan las pruebas de Android
     implementation("net.java.dev.jna:jna-platform:5.19.1")   // DPAPI (Crypt32Util) de las preferencias cifradas; la MISMA de :pos
+    implementation("org.jmdns:jmdns:3.6.1")   // Hub LAN: anunciar y encontrar los POS del local por mDNS (aprobada por el founder, 3-oct)
     testImplementation(kotlin("test-junit"))
     testRuntimeOnly("org.jetbrains.compose.desktop:desktop-jvm-macos-arm64:$cmp")
 }
 
-tasks.test { systemProperty("java.awt.headless", "true") }
+tasks.test {
+    systemProperty("java.awt.headless", "true")
+    // mDNS de verdad (RedLocalMdnsRealTest): fuera del CI, depende de la red del equipo.
+    providers.gradleProperty("avoqado.redReal").orNull?.let { systemProperty("avoqado.redReal", it) }
+}

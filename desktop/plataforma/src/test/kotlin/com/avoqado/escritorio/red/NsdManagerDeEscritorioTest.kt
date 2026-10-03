@@ -97,10 +97,5 @@ class NsdManagerDeEscritorioTest {
         assertEquals(listOf("iniciado", "detenido", "iniciado", "detenido"), escucha.eventos.toList())
     }
 
-    @Test fun `el Hub LAN sigue sin encontrar nada`() {
-        val nsd = NsdManager(); val escucha = Escucha()
-        nsd.discoverServices("_avoqado-pos._tcp", NsdManager.PROTOCOL_DNS_SD, escucha)
-        nsd.stopServiceDiscovery(escucha)
-        assertEquals(emptyList(), escucha.eventos.toList())
-    }
+    // El Hub LAN (`_avoqado-pos._tcp`) ya no es isla: su contrato se prueba en NsdManagerHubLanTest (mDNS falso).
 }

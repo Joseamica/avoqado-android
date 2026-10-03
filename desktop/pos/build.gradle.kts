@@ -283,6 +283,8 @@ val evidencia = providers.gradleProperty("avoqado.evidencia")
 tasks.test {
     systemProperty("java.awt.headless", "true")
     systemProperty("avoqado.api", "http://127.0.0.1:9/api/v1")    // puerto cerrado: ninguna prueba unitaria llega a un servidor
+    // Hub LAN con mDNS de verdad (HubLanEntreDosPosTest): fuera del CI, depende de la red del equipo.
+    providers.gradleProperty("avoqado.redReal").orNull?.let { systemProperty("avoqado.redReal", it) }
     systemProperty("avoqado.esquemas", appAndroid.resolve("schemas").absolutePath)   // los JSON que exporta Android (3.json…)
     inputs.dir(appAndroid.resolve("schemas"))
         .withPropertyName("esquemasAndroid")
@@ -380,6 +382,10 @@ val empaquetarWindows by tasks.registering(Zip::class) {
         }
         from("windows/QueVeWindows.bat")   // qué impresoras, COM y pantallas ve Windows (sólo lee)
         from("windows/LEEME-PANTALLA-DEL-CLIENTE.txt")   // cómo probar la pantalla del cliente con dos monitores
+        from("windows/LEEME-RED-LOCAL.txt")   // Hub LAN: el aviso del firewall y cómo comprobar que la caja y la cocina se ven
+        from("windows/PruebaDeRedLocal.bat") {   // ¿esta PC encuentra a las demás del local y le llegan por TCP?
+            filter(org.apache.tools.ant.filters.FixCrLfFilter::class, "eol" to org.apache.tools.ant.filters.FixCrLfFilter.CrLf.newInstance("crlf"))
+        }
         from("windows/QueVeWindows.ps1") {
             filter { it.replace("@CARPETA_DE_DATOS_PS@", carpetaPs) }
             filter(org.apache.tools.ant.filters.FixCrLfFilter::class, "eol" to org.apache.tools.ant.filters.FixCrLfFilter.CrLf.newInstance("crlf"))

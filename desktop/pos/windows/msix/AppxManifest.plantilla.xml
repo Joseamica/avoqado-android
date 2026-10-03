@@ -2,7 +2,8 @@
 <Package xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
   xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
   xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
-  IgnorableNamespaces="uap rescap">
+  xmlns:desktop2="http://schemas.microsoft.com/appx/manifest/desktop/windows10/2"
+  IgnorableNamespaces="uap rescap desktop2">
   <Identity Name="@NOMBRE@" Publisher="@EDITOR@" Version="@VERSION@" ProcessorArchitecture="x64"/>
   <Properties>
     <DisplayName>@NOMBRE_VISIBLE@</DisplayName>
@@ -21,4 +22,16 @@
         Square44x44Logo="Assets\Square44x44Logo.png"/>
     </Application>
   </Applications>
+  <!-- Hub LAN: que las tablets y la pantalla de cocina le lleguen a esta PC por el WiFi/cable del local (TCP a su puerto,
+       que es efímero) y que encuentre a los demás (mDNS, UDP 5353). Profile="all": Windows 11 marca las redes WiFi nuevas
+       como «Pública» (medido en la Alienware el 3-oct); Android acepta en cualquier WiFi. Sin esto, Windows bloquea lo que
+       entra y, si el cajero cierra su aviso, deja un bloqueo PERMANENTE. -->
+  <Extensions>
+    <desktop2:Extension Category="windows.firewallRules">
+      <desktop2:FirewallRules Executable="Avoqado POS.exe">
+        <desktop2:Rule Direction="in" IPProtocol="TCP" Profile="all"/>
+        <desktop2:Rule Direction="in" IPProtocol="UDP" LocalPortMin="5353" LocalPortMax="5353" Profile="all"/>
+      </desktop2:FirewallRules>
+    </desktop2:Extension>
+  </Extensions>
 </Package>

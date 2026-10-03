@@ -50,10 +50,17 @@ public class ConnectivityManager {
     }
 
     public Network getActiveNetwork() { return arriba ? Network.UNICA : null; }
-    /** La red activa ({@link Network#UNICA}): cable con internet, como siempre. Una interfaz: sus transportes reales. */
+    /**
+     * La red activa ({@link Network#UNICA}): la de la tarjeta del local (WiFi o cable, la misma que usa el Hub LAN); sin
+     * tarjeta del local, cable como antes. 🔴 El Hub LAN anuncia «wired» con esto y el cable gana la elección del árbitro: una
+     * PC en WiFi que dijera «cable» le ganaría a una tablet que sí lo está. Una interfaz: sus transportes reales.
+     */
     public NetworkCapabilities getNetworkCapabilities(Network network) {
         if (network == null) return null;
-        if (network.interfaz == null) return new NetworkCapabilities();
+        if (network.interfaz == null) {
+            kotlin.Pair<NetworkInterface, InetAddress> lan = com.avoqado.escritorio.red.RedLocalMdns.interfazDelLocalDeEsteEquipo();
+            return lan == null ? new NetworkCapabilities() : capacidadesDe(lan.getFirst());
+        }
         NetworkInterface i = interfazDe(network);
         return i == null ? null : capacidadesDe(i);
     }
@@ -99,6 +106,9 @@ public class ConnectivityManager {
         }
         return lista;
     }
+
+    /** Escritorio (no es API de Android): qué es una tarjeta para el Hub LAN — WiFi, cable, o nada si es virtual (RedLocalMdns). */
+    public static NetworkCapabilities capacidadesDeLaInterfaz(NetworkInterface i) { return capacidadesDe(i); }
 
     private static NetworkCapabilities capacidadesDe(NetworkInterface i) {
         boolean conMac;

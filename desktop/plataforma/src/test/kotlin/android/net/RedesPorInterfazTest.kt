@@ -88,11 +88,19 @@ class RedesPorInterfazTest {
             cm.getNetworkCapabilities(it)!!.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) })
     }
 
-    @Test fun `la red activa de siempre no cambia - cable con internet y sin propiedades de enlace`() {
+    /**
+     * La red activa dice lo que es la tarjeta del LOCAL (la del Hub LAN): WiFi o cable, nunca las dos; sin tarjeta del local,
+     * cable como antes. Sin depender de la máquina donde corre: se compara contra la misma elección (RedLocalMdns).
+     */
+    @Test fun `la red activa - internet, sin propiedades de enlace, y WiFi o cable segun la tarjeta del local`() {
         val cm = ConnectivityManager { true }
         val activa = cm.getNetworkCapabilities(Network.UNICA)!!
-        assertTrue(activa.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET))
-        assertFalse(activa.hasTransport(NetworkCapabilities.TRANSPORT_WIFI))
+        val wifi = activa.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+        val cable = activa.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)
+        assertTrue(wifi != cable, "WiFi o cable, uno solo")
+        val lan = com.avoqado.escritorio.red.RedLocalMdns.interfazDelLocalDeEsteEquipo()
+        val esperado = lan?.let { ConnectivityManager.capacidadesDeLaInterfaz(it.first).hasTransport(NetworkCapabilities.TRANSPORT_WIFI) } ?: false
+        assertEquals(esperado, wifi)
         assertTrue(activa.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET))
         assertNull(cm.getNetworkCapabilities(null))
         assertNull(cm.getLinkProperties(Network.UNICA))

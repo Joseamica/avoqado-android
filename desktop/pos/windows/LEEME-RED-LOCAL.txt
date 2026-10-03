@@ -1,0 +1,27 @@
+RED LOCAL (HUB LAN) EN WINDOWS — qué esperar y cómo comprobarlo
+
+Qué hace: la PC con Windows se encuentra y se habla con las tablets y la pantalla de cocina por el WiFi
+o el cable del local, AUNQUE NO HAYA INTERNET: las comandas llegan a la cocina y las mesas no se
+cruzan entre cajas. Es una función Premium (la misma «red local» de Android).
+
+INSTALADA DESDE LA MICROSOFT STORE
+No hay que hacer nada: el instalador ya le dice a Windows que deje pasar a Avoqado POS.
+
+CON EL ZIP (Iniciar.bat)
+La primera vez Windows muestra «Firewall de Windows Defender bloqueó algunas características…».
+1. Marca las DOS casillas, «Redes privadas» y «Redes públicas». Windows 11 suele marcar el WiFi del
+   local como «público»; si sólo marcas «privadas», no va a funcionar.
+2. Da clic en «Permitir acceso». Pide la contraseña de administrador de la PC.
+OJO: si alguien le da «Cancelar», Windows BLOQUEA a Avoqado para siempre. Para arreglarlo:
+Panel de control > Firewall de Windows Defender > Permitir una aplicación… > busca «javaw» o
+«Java(TM) Platform» de la carpeta de Avoqado > marca Privada y Pública > Aceptar.
+El permiso va atado a la RUTA de la carpeta (…\jre\bin\javaw.exe): si mueves o copias la carpeta de
+Avoqado a otro lado, Windows vuelve a preguntar.
+
+CÓMO COMPROBAR QUE SE VEN
+1. Abre PruebaDeRedLocal.bat en esta PC y, AL MISMO TIEMPO, en otra PC con Windows de la misma red.
+2. En los 30 segundos, cada una debe decir «Encontré: …» y «contestó: hola de …».
+   - «Encontré» pero «NO contestó por TCP»: el firewall de la otra PC está bloqueando (ver arriba).
+   - No encuentra a nadie: no están en la misma red, o el router aísla a los equipos («aislamiento de
+     clientes» o red de invitados). Conéctalos a la red principal del local.
+3. En Avoqado: con la sesión iniciada en las dos, la bitácora de cada una dice «🤝 Peer: …» con la otra.

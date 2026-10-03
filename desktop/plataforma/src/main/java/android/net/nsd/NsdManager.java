@@ -1,13 +1,16 @@
 package android.net.nsd;
 
 import android.util.Log;
+import com.avoqado.escritorio.red.RedLocalMdns;
 
 /**
- * Sustituto: anunciar y descubrir no encuentra a nadie (el Hub LAN queda en isla; se dice en la bitácora), salvo que
- * para impresoras crudas (`_pdl-datastream._tcp`) barre el 9100 de las subredes privadas del equipo.
+ * Sustituto: el Hub LAN (`_avoqado-pos._tcp`) anuncia, busca y resuelve por mDNS de verdad (jmDNS, en la tarjeta del local:
+ * RedLocalMdns); para impresoras crudas (`_pdl-datastream._tcp`) barre el 9100 de las subredes privadas del equipo. Cualquier
+ * otro tipo no encuentra a nadie y lo dice en la bitácora.
  */
 public final class NsdManager {
     public static final int PROTOCOL_DNS_SD = 1;
+    public static final int FAILURE_INTERNAL_ERROR = 0;
 
     public interface RegistrationListener {
         void onRegistrationFailed(NsdServiceInfo serviceInfo, int errorCode);
@@ -30,10 +33,52 @@ public final class NsdManager {
         void onServiceResolved(NsdServiceInfo serviceInfo);
     }
 
+    // --- Hub LAN (`_avoqado-pos._tcp`): mDNS de verdad sobre jmDNS (RedLocalMdns). Estáticos por lo mismo que BARRIDOS. ---
+    // Cada operación se guarda como «pedido» ANTES de pedirla y se llena después: su respuesta puede llegar antes de que
+    // vuelva la llamada, y sólo se entrega si el pedido sigue guardado (un stop/unregister lo saca).
+    private static final class PedidoDeAnuncio { RedLocalMdns.Anuncio anuncio; }
+    private static final class PedidoDeBusqueda { final String tipo; RedLocalMdns.Busqueda busqueda; PedidoDeBusqueda(String t) { tipo = t; } }
+    private static final class PedidoDeResolucion { RedLocalMdns.Resolucion resolucion; }
+    private static final java.util.Map<RegistrationListener, PedidoDeAnuncio> ANUNCIOS = new java.util.HashMap<>();
+    private static final java.util.Map<DiscoveryListener, PedidoDeBusqueda> BUSQUEDAS = new java.util.HashMap<>();
+    private static final java.util.Map<ResolveListener, PedidoDeResolucion> RESOLUCIONES = new java.util.HashMap<>();
+
+    private static RedLocalMdns red() { return RedLocalMdns.Companion.actual(); }
+
     public void registerService(NsdServiceInfo serviceInfo, int protocolType, RegistrationListener listener) {
-        Log.w("Escritorio", "No disponible en Windows todavía: anunciar este POS en la red local (" + serviceInfo.getServiceType() + ")");
+        String tipo = serviceInfo.getServiceType();
+        if (!esHubLan(tipo)) {
+            Log.w("Escritorio", "No disponible en Windows todavía: anunciar en la red local (" + tipo + ")");
+            return;
+        }
+        java.util.Map<String, String> txt = new java.util.LinkedHashMap<>();
+        serviceInfo.getAttributes().forEach((k, v) -> txt.put(k, v == null ? "" : new String(v, java.nio.charset.StandardCharsets.UTF_8)));
+        PedidoDeAnuncio pedido = new PedidoDeAnuncio();
+        synchronized (ANUNCIOS) {
+            ANUNCIOS.put(listener, pedido);
+            pedido.anuncio = red().anunciar(tipo, serviceInfo.getServiceName(), serviceInfo.getPort(), txt,
+                nombreFinal -> {
+                    synchronized (ANUNCIOS) { if (ANUNCIOS.get(listener) != pedido) return kotlin.Unit.INSTANCE; }
+                    NsdServiceInfo registrado = new NsdServiceInfo();
+                    registrado.setServiceName(nombreFinal);
+                    registrado.setServiceType(tipo);
+                    registrado.setPort(serviceInfo.getPort());
+                    listener.onServiceRegistered(registrado);
+                    return kotlin.Unit.INSTANCE;
+                },
+                error -> {
+                    synchronized (ANUNCIOS) { if (ANUNCIOS.get(listener) != pedido) return kotlin.Unit.INSTANCE; ANUNCIOS.remove(listener); }
+                    listener.onRegistrationFailed(serviceInfo, FAILURE_INTERNAL_ERROR);
+                    return kotlin.Unit.INSTANCE;
+                });
+        }
     }
-    public void unregisterService(RegistrationListener listener) {}
+
+    public void unregisterService(RegistrationListener listener) {
+        PedidoDeAnuncio pedido;
+        synchronized (ANUNCIOS) { pedido = ANUNCIOS.remove(listener); }
+        if (pedido != null && pedido.anuncio != null) red().retirar(pedido.anuncio);
+    }
 
     /** Un barrido en curso: con qué detenerlo y de qué tipo era (para onDiscoveryStopped). */
     private static final class Barrido {
@@ -51,6 +96,21 @@ public final class NsdManager {
     private static final java.util.Map<DiscoveryListener, Barrido> BARRIDOS = new java.util.HashMap<>();
 
     public void discoverServices(String serviceType, int protocolType, DiscoveryListener listener) {
+        if (esHubLan(serviceType)) {
+            // Guardada ANTES de avisar «iniciado» (y el aviso va por el hilo de avisos, antes que cualquier encontrado): un
+            // listener que se detiene dentro de onDiscoveryStarted encuentra su búsqueda.
+            synchronized (BUSQUEDAS) {
+                if (BUSQUEDAS.containsKey(listener)) return;   // ya busca con este listener
+                PedidoDeBusqueda pedido = new PedidoDeBusqueda(serviceType);
+                BUSQUEDAS.put(listener, pedido);
+                red().enAvisos(() -> { listener.onDiscoveryStarted(serviceType); return kotlin.Unit.INSTANCE; });
+                if (BUSQUEDAS.get(listener) != pedido) return;   // se detuvo dentro de onDiscoveryStarted: no se arranca
+                pedido.busqueda = red().buscar(serviceType,
+                    nombre -> { listener.onServiceFound(encontrado(nombre, serviceType)); return kotlin.Unit.INSTANCE; },
+                    nombre -> { listener.onServiceLost(encontrado(nombre, serviceType)); return kotlin.Unit.INSTANCE; });
+            }
+            return;
+        }
         if (!esImpresoraCruda(serviceType)) {
             Log.w("Escritorio", "No disponible en Windows todavía: descubrir en la red local (" + serviceType + ")");
             return;
@@ -86,6 +146,14 @@ public final class NsdManager {
     }
 
     public void stopServiceDiscovery(DiscoveryListener listener) {
+        PedidoDeBusqueda pedido;
+        synchronized (BUSQUEDAS) { pedido = BUSQUEDAS.remove(listener); }
+        if (pedido != null) {
+            if (pedido.busqueda != null) red().detener(pedido.busqueda);
+            // Por el MISMO hilo de avisos que «iniciado»: nunca llega «detenido» antes que «iniciado».
+            red().enAvisos(() -> { listener.onDiscoveryStopped(pedido.tipo); return kotlin.Unit.INSTANCE; });
+            return;
+        }
         Barrido barrido;
         kotlin.jvm.functions.Function0<kotlin.Unit> detener;
         synchronized (BARRIDOS) {
@@ -97,13 +165,55 @@ public final class NsdManager {
         listener.onDiscoveryStopped(barrido.tipo);
     }
 
-    /** Lo que encontró el barrido ya trae IP y puerto: se resuelve en el acto. */
+    /**
+     * Lo que encontró el barrido de impresoras ya trae IP y puerto: se resuelve en el acto. Un POS del Hub LAN se pregunta por
+     * mDNS (hasta 3 s) y se entrega en un NsdServiceInfo NUEVO: el encontrado no se toca, porque LanDiscovery lo vuelve a
+     * resolver cada minuto y, con host y puerto puestos, caería en el atajo de arriba con el TXT viejo.
+     */
     public void resolveService(NsdServiceInfo serviceInfo, ResolveListener listener) {
-        if (serviceInfo.getHost() != null && serviceInfo.getPort() > 0) listener.onServiceResolved(serviceInfo);
+        if (serviceInfo.getHost() != null && serviceInfo.getPort() > 0) { listener.onServiceResolved(serviceInfo); return; }
+        String tipo = serviceInfo.getServiceType();
+        if (!esHubLan(tipo)) return;
+        String nombre = serviceInfo.getServiceName();
+        PedidoDeResolucion pedido = new PedidoDeResolucion();
+        synchronized (RESOLUCIONES) {
+            RESOLUCIONES.put(listener, pedido);
+            pedido.resolucion = red().resolver(tipo, nombre,
+                resuelto -> {
+                    // Sólo si sigue pedida: un stopServiceResolution que llegó mientras tanto la sacó del mapa.
+                    synchronized (RESOLUCIONES) { if (RESOLUCIONES.get(listener) != pedido) return kotlin.Unit.INSTANCE; RESOLUCIONES.remove(listener); }
+                    NsdServiceInfo info = encontrado(nombre, tipo);
+                    info.setHost(resuelto.getHost());
+                    info.setPort(resuelto.getPuerto());
+                    resuelto.getTxt().forEach(info::setAttribute);
+                    listener.onServiceResolved(info);
+                    return kotlin.Unit.INSTANCE;
+                },
+                () -> {
+                    synchronized (RESOLUCIONES) { if (RESOLUCIONES.get(listener) != pedido) return kotlin.Unit.INSTANCE; RESOLUCIONES.remove(listener); }
+                    listener.onResolveFailed(serviceInfo, FAILURE_INTERNAL_ERROR);
+                    return kotlin.Unit.INSTANCE;
+                });
+        }
+    }
+
+    private static NsdServiceInfo encontrado(String nombre, String tipo) {
+        NsdServiceInfo info = new NsdServiceInfo();
+        info.setServiceName(nombre);
+        info.setServiceType(tipo);
+        return info;
+    }
+
+    private static boolean esHubLan(String tipo) {
+        return tipo != null && tipo.replaceAll("^\\.|\\.$", "").equals("_avoqado-pos._tcp");
     }
 
     private static boolean esImpresoraCruda(String tipo) {
         return tipo != null && tipo.replaceAll("\\.$", "").equals("_pdl-datastream._tcp");
     }
-    public void stopServiceResolution(ResolveListener listener) {}
+    public void stopServiceResolution(ResolveListener listener) {
+        PedidoDeResolucion pedido;
+        synchronized (RESOLUCIONES) { pedido = RESOLUCIONES.remove(listener); }
+        if (pedido != null && pedido.resolucion != null) red().cancelar(pedido.resolucion);
+    }
 }
