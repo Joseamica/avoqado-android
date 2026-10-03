@@ -40,9 +40,11 @@ internal class DCB : Structure() {
 
 // Máscaras del campo de bits del DCB (winbase.h).
 internal const val F_BINARY = 1 shl 0
+internal const val F_PARITY = 1 shl 1
 internal const val F_OUTX_CTS_FLOW = 1 shl 2
 internal const val F_OUTX_DSR_FLOW = 1 shl 3
 internal const val F_DTR_CONTROL = 0b11 shl 4
+internal const val F_DSR_SENSITIVITY = 1 shl 6
 internal const val F_OUTX = 1 shl 8
 internal const val F_INX = 1 shl 9
 internal const val F_RTS_CONTROL = 0b11 shl 12

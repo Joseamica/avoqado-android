@@ -38,7 +38,7 @@ private interface WinspoolCrudo : StdCallLibrary {
 
 /** kernel32: GetCommState/SetCommState con el DCB de 28 bytes de DcbDeWindows.kt, no con el de jna-platform. */
 @Suppress("FunctionName")
-private interface ComCrudo : StdCallLibrary {
+internal interface ComCrudo : StdCallLibrary {
     fun GetCommState(hFile: WinNT.HANDLE, lpDCB: DCB): Boolean
     fun SetCommState(hFile: WinNT.HANDLE, lpDCB: DCB): Boolean
 

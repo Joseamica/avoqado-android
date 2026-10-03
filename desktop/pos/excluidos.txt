@@ -22,7 +22,7 @@ com/avoqado/pos/customerdisplay/DisplayRoles.kt                 # reemplazo: rol
 com/avoqado/pos/printing/data/SunmiInnerPrinter.kt              # reemplazo: impresora interna Sunmi (hardware) | huella: f20cb3509b758e9d789f40d9a90f092ff0fe0dd6b2f6c720f100d319ea78888f
 com/avoqado/pos/printing/data/UsbPrinterManager.kt              # reemplazo: USB host de Android | huella: 82dd226e018f2f21e39ab95bc9ca3d59b750f07d423724fa4e4739fbf53c2b5e
 com/avoqado/pos/printing/data/AreaTicketPdfGenerator.kt         # reemplazo: android.graphics.pdf | huella: ac74ef821023d8dfbfcf6ceb35acb05701f4697529a105b8a70cb68a4fea8646
-com/avoqado/pos/scale/UsbSerialScaleManager.kt                  # reemplazo: báscula por usb-serial-for-android | huella: cabd0b26eccb941d6a13653e652af981e1f7328627a2ebe20f9a8e447cc1bc63
+com/avoqado/pos/scale/UsbSerialScaleManager.kt                  # reemplazo: báscula por un puerto COM de Windows (escritorio/bascula/), misma lógica de tramas | huella: cabd0b26eccb941d6a13653e652af981e1f7328627a2ebe20f9a8e447cc1bc63
 com/avoqado/pos/pos/presentation/scanner/BarcodeScannerView.kt  # reemplazo: CameraX + ML Kit | huella: 41a8e5a7bc5ec6b01c2c0f1b07654392c492cc39469a9d25f4bfb78ed19f4abf
 com/avoqado/pos/settings/domain/ScreenPinningManager.kt         # reemplazo: fijar pantalla (modo kiosco) de Android | huella: d23efb3da30e0a9846ac6f9183d9b6504d24ed380120d25a604d577a8e240228
 #
