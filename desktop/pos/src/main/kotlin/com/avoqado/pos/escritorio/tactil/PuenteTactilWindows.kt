@@ -17,6 +17,7 @@ import com.sun.jna.platform.win32.WinDef.WPARAM
 import com.sun.jna.platform.win32.WinUser
 import com.sun.jna.ptr.IntByReference
 import com.sun.jna.win32.StdCallLibrary
+import com.avoqado.pos.escritorio.NOMBRE_VENTANA_DEL_CLIENTE
 import com.avoqado.pos.escritorio.teclado.DetectorDeToque
 import com.avoqado.pos.escritorio.teclado.Puntero
 import com.avoqado.pos.escritorio.teclado.TecladoDeLaVentana
@@ -108,13 +109,17 @@ object PuenteTactilWindows {
     /** Referencias fuertes para siempre: si la JVM recolectara el callback, Windows llamaría a memoria liberada. */
     private val vivos = mutableListOf<Any>()
 
-    fun instalar(ventana: ComposeWindow, alApagarse: (String) -> Unit = {}): String {
+    /**
+     * [esLaCaja] = false para la pantalla del cliente: su dedo no alimenta el teclado en pantalla (que es de la caja) ni
+     * pide el foco (esa ventana nunca lo toma).
+     */
+    fun instalar(ventana: ComposeWindow, esLaCaja: Boolean = true, alApagarse: (String) -> Unit = {}): String {
         motivoParaNoInstalar(System.getProperty("os.name").orEmpty(), System.getProperty("avoqado.toque"))
             ?.let { return "omitido: $it" }
         val escena = EscenaDeVentana.de(ventana).getOrElse { return "omitido: ${it.message}" }
         val lienzo = primerLienzo(escena.lienzo) ?: return "omitido: sin lienzo nativo (¿dibujo por software?)"
         return runCatching {
-            val puente = PuenteDeVentana(ventana, escena, lienzo, alApagarse)
+            val puente = PuenteDeVentana(ventana, escena, lienzo, esLaCaja, alApagarse)
             vivos += puente   // ANTES de engancharse
             puente.encender()
             "activo"
@@ -131,6 +136,7 @@ private class PuenteDeVentana(
     private val ventana: ComposeWindow,
     private val escena: EscenaDeVentana,
     private val lienzo: Canvas,
+    private val esLaCaja: Boolean,
     private val alApagarseExterno: (String) -> Unit,
 ) : WinUser.WindowProc {
     private val w32 = Win32Jna(HWND(Native.getComponentPointer(lienzo)))
@@ -155,7 +161,7 @@ private class PuenteDeVentana(
         reiniciar = { dedos -> escena.escena.reiniciarGestos(dedos) },
         puedeEntregar = { manejador.activo && !manejador.mouseApretado && !modalAhora() },
         alBajarUnDedo = {
-            if (!ventana.isFocused) {
+            if (esLaCaja && !ventana.isFocused) {
                 ventana.toFront()
                 ventana.requestFocus()
             }
@@ -175,6 +181,7 @@ private class PuenteDeVentana(
 
     /** Teclado híbrido: sólo avisos, sin tocar la entrega. La tolerancia de toque son 8 dp, como el umbral de arrastre. */
     private fun avisarAlTeclado(e: EventoDeToque) {
+        if (!esLaCaja) return   // el dedo del cliente no abre ni cierra el teclado de la caja
         val p = e.punteros.firstOrNull() ?: return
         when (e.tipo) {
             TipoDeEvento.PRESIONA -> {
@@ -242,7 +249,11 @@ private class PuenteDeVentana(
             runCatching { Log.i("Toque", "Mouse en AWT cerca de un dedo: ${e.paramString()} dedos=${entrega.hayDedos} en cola=${entrega.retenidos}") }
         }
         if (e.id == MouseEvent.MOUSE_ENTERED || e.id == MouseEvent.MOUSE_EXITED) return
-        if (e.id == MouseEvent.MOUSE_PRESSED) TecladoDeLaVentana.alPuntero(Puntero.MOUSE)
+        // El escucha es GLOBAL (lo ven todas las ventanas): sólo el de la caja avisa, y no por clics en la ventana del cliente.
+        if (e.id == MouseEvent.MOUSE_PRESSED && esLaCaja &&
+            SwingUtilities.getWindowAncestor(e.component)?.name != NOMBRE_VENTANA_DEL_CLIENTE &&
+            (e.component as? java.awt.Window)?.name != NOMBRE_VENTANA_DEL_CLIENTE
+        ) TecladoDeLaVentana.alPuntero(Puntero.MOUSE)
         if (SwingUtilities.getWindowAncestor(e.component) !== ventana && e.component !== ventana) return
         val botones = MouseEvent.BUTTON1_DOWN_MASK or MouseEvent.BUTTON2_DOWN_MASK or MouseEvent.BUTTON3_DOWN_MASK
         manejador.mouseApretado = e.modifiersEx and botones != 0

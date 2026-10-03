@@ -6,9 +6,9 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Reemplazo de escritorio: no hay otra pantalla a la cual mover la caja. El interruptor que llama a esto
- * (Ajustes › Pantalla del cliente › invertir) sólo aparece si `CustomerDisplayState.invertible`, que en escritorio
- * nunca se prende; si aun así llegara, lo dice en la bitácora y no mueve nada.
+ * Reemplazo de escritorio: aquí no se usa. En Android este guard relanza la Activity de la caja en otra pantalla; en
+ * escritorio la ventana de la caja la mueve el propio `CustomerDisplayManager` (modo invertido con dos monitores), que no
+ * llama a esto. Se conserva la clase porque el código de la app la inyecta.
  */
 @Singleton
 class CashierDisplayGuard @Inject constructor() {

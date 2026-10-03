@@ -15,7 +15,7 @@ com/avoqado/pos/core/di/DatabaseModule.kt                       # reemplazo: Roo
 com/avoqado/pos/auth/data/BiometricAuthManager.kt               # reemplazo: sin biometría en escritorio | huella: e0ccd4d268b356bb4d0b4765510c62ebaa8f53252ec3fae247808c7679723cb2
 com/avoqado/pos/auth/presentation/LandingScreen.kt              # reemplazo: fondo fijo en vez del video (VideoView) | huella: 26090b8c018e6549408d185ca7ae260508cc64d0abba072bbb5198bdb8acd230
 com/avoqado/pos/customerdisplay/CustomerDisplayPresentation.kt  # sin reemplazo: Presentation de Android (segunda pantalla); sólo la usa CustomerDisplayManager | huella: 8f212a0724fff66aa578d5887bc2e2746bebfc132fc642b4c8f6eedce9ca0a78
-com/avoqado/pos/customerdisplay/CustomerDisplayManager.kt       # reemplazo: segunda pantalla, fase siguiente | huella: f3fd9f880b04dbfafc4a367c510b649477101c05a399a32dbb948f231158e06d
+com/avoqado/pos/customerdisplay/CustomerDisplayManager.kt       # reemplazo: la pantalla del cliente en un segundo monitor (ventana propia: escritorio/VentanaDelCliente.kt) | huella: f3fd9f880b04dbfafc4a367c510b649477101c05a399a32dbb948f231158e06d
 com/avoqado/pos/customerdisplay/CashierDisplayGuard.kt          # reemplazo: DisplayManager/Activity en otro display | huella: 5a075646fb8e24d65733154fec879a615d20e88f915cdaa66dbf4782e83fd01c
 com/avoqado/pos/customerdisplay/CustomerTouchBridge.kt          # sin reemplazo: InputManager de Android; sólo lo usa CustomerDisplayManager | huella: 4a0f2bd67fff71fe80d09dd1599b3d0eac0d797e200c1297f6c7d3f8bfe94d74
 com/avoqado/pos/customerdisplay/DisplayRoles.kt                 # reemplazo: roles de displays de Android | huella: 1cbaafe6086cd2ff3aba87af3fecf20c6526f30adf4474a46dcd781e9e8eae04

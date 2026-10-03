@@ -379,6 +379,7 @@ val empaquetarWindows by tasks.registering(Zip::class) {
             filteringCharset = "UTF-8"
         }
         from("windows/QueVeWindows.bat")   // qué impresoras, COM y pantallas ve Windows (sólo lee)
+        from("windows/LEEME-PANTALLA-DEL-CLIENTE.txt")   // cómo probar la pantalla del cliente con dos monitores
         from("windows/QueVeWindows.ps1") {
             filter { it.replace("@CARPETA_DE_DATOS_PS@", carpetaPs) }
             filter(org.apache.tools.ant.filters.FixCrLfFilter::class, "eol" to org.apache.tools.ant.filters.FixCrLfFilter.CrLf.newInstance("crlf"))

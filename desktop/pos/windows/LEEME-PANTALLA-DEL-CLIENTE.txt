@@ -1,0 +1,36 @@
+PANTALLA DEL CLIENTE EN UN SEGUNDO MONITOR — cómo probarla (5 minutos)
+
+Qué hace: si la PC tiene DOS monitores, el segundo se vuelve la pantalla del cliente, igual que la
+pantallita de la Sunmi D3. El cliente ve el carrito, el total, la propina, la calificación, el recibo
+por WhatsApp o correo, el logo del negocio y, si está prendido, el kiosco de check-in.
+Con un solo monitor, Avoqado POS funciona igual que siempre.
+
+ANTES
+1. Conecta el segundo monitor y, en Windows, elige «Extender estas pantallas» (no «Duplicar»).
+   (Configuración > Sistema > Pantalla.)
+2. Si el segundo monitor es táctil: Panel de control > Configuración de Tablet PC > Configurar,
+   y toca ese monitor cuando Windows lo pida, para que sus toques caigan en él.
+3. (Opcional) Si la barra de tareas de Windows aparece encima del letrero del cliente: Configuración >
+   Personalización > Barra de tareas > Comportamientos de la barra de tareas > apaga «Mostrar la barra de
+   tareas en todas las pantallas». Ojo: aplica a todos los monitores que no son el principal.
+4. La caja va en el monitor PRINCIPAL de Windows. Si salen al revés, usa «Invertir pantallas» (abajo)
+   o marca como principal el monitor del cajero en Configuración > Sistema > Pantalla.
+
+PRUEBAS
+1. Abre Avoqado POS. La caja sale en el monitor principal y, en unos segundos, el otro monitor muestra
+   el logo o el nombre del negocio, sin bordes ni barra de título.
+2. Agrega productos en la caja: el carrito aparece en el monitor del cliente.
+3. Con el teclado de la caja, escribe algo en una búsqueda MIENTRAS tocas el monitor del cliente:
+   las letras siguen yendo a la caja (el monitor del cliente nunca le quita el teclado).
+4. Ajustes > Pantalla del cliente > «El cliente elige propina y calificación»: prende el interruptor,
+   cobra y deja que el cliente toque la propina en SU monitor, con el dedo o con el mouse.
+5. A media venta, desconecta el cable del monitor del cliente: la caja sigue funcionando y el cobro no
+   se queda esperando al cliente. Vuelve a conectarlo: el letrero regresa solo en unos segundos.
+6. Ajustes > Pantalla del cliente > «Invertir pantallas»: la caja se va al otro monitor y el cliente
+   al principal. Vuelve a tocarlo para regresar.
+7. Cierra Avoqado POS: se cierran las dos ventanas.
+
+SI ALGO FALLA
+Manda la carpeta de logs (la ruta aparece en diagnostico.txt). Las líneas con «CustomerDisplay» o
+«PantallaCliente» dicen qué vio la app: cuántos monitores, dónde montó al cliente y por qué lo quitó.
+QueVeWindows.bat también muestra qué pantallas ve Windows.

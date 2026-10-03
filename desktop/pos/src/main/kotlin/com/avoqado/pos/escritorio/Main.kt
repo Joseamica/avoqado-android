@@ -16,12 +16,17 @@ import androidx.compose.ui.window.rememberWindowState
 import com.avoqado.escritorio.Bitacora
 import com.avoqado.escritorio.CandadoDeInstancia
 import com.avoqado.escritorio.CarpetaDeDatos
+import com.avoqado.escritorio.Escritorio
 import com.avoqado.escritorio.RecursosDeImagen
 import com.avoqado.escritorio.Urls
 import com.avoqado.pos.BuildConfig
+import com.avoqado.pos.customerdisplay.CustomerDisplayManager
+import com.avoqado.pos.customerdisplay.CustomerDisplayState
+import com.avoqado.pos.customerdisplay.monitoresDivididos
 import com.avoqado.pos.escritorio.tactil.EscenaDeVentana
 import com.avoqado.pos.escritorio.tactil.PuenteTactilWindows
 import com.avoqado.pos.escritorio.teclado.TecladoDeLaVentana
+import com.avoqado.pos.kiosk.domain.KioskState
 import java.awt.GraphicsEnvironment
 import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicBoolean
@@ -92,10 +97,28 @@ fun main() {
                         runCatching { TecladoDeLaVentana.instalar(EscenaDeVentana.de(window).getOrThrow(), window) }
                             .onSuccess { Log.i("Teclado", "Teclado híbrido instalado") }
                             .onFailure { Log.w("Teclado", "Teclado híbrido omitido: ${it.javaClass.simpleName}: ${it.message}") }
+                        // La pantalla del cliente en un segundo monitor, si lo hay (en Android: MainActivity.onStart → attach).
+                        // Si falla, la caja sigue como una de una sola pantalla.
+                        runCatching {
+                            val inyector = Escritorio.inyector
+                            inyector.getInstance(CustomerDisplayManager::class.java).arrancar(
+                                CajaDeLaVentana(window, maximizar = !monitoresDivididos()),
+                                FabricaDeVentanasDelCliente(
+                                    inyector.getInstance(CustomerDisplayState::class.java),
+                                    inyector.getInstance(KioskState::class.java),
+                                ),
+                            )
+                        }.onFailure { Log.w("PantallaCliente", "Pantalla del cliente omitida: ${it.javaClass.simpleName}: ${it.message}") }
                         runCatching { Diagnostico.escribir(carpeta, window.renderApi.name, Diagnostico.arranqueMs(), toque) }
                             .onFailure { Log.w("Arranque", "No se pudo escribir el diagnóstico", it) }
                     }
-                    DisposableEffect(window) { onDispose { TecladoDeLaVentana.desinstalar() } }
+                    DisposableEffect(window) {
+                        onDispose {
+                            TecladoDeLaVentana.desinstalar()
+                            // Sin esto la ventana del cliente sigue viva y Java no termina de salir al cerrar la caja.
+                            runCatching { Escritorio.inyector.getInstance(CustomerDisplayManager::class.java).detener() }
+                        }
+                    }
                     AppEscritorio()
                 }
             }
@@ -118,6 +141,8 @@ private inline fun <T> protegido(carpeta: Path?, bloque: () -> T): T =
 /** En Windows se abre con javaw.exe, sin consola: el aviso queda en la bitácora y, con pantalla, en un diálogo. */
 private fun salir(codigo: Int, texto: String, tipo: Int): Nothing {
     Log.w("Arranque", texto)
+    // El letrero del cliente va siempre encima: con las pantallas invertidas taparía este aviso (sale en el monitor principal).
+    runCatching { Escritorio.inyector.getInstance(CustomerDisplayManager::class.java).detener() }
     if (!GraphicsEnvironment.isHeadless()) JOptionPane.showMessageDialog(null, texto, "Avoqado POS", tipo)
     exitProcess(codigo)
 }
