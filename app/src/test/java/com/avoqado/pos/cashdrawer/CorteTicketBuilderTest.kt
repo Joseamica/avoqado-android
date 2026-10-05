@@ -69,6 +69,7 @@ class CorteTicketBuilderTest {
         tenders: List<CashDrawerRepository.TenderRow>? = this.tenders,
         isPartial: Boolean = false,
         events: List<CashDrawerEventEntity> = eventos,
+        showExpected: Boolean = true,
     ): String = String(
         CorteTicketBuilder.build(
             session = session,
@@ -77,6 +78,7 @@ class CorteTicketBuilderTest {
             venueName = "Restaurante El Atole",
             paperWidth = PaperWidth.MM80,
             isPartial = isPartial,
+            showExpected = showExpected,
         ),
         Charsets.ISO_8859_1,
     )
@@ -444,11 +446,101 @@ class CorteTicketBuilderTest {
     /** El promedio se calcula sobre EFECTIVO, nunca sobre el total mezclado. */
     @Test
     fun `el ticket promedio sale de las ventas en efectivo`() {
-        // eventos trae 2 CASH_SALE ($30.00 + $20.00 = $50.00) → promedio $25.00.
-        // Con el total mezclado ($208.00 de tenders) habría dado $104.00.
+        // eventos trae 2 CASH_SALE ($30.00 + $20.00 = $50.00) con $3.00 de propina en efectivo
+        // dentro (tender CASH) → promedio ($50.00 − $3.00) / 2 = $23.50. La propina es del
+        // personal, no venta (regla 6). Con el total mezclado ($208.00 de tenders) habría dado $104.00.
         val t = papel(tenders = tenders)
 
         val promedio = Regex("Ticket promedio en efectivo\\s+\\\$([\\d,.]+)").find(t)?.groupValues?.get(1)
-        assertEquals("el promedio debe ser efectivo/transacciones, no total/transacciones", "25.00", promedio)
+        assertEquals("el promedio debe ser efectivo sin propina / transacciones", "23.50", promedio)
+    }
+
+    // MARK: - La propina no es venta (regla 6 de product-decisions)
+
+    /**
+     * «Ventas netas» sumaba los totales del desglose, que traen la propina adentro: el corte de
+     * Windows del 3-oct decía «Ventas netas $113» con $105 vendidos y $8 de propina. La propina es
+     * del personal (criterio SAT 30/IVA/N): va en su sección, no en la venta.
+     */
+    @Test
+    fun `ventas netas no incluye la propina`() {
+        // tenders: 50 + 120 + 30 + 8 = $208.00 cobrado, de los que $20.00 son propina → $188.00.
+        val t = papel(tenders = tenders)
+
+        val netas = Regex("Ventas netas\\s+\\\$([\\d,.]+)").find(t)?.groupValues?.get(1)
+        assertEquals("188.00", netas)
+        assertEquals(18_800, CorteTicketBuilder.ventasNetasCents(tenders))
+    }
+
+    @Test
+    fun `el desglose por metodo sigue siendo lo cobrado con propina`() {
+        // Es lo que hay físicamente por método; la sección de propinas dice cuánto es del personal.
+        val t = papel(tenders = tenders)
+        assertTrue(Regex("Tarjeta de cr\\S+dito\\s+\\\$120\\.00").containsMatchIn(t))
+    }
+
+    @Test
+    fun `sin desglose el promedio no puede descontar propinas que no conoce`() {
+        assertEquals(2_500, CorteTicketBuilder.ticketPromedioEfectivoCents(5_000, 2, tenders = null))
+        assertEquals(0, CorteTicketBuilder.ticketPromedioEfectivoCents(5_000, 0, tenders = tenders))
+        // Propina NETA negativa (reembolso de una propina anterior): no infla el promedio.
+        assertEquals(10_000, CorteTicketBuilder.ticketPromedioEfectivoCents(10_000, 1, listOf(CashDrawerRepository.TenderRow("CASH", 8_000, tipsCents = -2_000))))
+        // Nunca negativo, aunque el server reporte más propina que lo que vio el cajón.
+        assertEquals(0, CorteTicketBuilder.ticketPromedioEfectivoCents(100, 1, listOf(CashDrawerRepository.TenderRow("CASH", 100, tipsCents = 500))))
+    }
+
+    // MARK: - Conteo ciego sin fugas
+
+    /**
+     * 🔴 El corte PARCIAL de quien no tiene `cash-drawer:view-expected` escondía el esperado
+     * pero imprimía «Efectivo $50.00» en el desglose y el ticket promedio en efectivo
+     * (promedio × transacciones = ventas en efectivo): con el fondo y los ingresos/egresos a la
+     * vista, el esperado se reconstruye en una suma. Full-testing de Windows, 3-oct.
+     */
+    @Test
+    fun `el corte parcial ciego no deja reconstruir el esperado`() {
+        val t = papel(session = abierta, isPartial = true, showExpected = false)
+
+        assertFalse("el efectivo del desglose", t.contains("\$50.00"))
+        assertFalse("ni sin la propina", t.contains("\$47.00"))
+        assertFalse("el promedio × transacciones da las ventas", t.contains("Ticket promedio"))
+        assertFalse(t.contains("Ventas netas"))
+        assertFalse(t.contains("Ventas en efectivo"))
+        assertTrue("apagado se explica", t.contains(CorteTicketBuilder.OCULTO_CIEGO))
+        assertTrue("las tarjetas no revelan el cajón", t.contains("\$120.00"))
+        // Un tipo de pago propio puede contar como efectivo del cajón (vales): lo que no es
+        // tarjeta también se esconde.
+        assertFalse("transferencia/otros pueden ser efectivo del cajón", t.contains("\$8.00"))
+    }
+
+    @Test
+    fun `el corte parcial ciego sin desglose tampoco imprime el efectivo`() {
+        val t = papel(session = abierta, tenders = null, isPartial = true, showExpected = false)
+        assertFalse(t.contains("\$50.00"))
+        assertTrue(t.contains(CorteTicketBuilder.OCULTO_CIEGO))
+    }
+
+    @Test
+    fun `con permiso el corte parcial sí muestra el efectivo`() {
+        val t = papel(session = abierta, isPartial = true, showExpected = true)
+        assertTrue(t.contains("\$50.00"))
+        assertTrue(t.contains("Ticket promedio en efectivo"))
+    }
+
+    @Test
+    fun `al cerrar la caja el corte siempre muestra el efectivo`() {
+        val t = papel(isPartial = false, showExpected = false)
+        assertTrue(t.contains("\$50.00"))
+    }
+
+    /** La lista de Movimientos de la caja abierta: cada venta con su monto es el esperado en partes. */
+    @Test
+    fun `en conteo ciego la caja abierta no lista las ventas en efectivo`() {
+        val ciego = CorteTicketBuilder.movimientosALaVista(eventos, puedeVerEsperado = false)
+        assertTrue(ciego.none { it.type == CashDrawerEventType.CASH_SALE.name })
+        assertEquals("ingresos y egresos sí: ya están en sus tarjetas", 2, ciego.size)
+
+        val conPermiso = CorteTicketBuilder.movimientosALaVista(eventos, puedeVerEsperado = true)
+        assertEquals(eventos.size, conPermiso.size)
     }
 }

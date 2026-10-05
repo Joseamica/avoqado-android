@@ -46,6 +46,52 @@ object CorteTicketBuilder {
     )
 
 
+    /** Lo que el corte dice bajo los métodos escondidos cuando el conteo es ciego. */
+    const val OCULTO_CIEGO = "Se revelan al cerrar la caja."
+
+    /**
+     * Conteo ciego: qué métodos del desglose se esconden. Sólo las TARJETAS se ven: nunca pasan
+     * por el cajón. Un tipo de pago propio puede contar como efectivo físico
+     * (`countsAsPhysicalCash`, p. ej. vales de despensa) y llega con método `OTHER` u otro; el
+     * desglose no dice cuál, así que se esconde todo lo que no sea tarjeta (Codex, 4-oct).
+     */
+    fun ocultoEnCiego(method: String): Boolean = method != "CREDIT_CARD" && method != "DEBIT_CARD"
+
+    /**
+     * «Ventas netas» = lo cobrado SIN propina. Los totales del desglose traen la propina adentro
+     * (es lo que hay físicamente por método), pero la propina es del personal, no venta (regla 6
+     * de product-decisions; SAT 30/IVA/N). El corte de Windows del 3-oct decía $113 con $105 vendidos.
+     */
+    fun ventasNetasCents(tenders: List<CashDrawerRepository.TenderRow>): Int =
+        tenders.sumOf { it.totalCents - it.tipsCents }
+
+    /**
+     * Ticket promedio de las ventas en efectivo del cajón, sin la propina en efectivo cuando el
+     * server la desglosa. Sin desglose no se conoce la propina: se queda lo cobrado.
+     */
+    fun ticketPromedioEfectivoCents(
+        cashSalesCents: Int,
+        txCount: Int,
+        tenders: List<CashDrawerRepository.TenderRow>?,
+    ): Int {
+        if (txCount <= 0) return 0
+        // `tipsCents` viene NETO de reembolsos (puede ser negativo) y las ventas del cajón son brutas:
+        // restar una propina negativa inflaría el promedio. Sólo se descuenta propina positiva.
+        val propinaEfectivo = (tenders?.firstOrNull { it.method == "CASH" }?.tipsCents ?: 0).coerceAtLeast(0)
+        return ((cashSalesCents - propinaEfectivo) / txCount).coerceAtLeast(0)
+    }
+
+    /**
+     * Movimientos de la caja ABIERTA que se listan. Conteo ciego: cada venta en efectivo con su
+     * monto es el esperado en partes (fondo + ventas + ingresos − egresos), igual que la tarjeta
+     * «Ventas» que ya se escondía. Ingresos y egresos se quedan: ya están en sus tarjetas.
+     */
+    fun movimientosALaVista(
+        events: List<CashDrawerEventEntity>,
+        puedeVerEsperado: Boolean,
+    ): List<CashDrawerEventEntity> =
+        if (puedeVerEsperado) events else events.filter { it.type != CashDrawerEventType.CASH_SALE.name }
+
     fun build(
         session: CashDrawerSessionEntity,
         events: List<CashDrawerEventEntity>,
@@ -108,8 +154,10 @@ object CorteTicketBuilder {
         val actual = session.actualAmountCents ?: 0
         val diff = actual - expected
         val hasServerBreakdown = tenders != null
-        val totalSales = if (tenders != null) tenders.sumOf { it.totalCents } else cashSales
+        val totalSales = if (tenders != null) ventasNetasCents(tenders) else cashSales
         val txCount = events.count { it.type == CashDrawerEventType.CASH_SALE.name }
+        // Conteo ciego: corte PARCIAL de quien no tiene `cash-drawer:view-expected`.
+        val ciego = isPartial && !showExpected
 
         val p = ESCPOSPrinter(paperWidth, switchToSingleByteFirst)
         p.reset()
@@ -155,10 +203,13 @@ object CorteTicketBuilder {
         // un promedio: el server no manda el conteo total.
         // Mismos textos en avoqado-ios (CortePrinter.swift).
         p.printTwoColumns(if (hasServerBreakdown) "Transacciones en efectivo" else "Transacciones", "$txCount")
-        p.printTwoColumns(
-            if (hasServerBreakdown) "Ticket promedio en efectivo" else "Ticket promedio",
-            money(if (txCount > 0) cashSales / txCount else 0),
-        )
+        // Ciego: promedio × transacciones = ventas en efectivo, o sea el esperado en una suma.
+        if (!ciego) {
+            p.printTwoColumns(
+                if (hasServerBreakdown) "Ticket promedio en efectivo" else "Ticket promedio",
+                money(ticketPromedioEfectivoCents(cashSales, txCount, tenders)),
+            )
+        }
         p.printDivider()
 
         p.setBold(true)
@@ -167,19 +218,21 @@ object CorteTicketBuilder {
 // 🔴 Tres casos, no dos. El servidor contestando "no hubo cobros" NO es lo mismo que no
         // haber podido preguntar, y el ticket impreso queda en el cajón como comprobante: decir
         // "sin conexión" cuando sí la había vuelve el papel una prueba falsa de lo que pasó.
+        // Conteo ciego: el renglón se queda (se sabe que hubo ese método) pero sin importe.
+        fun renglon(method: String, cents: Int) =
+            p.printTwoColumns(tenderLabel(method), if (ciego && ocultoEnCiego(method)) "--" else money(cents))
         if (hasServerBreakdown && tenders.orEmpty().isEmpty()) {
-            p.printTwoColumns("Efectivo", money(cashSales))
+            renglon("CASH", cashSales)
             p.printLine("No hubo cobros en este corte.")
         } else if (hasServerBreakdown) {
-            tenders.orEmpty().sortedByDescending { it.totalCents }.forEach {
-                p.printTwoColumns(tenderLabel(it.method), money(it.totalCents))
-            }
+            tenders.orEmpty().sortedByDescending { it.totalCents }.forEach { renglon(it.method, it.totalCents) }
         } else {
-            p.printTwoColumns("Efectivo", money(cashSales))
+            renglon("CASH", cashSales)
             p.printLine("No se pudo consultar el desglose.")
             p.printLine("Tarjeta y otros medios aparecerán al")
             p.printLine("volver a imprimirlo con conexión.")
         }
+        if (ciego) p.printLine(OCULTO_CIEGO)
         p.printDivider()
 
         // PROPINAS — su propia sección, como en el Corte Z de SoftRestaurant.

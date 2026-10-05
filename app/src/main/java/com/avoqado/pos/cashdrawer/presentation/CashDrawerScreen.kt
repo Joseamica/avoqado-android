@@ -1056,17 +1056,31 @@ private fun OpenDrawerContent(
             )
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
 
-            // Show events in reverse chronological order (excluding OPEN)
-            val displayEvents = events
+            // Show events in reverse chronological order (excluding OPEN).
+            // Conteo ciego: sin las ventas en efectivo (cada una con su monto es el esperado en partes).
+            val displayEvents = com.avoqado.pos.cashdrawer.data.CorteTicketBuilder
+                .movimientosALaVista(events, puedeVerEsperado = showExpected)
                 .filter { it.type != CashDrawerEventType.OPEN.name }
                 .reversed()
+
+            if (!showExpected) {
+                Text(
+                    text = "Las ventas en efectivo se revelan al cerrar la caja.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
 
             if (displayEvents.isEmpty()) {
                 // Sin esto quedaba el título "Movimientos" flotando sobre un hueco
                 // enorme, que se lee como si la pantalla estuviera a medio cargar.
                 Text(
-                    text = "Todavía no hay movimientos. Los cobros en efectivo, " +
-                        "ingresos y egresos aparecerán aquí.",
+                    text = if (showExpected) {
+                        "Todavía no hay movimientos. Los cobros en efectivo, " +
+                            "ingresos y egresos aparecerán aquí."
+                    } else {
+                        "Todavía no hay ingresos ni egresos. Aparecerán aquí."
+                    },
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(vertical = AvoqadoTheme.spacing.md),

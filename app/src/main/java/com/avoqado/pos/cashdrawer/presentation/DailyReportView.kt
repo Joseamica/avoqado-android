@@ -1,7 +1,6 @@
 package com.avoqado.pos.cashdrawer.presentation
 
 import android.widget.Toast
-import com.avoqado.pos.cashdrawer.data.CorteTicketBuilder
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -29,6 +28,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.avoqado.pos.cashdrawer.data.CorteTicketBuilder
 import com.avoqado.pos.cashdrawer.data.model.CashDrawerEventEntity
 import com.avoqado.pos.cashdrawer.data.model.CashDrawerEventType
 import com.avoqado.pos.cashdrawer.data.model.CashDrawerSessionEntity
@@ -126,11 +126,15 @@ fun DailyReportView(
 
     val transactionCount = events.count { it.type == CashDrawerEventType.CASH_SALE.name }
     // Total sales = all tenders when the server breakdown is available.
-    val totalSalesCents = if (hasServerBreakdown) tenderBreakdown.orEmpty().sumOf { it.totalCents } else cashSalesCents
+    // Sin propina: es del personal, no venta (regla 6). Misma cuenta que el ticket impreso.
+    val totalSalesCents = if (hasServerBreakdown) CorteTicketBuilder.ventasNetasCents(tenderBreakdown.orEmpty()) else cashSalesCents
     // 🔴 `transactionCount` sólo cuenta las ventas en EFECTIVO del cajón: dividir entre él el total
     // de todos los métodos inflaba el promedio. Mismo criterio y mismos textos que el ticket
     // impreso (`CorteTicketBuilder`) y que iOS.
-    val avgTicketCents = if (transactionCount > 0) cashSalesCents / transactionCount else 0
+    val avgTicketCents = CorteTicketBuilder.ticketPromedioEfectivoCents(cashSalesCents, transactionCount, tenderBreakdown)
+    // Conteo ciego: corte PARCIAL de quien no tiene `cash-drawer:view-expected`. Nada que deje
+    // reconstruir el esperado: ni el efectivo del desglose ni el promedio (× transacciones).
+    val ciego = isPartial && !showExpected
 
     // Resta TODOS los egresos, reembolsos incluidos: ese dinero salió del cajón.
     val expectedCents = session.startingAmountCents + cashSalesCents + payInsCents - payOutsTodosCents
@@ -217,7 +221,9 @@ fun DailyReportView(
                 )
             }
             ReportRow(label = if (hasServerBreakdown) "Transacciones en efectivo" else "Transacciones", value = "$transactionCount")
-            ReportRow(label = if (hasServerBreakdown) "Ticket promedio en efectivo" else "Ticket promedio", value = formatCurrency(avgTicketCents))
+            if (!ciego) {
+                ReportRow(label = if (hasServerBreakdown) "Ticket promedio en efectivo" else "Ticket promedio", value = formatCurrency(avgTicketCents))
+            }
 
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
 
@@ -228,7 +234,7 @@ fun DailyReportView(
             if (hasServerBreakdown && tenderBreakdown.orEmpty().isEmpty()) {
                 // El server contestó y NO hubo cobros: eso es un dato, no una falla. Sin botón de
                 // reintentar — no hay nada que reintentar.
-                ReportRow(label = "Efectivo", value = formatCurrency(displayCashCents))
+                ReportRow(label = "Efectivo", value = if (ciego) "Se revela al cerrar" else formatCurrency(displayCashCents))
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
                 Text(
                     text = "No hubo cobros en este corte.",
@@ -246,20 +252,25 @@ fun DailyReportView(
                     .forEach { tender ->
                         ReportRow(
                             label = tenderLabel(tender.method),
-                            value = formatCurrency(tender.totalCents),
+                            value = if (ciego && CorteTicketBuilder.ocultoEnCiego(tender.method)) "Se revela al cerrar" else formatCurrency(tender.totalCents),
                         )
                     }
             } else {
-                ReportRow(label = "Efectivo", value = formatCurrency(displayCashCents))
+                ReportRow(label = "Efectivo", value = if (ciego) "Se revela al cerrar" else formatCurrency(displayCashCents))
                 // Sin conexión no se pudo consultar el desglose. Pintar "Tarjeta $0.00"
                 // aquí sería MENTIR: el POS no sabe cuánto se cobró con tarjeta, y el
                 // dueño cerraría su turno creyendo que no hubo ni un cobro con terminal.
                 // El efectivo de arriba sí es confiable — sale del cajón, no del server.
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
                 Text(
-                    text = "No se pudo consultar el desglose por método de pago. Se muestra sólo " +
-                        "el efectivo, que es lo que hay en el cajón; los cobros con tarjeta y otros " +
-                        "medios aparecerán cuando se pueda consultar.",
+                    text = if (ciego) {
+                        "No se pudo consultar el desglose por método de pago; los cobros con tarjeta " +
+                            "y otros medios aparecerán cuando se pueda consultar."
+                    } else {
+                        "No se pudo consultar el desglose por método de pago. Se muestra sólo " +
+                            "el efectivo, que es lo que hay en el cajón; los cobros con tarjeta y otros " +
+                            "medios aparecerán cuando se pueda consultar."
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

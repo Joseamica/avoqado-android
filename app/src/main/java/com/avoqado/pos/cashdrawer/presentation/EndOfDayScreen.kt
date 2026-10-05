@@ -171,11 +171,23 @@ fun EndOfDayScreen(
             StatusBanner(s)
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
 
+            // Conteo ciego: con una caja abierta, el efectivo del día (o el total menos las
+            // tarjetas, o el promedio × transacciones) es el esperado de esa caja. Mismo
+            // candado que el corte parcial (`cash-drawer:view-expected`).
+            val ciego = !viewModel.puedeVerEsperado && s.openDrawers.isNotEmpty()
             ReportSectionTitle(text = "Resumen del día")
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
-            ReportRow(label = "Ventas totales", value = money(s.sales.totalCents), isBold = true)
+            if (ciego) {
+                Text(
+                    text = "Conteo ciego: el efectivo y el total se revelan al cerrar la caja.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                ReportRow(label = "Ventas totales", value = money(s.sales.totalCents), isBold = true)
+            }
             ReportRow(label = "Transacciones", value = "${s.sales.transactionCount}")
-            ReportRow(label = "Ticket promedio", value = money(s.sales.averageTicketCents))
+            if (!ciego) ReportRow(label = "Ticket promedio", value = money(s.sales.averageTicketCents))
             ReportRow(label = "Propinas", value = money(s.sales.tipsCents))
 
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxl))
@@ -185,7 +197,10 @@ fun EndOfDayScreen(
                 ReportRow(label = "Sin ventas hoy", value = money(0))
             } else {
                 s.sales.tenders.forEach { t ->
-                    ReportRow(label = tenderLabel(t.method), value = money(t.totalCents))
+                    ReportRow(
+                        label = tenderLabel(t.method),
+                        value = if (ciego && com.avoqado.pos.cashdrawer.data.CorteTicketBuilder.ocultoEnCiego(t.method)) "Se revela al cerrar la caja" else money(t.totalCents),
+                    )
                 }
             }
 
