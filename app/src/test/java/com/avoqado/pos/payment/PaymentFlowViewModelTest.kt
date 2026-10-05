@@ -33,6 +33,7 @@ import com.avoqado.pos.payment.data.TerminalPaymentService
 import com.avoqado.pos.payment.data.model.CreateOrderRequest
 import com.avoqado.pos.payment.data.model.CreateOrderResponse
 import com.avoqado.pos.payment.data.model.OrderData
+import com.avoqado.pos.payment.data.model.PaymentErrorSource
 import com.avoqado.pos.payment.data.model.PaymentFlowState
 import com.avoqado.pos.payment.data.model.PaymentMethod
 import com.avoqado.pos.payment.data.PaymentSyncService
@@ -1000,6 +1001,81 @@ class PaymentFlowViewModelTest {
         assertEquals(deliveryCode, printedReceipt.captured.areaDeliveryCode)
         coVerify(exactly = 0) { kdsRepository.createOrder(any(), any(), any(), any()) }
         coVerify(exactly = 0) { printerService.autoPrintKitchenTicket(any()) }
+    }
+
+    // MARK: - B3 (IVA B2b): un rechazo de negocio del cobro se dice tal cual, sin prefijo y sin encolar
+
+    private val textoDeCuentaCancelada = "Esta cuenta está cancelada, abre una nueva."
+
+    @Test
+    fun `B3 efectivo de una orden ya creada rechazado por el servidor muestra su texto tal cual`() = runTest {
+        coEvery {
+            orderRepository.createOrder(any(), any(), any(), any(), any())
+        } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-cancelada")))
+        coEvery {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any())
+        } returns Result.failure(OrderRepository.ServerException(400, textoDeCuentaCancelada))
+
+        viewModel.startPaymentFlow(cartConUnProducto())
+        viewModel.confirmCashCustom(2000)
+        advanceUntilIdle()
+
+        // El estado Error sólo se alcanza en la rama que NO encola (la que encola pinta Success en cola).
+        assertEquals(
+            PaymentFlowState.Error(message = textoDeCuentaCancelada, source = PaymentErrorSource.SERVER),
+            viewModel.state.value,
+        )
+    }
+
+    @Test
+    fun `B3 efectivo de un vale de area rechazado por el servidor muestra su texto tal cual`() = runTest {
+        val openCheckout = AreaTicketCheckout(
+            id = "checkout-area-b3",
+            status = "OPEN",
+            version = 1,
+            expiresAt = "2026-07-30T00:00:00.000Z",
+            createdAt = "2026-07-29T00:00:00.000Z",
+            totals = AreaTicketCheckoutTotals(subtotal = "1.00", discountAmount = "0.00", total = "1.00"),
+        )
+        val materializedCheckout = openCheckout.copy(
+            status = "MATERIALIZED",
+            order = AreaTicketCheckoutOrder(
+                id = "order-area-b3",
+                orderNumber = "AREA-B3",
+                paymentStatus = "PENDING",
+                status = "OPEN",
+                total = "1.00",
+                remainingBalance = "1.00",
+            ),
+        )
+        every { areaTicketRepository.session.current() } returns openCheckout
+        coEvery { areaTicketRepository.materialize(any(), any(), any()) } returns materializedCheckout
+        coEvery {
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any())
+        } returns Result.failure(OrderRepository.ServerException(400, textoDeCuentaCancelada))
+
+        val cart = CartState(
+            items = listOf(
+                CartItem(
+                    id = "area-line-b3",
+                    type = CartItemType.ProductItem("product-1"),
+                    name = "Jamón",
+                    unitPrice = 100,
+                    areaTicketId = "ticket-b3",
+                    areaTicketLineId = "ticket-line-b3",
+                    locked = true,
+                ),
+            ),
+        )
+
+        viewModel.startPaymentFlow(cart)
+        viewModel.confirmCashCustom(100)
+        advanceUntilIdle()
+
+        assertEquals(
+            PaymentFlowState.Error(message = textoDeCuentaCancelada, source = PaymentErrorSource.SERVER),
+            viewModel.state.value,
+        )
     }
 
     @Test

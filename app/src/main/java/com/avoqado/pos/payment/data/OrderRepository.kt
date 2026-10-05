@@ -549,6 +549,12 @@ class OrderRepository @Inject constructor(
             }.toString()
         }
 
+        /**
+         * B3 (IVA B2b): lo que ve el cajero cuando el servidor rechaza un cobro — su `message` («Esta cuenta está cancelada,
+         * abre una nueva.»), igual que en iOS; si el cuerpo no lo trae (un proxy), el texto de siempre.
+         */
+        fun mensajeDelRechazo(code: Int, body: String): String = extractErrorMessage(body) ?: "Error al registrar pago ($code)"
+
         private fun extractErrorMessage(responseBody: String): String? {
             return try {
                 val root = errorParserJson.parseToJsonElement(responseBody).jsonObject
@@ -938,7 +944,7 @@ class OrderRepository @Inject constructor(
                 )
             } else {
                 Log.e("💵", "❌ Cash payment failed ($code): $body")
-                Result.failure(ServerException(code, "Error al registrar pago ($code)"))
+                Result.failure(ServerException(code, mensajeDelRechazo(code, body)))
             }
         } catch (e: Exception) {
             Log.e("💵", "❌ Cash payment error: ${e.message}")

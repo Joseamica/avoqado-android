@@ -79,6 +79,24 @@ class OrderRepositoryTest {
         assertEquals("Service Unavailable", ex.message)
     }
 
+    // MARK: - B3 (IVA B2b): el rechazo del cobro trae el texto del servidor
+
+    @Test
+    fun `el rechazo de una cuenta cancelada trae el texto del servidor`() {
+        val cuerpo = """{"success":false,"code":"ORDER_CANCELLED_NO_NEW_CHARGE","message":"Esta cuenta está cancelada, abre una nueva."}"""
+        assertEquals("Esta cuenta está cancelada, abre una nueva.", OrderRepository.mensajeDelRechazo(400, cuerpo))
+    }
+
+    @Test
+    fun `control - sin mensaje legible queda el texto de siempre`() {
+        assertEquals("Error al registrar pago (400)", OrderRepository.mensajeDelRechazo(400, "<html>proxy</html>"))
+    }
+
+    @Test
+    fun `control - un 400 nunca es encolable (si lo fuera, la cola lo registraria como cobrado)`() {
+        assertFalse(OrderRepository.isQueueableHttpCode(400))
+    }
+
     // MARK: - paymentId extraction
 
     @Test

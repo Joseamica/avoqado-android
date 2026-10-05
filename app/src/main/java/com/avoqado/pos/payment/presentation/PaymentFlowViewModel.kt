@@ -1757,7 +1757,7 @@ class PaymentFlowViewModel @Inject constructor(
                                 autoPrintAfterPayment(PaymentMethod.CASH)
                             } else {
                                 _state.value = PaymentFlowState.Error(
-                                    message = "No se pudo registrar el pago: ${error.message ?: "error desconocido"}",
+                                    message = mensajeDelCobroFallido(error),
                                     source = PaymentErrorSource.SERVER,
                                 )
                             }
@@ -2049,6 +2049,15 @@ class PaymentFlowViewModel @Inject constructor(
         }
     }
 
+    /**
+     * B3 (IVA B2b): un rechazo de NEGOCIO del servidor (4xx) se dice tal cual, sin prefijo — p. ej. «Esta cuenta está
+     * cancelada, abre una nueva.» —, igual que en iOS. Lo demás conserva el texto de siempre.
+     */
+    private fun mensajeDelCobroFallido(error: Throwable): String {
+        val delServidor = (error as? OrderRepository.ServerException)?.takeIf { it.code in 400..499 }?.message
+        return if (!delServidor.isNullOrBlank()) delServidor else "No se pudo registrar el pago: ${error.message ?: "error desconocido"}"
+    }
+
     private suspend fun recordCashPaymentForOrder(
         orderId: String,
         total: Int,
@@ -2191,7 +2200,7 @@ class PaymentFlowViewModel @Inject constructor(
                     autoPrintAfterPayment(PaymentMethod.CASH, changeCents)
                 } else {
                     _state.value = PaymentFlowState.Error(
-                        message = "No se pudo registrar el pago: ${error.message ?: "error desconocido"}",
+                        message = mensajeDelCobroFallido(error),
                         source = PaymentErrorSource.SERVER,
                     )
                 }
