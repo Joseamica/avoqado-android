@@ -4,8 +4,12 @@ import android.util.Log
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.ExperimentalComposeUiApi
+import androidx.compose.ui.graphics.painter.BitmapPainter
+import androidx.compose.ui.graphics.painter.Painter
+import androidx.compose.ui.graphics.toComposeImageBitmap
 import androidx.compose.ui.window.LocalWindowExceptionHandlerFactory
 import androidx.compose.ui.window.Window
 import androidx.compose.ui.window.WindowExceptionHandler
@@ -20,6 +24,7 @@ import com.avoqado.escritorio.Escritorio
 import com.avoqado.escritorio.RecursosDeImagen
 import com.avoqado.escritorio.Urls
 import com.avoqado.pos.BuildConfig
+import com.avoqado.pos.R
 import com.avoqado.pos.customerdisplay.CustomerDisplayManager
 import com.avoqado.pos.customerdisplay.CustomerDisplayState
 import com.avoqado.pos.customerdisplay.monitoresDivididos
@@ -30,6 +35,7 @@ import com.avoqado.pos.kiosk.domain.KioskState
 import java.awt.GraphicsEnvironment
 import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicBoolean
+import javax.imageio.ImageIO
 import javax.swing.JOptionPane
 import kotlin.system.exitProcess
 
@@ -81,6 +87,7 @@ fun main() {
                 Window(
                     onCloseRequest = ::exitApplication,
                     title = "Avoqado POS",
+                    icon = remember { iconoDeLaVentana() },
                     state = rememberWindowState(placement = WindowPlacement.Maximized, size = Arranque.TAMANO_INICIAL),
                 ) {
                     LaunchedEffect(Unit) {
@@ -146,3 +153,9 @@ private fun salir(codigo: Int, texto: String, tipo: Int): Nothing {
     if (!GraphicsEnvironment.isHeadless()) JOptionPane.showMessageDialog(null, texto, "Avoqado POS", tipo)
     exitProcess(codigo)
 }
+
+/** El isotipo de Avoqado en la barra de título y en la de tareas: sin él, Windows enseña el ícono de Java. */
+private fun iconoDeLaVentana(): Painter? = runCatching {
+    val ruta = rutaDeRecurso(R.drawable.avoqado_logo_mark) ?: return null
+    Thread.currentThread().contextClassLoader.getResourceAsStream(ruta)?.use { BitmapPainter(ImageIO.read(it).toComposeImageBitmap()) }
+}.getOrNull()
