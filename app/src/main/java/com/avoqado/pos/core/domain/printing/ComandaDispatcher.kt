@@ -526,8 +526,9 @@ class ComandaDispatcher @Inject constructor(
     }
 
     /**
-     * PRE-PAGO — punto de entrada del vale de área (§5.6). **Todavía nadie lo llama**: conectar el
-     * vale va en otro cambio; esto es el enchufe, no el cable.
+     * PRE-PAGO — punto de entrada del vale de área (§5.6). Lo llama
+     * `AreaTicketOperationsViewModel.issue` al emitir (La Galeterie, 5-oct-2026); el regreso pagado
+     * (`AREA_TICKET_PAID`) todavía no tiene quien lo llame.
      *
      * Quien emita el vale es quien debe haber comprobado que el venue tiene `AREA_TICKETS`. Aquí NO
      * se comprueba, a propósito: un feature flag adentro del camino de impresión es justo el guard
@@ -598,6 +599,8 @@ class ComandaDispatcher @Inject constructor(
         mode: FulfillmentMode,
         moment: ComandaMoment,
         serverName: String? = null,
+        /** Lo mismo que en [dispatch]: una comanda que se rindió se le DICE al cajero que emitió el vale. */
+        alCambiarEstado: (EstadoDeComanda) -> Unit = {},
     ): Boolean {
         if (!AreaComandaPolicy.shouldPrint(mode, moment)) {
             Log.d(TAG, "🎟️ Vale $areaTicketCode: $mode no pide comanda en $moment — se omite")
@@ -616,6 +619,7 @@ class ComandaDispatcher @Inject constructor(
             // Vales: fail-open siempre. Un área sin estación configurada tiene que seguir sacando su
             // papel por la impresora de cocina local.
             noStationsFallback = NoStationsFallback.RouteAnyway,
+            alCambiarEstado = alCambiarEstado,
         )
         return true
     }

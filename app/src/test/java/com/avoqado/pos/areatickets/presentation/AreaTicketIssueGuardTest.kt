@@ -66,6 +66,7 @@ class AreaTicketIssueGuardTest {
             printerService = printerService,
             pdfGenerator = mockk(relaxed = true),
             secureStorage = secureStorage,
+            comandaDispatcher = mockk(relaxed = true),
         )
     }
 

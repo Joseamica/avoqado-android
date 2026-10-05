@@ -1446,7 +1446,7 @@ fun CheckoutScreen(
     areaOperationsState.message?.let { message ->
         AvoqadoSuccessToast(
             message = message,
-            onDismiss = areaTicketOperations::dismissFeedback,
+            onDismiss = areaTicketOperations::dismissMessage,
         )
     }
 

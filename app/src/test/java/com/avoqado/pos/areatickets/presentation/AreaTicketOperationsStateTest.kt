@@ -213,6 +213,7 @@ class AreaTicketOperationsStateTest {
             printerService = printerService,
             pdfGenerator = mockk(relaxed = true),
             secureStorage = secureStorage,
+            comandaDispatcher = mockk(relaxed = true),
         )
         val cart = CartState(
             items = listOf(
@@ -252,6 +253,7 @@ class AreaTicketOperationsStateTest {
             printerService = printerService,
             pdfGenerator = mockk(relaxed = true),
             secureStorage = secureStorage,
+            comandaDispatcher = mockk(relaxed = true),
         )
         val cart = CartState(
             items = listOf(
@@ -291,6 +293,7 @@ class AreaTicketOperationsStateTest {
             printerService = mockk<PrinterService>(relaxed = true),
             pdfGenerator = mockk<AreaTicketPdfGenerator>(relaxed = true),
             secureStorage = mockk<SecureStorage>(relaxed = true),
+            comandaDispatcher = mockk(relaxed = true),
         )
 
         assertTrue(viewModel.state.value.issueWorkspace)
@@ -316,6 +319,7 @@ class AreaTicketOperationsStateTest {
             printerService = mockk(relaxed = true),
             pdfGenerator = mockk(relaxed = true),
             secureStorage = mockk(relaxed = true),
+            comandaDispatcher = mockk(relaxed = true),
         )
 
         viewModel.refresh(loadPendingDelivery = true)
@@ -343,6 +347,7 @@ class AreaTicketOperationsStateTest {
             printerService = mockk<PrinterService>(relaxed = true),
             pdfGenerator = mockk<AreaTicketPdfGenerator>(relaxed = true),
             secureStorage = secureStorage,
+            comandaDispatcher = mockk(relaxed = true),
         )
 
         assertEquals("9340048086", viewModel.state.value.pendingReprintCode)
@@ -384,6 +389,7 @@ class AreaTicketOperationsStateTest {
             printerService = mockk<PrinterService>(relaxed = true),
             pdfGenerator = pdfGenerator,
             secureStorage = secureStorage,
+            comandaDispatcher = mockk(relaxed = true),
         )
 
         viewModel.preparePendingPdf()
@@ -438,6 +444,7 @@ class AreaTicketOperationsStateTest {
             printerService = printerService,
             pdfGenerator = mockk(relaxed = true),
             secureStorage = secureStorage,
+            comandaDispatcher = mockk(relaxed = true),
         )
 
         var cartCleared = false
@@ -468,6 +475,7 @@ class AreaTicketOperationsStateTest {
             printerService = mockk(relaxed = true),
             pdfGenerator = mockk(relaxed = true),
             secureStorage = mockk(relaxed = true),
+            comandaDispatcher = mockk(relaxed = true),
         )
 
         viewModel.deliverWithPaper("ticket-1")
@@ -493,6 +501,7 @@ class AreaTicketOperationsStateTest {
             printerService = mockk(relaxed = true),
             pdfGenerator = mockk(relaxed = true),
             secureStorage = mockk(relaxed = true),
+            comandaDispatcher = mockk(relaxed = true),
         )
 
         viewModel.deliverWithPaper("ticket-1")
@@ -516,6 +525,7 @@ class AreaTicketOperationsStateTest {
             printerService = mockk(relaxed = true),
             pdfGenerator = mockk(relaxed = true),
             secureStorage = mockk(relaxed = true),
+            comandaDispatcher = mockk(relaxed = true),
         )
 
         viewModel.deliverByReceiptCode("8123456789")
@@ -545,6 +555,7 @@ class AreaTicketOperationsStateTest {
             printerService = mockk(relaxed = true),
             pdfGenerator = mockk(relaxed = true),
             secureStorage = mockk(relaxed = true),
+            comandaDispatcher = mockk(relaxed = true),
         )
 
         viewModel.deliverByReceiptCode("8123456789")
@@ -576,6 +587,7 @@ class AreaTicketOperationsStateTest {
             printerService = mockk(relaxed = true),
             pdfGenerator = mockk(relaxed = true),
             secureStorage = mockk(relaxed = true),
+            comandaDispatcher = mockk(relaxed = true),
         )
 
         viewModel.deliverByReceiptCode("8123456789")
@@ -608,6 +620,7 @@ class AreaTicketOperationsStateTest {
             printerService = mockk(relaxed = true),
             pdfGenerator = mockk(relaxed = true),
             secureStorage = mockk(relaxed = true),
+            comandaDispatcher = mockk(relaxed = true),
         )
 
         viewModel.deliverByReceiptCode("8123456789")
@@ -641,6 +654,7 @@ class AreaTicketOperationsStateTest {
             printerService = mockk(relaxed = true),
             pdfGenerator = mockk(relaxed = true),
             secureStorage = mockk(relaxed = true),
+            comandaDispatcher = mockk(relaxed = true),
         )
 
         viewModel.deliverByReceiptCode("8123456789")
@@ -669,6 +683,7 @@ class AreaTicketOperationsStateTest {
             printerService = mockk(relaxed = true),
             pdfGenerator = mockk(relaxed = true),
             secureStorage = mockk(relaxed = true),
+            comandaDispatcher = mockk(relaxed = true),
         )
 
         viewModel.deliverByReceiptCode("8123456789")

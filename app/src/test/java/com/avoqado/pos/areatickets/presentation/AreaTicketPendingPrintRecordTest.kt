@@ -472,6 +472,7 @@ class AreaTicketPendingPrintRecordTest {
         printerService = printerService,
         pdfGenerator = pdfGenerator,
         secureStorage = secureStorage,
+        comandaDispatcher = mockk(relaxed = true),
     )
 
     private fun pendientes(): List<PendingAreaTicketPrintRecord> =

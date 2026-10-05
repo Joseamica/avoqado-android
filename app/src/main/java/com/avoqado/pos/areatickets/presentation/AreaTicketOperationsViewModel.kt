@@ -1,5 +1,6 @@
 package com.avoqado.pos.areatickets.presentation
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.areatickets.data.AreaTicket
@@ -11,18 +12,25 @@ import com.avoqado.pos.areatickets.data.PendingAreaTicketPrintRecord
 import com.avoqado.pos.areatickets.data.SETTLEMENT_ROUTE_EXTERNAL
 import com.avoqado.pos.areatickets.data.toAreaTicketData
 import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.core.domain.printing.ComandaDispatcher
+import com.avoqado.pos.core.domain.printing.ComandaMoment
+import com.avoqado.pos.core.domain.printing.FulfillmentMode
 import com.avoqado.pos.pos.data.model.CartItemType
 import com.avoqado.pos.pos.presentation.cart.CartState
 import com.avoqado.pos.printing.data.ESCPOSPrinter.BarcodeSymbology
 import com.avoqado.pos.printing.data.AreaTicketPdfGenerator
+import com.avoqado.pos.printing.data.EstadoDeComanda
 import com.avoqado.pos.printing.data.PrinterService
 import com.avoqado.pos.printing.data.model.PrinterRole
+import com.avoqado.pos.printing.routing.RoutableItem
 import dagger.hilt.android.lifecycle.HiltViewModel
 import java.util.Locale
 import java.util.UUID
 import javax.inject.Inject
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -101,7 +109,14 @@ class AreaTicketOperationsViewModel @Inject constructor(
     private val printerService: PrinterService,
     private val pdfGenerator: AreaTicketPdfGenerator,
     private val secureStorage: SecureStorage,
+    private val comandaDispatcher: ComandaDispatcher,
 ) : ViewModel() {
+    /**
+     * Codex (5-oct): la comanda no muere si se cierra la pantalla de vales a media impresión o reintento.
+     * ponytail: si la app muere en ese lapso la comanda se pierde (los vales no tienen la libreta del mostrador);
+     * si llega a pasar, encolarla en ReplayDeComandasPendientes.
+     */
+    private val comandaScope = CoroutineScope(SupervisorJob() + Dispatchers.Main)
     private val _state = MutableStateFlow(AreaTicketOperationsState())
     val state: StateFlow<AreaTicketOperationsState> = _state.asStateFlow()
     private var refreshRequestId = 0L
@@ -244,7 +259,13 @@ class AreaTicketOperationsViewModel @Inject constructor(
                 // puede seguir cobrable aunque falle la salida en papel: imprimir es una
                 // recuperación secundaria del mismo vale, no parte de su creación.
                 onIssued()
-                printAndRecord(ticket, reprint = false, venueId)
+                try {
+                    printAndRecord(ticket, reprint = false, venueId)
+                } finally {
+                    // Después del vale (si comparten impresora, el vale sale primero) y aunque su papel falle: el vale ya
+                    // existe y la cocina tiene que enterarse. La reimpresión NO pasa por aquí: no repite la comanda.
+                    despacharComanda(ticket, cart, venueId)
+                }
                 ticket
             }.onSuccess { ticket ->
                 secureStorage.pendingAreaTicketPrintCode = null
@@ -451,6 +472,11 @@ class AreaTicketOperationsViewModel @Inject constructor(
         _state.value = _state.value.copy(message = null, error = null)
     }
 
+    /** El toast de éxito se cierra solo: no se lleva un aviso que llegó mientras tanto (una comanda que no salió). */
+    fun dismissMessage() {
+        _state.value = _state.value.copy(message = null)
+    }
+
     /** Codex r2 #5: el ViewModel sobrevive a la navegación; Checkout lo llama al volver a la pantalla. */
     fun retryPendingPrintRecords() {
         launchFlush()
@@ -534,6 +560,49 @@ class AreaTicketOperationsViewModel @Inject constructor(
             parts += "No se pudo completar el resto: ${failure.message ?: "No se pudo registrar la entrega."}"
         }
         return parts.joinToString(" ")
+    }
+
+    /**
+     * La comanda del vale (§5.6): sale al EMITIR en las áreas que preparan antes de que el cliente pague —eso lo decide
+     * [com.avoqado.pos.core.domain.printing.AreaComandaPolicy]— y se rutea por estación igual que la del mostrador
+     * (Cocina, Bebidas…). Corre aparte: con reintentos tarda hasta ~1 min y jamás frena el vale. Una que se rindió
+     * se DICE, sin tapar el aviso del vale si lo hay.
+     */
+    private fun despacharComanda(ticket: AreaTicket, cart: CartState, venueId: String?) {
+        val lineas = cart.items.map { item ->
+            RoutableItem(
+                orderItemId = item.id,
+                productId = (item.type as? CartItemType.ProductItem)?.productId,
+                categoryId = item.categoryId,
+                productName = item.nombreEnCocina,
+                quantity = item.quantity,
+                modifiers = item.selectedModifiers.map { it.modifierName },
+                notes = item.itemNote,
+            )
+        }
+        val avisar: (String?, List<String>) -> Unit = { causa, estaciones ->
+            val aviso = "No salió la comanda de ${estaciones.joinToString()} del vale ${ticket.code}. " +
+                (causa ?: "La impresora no respondió.") + " Avísale a la cocina."
+            _state.value = _state.value.copy(error = listOfNotNull(_state.value.error, aviso).joinToString("\n\n"))
+        }
+        comandaScope.launch {
+            try {
+                comandaDispatcher.dispatchAreaComanda(
+                    venueId = venueId,
+                    lines = lineas,
+                    areaTicketCode = ticket.code,
+                    areaName = ticket.fulfillmentArea.name,
+                    mode = FulfillmentMode.fromServer(ticket.fulfillmentArea.fulfillmentMode),
+                    moment = ComandaMoment.AREA_TICKET_ISSUED,
+                    alCambiarEstado = { estado -> if (estado is EstadoDeComanda.NoSalio) avisar(estado.causa, estado.estaciones) },
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e("🍳", "❌ La comanda del vale ${ticket.code} reventó al despacharse: ${e.message}", e)
+                avisar(e.message, listOf("Cocina"))
+            }
+        }
     }
 
     private suspend fun printAndRecord(ticket: AreaTicket, reprint: Boolean, venueId: String?) {

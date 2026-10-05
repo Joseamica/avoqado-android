@@ -189,7 +189,7 @@ fun AreaTicketDeliveryScreen(
         state.message?.let { message ->
             AvoqadoSuccessToast(
                 message = message,
-                onDismiss = viewModel::dismissFeedback,
+                onDismiss = viewModel::dismissMessage,
             )
         }
 
