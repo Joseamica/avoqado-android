@@ -49,15 +49,22 @@ enum class PrinterRole(val value: String) {
 enum class PaperWidth(val mm: Int) {
     MM58(58),
     MM80(80),
+
+    /**
+     * Rollo de 80 mm en una impresora que sólo imprime 72 mm a 180 dpi: 512 puntos, 42 columnas, no 576 y 48 (La Galeterie,
+     * 5-oct: con «80mm» el código y el «$73.00» salían cortados en el borde). Se guarda como 72, el ancho IMPRIMIBLE.
+     */
+    MM72(72),
     ;
 
     val displayName: String
-        get() = "${mm}mm"
+        get() = if (this == MM72) "80mm (42 col.)" else "${mm}mm"
 
     val charsPerLine: Int
         get() = when (this) {
             MM58 -> 32
             MM80 -> 48
+            MM72 -> 42
         }
 
     /**
@@ -72,6 +79,7 @@ enum class PaperWidth(val mm: Int) {
         get() = when (this) {
             MM58 -> 384
             MM80 -> 576
+            MM72 -> 512
         }
 
     /**
@@ -87,7 +95,7 @@ enum class PaperWidth(val mm: Int) {
      * dejar que cada quien lo tantee.
      */
     val centeringSlackChars: Int
-        get() = ((mm * DOTS_PER_MM - dots) / 2) / ESCPOSPrinter.CHAR_WIDTH_DOTS
+        get() = (((if (this == MM72) 80 else mm) * DOTS_PER_MM - dots) / 2) / ESCPOSPrinter.CHAR_WIDTH_DOTS
 
     companion object {
         /** 203 dpi = 8 puntos por milímetro. */
@@ -142,7 +150,11 @@ data class SavedPrinter(
         }
 
     val paperWidth: PaperWidth
-        get() = if (paperWidthMm == 58) PaperWidth.MM58 else PaperWidth.MM80
+        get() = when (paperWidthMm) {
+            58 -> PaperWidth.MM58
+            72 -> PaperWidth.MM72
+            else -> PaperWidth.MM80
+        }
 
     val roleEnums: List<PrinterRole>
         get() = roles.mapNotNull { role ->
