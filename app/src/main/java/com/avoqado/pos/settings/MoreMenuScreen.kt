@@ -1290,70 +1290,73 @@ private fun IdentityCard(
         ),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
     ) {
-        Row(
+        BoxWithConstraints(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(padding),
-            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box(
-                modifier = Modifier
-                    .size(chipSize)
-                    .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
-                    .background(MaterialTheme.colorScheme.surfaceContainerHigh),
-                contentAlignment = Alignment.Center,
-            ) {
-                if (initials != null) {
-                    Text(
-                        text = initials,
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-                } else {
-                    Icon(
-                        Icons.Outlined.Person,
-                        contentDescription = null,
-                        modifier = Modifier.size(AvoqadoTheme.dimensions.iconLarge),
-                        tint = MaterialTheme.colorScheme.onSurface,
-                    )
-                }
-            }
-            Column(
-                modifier = Modifier
-                    .weight(1f)
-                    .padding(horizontal = if (dense) AvoqadoTheme.spacing.sm else AvoqadoTheme.spacing.md),
-            ) {
-                Text(
-                    text = "Sesión iniciada",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    // El nombre cede espacio y se recorta; la píldora del rol
-                    // nunca — es el dato que se vino a buscar.
-                    Text(
-                        text = primary,
-                        style = if (dense) {
-                            MaterialTheme.typography.titleSmall
+            val identidad: @Composable (Modifier) -> Unit = { rowModifier ->
+                Row(modifier = rowModifier, verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .size(chipSize)
+                            .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
+                            .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        if (initials != null) {
+                            Text(
+                                text = initials,
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.SemiBold,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
                         } else {
-                            MaterialTheme.typography.titleMedium
-                        },
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false),
-                    )
-                    Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
-                    RolePill(roleLabel = roleLabel)
-                }
-                if (secondary != null) {
-                    Text(
-                        text = secondary,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                            Icon(
+                                Icons.Outlined.Person,
+                                contentDescription = null,
+                                modifier = Modifier.size(AvoqadoTheme.dimensions.iconLarge),
+                                tint = MaterialTheme.colorScheme.onSurface,
+                            )
+                        }
+                    }
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(horizontal = if (dense) AvoqadoTheme.spacing.sm else AvoqadoTheme.spacing.md),
+                    ) {
+                        Text(
+                            text = "Sesión iniciada",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            // El nombre cede espacio y se recorta; la píldora del rol
+                            // nunca — es el dato que se vino a buscar.
+                            Text(
+                                text = primary,
+                                style = if (dense) {
+                                    MaterialTheme.typography.titleSmall
+                                } else {
+                                    MaterialTheme.typography.titleMedium
+                                },
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f, fill = false),
+                            )
+                            Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
+                            RolePill(roleLabel = roleLabel)
+                        }
+                        if (secondary != null) {
+                            Text(
+                                text = secondary,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
                 }
             }
 
@@ -1362,47 +1365,63 @@ private fun IdentityCard(
             // hacer scroll (decisión del founder, 2026-08-29). «Cambiar usuario» va en color
             // porque es la de todos los días; «Cerrar sesión» queda al lado, sin peso visual,
             // porque es la excepcional — y no desaparece: el founder pidió conservar las dos.
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
-            ) {
+            val acciones: @Composable () -> Unit = {
                 Row(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(50))
-                        .background(MaterialTheme.colorScheme.primary)
-                        .clickable(onClick = onSwitchUser)
-                        .padding(
-                            horizontal = AvoqadoTheme.spacing.md,
-                            vertical = AvoqadoTheme.spacing.sm,
-                        ),
                     verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
                 ) {
-                    Text(
-                        text = "Cambiar usuario",
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onPrimary,
-                        maxLines = 1,
-                    )
-                }
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .background(MaterialTheme.colorScheme.primary)
+                            .clickable(onClick = onSwitchUser)
+                            .padding(
+                                horizontal = AvoqadoTheme.spacing.md,
+                                vertical = AvoqadoTheme.spacing.sm,
+                            ),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "Cambiar usuario",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onPrimary,
+                            maxLines = 1,
+                        )
+                    }
 
-                Row(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(50))
-                        .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                        .clickable(onClick = onLogout)
-                        .padding(
-                            horizontal = AvoqadoTheme.spacing.md,
-                            vertical = AvoqadoTheme.spacing.sm,
-                        ),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        text = "Cerrar sesión",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
-                    )
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(50))
+                            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+                            .clickable(onClick = onLogout)
+                            .padding(
+                                horizontal = AvoqadoTheme.spacing.md,
+                                vertical = AvoqadoTheme.spacing.sm,
+                            ),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            text = "Cerrar sesión",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1,
+                        )
+                    }
+                }
+            }
+
+            // En celular (< 600 dp) los botones no caben junto al nombre, que se quedaba sin espacio:
+            // ahí bajan a su propia fila. Espejo de `identityCard` en iOS (ancho compacto).
+            if (maxWidth < 600.dp) {
+                Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md)) {
+                    identidad(Modifier.fillMaxWidth())
+                    acciones()
+                }
+            } else {
+                Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    identidad(Modifier.weight(1f))
+                    acciones()
                 }
             }
         }
