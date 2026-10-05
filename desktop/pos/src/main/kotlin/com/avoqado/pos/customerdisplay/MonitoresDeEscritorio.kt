@@ -51,7 +51,7 @@ internal fun monitoresDeAwt(): List<Monitor> {
     val ge = GraphicsEnvironment.getLocalGraphicsEnvironment()
     val delSistema = ge.defaultScreenDevice
     val reales = ge.screenDevices.map { d -> Monitor(d.iDstring, d.defaultConfiguration.bounds, principal = d == delSistema) }
-    return if (monitoresDivididos()) dividirEnDos(reales) else reales
+    return if (monitoresDivididos()) dividirEnDos(reales, areaUtil = ge.maximumWindowBounds) else reales
 }
 
 /**
@@ -61,9 +61,13 @@ internal fun monitoresDeAwt(): List<Monitor> {
 internal fun monitoresDivididos(): Boolean =
     !com.avoqado.pos.BuildConfig.PRODUCCION && System.getProperty("avoqado.monitores") == "dividir"
 
-internal fun dividirEnDos(reales: List<Monitor>): List<Monitor> {
+/**
+ * `areaUtil`: el monitor principal SIN la barra de tareas. Las dos mitades salen de ahí: con el
+ * alto completo, la barra de abajo de la app quedaba tapada (full-testing 3-oct).
+ */
+internal fun dividirEnDos(reales: List<Monitor>, areaUtil: Rectangle? = null): List<Monitor> {
     val p = reales.firstOrNull { it.principal } ?: return reales
-    val r = p.limites
+    val r = areaUtil?.let { p.limites.intersection(it) }?.takeUnless { it.isEmpty } ?: p.limites
     val mitad = r.width / 2
     return listOf(
         Monitor(p.clave + "#izquierda", Rectangle(r.x, r.y, mitad, r.height), principal = true),

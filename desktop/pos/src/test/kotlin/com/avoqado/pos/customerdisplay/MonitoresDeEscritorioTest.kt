@@ -79,4 +79,14 @@ class MonitoresDeEscritorioTest {
         // Totalmente fuera: null.
         assertNull(monitorDe(Rectangle(9000, 9000, 10, 10), numerados))
     }
+
+    @Test
+    fun `dividir parte el area util, sin la barra de tareas`() {
+        val principal = Monitor("A", Rectangle(0, 0, 1920, 1080), principal = true)
+        val partidos = dividirEnDos(listOf(principal), areaUtil = Rectangle(0, 0, 1920, 1032))
+        assertEquals(Rectangle(0, 0, 960, 1032), partidos[0].limites)
+        assertEquals(Rectangle(960, 0, 960, 1032), partidos[1].limites)
+        // Un área útil que no toca al principal no lo deja en cero.
+        assertEquals(1080, dividirEnDos(listOf(principal), areaUtil = Rectangle(5000, 0, 10, 10))[0].limites.height)
+    }
 }
