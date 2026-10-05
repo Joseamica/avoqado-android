@@ -26,7 +26,7 @@ package com.avoqado.pos.core.domain
  * venue con Permission Sets (`VenueRolePermission`) manda otra cosa; aquí sale la
  * matriz por default (`customPermissions = null`), que es la de la mayoría.
  *
- * Derivado de avoqado-server · huella 1ac6f0c7412a5e22.
+ * Derivado de avoqado-server · huella 94580b4cfdc1a4a7.
  */
 object PermisosRealesDelServer {
 
@@ -356,7 +356,7 @@ object PermisosRealesDelServer {
         "upsells:*",
     )
 
-    /** ADMIN — 139 permisos efectivos (113 declarados + 26 implícitos: analytics:read, customers:read, delivery-channels:snooze, discounts:apply, discounts:read, features:read, features:update, inventory:read, menu:read, orders:comp, orders:read, orders:update, orders:void, payments:read, products:read, serialized-inventory:create, settings:read, shifts:close, shifts:create, shifts:read, tables:read, tables:update, teams:read, tpv:read, venues:manage, venues:read). */
+    /** ADMIN — 142 permisos efectivos (115 declarados + 27 implícitos: analytics:read, customers:read, delivery-channels:snooze, discounts:apply, discounts:read, features:read, features:update, inventory:read, menu:read, orders:comp, orders:read, orders:update, orders:void, payments:read, products:read, reservations:read, serialized-inventory:create, settings:read, shifts:close, shifts:create, shifts:read, tables:read, tables:update, teams:read, tpv:read, venues:manage, venues:read). */
     val ADMIN = listOf(
         "accounting:manage",
         "accounting:read",
@@ -441,6 +441,7 @@ object PermisosRealesDelServer {
         "referral:void-manual",
         "reports:*",
         "reservations:*",
+        "reservations:read",
         "reviews:*",
         "role-config:*",
         "sale-verifications:review",
@@ -459,6 +460,8 @@ object PermisosRealesDelServer {
         "sim-custody:reassign-supervisor",
         "staff-documents:read",
         "staff-documents:write",
+        "staffpay:manage",
+        "staffpay:read",
         "tables:*",
         "tables:read",
         "tables:update",
@@ -499,7 +502,7 @@ object PermisosRealesDelServer {
         "venues:read",
     )
 
-    /** OWNER — 151 permisos efectivos (125 declarados + 26 implícitos: analytics:read, commissions:read, customers:read, delivery-channels:snooze, discounts:apply, discounts:read, features:read, features:update, inventory:read, menu:read, orders:comp, orders:read, orders:update, orders:void, payments:read, products:read, settings:read, shifts:close, shifts:create, shifts:read, tables:read, tables:update, teams:read, tpv:read, venues:manage, venues:read). */
+    /** OWNER — 155 permisos efectivos (128 declarados + 27 implícitos: analytics:read, commissions:read, customers:read, delivery-channels:snooze, discounts:apply, discounts:read, features:read, features:update, inventory:read, menu:read, orders:comp, orders:read, orders:update, orders:void, payments:read, products:read, reservations:read, settings:read, shifts:close, shifts:create, shifts:read, tables:read, tables:update, teams:read, tpv:read, venues:manage, venues:read). */
     val OWNER = listOf(
         "accounting:manage",
         "accounting:read",
@@ -583,6 +586,7 @@ object PermisosRealesDelServer {
         "referral:void-manual",
         "reports:*",
         "reservations:*",
+        "reservations:read",
         "reviews:*",
         "role-config:*",
         "sale-verifications:edit",
@@ -610,6 +614,9 @@ object PermisosRealesDelServer {
         "sim-custody:view-all-supervisors",
         "staff-documents:read",
         "staff-documents:write",
+        "staffpay:close",
+        "staffpay:manage",
+        "staffpay:read",
         "tables:*",
         "tables:read",
         "tables:update",
@@ -744,6 +751,7 @@ object PermisosRealesDelServer {
             "orders:void",
             "payments:read",
             "products:read",
+            "reservations:read",
             "serialized-inventory:create",
             "settings:read",
             "shifts:close",
@@ -773,6 +781,7 @@ object PermisosRealesDelServer {
             "orders:void",
             "payments:read",
             "products:read",
+            "reservations:read",
             "settings:read",
             "shifts:close",
             "shifts:create",
