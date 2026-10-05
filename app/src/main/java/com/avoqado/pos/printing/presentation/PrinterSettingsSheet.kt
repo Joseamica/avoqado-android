@@ -207,6 +207,11 @@ fun PrinterSettingsSheet(
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+                Text(
+                    text = "Sólo de esta caja. Las de cocina y bebidas por red se configuran en el panel web.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
 
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
 
