@@ -137,6 +137,9 @@ class ESCPOSPrinter(
         /** Códigos por pieza del vale de caja externa: la misma altura de las etiquetas de precio. */
         const val EXTERNAL_CODE_HEIGHT_DOTS = 100
 
+        /** Renglones en blanco tras cada código del vale (~1 cm): con uno solo la pistola de la caja leía dos. */
+        const val EXTERNAL_CODE_GAP_LINES = 3
+
         /** Default de ESC/POS. Con 10 dígitos en CODE128-C cabe en 58 mm. */
         const val DEFAULT_MODULE_WIDTH = 3
 
@@ -871,7 +874,7 @@ class ESCPOSPrinter(
      * Caja externa (spec 2026-09-30 D6/D15): bajo el renglón, sus extras y un código por pieza —
      * CODE128-C si es numérico par, si no B, si no texto — y SÓLO si las barras caben al ancho
      * mínimo: `fittingModuleWidth` imprime al mínimo aunque no quepa, y unas barras cortadas ni se
-     * leen ni caen al texto. Un renglón en blanco entre códigos para que la pistola no lea dos.
+     * leen ni caen al texto. Tres renglones en blanco entre códigos para que la pistola no lea dos.
      */
     private fun printExternalLineCodes(item: ReceiptItem) {
         item.modifiers?.forEach { printLine("   + $it") }
@@ -884,7 +887,7 @@ class ESCPOSPrinter(
             }
             val dibujado = symbology != null && printBarcode(code, symbology, heightDots = EXTERNAL_CODE_HEIGHT_DOTS)
             if (!dibujado) printLine(code)
-            printLine()
+            feedLines(EXTERNAL_CODE_GAP_LINES)
         }
         setAlignment(TextAlignment.LEFT)
     }

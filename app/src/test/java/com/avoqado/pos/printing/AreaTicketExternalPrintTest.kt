@@ -141,6 +141,16 @@ class AreaTicketExternalPrintTest {
     }
 
     @Test
+    fun `entre un codigo y el siguiente quedan 3 renglones en blanco para que la pistola no lea dos`() {
+        // La Galeterie 6-oct: con UN renglón (≈4 mm) el café y su extra quedaban pegados.
+        val out = render(externo())
+        val codigo = code128B("P000672")
+        val i = (0..out.size - codigo.size).first { s -> codigo.indices.all { out[s + it] == codigo[it] } }
+        val despues = out.copyOfRange(i + codigo.size, i + codigo.size + 4)
+        assertEquals("0a0a0a1d", hex(despues))
+    }
+
+    @Test
     fun `P1 la copia del vale normal sale igual que el original`() {
         assertEquals(DORADO_58_CODE128, hex(ESCPOSPrinter(paperWidth = PaperWidth.MM58).generateAreaTicket(normal().copy(isReprint = true))))
     }
