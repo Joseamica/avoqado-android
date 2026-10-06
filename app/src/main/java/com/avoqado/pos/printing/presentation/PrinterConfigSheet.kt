@@ -57,6 +57,7 @@ import com.avoqado.pos.printing.data.model.PrinterConnectionType
 import com.avoqado.pos.printing.data.model.PrinterRole
 import com.avoqado.pos.printing.data.model.PrinterStatus
 import com.avoqado.pos.printing.data.model.SavedPrinter
+import com.avoqado.pos.printing.data.model.TablaDeAcentos
 import kotlinx.coroutines.launch
 
 /**
@@ -98,6 +99,7 @@ fun PrinterConfigSheet(
     var autoPrintKitchenTickets by remember { mutableStateOf(printer.autoPrintKitchenTickets) }
     var autoOpenCashDrawer by remember { mutableStateOf(printer.autoOpenCashDrawer) }
     var cashDrawerPin by remember { mutableIntStateOf(printer.cashDrawerPin) }
+    var tablaDeAcentos by remember { mutableStateOf(TablaDeAcentos.deGuardada(printer.tablaDeAcentos)) }
     var numberOfCopies by remember { mutableIntStateOf(printer.numberOfCopies) }
     var isPrinting by remember { mutableStateOf(false) }
     var showDeleteConfirm by remember { mutableStateOf(false) }
@@ -126,6 +128,7 @@ fun PrinterConfigSheet(
         autoOpenCashDrawer = autoOpenCashDrawer,
         numberOfCopies = numberOfCopies,
         cashDrawerPin = cashDrawerPin,
+        tablaDeAcentos = tablaDeAcentos.name.takeIf { tablaDeAcentos != TablaDeAcentos.WINDOWS_1252 },
     )
 
     fun saveChanges() {
@@ -332,6 +335,31 @@ fun PrinterConfigSheet(
                     "Eso pasa con un rollo angosto puesto con adaptadores en una " +
                     "impresora más ancha. Imprime la página de prueba, cuenta el " +
                     "primer número de la regla que alcances a ver y ponlo aquí.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+
+            // -- ACENTOS -- (La Galeterie, 5-oct: hay impresoras que ignoran la tabla de siempre y sacan «CAFETER═A»)
+            SectionHeader("Tabla de acentos")
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+            SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                TablaDeAcentos.entries.forEachIndexed { index, tabla ->
+                    SegmentedButton(
+                        selected = tablaDeAcentos == tabla,
+                        onClick = {
+                            tablaDeAcentos = tabla
+                            saveChanges()
+                        },
+                        shape = SegmentedButtonDefaults.itemShape(index = index, count = TablaDeAcentos.entries.size),
+                    ) { Text(tabla.etiqueta) }
+                }
+            }
+            Text(
+                "Déjala en Normal salvo que los acentos salgan como símbolos (CAFETER═A). " +
+                    "Imprime la página de prueba: trae una línea con acentos por cada tabla. " +
+                    "Elige aquí la que salga bien.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -619,6 +647,7 @@ internal fun SavedPrinter.conEdiciones(
     autoOpenCashDrawer: Boolean,
     numberOfCopies: Int,
     cashDrawerPin: Int = this.cashDrawerPin,
+    tablaDeAcentos: String? = this.tablaDeAcentos,
 ): SavedPrinter = copy(
     name = name,
     roles = roles,
@@ -629,4 +658,5 @@ internal fun SavedPrinter.conEdiciones(
     autoOpenCashDrawer = autoOpenCashDrawer,
     numberOfCopies = numberOfCopies,
     cashDrawerPin = cashDrawerPin,
+    tablaDeAcentos = tablaDeAcentos,
 )

@@ -137,6 +137,8 @@ data class SavedPrinter(
      * ya guardadas se lean sin romperse.
      */
     val cashDrawerPin: Int = 2,
+    /** [TablaDeAcentos] por nombre; null (las ya guardadas) = la de siempre. */
+    val tablaDeAcentos: String? = null,
     val numberOfCopies: Int = 1,
     val dateAdded: Long = System.currentTimeMillis(),
     val lastConnected: Long? = null,

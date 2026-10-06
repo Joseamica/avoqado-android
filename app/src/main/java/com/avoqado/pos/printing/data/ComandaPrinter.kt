@@ -1,6 +1,7 @@
 package com.avoqado.pos.printing.data
 
 import android.util.Log
+import com.avoqado.pos.printing.data.model.TablaDeAcentos
 import com.avoqado.pos.printing.data.model.ComboPrintLines
 import com.avoqado.pos.printing.data.model.KitchenItem
 import com.avoqado.pos.printing.data.model.KitchenTicketData
@@ -304,6 +305,10 @@ class ComandaPrinter @Inject constructor(
      *   client can't service those transports; the caller logs and skips that station rather
      *   than falling back to a wrong transport.
      */
+    /** El «Codificación» del panel: sólo PC850/PC437 cambian la tabla; el CP858 de fábrica queda como siempre (null). */
+    private fun PrinterInfo.tablaDelPanel(): String? =
+        TablaDeAcentos.delPanel(charset).takeIf { it != TablaDeAcentos.WINDOWS_1252 }?.name
+
     private fun PrinterInfo.toKitchenSavedPrinter(internalPrinter: SavedPrinter?): SavedPrinter? {
         // POS_INTERNAL va ANTES del chequeo de dirección: la integrada no lleva dirección
         // a propósito (registrarle una IP fue justo el bug que originó este tipo).
@@ -332,6 +337,7 @@ class ComandaPrinter @Inject constructor(
                     port = parsedPort ?: DEFAULT_PRINT_PORT,
                     roles = listOf(PrinterRole.KITCHEN.value),
                     paperWidthMm = paperWidthMm,
+                    tablaDeAcentos = tablaDelPanel(),
                 )
             }
             "BLUETOOTH" -> SavedPrinter(
@@ -343,6 +349,7 @@ class ComandaPrinter @Inject constructor(
                 roles = listOf(PrinterRole.KITCHEN.value),
                 paperWidthMm = paperWidthMm,
                 leftMarginChars = leftMarginChars,
+                tablaDeAcentos = tablaDelPanel(),
             )
             else -> {
                 Log.w(

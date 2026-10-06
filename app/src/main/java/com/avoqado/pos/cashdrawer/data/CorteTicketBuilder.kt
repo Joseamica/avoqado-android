@@ -112,6 +112,7 @@ object CorteTicketBuilder {
          * imprimiendo el primer corte en la D3.
          */
         switchToSingleByteFirst: Boolean = false,
+        tablaDeAcentos: com.avoqado.pos.printing.data.model.TablaDeAcentos = com.avoqado.pos.printing.data.model.TablaDeAcentos.WINDOWS_1252,
         /**
          * 🔴 El corte salió SIN confirmarlo con el servidor (sin red): sólo trae lo que registró
          * este aparato. Lo que escribe el servidor —el egreso de un reembolso, la venta en efectivo
@@ -159,7 +160,7 @@ object CorteTicketBuilder {
         // Conteo ciego: corte PARCIAL de quien no tiene `cash-drawer:view-expected`.
         val ciego = isPartial && !showExpected
 
-        val p = ESCPOSPrinter(paperWidth, switchToSingleByteFirst)
+        val p = ESCPOSPrinter(paperWidth, switchToSingleByteFirst, tablaDeAcentos = tablaDeAcentos)
         p.reset()
         p.setAlignment(ESCPOSPrinter.TextAlignment.CENTER)
         p.setBold(true)

@@ -21,6 +21,7 @@ import com.avoqado.pos.printing.data.model.AreaTicketData
 import com.avoqado.pos.printing.data.ESCPOSPrinter.BarcodeSymbology
 import com.avoqado.pos.printing.data.model.DiscoveredPrinter
 import com.avoqado.pos.printing.data.model.KitchenTicketData
+import com.avoqado.pos.printing.data.model.TablaDeAcentos
 import com.avoqado.pos.printing.data.model.PaperWidth
 import com.avoqado.pos.printing.data.model.PrinterConnectionType
 import com.avoqado.pos.printing.data.model.PrinterException
@@ -668,6 +669,7 @@ class PrinterService @Inject constructor(
         paperWidth = printer.paperWidth,
         switchToSingleByteFirst = printer.connectionTypeEnum == PrinterConnectionType.INTERNAL,
         leftMarginChars = printer.leftMarginChars,
+        tablaDeAcentos = TablaDeAcentos.deGuardada(printer.tablaDeAcentos),
     )
 
     suspend fun printTestPage(printer: SavedPrinter) {

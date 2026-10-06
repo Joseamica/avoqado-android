@@ -15,6 +15,7 @@ import io.mockk.mockk
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -42,6 +43,11 @@ class CashDrawerCorteConfirmadoPorElServidorTest {
 
     @get:Rule
     val mainDispatcherRule = MainDispatcherRule(UnconfinedTestDispatcher())
+
+    private val pantallas = mutableListOf<CashDrawerViewModel>()
+
+    @After
+    fun esperarALasPantallas() = pantallas.forEach { it.esperarSuTrabajo() }
 
     // MARK: - Los números del caso (en centavos)
 
@@ -265,7 +271,7 @@ class CashDrawerCorteConfirmadoPorElServidorTest {
             ),
             printerService = mockk<PrinterService>(relaxed = true),
             roleManager = mockk<RoleManager>(relaxed = true).also { every { it.hasVenuePermission(any(), any()) } returns true },
-        )
+        ).also { pantallas += it }
         fun consultas() = synchronized(llamadas) { llamadas.count { it.path.endsWith("/cash-drawer/current") } }
 
         esperar("la primera visita no preguntó al servidor") { consultas() >= 1 }

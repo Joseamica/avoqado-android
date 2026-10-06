@@ -1,5 +1,7 @@
 package com.avoqado.pos.cashdrawer
 
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.cashdrawer.data.CashDrawerDao
 import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
 import com.avoqado.pos.core.util.ConnectivityMonitor
@@ -15,6 +17,9 @@ import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.job
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import okhttp3.Call
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -33,6 +38,21 @@ import java.io.IOException
  * ([CashDrawerSessionPromotionTest]) y la de la fusión por LLAVE de los EVENTOS
  * ([CashDrawerEventKeyMergeTest]).
  */
+
+/**
+ * 🔴 Espera lo que el ViewModel dejó corriendo ANTES de que la prueba suelte `Dispatchers.Main`. Se llama
+ * desde un `@After`, que corre antes de que `MainDispatcherRule` restaure `Main`.
+ *
+ * El `init` de Caja sincroniza con el servidor en `viewModelScope`. Si la prueba termina con un GET en
+ * vuelo, la respuesta regresa a un `Main` que ya no existe y truena en OTRA prueba, la siguiente con
+ * `runTest` (5-oct: «P1 el historial…» falló 1 de 855; sola pasaba 7/7).
+ */
+internal fun ViewModel.esperarSuTrabajo() = runBlocking {
+    withTimeout(10_000) {
+        val trabajo = viewModelScope.coroutineContext.job
+        while (trabajo.children.any { it.isActive }) trabajo.children.forEach { it.join() }
+    }
+}
 
 // MARK: - Números del caso real (2026-08-16)
 

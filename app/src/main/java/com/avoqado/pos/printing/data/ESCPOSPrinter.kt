@@ -6,6 +6,7 @@ import com.avoqado.pos.printing.data.model.MonoRaster
 import com.avoqado.pos.printing.data.model.PaperWidth
 import com.avoqado.pos.printing.data.model.ReceiptData
 import com.avoqado.pos.printing.data.model.ReceiptItem
+import com.avoqado.pos.printing.data.model.TablaDeAcentos
 import com.avoqado.pos.core.util.VenueTimeZone
 import com.avoqado.pos.printing.receiptlayout.Align
 import com.avoqado.pos.printing.receiptlayout.CanonicalLayout
@@ -54,6 +55,8 @@ class ESCPOSPrinter(
      * imprime [generateTestPrint].
      */
     private val leftMarginChars: Int = 0,
+    /** Con qué tabla van los acentos (ver [TablaDeAcentos]). Por default la de siempre: `ESC t 16` y Latin-1. */
+    private val tablaDeAcentos: TablaDeAcentos = TablaDeAcentos.WINDOWS_1252,
 ) {
     private val buffer = ByteArrayOutputStream()
 
@@ -264,7 +267,7 @@ class ESCPOSPrinter(
         buffer.reset()
         appendCommand(INITIALIZE)
         if (switchToSingleByteFirst) appendCommand(SINGLE_BYTE_MODE)
-        appendCommand(CODE_PAGE_LATIN1)
+        appendCommand(byteArrayOf(0x1B, 0x74, tablaDeAcentos.escT))   // ESC t 16 = CODE_PAGE_LATIN1, como siempre
         applyPrintArea()
     }
 
@@ -301,6 +304,10 @@ class ESCPOSPrinter(
     }
 
     private fun appendText(text: String) {
+        if (tablaDeAcentos != TablaDeAcentos.WINDOWS_1252) {
+            buffer.write(tablaDeAcentos.codificar(text))
+            return
+        }
         // Use Latin-1 for Spanish character support, fallback to UTF-8
         try {
             buffer.write(text.toByteArray(Charsets.ISO_8859_1))
@@ -1041,6 +1048,14 @@ class ESCPOSPrinter(
         // Chequeo de acentos: en la integrada no mandamos el comando de code
         // page, así que esta línea es la que dice si el español sale bien.
         printLine("Acentos: aeiou AEIOU nN - áéíóú ÁÉÍÓÚ ñÑ ¿? °")
+        // Si la de arriba sale con símbolos, la que salga bien aquí es la «Tabla de acentos» que hay que elegir.
+        printLine("Tabla de acentos (elige la que se vea bien):")
+        for (tabla in TablaDeAcentos.entries) {
+            appendCommand(byteArrayOf(0x1B, 0x74, tabla.escT))
+            buffer.write(tabla.codificar("${tabla.etiqueta}: áéíóú ÁÉÍÓÚ ñÑ ¿?"))
+            appendCommand(LINE_FEED)
+        }
+        appendCommand(byteArrayOf(0x1B, 0x74, tablaDeAcentos.escT))
         setBold(true)
         printLine("Texto en negritas")
         setBold(false)

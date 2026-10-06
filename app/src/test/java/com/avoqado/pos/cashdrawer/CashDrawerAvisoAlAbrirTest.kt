@@ -56,15 +56,17 @@ class CashDrawerAvisoAlAbrirTest {
     /** Mantiene bloqueado el `GET /current` del arranque hasta que la prueba termina. */
     private val portero = CountDownLatch(1)
 
+    private val pantallas = mutableListOf<CashDrawerViewModel>()
+
     /**
      * Se suelta con `Dispatchers.Main` todavia puesto (los `@After` corren ANTES de que la regla
-     * lo restaure): asi el `loadCurrentSession()` del arranque termina donde puede terminar, en
-     * vez de despertar sobre un dispatcher que ya no existe.
+     * lo restaure) y se espera a que el sync del arranque TERMINE, en vez de despertar sobre un
+     * dispatcher que ya no existe.
      */
     @After
     fun soltarElPortero() {
         portero.countDown()
-        Thread.sleep(100)
+        pantallas.forEach { it.esperarSuTrabajo() }
     }
 
     // MARK: - Andamio
@@ -129,7 +131,7 @@ class CashDrawerAvisoAlAbrirTest {
             roleManager = mockk<RoleManager>(relaxed = true).also {
                 every { it.hasVenuePermission(any(), any()) } returns true
             },
-        )
+        ).also { pantallas += it }
     }
 
     /** El POST del cajon vive en `Dispatchers.IO`: se espera al estado, con tope. */

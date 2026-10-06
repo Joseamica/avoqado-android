@@ -472,6 +472,7 @@ class CashDrawerViewModel @Inject constructor(
                     // papel sale en blanco. Mismo criterio que `escposFor`.
                     switchToSingleByteFirst =
                         printer.connectionTypeEnum == com.avoqado.pos.printing.data.model.PrinterConnectionType.INTERNAL,
+                    tablaDeAcentos = com.avoqado.pos.printing.data.model.TablaDeAcentos.deGuardada(printer.tablaDeAcentos),
                     sinConfirmar = sinConfirmar,
                 )
                 printerService.sendPrintData(data, printer)
