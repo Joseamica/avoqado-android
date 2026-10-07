@@ -197,14 +197,15 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           $msix = Join-Path "$env:RUNNER_TEMP\msix" "$($env:NOMBRE_PAQUETE)_$($env:VMSIX).0_x64.msix"
           if (-not (Test-Path -LiteralPath $msix)) { throw "No está $msix" }
-          # -i es la CARPETA del .msix (la CLI actual dice --inputDirectory; la doc web aún dice archivo). -ut: el
-          # paquete pesa ~150 MB y la subida por omisión se corta a los 100 s.
+          # La ruta es el .msix MISMO: el publicador MSIX de la CLI sólo reconoce una ruta que termina en .msix
+          # (MSIXProjectPublisher.CanPublishAsync); con la carpeta dice «no project publisher». -ut: el paquete pesa
+          # ~150 MB y la subida por omisión se corta a los 100 s.
           # publish borra el borrador pendiente, arma uno nuevo desde lo publicado, sube el paquete y lo manda a revisión.
           if ($env:PRUEBA -eq 'true') {
             # Prueba: sube el paquete y deja el envío en BORRADOR. El siguiente envío real lo borra solo.
-            msstore publish "$env:RUNNER_TEMP\msix" -i "$env:RUNNER_TEMP\msix" -id $env:PRODUCTO_TIENDA -ut 1800 --noCommit
+            msstore publish $msix -id $env:PRODUCTO_TIENDA -ut 1800 --noCommit
           } else {
-            msstore publish "$env:RUNNER_TEMP\msix" -i "$env:RUNNER_TEMP\msix" -id $env:PRODUCTO_TIENDA -ut 1800
+            msstore publish $msix -id $env:PRODUCTO_TIENDA -ut 1800
           }
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
