@@ -342,7 +342,9 @@ val versionMsix: Provider<String> = provider {
     }
     numeros.joinToString(".") + ".0"
 }
-val nombreMsix = if (produccion) "Avoqado.POS" else "Avoqado.POS.Prueba"
+// Producción = la identidad que Partner Center asignó a «Avoqado POS» (Product identity, 6-oct): si no coincide, la Store rechaza el paquete.
+val nombreMsix = if (produccion) "ServiciosTecnologicosAvo.AvoqadoPOS" else "Avoqado.POS.Prueba"
+val editorVisibleMsix = if (produccion) "Servicios Tecnologicos Avo" else "Avoqado"
 val nombreVisibleMsix = if (produccion) "Avoqado POS" else "Avoqado POS (prueba)"
 val generarVersionMsix by tasks.registering {
     val archivo = layout.buildDirectory.file("generated/msix/version.txt")
@@ -406,7 +408,7 @@ val empaquetarWindows by tasks.registering(Zip::class) {
         into("msix") {
             from("windows/msix/AppxManifest.plantilla.xml") {
                 rename { "AppxManifest.xml" }
-                filter { it.replace("@NOMBRE_VISIBLE@", nombreVisibleMsix).replace("@NOMBRE@", nombreMsix).replace("@VERSION@", versionMsix.get()) }
+                filter { it.replace("@NOMBRE_VISIBLE@", nombreVisibleMsix).replace("@EDITOR_VISIBLE@", editorVisibleMsix).replace("@NOMBRE@", nombreMsix).replace("@VERSION@", versionMsix.get()) }
                 filteringCharset = "UTF-8"
             }
             from(appAndroid.resolve("src/main/res/drawable-nodpi/avoqado_logo_mark.png")) { rename { "logo.png" } }

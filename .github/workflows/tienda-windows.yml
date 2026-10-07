@@ -1,0 +1,217 @@
+name: Tienda de Windows
+
+# Publica el POS de Windows (`desktop/`) en la Microsoft Store cuando SUBE el número de versión de Android
+# (versionName de app/build.gradle.kts ⇒ versión MSIX X.Y.Z.0). Decisión del founder (7-oct-2026): automático por
+# versión, no por cada push — cada envío pasa por la revisión de Microsoft (horas o días) y uno en revisión atora al
+# siguiente; esa revisión es la «puerta humana», como el clic de producción en Play.
+#
+# Cómo sabe que una versión ya se mandó: la etiqueta `tienda-windows/v<versión>`, que este workflow crea al enviar.
+# Si Microsoft RECHAZA una versión, se corrige y se sube el número (o se borra su etiqueta y se vuelve a correr).
+#
+# Sin los 4 secretos de Partner Center (cuenta de empresa Entra + app con rol Manager) no publica nada y sale en verde
+# con un aviso. No toca release.yml: Windows nunca frena a Android.
+#
+# Tres pasos, cada uno en la máquina donde ya está probado:
+#   decidir (Linux) → paquete (macOS, igual que desktop.yml: arma el ZIP) → tienda (Windows: jpackage + makeappx + msstore)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'app/build.gradle.kts'        # el número de versión vive aquí
+      - 'app/src/main/**'
+      - 'desktop/**'
+      - 'gradle/**'
+      - '.github/workflows/tienda-windows.yml'
+  workflow_dispatch:
+    inputs:
+      prueba:
+        description: 'Prueba: sube a Partner Center como BORRADOR (versión +1 en el último número), sin mandar a revisión ni etiquetar'
+        type: boolean
+        default: false
+
+concurrency:
+  group: tienda-windows
+  cancel-in-progress: false           # nunca cortar un envío a la mitad
+
+permissions:
+  contents: write                     # crear la etiqueta tienda-windows/v<versión>
+
+env:
+  PRODUCTO_TIENDA: 9PCZG05M3PVC
+  NOMBRE_PAQUETE: ServiciosTecnologicosAvo.AvoqadoPOS
+  EDITOR_PAQUETE: CN=0977A663-BA7F-4DC8-85B8-1C8928D30E67
+  # Java que va DENTRO del paquete: Temurin 17 JRE para Windows, fijo con su huella (API de Adoptium).
+  JRE_URL: https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.20.1%2B1/OpenJDK17U-jre_x64_windows_hotspot_17.0.20.1_1.zip
+  JRE_SHA256: bc21a93923103cdaac93ee337b0ae4365e739fde36df823dd456bc67c8a9d352
+  JRE_CARPETA: jdk-17.0.20.1+1-jre
+
+jobs:
+  decidir:
+    runs-on: ubuntu-latest
+    outputs:
+      publicar: ${{ steps.d.outputs.publicar }}
+      version: ${{ steps.d.outputs.version }}
+      version_msix: ${{ steps.d.outputs.version_msix }}
+      prueba: ${{ steps.d.outputs.prueba }}
+      etiqueta: ${{ steps.d.outputs.etiqueta }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: d
+        env:
+          TENANT: ${{ secrets.PARTNER_CENTER_TENANT_ID }}
+          SELLER: ${{ secrets.PARTNER_CENTER_SELLER_ID }}
+          CLIENT: ${{ secrets.PARTNER_CENTER_CLIENT_ID }}
+          SECRET: ${{ secrets.PARTNER_CENTER_CLIENT_SECRET }}
+          PRUEBA: ${{ github.event_name == 'workflow_dispatch' && inputs.prueba }}
+        run: |
+          VER=$(sed -nE 's/^[[:space:]]*versionName[[:space:]]*=[[:space:]]*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/p' app/build.gradle.kts | head -1)
+          [ -n "$VER" ] || { echo "::error::No encontré versionName X.Y.Z en app/build.gradle.kts"; exit 1; }
+          ETQ="tienda-windows/v$VER"
+          echo "version=$VER" >> "$GITHUB_OUTPUT"; echo "etiqueta=$ETQ" >> "$GITHUB_OUTPUT"
+          if [ "$PRUEBA" = "true" ]; then
+            # La tienda sólo acepta una versión MAYOR que la publicada: la prueba sube el último número (2.22.2 → 2.22.3).
+            VMSIX="${VER%.*}.$(( ${VER##*.} + 1 ))"
+          else
+            VMSIX="$VER"
+          fi
+          echo "version_msix=$VMSIX" >> "$GITHUB_OUTPUT"; echo "prueba=${PRUEBA:-false}" >> "$GITHUB_OUTPUT"
+          if [ -z "$TENANT" ] || [ -z "$SELLER" ] || [ -z "$CLIENT" ] || [ -z "$SECRET" ]; then
+            echo "::notice::Faltan los secretos PARTNER_CENTER_* : no se publica la $VER en la Microsoft Store."
+            echo "publicar=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          if [ "$PRUEBA" = "true" ]; then
+            echo "::notice::PRUEBA: se sube $VMSIX a Partner Center como BORRADOR (no va a revisión, no se etiqueta)."
+            echo "publicar=true" >> "$GITHUB_OUTPUT"
+          elif git ls-remote --exit-code --tags origin "refs/tags/$ETQ" >/dev/null; then
+            echo "::notice::La $VER ya se mandó a la Microsoft Store ($ETQ): nada que hacer."
+            echo "publicar=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::Versión nueva para la Microsoft Store: $VER"
+            echo "publicar=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  paquete:
+    needs: decidir
+    if: needs.decidir.outputs.publicar == 'true'
+    # macOS ARM64 como desktop.yml: es donde el build de escritorio ya está probado.
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Acotar memoria al tamaño del runner
+        run: |
+          mkdir -p ~/.gradle
+          cat >> ~/.gradle/gradle.properties <<'EOF'
+          org.gradle.jvmargs=-Xmx3g -XX:MaxMetaspaceSize=768m -Dfile.encoding=UTF-8
+          kotlin.daemon.jvmargs=-Xmx2g
+          org.gradle.workers.max=2
+          org.gradle.daemon=false
+          EOF
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: true
+
+      - name: Java de Windows para el paquete (huella fija)
+        run: |
+          curl -sSL -o "$RUNNER_TEMP/jre.zip" "$JRE_URL"
+          echo "$JRE_SHA256  $RUNNER_TEMP/jre.zip" | shasum -a 256 -c -
+          unzip -q "$RUNNER_TEMP/jre.zip" -d "$RUNNER_TEMP/jre"
+          test -f "$RUNNER_TEMP/jre/$JRE_CARPETA/bin/javaw.exe"
+
+      - name: Armar el ZIP de producción
+        run: |
+          ./gradlew -p desktop :pos:empaquetarWindows --console=plain \
+            -Pavoqado.produccion=true \
+            -Pavoqado.jreWindows="$RUNNER_TEMP/jre/$JRE_CARPETA" \
+            -Pavoqado.salida="$RUNNER_TEMP/salida"
+
+      - name: El manifiesto lleva la identidad de la tienda y esta versión
+        env:
+          VER: ${{ needs.decidir.outputs.version }}
+        run: |
+          M=$(unzip -p "$RUNNER_TEMP/salida/avoqado-pos-windows-produccion.zip" "Avoqado POS/msix/AppxManifest.xml")
+          echo "$M" | grep -q "Name=\"$NOMBRE_PAQUETE\"" || { echo "::error::El manifiesto no dice Name=$NOMBRE_PAQUETE"; exit 1; }
+          echo "$M" | grep -q "Version=\"$VER.0\"" || { echo "::error::El manifiesto no dice Version=$VER.0"; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: zip-windows
+          path: ${{ runner.temp }}/salida/avoqado-pos-windows-produccion.zip
+          retention-days: 7
+
+  tienda:
+    needs: [decidir, paquete]
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: powershell               # PowerShell 5.1: con la que se probaron los dos scripts en la Alienware
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: zip-windows
+          path: ${{ runner.temp }}\zip
+
+      - name: Descomprimir
+        run: Expand-Archive -LiteralPath "$env:RUNNER_TEMP\zip\avoqado-pos-windows-produccion.zip" -DestinationPath "$env:RUNNER_TEMP\pos"
+
+      - name: Herramientas (JDK para jpackage y makeappx, con huella fija)
+        run: |
+          & "$env:RUNNER_TEMP\pos\Avoqado POS\msix\herramientas.ps1" -Destino "$env:RUNNER_TEMP\herramientas"
+
+      - name: Armar el MSIX sin firmar (lo firma la tienda)
+        env:
+          VMSIX: ${{ needs.decidir.outputs.version_msix }}
+        run: |
+          & "$env:RUNNER_TEMP\pos\Avoqado POS\msix\armar-msix.ps1" -Carpeta "$env:RUNNER_TEMP\pos\Avoqado POS" `
+            -Herramientas "$env:RUNNER_TEMP\herramientas" -Editor $env:EDITOR_PAQUETE -Salida "$env:RUNNER_TEMP\msix" -Version "$env:VMSIX.0"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: msix-tienda
+          path: ${{ runner.temp }}\msix\*.msix
+          retention-days: 30
+
+      - name: Instalar la herramienta de la Microsoft Store
+        uses: microsoft/microsoft-store-apppublisher@v1.1
+
+      - name: Mandar a la Microsoft Store
+        env:
+          TENANT: ${{ secrets.PARTNER_CENTER_TENANT_ID }}
+          SELLER: ${{ secrets.PARTNER_CENTER_SELLER_ID }}
+          CLIENT: ${{ secrets.PARTNER_CENTER_CLIENT_ID }}
+          SECRET: ${{ secrets.PARTNER_CENTER_CLIENT_SECRET }}
+          VMSIX: ${{ needs.decidir.outputs.version_msix }}
+          PRUEBA: ${{ needs.decidir.outputs.prueba }}
+        run: |
+          msstore reconfigure --tenantId $env:TENANT --sellerId $env:SELLER --clientId $env:CLIENT --clientSecret $env:SECRET
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $msix = Join-Path "$env:RUNNER_TEMP\msix" "$($env:NOMBRE_PAQUETE)_$($env:VMSIX).0_x64.msix"
+          if (-not (Test-Path -LiteralPath $msix)) { throw "No está $msix" }
+          # publish borra el borrador pendiente, arma uno nuevo desde lo publicado, sube el paquete y lo manda a revisión.
+          if ($env:PRUEBA -eq 'true') {
+            # Prueba: sube el paquete y deja el envío en BORRADOR. El siguiente envío real lo borra solo.
+            msstore publish "$env:RUNNER_TEMP\msix" -i $msix -id $env:PRODUCTO_TIENDA --noCommit
+          } else {
+            msstore publish "$env:RUNNER_TEMP\msix" -i $msix -id $env:PRODUCTO_TIENDA
+          }
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+
+      - name: Marcar la versión como enviada
+        if: needs.decidir.outputs.prueba != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ETQ: ${{ needs.decidir.outputs.etiqueta }}
+        run: |
+          gh api "repos/$env:GITHUB_REPOSITORY/git/refs" -f "ref=refs/tags/$env:ETQ" -f "sha=$env:GITHUB_SHA"
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          "::notice::Mandada a la Microsoft Store: $env:ETQ. Microsoft la revisa (horas o días) y sale sola."

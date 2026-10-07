@@ -7,7 +7,7 @@
   <Identity Name="@NOMBRE@" Publisher="@EDITOR@" Version="@VERSION@" ProcessorArchitecture="x64"/>
   <Properties>
     <DisplayName>@NOMBRE_VISIBLE@</DisplayName>
-    <PublisherDisplayName>Avoqado</PublisherDisplayName>
+    <PublisherDisplayName>@EDITOR_VISIBLE@</PublisherDisplayName>
     <Logo>Assets\StoreLogo.png</Logo>
   </Properties>
   <Dependencies>
