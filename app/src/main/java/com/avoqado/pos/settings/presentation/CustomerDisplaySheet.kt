@@ -16,7 +16,6 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -35,6 +34,7 @@ import com.avoqado.pos.customerdisplay.DisplayModePrefs
 import com.avoqado.pos.designsystem.components.AvoqadoDialog
 import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
+import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 
 /**
  * Ajustes de la pantalla de cara al cliente (POS de doble pantalla).
@@ -63,7 +63,7 @@ fun CustomerDisplaySheet(
     val kioskOn by kioskPrefs.enabled.collectAsState()
     var confirmando by remember { mutableStateOf(false) }
 
-    ModalBottomSheet(
+    AvoqadoModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
     ) {

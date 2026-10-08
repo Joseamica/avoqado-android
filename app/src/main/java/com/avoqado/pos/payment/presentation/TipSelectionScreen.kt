@@ -21,7 +21,6 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -39,6 +38,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import com.avoqado.pos.core.util.formatMoney
+import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Success
@@ -96,7 +96,7 @@ fun TipSelectionSheet(
 
     val hasSelection = selectedTipPercent > 0 || (showCustomInput && customTipCents > 0)
 
-    ModalBottomSheet(
+    AvoqadoModalBottomSheet(
         onDismissRequest = { /* explicit choice required — see confirmValueChange */ },
         sheetState = sheetState,
     ) {

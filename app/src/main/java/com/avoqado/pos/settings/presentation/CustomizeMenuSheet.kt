@@ -12,7 +12,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -26,6 +25,7 @@ import androidx.compose.ui.text.font.FontWeight
 import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.settings.domain.PreferenciasDelMenu
+import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 
 // MARK: - Menu Item Definition
 
@@ -61,7 +61,7 @@ fun CustomizeMenuSheet(
         }
     }
 
-    ModalBottomSheet(
+    AvoqadoModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
     ) {

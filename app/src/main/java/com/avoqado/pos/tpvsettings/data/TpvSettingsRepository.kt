@@ -173,6 +173,12 @@ data class TerminalNavigationSettings(
     val customerDisplayInverted: Boolean = false,
     /** Ver `DeviceTerminalSettingsDto.configurableSettings`. */
     val configurableSettings: List<String> = emptyList(),
+    /**
+     * Cómo se llama este aparato en el panel («Avoqado Windows 10 (2)»). Sale de la lista `terminals` del MISMO
+     * response, por el id exacto de `deviceTerminal`: nunca se adivina por modelo ni se toma el de otra terminal.
+     * null = no se sabe (primera vez sin red, server viejo): la pantalla dice «esta computadora» / «este aparato».
+     */
+    val terminalName: String? = null,
 ) {
     companion object {
         const val STANDARD_POS = "STANDARD_POS"
@@ -744,6 +750,8 @@ internal data class VenueSettingsData(
     val settings: TpvSettings? = null,
     val activeTerminalId: String? = null,
     val deviceTerminal: DeviceTerminalSettingsDto? = null,
+    /** Las terminales del venue; sólo se lee el nombre de la de [deviceTerminal]. */
+    val terminals: List<TerminalDelVenueDto> = emptyList(),
     val plan: VenuePlanDto? = null,
     /**
      * Panel de promociones. Es de VENUE (`VenueSettings`), no de terminal — por
@@ -784,6 +792,12 @@ internal data class DeviceTerminalSettingsDto(
     val configurableSettings: List<String> = emptyList(),
 )
 
+@Serializable
+internal data class TerminalDelVenueDto(
+    val id: String? = null,
+    val name: String? = null,
+)
+
 internal fun VenueSettingsData?.toTerminalNavigationSettings(): TerminalNavigationSettings {
     val terminal = this?.deviceTerminal ?: return TerminalNavigationSettings.DEFAULT
     return TerminalNavigationSettings(
@@ -795,6 +809,7 @@ internal fun VenueSettingsData?.toTerminalNavigationSettings(): TerminalNavigati
         fulfillmentAreaId = terminal.fulfillmentAreaId,
         customerDisplayInverted = terminal.customerDisplayInverted,
         configurableSettings = terminal.configurableSettings,
+        terminalName = terminals.firstOrNull { it.id == terminal.id }?.name?.trim()?.takeIf { it.isNotEmpty() },
     )
 }
 

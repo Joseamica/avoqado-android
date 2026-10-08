@@ -10,7 +10,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -26,6 +25,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import com.avoqado.pos.reservations.data.ReservationRepository
 import com.avoqado.pos.reservations.domain.ReservationAction
+import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -41,7 +41,7 @@ fun CancelReservationSheet(
         if (state.justCompletedAction == ReservationAction.CANCEL) onDismiss()
     }
 
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+    AvoqadoModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
         com.avoqado.pos.designsystem.components.ImmersiveWindow()
         Column(
             modifier = Modifier

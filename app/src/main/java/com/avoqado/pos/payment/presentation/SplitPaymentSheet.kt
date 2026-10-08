@@ -31,7 +31,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
@@ -50,6 +49,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.avoqado.pos.core.util.formatMoney
+import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.pos.data.model.CartItem
@@ -84,7 +84,7 @@ fun SplitPaymentSheet(
 ) {
     var selectedOption by remember { mutableStateOf<SplitType?>(null) }
 
-    ModalBottomSheet(
+    AvoqadoModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
     ) {

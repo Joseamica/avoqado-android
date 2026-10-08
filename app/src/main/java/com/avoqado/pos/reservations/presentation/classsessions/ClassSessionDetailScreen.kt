@@ -32,7 +32,6 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -69,6 +68,7 @@ import java.time.ZonedDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -144,7 +144,7 @@ fun ClassSessionDetailScreen(
     }
 
     if (showAdd) {
-        ModalBottomSheet(
+        AvoqadoModalBottomSheet(
             onDismissRequest = { showAdd = false },
             sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         ) {

@@ -6,6 +6,7 @@ import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -25,6 +26,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Bluetooth
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.filled.Print
 import androidx.compose.material.icons.filled.Usb
 import androidx.compose.material.icons.filled.Wifi
@@ -33,7 +36,6 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
@@ -65,6 +67,7 @@ import com.avoqado.pos.printing.data.model.PrinterConnectionType
 import com.avoqado.pos.printing.data.model.PrinterStatus
 import com.avoqado.pos.printing.data.model.SavedPrinter
 import kotlinx.coroutines.launch
+import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -73,6 +76,10 @@ fun PrinterSettingsSheet(
     onDismiss: () -> Unit,
     /** La config del panel: sus impresoras (las de las estaciones) se enseñan aparte. */
     printConfig: com.avoqado.pos.printing.routing.PrintConfig = com.avoqado.pos.printing.routing.PrintConfig(),
+    /** Cómo se llama este aparato en el panel; null = no se sabe y se dice «esta computadora» / «este aparato». */
+    nombreDelAparato: String? = null,
+    /** La pantalla del panel donde se editan las de cocina; null = quien mira no puede editarlas (cajero). */
+    ligaDelPanel: String? = null,
 ) {
     val savedPrinters by printerService.savedPrinters.collectAsState()
     val statuses by printerService.printerStatuses.collectAsState()
@@ -144,7 +151,7 @@ fun PrinterSettingsSheet(
         return
     }
 
-    ModalBottomSheet(
+    AvoqadoModalBottomSheet(
         onDismissRequest = {
             printerService.stopDiscovery()
             onDismiss()
@@ -167,7 +174,7 @@ fun PrinterSettingsSheet(
                 .padding(AvoqadoTheme.spacing.lg),
         ) {
             Text(
-                text = "Impresoras",
+                text = "Impresoras y cajón",
                 style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.Bold,
             )
@@ -199,33 +206,37 @@ fun PrinterSettingsSheet(
                 }
             }
 
-            // Saved printers list
-            if (savedPrinters.isNotEmpty()) {
+            // 🔴 Lo de ESTA caja va primero y en grande: la de recibos (con su cajón) o, si no hay, el aviso. La segunda
+            // caja de La Galeterie (8-oct) enseñaba en verde las de cocina, el cajero la creyó lista y no tenía impresora
+            // de recibos: no salió el ticket ni abrió el cajón.
+            val aparato = esteAparato(com.avoqado.pos.designsystem.components.LocalEsEscritorio.current)
+            TarjetaDeRecibos(
+                recibos = impresorasDeRecibos(savedPrinters),
+                statuses = statuses,
+                nombreDelAparato = nombreDelAparato(nombreDelAparato),
+                aparato = aparato,
+                printerService = printerService,
+                onAbrir = { configPrinter = it },
+            )
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+
+            val otras = otrasDeEstaCaja(savedPrinters)
+            if (otras.isNotEmpty()) {
                 Text(
-                    text = "Impresoras guardadas",
+                    text = "Otras impresoras de $aparato",
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                Text(
-                    text = "Sólo de esta caja. Las de cocina y bebidas por red se configuran en el panel web.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-
-                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
-
-                savedPrinters.forEach { printer ->
-                    val status = statuses[printer.id] ?: PrinterStatus.Disconnected
+                otras.forEach { printer ->
                     SavedPrinterRow(
                         printer = printer,
-                        status = status,
+                        status = statuses[printer.id] ?: PrinterStatus.Disconnected,
                         onClick = { configPrinter = printer },
                     )
                     HorizontalDivider()
                 }
-
-                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
             }
 
             // 🔴 Las impresoras del PANEL (las de las estaciones). Antes no salían aquí y el local
@@ -234,29 +245,56 @@ fun PrinterSettingsSheet(
                 info.active && savedPrinters.none { it.id == info.id }
             }
             if (delPanel.isNotEmpty()) {
-                Text(
-                    text = "Impresoras del panel",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Text(
-                    text = "Se configuran en el panel web. Si cambian de dirección, la app las encuentra sola.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
-                delPanel.forEach { info ->
-                    PanelPrinterRow(
-                        info = info,
-                        estaciones = printConfig.stations.filter { it.active && it.printerId == info.id }.map { it.name },
-                        status = statuses[info.id],
-                        direccionVigente = info.address?.let { raw ->
-                            val host = raw.substringBeforeLast(':').takeIf { raw.substringAfterLast(':').toIntOrNull() != null } ?: raw
-                            printerService.direccionVigente(info.id, host)
-                        },
+                // Lo del LOCAL: en gris y de sólo lectura, con el camino al panel (o a quién pedírselo).
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.xl))
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+                        .padding(AvoqadoTheme.spacing.lg),
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Filled.Lock, contentDescription = null, modifier = Modifier.size(16.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.xs))
+                        Text(text = "Comandas del local", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.SemiBold)
+                    }
+                    Text(
+                        text = "Llegan a todas las cajas. Si cambian de dirección, la app las encuentra sola.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    HorizontalDivider()
+                    val uriHandler = androidx.compose.ui.platform.LocalUriHandler.current
+                    if (ligaDelPanel != null) {
+                        Text(
+                            text = "Editar en el panel web ↗",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.SemiBold,
+                            textDecoration = androidx.compose.ui.text.style.TextDecoration.Underline,
+                            modifier = Modifier
+                                .padding(top = AvoqadoTheme.spacing.xs)
+                                .clickable { runCatching { uriHandler.openUri(ligaDelPanel) } },
+                        )
+                    } else {
+                        Text(
+                            text = "Pídele a tu gerente que las cambie en el panel web.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.padding(top = AvoqadoTheme.spacing.xs),
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+                    delPanel.forEach { info ->
+                        PanelPrinterRow(
+                            info = info,
+                            estaciones = printConfig.stations.filter { it.active && it.printerId == info.id }.map { it.name },
+                            status = statuses[info.id],
+                            direccionVigente = info.address?.let { raw ->
+                                val host = raw.substringBeforeLast(':').takeIf { raw.substringAfterLast(':').toIntOrNull() != null } ?: raw
+                                printerService.direccionVigente(info.id, host)
+                            },
+                        )
+                        HorizontalDivider()
+                    }
                 }
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
             }
@@ -267,13 +305,19 @@ fun PrinterSettingsSheet(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    text = "Impresoras disponibles",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.weight(1f),
-                )
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Disponibles para agregar",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Text(
+                        text = "Conectadas a ${nombreDelAparato(nombreDelAparato) ?: aparato} o en la red del local",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 if (isDiscovering) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(14.dp),
@@ -391,6 +435,107 @@ fun PrinterSettingsSheet(
             }
 
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxxl))
+        }
+    }
+}
+
+// MARK: - Recibos y cajón de esta caja
+
+/**
+ * La tarjeta de lo que es de ESTA caja: la impresora de recibos y su cajón. Sin ninguna, lo DICE en naranja (antes no
+ * había aviso y la caja parecía lista); con una, su estado y las dos pruebas a la mano. La config completa (funciones,
+ * pin del cajón, abrir al cobrar) sigue en la hoja de la impresora.
+ */
+@Composable
+private fun TarjetaDeRecibos(
+    recibos: List<SavedPrinter>,
+    statuses: Map<String, PrinterStatus>,
+    nombreDelAparato: String?,
+    aparato: String,
+    printerService: PrinterService,
+    onAbrir: (SavedPrinter) -> Unit,
+) {
+    val aviso = androidx.compose.ui.graphics.Color(0xFFD97706)
+    val configurada = recibos.isNotEmpty()
+    val scope = rememberCoroutineScope()
+    var mensaje by remember { mutableStateOf<String?>(null) }
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.xl))
+            .background(MaterialTheme.colorScheme.surface)
+            .then(
+                Modifier.border(
+                    width = 2.dp,
+                    color = if (configurada) Success else aviso,
+                    shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.xl),
+                ),
+            )
+            .padding(AvoqadoTheme.spacing.lg),
+    ) {
+        Text(text = "Recibos y cajón de esta caja", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+        nombreDelAparato?.let {
+            Text(text = it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+        if (!configurada) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.lg))
+                    .background(aviso.copy(alpha = 0.10f))
+                    .padding(AvoqadoTheme.spacing.md),
+                verticalAlignment = Alignment.Top,
+            ) {
+                Icon(Icons.Filled.Warning, contentDescription = null, tint = aviso, modifier = Modifier.size(20.dp))
+                Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
+                Column {
+                    Text(text = "No configurada", style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold)
+                    Text(
+                        text = "${aparato.replaceFirstChar { it.uppercase() }} no tiene impresora de tickets: sin ella no sale el ticket ni abre el cajón. Agrégala abajo, en «Disponibles para agregar».",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            return@Column
+        }
+        recibos.forEach { printer ->
+            SavedPrinterRow(
+                printer = printer,
+                status = statuses[printer.id] ?: PrinterStatus.Disconnected,
+                onClick = { onAbrir(printer) },
+            )
+        }
+        val principal = recibos.first()
+        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+            androidx.compose.material3.OutlinedButton(
+                onClick = {
+                    scope.launch {
+                        mensaje = try {
+                            printerService.printTestPage(principal); "Prueba enviada a ${principal.name}"
+                        } catch (e: Exception) {
+                            "No se pudo imprimir: ${e.message}"
+                        }
+                    }
+                },
+                shape = RoundedCornerShape(50),
+            ) { Text("Imprimir prueba") }
+            androidx.compose.material3.OutlinedButton(
+                onClick = {
+                    scope.launch {
+                        mensaje = try {
+                            printerService.openCashDrawer(principal); "Orden enviada al cajón"
+                        } catch (e: Exception) {
+                            "No se pudo abrir el cajón: ${e.message}"
+                        }
+                    }
+                },
+                shape = RoundedCornerShape(50),
+            ) { Text("Abrir cajón") }
+        }
+        mensaje?.let {
+            Text(text = it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
@@ -619,11 +764,10 @@ private fun DiscoveredPrinterRow(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        Icon(
-            Icons.Filled.ChevronRight,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
+        // «Agregar», no «Usar para recibos»: al tocarlo se elige para qué sirve (recibos viene marcado).
+        androidx.compose.material3.OutlinedButton(onClick = onClick, shape = RoundedCornerShape(50)) {
+            Text("Agregar")
+        }
     }
 }
 

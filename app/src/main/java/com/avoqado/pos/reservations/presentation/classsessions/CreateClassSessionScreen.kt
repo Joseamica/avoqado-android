@@ -36,7 +36,6 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -73,6 +72,7 @@ import java.time.LocalDate
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
 @Composable
@@ -175,7 +175,7 @@ fun CreateClassSessionScreen(
     }
 
     activeSheet?.let { sheet ->
-        ModalBottomSheet(
+        AvoqadoModalBottomSheet(
             onDismissRequest = { activeSheet = null },
             sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         ) {
@@ -201,7 +201,7 @@ fun CreateClassSessionScreen(
 
     if (showCreateProduct) {
         com.avoqado.pos.designsystem.components.ImmersiveWindow()
-        ModalBottomSheet(
+        AvoqadoModalBottomSheet(
             onDismissRequest = { showCreateProduct = false },
             sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         ) {

@@ -12,7 +12,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -35,6 +34,7 @@ import com.avoqado.pos.pos.data.model.Promotion
 import com.avoqado.pos.pos.data.model.PromotionGroup
 import com.avoqado.pos.pos.data.model.PromotionOption
 import java.util.Locale
+import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 
 // ──────────────────────────────────────────────────────────────────────────
 // Qué eligió el cajero, y cuánto cuesta — lógica PURA, espejada en iOS (Task 7)
@@ -224,7 +224,7 @@ fun PromotionSheet(
     // `weight` sobre altura infinita truena. Mismo recurso que AvoqadoDialog.
     val alturaMaximaLista = (LocalConfiguration.current.screenHeightDp * 0.55f).dp
 
-    ModalBottomSheet(
+    AvoqadoModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
     ) {

@@ -17,7 +17,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Icon
 import androidx.compose.material.icons.Icons
@@ -50,6 +49,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
+import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 
 // MARK: - Screen state machine (matching iOS: 3 screens)
 
@@ -113,7 +113,7 @@ fun TimeClockSheet(
     }
     val timeDisplay = currentTime.format(DateTimeFormatter.ofPattern("HH:mm"))
 
-    ModalBottomSheet(
+    AvoqadoModalBottomSheet(
         onDismissRequest = {
             pin = ""
             staffData = null

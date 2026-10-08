@@ -25,7 +25,6 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
@@ -59,6 +58,7 @@ import com.avoqado.pos.printing.data.model.PrinterStatus
 import com.avoqado.pos.printing.data.model.SavedPrinter
 import com.avoqado.pos.printing.data.model.TablaDeAcentos
 import kotlinx.coroutines.launch
+import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 
 /**
  * Roles que la hoja OFRECE. "Bar" NO se ofrece: ningún camino de ruteo lo consulta hoy,
@@ -135,7 +135,7 @@ fun PrinterConfigSheet(
         printerService.updatePrinter(printerEditado())
     }
 
-    ModalBottomSheet(
+    AvoqadoModalBottomSheet(
         onDismissRequest = {
             saveChanges()
             onDismiss()

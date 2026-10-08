@@ -567,7 +567,7 @@ class TablesViewModel @Inject constructor(
             return
         }
         val printer = printerService.getDefaultPrinter(PrinterRole.RECEIPT) ?: run {
-            _actionState.value = TableActionState.Error("No hay impresora de recibos configurada")
+            _actionState.value = TableActionState.Error("No hay impresora de recibos en esta caja. Agrégala en Más › Impresoras y cajón.")
             return
         }
         viewModelScope.launch {

@@ -42,7 +42,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
@@ -83,6 +82,7 @@ import com.avoqado.pos.transactions.data.model.TransactionActiveFilter
 import com.avoqado.pos.transactions.data.model.TransactionFilters
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 
 @Composable
 fun TransactionsScreen(
@@ -762,7 +762,7 @@ private fun FilterSheets(
 
     when (activeFilter) {
         TransactionActiveFilter.METHOD -> {
-            ModalBottomSheet(
+            AvoqadoModalBottomSheet(
                 onDismissRequest = { viewModel.setActiveFilter(null) },
                 sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
             ) {
@@ -777,7 +777,7 @@ private fun FilterSheets(
             }
         }
         TransactionActiveFilter.STAFF -> {
-            ModalBottomSheet(
+            AvoqadoModalBottomSheet(
                 onDismissRequest = { viewModel.setActiveFilter(null) },
                 sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
             ) {
@@ -792,7 +792,7 @@ private fun FilterSheets(
             }
         }
         TransactionActiveFilter.SUBTOTAL -> {
-            ModalBottomSheet(
+            AvoqadoModalBottomSheet(
                 onDismissRequest = { viewModel.setActiveFilter(null) },
                 sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
             ) {
@@ -818,7 +818,7 @@ private fun FilterSheets(
             }
         }
         TransactionActiveFilter.TIP -> {
-            ModalBottomSheet(
+            AvoqadoModalBottomSheet(
                 onDismissRequest = { viewModel.setActiveFilter(null) },
                 sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
             ) {
@@ -844,7 +844,7 @@ private fun FilterSheets(
             }
         }
         TransactionActiveFilter.TOTAL -> {
-            ModalBottomSheet(
+            AvoqadoModalBottomSheet(
                 onDismissRequest = { viewModel.setActiveFilter(null) },
                 sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
             ) {

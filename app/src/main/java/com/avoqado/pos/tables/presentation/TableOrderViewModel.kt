@@ -392,7 +392,7 @@ class TableOrderViewModel @Inject constructor(
     val printPreBillBlockedReason: String?
         get() = when {
             printerService.getDefaultPrinter(PrinterRole.RECEIPT) == null ->
-                "No hay impresora de recibos configurada. Ve a Más › Impresora para elegir una."
+                "No hay impresora de recibos en esta caja. Agrégala en Más › Impresoras y cajón."
             _check.value == null ->
                 "La cuenta todavía no se puede leer del servidor. Sin conexión no se imprime la pre-cuenta."
             else -> null
@@ -401,7 +401,7 @@ class TableOrderViewModel @Inject constructor(
     /** "Caja abierta": pulso ESC/POS al cajón por la impresora de recibos. */
     fun openCashDrawer() {
         val printer = printerService.getDefaultPrinter(PrinterRole.RECEIPT) ?: run {
-            _actionMessage.value = "No hay impresora de recibos configurada"
+            _actionMessage.value = "No hay impresora de recibos en esta caja. Agrégala en Más › Impresoras y cajón."
             return
         }
         viewModelScope.launch {

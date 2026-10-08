@@ -873,7 +873,7 @@ class PaymentFlowViewModel @Inject constructor(
                         else "No se pudo imprimir: ${outcome.reason}"
                     is PrinterService.PrintOutcome.NoPrinter ->
                         if (!selectedTerminalId.isNullOrBlank()) LOCAL_PRINTER_UNAVAILABLE
-                        else "No hay impresora de recibos configurada"
+                        else "No hay impresora de recibos en esta caja. Agrégala en Más › Impresoras y cajón."
                 }
             } catch (e: Exception) {
                 _printResult.value = "Error al imprimir: ${e.message ?: "desconocido"}"

@@ -42,7 +42,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
@@ -67,6 +66,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import com.avoqado.pos.core.util.formatMoney
+import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 
 import com.avoqado.pos.designsystem.components.AvoqadoDialog
 import com.avoqado.pos.designsystem.components.AvoqadoPillTextField
@@ -1103,7 +1103,7 @@ private fun CartOptionsSheet(
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
-    ModalBottomSheet(
+    AvoqadoModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
     ) {

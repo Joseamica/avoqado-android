@@ -32,7 +32,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
@@ -60,6 +59,7 @@ import com.avoqado.pos.inventory.presentation.InventoryViewModel
 import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.TimeZone
+import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 
 // MARK: - Selected PO Item (local UI state)
 
@@ -131,7 +131,7 @@ fun CreatePurchaseOrderSheet(
         )
     }
 
-    ModalBottomSheet(
+    AvoqadoModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         containerColor = MaterialTheme.colorScheme.surface,

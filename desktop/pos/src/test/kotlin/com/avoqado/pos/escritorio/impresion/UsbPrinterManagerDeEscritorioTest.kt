@@ -120,6 +120,38 @@ class UsbPrinterManagerDeEscritorioTest {
         while ((t.state == Thread.State.NEW || t.state == Thread.State.RUNNABLE) && System.nanoTime() < limite) Thread.sleep(5)
     }
 
+    /**
+     * La pantalla de Impresoras le pregunta a Windows si la cola está lista, sin abrirla: antes la BIXOLON que acababa de
+     * imprimir y abrir el cajón salía «No responde» al volver a entrar (La Galeterie, 8-oct).
+     */
+    @Test fun `esta lista - cola lista dice que si, sin quedar abierta`() {
+        assertEquals(true, usb.estaLista("usb:cola:POS-80"))
+        assertFalse(usb.isOpen("p1"))
+    }
+
+    @Test fun `esta lista - cola fuera de linea o borrada dice que no`() {
+        falso.colasHoy[0] = falso.colasHoy[0].copy(estado = 0x80)   // PRINTER_STATUS_OFFLINE
+        assertEquals(false, usb.estaLista("usb:cola:POS-80"))
+        assertEquals(false, usb.estaLista("usb:cola:Ya no existe"))
+    }
+
+    @Test fun `esta lista - sin papel sigue lista, como al imprimir`() {
+        falso.colasHoy[0] = falso.colasHoy[0].copy(estado = 0x10)   // PRINTER_STATUS_PAPER_OUT
+        assertEquals(true, usb.estaLista("usb:cola:POS-80"))
+    }
+
+    /** Un COM se abre exclusivo: probarlo sin que nadie lo pida le quitaría el puerto a quien lo usa. */
+    @Test fun `esta lista - un COM no se sabe sin abrirlo, y no se abre`() {
+        assertNull(usb.estaLista("usb:com:COM3"))
+        assertEquals(0, falso.aperturasDePuerto.get())
+    }
+
+    @Test fun `esta lista - si Windows no contesta no se sabe, y no truena`() {
+        falso.fallaAlLeerCola = UnsatisfiedLinkError("winspool")
+        assertNull(usb.estaLista("usb:cola:POS-80"))
+        assertNull(usb.estaLista("usb:1234:5678"))   // dirección de Android
+    }
+
     @Test fun `buscar lista las colas y los puertos de Windows`() {
         assertEquals(listOf("usb:cola:Cocina", "usb:cola:POS-80", "usb:com:COM3"), usb.discoverPrinters().map { it.address }.sorted())
     }

@@ -8,7 +8,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -18,6 +17,7 @@ import androidx.compose.ui.unit.dp
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.pos.data.DiscountsRepository
 import com.avoqado.pos.pos.presentation.checkout.OrderDiscountsContent
+import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 
 /**
  * Descuentos de la CUENTA COMPLETA, abiertos desde el carrito.
@@ -38,7 +38,7 @@ fun OrderDiscountSheet(
     discountsRepository: DiscountsRepository,
     onDismiss: () -> Unit,
 ) {
-    ModalBottomSheet(
+    AvoqadoModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
     ) {

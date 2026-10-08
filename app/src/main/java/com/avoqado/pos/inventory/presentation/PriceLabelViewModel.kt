@@ -99,7 +99,7 @@ class PriceLabelViewModel @Inject constructor(
                     _copias.value = emptyMap()
                 }
                 PrinterService.PrintOutcome.NoPrinter ->
-                    _error.value = "No hay impresora configurada. Ve a Más › Impresora para agregar una."
+                    _error.value = "No hay impresora configurada. Agrégala en Más › Impresoras y cajón."
                 PrinterService.PrintOutcome.OutOfPaper ->
                     _error.value = "La impresora no tiene papel. Cambia el rollo y vuelve a imprimir."
                 is PrinterService.PrintOutcome.Failed ->
@@ -131,7 +131,7 @@ class PriceLabelViewModel @Inject constructor(
             _aviso.value = when (val r = imprimir()) {
                 is PrinterService.PrintOutcome.Printed -> hecho
                 PrinterService.PrintOutcome.NoPrinter ->
-                    AvisoImpresion.Error("No hay impresora configurada. Ve a Más › Impresora para agregar una.")
+                    AvisoImpresion.Error("No hay impresora configurada. Agrégala en Más › Impresoras y cajón.")
                 PrinterService.PrintOutcome.OutOfPaper ->
                     AvisoImpresion.Error("La impresora no tiene papel. Cambia el rollo y vuelve a imprimir.")
                 is PrinterService.PrintOutcome.Failed -> AvisoImpresion.Error("No se pudo imprimir: ${r.reason}")

@@ -118,6 +118,18 @@ internal class UsbPrinterManager(@Suppress("unused") private val context: Contex
     fun isOpen(printerId: String): Boolean = abiertas.containsKey(printerId) && !cierresPendientes.containsKey(printerId)
 
     /**
+     * Para la pantalla de Impresoras (PrinterService.probar, en IO): ¿la cola está lista? Le pregunta a Windows sin abrir
+     * nada, con la misma regla que open (sin papel cuenta como lista: el cajón abre igual). null = no se sabe: un COM no se
+     * prueba sin abrirlo (Windows lo abre exclusivo), y si Windows no contesta tampoco se inventa. Nunca lanza.
+     */
+    fun estaLista(address: String): Boolean? = when (val destino = leerDireccion(address)) {
+        is DestinoDeWindows.Cola -> runCatching { sistema.cola(destino.nombre)?.let { motivoFueraDeLinea(it) == null } ?: false }
+            .onFailure { Log.w(TAG, "No se pudo consultar la cola ${destino.nombre}: ${it.message}") }
+            .getOrNull()
+        else -> null
+    }
+
+    /**
      * Regresa en el acto, SIEMPRE: lo llama el hilo de la pantalla. Si la impresora está libre, cierra ya; si está ocupada
      * (un ticket a medias en el COM, una apertura), deja el cierre pendiente y lo termina otro hilo con el mismo candado,
      * cuando se desocupe: el ticket que iba no se corta.

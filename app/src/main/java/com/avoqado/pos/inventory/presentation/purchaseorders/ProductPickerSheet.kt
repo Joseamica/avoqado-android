@@ -13,7 +13,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -28,6 +27,7 @@ import androidx.compose.ui.text.font.FontWeight
 import com.avoqado.pos.designsystem.components.SearchPillField
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.inventory.data.model.StockItem
+import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 
 // MARK: - Product Picker Sheet
 
@@ -54,7 +54,7 @@ fun ProductPickerSheet(
         }
     }
 
-    ModalBottomSheet(
+    AvoqadoModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         containerColor = MaterialTheme.colorScheme.surface,

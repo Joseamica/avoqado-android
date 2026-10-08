@@ -58,6 +58,7 @@ import com.avoqado.pos.reservations.presentation.create.sections.ServiceSection
 import kotlinx.coroutines.launch
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 
 /**
  * Square-style summary form: four tappable rows (Cliente, Servicio, Fecha y hora,
@@ -374,7 +375,7 @@ private fun PickerSheet(
         }
     }
 
-    ModalBottomSheet(
+    AvoqadoModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
         dragHandle = null,

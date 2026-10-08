@@ -32,7 +32,6 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -56,6 +55,7 @@ import com.avoqado.pos.pos.data.model.CreateProductRequest
 import com.avoqado.pos.pos.data.model.Product
 import com.avoqado.pos.pos.data.model.ProductCategory
 import kotlinx.coroutines.launch
+import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -309,7 +309,7 @@ fun CreateProductView(
 
         // Category picker bottom sheet
         if (showCategoryPicker) {
-            ModalBottomSheet(
+            AvoqadoModalBottomSheet(
                 onDismissRequest = { showCategoryPicker = false },
                 sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
             ) {

@@ -107,7 +107,7 @@ object TextosMerma {
     const val IMPRIMIR_COMPROBANTE = "Imprimir comprobante"
     const val COMPROBANTE_IMPRESO = "Comprobante enviado a la impresora"
     const val COMPROBANTE_NO_REGISTRADA = "Esta merma no se registró: revísala en «Mermas por subir»."
-    const val SIN_IMPRESORA = "No hay impresora configurada. Ve a Más › Impresora para agregar una."
+    const val SIN_IMPRESORA = "No hay impresora configurada. Agrégala en Más › Impresoras y cajón."
     const val SIN_PAPEL = "La impresora no tiene papel. Cambia el rollo y vuelve a imprimir."
     const val NO_SE_PUDO_IMPRIMIR = "No se pudo imprimir: {motivo}"
 

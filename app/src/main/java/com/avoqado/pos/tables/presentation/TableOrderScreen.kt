@@ -2397,7 +2397,7 @@ internal fun TableActionsPanel(
             ActionPill(
                 label = "Caja abierta",
                 enabled = hasCashDrawer,
-                blockedReason = "No hay impresora de recibos con cajón configurada. Ve a Más › Impresora.",
+                blockedReason = "No hay impresora de recibos con cajón en esta caja. Agrégala en Más › Impresoras y cajón.",
                 onBlocked = onBlocked,
                 onClick = onCajaAbierta,
                 modifier = Modifier.weight(1f),

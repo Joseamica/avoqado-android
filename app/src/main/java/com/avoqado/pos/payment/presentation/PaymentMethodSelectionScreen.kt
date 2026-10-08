@@ -27,7 +27,6 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -46,6 +45,7 @@ import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.avoqado.pos.core.util.formatMoney
+import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Success
@@ -359,7 +359,7 @@ private fun ManualMethodSheet(
     onSelect: (com.avoqado.pos.payment.domain.ManualPaymentChoice) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    AvoqadoModalBottomSheet(onDismissRequest = onDismiss) {
         com.avoqado.pos.designsystem.components.ImmersiveWindow()
         Column(
             modifier = Modifier
@@ -453,7 +453,7 @@ private fun CustomCashSheet(
     val isValid = inputCents >= totalCents
     val changeCents = if (isValid) inputCents - totalCents else 0
 
-    ModalBottomSheet(
+    AvoqadoModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
     ) {
@@ -736,7 +736,7 @@ private fun PaymentItemsSheet(
     paymentContext: PaymentContext,
     onDismiss: () -> Unit,
 ) {
-    ModalBottomSheet(
+    AvoqadoModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
     ) {

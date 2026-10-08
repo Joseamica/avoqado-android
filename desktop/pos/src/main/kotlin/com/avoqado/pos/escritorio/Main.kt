@@ -31,6 +31,7 @@ import com.avoqado.pos.customerdisplay.monitoresDivididos
 import com.avoqado.pos.escritorio.tactil.EscenaDeVentana
 import com.avoqado.pos.escritorio.tactil.PuenteTactilWindows
 import com.avoqado.pos.escritorio.teclado.PistolaDeLaVentana
+import com.avoqado.pos.designsystem.components.LocalEsEscritorio
 import com.avoqado.pos.escritorio.teclado.emisorDelBus
 import com.avoqado.pos.escritorio.teclado.TecladoDeLaVentana
 import com.avoqado.pos.kiosk.domain.KioskState
@@ -86,7 +87,8 @@ fun main() {
     // medido en Windows el 30-sep) no pasa por alTronar: sin esto escapa de main con exit 1 y, bajo javaw, sin aviso.
     try {
         application {
-            CompositionLocalProvider(LocalWindowExceptionHandlerFactory provides alTronar) {
+            // LocalEsEscritorio: las hojas modales llevan una X (con mouse no hay gesto ni botón de atrás).
+            CompositionLocalProvider(LocalWindowExceptionHandlerFactory provides alTronar, LocalEsEscritorio provides true) {
                 Window(
                     onCloseRequest = ::exitApplication,
                     title = "Avoqado POS",

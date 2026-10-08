@@ -1121,10 +1121,13 @@ fun MoreMenuScreen(
     // Printer Settings Sheet
     if (showPrinter) {
         val printConfig by viewModel.printConfigRepository.config.collectAsState()
+        val nombreDelAparato by viewModel.nombreDeEsteAparato.collectAsState()
         PrinterSettingsSheet(
             printerService = viewModel.printerService,
             onDismiss = { showPrinter = false },
             printConfig = printConfig,
+            nombreDelAparato = nombreDelAparato,
+            ligaDelPanel = viewModel.ligaDeImpresorasDelPanel,
         )
     }
 
@@ -1770,7 +1773,9 @@ private fun SettingsHubSheet(
                 entries = listOf(
                     MenuEntry(
                         icon = Icons.Outlined.Print,
-                        label = "Impresora",
+                        // El cajón abre por la impresora de recibos: quien busca «cajón» lo encuentra aquí (La Galeterie, 8-oct).
+                        label = "Impresoras y cajón",
+                        subtitle = "Tickets, comandas y cajón de dinero",
                         onClick = onOpenPrinter,
                     ),
                     MenuEntry(

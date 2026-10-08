@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
@@ -21,6 +20,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.kds.domain.TextosDeCocina
+import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 
 // MARK: - KDS Settings Sheet
 
@@ -40,7 +40,7 @@ fun KDSSettingsSheet(
     onApagar: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    ModalBottomSheet(
+    AvoqadoModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
     ) {

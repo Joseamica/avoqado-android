@@ -15,7 +15,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -39,6 +38,7 @@ import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Error
 import com.avoqado.pos.designsystem.theme.Success
+import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 
 /** Cuántos retiros se listan en la hoja antes de resumir «y N más». */
 private const val RETIROS_VISIBLES = 4
@@ -75,7 +75,7 @@ fun CloseDrawerSheet(
         onClosed?.invoke(actualCents)
     }
 
-    ModalBottomSheet(
+    AvoqadoModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
     ) {

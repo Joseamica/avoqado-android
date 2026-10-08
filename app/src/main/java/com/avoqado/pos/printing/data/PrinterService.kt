@@ -557,7 +557,14 @@ class PrinterService @Inject constructor(
             )
             return
         }
-        // Bluetooth/USB: se quedan en SinComprobar. Ver el doc de arriba.
+        // USB: sólo si se puede preguntar SIN abrirla (la cola de Windows en escritorio). En Android
+        // `estaLista` es null y se queda como estaba. Ver el doc de arriba.
+        if (printer.connectionTypeEnum == PrinterConnectionType.USB) {
+            val lista = withContext(Dispatchers.IO) { usbPrinters.estaLista(printer.address) } ?: return
+            updateStatus(printer.id, if (lista) PrinterStatus.Connected else PrinterStatus.Disconnected)
+            return
+        }
+        // Bluetooth: se queda en SinComprobar. Ver el doc de arriba.
         if (printer.connectionTypeEnum != PrinterConnectionType.WIFI) return
 
         // Ya conectada: no la toques (evita el mismo hueco en WiFi).

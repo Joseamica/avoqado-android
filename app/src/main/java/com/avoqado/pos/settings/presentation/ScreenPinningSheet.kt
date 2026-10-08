@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -24,6 +23,7 @@ import androidx.compose.ui.text.font.FontWeight
 import com.avoqado.pos.core.util.findActivity
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.settings.domain.ScreenPinningManager
+import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 
 /**
  * Esconder las barras de Android + la salida explícita.
@@ -50,7 +50,7 @@ fun ScreenPinningSheet(
     val enabled by screenPinning.enabled.collectAsState()
     val activity = LocalContext.current.findActivity()
 
-    ModalBottomSheet(
+    AvoqadoModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
     ) {

@@ -30,6 +30,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import com.avoqado.pos.core.util.formatMoney
+import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 
 import com.avoqado.pos.designsystem.components.CircleBackButton
 import androidx.compose.material.icons.automirrored.filled.NoteAdd
@@ -130,7 +131,7 @@ fun ProductDetailPanel(
     } else {
         // iPhone-style: bottom sheet
         val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-        ModalBottomSheet(
+        AvoqadoModalBottomSheet(
             onDismissRequest = onDismiss,
             sheetState = sheetState,
         ) {

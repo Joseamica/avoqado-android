@@ -31,7 +31,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
@@ -58,6 +57,7 @@ import com.avoqado.pos.inventory.data.CreateTransferItemRequest
 import com.avoqado.pos.inventory.data.model.StockItem
 import com.avoqado.pos.inventory.presentation.InventoryViewModel
 import androidx.compose.ui.text.style.TextAlign
+import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 
 // MARK: - Create Transfer Sheet
 
@@ -89,7 +89,7 @@ fun CreateTransferSheet(
         )
     }
 
-    ModalBottomSheet(
+    AvoqadoModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         containerColor = MaterialTheme.colorScheme.surface,
@@ -399,7 +399,7 @@ private fun ItemPickerSheet(
             (it.sku?.contains(searchText, ignoreCase = true) == true)
     }
 
-    ModalBottomSheet(
+    AvoqadoModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         containerColor = MaterialTheme.colorScheme.surface,

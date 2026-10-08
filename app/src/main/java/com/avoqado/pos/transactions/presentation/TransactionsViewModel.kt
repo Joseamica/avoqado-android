@@ -344,7 +344,7 @@ class TransactionsViewModel @Inject constructor(
                     is PrinterService.PrintOutcome.Printed -> "Recibo impreso"
                     is PrinterService.PrintOutcome.OutOfPaper -> "La impresora no tiene papel"
                     is PrinterService.PrintOutcome.Failed -> "No se pudo imprimir: ${outcome.reason}"
-                    is PrinterService.PrintOutcome.NoPrinter -> "No hay impresora de recibos configurada"
+                    is PrinterService.PrintOutcome.NoPrinter -> "No hay impresora de recibos en esta caja. Agrégala en Más › Impresoras y cajón."
                 }
 
                 val imprimio = outcome is PrinterService.PrintOutcome.Printed

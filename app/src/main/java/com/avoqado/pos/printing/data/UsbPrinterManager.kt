@@ -213,6 +213,13 @@ internal class UsbPrinterManager(private val context: Context) {
     /** True if we hold a claimed connection for this printer AND it is still attached. */
     fun isOpen(printerId: String): Boolean = openPrinters.containsKey(printerId)
 
+    /**
+     * ¿Está lista, sin abrirla? En Android no se sabe: preguntar puede hacer saltar el diálogo de permiso (ver
+     * PrinterService.probar). Escritorio sí lo sabe: le pregunta a la cola de Windows.
+     */
+    @Suppress("UNUSED_PARAMETER")
+    fun estaLista(address: String): Boolean? = null
+
     fun close(printerId: String) {
         openPrinters.remove(printerId)?.let { open ->
             runCatching { open.connection.releaseInterface(open.usbInterface) }

@@ -452,7 +452,7 @@ class CashDrawerViewModel @Inject constructor(
         val printer = printerService.getDefaultPrinter(PrinterRole.RECEIPT)
         if (printer == null) {
             _printCorteResult.value = PrintCorteResult.Failure(
-                "No hay impresora de recibos configurada. Ve a Más > Impresora para agregar una.",
+                "No hay impresora de recibos en esta caja. Agrégala en Más › Impresoras y cajón.",
             )
             return
         }

@@ -52,7 +52,20 @@ class MoreMenuViewModel @Inject constructor(
     private val wasteSyncCoordinator: com.avoqado.pos.inventory.waste.data.WasteSyncCoordinator,
     private val bloqueoDeMerma: com.avoqado.pos.inventory.waste.data.BloqueoDeMermaPorPlan,
     private val pendingWasteDao: com.avoqado.pos.inventory.waste.data.PendingWasteDao,
+    private val tpvSettingsRepository: com.avoqado.pos.tpvsettings.data.TpvSettingsRepository,
 ) : ViewModel() {
+
+    /** Cómo se llama este aparato en el panel, para la pantalla «Impresoras y cajón». null = no se sabe. */
+    val nombreDeEsteAparato: StateFlow<String?> = tpvSettingsRepository.terminalNavigation
+        .map { it.terminalName }
+        .stateIn(viewModelScope, SharingStarted.Eagerly, tpvSettingsRepository.terminalNavigation.value.terminalName)
+
+    /**
+     * La pantalla del panel donde se editan las impresoras del local, sólo para quien puede editarlas (`printers:manage`,
+     * gerente para arriba). Un cajero recibe null y ve «pídele a tu gerente».
+     */
+    val ligaDeImpresorasDelPanel: String?
+        get() = com.avoqado.pos.printing.presentation.ligaDeImpresorasDelPanel(secureStorage.venueSlug, roleManager.canManagePrinters)
 
     private val _venueName = MutableStateFlow(secureStorage.venueName ?: "Sin establecimiento")
     val venueName: StateFlow<String> = _venueName.asStateFlow()

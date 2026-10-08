@@ -35,7 +35,6 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
@@ -88,6 +87,7 @@ import com.avoqado.pos.inventory.waste.presentation.preseleccionDesdeInventario
 import com.avoqado.pos.scale.ScaleCaptureViewModel
 import com.avoqado.pos.scale.ScaleUsageContext
 import com.avoqado.pos.scale.configuredProfileFor
+import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 
 // MARK: - Entry Point
 
@@ -244,7 +244,7 @@ fun InventoryScreen(
 
     // Count type bottom sheet
     if (showCountTypeSheet) {
-        ModalBottomSheet(
+        AvoqadoModalBottomSheet(
             onDismissRequest = { viewModel.closeCountTypeSheet() },
         ) {
             com.avoqado.pos.designsystem.components.ImmersiveWindow()
@@ -1167,7 +1167,7 @@ private fun SortOptionsSheet(
     onSortSelected: (StockSortOption) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    ModalBottomSheet(
+    AvoqadoModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(),
         containerColor = MaterialTheme.colorScheme.surface,

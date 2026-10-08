@@ -18,7 +18,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
@@ -38,6 +37,7 @@ import com.avoqado.pos.inventory.data.ReceiveItemRequest
 import com.avoqado.pos.inventory.data.model.PurchaseOrder
 import com.avoqado.pos.inventory.data.model.PurchaseOrderItem
 import com.avoqado.pos.inventory.presentation.InventoryViewModel
+import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 
 // MARK: - Receive Stock Sheet
 
@@ -75,7 +75,7 @@ fun ReceiveStockSheet(
         )
     }
 
-    ModalBottomSheet(
+    AvoqadoModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         containerColor = MaterialTheme.colorScheme.surface,

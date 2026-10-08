@@ -41,7 +41,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
@@ -62,6 +61,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.transactions.data.RefundItem
+import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 
 // MARK: - Unassociated Refund Bottom Sheet
 
@@ -73,7 +73,7 @@ fun UnassociatedRefundSheet(
 ) {
     val refundState by viewModel.refundState.collectAsState()
 
-    ModalBottomSheet(
+    AvoqadoModalBottomSheet(
         onDismissRequest = {
             if (refundState !is RefundUiState.Loading) {
                 viewModel.resetRefundState()

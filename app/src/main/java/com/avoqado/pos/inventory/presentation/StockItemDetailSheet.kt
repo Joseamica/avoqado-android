@@ -14,7 +14,6 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -29,6 +28,7 @@ import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.inventory.data.model.StockItem
 import com.avoqado.pos.inventory.waste.domain.TextosMerma
+import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 
 /**
  * Detalle de un artículo tocado en Inventario → Descripción general.
@@ -42,7 +42,7 @@ fun StockItemDetailSheet(
     /** «Registrar merma» con ESTE artículo ya elegido; null = sin permiso o el artículo no admite merma. */
     onRegistrarMerma: (() -> Unit)? = null,
 ) {
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    AvoqadoModalBottomSheet(onDismissRequest = onDismiss) {
         ImmersiveWindow()
         Column(
             modifier = Modifier
