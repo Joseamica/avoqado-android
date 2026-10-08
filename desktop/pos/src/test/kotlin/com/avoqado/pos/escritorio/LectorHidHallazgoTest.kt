@@ -6,9 +6,10 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 
 /**
- * HALLAZGO (29-sep): por qué el lector de pistola NO se cablea en escritorio. En un teclado físico LectorHid (app)
- * se come teclas de una persona. Si alguien lo arregla en Android, estas pruebas fallan: ésa es la señal de que ya
- * se puede cablear en Windows.
+ * HALLAZGO (29-sep): por qué escritorio NO usa LectorHid (app) para la pistola. En un teclado físico se come teclas de
+ * una persona, y en Windows pistola y teclado son el mismo aparato. Escritorio reconoce la pistola con su propio
+ * `teclado/LectorDePistola` (retiene y devuelve, nunca come a ciegas; 7-oct) y sólo emite al bus de LectorHidBus.
+ * Si alguien arregla LectorHid en Android, estas pruebas fallan: ésa es la señal de que se puede volver a una sola pieza.
  */
 class LectorHidHallazgoTest {
     @Test fun `en un teclado fisico la 2a tecla de un par tecleado a 80 ms no llega al campo`() {

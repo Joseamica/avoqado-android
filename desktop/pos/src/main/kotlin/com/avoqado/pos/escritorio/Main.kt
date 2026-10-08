@@ -30,8 +30,11 @@ import com.avoqado.pos.customerdisplay.CustomerDisplayState
 import com.avoqado.pos.customerdisplay.monitoresDivididos
 import com.avoqado.pos.escritorio.tactil.EscenaDeVentana
 import com.avoqado.pos.escritorio.tactil.PuenteTactilWindows
+import com.avoqado.pos.escritorio.teclado.PistolaDeLaVentana
+import com.avoqado.pos.escritorio.teclado.emisorDelBus
 import com.avoqado.pos.escritorio.teclado.TecladoDeLaVentana
 import com.avoqado.pos.kiosk.domain.KioskState
+import com.avoqado.pos.pos.data.LectorHidBus
 import java.awt.GraphicsEnvironment
 import java.nio.file.Path
 import java.util.concurrent.atomic.AtomicBoolean
@@ -104,6 +107,11 @@ fun main() {
                         runCatching { TecladoDeLaVentana.instalar(EscenaDeVentana.de(window).getOrThrow(), window) }
                             .onSuccess { Log.i("Teclado", "Teclado híbrido instalado") }
                             .onFailure { Log.w("Teclado", "Teclado híbrido omitido: ${it.javaClass.simpleName}: ${it.message}") }
+                        // La pistola de códigos llega a la pantalla de cobro por el MISMO bus que en Android (MainActivity →
+                        // LectorHidBus). Sin esto, lo que escaneaba no llegaba a ningún lado (La Galeterie, 7-oct).
+                        runCatching { PistolaDeLaVentana.instalar(window, emisorDelBus(Escritorio.inyector.getInstance(LectorHidBus::class.java))) }
+                            .onSuccess { Log.i("Lector", "Lector de pistola instalado") }
+                            .onFailure { Log.w("Lector", "Lector de pistola omitido: ${it.javaClass.simpleName}: ${it.message}") }
                         // La pantalla del cliente en un segundo monitor, si lo hay (en Android: MainActivity.onStart → attach).
                         // Si falla, la caja sigue como una de una sola pantalla.
                         runCatching {
@@ -122,6 +130,7 @@ fun main() {
                     DisposableEffect(window) {
                         onDispose {
                             TecladoDeLaVentana.desinstalar()
+                            PistolaDeLaVentana.desinstalar()
                             // Sin esto la ventana del cliente sigue viva y Java no termina de salir al cerrar la caja.
                             runCatching { Escritorio.inyector.getInstance(CustomerDisplayManager::class.java).detener() }
                         }
