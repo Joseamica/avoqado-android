@@ -54,6 +54,15 @@ import com.avoqado.pos.payment.data.model.PaymentItem
 import com.avoqado.pos.payment.data.model.PaymentMethod
 import kotlin.math.ceil
 import com.avoqado.pos.core.util.aCentavos
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.foundation.focusable
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.input.key.utf16CodePoint
 
 /**
  * Combined payment method selection screen (matching iOS).
@@ -441,6 +450,17 @@ private fun ManualMethodSheet(
     }
 }
 
+/**
+ * Una tecla sobre «Monto recibido». Mismo criterio que el teclado de la pantalla: el dígito entra
+ * como centavos (1→5→0→0→0 = $150.00) y retroceso quita el último. null = la tecla no es de aquí.
+ * Prueba: `MontoConTeclaTest`.
+ */
+internal fun montoConTecla(cents: Int, caracter: Char?, borrar: Boolean): Int? = when {
+    borrar -> cents / 10
+    caracter != null && caracter in '0'..'9' -> if (cents < 10_000_000) cents * 10 + (caracter - '0') else cents
+    else -> null
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun CustomCashSheet(
@@ -453,6 +473,13 @@ private fun CustomCashSheet(
     val isValid = inputCents >= totalCents
     val changeCents = if (isValid) inputCents - totalCents else 0
 
+    // Teclado físico (POS de Windows, tableta con teclado): sin esto el monto sólo entraba con el
+    // mouse. Mismo patrón que `PinPadView`. La hoja abre su propia ventana: se pide el foco al abrir.
+    // Un clic en un botón de la pantalla se lleva el foco, pero sigue DENTRO de esta columna, así que
+    // `onPreviewKeyEvent` (de padre a hijo) sigue viendo las teclas.
+    val foco = remember { androidx.compose.ui.focus.FocusRequester() }
+    LaunchedEffect(Unit) { runCatching { foco.requestFocus() } }
+
     AvoqadoModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = sheetState,
@@ -460,6 +487,22 @@ private fun CustomCashSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .focusRequester(foco)
+                .focusable()
+                .onPreviewKeyEvent { e ->
+                    if (e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                    if (e.key == Key.Enter || e.key == Key.NumPadEnter) {
+                        if (isValid) onConfirm(inputCents)
+                        return@onPreviewKeyEvent true
+                    }
+                    val nuevo = montoConTecla(
+                        inputCents,
+                        caracter = e.utf16CodePoint.takeIf { it > 0 }?.toChar(),
+                        borrar = e.key == Key.Backspace,
+                    ) ?: return@onPreviewKeyEvent false
+                    inputCents = nuevo
+                    true
+                }
                 .padding(horizontal = AvoqadoTheme.spacing.lg)
                 .padding(bottom = AvoqadoTheme.spacing.xxl),
         ) {
@@ -555,16 +598,12 @@ private fun CustomCashSheet(
                                     .height(52.dp)
                                     .background(MaterialTheme.colorScheme.surface)
                                     .clickable {
-                                        when (label) {
-                                            "\u232B" -> inputCents /= 10
-                                            "." -> { /* decimal handled by cents input */ }
-                                            else -> {
-                                                val digit = label.toIntOrNull() ?: return@clickable
-                                                if (inputCents < 10_000_000) {
-                                                    inputCents = inputCents * 10 + digit
-                                                }
-                                            }
-                                        }
+                                        // "." no hace nada: los dígitos ya entran como centavos.
+                                        montoConTecla(
+                                            inputCents,
+                                            caracter = label.singleOrNull(),
+                                            borrar = label == "\u232B",
+                                        )?.let { inputCents = it }
                                     },
                                 contentAlignment = Alignment.Center,
                             ) {
