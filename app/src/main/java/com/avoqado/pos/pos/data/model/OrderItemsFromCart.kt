@@ -60,7 +60,7 @@ fun buildOrderItemRequests(items: List<CartItem>): List<OrderItemRequest> {
  * ninguna elección. Mandar un ref a medias es un 400 del server, y peor: con
  * `selections` incompletas el server cobraría OTRA cosa.
  */
-private fun promotionRefDe(items: List<CartItem>, instanceId: String): PromotionRefRequest? {
+internal fun promotionRefDe(items: List<CartItem>, instanceId: String): PromotionRefRequest? {
     val lineas = items.filter { it.promotionInstanceId == instanceId }
     val promotionId = lineas.firstNotNullOfOrNull { it.promotionId }?.takeIf { it.isNotBlank() }
         ?: return null
@@ -68,7 +68,7 @@ private fun promotionRefDe(items: List<CartItem>, instanceId: String): Promotion
         .mapNotNull { linea ->
             val groupId = linea.promotionGroupId?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
             val optionId = linea.promotionOptionId?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
-            PromotionSelectionRequest(groupId = groupId, optionId = optionId)
+            PromotionSelectionRequest(groupId = groupId, optionId = optionId, serviceCourse = linea.serviceCourse)
         }
         // El server resuelve cada grupo con `selections.find(s => s.groupId === group.id)`:
         // un grupo repetido sólo usaría la primera. Se deduplica aquí para que
@@ -104,4 +104,6 @@ private fun CartItem.toOrderItemRequest(): OrderItemRequest = OrderItemRequest(
     isCortesia = isCortesia,
     discountId = itemDiscountId,
     weightQuantity = weightKg,
+    serviceCourse = serviceCourse,
+    externalId = id.takeIf { serviceCourse?.preparationVersion == 1 },
 )

@@ -128,6 +128,7 @@ class ComandaDispatcher @Inject constructor(
         val orderType: String,
         val curso: String? = null,
         val etiquetaPantalla: String? = null,
+        val configCongelada: PrintConfig? = null,
     )
 
     /**
@@ -150,13 +151,15 @@ class ComandaDispatcher @Inject constructor(
         origenDelFolio: String? = null,
         alCambiarEstado: (EstadoDeComanda) -> Unit = {},
     ): Job = fondo.launch {
-        val guardada = guardarLaRonda(venueId, orderNumber, pedidos, orderId, servidorLaTiene, origenDelFolio)
+        val configCongelada = pedidos.firstNotNullOfOrNull { it.configCongelada }
+        require(pedidos.all { it.configCongelada == configCongelada }) { "Los tiempos deben conservar el mismo destino de cocina" }
+        val guardada = guardarLaRonda(venueId, orderNumber, pedidos, orderId, servidorLaTiene, origenDelFolio, configCongelada)
         val guardadasAntes = guardada?.entregas
         // Codex 3.6 (#4): UNA config para toda la ronda, la misma con que se guardó. El tiempo 1 puede insistir ~1 min y en
         // ese minuto se puede cambiar de sucursal: si cada tiempo releyera la global, el 2 saldría por las impresoras de la
         // otra (y su papel, si no salía, se perdía). La tablet sigue en la sucursal de la ronda. No se detiene el despacho:
         // un tiempo «sólo impresora» no tiene fila en disco, detenerlo sería perderlo.
-        val configDeLaRonda = guardada?.config ?: run {
+        val configDeLaRonda = guardada?.config ?: configCongelada ?: run {
             venueId?.let { printConfigRepository.refreshConTope(it) }
             printConfigRepository.getCurrentConfig()
         }
@@ -230,12 +233,13 @@ class ComandaDispatcher @Inject constructor(
         orderId: String?,
         servidorLaTiene: Boolean?,
         origen: String?,
+        configCongelada: PrintConfig? = null,
     ): RondaGuardada? {
         val wifi = entregaPorWifi ?: return null
         if (servidorLaTiene == null || venueId == null || origen == null) return null
         return try {
-            printConfigRepository.refreshConTope(venueId)
-            val config = printConfigRepository.getCurrentConfig()
+            if (configCongelada == null) printConfigRepository.refreshConTope(venueId)
+            val config = configCongelada ?: printConfigRepository.getCurrentConfig()
             val entregas = pedidos.flatMap { p ->
                 entregasPorWifi(
                     venueId, PrintRoutingMapper.buildComandas(p.lines, config), config, orderNumber, p.orderType,
@@ -335,7 +339,7 @@ class ComandaDispatcher @Inject constructor(
         val config = configDeLaRonda ?: printConfigRepository.getCurrentConfig()
 
         val legacy = noStationsFallback as? NoStationsFallback.LegacySingleTicket
-        if (legacy != null && config.stations.none { it.active }) {
+        if (legacy != null && config.stations.none { it.active } && lines.none { it.serviceCourse?.preparationVersion == 1 }) {
             val resultadoLegado = printerService.autoPrintKitchenTicket(
                 KitchenTicketData(
                     orderNumber = orderNumber,
@@ -368,6 +372,9 @@ class ComandaDispatcher @Inject constructor(
         }
 
         val plans = PrintRoutingMapper.buildComandas(lines, config)
+        val paperPlans = plans.map { it.copy(lines = it.lines.filterNot { line ->
+            line.serviceCourse?.preparationVersion == 1 && line.serviceCourse.kind == "STANDARD"
+        }) }.filter { it.lines.isNotEmpty() }
         val comboNames = comboNamesDe(lines)
         // Etapa 3 del KDS (3.5, D6): «WiFi primero». Sólo si el llamador reparte por pantalla (`servidorLaTiene != null`:
         // mostrador y rondas; Uber y vales no) y hay folio (sin folio no hay `sourceKey` que empujar). La entrega se
@@ -386,8 +393,8 @@ class ComandaDispatcher @Inject constructor(
         var acusadas = emptySet<String>()
         val (reparto, estado) = try {
             if (entregas.isNotEmpty()) acusadas = entregaPorWifi?.entregar(entregas).orEmpty()
-            val decidido = servidorLaTiene?.let { KitchenDeliveryPolicy.decidir(plans, config, acusadas) }
-                ?: KitchenDeliveryPolicy.Reparto(plans, emptyList())
+            val decidido = servidorLaTiene?.let { KitchenDeliveryPolicy.decidir(paperPlans, config, acusadas) }
+                ?: KitchenDeliveryPolicy.Reparto(paperPlans, emptyList())
             // Todo iba a pantallas que acusaron: no hay papel que mandar ni que reportar a «la libreta» (y sus filas ya se
             // borraron al acusar). M-3 de la revisión (3.4): con `servidorLaTiene = null` esto también puede vaciar `plans`
             // (todas las líneas con `quantity <= 0`) y regresa `null` sin avisar — cambio aceptado, iOS trae la misma guarda.
@@ -469,9 +476,11 @@ class ComandaDispatcher @Inject constructor(
                 mensaje = KitchenDeliveryPolicy.mensajeParaPantalla(
                     plan, venueId, deviceId, origen, orderNumber, etiquetaPantalla ?: orderType, orderId, ahora, curso,
                 ),
-                trabajoDeRespaldo = if (soloPantalla) {
+                trabajoDeRespaldo = if (soloPantalla || plan.lines.any { it.serviceCourse?.preparationVersion == 1 }) {
                     TrabajoPendiente(
-                        planes = listOf(plan),
+                        planes = listOf(plan.copy(lines = plan.lines.filterNot {
+                            it.serviceCourse?.preparationVersion == 1 && it.serviceCourse.kind == "STANDARD"
+                        })).filter { it.lines.isNotEmpty() },
                         config = KitchenDeliveryPolicy.conRespaldo(config, listOf(stationId)),
                         orderNumber = orderNumber, orderType = orderType, serverName = serverName,
                         comboNames = comboNames, venueId = venueId, orderId = orderId,

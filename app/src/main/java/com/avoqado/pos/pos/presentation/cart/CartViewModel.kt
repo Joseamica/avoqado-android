@@ -214,6 +214,7 @@ class CartViewModel @Inject constructor(
      * (el que alimenta `MainActivity`), y la app nunca usa el default.
      */
     private val lectorHidBus: com.avoqado.pos.pos.data.LectorHidBus = com.avoqado.pos.pos.data.LectorHidBus(),
+    private val serviceCoursesRepository: com.avoqado.pos.tables.data.ServiceCoursesRepository? = null,
 ) : ViewModel() {
 
     private val _cartState = MutableStateFlow(defaultCartState())
@@ -497,6 +498,9 @@ class CartViewModel @Inject constructor(
     val referralValidation: StateFlow<ReferralCaptureUiState> = _referralValidation.asStateFlow()
 
     init {
+        serviceCoursesRepository?.let { repository -> viewModelScope.launch {
+            repository.courses.collect { freezePreparationForPendingProducts() }
+        } }
         // Clear cart when venue changes (like iOS)
         viewModelScope.launch {
             authRepository.venueSwitched.collect {
@@ -719,6 +723,21 @@ class CartViewModel @Inject constructor(
 
     // MARK: - Cart Operations
 
+    private fun immediateServiceCourse() = serviceCoursesRepository?.immediateSnapshot()?.takeIf {
+        secureStorage.venueType?.uppercase() in setOf("RESTAURANT", "CAFE", "HOTEL_RESTAURANT")
+    }
+
+    private fun freezePreparationForPendingProducts() {
+        if (_pendingSplitOrder.value != null) return
+        val immediate = immediateServiceCourse() ?: return
+        val courses = serviceCoursesRepository?.courses?.value.orEmpty()
+        _cartState.update { state -> state.copy(items = state.items.map { item ->
+            if (item.type !is CartItemType.ProductItem || item.locked || item.areaTicketLineId != null || item.serviceCourse?.preparationVersion == 1) item
+            else item.copy(serviceCourse = item.serviceCourse?.let { course -> course.copy(preparationVersion = 1,
+                sortOrder = course.sortOrder ?: courses.indexOfFirst { it.id == course.id }.takeIf { it >= 0 } ?: 31) } ?: immediate)
+        }) }
+    }
+
     fun addProduct(product: Product) {
         // Agotado AVISA, nunca bloquea (Square-parity 2026-08-12): el registro
         // del sistema puede estar desfasado y el producto sí existir en el
@@ -754,6 +773,7 @@ class CartViewModel @Inject constructor(
                     imageUrl = product.imageUrl,
                     colorHex = product.color,
                     categoryId = product.categoryId,
+                    serviceCourse = immediateServiceCourse(),
                 )
                 state.copy(items = state.items + newItem)
             }
@@ -796,6 +816,7 @@ class CartViewModel @Inject constructor(
             itemDiscountType = discount?.type,
             itemDiscountValue = discount?.value,
             itemDiscountName = discount?.name,
+            serviceCourse = immediateServiceCourse(),
         )
         _cartState.update { it.copy(items = it.items + newItem) }
         Log.d("🛒", "Added product with modifiers: ${product.name} x$quantity (${modifiers.size} mods)")
@@ -819,6 +840,7 @@ class CartViewModel @Inject constructor(
             colorHex = product.color,
             categoryId = product.categoryId,
             weightKg = weightKg,
+            serviceCourse = immediateServiceCourse(),
         )
         _cartState.update { it.copy(items = it.items + newItem) }
         Log.d("🛒", "Added weighted product: ${product.name} (${weightKg} kg)")
@@ -887,12 +909,13 @@ class CartViewModel @Inject constructor(
      * @return `true` sólo si de verdad entró — la UI celebra con eso, así que un
      *   "¡Combo agregado!" nunca puede mentir.
      */
-    fun aplicarPromocion(promotion: Promotion, selecciones: Map<String, String> = emptyMap()): Boolean {
+    fun aplicarPromocion(promotion: Promotion, selecciones: Map<String, String> = emptyMap(), times: Map<String, com.avoqado.pos.pos.data.model.ServiceCourseSnapshot> = emptyMap()): Boolean {
         val elegidas = opcionesElegidas(promotion, selecciones)
         if (elegidas.isNullOrEmpty()) {
             Log.w("🎁", "Promoción sin elección completa, no se agrega: ${promotion.name}")
             return false
         }
+        if (times.isNotEmpty() && elegidas.any { times[it.grupo.id] == null }) return false
         val precios = preciosUnitariosDePromocion(promotion, elegidas)
         val instanceId = UUID.randomUUID().toString()
         val nuevas = elegidas.mapIndexed { index, elegida ->
@@ -901,7 +924,7 @@ class CartViewModel @Inject constructor(
                 name = elegida.opcion.productName.ifBlank { promotion.name },
                 // El carrito ya pinta `subtitle` bajo el nombre: es donde se lee
                 // "Combo del día" sin volver al catálogo.
-                subtitle = promotion.name,
+                subtitle = times[elegida.grupo.id]?.let { "${promotion.name} · ${it.label}" } ?: promotion.name,
                 unitPrice = precios.getOrElse(index) { elegida.opcion.productPriceCents },
                 quantity = elegida.opcion.quantity.coerceAtLeast(1),
                 promotionInstanceId = instanceId,
@@ -909,9 +932,11 @@ class CartViewModel @Inject constructor(
                 promotionId = promotion.id,
                 promotionGroupId = elegida.grupo.id,
                 promotionOptionId = elegida.opcion.id,
+                serviceCourse = times[elegida.grupo.id],
             )
         }
         _cartState.update { it.copy(items = it.items + nuevas) }
+        freezePreparationForPendingProducts()
         Log.d("🎁", "Promoción aplicada: ${promotion.name} (${nuevas.size} líneas, instancia $instanceId)")
         return true
     }
@@ -1135,6 +1160,7 @@ class CartViewModel @Inject constructor(
                     promotionId = item.promotionId,
                     promotionGroupId = item.promotionGroupId,
                     promotionOptionId = item.promotionOptionId,
+                    serviceCourse = item.serviceCourse,
                 )
             },
             orderDiscount = state.orderDiscount,
@@ -1735,6 +1761,7 @@ class CartViewModel @Inject constructor(
                 promotionId = savedItem.promotionId,
                 promotionGroupId = savedItem.promotionGroupId,
                 promotionOptionId = savedItem.promotionOptionId,
+                serviceCourse = savedItem.serviceCourse,
                 subtitle = savedItem.promotionName,
             )
         }

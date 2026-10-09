@@ -196,10 +196,14 @@ class TablesViewModel @Inject constructor(
                     // con UUID local que el ack promoverá al id del server.
                     // Errores de NEGOCIO (403/409/4xx) NO abren offline.
                     if (isNetworkError(e)) {
-                        openTableOffline(vId, table, covers)
-                        _actionState.value = TableActionState.Idle
-                        _selectedTableId.value = null
-                        onReady()
+                        try {
+                            openTableOffline(vId, table, covers)
+                            _actionState.value = TableActionState.Idle
+                            _selectedTableId.value = null
+                            onReady()
+                        } catch (_: Exception) {
+                            _actionState.value = TableActionState.Error("No se pudo guardar la mesa en este aparato. Libera espacio e inténtalo de nuevo.")
+                        }
                     } else {
                         _actionState.value = TableActionState.Error(friendlyTableError(e, "No se pudo abrir la mesa"))
                     }
@@ -234,7 +238,8 @@ class TablesViewModel @Inject constructor(
                 isProvisional = true,
             ),
         )
-        repository.markTableOccupiedLocally(table.id)
+        repository.markTableOccupiedLocally(table.id, covers, vId)
+        check(secureStorage.venueId == vId) { "La sucursal cambió" }
         android.util.Log.w("TablesViewModel", "📴 Mesa ${table.number} abierta OFFLINE (folio $folio)")
     }
 
@@ -260,6 +265,7 @@ class TablesViewModel @Inject constructor(
                 version = order.version,
                 totalCents = round(order.total * 100).toInt(),
                 mode = TableSession.Mode.ORDERING,
+                isProvisional = order.isProvisional,
             ),
         )
         _selectedTableId.value = null
@@ -278,6 +284,7 @@ class TablesViewModel @Inject constructor(
                 version = check.version,
                 totalCents = round(check.total * 100).toInt(),
                 mode = TableSession.Mode.ORDERING,
+                isProvisional = check.isProvisional,
             ),
         )
         _selectedTableId.value = null
@@ -313,6 +320,7 @@ class TablesViewModel @Inject constructor(
                 version = order.version,
                 totalCents = round(order.total * 100).toInt(),
                 mode = TableSession.Mode.PAYING,
+                isProvisional = order.isProvisional,
             ),
         )
         _selectedTableId.value = null

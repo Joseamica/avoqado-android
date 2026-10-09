@@ -36,7 +36,16 @@ object PrintRoutingMapper {
                 notes = item.notes,
             )
         }
-        return PrintRoutingEngine.buildTicketPlans(routingItems, toRoutingConfig(config))
+        val source = items.associateBy { it.orderItemId }
+        return PrintRoutingEngine.buildTicketPlans(routingItems, toRoutingConfig(config)).map { plan ->
+            plan.copy(lines = plan.lines.flatMap { line ->
+                if (line.orderItemIds.none { source[it]?.serviceCourse?.preparationVersion == 1 }) listOf(line)
+                else line.orderItemIds.mapNotNull { id -> source[id]?.let { item ->
+                    line.copy(quantity = item.quantity, orderItemIds = listOf(id), serviceCourse = item.serviceCourse,
+                        externalId = item.externalId, orderPromotionId = item.orderPromotionId)
+                } }
+            })
+        }
     }
 
     /** Resolve the station name for a plan (null for the unrouted "SIN ESTACIÓN" bucket). */
@@ -64,4 +73,7 @@ data class RoutableItem(
      * se reparten entre cocina y barra sale encabezado en las dos comandas.
      */
     val comboName: String? = null,
+    val serviceCourse: com.avoqado.pos.pos.data.model.ServiceCourseSnapshot? = null,
+    val externalId: String? = null,
+    val orderPromotionId: String? = null,
 )

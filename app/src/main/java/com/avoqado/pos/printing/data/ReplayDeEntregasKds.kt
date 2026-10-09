@@ -159,7 +159,8 @@ class ReplayDeEntregasKds @Inject constructor(
         }
         // I4: una comanda de hace más de 8 h ya se resolvió (la cocina la preparó, alguien la cantó, el cliente se fue).
         // Imprimirla sola en la cocina manda comida que nadie pidió: se retira sin papel ni marca.
-        if (ahora - fila.creadaEnMillis > VIGENCIA_MS) {
+        val preparation = KdsLanProtocol.decodeComanda(fila.mensajeJson)?.preparationVersion == 1
+        if (!preparation && ahora - fila.creadaEnMillis > VIGENCIA_MS) {
             Log.w(TAG, "🗑️ ${fila.entregaId} tiene más de 8 h: se descarta sin imprimir")
             dao.borrar(fila.entregaId)
             return
@@ -178,7 +179,7 @@ class ReplayDeEntregasKds @Inject constructor(
             return
         }
         val reciente = ahora - fila.creadaEnMillis < VENTANA_REINTENTO_MS
-        if (reciente && entregaPorWifi.empujar(mensaje, ESPERA_PANTALLAS_MS)) {
+        if ((reciente || preparation) && entregaPorWifi.empujar(mensaje, ESPERA_PANTALLAS_MS)) {
             Log.i(TAG, "📡 ${fila.entregaId} llegó a la pantalla")
             // M1: SÓLO se registra el acuse — un empuje sin acuse del replay nunca cuenta como fallo (ya lo cuenta el
             // envío en vivo de EntregaPorWifi.entregar; contarlo aquí también duplicaría la racha).
@@ -186,6 +187,8 @@ class ReplayDeEntregasKds @Inject constructor(
             dao.borrar(fila.entregaId)
             return
         }
+        // A retained course is visible on KDS, but never becomes a preparation ticket on paper.
+        if (preparation && trabajo.planes.isEmpty()) return
         // I1: la espera a la pantalla (hasta 3 s + el empuje) da tiempo a un cambio de sucursal, y el refresco de la config
         // (hasta 1.5 s) también. Se revalida ANTES — nunca se refresca la config de una sucursal que ya no es la vigente —
         // y DESPUÉS: la config en memoria podría ser ya la de la otra y el papel saldría en su cocina. Paridad con iOS.

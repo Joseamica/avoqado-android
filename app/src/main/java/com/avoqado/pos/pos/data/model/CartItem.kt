@@ -2,17 +2,22 @@ package com.avoqado.pos.pos.data.model
 
 import java.util.UUID
 import kotlin.math.roundToInt
+import kotlinx.serialization.Serializable
 
+@Serializable
 sealed class CartItemType {
+    @Serializable
     data class ProductItem(val productId: String) : CartItemType()
+    @Serializable
     data object CustomAmount : CartItemType()
 
     /** A prepaid credit pack (membresía) sold from the grid. Behaves like a custom
      *  amount for money/order purposes; the packId is carried so the credits can be
      *  granted to the attached customer on payment success. */
-    data class CreditPack(val packId: String) : CartItemType()
+    @Serializable data class CreditPack(val packId: String) : CartItemType()
 }
 
+@Serializable
 data class CartItem(
     val id: String = UUID.randomUUID().toString(),
     val type: CartItemType,
@@ -48,6 +53,7 @@ data class CartItem(
      *  líneas se pueden agrupar pero no se pueden mandar. */
     val promotionGroupId: String? = null,
     val promotionOptionId: String? = null,
+    val serviceCourse: ServiceCourseSnapshot? = null,
 
     // Customizations
     var selectedModifiers: List<SelectedModifier> = emptyList(),

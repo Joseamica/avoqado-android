@@ -132,6 +132,9 @@ class KDSViewModelTest {
         every { roleManager.canManagePrinters } returns true
         every { planManager.hasFeature("KITCHEN_DISPLAY") } returns true
         coEvery { repo.fetchOrders(any()) } returns lectura
+        coEvery { repo.fetchBoardPage(any(), any()) } coAnswers {
+            repo.fetchOrders(firstArg()).map { KDSRepository.BoardPage(it) }
+        }
         coEvery { repo.fetchDeliveryChannels() } returns Result.success(emptyList())
         return KDSViewModel(
             repo, mockk(relaxed = true), mockk(relaxed = true), printConfig, Provider { cola },
@@ -155,6 +158,29 @@ class KDSViewModelTest {
     }
 
     private val sinInternet = Result.failure<List<KDSOrder>>(IOException("sin internet"))
+
+    @Test fun `board pagination keeps server total and the last good page when the next request fails`() = runTest {
+        val vm = armar(comandas = listOf(comanda("first", 1)))
+        coEvery { repo.fetchBoardPage("st-barra", 0) } returns Result.success(
+            KDSRepository.BoardPage(listOf(comanda("first", 1)), total = 205, nextOffset = 100))
+        vm.refrescar()
+        assertEquals(205, vm.boardPaging.value.total)
+        assertEquals(100, vm.boardPaging.value.nextOffset)
+        coEvery { repo.fetchBoardPage("st-barra", 100) } returns Result.failure(IOException("sin internet"))
+        vm.nextBoardPage(); runCurrent()
+        assertEquals(0, vm.boardPaging.value.offset)
+        assertEquals(listOf("first"), vm.comandas.value.map { it.id })
+        coEvery { repo.fetchBoardPage("st-barra", 100) } returns Result.success(
+            KDSRepository.BoardPage(listOf(comanda("second", 2)), total = 205, nextOffset = 200))
+        vm.nextBoardPage(); runCurrent()
+        assertEquals(100, vm.boardPaging.value.offset)
+        assertEquals(200, vm.boardPaging.value.nextOffset)
+        assertEquals(listOf("second"), vm.comandas.value.map { it.id })
+        vm.previousBoardPage(); runCurrent()
+        assertEquals(0, vm.boardPaging.value.offset)
+        assertEquals(205, vm.boardPaging.value.total)
+        assertEquals(listOf("first"), vm.comandas.value.map { it.id })
+    }
 
     @Test
     fun `P1 abrir la pantalla nunca la prende`() = runTest {

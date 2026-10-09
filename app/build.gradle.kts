@@ -5,7 +5,7 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.hilt)
     alias(libs.plugins.ksp)
-    id("com.google.gms.google-services")  // Firebase
+    id("com.google.gms.google-services") apply false // Firebase
     id("com.google.firebase.crashlytics")  // Firebase Crashlytics
 }
 
@@ -29,6 +29,17 @@ fun configValue(key: String, defaultValue: String): String {
 val releaseBaseUrl = "https://api.avoqado.io/api/v1"
 val defaultDebugBaseUrl = "https://patchiest-noncommemorational-willia.ngrok-free.dev/api/v1"
 val debugBaseUrl = configValue("avoqado.devBaseUrl", defaultDebugBaseUrl).trim()
+// Isolated device QA can coexist with DEV and production without replacing their sessions.
+val debugApplicationIdSuffix = configValue("avoqado.devApplicationIdSuffix", ".dev").trim()
+check(debugApplicationIdSuffix.matches(Regex("\\.[a-z][a-z0-9_]*"))) { "Invalid development application suffix" }
+// An isolated local QA package has no Firebase client. Regular DEV/release keep their configuration.
+if (debugApplicationIdSuffix == ".dev") {
+    apply(plugin = "com.google.gms.google-services")
+} else {
+    check(gradle.startParameter.taskNames.none { it.contains("release", ignoreCase = true) }) {
+        "An isolated local QA package cannot be used for a release build"
+    }
+}
 
 check(debugBaseUrl != releaseBaseUrl) {
     "Debug/development BASE_URL must not point to production. " +
@@ -95,9 +106,9 @@ android {
     buildTypes {
         debug {
             // Distinct package so DEV (ngrok) and PROD (api.avoqado.io) coexist on the same device.
-            applicationIdSuffix = ".dev"
+            applicationIdSuffix = debugApplicationIdSuffix
             versionNameSuffix = "-dev"
-            manifestPlaceholders["appLabel"] = "Avoqado DEV"
+            manifestPlaceholders["appLabel"] = if (debugApplicationIdSuffix == ".dev") "Avoqado DEV" else "Avoqado QA"
             isMinifyEnabled = false
             buildConfigField("String", "BASE_URL", "\"$debugBaseUrl\"")
             buildConfigField("String", "DASHBOARD_URL", "\"$debugDashboardUrl\"")

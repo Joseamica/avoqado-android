@@ -203,8 +203,8 @@ private fun pesos(centavos: Int): String = String.format(Locale.US, "$%.2f", cen
  * No es paso a paso. Los grupos de una sola opción no se preguntan: se listan
  * como "Incluye", para que el cajero pueda decirle al cliente qué trae.
  *
- * Si `promocion.requiereEleccion` es false esta hoja NO se abre: la promoción
- * entra directo al carrito (ver `CheckoutScreen`).
+ * En restaurante/cafetería también se abre para los grupos fijos: cada
+ * producto tiene su tiempo de servicio. Las demás ventas conservan el flujo directo.
  *
  * Plan: .superpowers/sdd/2026-08-15-promociones-pos-cliente/task-6-brief.md
  */
@@ -214,8 +214,15 @@ fun PromotionSheet(
     promocion: Promotion,
     onDismiss: () -> Unit,
     onConfirm: (Map<String, String>) -> Unit,
+    courses: List<com.avoqado.pos.pos.data.model.ServiceCourseSnapshot> = emptyList(),
+    initialCourse: com.avoqado.pos.pos.data.model.ServiceCourseSnapshot? = null,
+    courseNotice: String? = null,
+    onConfirmWithCourses: ((Map<String, String>, Map<String, com.avoqado.pos.pos.data.model.ServiceCourseSnapshot>) -> Unit)? = null,
 ) {
     var selecciones by remember(promocion.id) { mutableStateOf(emptyMap<String, String>()) }
+    var tiempos by remember(promocion.id) { mutableStateOf(promocion.groups.mapNotNull { group ->
+        (initialCourse ?: courses.firstOrNull())?.let { group.id to it }
+    }.toMap()) }
     val preguntables = remember(promocion.id) { gruposConEleccion(promocion) }
     val incluidos = remember(promocion.id) { gruposIncluidos(promocion) }
     val completa = opcionesElegidas(promocion, selecciones) != null
@@ -250,6 +257,13 @@ fun PromotionSheet(
             }
 
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+
+            courseNotice?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            if (courses.isNotEmpty()) {
+                Text("Elige cuándo servir cada producto. El combo se cobra completo.", style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+            }
 
             LazyColumn(
                 modifier = Modifier.heightIn(max = alturaMaximaLista),
@@ -287,6 +301,17 @@ fun PromotionSheet(
                         }
                     }
                 }
+                if (courses.isNotEmpty()) {
+                    items(count = promocion.groups.size, key = { "tiempo-${promocion.groups[it].id}" }) { index ->
+                        val group = promocion.groups[index]
+                        val option = opcionesElegidas(promocion, selecciones)?.firstOrNull { it.grupo.id == group.id }?.opcion
+                            ?: group.options.firstOrNull { it.id == selecciones[group.id] } ?: group.options.singleOrNull()
+                        if (option != null) {
+                            CourseForComponent(label = etiquetaDeOpcion(option), selected = tiempos[group.id], courses = courses,
+                                onSelect = { tiempos = tiempos + (group.id to it) })
+                        }
+                    }
+                }
             }
 
             Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.lg))
@@ -294,7 +319,7 @@ fun PromotionSheet(
             PrimaryButton(
                 // Sin estimado no se escribe un precio inventado.
                 text = if (estimado != null) "Agregar al carrito · ${pesos(estimado)}" else "Agregar al carrito",
-                onClick = { onConfirm(selecciones) },
+                onClick = { onConfirmWithCourses?.invoke(selecciones, tiempos) ?: onConfirm(selecciones) },
                 enabled = completa,
                 fullWidth = true,
             )
@@ -397,4 +422,27 @@ private fun PromotionSheetPreview() {
         onDismiss = {},
         onConfirm = {},
     )
+}
+
+@Composable
+private fun CourseForComponent(
+    label: String,
+    selected: com.avoqado.pos.pos.data.model.ServiceCourseSnapshot?,
+    courses: List<com.avoqado.pos.pos.data.model.ServiceCourseSnapshot>,
+    onSelect: (com.avoqado.pos.pos.data.model.ServiceCourseSnapshot) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    Column {
+        Text(label, style = MaterialTheme.typography.titleSmall)
+        androidx.compose.foundation.layout.Box {
+            androidx.compose.material3.OutlinedButton(onClick = { expanded = true }, modifier = Modifier.fillMaxWidth()) {
+                Text("Tiempo: ${selected?.label ?: "Elegir tiempo"}")
+            }
+            androidx.compose.material3.DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+                courses.forEach { course ->
+                    androidx.compose.material3.DropdownMenuItem(text = { Text(course.label) }, onClick = { onSelect(course); expanded = false })
+                }
+            }
+        }
+    }
 }

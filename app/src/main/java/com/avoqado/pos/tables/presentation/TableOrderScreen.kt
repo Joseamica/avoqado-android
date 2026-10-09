@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -115,6 +116,7 @@ fun TableOrderScreen(
     onPagar: () -> Unit,
     viewModel: TableOrderViewModel = hiltViewModel(),
     catalogViewModel: CartViewModel = hiltViewModel(),
+    promotionsViewModel: com.avoqado.pos.pos.presentation.promotions.PromotionsPanelViewModel = hiltViewModel(),
 ) {
     // SNAPSHOT, not collected: this screen OWNS the session — clearing it on
     // send/exit must not recompose into the null-guard (that double-fired
@@ -130,7 +132,22 @@ fun TableOrderScreen(
     val pendingLines by viewModel.pending.collectAsState()
     val queuedLines by viewModel.queued.collectAsState()
     val selectedCourse by viewModel.selectedCourse.collectAsState()
-    val extraCourses by viewModel.extraCourses.collectAsState()
+    val availableCourses by viewModel.availableCourses.collectAsState()
+    val courseNotice by viewModel.courseNotice.collectAsState()
+    val promotionCatalog by promotionsViewModel.promociones.collectAsState()
+    val promotionState by promotionsViewModel.estado.collectAsState()
+    var showCombos by remember { mutableStateOf(false) }
+    var selectedCombo by remember { mutableStateOf<com.avoqado.pos.pos.data.model.Promotion?>(null) }
+    LaunchedEffect(session?.orderId) { viewModel.refreshServiceCourses(); promotionsViewModel.refresh() }
+    selectedCombo?.let { combo ->
+        com.avoqado.pos.pos.presentation.promotions.PromotionSheet(
+            promocion = combo, onDismiss = { selectedCombo = null }, onConfirm = {}, courses = availableCourses,
+            initialCourse = availableCourses.firstOrNull { it.legacyCourse == selectedCourse },
+            onConfirmWithCourses = { selections, times ->
+                if (viewModel.addPromotion(combo, selections, times)) selectedCombo = null
+            },
+        )
+    }
     val hideSent by viewModel.hideSent.collectAsState()
     val isSending by viewModel.isSending.collectAsState()
     val actionMessage by viewModel.actionMessage.collectAsState()
@@ -152,6 +169,8 @@ fun TableOrderScreen(
     // Square's right-panel tabs: Cuenta (the check) / Acciones (the catalog).
     var panelTab by remember { mutableStateOf(PanelTab.CUENTA) }
     var showCustomAmount by remember { mutableStateOf(false) }
+    var showPreparation by remember { mutableStateOf(false) }
+    var showUrgentPreparation by remember { mutableStateOf(false) }
     var showMoveDialog by remember { mutableStateOf(false) }
     var showAssignSheet by remember { mutableStateOf(false) }
     var showWholeCortesia by remember { mutableStateOf(false) }
@@ -186,7 +205,7 @@ fun TableOrderScreen(
     val tablesViewModel: TablesViewModel = androidx.hilt.navigation.compose.hiltViewModel()
     var unknownBarcode by remember { mutableStateOf<String?>(null) }
     // Menú … por tiempo (¡Listo!/Repetir). Par (curso, abierto).
-    var courseMenuTarget by remember { mutableStateOf<Pair<String?, Boolean>?>(null) }
+    var courseMenuTarget by remember { mutableStateOf<Pair<String?, String>?>(null) }
     var showDiscardDialog by remember { mutableStateOf(false) }
     var showAnularDialog by remember { mutableStateOf(false) }
     var compTarget by remember { mutableStateOf<OrderDetailItem?>(null) }
@@ -321,8 +340,17 @@ fun TableOrderScreen(
                     Column(modifier = Modifier.fillMaxSize()) {
                         contextBar()
                         HorizontalDivider()
+                        Row(modifier = Modifier.fillMaxWidth()) {
+                            TextButton(onClick = { showCombos = false }) { Text("Productos") }
+                            TextButton(onClick = { showCombos = true }) { Text("Combos y paquetes") }
+                        }
+                        courseNotice?.let { Text(it, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(AvoqadoTheme.spacing.md)) }
                         Box(modifier = Modifier.weight(1f)) {
-                            if (showSearch) {
+                            if (showCombos) {
+                                com.avoqado.pos.pos.presentation.promotions.PromotionsPanel(vigentes = promotionCatalog.active, proximas = promotionCatalog.upcoming,
+                                    estado = promotionState, planPermitido = promotionsViewModel.planPermitido, puedeAplicar = promotionsViewModel.puedeAplicar && !readOnlyCheck,
+                                    onPromotionTap = { selectedCombo = it })
+                            } else if (showSearch) {
                                 SearchOverlayView(
                                     viewModel = catalogViewModel,
                                     onProductTap = { handleProductTap(it); showSearch = false },
@@ -364,19 +392,20 @@ fun TableOrderScreen(
                                 pendingLines = pendingLines,
                                 queuedLines = queuedLines,
                                 selectedCourse = selectedCourse,
-                                extraCourses = extraCourses,
+                                availableCourses = availableCourses,
                                 hideSent = hideSent,
                                 isSending = isSending,
                                 onToggleHideSent = { viewModel.toggleHideSent() },
                                 onSelectCourse = { viewModel.selectCourse(it) },
                                 onAddCourse = { viewModel.addExtraCourse() },
+                                onUrgent = { if (!blockIfReadOnly()) showUrgentPreparation = true },
                                 onRemovePending = { viewModel.removePending(it) },
                                 onCycleSeat = { id ->
                                     val maxSeats = (check?.covers ?: floorTable?.currentOrder?.covers ?: 4).coerceAtLeast(1)
                                     viewModel.cyclePendingSeat(id, maxSeats)
                                 },
                                 onSentItemTap = { item -> if (!item.isCortesia && !blockIfReadOnly()) compTarget = item },
-                                onCourseMenu = { c -> courseMenuTarget = c to true },
+                                onCourseMenu = { c, label -> courseMenuTarget = c to label },
                                 pendingCount = viewModel.pendingCount,
                                 pendingTotalCents = viewModel.pendingTotalCents,
                                 onEnviar = { fireSend() },
@@ -460,7 +489,18 @@ fun TableOrderScreen(
             Column(modifier = Modifier.fillMaxSize()) {
                 contextBar()
                 HorizontalDivider()
-                if (showSearch) {
+                Row(modifier = Modifier.fillMaxWidth()) {
+                    TextButton(onClick = { showCombos = false }) { Text("Productos") }
+                    TextButton(onClick = { showCombos = true }) { Text("Combos y paquetes") }
+                }
+                courseNotice?.let { Text(it, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(AvoqadoTheme.spacing.md)) }
+                if (showCombos) {
+                    Box(modifier = Modifier.weight(1f)) {
+                        com.avoqado.pos.pos.presentation.promotions.PromotionsPanel(vigentes = promotionCatalog.active, proximas = promotionCatalog.upcoming,
+                            estado = promotionState, planPermitido = promotionsViewModel.planPermitido, puedeAplicar = promotionsViewModel.puedeAplicar && !readOnlyCheck,
+                            onPromotionTap = { selectedCombo = it })
+                    }
+                } else if (showSearch) {
                     Box(modifier = Modifier.weight(1f)) {
                         SearchOverlayView(
                             viewModel = catalogViewModel,
@@ -522,19 +562,20 @@ fun TableOrderScreen(
                                 pendingLines = pendingLines,
                                 queuedLines = queuedLines,
                                 selectedCourse = selectedCourse,
-                                extraCourses = extraCourses,
+                                availableCourses = availableCourses,
                                 hideSent = hideSent,
                                 isSending = isSending,
                                 onToggleHideSent = { viewModel.toggleHideSent() },
                                 onSelectCourse = { viewModel.selectCourse(it) },
                                 onAddCourse = { viewModel.addExtraCourse() },
+                                onUrgent = { if (!blockIfReadOnly()) showUrgentPreparation = true },
                                 onRemovePending = { viewModel.removePending(it) },
                                 onCycleSeat = { id ->
                                     val maxSeats = (check?.covers ?: floorTable?.currentOrder?.covers ?: 4).coerceAtLeast(1)
                                     viewModel.cyclePendingSeat(id, maxSeats)
                                 },
                                 onSentItemTap = { item -> if (!item.isCortesia && !blockIfReadOnly()) compTarget = item },
-                                onCourseMenu = { c -> courseMenuTarget = c to true },
+                                onCourseMenu = { c, label -> courseMenuTarget = c to label },
                                 pendingCount = viewModel.pendingCount,
                                 pendingTotalCents = viewModel.pendingTotalCents,
                                 onEnviar = { showPhoneCheck = false; fireSend() },
@@ -631,6 +672,10 @@ fun TableOrderScreen(
                 )
             }
         }
+    if (showPreparation) com.avoqado.pos.kds.presentation.PreparationServiceScreen(
+        orderId = active.orderId, onDismiss = { showPreparation = false })
+    if (showUrgentPreparation) com.avoqado.pos.kds.presentation.PreparationServiceScreen(
+        orderId = active.orderId, onDismiss = { showUrgentPreparation = false }, urgentSelection = true)
     }
 
     // Product detail (modifiers/notes) — adds land on the SELECTED course.
@@ -681,18 +726,20 @@ fun TableOrderScreen(
         )
     }
 
-    courseMenuTarget?.takeIf { it.second }?.let { (course, _) ->
+
+    courseMenuTarget?.let { (course, label) ->
         val count = check?.items?.filter { it.course == course }?.sumOf { it.quantity } ?: 0
+        val perProduct = check?.items?.any { it.course == course && it.serviceCourse?.preparationVersion == 1 } == true
         AvoqadoDialog(
-            title = course ?: "Inmediato",
+            title = label,
             description = "$count artículo(s) en este tiempo.",
             onDismiss = { courseMenuTarget = null },
             actionButton = {
                 PrimaryButton(
-                    text = "¡Listo!",
+                    text = if (perProduct) "Ver preparación y liberar" else "¡MARCHAR!",
                     onClick = {
                         courseMenuTarget = null
-                        viewModel.marcharCourse(course)
+                        if (perProduct) showPreparation = true else viewModel.marcharCourse(course)
                     },
                     fullWidth = true,
                 )
@@ -1340,16 +1387,17 @@ internal fun TableCheckPanel(
     /** Offline-first: rondas enviadas SIN red (impresas + en outbox), esperando sync. */
     queuedLines: List<TableOrderViewModel.PendingLine> = emptyList(),
     selectedCourse: String?,
-    extraCourses: List<String>,
+    availableCourses: List<com.avoqado.pos.pos.data.model.ServiceCourseSnapshot>,
     hideSent: Boolean,
     isSending: Boolean,
     onToggleHideSent: () -> Unit,
     onSelectCourse: (String?) -> Unit,
     onAddCourse: () -> Unit,
+    onUrgent: (() -> Unit)? = null,
     onRemovePending: (String) -> Unit,
     onCycleSeat: (String) -> Unit = {},
     onSentItemTap: (OrderDetailItem) -> Unit,
-    onCourseMenu: (String?) -> Unit = {},
+    onCourseMenu: (String?, String) -> Unit = { _, _ -> },
     pendingCount: Int,
     pendingTotalCents: Int,
     onEnviar: () -> Unit,
@@ -1420,9 +1468,10 @@ internal fun TableCheckPanel(
             PendingCard(
                 pendingLines = pendingLines,
                 selectedCourse = selectedCourse,
-                extraCourses = extraCourses,
+                availableCourses = availableCourses,
                 onSelectCourse = onSelectCourse,
                 onAddCourse = onAddCourse,
+                onUrgent = onUrgent,
                 onRemovePending = onRemovePending,
                 onCycleSeat = onCycleSeat,
             )
@@ -1587,7 +1636,7 @@ internal fun TableCheckPanel(
 private fun SentCard(
     sentItems: List<OrderDetailItem>,
     onSentItemTap: (OrderDetailItem) -> Unit,
-    onCourseMenu: (String?) -> Unit = {},
+    onCourseMenu: (String?, String) -> Unit = { _, _ -> },
 ) {
     // RONDA = la unidad de agrupación (modelo Square verificado en el POS real):
     // cada Enviar repite el encabezado del tiempo con SU propia hora — líneas
@@ -1616,9 +1665,10 @@ private fun SentCard(
             }
             Column(modifier = Modifier.padding(AvoqadoTheme.spacing.md)) {
                 val sentAt = key.second
+                val label = items.firstOrNull()?.serviceCourse?.label ?: course ?: "Inmediato"
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = course ?: "Inmediato",
+                        text = label,
                         style = MaterialTheme.typography.labelMedium,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -1630,13 +1680,15 @@ private fun SentCard(
                         contentDescription = "Acciones del tiempo",
                         modifier = Modifier
                             .size(20.dp)
-                            .clickable { onCourseMenu(course) },
+                            .clickable { onCourseMenu(course, label) },
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
                 sentAt?.let {
                     Text(
-                        text = "Enviado a la cocina a las ${timeDisplay(it)}",
+                        text = if (items.any { item -> item.serviceCourse?.preparationVersion == 1 })
+                            "Comanda registrada a las ${timeDisplay(it)} · Consulta preparación"
+                        else "Enviado a la cocina a las ${timeDisplay(it)}",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -1700,13 +1752,14 @@ private fun SentCard(
 private fun PendingCard(
     pendingLines: List<TableOrderViewModel.PendingLine>,
     selectedCourse: String?,
-    extraCourses: List<String>,
+    availableCourses: List<com.avoqado.pos.pos.data.model.ServiceCourseSnapshot>,
     onSelectCourse: (String?) -> Unit,
     onAddCourse: () -> Unit,
+    onUrgent: (() -> Unit)? = null,
     onRemovePending: (String) -> Unit,
     onCycleSeat: (String) -> Unit = {},
 ) {
-    val allCourses: List<String?> = TableOrderViewModel.BASE_COURSES + extraCourses
+    val allCourses: List<String?> = (availableCourses.map { it.legacyCourse } + pendingLines.map { it.course }).distinct()
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -1734,7 +1787,7 @@ private fun PendingCard(
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
-                        text = course ?: "Inmediato",
+                        text = lines.firstOrNull()?.item?.serviceCourse?.label ?: course ?: availableCourses.firstOrNull { it.kind == "IMMEDIATE" }?.label ?: "Inmediato",
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
                         modifier = Modifier.weight(1f),
@@ -1798,17 +1851,16 @@ private fun PendingCard(
                 }
             }
         }
-        // "Más platos" — Square's last row
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clickable(onClick = onAddCourse)
-                .padding(AvoqadoTheme.spacing.md),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-            Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
-            Text("Más platos", style = MaterialTheme.typography.bodyMedium)
+        Row(Modifier.fillMaxWidth().padding(AvoqadoTheme.spacing.sm),
+            horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+            TextButton(onClick = onAddCourse, modifier = Modifier.weight(1f).heightIn(min = 52.dp)) {
+                Text("Configurar tiempos", style = MaterialTheme.typography.bodyMedium)
+            }
+            onUrgent?.let { send ->
+                OutlinedButton(onClick = send, modifier = Modifier.weight(1f).heightIn(min = 52.dp)) {
+                    Text("Enviar urgente", style = MaterialTheme.typography.bodyMedium)
+                }
+            }
         }
     }
 }
@@ -2032,7 +2084,9 @@ internal fun QueuedRoundsCard(queuedLines: List<TableOrderViewModel.PendingLine>
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Text(
-                text = "Por sincronizar — enviado a cocina",
+                text = if (queuedLines.any { it.item.serviceCourse?.preparationVersion == 1 })
+                    "Comanda registrada — por sincronizar"
+                else "Por sincronizar — enviado a cocina",
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -2040,7 +2094,7 @@ internal fun QueuedRoundsCard(queuedLines: List<TableOrderViewModel.PendingLine>
         queuedLines.forEach { line ->
             Row(modifier = Modifier.fillMaxWidth()) {
                 Text(
-                    text = "${line.item.quantity}× ${line.item.name}" + (line.course?.let { " · $it" } ?: ""),
+                    text = "${line.item.quantity}× ${line.item.name}" + (com.avoqado.pos.tables.data.kitchenCourseLabel(line.item.serviceCourse, line.course)?.let { " · $it" } ?: ""),
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.weight(1f),
                 )

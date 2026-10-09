@@ -73,4 +73,22 @@ class EnrutadorLanTest {
         assertEquals(LeaseProtocol.ERROR_VERSION_MISMATCH, KdsLanProtocol.decodeAck(responder(v2, receptor = { true }))?.message)
         assertEquals("Petición ilegible", LeaseProtocol.decodeResponse(responder("<<basura>>"))?.message)
     }
+    @Test fun `preparation only acknowledges correct venue and durable receiver success`() = runTest {
+        val item = com.avoqado.pos.kds.domain.PreparationPeerItem("round:r:s", "sync:r:0", "s", 1, 0,
+            com.avoqado.pos.kds.domain.PreparationCounts(HELD = 1))
+        val command = com.avoqado.pos.kds.domain.PreparationPeerProgress(venueId = "venue-1", deviceId = "d", staffId = "staff",
+            deliveryId = "a:0", intentId = "a", action = com.avoqado.pos.kds.domain.PreparationAction.RELEASE, quantity = 1, items = listOf(item))
+        val protocol = com.avoqado.pos.kds.domain.PreparationPeerProtocol
+        val encoded = protocol.json.encodeToString(com.avoqado.pos.kds.domain.PreparationPeerProgress.serializer(), command)
+        var calls = 0
+        assertFalse(protocol.acknowledged(EnrutadorLan.responder(encoded, "other", emptySet(), null, null, { calls++; true }), command))
+        assertEquals(0, calls)
+        assertFalse(protocol.acknowledged(EnrutadorLan.responder(encoded, "venue-1", emptySet(), null, null, { false }), command))
+        assertFalse(protocol.acknowledged(EnrutadorLan.responder(encoded, "venue-1", emptySet(), null, null), command))
+        assertTrue(protocol.acknowledged(EnrutadorLan.responder(encoded, "venue-1", emptySet(), null, null, { true }), command))
+        assertFalse(protocol.displayed(EnrutadorLan.responder(encoded, "venue-1", setOf("s"), null, null, { true }), command))
+        assertTrue(protocol.displayed(EnrutadorLan.responder(encoded, "venue-1", setOf("s"), null, { true }, { true }, { setOf("s") }), command))
+        assertFalse(protocol.displayed(EnrutadorLan.responder(encoded, "venue-1", emptySet(), null, null, { true }, { setOf("s") }), command))
+    }
+
 }

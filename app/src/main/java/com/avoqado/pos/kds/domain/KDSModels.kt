@@ -40,6 +40,7 @@ data class KDSOrder(
     val sourceKey: String? = null,
     /** Estación a la que el servidor la repartió. `null` = «Sin estación»: sale en todas las pantallas. */
     val printStationId: String? = null,
+    val preparationVersion: Int = 0,
 )
 
 @Serializable
@@ -54,6 +55,13 @@ data class KDSOrderItem(
     val categoryId: String? = null,
     /** KDS 3.6: el tiempo del platillo en una mesa («Aperitivos»). `null` = sin tiempo. */
     val course: String? = null,
+    val orderItemId: String? = null,
+    val externalId: String? = null,
+    val orderPromotionId: String? = null,
+    val serviceCourse: com.avoqado.pos.pos.data.model.ServiceCourseSnapshot? = null,
+    val preparation: PreparationCounts? = null,
+    val preparationRevision: Int = 0,
+    val pendingPreparation: Boolean = false,
 )
 
 /**

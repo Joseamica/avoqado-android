@@ -83,10 +83,14 @@ object KitchenDeliveryPolicy {
             orderType = orderType,
             orderId = orderId,
             createdAtMillis = createdAtMillis,
+            preparationVersion = if (plan.lines.any { it.serviceCourse?.preparationVersion == 1 }) 1 else 0,
             items = plan.lines.mapIndexed { i, l ->
                 KdsComandaItem(
                     id = l.orderItemIds.firstOrNull() ?: "$sourceKey#$i", productName = l.productName, quantity = l.quantity,
                     modifiers = l.modifiers, notes = l.notes, course = curso,
+                    serviceCourse = l.serviceCourse, externalId = l.externalId, orderPromotionId = l.orderPromotionId,
+                    preparation = if (l.serviceCourse?.preparationVersion == 1)
+                        com.avoqado.pos.kds.domain.PreparationCounts.initial(l.quantity, l.serviceCourse.kind == "STANDARD") else null,
                 )
             },
         )

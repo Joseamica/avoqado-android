@@ -99,7 +99,7 @@ internal object KdsLanSql {
         "UPDATE kds_tickets_locales SET listaEnMillis = :ahora WHERE sourceKey = :sourceKey AND listaEnMillis IS NULL"
 
     const val PURGAR_TICKETS: String =
-        "DELETE FROM kds_tickets_locales WHERE venueId = :venueId AND recibidaEnMillis < :corte"
+        "DELETE FROM kds_tickets_locales WHERE venueId = :venueId AND recibidaEnMillis < :corte AND itemsJson NOT LIKE '%\"preparationVersion\":1%'"
 
     /**
      * D9 (ronda 1 de la Task 8): el servidor ya devolvió estos folios — su copia gana, y la local PENDIENTE sobra. Sin

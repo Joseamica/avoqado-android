@@ -49,6 +49,7 @@ data class SavedCartItem(
     val promotionId: String? = null,
     val promotionGroupId: String? = null,
     val promotionOptionId: String? = null,
+    val serviceCourse: ServiceCourseSnapshot? = null,
 )
 
 @Serializable

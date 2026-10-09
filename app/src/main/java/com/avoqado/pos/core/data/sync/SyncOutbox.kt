@@ -68,11 +68,13 @@ class SyncOutbox @Inject constructor(
      */
     private val cajon: com.avoqado.pos.cashdrawer.data.CashDrawerRepository,
     @ApplicationContext context: Context,
+    private val cachedPayloads: com.avoqado.pos.core.data.local.database.CachedPayloadDao,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val replayMutex = Mutex()
     private val json = Json { ignoreUnknownKeys = true }
     private val prefs = context.getSharedPreferences("sync_outbox", Context.MODE_PRIVATE)
+    private val tableDrafts by lazy { com.avoqado.pos.tables.data.TableRoundDraftStore(context) }
 
     private val _pendingCount = MutableStateFlow(0)
     val pendingCount: StateFlow<Int> = _pendingCount.asStateFlow()
@@ -209,19 +211,30 @@ class SyncOutbox @Inject constructor(
         payload: JsonObject,
         id: String = UUID.randomUUID().toString(),
         retenido: Boolean = false,
+        createdAtLocal: Long? = null,
+        preparationSnapshots: List<com.avoqado.pos.core.data.local.database.CachedPayloadEntity>? = null,
+        expectedActorStaffId: String? = null,
     ): String {
+        val actor = secureStorage.userId
+        if (type == SyncIntentTypes.KDS_ITEM_PROGRESS) {
+            check(!actor.isNullOrBlank() && actor == expectedActorStaffId && secureStorage.venueId == venueId) {
+                "Cambió la sesión. Revisa el producto antes de continuar."
+            }
+            require(!retenido && preparationSnapshots != null)
+        } else require(preparationSnapshots == null)
         // seq asignado ATÓMICAMENTE (maxSeq+insert en una transacción).
-        val seq = dao.insertWithNextSeq(
-            SyncIntentEntity(
+        val entity = SyncIntentEntity(
                 id = id,
                 venueId = venueId,
-                staffId = secureStorage.userId,
+                staffId = actor,
                 seq = 0, // reemplazado dentro de insertWithNextSeq
                 type = type,
                 payloadJson = json.encodeToString(JsonObject.serializer(), payload),
                 status = if (retenido) SyncIntentEntity.STATUS_HELD else SyncIntentEntity.STATUS_PENDING,
-            ),
-        )
+                createdAt = createdAtLocal ?: System.currentTimeMillis(),
+            )
+        val seq = if (preparationSnapshots == null) dao.insertWithNextSeq(entity)
+            else dao.insertPreparationWithNextSeq(entity, preparationSnapshots)
         refreshCounts(venueId)
         Log.d(TAG, "📥 Encolado $type seq=$seq id=$id${if (retenido) " (retenido)" else ""}")
         if (!retenido) scope.launch { replayNow(venueId) }
@@ -244,6 +257,16 @@ class SyncOutbox @Inject constructor(
 
     // MARK: - Replay
 
+    private suspend fun preparationLanesNegotiated(venueId: String): Boolean {
+        if (secureStorage.venueId != venueId) return false
+        val saved = cachedPayloads.get("preparation_capabilities:$venueId") ?: return false
+        if (saved.venueId != venueId) return false
+        val capability = runCatching {
+            json.decodeFromString<com.avoqado.pos.kds.domain.PreparationCapabilities>(saved.json)
+        }.getOrNull() ?: return false
+        return capability.version == 1 && capability.enabled && capability.replayLaneVersion == 1
+    }
+
     suspend fun replayNow(venueId: String) {
         if (
             activeVenueId != venueId ||
@@ -260,85 +283,118 @@ class SyncOutbox @Inject constructor(
             .onFailure { Log.e(TAG, "❌ No se pudo sincronizar el cajón antes del outbox: ${it.message}") }
             .getOrDefault(true)
         replayMutex.withLock {
-            while (true) {
-                if (activeVenueId != venueId) break
-                val leidos = dao.pendingFifo(venueId, BATCH_SIZE)
-                if (leidos.isEmpty()) break
+            val lanes: List<Boolean?> = if (preparationLanesNegotiated(venueId)) listOf(false, true) else listOf(null)
+            for (lane in lanes) {
+                while (true) {
+                    if (activeVenueId != venueId || lane != null && secureStorage.venueId != venueId) break
+                    val leidos = if (lane == null) dao.pendingFifo(venueId, BATCH_SIZE)
+                        else dao.pendingFifoLane(venueId, lane, BATCH_SIZE)
+                    if (leidos.isEmpty()) break
 
-                // 🔴 RONDA EN VUELO (spec §5): lo que va detrás de una ronda retenida NO sale hasta que ella se suelte o
-                // se descarte. Mismo principio que la barrera del cajón: cortar, nunca reordenar.
-                val antesDeLaRetenida = leidos.take(hastaElPrimerRetenido(leidos.map { it.status }))
-                if (antesDeLaRetenida.isEmpty()) {
-                    Log.d(TAG, "⏸️ Una ronda en vuelo retiene la cola")
-                    break
-                }
-
-                // 🔴 SE CORTA EN EL PRIMER `PAY_CASH`, NO SE REORDENA. El FIFO por aparato es lo
-                // que hace que una mesa se abra antes de que le agreguen artículos: adelantar lo
-                // que no es dinero rompería ese orden. Lo que NO es dinero sigue fluyendo; el
-                // cobro en efectivo y todo lo posterior esperan a que la caja aterrice.
-                val cuantos = cuantosIntentsSePuedenMandar(antesDeLaRetenida.map { it.type }, cobrosPuedenSalir)
-                val batch = antesDeLaRetenida.take(cuantos)
-                if (batch.isEmpty()) {
-                    Log.w(TAG, "⏸️ El outbox se detiene en el primer PAY_CASH: la caja aún no llega al servidor")
-                    break
-                }
-
-                val request = SyncIntentsRequest(
-                    deviceId = deviceId,
-                    intents = batch.map {
-                        SyncIntentWire(
-                            id = it.id,
-                            seq = it.seq,
-                            type = it.type,
-                            payload = json.decodeFromString(JsonObject.serializer(), it.payloadJson),
-                            staffId = it.staffId,
-                            createdAtLocal = it.createdAt,
-                        )
-                    },
-                )
-
-                val response = try {
-                    apiService.syncIntents(venueId, request)
-                } catch (e: Exception) {
-                    // Error de red/5xx: los intents quedan PENDING y el próximo
-                    // trigger reintenta (idempotente). Jamás se pierden.
-                    Log.w(TAG, "⚠️ Replay interrumpido (${batch.size} pendientes): ${e.message}")
-                    break
-                }
-
-                var sawRetry = false
-                for (ack in response.data) {
-                    if (ack.isRetry) {
-                        // Transitorio: el intent se queda PENDING (no lo resolvemos).
-                        // El server ya cortó el batch aquí (FIFO), así que salimos
-                        // del while para NO re-leer el mismo PENDING en caliente;
-                        // el próximo trigger (timer/reconexión) reintenta.
-                        sawRetry = true
-                        Log.d(TAG, "🔁 Intent ${ack.id} RETRY (${ack.errorCode}) — sigue pendiente, reintentaré")
-                        _acks.emit(ack)
+                    // 🔴 RONDA EN VUELO (spec §5): lo que va detrás de una ronda retenida NO sale hasta que ella se suelte o
+                    // se descarte. Mismo principio que la barrera del cajón: cortar, nunca reordenar.
+                    val antesDeLaRetenida = leidos.take(hastaElPrimerRetenido(leidos.map { it.status }))
+                    if (antesDeLaRetenida.isEmpty()) {
+                        Log.d(TAG, "⏸️ Una ronda en vuelo retiene la cola")
                         break
                     }
-                    dao.resolve(
-                        id = ack.id,
-                        status = if (ack.isAcked) SyncIntentEntity.STATUS_ACKED else SyncIntentEntity.STATUS_REJECTED,
-                        errorCode = ack.errorCode,
-                        message = ack.message,
-                        resultJson = ack.result?.let { json.encodeToString(JsonObject.serializer(), it) },
-                    )
-                    _acks.emit(ack)
-                    if (!ack.isAcked) {
-                        Log.w(TAG, "🚫 Intent ${ack.id} RECHAZADO: ${ack.errorCode} — ${ack.message}")
+
+                    // 🔴 SE CORTA EN EL PRIMER `PAY_CASH`, NO SE REORDENA. El FIFO por aparato es lo
+                    // que hace que una mesa se abra antes de que le agreguen artículos: adelantar lo
+                    // que no es dinero rompería ese orden. Lo que NO es dinero sigue fluyendo; el
+                    // cobro en efectivo y todo lo posterior esperan a que la caja aterrice.
+                    val cuantos = cuantosIntentsSePuedenMandar(antesDeLaRetenida.map { it.type }, cobrosPuedenSalir)
+                    val batch = antesDeLaRetenida.take(cuantos)
+                    if (batch.isEmpty()) {
+                        Log.w(TAG, "⏸️ El outbox se detiene en el primer PAY_CASH: la caja aún no llega al servidor")
+                        break
                     }
-                }
-                refreshCounts(venueId)
-                Log.d(TAG, "✅ Replay de ${batch.size} intents aplicado")
-                if (sawRetry) break // no hot-loop sobre el mismo PENDING
-                if (batch.size < leidos.size) {
-                    // El lote venía recortado por la barrera del cajón o por una ronda en vuelo. Volver al
-                    // `while` lo re-leería en caliente.
-                    Log.w(TAG, "⏸️ Quedan ${leidos.size - batch.size} intents esperando (caja o ronda en vuelo)")
-                    break
+
+                    val request = SyncIntentsRequest(
+                        deviceId = deviceId,
+                        intents = batch.map {
+                            SyncIntentWire(
+                                id = it.id,
+                                seq = it.seq,
+                                type = it.type,
+                                payload = json.decodeFromString(JsonObject.serializer(), it.payloadJson),
+                                staffId = it.staffId,
+                                createdAtLocal = it.createdAt,
+                            )
+                        },
+                    )
+
+                    val response = try {
+                        apiService.syncIntents(venueId, request)
+                    } catch (e: Exception) {
+                        // Error de red/5xx: los intents quedan PENDING y el próximo
+                        // trigger reintenta (idempotente). Jamás se pierden.
+                        Log.w(TAG, "⚠️ Replay interrumpido (${batch.size} pendientes): ${e.message}")
+                        break
+                    }
+
+                    if (response.data.isEmpty() || response.data.any { ack ->
+                        batch.none { it.id == ack.id } || ack.status !in setOf("ACKED", "REJECTED", "RETRY")
+                    } || response.data.map { it.id }.distinct().size != response.data.size) {
+                        Log.w(TAG, "Respuesta de sync ilegible; las operaciones siguen pendientes")
+                        break
+                    }
+
+                    var sawRetry = false
+                    for (ack in response.data) {
+                        val row = batch.firstOrNull { it.id == ack.id } ?: continue
+                        if (ack.isRetry) {
+                            // Transitorio: el intent se queda PENDING (no lo resolvemos).
+                            // El server ya cortó el batch aquí (FIFO), así que salimos
+                            // del while para NO re-leer el mismo PENDING en caliente;
+                            // el próximo trigger (timer/reconexión) reintenta.
+                            sawRetry = true
+                            Log.d(TAG, "🔁 Intent ${ack.id} RETRY (${ack.errorCode}) — sigue pendiente, reintentaré")
+                            if (activeVenueId == venueId) _acks.emit(ack)
+                            break
+                        }
+                        if (ack.isAcked && row.type == SyncIntentTypes.OPEN_TABLE) {
+                            try {
+                                val payload = json.decodeFromString(JsonObject.serializer(), row.payloadJson)
+                                if (payload["localOrderId"] != null || ack.result?.get("localOrderId") != null) {
+                                    val local = (ack.result?.get("localOrderId") as? kotlinx.serialization.json.JsonPrimitive)?.content
+                                    val order = (ack.result?.get("orderId") as? kotlinx.serialization.json.JsonPrimitive)?.content
+                                    require(!local.isNullOrBlank() && !order.isNullOrBlank() && payload["localOrderId"] == ack.result?.get("localOrderId"))
+                                    tableDrafts.promote(row.venueId, local, order)
+                                }
+                            } catch (e: Exception) {
+                                val message = "No se pudo recuperar el pedido guardado. No se borró; se intentará de nuevo."
+                                dao.resolve(ack.id, SyncIntentEntity.STATUS_PENDING, LOCAL_DRAFT_RECOVERY_FAILED, message, null)
+                                val localRef = runCatching { json.decodeFromString(JsonObject.serializer(), row.payloadJson)["localOrderId"] }.getOrNull()
+                                val recoveryResult = JsonObject((ack.result ?: JsonObject(emptyMap())) + listOfNotNull(localRef?.let { "localOrderId" to it }).toMap())
+                                if (activeVenueId == venueId) _acks.emit(ack.copy(status = "RETRY", errorCode = LOCAL_DRAFT_RECOVERY_FAILED, message = message, result = recoveryResult))
+                                Log.e(TAG, "No se pudo guardar el cambio de identidad de la mesa", e)
+                                sawRetry = true
+                                break
+                            }
+                        }
+                        dao.resolve(
+                            id = ack.id,
+                            status = if (ack.isAcked) SyncIntentEntity.STATUS_ACKED else SyncIntentEntity.STATUS_REJECTED,
+                            errorCode = ack.errorCode,
+                            message = ack.message,
+                            resultJson = ack.result?.let { json.encodeToString(JsonObject.serializer(), it) },
+                        )
+                        if (activeVenueId == venueId) _acks.emit(ack)
+                        if (!ack.isAcked) {
+                            Log.w(TAG, "🚫 Intent ${ack.id} RECHAZADO: ${ack.errorCode} — ${ack.message}")
+                        }
+                    }
+                    refreshCounts(venueId)
+                    Log.d(TAG, "✅ Replay de ${batch.size} intents aplicado")
+                    if (sawRetry) break // no hot-loop sobre el mismo PENDING
+                    if (response.data.size != batch.size) break // partial response must not spin
+                    if (batch.size < leidos.size) {
+                        // El lote venía recortado por la barrera del cajón o por una ronda en vuelo. Volver al
+                        // `while` lo re-leería en caliente.
+                        Log.w(TAG, "⏸️ Quedan ${leidos.size - batch.size} intents esperando (caja o ronda en vuelo)")
+                        break
+                    }
                 }
             }
         }
@@ -380,6 +436,7 @@ class SyncOutbox @Inject constructor(
         dao.pendingCount(venueId) + dao.heldCount(venueId) + dao.rejectedCount(venueId)
 
     companion object {
+        const val LOCAL_DRAFT_RECOVERY_FAILED = "LOCAL_DRAFT_RECOVERY_FAILED"
         /** El tipo de intent que MUEVE DINERO EN EFECTIVO. Espejo exacto del `SyncIntentType` del server. */
         internal const val TIPO_PAGO_EN_EFECTIVO = "PAY_CASH"
 

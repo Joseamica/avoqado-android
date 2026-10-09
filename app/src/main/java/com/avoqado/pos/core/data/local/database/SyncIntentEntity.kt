@@ -74,6 +74,29 @@ data class SyncIntentPayload(
 
 @Dao
 interface SyncIntentDao {
+    @Query("SELECT * FROM cached_payloads WHERE venue_id = :venueId AND cache_key IN (:keys) LIMIT 100")
+    suspend fun preparationBefore(venueId: String, keys: List<String>): List<CachedPayloadEntity>
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun savePreparationSnapshots(snapshots: List<CachedPayloadEntity>)
+
+    /** Intent and its optimistic progress survive together, including a process killed after the commit. */
+    @androidx.room.Transaction
+    suspend fun insertPreparationWithNextSeq(entity: SyncIntentEntity, snapshots: List<CachedPayloadEntity>): Long {
+        require(entity.type == "KDS_ITEM_PROGRESS" && entity.status == SyncIntentEntity.STATUS_PENDING)
+        com.avoqado.pos.kds.domain.validatePreparationSnapshots(entity.id, entity.venueId, entity.staffId, snapshots)
+        snapshots.singleOrNull { it.cacheKey == "preparation:${entity.venueId}:delivery:${entity.id}" }?.let { record ->
+            val job = com.avoqado.pos.kds.domain.PreparationPeerProtocol.json.decodeFromString<com.avoqado.pos.kds.domain.PreparationDeliveryJob>(record.json)
+            val keys = job.commands.flatMap { it.items }.map { "preparation:${entity.venueId}:${it.stableKey}" }
+            if (keys.isNotEmpty()) com.avoqado.pos.kds.domain.validatePreparationPredecessors(job, snapshots, preparationBefore(entity.venueId, keys))
+        }
+        val seq = maxSeq() + 1
+        check(insert(entity.copy(seq = seq)) != -1L) { "Esta acción ya fue guardada" }
+        savePreparationSnapshots(snapshots)
+        return seq
+    }
+
+    @Query("SELECT * FROM pos_sync_intents WHERE venue_id = :venueId AND id IN (:ids)")
+    suspend fun preparationStatuses(venueId: String, ids: List<String>): List<SyncIntentEntity>
     /** IGNORE: el mismo intent nunca se encola dos veces (dedup local). */
     @Insert(onConflict = OnConflictStrategy.IGNORE)
     suspend fun insert(entity: SyncIntentEntity): Long
@@ -94,6 +117,10 @@ interface SyncIntentDao {
     /** Lo que falta mandar, CON las rondas retenidas: el replay corta antes de la primera (barrera FIFO). */
     @Query("SELECT * FROM pos_sync_intents WHERE venue_id = :venueId AND status IN ('${SyncIntentEntity.STATUS_PENDING}', '${SyncIntentEntity.STATUS_HELD}') ORDER BY seq ASC LIMIT :limit")
     suspend fun pendingFifo(venueId: String, limit: Int = 50): List<SyncIntentEntity>
+
+    /** Negotiated lanes share the global seq, but each keeps its own held/retry barrier. */
+    @Query("SELECT * FROM pos_sync_intents WHERE venue_id = :venueId AND status IN ('PENDING', 'HELD') AND ((:preparationLane = 1 AND type = 'KDS_ITEM_PROGRESS') OR (:preparationLane = 0 AND type != 'KDS_ITEM_PROGRESS')) ORDER BY seq ASC LIMIT :limit")
+    suspend fun pendingFifoLane(venueId: String, preparationLane: Boolean, limit: Int = 50): List<SyncIntentEntity>
 
     /** La ronda en vuelo falló por red: vuelve a la cola como un intent cualquiera. */
     @Query("UPDATE pos_sync_intents SET status = '${SyncIntentEntity.STATUS_PENDING}' WHERE id = :id AND status = '${SyncIntentEntity.STATUS_HELD}'")

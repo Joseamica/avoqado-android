@@ -103,6 +103,33 @@ class LanDiscoveryCarrerasTest {
         assertEquals("lo encolado no se resuelve", 1, resoluciones.size)
     }
 
+    @Test
+    fun `un peer perdido vuelve a buscarse sin reabrir su pantalla y callbacks viejos no lo borran`() {
+        discovery.buscar()
+        val original = busquedas.single()
+        original.onServiceFound(servicio("nexgo1"))
+        resoluciones.single().onServiceResolved(servicio("nexgo1"))
+        original.onServiceLost(servicio("nexgo1"))
+        assertTrue(peersVistos().isEmpty())
+
+        discovery.refrescar()
+        verify(exactly = 1) { nsd.stopServiceDiscovery(original) }
+        assertEquals("se espera la baja antes de otra búsqueda", 1, busquedas.size)
+        original.onDiscoveryStopped("_avoqado-pos._tcp.")
+        assertEquals(2, busquedas.size)
+        val nueva = busquedas.last()
+        nueva.onServiceFound(servicio("nexgo1"))
+        resoluciones.last().onServiceResolved(servicio("nexgo1"))
+        assertEquals(1, peersVistos().size)
+        original.onServiceLost(servicio("nexgo1"))
+        assertEquals("callback de la búsqueda vieja no borra el peer recuperado", 1, peersVistos().size)
+
+        discovery.parar()
+        nueva.onDiscoveryStopped("_avoqado-pos._tcp.")
+        discovery.refrescar()
+        assertEquals("parar es terminal: no revive otra sucursal", 2, busquedas.size)
+    }
+
     // MARK: - QA D1 (29-sep): una pantalla ya conocida cambia su TXT y NSD no avisa
 
     private fun peersVistos() = recibidos.lastOrNull().orEmpty()

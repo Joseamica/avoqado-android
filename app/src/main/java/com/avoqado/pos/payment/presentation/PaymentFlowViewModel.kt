@@ -2992,6 +2992,15 @@ class PaymentFlowViewModel @Inject constructor(
         // cliente enfrente. Se dice como «No salió la comanda» —sin botón: no hay trabajo que reenviar—
         // y sólo la cancelación se propaga.
         try {
+            val coursePedidos = com.avoqado.pos.payment.domain.buildCounterCoursePedidos(realItems)
+            if (coursePedidos != null) {
+                comandaDispatcher.despacharEnFondo(
+                    venueId = secureStorage.venueId, orderNumber = orderNumber, pedidos = coursePedidos,
+                    orderId = createdOrderId, servidorLaTiene = servidorLaTiene, origenDelFolio = origenDelFolio,
+                    alCambiarEstado = { estado -> aplicarEstadoDeComanda(estado, orderNumber) },
+                ).join()
+                return
+            }
             comandaDispatcher.dispatch(
                 venueId = secureStorage.venueId,
                 lines = realItems.map { item ->

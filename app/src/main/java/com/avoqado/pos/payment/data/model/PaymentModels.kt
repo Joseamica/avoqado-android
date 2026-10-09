@@ -203,6 +203,7 @@ data class CreateOrderRequest(
 data class PromotionSelectionRequest(
     val groupId: String,
     val optionId: String,
+    val serviceCourse: com.avoqado.pos.pos.data.model.ServiceCourseSnapshot? = null,
 )
 
 /**
@@ -254,6 +255,8 @@ data class OrderItemRequest(
      * Constrúyela con [promocion], no a mano.
      */
     val promotionRef: PromotionRefRequest? = null,
+    val serviceCourse: com.avoqado.pos.pos.data.model.ServiceCourseSnapshot? = null,
+    val externalId: String? = null,
 ) {
     /** Línea de promoción: el ref y nada más. Ver [promotionRef]. */
     companion object {

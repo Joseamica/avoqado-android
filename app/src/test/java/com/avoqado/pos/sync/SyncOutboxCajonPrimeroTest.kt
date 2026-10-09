@@ -82,7 +82,7 @@ class SyncOutboxCajonPrimeroTest {
             pedidos += request
             SyncIntentsResponse(data = request.intents.map { SyncAck(id = it.id, status = "ACKED") })
         }
-        return SyncOutbox(dao, apiService, connectivityMonitor, secureStorage, cajon, context)
+        return SyncOutbox(dao, apiService, connectivityMonitor, secureStorage, cajon, context, mockk(relaxed = true))
     }
 
     /** Los tipos que el outbox llegó a mandar, en orden, a lo largo de toda la corrida. */

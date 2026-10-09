@@ -57,6 +57,14 @@ class KDSRepositoryTest {
 
     private fun lista(vararg comandas: String) = "{\"success\":true,\"data\":[${comandas.joinToString(",")}]}"
 
+
+    @Test fun `board page exposes total and next page while requesting priority before the server limit`() = runTest {
+        server.enqueue(MockResponse().setBody("""{"data":[${comanda()}],"page":{"total":250,"offset":100,"limit":100,"nextOffset":101}}"""))
+        val page = repo.fetchBoardPage("st-barra", 100).getOrThrow()
+        assertEquals(250, page.total); assertEquals(101, page.nextOffset); assertEquals(1, page.items.size)
+        val url = server.takeRequest(1, TimeUnit.SECONDS)!!.requestUrl!!
+        assertEquals("1", url.queryParameter("urgencyVersion")); assertEquals("100", url.queryParameter("offset"))
+    }
     @Test
     fun `el tablero pide SU estacion y lee el folio y la estacion de cada comanda`() = runTest {
         server.enqueue(MockResponse().setBody(lista(comanda("sale:ext-1:st-barra", "st-barra"))))

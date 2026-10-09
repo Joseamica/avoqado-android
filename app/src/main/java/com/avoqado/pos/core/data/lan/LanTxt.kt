@@ -16,6 +16,8 @@ object LanTxt {
         bootedAtMillis: Long,
         kdsStations: Set<String>,
         hub: Boolean,
+        preparationVersion: Int = 0,
+        urgencyVersion: Int = 0,
     ): Map<String, String> {
         val txt = linkedMapOf(
             LeaseProtocol.TXT_DEVICE_ID to deviceId,
@@ -25,6 +27,8 @@ object LanTxt {
             LeaseProtocol.TXT_HUB to if (hub) "1" else "0",
         )
         if (kdsStations.isNotEmpty()) txt[LeaseProtocol.TXT_KDS] = kdsStations.sorted().joinToString(",")
+        if (preparationVersion == 1) txt["prep"] = "1"
+        if (preparationVersion == 1 && urgencyVersion == 1) txt["urg"] = "1"
         return txt
     }
 
@@ -50,6 +54,8 @@ object LanTxt {
             bootedAtMillis = txt[LeaseProtocol.TXT_BOOTED_AT]?.toLongOrNull() ?: 0L,
             kdsStations = estacionesDe(txt[LeaseProtocol.TXT_KDS]),
             sirveLeases = txt[LeaseProtocol.TXT_HUB] != "0",
+            preparationVersion = if (peerVenue == myVenueId && txt["prep"] == "1") 1 else 0,
+            urgencyVersion = if (peerVenue == myVenueId && txt["prep"] == "1" && txt["urg"] == "1") 1 else 0,
         )
     }
 }

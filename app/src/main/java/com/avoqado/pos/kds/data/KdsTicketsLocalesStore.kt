@@ -42,6 +42,9 @@ class KdsTicketsLocalesStore @Inject constructor(private val dao: KdsTicketsLoca
      * entre las dos escondía el curso ya acusado.
      */
     suspend fun unir(comanda: KdsComanda, ahora: Long = System.currentTimeMillis()): Boolean = try {
+        require(comanda.preparationVersion != 1 || comanda.items.all {
+            it.serviceCourse?.preparationVersion == 1 && it.preparation?.validFor(it.quantity) == true && it.externalId != null
+        }) { "La comanda necesita identificadores y estados por producto" }
         val guardada = dao.unir(
             KdsTicketLocalEntity(
                 sourceKey = comanda.sourceKey, venueId = comanda.venueId, stationId = comanda.stationId,
@@ -65,6 +68,7 @@ class KdsTicketsLocalesStore @Inject constructor(private val dao: KdsTicketsLoca
      * transacción del DAO ([KdsTicketsLocalesDao.marcarListaOCrear]) — aquí sólo se arma la sombra. Espejo de iOS.
      */
     suspend fun marcarLista(orden: KDSOrder, venueId: String, stationId: String, ahora: Long = System.currentTimeMillis()) {
+        check(orden.preparationVersion != 1) { "Usa las acciones de cada producto" }
         val sourceKey = orden.sourceKey ?: return
         dao.marcarListaOCrear(
             KdsTicketLocalEntity(
@@ -108,7 +112,8 @@ class KdsTicketsLocalesStore @Inject constructor(private val dao: KdsTicketsLoca
     private fun KdsTicketLocalEntity.aDominio() = KdsTicketLocal(
         sourceKey = sourceKey, venueId = venueId, stationId = stationId, orderNumber = orderNumber, orderType = orderType,
         items = runCatching { json.decodeFromString(items, itemsJson) }.getOrDefault(emptyList())
-            .map { KDSOrderItem(id = it.id, productName = it.productName, quantity = it.quantity, modifiers = it.modifiers, notes = it.notes, course = it.course) },
+            .map { KDSOrderItem(id = it.id, productName = it.productName, quantity = it.quantity, modifiers = it.modifiers, notes = it.notes, course = it.course,
+                externalId = it.externalId, serviceCourse = it.serviceCourse, orderPromotionId = it.orderPromotionId, preparation = it.preparation) },
         recibidaEnMillis = recibidaEnMillis, listaEnMillis = listaEnMillis,
     )
 

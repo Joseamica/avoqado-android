@@ -173,6 +173,7 @@ data class Modifier(
     val priceInCents: Int get() = price.aCentavos()
 }
 
+@Serializable
 data class SelectedModifier(
     val groupId: String,
     val groupName: String,

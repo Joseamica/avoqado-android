@@ -457,6 +457,15 @@ class OrderRepository @Inject constructor(
                                                                 buildJsonObject {
                                                                     put("groupId", selection.groupId)
                                                                     put("optionId", selection.optionId)
+                                                                    selection.serviceCourse?.let { course ->
+                                                                        put("serviceCourse", buildJsonObject {
+                                                                            put("id", course.id)
+                                                                            put("label", course.label)
+                                                                            put("kind", course.kind)
+                                                                            course.preparationVersion?.let { put("preparationVersion", it) }
+                                                                            course.sortOrder?.let { put("sortOrder", it) }
+                                                                        })
+                                                                    }
                                                                 },
                                                             )
                                                         }
@@ -496,6 +505,14 @@ class OrderRepository @Inject constructor(
                                     }
 
                                     if (promotionRef == null) {
+                                        item.externalId?.let { put("externalId", it) }
+                                        item.serviceCourse?.let { course ->
+                                            put("serviceCourse", buildJsonObject {
+                                                put("id", course.id); put("label", course.label); put("kind", course.kind)
+                                                course.preparationVersion?.let { put("preparationVersion", it) }
+                                                course.sortOrder?.let { put("sortOrder", it) }
+                                            })
+                                        }
                                         item.note
                                             ?.trim()
                                             ?.takeIf { it.isNotEmpty() }

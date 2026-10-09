@@ -28,7 +28,7 @@ private const val TAG = "ClienteDeComandas"
 class ClienteDeComandas @Inject constructor() {
 
     suspend fun entregar(peer: LanPeer, mensaje: KdsComanda, presupuestoMs: Long = PRESUPUESTO_MS): Boolean =
-        KdsLanProtocol.esAcuse(enviar(peer, KdsLanProtocol.encode(mensaje), presupuestoMs), mensaje.sourceKey)
+        KdsLanProtocol.esAcuse(enviar(peer, KdsLanProtocol.encode(mensaje), presupuestoMs), mensaje.sourceKey, mensaje.preparationVersion)
 
     /** Una conexión = una línea = una respuesta. `null` = sin respuesta dentro del presupuesto (o ilegible/excesiva). */
     suspend fun enviar(peer: LanPeer, linea: String, presupuestoMs: Long = PRESUPUESTO_MS): String? = coroutineScope {

@@ -39,17 +39,20 @@ object KdsLanProtocol {
      * son «sin acuse» ⇒ papel. Un acuse laxo escondería una comanda que nadie vio: la respuesta de un aparato viejo, o
      * la de otra entrega que se cruzó.
      */
-    fun esAcuse(line: String?, sourceKey: String): Boolean {
+    fun esAcuse(line: String?, sourceKey: String, preparationVersion: Int = 0): Boolean {
         val ack = line?.let { decodeAck(it) } ?: return false
-        return ack.version == LeaseProtocol.PROTOCOL_VERSION && ack.status == LeaseProtocol.STATUS_OK && ack.sourceKey == sourceKey
+        return ack.version == LeaseProtocol.PROTOCOL_VERSION && ack.status == LeaseProtocol.STATUS_OK && ack.sourceKey == sourceKey &&
+            (preparationVersion == 0 || ack.preparationVersion == preparationVersion)
     }
 
-    fun acuse(sourceKey: String) = KdsComandaAck(status = LeaseProtocol.STATUS_OK, sourceKey = sourceKey)
+    fun acuse(sourceKey: String, preparationVersion: Int = 0) = KdsComandaAck(status = LeaseProtocol.STATUS_OK,
+        sourceKey = sourceKey, preparationVersion = preparationVersion.takeIf { it > 0 })
 
     fun rechazo(mensaje: String) = KdsComandaAck(status = LeaseProtocol.STATUS_ERROR, message = mensaje)
 }
 
 @Serializable
+@OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
 data class KdsComandaItem(
     /** `ConsolidatedLine.orderItemIds.first()`, o `"<sourceKey>#<idx>"` si no hay. Sólo para mostrar y para UNIR cursos. */
     val id: String,
@@ -59,9 +62,18 @@ data class KdsComandaItem(
     val notes: String? = null,
     /** KDS 3.6: el tiempo del platillo («Aperitivos»); `null` = sin tiempo. Swift lo OMITE cuando es nil. */
     val course: String? = null,
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val serviceCourse: com.avoqado.pos.pos.data.model.ServiceCourseSnapshot? = null,
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val externalId: String? = null,
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val orderPromotionId: String? = null,
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val preparation: com.avoqado.pos.kds.domain.PreparationCounts? = null,
 )
 
 @Serializable
+@OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
 data class KdsComanda(
     @SerialName("v") val version: Int = LeaseProtocol.PROTOCOL_VERSION,
     val op: String = KdsLanProtocol.OP_COMANDA,
@@ -77,12 +89,17 @@ data class KdsComanda(
     val orderId: String? = null,
     val createdAtMillis: Long,
     val items: List<KdsComandaItem>,
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val preparationVersion: Int = 0,
 )
 
 @Serializable
+@OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
 data class KdsComandaAck(
     @SerialName("v") val version: Int = LeaseProtocol.PROTOCOL_VERSION,
     val status: String,
     val sourceKey: String? = null,
     val message: String? = null,
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val preparationVersion: Int? = null,
 )

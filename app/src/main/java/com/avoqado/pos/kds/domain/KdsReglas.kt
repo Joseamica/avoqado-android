@@ -87,7 +87,7 @@ const val TOPE_DEL_TABLERO = 100
 
 /** «Marcar todas listas»: nunca un delivery que nadie ha aceptado (terminarlo le diría «listo» a Uber). */
 fun idsParaMarcarTodas(comandas: List<KDSOrder>): List<String> =
-    comandas.filterNot { it.needsAcceptance }.map { it.id }.take(TOPE_DEL_TABLERO)
+    comandas.filterNot { it.needsAcceptance || it.preparationVersion == 1 }.map { it.id }.take(TOPE_DEL_TABLERO)
 
 // MARK: - KDS 3.6: los tiempos de una mesa
 
@@ -101,6 +101,14 @@ data class GrupoDeTiempo(val tiempo: String?, val items: List<KDSOrderItem>)
  * orden en que aparece cada uno.
  */
 fun gruposPorTiempo(items: List<KDSOrderItem>): List<GrupoDeTiempo> {
+    if (items.any { it.serviceCourse != null }) {
+        return items.groupBy { it.serviceCourse?.label ?: it.course ?: TextosDeCocina.INMEDIATO }
+            .map { (name, rows) -> GrupoDeTiempo(name, rows) }
+            .sortedBy { group -> group.items.minOf { item ->
+                if (item.serviceCourse?.kind == "IMMEDIATE" || item.serviceCourse == null && item.course == null) Int.MIN_VALUE
+                else item.serviceCourse?.sortOrder ?: Int.MAX_VALUE
+            } }
+    }
     if (items.none { it.course != null }) return listOf(GrupoDeTiempo(null, items))
     return items.groupBy { it.course ?: TextosDeCocina.INMEDIATO }.map { (tiempo, suyos) -> GrupoDeTiempo(tiempo, suyos) }
         .sortedByDescending { it.tiempo == TextosDeCocina.INMEDIATO }
@@ -123,6 +131,7 @@ fun KdsTicketLocal.aKDSOrder(): KDSOrder = KDSOrder(
     status = KDSOrderStatus.NEW,
     sourceKey = sourceKey,
     printStationId = stationId,
+    preparationVersion = if (items.any { it.serviceCourse?.preparationVersion == 1 }) 1 else 0,
 )
 
 /**
@@ -238,3 +247,8 @@ object TextosDeCocina {
         else -> "$n pendientes"
     }
 }
+
+/** Priority is independent from age and acknowledgment; keep the original clock. */
+fun priorizarUrgentes(orders: List<KDSOrder>): List<KDSOrder> = orders.sortedWith(
+    compareByDescending<KDSOrder> { it.items.any { item -> item.preparation?.urgent == true } }
+        .thenBy { it.createdAt }.thenBy { it.id })

@@ -30,16 +30,13 @@ class PayloadCache @Inject constructor(
     }.onFailure { Log.e(TAG, "❌ load $type falló: ${it.message}") }.getOrNull()
 
     suspend fun save(type: String, venueId: String, json: String) {
-        runCatching {
-            dao.upsert(
-                CachedPayloadEntity(
-                    cacheKey = key(type, venueId),
-                    venueId = venueId,
-                    json = json,
-                    updatedAt = System.currentTimeMillis(),
-                ),
-            )
-        }.onFailure { Log.e(TAG, "❌ save $type falló: ${it.message}") }
+        runCatching { saveDurable(type, venueId, json) }
+            .onFailure { Log.e(TAG, "❌ save $type falló: ${it.message}") }
+    }
+
+    /** A local mutation must be on disk before the caller lets the user continue. */
+    suspend fun saveDurable(type: String, venueId: String, json: String) {
+        dao.upsert(CachedPayloadEntity(key(type, venueId), venueId, json, System.currentTimeMillis()))
     }
 
     /** Al cambiar de venue no arrastramos catálogo ajeno. */

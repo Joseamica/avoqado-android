@@ -33,14 +33,35 @@ data class CachedPayloadEntity(
 
 @Dao
 interface CachedPayloadDao {
+    @Query(PreparationCacheSql.LINE_COUNT)
+    suspend fun preparationLineCount(venueId: String, prefix: String, orderToken: String): Int
+
+    @Query(PreparationCacheSql.LINE_PAGE)
+    suspend fun preparationLinePage(venueId: String, prefix: String, orderToken: String, after: String): List<CachedPayloadEntity>
+
+    @Query("SELECT * FROM cached_payloads WHERE venue_id = :venueId AND cache_key IN (:keys)")
+    suspend fun preparationSnapshots(venueId: String, keys: List<String>): List<CachedPayloadEntity>
+
     @Query("SELECT * FROM cached_payloads WHERE cache_key = :cacheKey LIMIT 1")
     suspend fun get(cacheKey: String): CachedPayloadEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsert(entity: CachedPayloadEntity)
 
-    /** Al cambiar de venue no arrastramos catálogo ajeno. */
-    @Query("DELETE FROM cached_payloads WHERE venue_id != :venueId")
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAll(entities: List<CachedPayloadEntity>)
+
+    @Query(PreparationCacheSql.DELIVERIES)
+    suspend fun preparationDeliveries(venueId: String, prefix: String, after: String = ""): List<CachedPayloadEntity>
+
+    @Query(PreparationCacheSql.PAPER_COUNT)
+    suspend fun preparationPaperCount(venueId: String, prefix: String): Int
+
+    @Query(PreparationCacheSql.PAPER_PAGE)
+    suspend fun preparationPaperPage(venueId: String, prefix: String, after: String): List<CachedPayloadEntity>
+
+    /** Read caches may be pruned; durable preparation, receipts and negotiated capabilities stay scoped until resolved. */
+    @Query("DELETE FROM cached_payloads WHERE venue_id != :venueId AND cache_key NOT GLOB 'preparation:*' AND cache_key NOT GLOB 'preparation_capabilities:*'")
     suspend fun deleteOtherVenues(venueId: String)
 
     /**

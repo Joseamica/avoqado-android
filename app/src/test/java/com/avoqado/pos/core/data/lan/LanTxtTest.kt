@@ -9,6 +9,22 @@ import org.junit.Test
 /** El TXT del anuncio, PURO (etapa 3 del KDS, 3.5, D1). Espejo de `LanTxtTests` de iOS. */
 class LanTxtTest {
 
+    @Test fun `urgency is additive and requires both same venue and preparation capability`() {
+        val txt = LanTxt.construir("peer", "v", false, 1, setOf("s"), false, preparationVersion = 1, urgencyVersion = 1)
+        assertEquals("1", txt["prep"]); assertEquals("1", txt["urg"])
+        assertEquals(1, LanTxt.peerDesde(txt, "10.0.0.2", 9000, "me", "v")!!.urgencyVersion)
+        assertEquals(0, LanTxt.peerDesde(txt - "urg", "10.0.0.2", 9000, "me", "v")!!.urgencyVersion)
+        assertEquals(0, LanTxt.peerDesde(txt - "prep", "10.0.0.2", 9000, "me", "v")!!.urgencyVersion)
+        assertEquals(0, LanTxt.peerDesde(txt - "venue", "10.0.0.2", 9000, "me", "v")!!.urgencyVersion)
+    }
+    @Test fun `preparation needs explicit same venue and version one while old discovery remains compatible`() {
+        val txt = mapOf("did" to "peer", "venue" to "v", "prep" to "1")
+        assertEquals(1, LanTxt.peerDesde(txt, "10.0.0.2", 9000, "me", "v")!!.preparationVersion)
+        assertEquals(0, LanTxt.peerDesde(txt - "venue", "10.0.0.2", 9000, "me", "v")!!.preparationVersion)
+        assertEquals(0, LanTxt.peerDesde(txt + ("prep" to "2"), "10.0.0.2", 9000, "me", "v")!!.preparationVersion)
+        assertNull(LanTxt.peerDesde(txt + ("venue" to "other"), "10.0.0.2", 9000, "me", "v"))
+    }
+
     @Test
     fun `construir pone kds solo si hay estaciones, y hub siempre`() {
         val sin = LanTxt.construir("tablet-1", "venue-1", isWired = true, bootedAtMillis = 1_000, kdsStations = emptySet(), hub = false)

@@ -12,6 +12,16 @@ import java.io.IOException
 /** Las reglas de la pantalla de cocina, sin red ni pantalla. Espejo de `KDSReglasTests` de iOS. */
 class KdsReglasTest {
 
+
+    @Test fun `acknowledged urgent ticket stays ahead without changing clock or cooking counts`() {
+        val ordinary = comanda("old")
+        val urgent = comanda("urgent").copy(createdAt = ordinary.createdAt + 1000,
+            items = listOf(KDSOrderItem("i", "Café", 1, emptyList(), null,
+                preparation = PreparationCounts(PREPARING = 1, urgency = PreparationUrgency("urgent", true)))))
+        assertEquals(listOf("urgent", "old"), priorizarUrgentes(listOf(ordinary, urgent)).map { it.id })
+        assertEquals(urgent.createdAt, priorizarUrgentes(listOf(ordinary, urgent)).first().createdAt)
+        assertEquals(1, urgent.items.single().preparation!!.PREPARING)
+    }
     private val base = EntradaDeCasilla(
         abiertaAClientes = true, esSuperadmin = false, puedeConfigurar = true, tieneAccesoPro = true, prendida = false,
     )

@@ -4,13 +4,18 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -51,6 +56,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
@@ -116,6 +122,12 @@ fun KDSScreen(
     val settings by viewModel.settings.collectAsState()
     val canalesReparto by viewModel.canalesReparto.collectAsState()
     val config by viewModel.config.collectAsState()
+    val paging by viewModel.boardPaging.collectAsState()
+    val preparationCapabilities by viewModel.preparationCapabilities.collectAsState()
+    // El permiso cambia después de cargar capacidades, aunque los productos sean iguales.
+    val allowedPreparationActions = remember(preparationCapabilities, viewModel) {
+        com.avoqado.pos.kds.domain.PreparationAction.entries.filter(viewModel::canPreparation).toSet()
+    }
 
     // 🔴 El sondeo vive MIENTRAS esta pantalla está a la vista: se cancela al cerrarla y en segundo plano (I3).
     val owner = LocalLifecycleOwner.current
@@ -193,6 +205,7 @@ fun KDSScreen(
             is VistaDeCocina.Tablero -> TableroDeCocina(
                 vista = v,
                 comandas = comandas,
+                paging = paging, onNextPage = viewModel::nextBoardPage, onPreviousPage = viewModel::previousBoardPage,
                 config = config,
                 clockText = clockText,
                 tick = tick,
@@ -203,6 +216,8 @@ fun KDSScreen(
                 onMarcarTodas = { confirmacion = Confirmacion.MARCAR_TODAS },
                 onSettings = { showSettings = true },
                 onListo = viewModel::listo,
+                canPreparation = { it in allowedPreparationActions },
+                onPreparation = viewModel::progress,
                 onAcceptDelivery = viewModel::acceptDeliveryOrder,
                 onDenyDelivery = viewModel::denyDeliveryOrder,
                 onPausar = { pausando = it },
@@ -594,9 +609,11 @@ private fun PanelSinPantalla(
 
 // MARK: - Tablero
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun TableroDeCocina(
     vista: VistaDeCocina.Tablero,
+    paging: KDSViewModel.BoardPaging, onNextPage: () -> Unit, onPreviousPage: () -> Unit,
     comandas: List<KDSOrder>,
     config: PrintConfig,
     clockText: String,
@@ -608,65 +625,58 @@ private fun TableroDeCocina(
     onMarcarTodas: () -> Unit,
     onSettings: () -> Unit,
     onListo: (String) -> Unit,
+    canPreparation: (com.avoqado.pos.kds.domain.PreparationAction) -> Boolean,
+    onPreparation: (String, com.avoqado.pos.kds.domain.KDSOrderItem, com.avoqado.pos.kds.domain.PreparationAction, Int, com.avoqado.pos.kds.domain.PreparationState?, String?) -> Unit,
     onAcceptDelivery: (String) -> Unit,
     onDenyDelivery: (String) -> Unit,
     onPausar: (CanalReparto) -> Unit,
     onReanudar: (String) -> Unit,
 ) {
     Column(modifier = Modifier.testTag("kds-tablero")) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .background(MaterialTheme.colorScheme.surface)
-                .padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.md),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            CircleBackButton(onClick = onDismiss)
-            Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.md))
-            Column {
-                Text(
-                    text = vista.estacion.name,
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = MaterialTheme.colorScheme.onSurface,
-                )
-                Text(
-                    text = TextosDeCocina.pendientes(comandas.size),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.lg))
-            Text(
-                text = clockText,
-                style = MaterialTheme.typography.bodyMedium,
-                fontFamily = FontFamily.Monospace,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(modifier = Modifier.weight(1f))
+        val actions: @Composable () -> Unit = {
             OutlinedButton(onClick = onAbrirRecientes, modifier = Modifier.testTag("kds-recientes")) {
-                Text(TextosDeCocina.RECIENTES)
+                Text(TextosDeCocina.RECIENTES, maxLines = 1)
             }
             if (idsParaMarcarTodas(comandas).isNotEmpty()) {
-                Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
                 OutlinedButton(onClick = onMarcarTodas, modifier = Modifier.testTag("kds-marcar-todas")) {
-                    Text(TextosDeCocina.MARCAR_TODAS)
+                    Text(TextosDeCocina.MARCAR_TODAS, maxLines = 1)
                 }
             }
-            Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.md))
-            Box(
-                modifier = Modifier
-                    .size(AvoqadoTheme.dimensions.touchTarget)
-                    .clip(RoundedCornerShape(50))
-                    .clickable(onClick = onSettings),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(
-                    imageVector = Icons.Filled.Settings,
-                    contentDescription = "Configuración",
-                    modifier = Modifier.size(AvoqadoTheme.dimensions.iconLarge),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+        }
+        val clock: @Composable () -> Unit = {
+            Box(Modifier.heightIn(min = AvoqadoTheme.dimensions.touchTarget), contentAlignment = Alignment.Center) {
+                Text(clockText, style = MaterialTheme.typography.bodyMedium,
+                    fontFamily = FontFamily.Monospace, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
+        BoxWithConstraints(
+            Modifier.fillMaxWidth().background(MaterialTheme.colorScheme.surface)
+                .padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.md),
+        ) {
+            val wide = maxWidth >= 600.dp
+            Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md)) {
+                    CircleBackButton(onClick = onDismiss)
+                    Column(Modifier.weight(1f)) {
+                        Text(vista.estacion.name, style = MaterialTheme.typography.headlineSmall,
+                            fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface,
+                            maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(TextosDeCocina.pendientes(comandas.size), style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    if (wide) { clock(); actions() }
+                    Box(Modifier.size(AvoqadoTheme.dimensions.touchTarget).clip(RoundedCornerShape(50))
+                        .clickable(onClick = onSettings), contentAlignment = Alignment.Center) {
+                        Icon(Icons.Filled.Settings, contentDescription = "Configuración",
+                            modifier = Modifier.size(AvoqadoTheme.dimensions.iconLarge),
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+                if (!wide) FlowRow(
+                    horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
+                    verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
+                ) { actions(); clock() }
             }
         }
 
@@ -677,6 +687,14 @@ private fun TableroDeCocina(
                 onPausar = { onPausar(canal) },
                 onReanudar = { onReanudar(canal.id) },
             )
+        }
+
+        if (paging.total != null || paging.offset > 0) Row(Modifier.fillMaxWidth().padding(horizontal = AvoqadoTheme.spacing.md),
+            verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
+            Text("${paging.offset + (if (paging.count == 0) 0 else 1)}–${paging.offset + paging.count} de ${paging.total ?: "—"} comandas",
+                Modifier.weight(1f), style = MaterialTheme.typography.labelLarge)
+            if (paging.offset > 0) OutlinedButton(onClick = onPreviousPage, enabled = !paging.loading) { Text("Anterior") }
+            if (paging.nextOffset != null) OutlinedButton(onClick = onNextPage, enabled = !paging.loading) { Text("Siguiente") }
         }
 
         if (comandas.isEmpty()) {
@@ -703,7 +721,7 @@ private fun TableroDeCocina(
                 verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md),
                 modifier = Modifier.fillMaxSize(),
             ) {
-                items(items = comandas, key = { it.id }) { order ->
+                items(items = com.avoqado.pos.kds.domain.priorizarUrgentes(comandas), key = { it.id }) { order ->
                     val elapsedMs = tick - order.createdAt
                     val elapsedText = formatElapsedTime(elapsedMs)
 
@@ -713,6 +731,8 @@ private fun TableroDeCocina(
                         isLargeFont = isLargeFont,
                         etiqueta = etiquetaDeEstacion(order.printStationId, vista.estacion.id, config.stations),
                         onListo = { onListo(order.id) },
+                        canPreparation = canPreparation,
+                        onPreparation = { item, action, quantity, from, reason -> onPreparation(order.id, item, action, quantity, from, reason) },
                         onAcceptDelivery = { onAcceptDelivery(order.id) },
                         onDenyDelivery = { onDenyDelivery(order.id) },
                     )

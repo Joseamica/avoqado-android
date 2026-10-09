@@ -15,6 +15,7 @@ object SyncIntentTypes {
     const val PAY_CASH = "PAY_CASH"
     /** Etapa 3 del KDS (3.4): la caja imprimió la comanda en papel de respaldo (`action = FALLBACK_PRINTED`). */
     const val KDS_TICKET_MARK = "KDS_TICKET_MARK"
+    const val KDS_ITEM_PROGRESS = "KDS_ITEM_PROGRESS"
 }
 
 /** Códigos de rechazo estructurados del reducer. */

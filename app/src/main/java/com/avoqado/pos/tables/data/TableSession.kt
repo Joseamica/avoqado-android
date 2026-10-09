@@ -3,6 +3,7 @@ package com.avoqado.pos.tables.data
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -81,13 +82,10 @@ class TableSession @Inject constructor() {
      * sesión activa ya es otra.
      */
     fun promoteProvisional(localOrderId: String, orderId: String, orderNumber: String?, version: Int) {
-        val current = _active.value ?: return
-        if (current.orderId != localOrderId) return
-        _active.value = current.copy(
-            orderId = orderId,
-            orderNumber = orderNumber ?: current.orderNumber,
-            version = version,
-            isProvisional = false,
-        )
+        _active.update { current ->
+            if (current?.orderId != localOrderId) current
+            else current.copy(orderId = orderId, orderNumber = orderNumber ?: current.orderNumber,
+                version = version, isProvisional = false)
+        }
     }
 }

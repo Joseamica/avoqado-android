@@ -5,6 +5,8 @@ import com.avoqado.pos.core.data.network.ApiService
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -27,6 +29,7 @@ class TableServiceRepository @Inject constructor(
     private val tableSession: TableSession,
     /** Sólo para `tables:pay-any`: quién puede liquidar un cheque ajeno. */
     private val roleManager: com.avoqado.pos.core.domain.RoleManager,
+    private val draftStore: TableRoundDraftStore,
 ) {
     // MARK: - Offline fallback (Corte B2)
 
@@ -80,6 +83,9 @@ class TableServiceRepository @Inject constructor(
         val canManageAll: Boolean = true,
     )
 
+    private val floorWrites = Mutex()
+    private var loadedVenueId: String? = null
+
     private val cacheJson = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
 
     private val _tables = MutableStateFlow<List<DiningTable>>(emptyList())
@@ -126,64 +132,85 @@ class TableServiceRepository @Inject constructor(
     private val _ownership = MutableStateFlow(TableOwnership())
     val ownership: StateFlow<TableOwnership> = _ownership.asStateFlow()
 
+    private suspend fun cachedFloor(venueId: String): TablesCacheBlob? {
+        val cached = payloadCache.load(com.avoqado.pos.core.data.local.PayloadCache.TYPE_TABLES, venueId) ?: return null
+        return cacheJson.decodeFromString(TablesCacheBlob.serializer(), cached.json)
+    }
+
+    /** An early GET cannot erase an OPEN_TABLE or its unsent products. */
+    private fun preserveLocalChecks(venueId: String, fresh: List<DiningTable>, cached: List<DiningTable>): List<DiningTable> {
+        val serverIds = fresh.flatMap { it.openOrders.map { check -> check.id } + listOfNotNull(it.currentOrder?.id) }.toSet()
+        val locals = cached.mapNotNull { table ->
+            val checks = table.openOrders.filter { check ->
+                if (!check.isProvisional) false else {
+                    val (id, snapshot) = draftStore.loadResolved(venueId, check.id)
+                    id !in serverIds && (id == check.id || snapshot.pending.isNotEmpty() || snapshot.rounds.isNotEmpty())
+                }
+            }
+            if (checks.isEmpty()) null else table.id to table.copy(openOrders = checks, currentOrder = null)
+        }.toMap()
+        val merged = fresh.map { table ->
+            val local = locals[table.id] ?: return@map table
+            table.copy(status = "OCCUPIED", openOrders = table.openOrders + local.openOrders)
+        }
+        val freshIds = fresh.map { it.id }.toSet()
+        return merged + locals.values.filter { it.id !in freshIds }
+    }
+
     suspend fun refresh(venueId: String): Result<List<DiningTable>> = runCatching {
+        floorWrites.withLock {
+            if (loadedVenueId != venueId) {
+                loadedVenueId = venueId
+                _tables.value = emptyList()
+                _ownership.value = TableOwnership()
+                hydrateFromCache(venueId)
+            }
+        }
         _isLoading.value = true
         try {
             val response = apiService.getTables(venueId)
-            _tables.value = response.data
-            _ownership.value = TableOwnership(
-                enforced = response.settings?.enforceTableOwnership == true,
-                staffId = response.viewer?.staffId,
-                canManageAll = response.viewer?.canManageAllTables ?: true,
-                canPayAny = roleManager.canSettleAnyTable,
-            )
-            // Espejo en disco (Corte A): plano + regla de propiedad sobreviven
-            // un reinicio sin red.
-            payloadCache.save(
-                com.avoqado.pos.core.data.local.PayloadCache.TYPE_TABLES,
-                venueId,
-                cacheJson.encodeToString(
-                    TablesCacheBlob.serializer(),
-                    TablesCacheBlob(
-                        tables = response.data,
-                        enforced = _ownership.value.enforced,
-                        staffId = _ownership.value.staffId,
-                        canManageAll = _ownership.value.canManageAll,
-                    ),
-                ),
-            )
-            Log.d(TAG, "✅ ${response.data.size} tables (${response.data.count { it.isOccupied }} occupied)")
-            response.data
+            floorWrites.withLock {
+                check(loadedVenueId == venueId) { "La sucursal cambió" }
+                val tables = preserveLocalChecks(venueId, response.data, cachedFloor(venueId)?.tables ?: _tables.value)
+                val ownership = TableOwnership(response.settings?.enforceTableOwnership == true,
+                    response.viewer?.staffId, response.viewer?.canManageAllTables ?: true, roleManager.canSettleAnyTable)
+                payloadCache.save(com.avoqado.pos.core.data.local.PayloadCache.TYPE_TABLES, venueId,
+                    cacheJson.encodeToString(TablesCacheBlob.serializer(), TablesCacheBlob(tables, ownership.enforced, ownership.staffId, ownership.canManageAll)))
+                _tables.value = tables
+                _ownership.value = ownership
+                tables
+            }
         } finally {
-            _isLoading.value = false
+            if (loadedVenueId == venueId) _isLoading.value = false
         }
     }.onFailure {
         Log.e(TAG, "❌ refresh failed: ${it.message}")
-        // Sin red: hidratar el plano del espejo en disco para que las mesas
-        // sigan visibles (frescura marcada; el server sigue siendo la verdad).
-        hydrateFromCache(venueId)
+        floorWrites.withLock { if (loadedVenueId == venueId) hydrateFromCache(venueId) }
     }
 
-    /**
-     * Offline-first: marca la mesa OCUPADA en el estado local (optimista) al
-     * abrirla sin red — el plano refleja la apertura al instante; el server la
-     * confirmará en el replay.
-     */
-    fun markTableOccupiedLocally(tableId: String) {
-        _tables.value = _tables.value.map { if (it.id == tableId) it.copy(status = "OCCUPIED") else it }
+    /** Persist the check pointer before ordering; status alone cannot reopen a table after restart. */
+    suspend fun markTableOccupiedLocally(tableId: String, covers: Int? = null, scopedVenueId: String? = loadedVenueId) = floorWrites.withLock {
+        val venueId = checkNotNull(scopedVenueId) { "No hay sucursal seleccionada" }
+        check(loadedVenueId == venueId) { "La sucursal cambió" }
+        val session = checkNotNull(tableSession.current()) { "No hay cuenta abierta" }
+        check(session.tableId == tableId && session.isProvisional)
+        check(_tables.value.any { it.id == tableId }) { "No se pudo guardar la mesa en este aparato" }
+        val check = OpenCheckSummary(session.orderId, session.orderNumber, covers, version = session.version,
+            waiterId = _ownership.value.staffId, isProvisional = true)
+        val tables = _tables.value.map { table ->
+            if (table.id != tableId) table else table.copy(status = "OCCUPIED", openOrders = table.openOrders.filterNot { it.id == check.id } + check)
+        }
+        payloadCache.saveDurable(com.avoqado.pos.core.data.local.PayloadCache.TYPE_TABLES, venueId,
+            cacheJson.encodeToString(TablesCacheBlob.serializer(), TablesCacheBlob(tables, _ownership.value.enforced, _ownership.value.staffId, _ownership.value.canManageAll)))
+        _tables.value = tables
     }
 
-    /** Hidrata mesas + regla de propiedad del cache SOLO si el estado está vacío. */
     private suspend fun hydrateFromCache(venueId: String) {
         if (_tables.value.isNotEmpty()) return
-        val cached = payloadCache.load(com.avoqado.pos.core.data.local.PayloadCache.TYPE_TABLES, venueId) ?: return
         runCatching {
-            val blob = cacheJson.decodeFromString(TablesCacheBlob.serializer(), cached.json)
-            if (blob.tables.isNotEmpty() && _tables.value.isEmpty()) {
-                _tables.value = blob.tables
-                _ownership.value = TableOwnership(blob.enforced, blob.staffId, blob.canManageAll, roleManager.canSettleAnyTable)
-                Log.d(TAG, "🗂️ Plano hidratado del cache: ${blob.tables.size} mesas (hace ${cached.ageMinutes} min)")
-            }
+            val blob = cachedFloor(venueId) ?: return
+            _tables.value = blob.tables
+            _ownership.value = TableOwnership(blob.enforced, blob.staffId, blob.canManageAll, roleManager.canSettleAnyTable)
         }.onFailure { Log.e(TAG, "❌ Cache de mesas corrupto: ${it.message}") }
     }
 

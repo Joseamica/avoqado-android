@@ -78,7 +78,9 @@ class LanDiscovery(
     private var multicastLock: WifiManager.MulticastLock? = null
     /** `@Volatile`: el fallo de un registro llega en el hilo de NSD; el anuncio se arma en IO (revisión I1). */
     @Volatile private var registrationListener: NsdManager.RegistrationListener? = null
-    private var discoveryListener: NsdManager.DiscoveryListener? = null
+    @Volatile private var discoveryListener: NsdManager.DiscoveryListener? = null
+    @Volatile private var requiereRedescubrir = false
+    private var bajandoBusqueda = false
     private var txtRegistrado: Map<String, String>? = null
 
     /**
@@ -189,26 +191,38 @@ class LanDiscovery(
         val listener = object : NsdManager.DiscoveryListener {
             override fun onDiscoveryStarted(type: String) { Log.d(TAG, "🔎 Buscando POS en la red local") }
             override fun onServiceFound(info: NsdServiceInfo) {
-                if (parado || info.serviceType?.contains("avoqado-pos") != true) return
+                if (parado || discoveryListener !== this || info.serviceType?.contains("avoqado-pos") != true) return
                 conocidos[info.serviceName ?: return] = info
                 resolveQueue.add(info)
                 drainResolveQueue()
             }
             override fun onServiceLost(info: NsdServiceInfo) {
+                if (parado || discoveryListener !== this) return
                 // Se cae del plano por NOMBRE porque el TXT ya no viaja aquí (`contains`: el SO puede renombrar a «(2)»).
                 val name = info.serviceName ?: return
+                if (peers.any { it.deviceId.isNotEmpty() && name.contains(it.deviceId.take(6)) }) requiereRedescubrir = true
                 conocidos.remove(name) // un re-resolve en vuelo o en cola ya no lo revive (ledger T4)
                 peers = peers.filterNot { it.deviceId.isNotEmpty() && name.contains(it.deviceId.take(6)) }
                 Log.d(TAG, "👋 Peer perdido: $name")
             }
-            override fun onDiscoveryStopped(type: String) {}
+            override fun onDiscoveryStopped(type: String) {
+                synchronized(this@LanDiscovery) {
+                    if (parado || discoveryListener !== this || !bajandoBusqueda) return
+                    discoveryListener = null
+                    bajandoBusqueda = false
+                    requiereRedescubrir = false
+                    buscar()
+                }
+            }
             override fun onStartDiscoveryFailed(type: String, errorCode: Int) {
                 // Sin soltarlo, la guarda de `buscar` dejaba la caja sin buscar pantallas hasta reiniciar (Codex 3.6).
                 // Un fallo tardío de un intento ya reemplazado no toca al vigente.
                 synchronized(this@LanDiscovery) { if (discoveryListener === this) discoveryListener = null }
                 Log.e(TAG, "❌ Descubrimiento falló ($errorCode) — se reintenta en la siguiente revisión (≤ 1 min)")
             }
-            override fun onStopDiscoveryFailed(type: String, errorCode: Int) {}
+            override fun onStopDiscoveryFailed(type: String, errorCode: Int) {
+                synchronized(this@LanDiscovery) { if (discoveryListener === this) bajandoBusqueda = false }
+            }
         }
         discoveryListener = listener
         runCatching { manager.discoverServices(LeaseProtocol.SERVICE_TYPE, NsdManager.PROTOCOL_DNS_SD, listener) }
@@ -243,12 +257,24 @@ class LanDiscovery(
      */
     fun refrescar(): Boolean {
         if (parado) return false
+        redescubrirSiHaceFalta()
         if (apiNivel < API_CON_STOP_DE_RESOLVE) return refrescarSiContestan()
         soltarSiVencio()
         val ajenos = conocidos.filterKeys { !esPropio(it) }
         for ((nombre, info) in ajenos) encolarSiFalta(nombre, info)
         drainResolveQueue()
         return ajenos.isNotEmpty()
+    }
+
+    // NSD can lose a live POS; re-resolving only known names would never recover it.
+    @Synchronized
+    private fun redescubrirSiHaceFalta() {
+        if (parado || !requiereRedescubrir || bajandoBusqueda) return
+        val listener = discoveryListener ?: return
+        val manager = nsdManager ?: return
+        bajandoBusqueda = true
+        runCatching { manager.stopServiceDiscovery(listener) }
+            .onFailure { bajandoBusqueda = false }
     }
 
     /** Detalle 8. Sin resolve previo no hay a dónde sondear: ése lo hace el found de NSD, como siempre. */

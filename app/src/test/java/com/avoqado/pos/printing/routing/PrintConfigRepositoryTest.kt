@@ -34,6 +34,24 @@ class PrintConfigRepositoryTest {
         version = "v1",
     )
 
+    @Test fun `saved round config uses its venue without starting an HTTP request`() = runTest {
+        val saved = configConEstacion()
+        val encoded = kotlinx.serialization.json.Json.encodeToString(PrintConfig.serializer(), saved)
+        coEvery { payloadCache.load(PayloadCache.TYPE_PRINT_CONFIG, "venue-1") } returns PayloadCache.Cached(encoded, 100)
+        assertEquals(saved, repository.savedConfig("venue-1"))
+        coVerify(exactly = 0) { apiService.getPrintConfig(any()) }
+    }
+
+    @Test fun `saved round config never borrows another venue memory`() = runTest {
+        val original = configConEstacion()
+        coEvery { apiService.getPrintConfig("venue-1") } returns PrintConfigResponse(true, original)
+        coEvery { payloadCache.load(PayloadCache.TYPE_PRINT_CONFIG, "venue-2") } returns null
+        repository.refresh("venue-1")
+        assertTrue(repository.savedConfig("venue-2").stations.isEmpty())
+        assertEquals("Reading a frozen route must not mutate the active venue", original, repository.getCurrentConfig())
+        coVerify(exactly = 0) { apiService.getPrintConfig("venue-2") }
+    }
+
     @Test
     fun `getCurrentConfig starts as safe empty default`() {
         val config = repository.getCurrentConfig()

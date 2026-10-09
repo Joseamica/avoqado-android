@@ -30,6 +30,7 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -53,6 +54,7 @@ fun AvoqadoDialog(
     description: String? = null,
     dismissOnClickOutside: Boolean = true,
     actionButton: (@Composable () -> Unit)? = null,
+    centerTitle: Boolean = false,
     content: @Composable () -> Unit,
 ) {
     Dialog(
@@ -63,6 +65,7 @@ fun AvoqadoDialog(
             usePlatformDefaultWidth = false,
         ),
     ) {
+        ImmersiveWindow()
         Surface(
             modifier = modifier
                 .widthIn(min = 280.dp, max = 480.dp)
@@ -84,14 +87,19 @@ fun AvoqadoDialog(
             ) {
                 // Header: title + X
                 Row(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth()
+                        .padding(end = if (centerTitle) AvoqadoTheme.spacing.md else 0.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
+                    // Reserve the same space as the close control so the title
+                    // stays centered in the dialog, including when it wraps.
+                    if (centerTitle) Spacer(Modifier.size(36.dp))
                     Text(
                         text = title,
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurface,
+                        textAlign = if (centerTitle) TextAlign.Center else TextAlign.Start,
                         modifier = Modifier
                             .weight(1f)
                             .padding(vertical = AvoqadoTheme.spacing.md),

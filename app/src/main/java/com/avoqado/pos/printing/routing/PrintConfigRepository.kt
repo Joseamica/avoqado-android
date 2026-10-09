@@ -38,6 +38,16 @@ class PrintConfigRepository @Inject constructor(
 
     fun getCurrentConfig(): PrintConfig = _config.value
 
+    /** A round freezes this venue's known route before its first write/network attempt. */
+    suspend fun savedConfig(venueId: String): PrintConfig {
+        synchronized(candado) {
+            if (venueDeLaConfig == venueId) return _config.value
+        }
+        val saved = payloadCache.load(com.avoqado.pos.core.data.local.PayloadCache.TYPE_PRINT_CONFIG, venueId)
+            ?: return PrintConfig()
+        return cacheJson.decodeFromString(PrintConfig.serializer(), saved.json)
+    }
+
     /**
      * La sucursal del ÚLTIMO refresh pedido. Etapa 3 del KDS (3.5, paridad con la ronda 1 de la Task 7 de iOS): el refresh
      * no se cancela al vencer el tope ([refreshConTope]), así que el de la sucursal ANTERIOR puede contestar después del de

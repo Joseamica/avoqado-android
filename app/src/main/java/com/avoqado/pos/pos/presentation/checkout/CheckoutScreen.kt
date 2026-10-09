@@ -213,6 +213,8 @@ fun CheckoutScreen(
     val promotionsViewModel: PromotionsPanelViewModel = hiltViewModel()
     val promociones by promotionsViewModel.promociones.collectAsState()
     val estadoPromociones by promotionsViewModel.estado.collectAsState()
+    val comboCourses by promotionsViewModel.serviceCourses.collectAsState()
+    val comboCourseNotice by promotionsViewModel.courseNotice.collectAsState()
     val ajustePanelPromos by promotionsViewModel.ajustePanelCajero.collectAsState()
     LaunchedEffect(Unit) { promotionsViewModel.refresh() }
     // 🔴 `remember`, no lectura directa: `puedeAplicar` desemboca en
@@ -250,7 +252,7 @@ fun CheckoutScreen(
         }
     }
     val onPromotionTap: (Promotion) -> Unit = { promo ->
-        if (promo.requiereEleccion) promocionEnEleccion = promo else agregarPromocion(promo, emptyMap())
+        if (promo.requiereEleccion || promotionsViewModel.usesServiceCourses) promocionEnEleccion = promo else agregarPromocion(promo, emptyMap())
     }
     // Quitar una línea de promoción quita el combo COMPLETO — se avisa antes.
     // El `CartViewModel` lo garantiza igual venga de donde venga el borrado;
@@ -996,6 +998,14 @@ fun CheckoutScreen(
                 agregarPromocion(promo, selecciones)
                 promocionEnEleccion = null
             },
+            courses = if (promotionsViewModel.usesServiceCourses) comboCourses else emptyList(),
+            courseNotice = if (promotionsViewModel.usesServiceCourses) comboCourseNotice else null,
+            onConfirmWithCourses = if (promotionsViewModel.usesServiceCourses) { selections, times ->
+                if (cartViewModel.aplicarPromocion(promo, selections, times)) {
+                    promocionAgregada = promo.name
+                    promocionEnEleccion = null
+                } else promocionNoAgregada = promo.name
+            } else null,
         )
     }
 

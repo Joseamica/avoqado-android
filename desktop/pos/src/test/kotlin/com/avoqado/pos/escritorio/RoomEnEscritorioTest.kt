@@ -8,8 +8,25 @@ import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertTrue
+import kotlin.test.assertNull
+import androidx.room.withTransaction
+import com.avoqado.pos.core.data.local.database.CachedPayloadEntity
 
 class RoomEnEscritorioTest {
+    @Test fun `preparation transaction rolls back on failure and commits a complete snapshot`() = runBlocking {
+        val carpeta = Files.createTempDirectory("fulltest-preparation-transaction")
+        val db = DatabaseModule.provideDatabase(ContextoDeEscritorio(carpeta))
+        try {
+            val cache = db.cachedPayloadDao()
+            val row = CachedPayloadEntity("preparation:v:line", "v", "{}", 100)
+            try {
+                db.withTransaction { cache.upsert(row); error("Simulated process boundary failure") }
+            } catch (_: IllegalStateException) { }
+            assertNull(cache.get(row.cacheKey))
+            db.withTransaction { cache.upsert(row) }
+            assertEquals(row, cache.get(row.cacheKey))
+        } finally { db.close(); carpeta.toFile().deleteRecursively() }
+    }
     @Test fun `un cobro en efectivo encolado sobrevive a cerrar y reabrir la base`() = runBlocking {
         val carpeta = Files.createTempDirectory("Avoqado POS José ñ")
         try {

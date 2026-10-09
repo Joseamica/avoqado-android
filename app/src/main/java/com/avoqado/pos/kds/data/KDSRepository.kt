@@ -92,18 +92,20 @@ class KDSRepository @Inject constructor(
      * Las comandas pendientes de UNA estación (más las «Sin estación»), de la más vieja a la más nueva. El servidor topa
      * en 100. `stationId = null` = todas (sólo lo usan las apps viejas).
      */
-    suspend fun fetchOrders(stationId: String? = null): Result<List<KDSOrder>> {
+    data class BoardPage(val items: List<KDSOrder>, val total: Int? = null, val nextOffset: Int? = null)
+    suspend fun fetchOrders(stationId: String? = null): Result<List<KDSOrder>> = fetchBoardPage(stationId).map { it.items }
+    suspend fun fetchBoardPage(stationId: String?, offset: Int = 0): Result<BoardPage> {
+        require(offset in 0..1_000_000)
         val (venueId, token) = sesion() ?: return sinSesion()
-        val consulta = listOfNotNull("status=NEW,PREPARING,READY", conEstacion(stationId)).joinToString("&")
-        val request = Request.Builder()
-            .url(ruta(venueId, "kds/orders?$consulta"))
-            .header("Authorization", "Bearer $token")
-            // Corre sola cada 10 s: un 403 no puede sacar el diálogo global encima de la cocina.
-            .header(ForbiddenInterceptor.BACKGROUND_HEADER, "1")
-            .get()
-            .build()
-        return ejecutar(request).mapCatching(::comandas)
-            .onFailure { Log.d(TAG, "Tablero no leído: ${it.message}") }
+        val consulta = listOfNotNull("status=NEW,PREPARING,READY", conEstacion(stationId),
+            "urgencyVersion=1", "offset=$offset", "limit=100").joinToString("&")
+        val request = Request.Builder().url(ruta(venueId, "kds/orders?$consulta"))
+            .header("Authorization", "Bearer $token").header(ForbiddenInterceptor.BACKGROUND_HEADER, "1").get().build()
+        return ejecutar(request).mapCatching { body ->
+            val page = JSONObject(body).optJSONObject("page")
+            BoardPage(comandas(body), page?.optInt("total")?.takeIf { it >= 0 },
+                page?.let { if (it.isNull("nextOffset")) null else it.getInt("nextOffset") })
+        }.onFailure { Log.d(TAG, "Tablero no leído: ${it.message}") }
     }
 
     /** «Recientes»: las últimas 20 terminadas en 60 min, para deshacer un LISTO por error. */
@@ -254,6 +256,7 @@ class KDSRepository @Inject constructor(
                 completedAt = completedAt,
                 sourceKey = json.optString("sourceKey", "").takeIf { it.isNotEmpty() && it != "null" },
                 printStationId = json.optString("printStationId", "").takeIf { it.isNotEmpty() && it != "null" },
+                preparationVersion = json.optInt("preparationVersion", 0),
             )
         } catch (e: Exception) {
             Log.e(TAG, "Parse order error: ${e.message}")
@@ -272,6 +275,17 @@ class KDSRepository @Inject constructor(
                 productId = json.optString("productId", "").takeIf { it.isNotEmpty() && it != "null" },
                 categoryId = json.optString("categoryId", "").takeIf { it.isNotEmpty() && it != "null" },
                 course = json.optString("course", "").takeIf { it.isNotBlank() && it != "null" },
+                orderItemId = json.optString("orderItemId", "").takeIf { it.isNotBlank() && it != "null" },
+                externalId = json.optString("externalId", "").takeIf { it.isNotBlank() && it != "null" },
+                orderPromotionId = json.optString("orderPromotionId", "").takeIf { it.isNotBlank() && it != "null" },
+                serviceCourse = json.optJSONObject("serviceCourse")?.let {
+                    kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+                        .decodeFromString<com.avoqado.pos.pos.data.model.ServiceCourseSnapshot>(it.toString())
+                },
+                preparation = json.optJSONObject("preparation")?.let {
+                    kotlinx.serialization.json.Json.decodeFromString<com.avoqado.pos.kds.domain.PreparationCounts>(it.toString())
+                },
+                preparationRevision = json.optInt("preparationRevision", 0),
             )
         } catch (e: Exception) {
             Log.e(TAG, "Parse item error: ${e.message}")

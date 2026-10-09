@@ -86,7 +86,11 @@ class AppState @Inject constructor(
     @Inject
     lateinit var replayDeEntregasKds: com.avoqado.pos.printing.data.ReplayDeEntregasKds
 
+    @Inject
+    lateinit var preparationDelivery: com.avoqado.pos.kds.data.PreparationDeliveryService
+
     private fun detenerRedLocal() {
+        if (::preparationDelivery.isInitialized) preparationDelivery.stop()
         if (::lanHubService.isInitialized) lanHubService.stop()
         if (::transporteLan.isInitialized) transporteLan.detener()
         if (::replayDeEntregasKds.isInitialized) replayDeEntregasKds.detener()
@@ -136,6 +140,7 @@ class AppState @Inject constructor(
             // Etapa 3 del KDS (3.5, D12): la red local sigue a la sucursal. Idempotente por venue; con otra reinicia.
             if (::lanHubService.isInitialized) lanHubService.sincronizarVenue(venueId)
             if (::transporteLan.isInitialized) transporteLan.iniciar(venueId)
+            if (::preparationDelivery.isInitialized) preparationDelivery.start(venueId)
             // Ronda 2 (N2): una pasada al abrir y otra cada minuto, como el reloj de la libreta. Idempotente: con otra
             // sucursal sólo cambia a cuál apunta. Su lazo atrapa todo menos la cancelación (N6: al cerrar sesión no hay
             // «tropezó» falso).

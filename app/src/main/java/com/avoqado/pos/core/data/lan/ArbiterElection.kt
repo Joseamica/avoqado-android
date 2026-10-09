@@ -36,6 +36,8 @@ data class LanPeer(
     val kdsStations: Set<String> = emptySet(),
     /** ¿Contesta leases? (TXT `hub=`; ausente = app vieja = sí). Un aparato sólo-cocina no puede ganar la elección. */
     val sirveLeases: Boolean = true,
+    val preparationVersion: Int = 0,
+    val urgencyVersion: Int = 0,
 )
 
 object ArbiterElection {

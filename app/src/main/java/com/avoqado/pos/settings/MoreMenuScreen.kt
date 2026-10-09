@@ -167,6 +167,7 @@ fun MoreMenuScreen(
     var showSupport by remember { mutableStateOf(false) }
     var showChangeMode by remember { mutableStateOf(false) }
     var showKDS by remember { mutableStateOf(false) }
+    var showPreparationService by remember { mutableStateOf(false) }
     var showCustomerDisplay by remember { mutableStateOf(false) }
     var showAreaTicketDelivery by remember { mutableStateOf(false) }
     var showScreenPinning by remember { mutableStateOf(false) }
@@ -200,6 +201,7 @@ fun MoreMenuScreen(
         showChangeMode = false
         showAreaTicketDelivery = false
         showKDS = false
+        showPreparationService = false
         showCustomerDisplay = false
         showScreenPinning = false
     }
@@ -667,6 +669,9 @@ fun MoreMenuScreen(
         // Este grupo sólo lo ve el aparato que hace ese trabajo: en el iPhone de mostrador de
         // una cafetería no pinta nada, porque `canAccessKDS` y las entregas por área se filtran.
         val preparacionYEntrega = buildList {
+            add(MenuEntry(icon = Icons.Outlined.LocalFireDepartment, label = "Servicio y entregas",
+                subtitle = "Liberar productos y confirmar la entrega · Pro",
+                onClick = { showPreparationService = true }))
             if (viewModel.canAccessKDS && visible(PreferenciasDelMenu.PANTALLA_DE_COCINA)) {
                 add(
                     MenuEntry(
@@ -992,6 +997,9 @@ fun MoreMenuScreen(
             )
         }
     }
+
+    if (showPreparationService) com.avoqado.pos.kds.presentation.PreparationServiceScreen(
+        onDismiss = { showPreparationService = false })
 
     // KDS Fullscreen Overlay
     if (showKDS) {

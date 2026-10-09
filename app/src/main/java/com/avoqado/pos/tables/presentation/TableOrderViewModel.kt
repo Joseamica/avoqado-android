@@ -22,6 +22,7 @@ import com.avoqado.pos.tables.data.RondaConLlave
 import com.avoqado.pos.tables.data.TableServiceRepository
 import com.avoqado.pos.tables.data.TableSession
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -70,12 +71,15 @@ class TableOrderViewModel @Inject constructor(
     private val comandaDispatcher: com.avoqado.pos.core.domain.printing.ComandaDispatcher,
     /** La comanda de una ronda que no salió queda aquí, como la del mostrador: el reloj la reintenta sola. */
     private val comandasPendientesStore: com.avoqado.pos.printing.data.ComandasPendientesStore,
+    private val serviceCoursesRepository: com.avoqado.pos.tables.data.ServiceCoursesRepository? = null,
+    private val draftStore: com.avoqado.pos.tables.data.TableRoundDraftStore? = null,
 ) : ViewModel() {
 
     /** Json para serializar payloads de intents (mismas opciones que la red). */
     private val wireJson = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
 
     /** A not-yet-sent line: the cart item + the course it will fire under. */
+    @kotlinx.serialization.Serializable
     data class PendingLine(
         val item: CartItem,
         val course: String?,
@@ -131,6 +135,17 @@ class TableOrderViewModel @Inject constructor(
 
     private val _pending = MutableStateFlow<List<PendingLine>>(emptyList())
     val pending: StateFlow<List<PendingLine>> = _pending.asStateFlow()
+    private var draftScope: Pair<String, String>? = null
+    private var draftRounds: Map<String, List<PendingLine>> = emptyMap()
+    private var draftDates: Map<String, Long> = emptyMap()
+    private var draftRecoveryFailed = false
+    private var checkLoadGeneration = 0L
+    private var pendingLines: List<PendingLine>
+        get() = _pending.value
+        set(value) {
+            try { persistDraft(value); _pending.value = value }
+            catch (_: Exception) { showError("No se pudo guardar el pedido en este aparato", "Libera espacio e intenta de nuevo.") }
+        }
 
     /**
      * Offline-first: rondas ya "enviadas" SIN red — impresas en cocina y
@@ -149,13 +164,24 @@ class TableOrderViewModel @Inject constructor(
         // sesión provisional la hace TableSyncCoordinator.
         viewModelScope.launch {
             syncOutbox.acks.collect { ack ->
-                if (!ack.isAcked) return@collect
                 val session = tableSession.current() ?: return@collect
                 val result = ack.result ?: return@collect
                 val ackOrder = result["orderId"]?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.content }
                 val localRef = result["localOrderId"]?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.content }
                 if (ackOrder == session.orderId || localRef == session.orderId) {
-                    _queued.value = emptyList()
+                    if (ack.errorCode == com.avoqado.pos.core.data.sync.SyncOutbox.LOCAL_DRAFT_RECOVERY_FAILED) {
+                        draftRecoveryFailed = true
+                        showError("No se pudo recuperar el pedido guardado", "No se borró. Reabre la cuenta para intentarlo de nuevo.")
+                        return@collect
+                    }
+                    if (!ack.isAcked) return@collect
+                    if (localRef != null && ackOrder != null) {
+                        tableSession.promoteProvisional(localRef, ackOrder,
+                            (result["orderNumber"] as? kotlinx.serialization.json.JsonPrimitive)?.content,
+                            (result["version"] as? kotlinx.serialization.json.JsonPrimitive)?.content?.toIntOrNull() ?: 1)
+                        venueId?.let { restoreDraft(it, tableSession.current() ?: session, force = true) }
+                    }
+                    // The ack triggers a refresh; only matching lines in the full check retire the local amount.
                     loadCheck()
                 }
             }
@@ -169,6 +195,39 @@ class TableOrderViewModel @Inject constructor(
     /** "Más platos": extra slots beyond the base list ("Plato 5", "Plato 6"...). */
     private val _extraCourses = MutableStateFlow<List<String>>(emptyList())
     val extraCourses: StateFlow<List<String>> = _extraCourses.asStateFlow()
+
+    val availableCourses: StateFlow<List<com.avoqado.pos.pos.data.model.ServiceCourseSnapshot>> = serviceCoursesRepository?.courses
+        ?: MutableStateFlow(com.avoqado.pos.pos.data.model.ServiceCourseSnapshot.DEFAULTS)
+    val courseNotice: StateFlow<String?> = serviceCoursesRepository?.notice ?: MutableStateFlow(null)
+    private fun selectedSnapshot() = availableCourses.value.firstOrNull { it.label == _selectedCourse.value }
+        ?: availableCourses.value.firstOrNull { it.kind == "IMMEDIATE" && _selectedCourse.value == null }
+
+    fun refreshServiceCourses() {
+        val id = venueId ?: return
+        viewModelScope.launch { serviceCoursesRepository?.refresh(id) }
+    }
+
+    fun addPromotion(promotion: com.avoqado.pos.pos.data.model.Promotion, selections: Map<String, String>, times: Map<String, com.avoqado.pos.pos.data.model.ServiceCourseSnapshot>): Boolean {
+        if (readOnlyCheck.value || _isSending.value) return false
+        val chosen = com.avoqado.pos.pos.presentation.promotions.opcionesElegidas(promotion, selections) ?: return false
+        if (chosen.any { times[it.grupo.id] == null }) return false
+        val prices = com.avoqado.pos.pos.presentation.promotions.preciosUnitariosDePromocion(promotion, chosen)
+        val instance = java.util.UUID.randomUUID().toString()
+        val lines = chosen.mapIndexed { index, selection ->
+            val snapshot = times.getValue(selection.grupo.id)
+            val product = productsRepository.products.value.firstOrNull { it.id == selection.opcion.productId }
+            PendingLine(CartItem(
+                type = CartItemType.ProductItem(selection.opcion.productId), name = selection.opcion.productName.ifBlank { promotion.name },
+                subtitle = "${promotion.name} · ${snapshot.label}", unitPrice = prices[index], quantity = selection.opcion.quantity.coerceAtLeast(1),
+                categoryId = product?.categoryId, imageUrl = product?.imageUrl,
+                promotionInstanceId = instance, promotionId = promotion.id, promotionName = promotion.name,
+                promotionGroupId = selection.grupo.id, promotionOptionId = selection.opcion.id, serviceCourse = snapshot,
+            ), course = snapshot.legacyCourse)
+        }
+        pendingLines = _pending.value + lines
+        _selectedCourse.value = lines.firstOrNull()?.course
+        return lines.all { added -> _pending.value.any { it.item.id == added.item.id } }
+    }
 
     private val _hideSent = MutableStateFlow(false)
     val hideSent: StateFlow<Boolean> = _hideSent.asStateFlow()
@@ -213,13 +272,93 @@ class TableOrderViewModel @Inject constructor(
 
     // MARK: - Check (server truth)
 
+    private var draftRouting: Map<String, com.avoqado.pos.printing.routing.PrintConfig> = emptyMap()
+    private fun persistDraft(lines: List<PendingLine> = _pending.value, rounds: Map<String, List<PendingLine>> = draftRounds, detail: OrderDetail? = null,
+        routing: Map<String, com.avoqado.pos.printing.routing.PrintConfig> = emptyMap()) {
+        check(!draftRecoveryFailed) { "No se pudo recuperar el pedido guardado" }
+        val scope = draftScope ?: return
+        val snapshot = draftStore?.save(scope.first, scope.second, lines, rounds,
+            detail ?: _check.value?.takeIf { it.id == scope.second }, preparationRouting = routing)
+        draftDates = snapshot?.createdAtLocal ?: emptyMap()
+        draftRouting = snapshot?.preparationRouting ?: emptyMap()
+    }
+    private fun reconcileDraftRounds(detail: OrderDetail) {
+        val acknowledged = detail.items.mapNotNull { it.externalId }.toSet()
+        draftRounds.toMap().forEach { (key, lines) ->
+            if (lines.isNotEmpty() && com.avoqado.pos.tables.data.stampTableRoundLines(lines, key).all { it.externalId in acknowledged }) {
+                finishDraftRound(key)
+                _queued.value = _queued.value.filterNot { it.externalId?.startsWith("sync:$key:") == true }
+            }
+        }
+    }
+    private suspend fun stageDraftRound(vId: String, orderId: String, key: String, lines: List<PendingLine>) {
+        val config = if (draftStore != null && lines.any { it.item.serviceCourse?.preparationVersion == 1 })
+            com.avoqado.pos.tables.data.compactRoundPreparationConfig(lines, printConfigRepository.savedConfig(vId)) else null
+        check(secureStorage.venueId == vId && tableSession.current()?.orderId == orderId) { "Cambió la sucursal o la cuenta" }
+        if (draftScope == null) draftScope = vId to orderId
+        val next = draftRounds + (key to lines)
+        persistDraft(rounds = next, routing = config?.let { mapOf(key to it) }.orEmpty())
+        draftRounds = next
+    }
+    private fun finishDraftRound(key: String, keepPending: Boolean = false) {
+        val ids = draftRounds[key]?.map { it.item.id }?.toSet() ?: emptySet()
+        val next = if (keepPending) _pending.value else _pending.value.filterNot { it.item.id in ids }
+        try {
+            persistDraft(next, draftRounds - key)
+            draftRounds = draftRounds - key; _pending.value = next
+        } catch (_: Exception) { showError("No se pudo actualizar el pedido guardado", "Se recuperará con la misma llave al reabrir.") }
+    }
+    private fun restoreDraft(vId: String, session: TableSession.Active, force: Boolean = false) {
+        var scope = vId to session.orderId
+        if (draftStore == null || (!force && draftScope == scope)) return
+        try {
+            val (canonicalId, snapshot) = draftStore.loadResolved(vId, session.orderId)
+            if (canonicalId != session.orderId) {
+                tableSession.promoteProvisional(session.orderId, canonicalId, snapshot.cachedCheck?.orderNumber, snapshot.cachedCheck?.version ?: session.version)
+                scope = vId to canonicalId
+            }
+            val restoredSession = tableSession.current() ?: session
+            draftRecoveryFailed = false
+            draftScope = scope; draftRounds = snapshot.rounds; draftDates = snapshot.createdAtLocal
+            draftRouting = snapshot.preparationRouting
+            _check.value = snapshot.cachedCheck?.takeIf { it.id == canonicalId }
+            _pending.value = snapshot.pending
+            _check.value?.let { reconcileDraftRounds(it) }
+            val ordered = draftRounds.entries.sortedBy { snapshot.createdAtLocal[it.key] ?: 0L }
+            _queued.value = ordered.flatMap { com.avoqado.pos.tables.data.stampTableRoundLines(it.value, it.key) }
+            viewModelScope.launch {
+                for ((key, lines) in ordered) {
+                    if (draftScope != scope || venueId != vId) break
+                    try {
+                        when (syncOutbox.observarEstado(key).first()) {
+                            "ACKED" -> Unit // Retire the draft only after its lines are present in the check.
+                            "REJECTED" -> showError("Una ronda guardada necesita revisión", "Abre la cola de sincronización para ver el motivo.")
+                            "HELD" -> syncOutbox.soltar(vId, key)
+                            null -> {
+                                val requests = com.avoqado.pos.tables.data.buildTableRoundRequests(lines.map { it.item }, lines.associate { it.item.id to it.course }, lines.associate { it.item.id to it.seat })
+                                syncOutbox.enqueue(vId, com.avoqado.pos.core.data.sync.SyncIntentTypes.ADD_ITEMS,
+                                    payloadDeRonda(restoredSession, RondaConLlave.conLlaves(requests, key)), id = key, createdAtLocal = draftDates[key])
+                            }
+                            else -> Unit
+                        }
+                    } catch (_: Exception) { showError("No se pudo recuperar el pedido guardado", "No se borró. Reabre la cuenta para intentarlo de nuevo.") }
+                }
+            }
+        } catch (_: Exception) { draftRecoveryFailed = true; showError("No se pudo recuperar el pedido guardado", "No se borró. Reabre la cuenta para intentarlo de nuevo.") }
+    }
+
     fun loadCheck() {
-        val session = tableSession.current() ?: return
+        var session = tableSession.current() ?: return
+        val generation = ++checkLoadGeneration
+        venueId?.let { restoreDraft(it, session) }
+        if (draftRecoveryFailed) { _isLoadingCheck.value = false; return }
+        session = tableSession.current() ?: return
         // Sesión provisional (mesa abierta offline): la orden aún no existe en
         // el server — no hay cheque que cargar ni error que mostrar. El panel
         // vive de pending + queued hasta que el ack promueva la sesión.
         if (session.isProvisional) {
             _check.value = null
+            _isLoadingCheck.value = false
             return
         }
         val vId = venueId ?: return
@@ -227,12 +366,21 @@ class TableOrderViewModel @Inject constructor(
             _isLoadingCheck.value = true
             repository.getOrderDetail(vId, session.orderId).fold(
                 onSuccess = { detail ->
+                    if (generation != checkLoadGeneration || venueId != vId || tableSession.current()?.orderId != session.orderId || detail.id != session.orderId) return@fold
+                    try { persistDraft(detail = detail) }
+                    catch (_: Exception) {
+                        draftRecoveryFailed = true
+                        showError("No se pudo guardar la cuenta en este aparato", "Libera espacio y reabre la cuenta antes de cobrar.")
+                        return@fold
+                    }
                     _check.value = detail
+                    reconcileDraftRounds(detail)
                     // Toda acción del panel incrementa Order.version en el server;
                     // sin refrescarla, el siguiente Enviar da 409 (auditoría).
                     detail.version?.let { tableSession.updateVersion(it) }
                 },
                 onFailure = { e ->
+                    if (generation != checkLoadGeneration || venueId != vId || tableSession.current()?.orderId != session.orderId) return@fold
                     // 🔴 Sin red NO es un error: es el estado normal del local
                     // en un apagón. Avisarlo aquí hacía que el mesero viera
                     // "No se pudo actualizar la cuenta" CADA vez que entraba a
@@ -245,6 +393,7 @@ class TableOrderViewModel @Inject constructor(
                     }
                 },
             )
+            if (generation != checkLoadGeneration) return@launch
             _isLoadingCheck.value = false
             // El saldo de puntos depende del cliente adjunto, que viene en el cheque.
             loadLoyalty()
@@ -263,9 +412,7 @@ class TableOrderViewModel @Inject constructor(
 
     /** "Más platos": adds the next numbered slot and selects it. */
     fun addExtraCourse() {
-        val next = "Plato ${BASE_COURSES.size + _extraCourses.value.size + 1}"
-        _extraCourses.value = _extraCourses.value + next
-        _selectedCourse.value = next
+        showMessage("Configura los tiempos de esta sucursal en el dashboard, en Configuración › Tiempos de servicio.")
     }
 
     /** Grid tap without modifiers. Dedupe is COURSE-aware: the same product on
@@ -281,9 +428,9 @@ class TableOrderViewModel @Inject constructor(
         val existing = _pending.value.firstOrNull { line ->
             line.course == course &&
                 (line.item.type as? CartItemType.ProductItem)?.productId == product.id &&
-                line.item.selectedModifiers.isEmpty()
+                line.item.selectedModifiers.isEmpty() && line.item.promotionInstanceId == null && line.item.serviceCourse == selectedSnapshot()
         }
-        _pending.value = if (existing != null) {
+        pendingLines = if (existing != null) {
             _pending.value.map { line ->
                 if (line === existing) line.copy(item = line.item.copy(quantity = line.item.quantity + 1)) else line
             }
@@ -296,6 +443,7 @@ class TableOrderViewModel @Inject constructor(
                     imageUrl = product.imageUrl,
                     colorHex = product.color,
                     categoryId = product.categoryId,
+                    serviceCourse = selectedSnapshot(),
                 ),
                 course = course,
             )
@@ -315,7 +463,7 @@ class TableOrderViewModel @Inject constructor(
         if (product.isOutOfStock) {
             _actionMessage.value = "⚠️ \"${product.name}\" marcaba 0 — se agregó, revisa tus existencias"
         }
-        _pending.value = _pending.value + PendingLine(
+        pendingLines = _pending.value + PendingLine(
             item = CartItem(
                 type = CartItemType.ProductItem(product.id),
                 name = product.name,
@@ -328,6 +476,7 @@ class TableOrderViewModel @Inject constructor(
                 itemNote = note,
                 isCortesia = isCortesia,
                 cortesiaReason = cortesiaReason,
+                serviceCourse = selectedSnapshot(),
             ),
             course = _selectedCourse.value,
         )
@@ -335,7 +484,7 @@ class TableOrderViewModel @Inject constructor(
 
     /** Asiento de una línea pendiente: cicla — → A1 → ... → Amax → —. */
     fun cyclePendingSeat(lineItemId: String, maxSeats: Int) {
-        _pending.value = _pending.value.map { line ->
+        pendingLines = _pending.value.map { line ->
             if (line.item.id != lineItemId) line
             else {
                 val next = when (val cur = line.seat) {
@@ -348,12 +497,13 @@ class TableOrderViewModel @Inject constructor(
     }
 
     fun removePending(lineItemId: String) {
-        _pending.value = _pending.value.filterNot { it.item.id == lineItemId }
+        val instance = _pending.value.firstOrNull { it.item.id == lineItemId }?.item?.promotionInstanceId
+        pendingLines = _pending.value.filterNot { it.item.id == lineItemId || instance != null && it.item.promotionInstanceId == instance }
     }
 
     /** "Borrar nuevos artículos" (Acciones): drops every unsent line. */
     fun clearPending() {
-        _pending.value = emptyList()
+        pendingLines = emptyList()
         _actionMessage.value = "Artículos sin enviar borrados"
     }
 
@@ -367,7 +517,7 @@ class TableOrderViewModel @Inject constructor(
     /** "Ordenar carrito": reordena SOLO las líneas pendientes. Lo ya enviado
      *  vive en el server ordenado por hora de envío y no se toca. */
     fun sortPending(mode: CartSort) {
-        _pending.value = when (mode) {
+        pendingLines = when (mode) {
             CartSort.ASIENTO -> _pending.value.sortedWith(
                 compareBy({ it.seat ?: Int.MAX_VALUE }, { it.item.name.lowercase() }),
             )
@@ -420,10 +570,11 @@ class TableOrderViewModel @Inject constructor(
     fun addCustomAmount(name: String, amountCents: Int) {
         invalidateBlockedNotice()
         if (amountCents <= 0) return
-        _pending.value = _pending.value + PendingLine(
+        pendingLines = _pending.value + PendingLine(
             item = CartItem(
                 type = CartItemType.CustomAmount,
                 name = name.ifBlank { "Importe personalizado" },
+                serviceCourse = selectedSnapshot(),
                 unitPrice = amountCents,
             ),
             course = _selectedCourse.value,
@@ -432,7 +583,8 @@ class TableOrderViewModel @Inject constructor(
 
     fun updatePendingQuantity(lineItemId: String, quantity: Int) {
         if (quantity < 1) return removePending(lineItemId)
-        _pending.value = _pending.value.map { line ->
+        if (_pending.value.any { it.item.id == lineItemId && it.item.promotionInstanceId != null }) return
+        pendingLines = _pending.value.map { line ->
             if (line.item.id == lineItemId) line.copy(item = line.item.copy(quantity = quantity)) else line
         }
     }
@@ -467,42 +619,26 @@ class TableOrderViewModel @Inject constructor(
 
         _isSending.value = true
         viewModelScope.launch {
-            val requests = lines.map { line ->
-                when (val type = line.item.type) {
-                    is CartItemType.ProductItem -> AddOrderItemRequest(
-                        productId = type.productId,
-                        quantity = line.item.quantity,
-                        notes = line.item.itemNote,
-                        modifierIds = line.item.selectedModifiers.map { it.modifierId }.ifEmpty { null },
-                        course = line.course,
-                        isCortesia = line.item.isCortesia.takeIf { it },
-                        cortesiaReason = line.item.cortesiaReason?.takeIf { line.item.isCortesia },
-                        seat = line.seat,
-                    )
-                    // Custom-amount line: server keys on customName + cents.
-                    else -> AddOrderItemRequest(
-                        productId = null,
-                        quantity = line.item.quantity,
-                        notes = line.item.itemNote,
-                        course = line.course,
-                        customName = line.item.name,
-                        customUnitPriceCents = line.item.effectiveUnitPrice,
-                        isCortesia = line.item.isCortesia.takeIf { it },
-                        cortesiaReason = line.item.cortesiaReason?.takeIf { line.item.isCortesia },
-                        seat = line.seat,
-                    )
-                }
+            val requests = try {
+                com.avoqado.pos.tables.data.buildTableRoundRequests(lines.map { it.item }, lines.associate { it.item.id to it.course }, lines.associate { it.item.id to it.seat })
+            } catch (e: IllegalArgumentException) {
+                _isSending.value = false
+                onDone(false, e.message ?: "No se pudo preparar el combo")
+                return@launch
             }
+            val roundKey = java.util.UUID.randomUUID().toString()
+            try { stageDraftRound(vId, session.orderId, roundKey, lines) }
+            catch (_: Exception) { _isSending.value = false; onDone(false, "No se pudo guardar la ronda — intenta de nuevo"); return@launch }
             // Offline-first Corte B: una sesión PROVISIONAL (mesa abierta sin
             // red) nunca toca el server directo — su orden aún no existe allá.
             if (session.isProvisional) {
-                enqueueRoundOffline(vId, session, lines, requests, onDone)
+                try { enqueueRoundOffline(vId, session, lines, requests, roundKey, onDone) }
+                catch (_: Exception) { finishDraftRound(roundKey, keepPending = true); _isSending.value = false; onDone(false, "No se pudo guardar la ronda sin conexión — intenta de nuevo") }
                 return@launch
             }
 
             // Etapa 3 del KDS (spec §5): cada renglón lleva su llave y la red de seguridad se escribe RETENIDA antes de
             // la red. Si la respuesta se pierde, el replay lleva las MISMAS llaves y el servidor deduplica.
-            val roundKey = java.util.UUID.randomUUID().toString()
             val conLlaves = RondaConLlave.conLlaves(requests, roundKey)
             // Task 7 review (2026-09-28): `addItemsToOrder` no es transaccional y hace el CAS de versión AL FINAL
             // — un 409 (perdió el CAS) o un 5xx a medio POST pueden dejar filas YA escritas. Se necesita saber cuál
@@ -518,6 +654,7 @@ class TableOrderViewModel @Inject constructor(
                             payloadDeRonda(session, conLlaves),
                             id = roundKey,
                             retenido = true,
+                            createdAtLocal = draftDates[roundKey],
                         )
                     },
                     enLinea = {
@@ -531,9 +668,11 @@ class TableOrderViewModel @Inject constructor(
                 is RondaConLlave.Desenlace.Enviada -> {
                     // Saved — hand control back IMMEDIATELY; printing and the floor refresh are slow network hops.
                     tableSession.updateVersion(desenlace.valor.version)
-                    _pending.value = emptyList()
+                    _queued.value += com.avoqado.pos.tables.data.stampTableRoundLines(lines, roundKey)
+                    pendingLines = emptyList()
                     _isSending.value = false
-                    onDone(true, "Ronda enviada a cocina — Mesa ${session.tableNumber}")
+                    onDone(true, if (lines.any { it.item.serviceCourse?.preparationVersion == 1 })
+                        "Comanda registrada — Mesa ${session.tableNumber}" else "Ronda enviada a cocina — Mesa ${session.tableNumber}")
                     loadCheck()
                     printRoundComandas(vId, session, lines, refreshFloor = true, servidorLaTiene = true, roundKey = roundKey)
                 }
@@ -546,11 +685,13 @@ class TableOrderViewModel @Inject constructor(
                     marcarRondaEncolada(vId, session, lines, roundKey, onDone, motivo)
                 }
                 is RondaConLlave.Desenlace.Rechazada -> {
+                    finishDraftRound(roundKey, keepPending = true)
                     _isSending.value = false
                     repository.refresh(vId)
                     onDone(false, textoDeRondaRechazada(desenlace.error))
                 }
                 is RondaConLlave.Desenlace.NoSeGuardo -> {
+                    finishDraftRound(roundKey, keepPending = true)
                     _isSending.value = false
                     onDone(false, "No se pudo guardar la ronda — intenta de nuevo")
                 }
@@ -719,9 +860,11 @@ class TableOrderViewModel @Inject constructor(
         session: TableSession.Active,
         lines: List<PendingLine>,
         requests: List<AddOrderItemRequest>,
+        roundKey: String,
         onDone: (Boolean, String) -> Unit,
     ) {
-        val intentId = syncOutbox.enqueue(vId, com.avoqado.pos.core.data.sync.SyncIntentTypes.ADD_ITEMS, payloadDeRonda(session, requests))
+        val intentId = syncOutbox.enqueue(vId, com.avoqado.pos.core.data.sync.SyncIntentTypes.ADD_ITEMS,
+            payloadDeRonda(session, RondaConLlave.conLlaves(requests, roundKey)), id = roundKey, createdAtLocal = draftDates[roundKey])
         marcarRondaEncolada(vId, session, lines, intentId, onDone)
     }
 
@@ -753,9 +896,9 @@ class TableOrderViewModel @Inject constructor(
         mensaje: String = MENSAJE_RONDA_SIN_CONEXION,
     ) {
         // Espejo EXACTO de la llave de cada renglón: es lo que deja separar el cheque antes de que sincronice.
-        val stamped = lines.mapIndexed { idx, line -> line.copy(externalId = RondaConLlave.llave(intentId, idx)) }
+        val stamped = com.avoqado.pos.tables.data.stampTableRoundLines(lines, intentId)
         _queued.value = _queued.value + stamped
-        _pending.value = emptyList()
+        pendingLines = emptyList()
         _isSending.value = false
         onDone(true, mensaje)
         printRoundComandas(vId, session, lines, refreshFloor = false, servidorLaTiene = false, roundKey = intentId)
@@ -793,9 +936,10 @@ class TableOrderViewModel @Inject constructor(
     ) {
         if (refreshFloor) viewModelScope.launch { repository.refresh(vId) }
         // Comandas route catalog products only — custom amounts ride to the check but never to kitchen.
-        val kitchenLines = lines.filter { it.item.type is CartItemType.ProductItem }
+        val kitchenLines = com.avoqado.pos.tables.data.stampTableRoundLines(lines, roundKey)
+            .filter { it.item.type is CartItemType.ProductItem }
         // One comanda batch per course so each ticket reads "Mesa 8 · Aperitivos" like the single-course flow.
-        val pedidos = kitchenLines.groupBy { it.course }.map { (course, courseLines) ->
+        val pedidos = kitchenLines.groupBy { com.avoqado.pos.tables.data.kitchenCourseLabel(it.item.serviceCourse, it.course) }.map { (course, courseLines) ->
             com.avoqado.pos.core.domain.printing.ComandaDispatcher.Pedido(
                 lines = courseLines.map { line ->
                     RoutableItem(
@@ -806,12 +950,17 @@ class TableOrderViewModel @Inject constructor(
                         quantity = line.item.quantity,
                         modifiers = line.item.selectedModifiers.map { it.modifierName },
                         notes = line.item.itemNote,
+                        comboName = line.item.promotionName,
+                        serviceCourse = line.item.serviceCourse,
+                        externalId = line.externalId,
+                        orderPromotionId = line.item.promotionInstanceId,
                     )
                 },
                 orderType = "Mesa ${session.tableNumber}" + (course?.let { " · $it" } ?: ""),
                 // KDS 3.6: la pantalla junta los cursos en una tarjeta — «Mesa 8» arriba y el tiempo en cada platillo.
                 curso = course,
                 etiquetaPantalla = "Mesa ${session.tableNumber}",
+                configCongelada = draftRouting[roundKey],
             )
         }
         if (pedidos.isEmpty()) return
@@ -1149,6 +1298,7 @@ class TableOrderViewModel @Inject constructor(
             totalCents = round(check.total * 100).toInt(),
             // Nunca arrastrar PAYING al otro cheque: cobrar es por-cuenta.
             mode = TableSession.Mode.ORDERING,
+            isProvisional = check.isProvisional,
         )
         tableSession.start(next)
         clearPending()
@@ -1469,28 +1619,10 @@ class TableOrderViewModel @Inject constructor(
             _actionMessage.value = "No hay artículos en ese tiempo"
             return
         }
-        val copies = courseItems.map { item ->
-            PendingLine(
-                item = CartItem(
-                    type = CartItemType.ProductItem(item.productId!!),
-                    name = item.productName ?: "Artículo",
-                    unitPrice = kotlin.math.round(item.unitPrice * 100).toInt(),
-                    quantity = item.quantity,
-                    selectedModifiers = item.modifiers.map { m ->
-                        com.avoqado.pos.pos.data.model.SelectedModifier(
-                            groupId = "",
-                            groupName = "",
-                            modifierId = m.id,
-                            modifierName = m.name,
-                            priceInCents = kotlin.math.round(m.price * 100).toInt(),
-                        )
-                    },
-                    itemNote = item.notes,
-                ),
-                course = course,
-            )
-        }
-        _pending.value = _pending.value + copies
+        val copies = try {
+            com.avoqado.pos.tables.data.buildRepeatedTableLines(courseItems).map { PendingLine(it, course) }
+        } catch (e: IllegalArgumentException) { showError(e.message ?: "Elige el paquete completo desde Combos"); return }
+        pendingLines = _pending.value + copies
         _selectedCourse.value = course
         _actionMessage.value = "${copies.sumOf { it.item.quantity }} artículo(s) repetidos en ${course ?: "Inmediato"}"
     }
@@ -1569,6 +1701,10 @@ class TableOrderViewModel @Inject constructor(
 
     fun preparePagar(): Boolean {
         val session = tableSession.current() ?: return false
+        if (draftRecoveryFailed || (draftStore != null && !session.isProvisional && _check.value?.id != session.orderId)) {
+            showBlockedReason("No se pudo recuperar el saldo completo de esta cuenta. Conéctate y reabre la cuenta antes de cobrar; tus productos siguen guardados.")
+            return false
+        }
         // 🔴 MONEY: si ya hubo pagos parciales (split), Pagar debe cobrar SOLO lo
         // restante — usar el total completo re-cobraría lo ya pagado.
         // Solo confiar en el cheque si ES el de esta sesión (cambiar de cuenta
@@ -1630,6 +1766,6 @@ class TableOrderViewModel @Inject constructor(
      *  the caller confirms with the user first when any exist. */
     fun exitToFloor() {
         tableSession.clear()
-        _pending.value = emptyList()
+        pendingLines = emptyList()
     }
 }

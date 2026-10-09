@@ -71,6 +71,7 @@ class TableOrderRondaConLlaveTest {
         store: ComandasPendientesStore = mockk(relaxed = true),
         despachador: ComandaDispatcher = dispatcher,
         secureStorage: SecureStorage = mockk<SecureStorage>(relaxed = true).also { every { it.venueId } returns "venue-1" },
+        draftStore: com.avoqado.pos.tables.data.TableRoundDraftStore? = null,
     ): TableOrderViewModel {
         every { repository.tables } returns MutableStateFlow(emptyList())
         every { repository.ownership } returns MutableStateFlow(TableServiceRepository.TableOwnership())
@@ -94,6 +95,7 @@ class TableOrderRondaConLlaveTest {
             syncOutbox = syncOutbox, productsRepository = mockk(relaxed = true), connectivityMonitor = connectivity,
             timeEntryRepository = mockk(relaxed = true),
             comandaDispatcher = despachador, comandasPendientesStore = store,
+            draftStore = draftStore,
         ).apply {
             addCustomAmount("Pan", 3000)
             addCustomAmount("Café", 4500)
@@ -101,6 +103,146 @@ class TableOrderRondaConLlaveTest {
     }
 
     private fun llavesDe(payload: JsonObject) = payload["items"]!!.jsonArray.map { it.jsonObject["externalId"]!!.jsonPrimitive.content }
+
+    @Test fun `open ack reloads moved combo draft with either coordinator ordering and after cold restart`() = runTest {
+        for (coordinatorFirst in listOf(false, true)) {
+            val root = java.nio.file.Files.createTempDirectory("table-identity").toFile()
+            var subject: TableOrderViewModel? = null
+            var cold: TableOrderViewModel? = null
+            try {
+                val store = com.avoqado.pos.tables.data.TableRoundDraftStore(root)
+                val lines = (1..2).map { index -> TableOrderViewModel.PendingLine(
+                    com.avoqado.pos.pos.data.model.CartItem(id = "component-$index", type = com.avoqado.pos.pos.data.model.CartItemType.ProductItem("coffee"), name = "Café", unitPrice = 4950,
+                        promotionInstanceId = "instance", promotionId = "combo", promotionGroupId = "group-$index", promotionOptionId = "option-$index",
+                        serviceCourse = com.avoqado.pos.pos.data.model.ServiceCourseSnapshot("desserts", "Con el postre", "STANDARD")), "Con el postre") }
+                store.save("venue-1", "local", lines, emptyMap())
+                subject = vm(draftStore = store)
+                val acks = syncOutbox.acks as MutableSharedFlow<com.avoqado.pos.core.data.sync.SyncAck>
+                tableSession.start(tableSession.current()!!.copy(orderId = "local", isProvisional = true))
+                subject.loadCheck(); advanceUntilIdle()
+                assertEquals(9900, subject.pendingTotalCents)
+                coEvery { repository.getOrderDetail("venue-1", "real") } returns Result.success(OrderDetail(id = "real", total = 0.0, version = 1))
+                if (coordinatorFirst) {
+                    tableSession.promoteProvisional("local", "real", "ORD-real", 1)
+                    subject.loadCheck(); advanceUntilIdle()
+                }
+                store.promote("venue-1", "local", "real")
+                acks.emit(com.avoqado.pos.core.data.sync.SyncAck(id = "open", status = "ACKED", result = kotlinx.serialization.json.buildJsonObject {
+                    put("localOrderId", kotlinx.serialization.json.JsonPrimitive("local")); put("orderId", kotlinx.serialization.json.JsonPrimitive("real"))
+                }))
+                advanceUntilIdle()
+                assertEquals("real", tableSession.current()!!.orderId)
+                assertEquals(lines, subject.pending.value)
+                assertEquals(9900, subject.pendingTotalCents)
+                cold = vm(draftStore = com.avoqado.pos.tables.data.TableRoundDraftStore(root))
+                tableSession.start(tableSession.current()!!.copy(orderId = "real"))
+                coEvery { repository.getOrderDetail(any(), any()) } returns Result.failure(IOException("sin red"))
+                cold.loadCheck(); advanceUntilIdle()
+                assertEquals(lines, cold.pending.value)
+                assertEquals(9900, cold.pendingTotalCents)
+                assertEquals("Unconfirmed products are preserved in the draft, not charged yet", 0, cold.payableTotalCents)
+            } finally { subject?.viewModelScope?.cancel(); cold?.viewModelScope?.cancel(); root.deleteRecursively() }
+        }
+    }
+
+    @Test fun `cold stale provisional floor reference resolves to real bill and retains unsent combo`() = runTest {
+        val root = java.nio.file.Files.createTempDirectory("table-cold-alias").toFile()
+        var subject: TableOrderViewModel? = null
+        try {
+            val store = com.avoqado.pos.tables.data.TableRoundDraftStore(root)
+            val lines = (1..2).map { index -> TableOrderViewModel.PendingLine(
+                com.avoqado.pos.pos.data.model.CartItem(id = "component-$index", type = com.avoqado.pos.pos.data.model.CartItemType.ProductItem("coffee"), name = "Café", unitPrice = 4950,
+                    promotionInstanceId = "instance", promotionId = "combo", promotionGroupId = "group-$index", promotionOptionId = "option-$index",
+                    serviceCourse = com.avoqado.pos.pos.data.model.ServiceCourseSnapshot("desserts", "Con el postre", "STANDARD")), "Con el postre") }
+            store.save("venue-1", "local", lines, emptyMap())
+            store.promote("venue-1", "local", "real")
+            store.save("venue-1", "real", lines, emptyMap(), OrderDetail(id = "real", total = 109.0, version = 3,
+                payments = listOf(com.avoqado.pos.tables.data.OrderDetailPayment(amount = 50.0, tipAmount = 10.0, status = "COMPLETED"))))
+            subject = vm(draftStore = store)
+            tableSession.start(tableSession.current()!!.copy(orderId = "local", isProvisional = true))
+            coEvery { repository.getOrderDetail(any(), any()) } returns Result.failure(IOException("sin red"))
+            subject.loadCheck(); advanceUntilIdle()
+            assertEquals("real", tableSession.current()!!.orderId)
+            assertEquals(false, tableSession.current()!!.isProvisional)
+            assertEquals(lines, subject.pending.value)
+            assertEquals(9900, subject.pendingTotalCents)
+            assertEquals(4900, subject.payableTotalCents)
+            assertEquals(true, subject.preparePagar())
+            assertEquals(4900, tableSession.current()!!.totalCents)
+        } finally { subject?.viewModelScope?.cancel(); root.deleteRecursively() }
+    }
+
+    @Test fun `cold offline restart keeps previous bill and completed partial payments beside new round`() = runTest {
+        val root = java.nio.file.Files.createTempDirectory("table-balance").toFile()
+        try {
+            val warm = vm(draftStore = com.avoqado.pos.tables.data.TableRoundDraftStore(root))
+            coEvery { repository.getOrderDetail(any(), any()) } returns Result.success(OrderDetail(
+                id = "o1", total = 109.0, subtotal = 99.0, version = 3,
+                payments = listOf(com.avoqado.pos.tables.data.OrderDetailPayment(amount = 50.0, tipAmount = 10.0, status = "COMPLETED"),
+                    com.avoqado.pos.tables.data.OrderDetailPayment(amount = 20.0, status = "FAILED")),
+            ))
+            warm.loadCheck(); advanceUntilIdle()
+            warm.addCustomAmount("Pan", 3000)
+            warm.addCustomAmount("Café", 4500)
+            coEvery { repository.addRound(any(), any(), any(), any()) } returns Result.failure(IOException("sin red"))
+            warm.sendRound(); advanceUntilIdle()
+            assertEquals(12400, warm.payableTotalCents)
+            val cold = vm(draftStore = com.avoqado.pos.tables.data.TableRoundDraftStore(root))
+            coEvery { repository.getOrderDetail(any(), any()) } returns Result.failure(IOException("sin red"))
+            coEvery { syncOutbox.observarEstado(any()) } returns MutableStateFlow("PENDING")
+            cold.loadCheck(); advanceUntilIdle()
+            assertEquals(12400, cold.payableTotalCents)
+            assertEquals(2, cold.queued.value.size)
+            assertEquals(109.0, cold.check.value!!.total, 0.0)
+            assertEquals(true, cold.preparePagar())
+            assertEquals(12400, tableSession.current()!!.totalCents)
+            val acknowledgedCold = vm(draftStore = com.avoqado.pos.tables.data.TableRoundDraftStore(root))
+            coEvery { repository.getOrderDetail(any(), any()) } returns Result.failure(IOException("sin red"))
+            coEvery { syncOutbox.observarEstado(any()) } returns MutableStateFlow("ACKED")
+            acknowledgedCold.loadCheck(); advanceUntilIdle()
+            assertEquals("An ack alone cannot replace the previous cached bill", 12400, acknowledgedCold.payableTotalCents)
+            coEvery { repository.getOrderDetail(any(), any()) } returns Result.success(acknowledgedCold.check.value!!)
+            acknowledgedCold.loadCheck(); advanceUntilIdle()
+            assertEquals("A successful detail without the round cannot consume its local amount", 12400, acknowledgedCold.payableTotalCents)
+            assertEquals(2, acknowledgedCold.queued.value.size)
+            val complete = acknowledgedCold.check.value!!.copy(total = 184.0,
+                items = acknowledgedCold.queued.value.mapIndexed { index, line -> com.avoqado.pos.tables.data.OrderDetailItem(id = "sent-$index", externalId = line.externalId) })
+            coEvery { repository.getOrderDetail(any(), any()) } returns Result.success(complete)
+            acknowledgedCold.loadCheck(); advanceUntilIdle()
+            assertEquals(12400, acknowledgedCold.payableTotalCents)
+            assertEquals(0, acknowledgedCold.queued.value.size)
+            val reconciledCold = vm(draftStore = com.avoqado.pos.tables.data.TableRoundDraftStore(root))
+            coEvery { repository.getOrderDetail(any(), any()) } returns Result.failure(IOException("sin red"))
+            reconciledCold.loadCheck(); advanceUntilIdle()
+            assertEquals("The fetched total must not also restore its staged round", 12400, reconciledCold.payableTotalCents)
+            assertEquals(0, reconciledCold.queued.value.size)
+        } finally { root.deleteRecursively() }
+    }
+
+    @Test fun `a late older check cannot replace the latest bill or its durable cache`() = runTest {
+        val root = java.nio.file.Files.createTempDirectory("table-check-race").toFile()
+        try {
+            val store = com.avoqado.pos.tables.data.TableRoundDraftStore(root)
+            val subject = vm(draftStore = store)
+            val older = CompletableDeferred<Result<OrderDetail>>()
+            val newer = CompletableDeferred<Result<OrderDetail>>()
+            var reads = 0
+            coEvery { repository.getOrderDetail(any(), any()) } coAnswers {
+                if (++reads == 1) older.await() else newer.await()
+            }
+            subject.loadCheck(); advanceUntilIdle()
+            subject.loadCheck(); advanceUntilIdle()
+            assertEquals(2, reads)
+            newer.complete(Result.success(OrderDetail(id = "o1", total = 184.0, version = 5)))
+            advanceUntilIdle()
+            assertEquals(18400, subject.payableTotalCents)
+            older.complete(Result.success(OrderDetail(id = "o1", total = 109.0, version = 3)))
+            advanceUntilIdle()
+            assertEquals("An older GET must not reduce the bill", 18400, subject.payableTotalCents)
+            assertEquals(5, tableSession.current()!!.version)
+            assertEquals(184.0, store.load("venue-1", "o1").cachedCheck!!.total, 0.0)
+        } finally { root.deleteRecursively() }
+    }
 
     @Test
     fun `P1 la ronda en linea lleva las MISMAS llaves que su red de seguridad y con exito la descarta`() = runTest {

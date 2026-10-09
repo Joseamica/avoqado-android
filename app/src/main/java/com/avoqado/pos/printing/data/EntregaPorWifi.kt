@@ -23,7 +23,8 @@ private const val TAG = "EntregaPorWifi"
 /** Una entrega por WiFi: el mensaje y, si la estación es «sólo pantalla», el trabajo de papel que sale si nadie acusa. */
 data class EntregaKds(val mensaje: KdsComanda, val trabajoDeRespaldo: TrabajoPendiente?) {
     /** La llave de su fila (ronda 2, N1), o `null` si no se guarda (impresora + pantalla: sin trabajo de respaldo). */
-    val entregaId: String? get() = trabajoDeRespaldo?.let { entregaIdDe(mensaje.sourceKey, it.planes) }
+    val entregaId: String? get() = trabajoDeRespaldo?.let { if (mensaje.preparationVersion == 1)
+        mensaje.sourceKey + "|" + mensaje.items.map { item -> item.id }.sorted().joinToString(",") else entregaIdDe(mensaje.sourceKey, it.planes) }
 }
 
 /**
@@ -75,7 +76,7 @@ class EntregaPorWifi @Inject constructor(
             sinTumbar("No se pudo guardar la entrega ${e.mensaje.sourceKey}") {
                 dao.guardar(
                     EntregaKdsPendienteEntity(
-                        entregaId = entregaIdDe(e.mensaje.sourceKey, trabajo.planes),
+                        entregaId = requireNotNull(e.entregaId),
                         sourceKey = e.mensaje.sourceKey, venueId = e.mensaje.venueId, stationId = e.mensaje.stationId,
                         mensajeJson = KdsLanProtocol.encode(e.mensaje),
                         trabajoJson = json.encodeToString(TrabajoPendiente.serializer(), trabajo),

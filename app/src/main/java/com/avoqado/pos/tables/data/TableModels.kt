@@ -123,6 +123,8 @@ data class OpenCheckSummary(
     val waiterId: String? = null,
     val waiterName: String? = null,
     val createdAt: String? = null,
+    /** Local floor cache only: OPEN_TABLE has not appeared in the server floor yet. */
+    val isProvisional: Boolean = false,
 ) {
     val totalDisplay: String get() = "$${String.format(java.util.Locale.US, "%.2f", total)}"
 }
@@ -153,6 +155,9 @@ data class TableOrderItem(
     val total: Double = 0.0,
     /** TABLE_SERVICE course/tiempo. Null = "Inmediato". */
     val course: String? = null,
+    val serviceCourse: com.avoqado.pos.pos.data.model.ServiceCourseSnapshot? = null,
+    val orderPromotionId: String? = null,
+    val externalId: String? = null,
     /** Comped line ("Dar de cortesía"): stays on the check but costs 0. */
     val isCortesia: Boolean = false,
     val cortesiaReason: String? = null,
@@ -204,12 +209,14 @@ data class OpenedOrder(val id: String, val orderNumber: String? = null, val vers
 data class AddOrderItemRequest(
     /** Catalog product — null for a custom-amount line (customName + customUnitPriceCents). */
     val productId: String? = null,
+    val promotionRef: com.avoqado.pos.payment.data.model.PromotionRefRequest? = null,
     val quantity: Int,
     val notes: String? = null,
     /** Modifier ids picked with the normal product detail panel. */
     val modifierIds: List<String>? = null,
     /** TABLE_SERVICE course/tiempo ("Aperitivos"...). Null = preparar de inmediato. */
     val course: String? = null,
+    val serviceCourse: com.avoqado.pos.pos.data.model.ServiceCourseSnapshot? = null,
     /** Custom-amount line: label + unit price in cents (productId null). */
     val customName: String? = null,
     val customUnitPriceCents: Int? = null,
@@ -345,6 +352,9 @@ data class OrderDetailItem(
     val modifiers: List<OrderDetailModifier> = emptyList(),
     /** Course/tiempo the line was fired under. Null = "Inmediato". */
     val course: String? = null,
+    val serviceCourse: com.avoqado.pos.pos.data.model.ServiceCourseSnapshot? = null,
+    val orderPromotionId: String? = null,
+    val externalId: String? = null,
     /** Asiento/comensal de la línea. */
     val seat: Int? = null,
     /** ISO timestamp de creación de la fila (fallback de agrupación para filas viejas). */

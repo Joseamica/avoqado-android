@@ -4,10 +4,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -22,6 +20,8 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
@@ -57,6 +57,8 @@ fun KDSOrderCard(
     /** Sólo se usan cuando `order.needsAcceptance` — ver el bloque de acciones abajo. */
     onAcceptDelivery: () -> Unit = {},
     onDenyDelivery: () -> Unit = {},
+    canPreparation: (com.avoqado.pos.kds.domain.PreparationAction) -> Boolean = { false },
+    onPreparation: (com.avoqado.pos.kds.domain.KDSOrderItem, com.avoqado.pos.kds.domain.PreparationAction, Int, com.avoqado.pos.kds.domain.PreparationState?, String?) -> Unit = { _, _, _, _, _ -> },
 ) {
     val isLate = (System.currentTimeMillis() - order.createdAt) > LATE_THRESHOLD_MS
             && order.status != KDSOrderStatus.READY
@@ -87,126 +89,129 @@ fun KDSOrderCard(
         },
         elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
     ) {
-        Row(modifier = Modifier.height(IntrinsicSize.Min)) {
-            // Left color bar
-            Box(
-                modifier = Modifier
-                    .width(4.dp)
-                    .fillMaxHeight()
-                    .clip(RoundedCornerShape(topStart = AvoqadoTheme.cornerRadius.lg, bottomStart = AvoqadoTheme.cornerRadius.lg))
-                    .background(borderColor),
-            )
-
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(AvoqadoTheme.spacing.md),
+        // El Row de altura intrínseca dejaba acciones del FlowRow con tamaño 0 × 0.
+        Column(
+            modifier = Modifier.fillMaxWidth()
+                .drawBehind { drawRect(borderColor, size = Size(4.dp.toPx(), size.height)) }
+                .padding(start = AvoqadoTheme.spacing.md + 4.dp, top = AvoqadoTheme.spacing.md,
+                    end = AvoqadoTheme.spacing.md, bottom = AvoqadoTheme.spacing.md),
+        ) {
+            // Header: Order # + elapsed time
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                // Header: Order # + elapsed time
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        text = "#${order.orderNumber}",
-                        style = if (isLargeFont) MaterialTheme.typography.headlineSmall
-                                else MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onSurface,
-                    )
-                    Text(
-                        text = elapsedText,
-                        style = if (isLargeFont) MaterialTheme.typography.bodyLarge
-                                else MaterialTheme.typography.bodyMedium,
-                        fontFamily = FontFamily.Monospace,
-                        color = if (isLate) LateRedBorder
-                                else MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xs))
-
-                // Order type badge
-                OrderTypeBadge(orderType = order.orderType)
-
-                // «Sin estación» o el nombre de la estación que la mandó aquí (ya no tiene pantalla propia): la
-                // MISMA píldora, para que no lea como un dato distinto.
-                if (etiqueta != null) {
-                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxs))
-                    OrderTypeBadge(orderType = etiqueta)
-                }
-
-                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
-
-                // Items list — KDS 3.6: en una mesa con tiempos, agrupados bajo «Aperitivos», «Principales»…
-                gruposPorTiempo(order.items).forEach { grupo ->
-                    if (grupo.tiempo != null) {
-                        Text(
-                            text = grupo.tiempo,
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.SemiBold,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.padding(top = AvoqadoTheme.spacing.xs),
-                        )
-                    }
-                    grupo.items.forEach { item ->
-                        KDSItemRow(item = item, isLargeFont = isLargeFont)
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
-
-                // 🔴 Pedido de delivery que NADIE ha aceptado todavía (canal en modo MANUAL).
-                // El proveedor da ~11.5 minutos y después lo cancela solo: el cliente se queda
-                // sin comida y el rechazo cuenta contra la tasa que Uber exige para no
-                // suspender la integración. Por eso esto REEMPLAZA al botón de preparar —
-                // ponerse a cocinar antes de aceptar es cocinar algo que quizá ya se canceló.
-                if (order.needsAcceptance) {
-                    Text(
-                        text = "Falta aceptarlo en la app de delivery",
-                        style = MaterialTheme.typography.bodyMedium,
-                        fontWeight = FontWeight.Medium,
-                        color = LateRedBorder,
-                        modifier = Modifier.padding(bottom = AvoqadoTheme.spacing.xs),
-                    )
-                    Row(
-                        horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
-                        modifier = Modifier.fillMaxWidth(),
-                    ) {
-                        // "No puedo" va PRIMERO y en tamaño completo, no escondido: cuando se
-                        // acabó un ingrediente hay que poder decirlo rápido, y esconderlo
-                        // empuja a aceptar un pedido que no se va a poder entregar.
-                        OutlinedButton(
-                            onClick = onDenyDelivery,
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(56.dp),
-                            shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.md),
-                        ) {
-                            Text("No puedo", style = MaterialTheme.typography.titleMedium)
-                        }
-                        Button(
-                            onClick = onAcceptDelivery,
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(56.dp),
-                            shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.md),
-                        ) {
-                            Text("Aceptar", style = MaterialTheme.typography.titleMedium)
-                        }
-                    }
-                    return@Column
-                }
-
-                // Un toque: LISTO. Sale del tablero al instante (optimista); si el servidor no se entera, regresa.
-                PrimaryButton(
-                    text = TextosDeCocina.LISTO,
-                    onClick = onListo,
-                    fullWidth = true,
-                    modifier = Modifier.testTag("kds-listo-${order.id}"),
+                Text(
+                    text = "#${order.orderNumber}",
+                    style = if (isLargeFont) MaterialTheme.typography.headlineSmall
+                            else MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Text(
+                    text = elapsedText,
+                    style = if (isLargeFont) MaterialTheme.typography.bodyLarge
+                            else MaterialTheme.typography.bodyMedium,
+                    fontFamily = FontFamily.Monospace,
+                    color = if (isLate) LateRedBorder
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
+
+            val urgentProducts = order.items.count { it.preparation?.urgent == true }
+            if (urgentProducts > 0) Text("Urgente · $urgentProducts ${if (urgentProducts == 1) "producto" else "productos"}",
+                style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.error)
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xs))
+
+            // Order type badge
+            OrderTypeBadge(orderType = order.orderType)
+
+            // «Sin estación» o el nombre de la estación que la mandó aquí (ya no tiene pantalla propia): la
+            // MISMA píldora, para que no lea como un dato distinto.
+            if (etiqueta != null) {
+                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.xxs))
+                OrderTypeBadge(orderType = etiqueta)
+            }
+
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+
+            // Items list — KDS 3.6: en una mesa con tiempos, agrupados bajo «Aperitivos», «Principales»…
+            gruposPorTiempo(order.items).forEach { grupo ->
+                if (grupo.tiempo != null) {
+                    Text(
+                        text = grupo.tiempo,
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(top = AvoqadoTheme.spacing.xs),
+                    )
+                }
+                grupo.items.forEach { item ->
+                    KDSItemRow(item = item, isLargeFont = isLargeFont)
+                    if (order.preparationVersion == 1) {
+                        item.preparation?.let { counts ->
+                            PreparationBadges(counts, item.pendingPreparation, pulseUrgent = true)
+                            if (!order.needsAcceptance) PreparationControls(item.productName, counts,
+                                listOf(com.avoqado.pos.kds.domain.PreparationAction.START, com.avoqado.pos.kds.domain.PreparationAction.READY, com.avoqado.pos.kds.domain.PreparationAction.ACK_URGENT),
+                                can = canPreparation,
+                                onAction = { action, quantity, from, reason -> onPreparation(item, action, quantity, from, reason) })
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
+
+            // 🔴 Pedido de delivery que NADIE ha aceptado todavía (canal en modo MANUAL).
+            // El proveedor da ~11.5 minutos y después lo cancela solo: el cliente se queda
+            // sin comida y el rechazo cuenta contra la tasa que Uber exige para no
+            // suspender la integración. Por eso esto REEMPLAZA al botón de preparar —
+            // ponerse a cocinar antes de aceptar es cocinar algo que quizá ya se canceló.
+            if (order.needsAcceptance) {
+                Text(
+                    text = "Falta aceptarlo en la app de delivery",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.Medium,
+                    color = LateRedBorder,
+                    modifier = Modifier.padding(bottom = AvoqadoTheme.spacing.xs),
+                )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    // "No puedo" va PRIMERO y en tamaño completo, no escondido: cuando se
+                    // acabó un ingrediente hay que poder decirlo rápido, y esconderlo
+                    // empuja a aceptar un pedido que no se va a poder entregar.
+                    OutlinedButton(
+                        onClick = onDenyDelivery,
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(56.dp),
+                        shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.md),
+                    ) {
+                        Text("No puedo", style = MaterialTheme.typography.titleMedium)
+                    }
+                    Button(
+                        onClick = onAcceptDelivery,
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(56.dp),
+                        shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.md),
+                    ) {
+                        Text("Aceptar", style = MaterialTheme.typography.titleMedium)
+                    }
+                }
+                return@Column
+            }
+
+            // Un toque: LISTO. Sale del tablero al instante (optimista); si el servidor no se entera, regresa.
+            if (order.preparationVersion == 0) PrimaryButton(
+                text = TextosDeCocina.LISTO,
+                onClick = onListo,
+                fullWidth = true,
+                modifier = Modifier.testTag("kds-listo-${order.id}"),
+            )
         }
     }
 }

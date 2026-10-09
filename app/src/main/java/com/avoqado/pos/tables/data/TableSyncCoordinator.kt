@@ -2,6 +2,7 @@ package com.avoqado.pos.tables.data
 
 import android.util.Log
 import com.avoqado.pos.core.data.local.SecureStorage
+import com.avoqado.pos.core.data.local.database.SyncIntentDao
 import com.avoqado.pos.core.data.sync.SyncIntentTypes
 import com.avoqado.pos.core.data.sync.SyncOutbox
 import kotlinx.coroutines.CoroutineScope
@@ -34,6 +35,7 @@ class TableSyncCoordinator @Inject constructor(
     private val tableSession: TableSession,
     private val repository: TableServiceRepository,
     private val secureStorage: SecureStorage,
+    private val intents: SyncIntentDao,
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var started = false
@@ -48,27 +50,32 @@ class TableSyncCoordinator @Inject constructor(
         }
     }
 
-    private suspend fun handle(ack: com.avoqado.pos.core.data.sync.SyncAck) {
+    internal suspend fun handle(ack: com.avoqado.pos.core.data.sync.SyncAck) {
         if (!ack.isAcked) {
             Log.w(TAG, "🚫 Intent rechazado (${ack.errorCode}): ${ack.message}")
             return
         }
         val result = ack.result ?: return
+        val venueId = secureStorage.venueId ?: return
+        val type = intents.preparationStatuses(venueId, listOf(ack.id)).singleOrNull()?.type
+        // Preparation revisions belong to kitchen items, never to the table order.
+        if (type == SyncIntentTypes.KDS_ITEM_PROGRESS || type == SyncIntentTypes.KDS_TICKET_MARK) return
+        if (secureStorage.venueId != venueId) return
         val localOrderId = result["localOrderId"]?.jsonPrimitive?.contentOrNull
         val orderId = result["orderId"]?.jsonPrimitive?.contentOrNull
         val orderNumber = result["orderNumber"]?.jsonPrimitive?.contentOrNull
-        val version = result["version"]?.jsonPrimitive?.intOrNull ?: 1
+        val version = result["version"]?.jsonPrimitive?.intOrNull
 
         if (localOrderId != null && orderId != null) {
             Log.d(TAG, "⬆️ Promoviendo sesión provisional $localOrderId → $orderId")
-            tableSession.promoteProvisional(localOrderId, orderId, orderNumber, version)
-        } else if (orderId != null && tableSession.current()?.orderId == orderId) {
+            tableSession.promoteProvisional(localOrderId, orderId, orderNumber, version ?: 1)
+        } else if (version != null && orderId != null && tableSession.current()?.orderId == orderId) {
             // Ronda/cobro de la sesión activa confirmado: versión fresca evita 409.
             tableSession.updateVersion(version)
         }
 
         // Server reconciliation: el plano se rebasea a la verdad del server.
-        secureStorage.venueId?.let { repository.refresh(it) }
+        repository.refresh(venueId)
     }
 
     companion object {

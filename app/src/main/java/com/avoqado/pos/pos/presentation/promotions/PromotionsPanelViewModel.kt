@@ -34,7 +34,13 @@ class PromotionsPanelViewModel @Inject constructor(
     private val planManager: PlanManager,
     private val roleManager: RoleManager,
     tpvSettingsRepository: TpvSettingsRepository,
+    private val serviceCoursesRepository: com.avoqado.pos.tables.data.ServiceCoursesRepository,
 ) : ViewModel() {
+
+    val serviceCourses = serviceCoursesRepository.courses
+    val courseNotice = serviceCoursesRepository.notice
+    val usesServiceCourses: Boolean
+        get() = secureStorage.venueType?.uppercase() in setOf("RESTAURANT", "CAFE", "HOTEL_RESTAURANT") && planManager.hasFeature("TABLE_SERVICE")
 
     /** Catálogo cache-first: sin red se sigue viendo el último bueno. */
     val promociones: StateFlow<PromotionsPayload> = repository.promotions
@@ -104,5 +110,6 @@ class PromotionsPanelViewModel @Inject constructor(
             return
         }
         viewModelScope.launch { repository.refresh(venueId) }
+        if (usesServiceCourses) viewModelScope.launch { serviceCoursesRepository.refresh(venueId) }
     }
 }

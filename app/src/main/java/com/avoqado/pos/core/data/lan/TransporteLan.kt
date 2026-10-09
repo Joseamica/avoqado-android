@@ -76,6 +76,8 @@ class TransporteLan @Inject constructor(
     val receptorActivo: StateFlow<Boolean> = _receptorActivo.asStateFlow()
 
     private val _hubConectado = MutableStateFlow(false)
+    private val preparationConnected = MutableStateFlow(false)
+    @Volatile private var urgencyVersion = 0
     val hubConectado: StateFlow<Boolean> = _hubConectado.asStateFlow()
 
     /** D11: entregas seguidas sin acuse por estación ([EntregaPorWifi] la alimenta; la banda de la caja la dice). */
@@ -84,6 +86,8 @@ class TransporteLan @Inject constructor(
     @Volatile private var venueId: String? = null
     @Volatile private var hub: ((String) -> LeaseResponse)? = null
     @Volatile private var receptor: (suspend (KdsComanda) -> Boolean)? = null
+    @Volatile private var preparationReceiver: (suspend (com.avoqado.pos.kds.domain.PreparationPeerProgress) -> Boolean)? = null
+    @Volatile private var preparationDisplay: ((com.avoqado.pos.kds.domain.PreparationPeerProgress) -> Set<String>)? = null
 
     /**
      * Task 8b (paridad iOS `RuteoLan.generacion`): sube SÓLO al desactivar el receptor, al cambiar de estación o al
@@ -125,8 +129,8 @@ class TransporteLan @Inject constructor(
         vigilarRedLocal()
         this.venueId = venueId
         configJob = scope.launch {
-            combine(printConfigRepository.config, _hubConectado, _receptorEnganchado) { config, hub, receptor ->
-                hub || receptor || config.stations.any { it.active && it.hasKitchenDisplay }
+            combine(printConfigRepository.config, _hubConectado, _receptorEnganchado, preparationConnected) { config, hub, receptor, preparation ->
+                hub || receptor || preparation || config.stations.any { it.active && it.hasKitchenDisplay }
             }.distinctUntilChanged().collectLatest { debeVivir ->
                 if (!debeVivir) { apagarRed(); return@collectLatest }
                 // Revisión M5/M6: mientras la red local debe vivir se revisa cada minuto. `encender` es idempotente (mismo
@@ -177,6 +181,24 @@ class TransporteLan @Inject constructor(
     fun activarReceptor(estaciones: Set<String>, alRecibir: suspend (KdsComanda) -> Boolean) = fijarReceptor(estaciones, alRecibir)
 
     fun desactivarReceptor() = fijarReceptor(emptySet(), null)
+
+    fun activarPreparacion(receiver: suspend (com.avoqado.pos.kds.domain.PreparationPeerProgress) -> Boolean,
+        display: (com.avoqado.pos.kds.domain.PreparationPeerProgress) -> Set<String> = { emptySet() }, urgencyVersion: Int = 0) {
+        this.urgencyVersion = urgencyVersion
+        preparationReceiver = receiver
+        preparationDisplay = display
+        preparationConnected.value = true
+        reanunciar()
+    }
+
+    fun desactivarPreparacion() {
+        if (preparationReceiver != null) generacion++
+        preparationReceiver = null
+        urgencyVersion = 0
+        preparationDisplay = null
+        preparationConnected.value = false
+        reanunciar()
+    }
 
     /**
      * Task 8b: la generación sube sólo si cambia el conjunto de estaciones o si el receptor pasa de enganchado a
@@ -299,13 +321,15 @@ class TransporteLan @Inject constructor(
         publicarPeers()
     }
 
-    private fun txt(v: String) = LanTxt.construir(deviceId, v, isWiredConnection(), bootedAtMillis, _estacionesAnunciadas.value, hub != null)
+    private fun txt(v: String) = LanTxt.construir(deviceId, v, isWiredConnection(), bootedAtMillis, _estacionesAnunciadas.value, hub != null,
+        if (preparationReceiver != null) 1 else 0, urgencyVersion)
 
     @Synchronized
     private fun publicarPeers() {
         val p = puerto
         if (venueId == null || p <= 0) { _peers.value = emptyList(); return }
-        val yo = LanPeer(deviceId, "127.0.0.1", p, isWiredConnection(), bootedAtMillis, _estacionesAnunciadas.value, hub != null)
+        val yo = LanPeer(deviceId, "127.0.0.1", p, isWiredConnection(), bootedAtMillis, _estacionesAnunciadas.value, hub != null,
+            if (preparationReceiver != null) 1 else 0, urgencyVersion)
         _peers.value = listOf(yo) + ajenos
     }
 
@@ -359,7 +383,10 @@ class TransporteLan @Inject constructor(
             val g = generacion
             val vigente: (suspend (KdsComanda) -> Boolean)? =
                 if (r == null) null else { c: KdsComanda -> r(c) && generacion == g && c.stationId in _estacionesAnunciadas.value }
-            val respuesta = EnrutadorLan.responder(linea, venueId, _estacionesAnunciadas.value, hub, vigente)
+            val prep = preparationReceiver
+            val prepVigente: (suspend (com.avoqado.pos.kds.domain.PreparationPeerProgress) -> Boolean)? =
+                if (prep == null) null else { command -> prep(command) && generacion == g && venueId == command.venueId }
+            val respuesta = EnrutadorLan.responder(linea, venueId, _estacionesAnunciadas.value, hub, vigente, prepVigente, preparationDisplay)
             sock.getOutputStream().run { write((respuesta + "\n").toByteArray(Charsets.UTF_8)); flush() }
         }.onFailure { Log.w(TAG, "conexión fallida: ${it.message}") }
     }

@@ -48,6 +48,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -95,7 +96,16 @@ class KDSViewModel @Inject constructor(
     // Etapa 3 del KDS (3.5): el WiFi del local. Los dos viven fuera del ViewModel (D8).
     private val receptor: ReceptorDeComandas,
     private val ticketsLocales: KdsTicketsLocalesStore,
+    private val preparationRepository: com.avoqado.pos.kds.data.KitchenPreparationRepository? = null,
+    private val preparationDelivery: com.avoqado.pos.kds.data.PreparationDeliveryService? = null,
 ) : ViewModel() {
+
+    data class BoardPaging(val offset: Int = 0, val total: Int? = null, val nextOffset: Int? = null, val loading: Boolean = false, val count: Int = 0)
+    private val _boardPaging = MutableStateFlow(BoardPaging())
+    val boardPaging = _boardPaging.asStateFlow()
+    private var boardOffset = 0
+    fun nextBoardPage() { _boardPaging.value.nextOffset?.let { boardOffset = it; viewModelScope.launch { refrescarTablero() } } }
+    fun previousBoardPage() { boardOffset = maxOf(0, _boardPaging.value.offset - 100); viewModelScope.launch { refrescarTablero() } }
 
     // MARK: - Estado
 
@@ -186,6 +196,12 @@ class KDSViewModel @Inject constructor(
         aperturas++
         val mia = aperturas
         pantallaVisible = true
+        val openingVenue = kdsRepository.venueIdActual()
+        viewModelScope.launch {
+            if (openingVenue != null && aperturas == mia) {
+                preparationRepository?.refreshCapabilities(openingVenue)
+            }
+        }
         try {
             refrescar()
             var vuelta = 0
@@ -216,6 +232,7 @@ class KDSViewModel @Inject constructor(
     fun alOcultarse() {
         aperturas++
         pantallaVisible = false
+        preparationDelivery?.setDisplayedKeys(null, emptySet())
         sincronizarReceptor()
     }
 
@@ -259,14 +276,19 @@ class KDSViewModel @Inject constructor(
     private suspend fun refrescarTablero() {
         val tablero = _vista.value as? VistaDeCocina.Tablero ?: return
         val venueId = kdsRepository.venueIdActual()
-        val lectura = kdsRepository.fetchOrders(tablero.estacion.id)
+        if (estacionDelServidor != tablero.estacion.id) { boardOffset = 0; _boardPaging.value = BoardPaging() }
+        val requestedOffset = boardOffset
+        _boardPaging.value = _boardPaging.value.copy(loading = true)
+        val lectura = kdsRepository.fetchBoardPage(tablero.estacion.id, requestedOffset)
         // Codex 3.6 (#7): si mientras tanto eligieron OTRA estación (o cambió la sucursal), esta respuesta es de la anterior:
         // no se pinta bajo el encabezado nuevo, ni se guarda como su foto, ni retira copias locales. La nueva trae la suya.
         val sigue = (_vista.value as? VistaDeCocina.Tablero)?.estacion?.id == tablero.estacion.id &&
-            kdsRepository.venueIdActual() == venueId
+            kdsRepository.venueIdActual() == venueId && boardOffset == requestedOffset
         if (!sigue) return
         lectura.fold(
-            onSuccess = { nuevas ->
+            onSuccess = { page ->
+                val nuevas = page.items
+                _boardPaging.value = BoardPaging(requestedOffset, page.total, page.nextOffset, count = nuevas.size)
                 _sinConexion.value = false
                 // M4: un sondeo que arrancó ANTES de un LISTO puede traer todavía esa comanda — se ignora mientras
                 // el bump está en vuelo, o hasta que el servidor confirme que ya no la manda.
@@ -286,6 +308,8 @@ class KDSViewModel @Inject constructor(
                 ticketsLocales.retirarPendientes((antes + nuevas).mapNotNull { it.sourceKey }.toSet())
             },
             onFailure = { e ->
+                boardOffset = _boardPaging.value.offset
+                _boardPaging.value = _boardPaging.value.copy(loading = false)
                 // Se CONSERVA lo que ya se veía y se sigue mezclando con lo local: sin red la cocina trabaja con eso (D9).
                 if (esSinRed(e)) _sinConexion.value = true
                 // Codex 3.6 (#2): abrir sin internet (tablet reiniciada: proceso y ViewModel nuevos) arranca con la última
@@ -327,6 +351,79 @@ class KDSViewModel @Inject constructor(
         previousOrderIds = claves
         if (desdeServidor) hasLoadedFromAPI = true
         _comandas.value = juntas
+        val epoch = ++preparationEpoch
+        val venueId = kdsRepository.venueIdActual() ?: return
+        val repository = preparationRepository ?: return
+        viewModelScope.launch {
+            try {
+            if (epoch != preparationEpoch || kdsRepository.venueIdActual() != venueId) return@launch
+            val raw = juntas.flatMap { order -> if (order.preparationVersion == 1)
+                order.items.mapNotNull { item -> preparationLine(order, item) } else emptyList() }
+            preparationDelivery?.setDisplayedKeys(venueId, if (pantallaVisible) raw.map { it.stableKey }.toSet() else emptySet())
+            if (raw.isEmpty()) return@launch
+            val projected = raw.chunked(100).flatMap { repository.merge(venueId, it, acceptBaseline = desdeServidor) }.associateBy { it.stableKey }
+            val pending = repository.pendingKeys(venueId, projected.values.toList())
+            if (epoch != preparationEpoch || kdsRepository.venueIdActual() != venueId) return@launch
+            _comandas.value = juntas.map { order -> order.copy(items = order.items.map { item ->
+                val baseline = preparationLine(order, item)
+                val row = baseline?.let { projected[it.stableKey] }
+                if (row == null) item else item.copy(preparation = row.preparation,
+                    preparationRevision = row.preparationRevision, pendingPreparation = row.stableKey in pending)
+            }) }
+            repository.notice.value?.let { _aviso.value = AvisoDeCocina(it, esError = false) }
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (e: Exception) {
+                if (epoch == preparationEpoch) {
+                    preparationDelivery?.setDisplayedKeys(null, emptySet())
+                    _aviso.value = AvisoDeCocina(e.message ?: "No se pudo recuperar la preparación guardada", esError = true)
+                }
+            }
+        }
+    }
+
+    private var preparationEpoch = 0L
+    @OptIn(kotlinx.coroutines.FlowPreview::class)
+    private fun observePreparationDelivery() {
+        preparationDelivery?.let { service ->
+            viewModelScope.launch { service.changes.debounce(150).collect { venueId ->
+                if (pantallaVisible && kdsRepository.venueIdActual() == venueId) publicar(desdeServidor = false, sonar = false)
+            } }
+            viewModelScope.launch { service.notice.collect { message ->
+                if (pantallaVisible && message != null) _aviso.value = AvisoDeCocina(message, esError = false)
+            } }
+        }
+    }
+    init { observePreparationDelivery() }
+    private fun preparationLine(order: KDSOrder, item: com.avoqado.pos.kds.domain.KDSOrderItem): com.avoqado.pos.kds.domain.PreparationLine? =
+        item.preparation?.let { counts -> com.avoqado.pos.kds.domain.PreparationLine(
+            id = if (esLocal(order.id)) "local:${item.id}" else item.id, orderId = order.orderId,
+            orderItemId = item.orderItemId, externalId = item.externalId, sourceKey = order.sourceKey,
+            stationId = order.printStationId, orderNumber = order.orderNumber, productName = item.productName,
+            quantity = item.quantity, serviceCourse = item.serviceCourse, orderPromotionId = item.orderPromotionId,
+            preparation = counts, preparationRevision = item.preparationRevision,
+        ) }
+
+    val preparationCapabilities = preparationRepository?.capabilities
+        ?: MutableStateFlow(com.avoqado.pos.kds.domain.PreparationCapabilities()).asStateFlow()
+
+    fun canPreparation(action: com.avoqado.pos.kds.domain.PreparationAction): Boolean = preparationRepository?.can(action) == true
+
+    fun progress(orderId: String, item: com.avoqado.pos.kds.domain.KDSOrderItem,
+        action: com.avoqado.pos.kds.domain.PreparationAction, quantity: Int,
+        from: com.avoqado.pos.kds.domain.PreparationState?, reason: String?) {
+        val order = _comandas.value.firstOrNull { it.id == orderId } ?: return
+        val venueId = kdsRepository.venueIdActual() ?: return
+        val row = preparationLine(order, item) ?: return
+        viewModelScope.launch {
+            try {
+                val repository = preparationRepository ?: error("Actualiza la app para usar preparación por producto")
+                if (!repository.negotiated(venueId)) repository.refreshCapabilities(venueId)
+                repository.act(venueId, listOf(row), action, quantity, from, reason)
+                publicar(desdeServidor = false, sonar = false)
+                _exito.value = "${action.label}: $quantity · ${item.productName}"
+            } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+            catch (e: Exception) { _aviso.value = AvisoDeCocina(e.message ?: "No se pudo guardar el avance", esError = true) }
+        }
     }
 
     /**
@@ -337,6 +434,7 @@ class KDSViewModel @Inject constructor(
         val venueId = kdsRepository.venueIdActual()
         val tablero = _vista.value as? VistaDeCocina.Tablero
         if (venueId == null || tablero == null || !pantallaVisible) {
+            preparationDelivery?.setDisplayedKeys(null, emptySet())
             receptor.desactivar()
             localesJob?.cancel(); localesJob = null
             estacionObservada = null
@@ -345,6 +443,7 @@ class KDSViewModel @Inject constructor(
         }
         receptor.activar(venueId, tablero.estacion.id)
         if (localesJob?.isActive != true || estacionObservada != tablero.estacion.id) {
+            preparationDelivery?.setDisplayedKeys(null, emptySet())
             localesJob?.cancel()
             estacionObservada = tablero.estacion.id
             // Lo de la estación anterior no se mezcla con la nueva mientras llega la primera lectura.
@@ -360,6 +459,7 @@ class KDSViewModel @Inject constructor(
                     // recrea y lo vuelve a prender; aquí no se recrea: un error que persiste giraría sin fin.
                     .catch { e ->
                         Log.w(TAG, "La observación de lo guardado se cayó: ${e.message} — receptor apagado hasta la siguiente lectura")
+                        preparationDelivery?.setDisplayedKeys(null, emptySet())
                         receptor.desactivar()
                     }
                     .collect {
@@ -410,6 +510,10 @@ class KDSViewModel @Inject constructor(
     /** LISTO de un toque: sale del tablero al instante; sin red o sólo local va como marca `BUMP` (D10). */
     fun listo(id: String) {
         val comanda = _comandas.value.firstOrNull { it.id == id } ?: return
+        if (comanda.preparationVersion == 1) {
+            _aviso.value = AvisoDeCocina("Marca el avance de cada producto. Los tiempos retenidos siguen en espera de liberar.", esError = false)
+            return
+        }
         _comandas.value = _comandas.value.filterNot { it.id == id }
         if (esLocal(id)) {
             // Sólo existe aquí: no hay id del servidor que «bumpear». La marca por folio lo resuelve al sincronizar.
