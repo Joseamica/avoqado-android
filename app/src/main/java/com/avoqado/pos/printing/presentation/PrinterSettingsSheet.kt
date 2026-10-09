@@ -123,9 +123,11 @@ fun PrinterSettingsSheet(
     // SinComprobar hasta "Conectar" a mano (ronda 1 de revisión: conectar sin
     // que nadie lo pida filtraba el socket Bluetooth, que no se libera tras
     // imprimir, y podía disparar el diálogo de permiso de USB solo).
-    LaunchedEffect(Unit) {
-        printerService.startDiscovery()
-        printerService.probarTodas()
+    LaunchedEffect(Unit) { printerService.startDiscovery() }
+    // También al VOLVER de «Configurar impresora»: esa hoja cierra todas las conexiones al salir y
+    // las deja en «No responde», aunque la impresora siga bien (D3 de la guía, 8-oct).
+    LaunchedEffect(configPrinter == null) {
+        if (configPrinter == null) printerService.probarTodas()
     }
     // Las del panel se comprueban aparte (y se buscan si se movieron): pueden tardar más.
     LaunchedEffect(printConfig.printers) {
