@@ -493,19 +493,14 @@ class PaymentFlowViewModel @Inject constructor(
      */
     private fun checkoutBreakdown(): com.avoqado.pos.customerdisplay.CustomerContent.Total {
         val cart = cartState
-        val tip = currentTipCents
-        return if (cart != null && cart.items.isNotEmpty()) {
-            com.avoqado.pos.customerdisplay.CustomerContent.Total(
-                totalCents = cart.totalCents + cart.stampRewardCents - premioEnLaCuenta(cart) + tip,
-                items = cart.items,
-                subtotalCents = cart.subtotalCents,
-                discountCents = cart.discountCents + premioEnLaCuenta(cart),
-                taxCents = cart.taxCents,
-                tipCents = tip,
-            )
-        } else {
-            com.avoqado.pos.customerdisplay.CustomerContent.Total(totalCents = currentBaseAmount() + tip)
-        }
+        return com.avoqado.pos.customerdisplay.desgloseDelCobro(
+            cart = cart,
+            tipCents = currentTipCents,
+            premioCents = cart?.let { premioEnLaCuenta(it) } ?: 0,
+            // Una parte de cuenta dividida se ve como «Tu parte» con lo que de verdad se cobra.
+            esPagoCompleto = esPagoCompleto(),
+            montoACobrarCents = currentBaseAmount(),
+        )
     }
     private var selectedTerminalId: String? = null
     /**

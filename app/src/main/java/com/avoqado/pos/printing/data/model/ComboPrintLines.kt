@@ -77,8 +77,12 @@ object ComboPrintLines {
      * completo de un combo en la posición de su PRIMER renglón. Un combo cuyas
      * líneas quedaron separadas (algo entre medio) se junta igual — en el papel
      * un combo partido en dos no significa nada.
+     *
+     * Pública porque la pantalla del cliente agrupa igual que el ticket
+     * (`customerdisplay/DesgloseParaElCliente.kt`): el combo se lee igual en
+     * pantalla y en papel.
      */
-    private fun <T> group(
+    fun <T> group(
         tagged: List<Pair<Tag?, T>>,
         header: (Tag, List<T>) -> T,
         component: (T) -> T,

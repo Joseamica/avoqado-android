@@ -1,6 +1,5 @@
 package com.avoqado.pos.customerdisplay
 
-import com.avoqado.pos.pos.data.model.CartItem
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -21,11 +20,11 @@ sealed interface CustomerContent {
     /** Sin venta activa: marca del negocio. */
     data object Idle : CustomerContent
 
-    /** Carrito en vivo mientras el cajero teclea. */
+    /** Carrito en vivo mientras el cajero teclea. Ver [renglonesParaElCliente]. */
     data class Cart(
-        val items: List<CartItem>,
+        val renglones: List<RenglonCliente>,
         val subtotalCents: Int,
-        val discountCents: Int,
+        val descuentos: List<DescuentoCliente>,
         val taxCents: Int,
         val totalCents: Int,
     ) : CustomerContent
@@ -72,16 +71,18 @@ sealed interface CustomerContent {
      * anterior significaba dejarle vivos los botones de propina — un segundo
      * toque re-abría la propina con el cajero ya en otra pantalla.
      *
-     * `items` vacío ⇒ se cae al modo "solo total" en grande (p. ej. montos
-     * personalizados sin productos). La propina se muestra solo si `tipCents>0`.
+     * `renglones` vacío ⇒ se cae al modo "solo total" en grande (p. ej. montos
+     * personalizados sin productos, o una PARTE de una cuenta dividida, donde
+     * [etiqueta] es «Tu parte»). La propina se muestra solo si `tipCents>0`.
      */
     data class Total(
         val totalCents: Int,
-        val items: List<CartItem> = emptyList(),
+        val renglones: List<RenglonCliente> = emptyList(),
         val subtotalCents: Int = 0,
-        val discountCents: Int = 0,
+        val descuentos: List<DescuentoCliente> = emptyList(),
         val taxCents: Int = 0,
         val tipCents: Int = 0,
+        val etiqueta: String = "Total",
     ) : CustomerContent
 
     /** Gracias + QR del recibo digital. */
@@ -306,11 +307,11 @@ class CustomerDisplayState @Inject constructor() {
             CustomerContent.Idle
         } else {
             CustomerContent.Cart(
-                items = state.items,
+                renglones = renglonesParaElCliente(state.items),
                 subtotalCents = state.subtotalCents,
                 // El premio de cartilla también es un descuento para el cliente: sin él, sus
                 // productos sumarían más que el total y nada lo explicaría.
-                discountCents = state.discountCents + state.stampRewardCents,
+                descuentos = descuentosParaElCliente(state, premioCents = state.stampRewardCents),
                 taxCents = state.taxCents,
                 totalCents = state.totalCents,
             )

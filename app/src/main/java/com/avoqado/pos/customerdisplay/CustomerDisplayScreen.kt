@@ -337,9 +337,9 @@ private fun CartMirror(cart: CustomerContent.Cart) {
     // Mientras el cajero teclea: mismo desglose, sin propina (aún no se pide).
     ReceiptBreakdown(
         title = "Tu compra",
-        items = cart.items,
+        renglones = cart.renglones,
         subtotalCents = cart.subtotalCents,
-        discountCents = cart.discountCents,
+        descuentos = cart.descuentos,
         taxCents = cart.taxCents,
         tipCents = 0,
         totalCents = cart.totalCents,
@@ -348,16 +348,17 @@ private fun CartMirror(cart: CustomerContent.Cart) {
 
 /**
  * Desglose tipo recibo para la pantalla del cliente: lista de productos arriba
- * y, abajo, subtotal + descuento + impuestos + propina + total. Cada línea
- * opcional aparece solo cuando aplica (descuento/impuesto/propina > 0). Lo usan
- * tanto el espejo del carrito como el paso de cobro.
+ * (cada uno con su detalle debajo, y los combos agrupados como en el ticket) y,
+ * abajo, subtotal + un renglón por descuento + impuestos + propina + total. Cada
+ * línea opcional aparece solo cuando aplica. Lo usan tanto el espejo del carrito
+ * como el paso de cobro.
  */
 @Composable
 private fun ReceiptBreakdown(
     title: String,
-    items: List<com.avoqado.pos.pos.data.model.CartItem>,
+    renglones: List<RenglonCliente>,
     subtotalCents: Int,
-    discountCents: Int,
+    descuentos: List<DescuentoCliente>,
     taxCents: Int,
     tipCents: Int,
     totalCents: Int,
@@ -384,29 +385,55 @@ private fun ReceiptBreakdown(
             ),
             verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
         ) {
-            items(items, key = { it.id }) { item ->
-                Row(verticalAlignment = Alignment.CenterVertically) {
+            items(renglones, key = { it.key }) { renglon ->
+                // Un producto de combo va con sangría, más chico y sin precio: el precio
+                // es el del combo, en el renglón de arriba (igual que el ticket impreso).
+                val estilo = if (renglon.esComponente) MaterialTheme.typography.bodyLarge
+                             else MaterialTheme.typography.titleMedium
+                Row(verticalAlignment = Alignment.Top) {
                     Text(
-                        text = "${item.quantity}×",
-                        style = MaterialTheme.typography.titleMedium,
+                        text = if (renglon.esComponente) "" else "${renglon.cantidad}×",
+                        style = estilo,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier.width(52.dp),
                     )
-                    Text(
-                        text = item.name,
-                        style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier.weight(1f),
-                        maxLines = 2,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    Text(
-                        // BRUTO: abajo se pinta Subtotal y Descuento por separado,
-                        // así que la línea va a precio de lista o los renglones no
-                        // sumarían el subtotal que ve el cliente.
-                        text = money(item.grossPrice),
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.SemiBold,
-                    )
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(start = if (renglon.esComponente) AvoqadoTheme.spacing.lg else 0.dp),
+                    ) {
+                        Text(
+                            text = if (renglon.esComponente && renglon.cantidad > 1) {
+                                "${renglon.cantidad}× ${renglon.nombre}"
+                            } else {
+                                renglon.nombre
+                            },
+                            style = estilo,
+                            maxLines = 2,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        // Lo que explica el precio: modificadores, peso, cortesía,
+                        // descuento del producto, nota.
+                        renglon.detalle?.let { detalle ->
+                            Text(
+                                text = detalle,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                maxLines = 3,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                    }
+                    renglon.precioCents?.let { precio ->
+                        Text(
+                            // BRUTO: abajo se pinta Subtotal y cada descuento por separado,
+                            // así que la línea va a precio de lista o los renglones no
+                            // sumarían el subtotal que ve el cliente.
+                            text = money(precio),
+                            style = estilo,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                    }
                 }
             }
         }
@@ -421,15 +448,15 @@ private fun ReceiptBreakdown(
         ) {
             // Subtotal se muestra cuando hay algo que restar/sumar aparte (para
             // que "Total" no sea idéntico y confunda).
-            if (discountCents > 0 || tipCents > 0) {
+            if (descuentos.isNotEmpty() || taxCents > 0 || tipCents > 0) {
                 TotalRow("Subtotal", money(subtotalCents))
             }
-            if (discountCents > 0) {
-                // El descuento se DESTACA en verde: que el cliente vea que le
-                // rebajaron, no que pase como una línea gris más.
+            // Cada descuento con su nombre y DESTACADO en verde: que el cliente vea
+            // qué le rebajaron y por qué, no un «Descuento» suelto.
+            descuentos.forEach { descuento ->
                 TotalRow(
-                    label = "Descuento",
-                    value = "−${money(discountCents)}",
+                    label = descuento.etiqueta,
+                    value = "−${money(descuento.cents)}",
                     highlight = true,
                 )
             }
@@ -779,13 +806,14 @@ private fun TipPrompt(c: CustomerContent.Tip, onTip: (Int) -> Unit) {
 @Composable
 private fun TotalOnly(c: CustomerContent.Total) {
     // Con productos: desglose tipo recibo (lo que el cliente revisa antes de
-    // pagar). Sin productos (monto personalizado): el total en grande y ya.
-    if (c.items.isNotEmpty()) {
+    // pagar). Sin productos (monto personalizado, o una parte de una cuenta
+    // dividida): el total en grande con su etiqueta («Total» o «Tu parte»).
+    if (c.renglones.isNotEmpty()) {
         ReceiptBreakdown(
             title = "Tu compra",
-            items = c.items,
+            renglones = c.renglones,
             subtotalCents = c.subtotalCents,
-            discountCents = c.discountCents,
+            descuentos = c.descuentos,
             taxCents = c.taxCents,
             tipCents = c.tipCents,
             totalCents = c.totalCents,
@@ -798,7 +826,7 @@ private fun TotalOnly(c: CustomerContent.Total) {
         verticalArrangement = Arrangement.Center,
     ) {
         Text(
-            text = "Total",
+            text = c.etiqueta,
             style = MaterialTheme.typography.headlineSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -1365,5 +1393,3 @@ private fun PadButton(label: String, modifier: Modifier, filled: Boolean, enable
         Text(text = label, fontSize = CdActionSub, fontWeight = FontWeight.Bold, color = fg)
     }
 }
-
-private fun money(cents: Int): String = "$%,.2f".format(cents / 100.0)
