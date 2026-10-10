@@ -182,6 +182,21 @@ class TablesVersionPollerTest {
     }
 
     @Test
+    fun `refrescar todo de otra sucursal no repinta`() = runTest {
+        coEvery { mesas.refresh(any()) } returns Result.success(emptyList())
+        coEvery { plano.refresh(any()) } returns Result.success(FloorPlanPayload(floorPlanVersion = "p1"))
+        poller.entrar("A")
+        val mesasDeA = CompletableDeferred<Result<List<DiningTable>>>()
+        coEvery { mesas.refresh("A") } coAnswers { mesasDeA.await() }
+        val tardio = launch { poller.refrescarTodo("A") }
+        runCurrent() // el /tables de A queda esperando
+        poller.entrar("B") // el mesero cambió de sucursal
+        mesasDeA.complete(Result.success(emptyList()))
+        tardio.join()
+        coVerify(exactly = 0) { plano.refresh("A") } // no vuelve a apuntar el plano a A
+    }
+
+    @Test
     fun `volver a entrar olvida el servidor viejo`() = runTest {
         respuesta = ConsultaDeVersiones.ServidorViejo
         poller.consultar("v1")

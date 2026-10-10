@@ -39,9 +39,12 @@ import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.key
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -52,6 +55,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
@@ -166,7 +170,7 @@ internal fun FloorTopBar(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.md))
-            TextButton(onClick = onListo) { Text("Listo") }
+            TextButton(onClick = onListo) { Text("Listo", style = MaterialTheme.typography.labelLarge) }
         } else {
             if (totalCount > 0) {
                 Text(
@@ -176,7 +180,8 @@ internal fun FloorTopBar(
                 )
             }
             Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
-            TextButton(onClick = onAcciones) { Text("Acciones") }
+            // La misma letra que las pestañas y «N sin acomodar» (A13).
+            TextButton(onClick = onAcciones) { Text("Acciones", style = MaterialTheme.typography.labelLarge) }
             if (isLoading) {
                 CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
             } else {
@@ -199,24 +204,36 @@ internal fun FloorPlanCanvas(
     modifier: Modifier = Modifier,
 ) {
     val grid = FloorGeometry.gridOf(tab.floorShape)
+    // Margen por lado para que quepa lo que sale del área —la entrada que abre hacia afuera, el grosor de una pared del
+    // borde—: de 1 a 6 cuadros (enmienda A12, sustituye el cuadro fijo de A2).
+    val insets = remember(elements, grid) { FloorGeometry.contentInsets(elements, grid) }
+    val edge = MaterialTheme.colorScheme.outlineVariant
     BoxWithConstraints(modifier = modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
         val density = LocalDensity.current
-        // 1 cuadro de margen alrededor del área, como la vista del mesero del dashboard (`viewBox="-1 -1 cols+2 rows+2"`,
-        // enmienda A2): una pared en el borde se ve completa y una puerta que abre hacia afuera no se corta.
-        val cellPx = with(density) { min(maxWidth.toPx() / (grid.cols + 2), maxHeight.toPx() / (grid.rows + 2)) }
-        val areaW = with(density) { (grid.cols * cellPx).toDp() }
-        val areaH = with(density) { (grid.rows * cellPx).toDp() }
-        val margin = with(density) { cellPx.toDp() }
+        val totalCols = grid.cols + insets.left + insets.right
+        val totalRows = grid.rows + insets.top + insets.bottom
+        val cellPx = with(density) { min(maxWidth.toPx() / totalCols, maxHeight.toPx() / totalRows) }
+        val cell = with(density) { cellPx.toDp() }
         val nowMs = rememberFloorClock()
-        val areaShape = RoundedCornerShape(with(density) { (0.4f * cellPx).toDp() })
-        // Sin recorte: lo que asoma del borde del área cae en el margen.
-        Box(modifier = Modifier.size(areaW + margin * 2, areaH + margin * 2)) {
+        // Se recorta en la caja del lienzo, NUNCA en el borde del área: lo que asoma cabe en el margen y nada pisa la barra.
+        Box(modifier = Modifier.size(cell * totalCols, cell * totalRows).clipToBounds()) {
             Box(
                 modifier = Modifier
-                    .offset(margin, margin)
-                    .size(areaW, areaH)
-                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f), areaShape)
-                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, areaShape),
+                    .offset(cell * insets.left, cell * insets.top)
+                    .size(cell * grid.cols, cell * grid.rows)
+                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f), RoundedCornerShape(cell * 0.4f))
+                    // El borde va DEBAJO de paredes y mesas (`border` pinta encima y asomaba como una línea fina dentro de
+                    // las paredes del borde, A13).
+                    .drawBehind {
+                        val w = 1.dp.toPx()
+                        drawRoundRect(
+                            color = edge,
+                            topLeft = Offset(w / 2, w / 2),
+                            size = Size(size.width - w, size.height - w),
+                            cornerRadius = CornerRadius(0.4f * cellPx),
+                            style = Stroke(width = w),
+                        )
+                    },
             ) {
                 // Debajo y apagados (spec §4.2); su capa no se redibuja cuando cambia el estado de una mesa.
                 FloorElementsLayer(ElementsLayerModel(elements, cellPx), Modifier.fillMaxSize())
@@ -327,7 +344,9 @@ internal data class ElementsLayerModel(val elements: List<FloorGeometry.CellElem
 @Composable
 private fun FloorElementsLayer(model: ElementsLayerModel, modifier: Modifier = Modifier) {
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
-    val wall = muted.copy(alpha = 0.55f)
+    // Pared OPACA, del mismo tono que antes sobre el fondo del área: el borde del área (debajo) no se transparenta (A13).
+    val areaFill = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f).compositeOver(MaterialTheme.colorScheme.background)
+    val wall = muted.copy(alpha = 0.55f).compositeOver(areaFill)
     val barFill = muted.copy(alpha = 0.28f)
     val zoneFill = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)
     val zoneStroke = MaterialTheme.colorScheme.outline.copy(alpha = 0.6f)

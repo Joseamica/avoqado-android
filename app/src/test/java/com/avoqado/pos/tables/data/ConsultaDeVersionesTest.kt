@@ -27,6 +27,14 @@ class ConsultaDeVersionesTest {
     }
 
     @Test
+    fun `un 500 es error del servidor`() = runTest {
+        // El manejador global contesta 500 con JSON: la red SÍ funciona (enmienda A7).
+        val cuerpo = """{"message":"Ocurrió un error inesperado en el servidor."}""".toResponseBody("application/json".toMediaType())
+        coEvery { api.getTablesVersion("v1") } throws HttpException(Response.error<Any>(500, cuerpo))
+        assertEquals(ConsultaDeVersiones.ErrorDelServidor, fuente.consultar("v1"))
+    }
+
+    @Test
     fun `un error de red es sin respuesta`() = runTest {
         coEvery { api.getTablesVersion("v1") } throws IOException("sin red")
         assertEquals(ConsultaDeVersiones.SinRespuesta, fuente.consultar("v1"))

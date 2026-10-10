@@ -4,6 +4,7 @@ import com.avoqado.pos.tables.data.FloorPlanElement
 import java.util.Locale
 import kotlin.math.PI
 import kotlin.math.abs
+import kotlin.math.ceil
 import kotlin.math.cos
 import kotlin.math.floor
 import kotlin.math.max
@@ -191,6 +192,52 @@ object FloorGeometry {
         }
         return round6(min(1.5, min(min(size.w, size.h) * 0.42, across / (0.62 * max(1, number.length)))))
     }
+
+    /** Margen del lienzo alrededor del área, en cuadros, por lado. */
+    data class Insets(val top: Int, val left: Int, val bottom: Int, val right: Int)
+
+    /**
+     * Cuánto margen necesita el lienzo para que quepa lo que sale del área (enmienda A12): por lado,
+     * `clamp(ceil(lo que sobresale), 1, 6)` cuadros. Cuenta el abatimiento de una puerta que abre hacia afuera (la entrada),
+     * el medio grosor de una pared (0.3, punta redonda) y las cajas de barra y zona. Los letreros no se miden: su ancho
+     * depende de la letra, y se anclan dentro del área. Espejo: avoqado-ios `FloorGeometry.contentInsets`.
+     */
+    fun contentInsets(elements: List<CellElement>, grid: Grid): Insets {
+        var minX = 0.0
+        var minY = 0.0
+        var maxX = grid.cols.toDouble()
+        var maxY = grid.rows.toDouble()
+        fun take(x: Double, y: Double, pad: Double = 0.0) {
+            minX = min(minX, x - pad)
+            minY = min(minY, y - pad)
+            maxX = max(maxX, x + pad)
+            maxY = max(maxY, y + pad)
+        }
+        elements.forEach { e ->
+            when (e.type) {
+                "WALL" -> {
+                    take(e.x, e.y, WALL_HALF)
+                    take(e.x2 ?: e.x, e.y2 ?: e.y, WALL_HALF)
+                }
+                "DOOR" -> {
+                    val d = doorDrawing(e)
+                    take(d.x, d.y)
+                    take(d.x + d.w, d.y + d.h)
+                    take(d.leafTo.x, d.leafTo.y)
+                    d.arc.forEach { take(it.x, it.y) }
+                }
+                "BAR_COUNTER", "SERVICE_AREA" -> {
+                    take(e.x, e.y)
+                    take(e.x + (e.w ?: 1.0), e.y + (e.h ?: 1.0))
+                }
+            }
+        }
+        fun side(sobra: Double) = ceil(round6(sobra)).toInt().coerceIn(1, 6)
+        return Insets(top = side(-minY), left = side(-minX), bottom = side(maxY - grid.rows), right = side(maxX - grid.cols))
+    }
+
+    /** Medio grosor de una pared (se dibuja de 0.6 cuadros, con punta redonda). */
+    private const val WALL_HALF = 0.3
 
     /** Letra del nombre de una barra o zona (`fitLabel` de FloorDrawing.tsx), en cuadros. */
     fun labelFontCells(label: String, w: Double, h: Double): Double =

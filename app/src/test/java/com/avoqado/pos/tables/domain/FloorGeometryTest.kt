@@ -125,6 +125,25 @@ class FloorGeometryTest {
     }
 
     @Test
+    fun `sin nada que sobresalga el margen es de un cuadro`() {
+        val ancha = FloorGeometry.gridOf("WIDE")
+        assertEquals(FloorGeometry.Insets(1, 1, 1, 1), FloorGeometry.contentInsets(emptyList(), ancha))
+        // Una pared sobre el borde de arriba sale medio grosor (0.3 cuadros) y una barra pegada al borde no sale: 1 cuadro.
+        val pegadas = listOf(
+            CellElement("w", "WALL", 0.0, 0.0, x2 = 40.0, y2 = 0.0),
+            CellElement("b", "BAR_COUNTER", 32.0, 20.0, w = 8.0, h = 5.0),
+        )
+        assertEquals(FloorGeometry.Insets(1, 1, 1, 1), FloorGeometry.contentInsets(pegadas, ancha))
+    }
+
+    @Test
+    fun `una puerta que abre hacia afuera agranda el margen de su lado`() {
+        // La entrada: puerta horizontal de 4 cuadros en la pared de abajo, girada 180 ⇒ abre hacia afuera (3.5 cuadros).
+        val entrada = CellElement("d", "DOOR", 10.0, 24.5, w = 4.0, h = 0.5, rotation = 180)
+        assertEquals(FloorGeometry.Insets(top = 1, left = 1, bottom = 4, right = 1), FloorGeometry.contentInsets(listOf(entrada), FloorGeometry.gridOf("WIDE")))
+    }
+
+    @Test
     fun `el nombre de barra o cocina cabe en su caja`() {
         assertEquals(1.2, FloorGeometry.labelFontCells("Cocina", 8.0, 6.0), 1e-9)
         assertEquals(0.9, FloorGeometry.labelFontCells("Barra", 8.0, 2.0), 1e-9)
