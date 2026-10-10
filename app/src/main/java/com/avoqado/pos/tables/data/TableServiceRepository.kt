@@ -140,10 +140,14 @@ class TableServiceRepository @Inject constructor(
     var tablesVersion: String? = null
         private set
 
-    /** La versión del plano que trajo esa misma respuesta de /tables. */
-    @Volatile
-    var floorPlanVersionFromTables: String? = null
-        private set
+    /**
+     * La versión del plano que trajo esa misma respuesta de /tables. Es un flujo porque el armado del plano la observa: tras
+     * un fallo parcial, /tables puede volver con la MISMA lista (no re-emite) y sólo cambia esta versión (auditoría Codex del
+     * código, hallazgo 1). Se asigna ANTES que las mesas.
+     */
+    private val _floorPlanVersionFromTables = MutableStateFlow<String?>(null)
+    val floorPlanVersionFromTablesFlow: StateFlow<String?> = _floorPlanVersionFromTables.asStateFlow()
+    val floorPlanVersionFromTables: String? get() = _floorPlanVersionFromTables.value
 
     /**
      * Cambiar de sucursal vacía mesas, propiedad y VERSIONES antes de hidratar la nueva: la versión de A nunca se compara
@@ -155,7 +159,7 @@ class TableServiceRepository @Inject constructor(
         _tables.value = emptyList()
         _ownership.value = TableOwnership()
         tablesVersion = null
-        floorPlanVersionFromTables = null
+        _floorPlanVersionFromTables.value = null
         hydrateFromCache(venueId)
     }
 
@@ -200,7 +204,7 @@ class TableServiceRepository @Inject constructor(
                     cacheJson.encodeToString(TablesCacheBlob.serializer(), TablesCacheBlob(tables, ownership.enforced, ownership.staffId,
                         ownership.canManageAll, response.tablesVersion, response.floorPlanVersion)))
                 tablesVersion = response.tablesVersion
-                floorPlanVersionFromTables = response.floorPlanVersion
+                _floorPlanVersionFromTables.value = response.floorPlanVersion
                 _tables.value = tables
                 _ownership.value = ownership
                 tables
@@ -236,7 +240,7 @@ class TableServiceRepository @Inject constructor(
         runCatching {
             val blob = cachedFloor(venueId) ?: return
             tablesVersion = blob.tablesVersion
-            floorPlanVersionFromTables = blob.floorPlanVersion
+            _floorPlanVersionFromTables.value = blob.floorPlanVersion
             _tables.value = blob.tables
             _ownership.value = TableOwnership(blob.enforced, blob.staffId, blob.canManageAll, roleManager.canSettleAnyTable)
         }.onFailure { Log.e(TAG, "❌ Cache de mesas corrupto: ${it.message}") }

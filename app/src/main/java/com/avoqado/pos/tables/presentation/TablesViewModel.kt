@@ -78,13 +78,14 @@ class TablesViewModel @Inject constructor(
     private val poller = TablesVersionPoller(repository, floorPlanRepository, versionSource)
 
     /** Pestañas, mesas puestas, elementos, «sin acomodar» y la lista del teléfono, armados de mesas + plano. */
-    // `floorPlanVersionFromTables` se asigna ANTES de publicar las mesas (Task 5): al emitir, ya es la de esas mesas. Con
-    // ella el armador sabe si el plano guardado está atrasado (corrección C6).
+    // La versión del plano que anuncian las mesas se asigna ANTES de publicarlas (Task 5) y también se observa: con ella el
+    // armador sabe si el plano guardado está atrasado (C6), y una lista de mesas IGUAL no re-emite, así que sin observarla la
+    // vista provisional de un fallo parcial se quedaba aunque las versiones ya coincidieran (auditoría Codex, hallazgo 1).
     // Perezoso y sólo mientras alguien lo mira: Cobrar y la cuenta de la mesa también crean este ViewModel y no dibujan el
     // plano. Arranca armado con lo que ya hay en memoria (sin un primer cuadro vacío al volver a Mesas).
     val layout: StateFlow<FloorLayout> by lazy {
-        combine(repository.tables, floorPlanRepository.plan) { t, p ->
-            FloorLayoutBuilder.build(t, p, repository.floorPlanVersionFromTables)
+        combine(repository.tables, floorPlanRepository.plan, repository.floorPlanVersionFromTablesFlow) { t, p, v ->
+            FloorLayoutBuilder.build(t, p, v)
         }
             .flowOn(Dispatchers.Default)
             .stateIn(
