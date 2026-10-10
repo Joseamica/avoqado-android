@@ -3209,10 +3209,19 @@ class PaymentFlowViewModel @Inject constructor(
         }
 
         val isFullPayment = splitTypeValue == "FULLPAYMENT"
-        val receiptSubtotal = if (cart != null && isFullPayment) cart.subtotalCents else baseAmount
-        // El premio de cartilla también es descuento en el papel: sin él, subtotal − descuento ≠ total.
-        val receiptDiscount = if (cart != null && isFullPayment) cart.discountCents + premioEnLaCuenta(cart) else 0
-        val receiptTax = if (cart != null && isFullPayment) cart.taxCents else 0
+        // 🔴 Lo cobrado manda (IVA por producto, plan 7a; Codex r1 #3): antes el subtotal y el descuento salían del carrito y
+        // el TOTAL del servidor, así que una promoción que el servidor redondeó distinto ($99 contra $98.99) imprimía un papel
+        // que no cuadraba. Ahora el descuento es lo que falta del bruto a lo cobrado: absorbe promociones y el premio de
+        // cartilla que confirmó el servidor. Un pago parcial imprime sólo lo cobrado (nunca prorratea descuento ni IVA).
+        // Plan 7a: cargo 0 SIEMPRE. El cobro de una mesa con cargo queda en el renglón único de hoy (cargo dentro del
+        // subtotal, mismo total); separarlo es del 7b, que sabe cuándo la cuenta está al día.
+        val papel = com.avoqado.pos.printing.data.model.TotalesDelTicket.desdeLoCobrado(
+            cobrado = receiptTotal - currentTipCents,
+            propina = currentTipCents,
+            subtotalBruto = if (cart != null && isFullPayment) cart.subtotalCents else baseAmount,
+            cargo = 0,
+            impuestoAgregado = if (cart != null && isFullPayment) cart.taxCents else 0,
+        )
         val resolvedChange = changeCents ?: successState?.changeAmount
 
         // Folio real del backend; solo si falta cae a los últimos 4 del id (mejor
@@ -3231,11 +3240,12 @@ class PaymentFlowViewModel @Inject constructor(
             orderNumber = folio,
             orderType = "En tienda",
             items = receiptItems,
-            subtotal = receiptSubtotal,
-            taxAmount = receiptTax,
+            subtotal = papel.subtotal,
+            taxAmount = papel.impuesto,
             tipAmount = if (currentTipCents > 0) currentTipCents else null,
-            discountAmount = if (receiptDiscount > 0) receiptDiscount else null,
-            total = receiptTotal,
+            discountAmount = papel.descuento.takeIf { it > 0 },
+            total = papel.total,
+            serviceChargeAmount = papel.cargo.takeIf { it > 0 },
             paymentMethod = manualMethodLabel ?: when (resolvedMethod) {
                 PaymentMethod.CASH -> "Efectivo"
                 PaymentMethod.CARD -> "Tarjeta"

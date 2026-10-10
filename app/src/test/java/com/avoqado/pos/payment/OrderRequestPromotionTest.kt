@@ -46,6 +46,7 @@ import com.avoqado.pos.printing.data.ComandaPrinter
 import com.avoqado.pos.printing.data.PrinterService
 import com.avoqado.pos.printing.data.ReintentoDeComanda
 import com.avoqado.pos.printing.data.ReporteDeComandas
+import com.avoqado.pos.printing.data.model.ReceiptData
 import com.avoqado.pos.printing.routing.PrintConfig
 import com.avoqado.pos.printing.routing.PrintConfigRepository
 import com.avoqado.pos.referrals.domain.usecase.CaptureReferralUseCase
@@ -671,6 +672,139 @@ class OrderRequestPromotionTest {
         )
     }
 
+    // MARK: - El ticket del cobro cuadra con lo cobrado (IVA por producto, plan 7a, Tarea 8: sólo el cobro)
+
+    private fun cuadra(r: ReceiptData) =
+        r.total == r.subtotal - (r.discountAmount ?: 0) + (r.serviceChargeAmount ?: 0) + r.taxAmount + (r.tipAmount ?: 0)
+
+    @Test
+    fun `P1 el ticket del cobro cuadra con el total que confirmo el servidor (Codex r1 #3)`() = runTest {
+        val carrito = lineasDelCombo().mapIndexed { index, item ->
+            if (index == 0) item.copy(unitPrice = 7424) else item // total local: 9899; el servidor cobra 99
+        }
+        every { cashPaymentRepository.processCashPayment(9899, 10000) } returns CashPaymentResult.Success(changeCents = 101)
+        coEvery { orderRepository.createOrder(any(), any(), any(), any(), any()) } returns
+            Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-1", total = 99.0)))
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any()) } returns
+            Result.success(OrderRepository.CashPayResult(paymentId = "pay-1", receiptAccessKey = null))
+        val impreso = slot<ReceiptData>()
+        coEvery { printerService.autoPrintReceipt(capture(impreso)) } returns Unit
+
+        paymentViewModel.startPaymentFlow(CartState(items = carrito))
+        paymentViewModel.selectPaymentMethod(PaymentMethod.CASH)
+        paymentViewModel.processCashPayment(10000)
+        advanceUntilIdle()
+
+        val r = impreso.captured
+        assertEquals("TOTAL = lo que cobró el servidor", 9900, r.total)
+        assertEquals("subtotal − descuento + IVA + propina = TOTAL", r.total, r.subtotal - (r.discountAmount ?: 0) + r.taxAmount + (r.tipAmount ?: 0))
+        // Venta nueva: IVA incluido ⇒ la leyenda (taxCents 0), sin cargo y nunca una devolución.
+        assertEquals(0, r.taxAmount)
+        assertNull(r.serviceChargeAmount)
+        assertFalse(r.isRefund)
+    }
+
+    @Test
+    fun `P1 con propina el ticket cuadra con lo que cobro el servidor y la propina va en su renglon`() = runTest {
+        every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(showReviewScreen = false, showTipScreen = true)
+        val carrito = lineasDelCombo().mapIndexed { index, item ->
+            if (index == 0) item.copy(unitPrice = 7424) else item // 9899 local; el servidor cobra 99 + 5 de propina
+        }
+        coEvery { orderRepository.createOrder(any(), any(), any(), any(), any()) } returns
+            Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-1", total = 104.0)))
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any()) } returns
+            Result.success(OrderRepository.CashPayResult(paymentId = "pay-1", receiptAccessKey = null))
+        val impreso = slot<ReceiptData>()
+        coEvery { printerService.autoPrintReceipt(capture(impreso)) } returns Unit
+
+        paymentViewModel.startPaymentFlow(CartState(items = carrito))
+        assertTrue("montaje: pide propina", paymentViewModel.state.value is com.avoqado.pos.payment.data.model.PaymentFlowState.CollectingTip)
+        paymentViewModel.submitTip(500)
+        paymentViewModel.selectPaymentMethod(PaymentMethod.CASH)
+        paymentViewModel.processCashPayment(11000)
+        advanceUntilIdle()
+
+        val r = impreso.captured
+        assertEquals("TOTAL = lo que cobró el servidor, con la propina", 10400, r.total)
+        assertEquals(500, r.tipAmount)
+        assertEquals("lo cobrado supera el bruto: el subtotal es lo cobrado sin propina", 9900, r.subtotal)
+        assertNull(r.discountAmount)
+        assertTrue("subtotal − descuento + IVA + propina = TOTAL", cuadra(r))
+    }
+
+    @Test
+    fun `control - el cobro completo de una mesa con cargo imprime el renglon unico de hoy y el mismo total (7a no empeora)`() = runTest {
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any()) } returns
+            Result.success(OrderRepository.CashPayResult(paymentId = "pay-1", receiptAccessKey = null))
+        val impreso = slot<ReceiptData>()
+        coEvery { printerService.autoPrintReceipt(capture(impreso)) } returns Unit
+        // La mesa en PAYING (como la deja `TablesViewModel`): el cobro paga la orden EXISTENTE.
+        tableSession.start(
+            com.avoqado.pos.tables.data.TableSession.Active(
+                tableId = "mesa-5", tableNumber = "5", areaName = null, orderId = "order-mesa-5", orderNumber = "55",
+                version = 1, totalCents = 11500, mode = com.avoqado.pos.tables.data.TableSession.Mode.PAYING,
+            ),
+        )
+
+        // Así siembra el cobro de mesa el carrito: UN renglón con el saldo, cargo adentro (CartViewModel.consumePendingTableCobrar).
+        paymentViewModel.startPaymentFlow(CartState(items = listOf(CartItem(type = CartItemType.CustomAmount, name = "Cuenta Mesa 5", unitPrice = 11500, quantity = 1))))
+        paymentViewModel.selectPaymentMethod(PaymentMethod.CASH)
+        paymentViewModel.processCashPayment(11500)
+        advanceUntilIdle()
+
+        val r = impreso.captured
+        assertNull(r.serviceChargeAmount)
+        assertEquals(11500, r.subtotal)
+        assertEquals(11500, r.total)
+        assertEquals(r.total, r.subtotal - (r.discountAmount ?: 0) + r.taxAmount + (r.tipAmount ?: 0))
+    }
+
+    @Test
+    fun `control - un pago parcial imprime solo lo cobrado, sin descuento ni IVA prorrateado`() = runTest {
+        coEvery { orderRepository.createOrder(any(), any(), any(), any(), any()) } returns
+            Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-1", total = 99.0)))
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any()) } returns
+            Result.success(OrderRepository.CashPayResult(paymentId = "pay-1", receiptAccessKey = null))
+        val impreso = slot<ReceiptData>()
+        coEvery { printerService.autoPrintReceipt(capture(impreso)) } returns Unit
+
+        // Cuenta de $99 con un descuento de orden de $10; se cobran $50 de ella.
+        paymentViewModel.setSplitConfig(type = "CUSTOMAMOUNT", customAmountCents = 5000)
+        paymentViewModel.startPaymentFlow(
+            CartState(items = lineasDelCombo(), orderDiscount = Discount(id = "d-10", name = "Diez", type = "FIXED_AMOUNT", value = 10.0)),
+        )
+        paymentViewModel.selectPaymentMethod(PaymentMethod.CASH)
+        paymentViewModel.processCashPayment(5000)
+        advanceUntilIdle()
+
+        val r = impreso.captured
+        assertEquals(listOf(5000, 0, 5000), listOf(r.subtotal, r.taxAmount, r.total))
+        assertNull("el descuento de la cuenta no se reparte en un pago parcial", r.discountAmount)
+        assertNull(r.serviceChargeAmount)
+    }
+
+    @Test
+    fun `control - una venta vieja con IVA aparte imprime su IVA agregado una sola vez`() = runTest {
+        coEvery { orderRepository.createOrder(any(), any(), any(), any(), any()) } returns
+            Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-1", total = 116.0)))
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any()) } returns
+            Result.success(OrderRepository.CashPayResult(paymentId = "pay-1", receiptAccessKey = null))
+        val impreso = slot<ReceiptData>()
+        coEvery { printerService.autoPrintReceipt(capture(impreso)) } returns Unit
+        val producto = CartItem(id = "line-1", type = CartItemType.ProductItem("p-1"), name = "Producto", unitPrice = 10000)
+
+        // Un carrito con impuesto aparte de antes de D13 (hoy ya no se puede armar desde la caja).
+        paymentViewModel.startPaymentFlow(CartState(items = listOf(producto), orderTaxPercent = 16))
+        paymentViewModel.selectPaymentMethod(PaymentMethod.CASH)
+        paymentViewModel.processCashPayment(11600)
+        advanceUntilIdle()
+
+        val r = impreso.captured
+        assertEquals(listOf(10000, 1600, 11600), listOf(r.subtotal, r.taxAmount, r.total))
+        assertNull(r.discountAmount)
+        assertTrue(cuadra(r))
+    }
+
     // MARK: - Andamiaje
 
     private val orderRepository = mockk<OrderRepository>(relaxed = true)
@@ -686,6 +820,8 @@ class OrderRequestPromotionTest {
     private val printConfigRepository = mockk<PrintConfigRepository>(relaxed = true)
     private val comandaPrinter = mockk<ComandaPrinter>(relaxed = true)
     private val areaTicketRepository = mockk<AreaTicketRepository>(relaxed = true)
+    /** La del cobro: la prueba de la mesa la abre en PAYING, como `TablesViewModel` antes de mandar a Cobrar. */
+    private val tableSession = com.avoqado.pos.tables.data.TableSession()
 
     private val productsRepository = mockk<ProductsRepository>(relaxed = true)
     private val discountsRepository = mockk<DiscountsRepository>(relaxed = true)
@@ -755,7 +891,7 @@ class OrderRequestPromotionTest {
                 ReintentoDeComanda(comandaPrinter, reporteDeComandas = mockk<ReporteDeComandas>(relaxed = true)),
                 printerService,
             ),
-            tableSession = com.avoqado.pos.tables.data.TableSession(),
+            tableSession = tableSession,
             syncOutbox = mockk(relaxed = true),
             customerDisplay = com.avoqado.pos.customerdisplay.CustomerDisplayState(),
             areaTicketRepository = areaTicketRepository,
