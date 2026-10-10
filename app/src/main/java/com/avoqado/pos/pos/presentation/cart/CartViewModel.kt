@@ -190,6 +190,9 @@ private fun formatCents(cents: Int): String {
     return formatMoney(cents / 100.0)
 }
 
+internal const val AVISO_CARRITO_SIN_IMPUESTO =
+    "Este carrito guardado sumaba impuesto aparte. Ya no se suma: el precio ya incluye el IVA."
+
 @HiltViewModel
 class CartViewModel @Inject constructor(
     val productsRepository: ProductsRepository,
@@ -242,6 +245,15 @@ class CartViewModel @Inject constructor(
 
     fun consumeStockWarning() {
         _stockWarning.value = null
+    }
+
+    // D13 (IVA por producto, plan 7a): aviso ámbar al restaurar un carrito guardado que sumaba impuesto aparte. Se pinta
+    // como `stockWarning` y se consume con consumeAvisoDelCarrito(). Espejo de `avisoDelCarrito` en iOS.
+    private val _avisoDelCarrito = MutableStateFlow<String?>(null)
+    val avisoDelCarrito: StateFlow<String?> = _avisoDelCarrito.asStateFlow()
+
+    fun consumeAvisoDelCarrito() {
+        _avisoDelCarrito.value = null
     }
 
     private fun avisarSiAgotado(product: Product) {
@@ -1054,12 +1066,6 @@ class CartViewModel @Inject constructor(
         _cartState.update { it.copy(orderDiscount = discount) }
     }
 
-    fun applyOrderTaxPercent(taxPercent: Int?) {
-        if (_cartState.value.items.any { it.locked }) return
-        val normalized = taxPercent?.coerceIn(0, 100)?.takeIf { it > 0 }
-        _cartState.update { it.copy(orderTaxPercent = normalized) }
-    }
-
     fun setOrderNote(note: String?) {
         _cartState.update { it.copy(orderNote = note) }
     }
@@ -1186,6 +1192,7 @@ class CartViewModel @Inject constructor(
             }
         }
         _cartState.value = defaultCartState()
+        _avisoDelCarrito.value = null
         // Referral capture state is per-order, so wiping the cart must wipe
         // the code + validation too. The discount referenced by the validation
         // already lives on cartState.orderDiscount and is dropped above.
@@ -1773,11 +1780,15 @@ class CartViewModel @Inject constructor(
             items = items,
             orderDiscount = restoredDiscount,
             orderNote = savedCart.orderNote,
-            orderTaxPercent = savedCart.orderTaxPercent,
+            orderTaxPercent = null,
             reservationId = savedCart.reservationId,
             selectedStaffId = _cartState.value.selectedStaffId,
             selectedStaffName = _cartState.value.selectedStaffName,
         )
+        // D13 (IVA por producto, plan 7a): «Agregar impuesto» ya no existe — en México el precio ya trae el IVA (LFPC 7 Bis).
+        // Un carrito guardado con impuesto aparte se restaura SIN él, y se dice; uno sin impuesto limpia el aviso anterior
+        // (r1 #15). Lo ya cobrado y lo encolado no se tocan. La copia guardada sigue su ciclo de hoy (el 7b lo arregla).
+        _avisoDelCarrito.value = if ((savedCart.orderTaxPercent ?: 0) > 0) AVISO_CARRITO_SIN_IMPUESTO else null
         // 🔴 DINERO. Este camino reemplaza el carrito SIN pasar por `clearCart()`,
         // así que el vínculo con una venta a medio cobrar se limpia aquí. Hoy los
         // ids restaurados son UUID nuevos y el guard de `resolvePendingSplit…` ya

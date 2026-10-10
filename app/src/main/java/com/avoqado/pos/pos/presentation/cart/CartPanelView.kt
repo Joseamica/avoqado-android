@@ -68,8 +68,6 @@ import coil.compose.AsyncImage
 import com.avoqado.pos.core.util.formatMoney
 import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 
-import com.avoqado.pos.designsystem.components.AvoqadoDialog
-import com.avoqado.pos.designsystem.components.AvoqadoPillTextField
 import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.theme.AvoqadoAdaptiveSizeClass
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
@@ -87,7 +85,6 @@ fun CartPanelView(
     onSaveCart: () -> Unit = {},
     onAddCustomAmount: () -> Unit = {},
     onRemoveItem: (String) -> Unit = {},
-    onApplyTaxPercent: (Int?) -> Unit = {},
     /**
      * Abre los descuentos de la CUENTA COMPLETA desde el carrito — el
      * equivalente del "Review sale → Add discount" de Square (founder,
@@ -142,7 +139,6 @@ fun CartPanelView(
     val sectionInnerPadding = if (useDenseTabletLayout) AvoqadoTheme.spacing.md else AvoqadoTheme.spacing.lg
     var showCartOptions by remember { mutableStateOf(false) }
     var showSectionMenu by remember { mutableStateOf(false) }
-    var showTaxDialog by remember { mutableStateOf(false) }
 
     Box(modifier = Modifier.fillMaxSize()) {
         Column(
@@ -292,13 +288,6 @@ fun CartPanelView(
                                     onDismissRequest = { showSectionMenu = false },
                                 ) {
                                     DropdownMenuItem(
-                                        text = { Text("Agregar impuesto") },
-                                        onClick = {
-                                            showSectionMenu = false
-                                            showTaxDialog = true
-                                        },
-                                    )
-                                    DropdownMenuItem(
                                         text = { Text("Dividir cuenta") },
                                         leadingIcon = {
                                             Icon(
@@ -332,10 +321,8 @@ fun CartPanelView(
                         }
 
                         // "Agregar descuento" link — descuentos de la CUENTA
-                        // completa, junto al de impuesto porque es la misma
-                        // familia de acciones sobre el total (patrón de Square:
-                        // el descuento de venta se aplica desde el resumen, no
-                        // desde un artículo).
+                        // completa (patrón de Square: el descuento de venta se
+                        // aplica desde el resumen, no desde un artículo).
                         Text(
                             text = cartState.orderDiscount?.let { "Descuento (${it.name})" }
                                 ?: "Agregar descuento",
@@ -347,27 +334,6 @@ fun CartPanelView(
                             color = MaterialTheme.colorScheme.onSurface,
                             modifier = Modifier
                                 .clickable { onDiscountTap() }
-                                .padding(
-                                    horizontal = sectionInnerPadding,
-                                    vertical = sectionInnerPadding,
-                                ),
-                        )
-
-                        // "Agregar impuesto" link
-                        Text(
-                            text = if (cartState.orderTaxPercent != null) {
-                                "Impuesto (${cartState.orderTaxPercent}%)"
-                            } else {
-                                "Agregar impuesto"
-                            },
-                            style = if (useDenseTabletLayout) {
-                                MaterialTheme.typography.bodySmall
-                            } else {
-                                MaterialTheme.typography.bodyMedium
-                            },
-                            color = MaterialTheme.colorScheme.onSurface,
-                            modifier = Modifier
-                                .clickable { showTaxDialog = true }
                                 .padding(
                                     horizontal = sectionInnerPadding,
                                     vertical = sectionInnerPadding,
@@ -413,14 +379,6 @@ fun CartPanelView(
                                 else -> "Se calcula al cobrar"
                             },
                             onQuitar = onRemoveStampReward.takeIf { premioEditable },
-                            useDenseTabletLayout = useDenseTabletLayout,
-                        )
-                    }
-
-                    if (cartState.orderTaxPercent != null) {
-                        SummaryAmountRow(
-                            name = "IVA (${cartState.orderTaxPercent}%)",
-                            amount = cartState.taxDisplay,
                             useDenseTabletLayout = useDenseTabletLayout,
                         )
                     }
@@ -480,82 +438,6 @@ fun CartPanelView(
                         modifier = Modifier.weight(1f),
                         enabled = primaryActionEnabled,
                     )
-                }
-            }
-        }
-
-        // Tax dialog
-        if (showTaxDialog) {
-            var taxPercent by remember {
-                mutableStateOf((cartState.orderTaxPercent ?: 16).toString())
-            }
-            var taxError by remember { mutableStateOf<String?>(null) }
-            AvoqadoDialog(
-                title = "Agregar impuesto",
-                description = "Selecciona o ingresa el porcentaje de impuesto",
-                onDismiss = { showTaxDialog = false },
-                actionButton = {
-                    PrimaryButton(
-                        text = "Aplicar",
-                        onClick = {
-                            val parsed = taxPercent.toIntOrNull()
-                            if (parsed == null || parsed !in 0..100) {
-                                taxError = "Ingresa un porcentaje válido (0-100)"
-                                return@PrimaryButton
-                            }
-                            onApplyTaxPercent(parsed.takeIf { it > 0 })
-                            showTaxDialog = false
-                        },
-                        fullWidth = true,
-                    )
-                },
-            ) {
-                Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.md)) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
-                        listOf("8", "16").forEach { pct ->
-                            val isSelected = taxPercent == pct
-                            Box(
-                                modifier = Modifier
-                                    .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
-                                    .background(
-                                        if (isSelected) MaterialTheme.colorScheme.primary
-                                        else MaterialTheme.colorScheme.surfaceVariant,
-                                    )
-                                    .clickable {
-                                        taxPercent = pct
-                                        taxError = null
-                                    }
-                                    .padding(
-                                        horizontal = AvoqadoTheme.spacing.lg,
-                                        vertical = AvoqadoTheme.spacing.md,
-                                    ),
-                            ) {
-                                Text(
-                                    text = "$pct%",
-                                    color = if (isSelected) MaterialTheme.colorScheme.onPrimary
-                                    else MaterialTheme.colorScheme.onSurfaceVariant,
-                                    fontWeight = FontWeight.SemiBold,
-                                )
-                            }
-                        }
-                    }
-
-                    AvoqadoPillTextField(
-                        value = taxPercent,
-                        onValueChange = { input ->
-                            taxPercent = input.filter { it.isDigit() }.take(3)
-                            taxError = null
-                        },
-                        placeholder = "Porcentaje (%)",
-                    )
-
-                    taxError?.let { message ->
-                        Text(
-                            text = message,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error,
-                        )
-                    }
                 }
             }
         }

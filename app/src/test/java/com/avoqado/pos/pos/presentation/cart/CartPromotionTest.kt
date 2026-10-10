@@ -20,12 +20,14 @@ import com.avoqado.pos.pos.data.model.Promotion
 import com.avoqado.pos.pos.data.model.PromotionGroup
 import com.avoqado.pos.pos.data.model.PromotionOption
 import com.avoqado.pos.pos.data.model.SavedCart
+import com.avoqado.pos.pos.data.model.SavedCartItem
 import com.avoqado.pos.pos.presentation.promotions.estimadoDePromocion
 import com.avoqado.pos.referrals.domain.usecase.CaptureReferralUseCase
 import com.avoqado.pos.referrals.domain.usecase.ValidateReferralUseCase
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.verify
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -560,4 +562,51 @@ class CartPromotionTest {
             ),
         ),
     )
+
+    // MARK: - D13 (IVA por producto, plan 7a): «Agregar impuesto» desaparece
+
+    private fun guardadoConImpuesto(id: String = "s1", impuesto: Int? = 16) = SavedCart(
+        id = id,
+        name = "Mesa 5",
+        items = listOf(SavedCartItem(productId = "p-cafe", name = "Café", unitPrice = 5000, quantity = 1)),
+        orderTaxPercent = impuesto,
+    )
+
+    @Test
+    fun `P1 un carrito guardado con impuesto aparte se restaura SIN el y lo dice (D13)`() {
+        val vm = createViewModel()
+        vm.restoreSavedCart(guardadoConImpuesto())
+        val estado = vm.cartState.value
+        // El dinero primero: lo que se cobra es el precio de lista, sin los $8 de impuesto aparte.
+        assertEquals("se cobra el precio de lista, sin impuesto encima", 5000, estado.totalCents)
+        assertEquals(0, estado.taxCents)
+        assertNull(estado.orderTaxPercent)
+        assertEquals(AVISO_CARRITO_SIN_IMPUESTO, vm.avisoDelCarrito.value)
+    }
+
+    @Test
+    fun `P1 dos restauraciones seguidas en el mismo VM - la segunda sin impuesto no hereda el aviso (r1 #15)`() {
+        val vm = createViewModel()
+        vm.restoreSavedCart(guardadoConImpuesto("s1", 16))
+        assertEquals(AVISO_CARRITO_SIN_IMPUESTO, vm.avisoDelCarrito.value)
+        vm.restoreSavedCart(guardadoConImpuesto("s2", null))
+        assertNull("una restauración sin impuesto no hereda el aviso de la anterior", vm.avisoDelCarrito.value)
+        vm.restoreSavedCart(guardadoConImpuesto("s3", 16))
+        assertEquals(AVISO_CARRITO_SIN_IMPUESTO, vm.avisoDelCarrito.value)
+        vm.clearCart()
+        assertNull("vaciar el carrito suelta su aviso", vm.avisoDelCarrito.value)
+    }
+
+    @Test
+    fun `control - D13 no cambia el ciclo de la copia guardada - se borra al restaurar como hoy (el 7b lo cambia a proposito)`() {
+        val vm = createViewModel()
+        // Lo que había en el carrito EN EL MOMENTO de borrar la copia (no después): así mover el borrado antes de
+        // poblar el carrito derriba la prueba. Se mide el subtotal (precio de lista, sin impuesto aparte), que es
+        // el mismo antes y después de D13: por eso es un control.
+        var subtotalAlBorrar: Int? = null
+        every { savedCartsRepository.deleteCart("s1") } answers { subtotalAlBorrar = vm.cartState.value.subtotalCents }
+        vm.restoreSavedCart(guardadoConImpuesto("s1", 16))
+        verify(exactly = 1) { savedCartsRepository.deleteCart("s1") }
+        assertEquals("el carrito ya está poblado cuando se borra la copia", 5000, subtotalAlBorrar)
+    }
 }

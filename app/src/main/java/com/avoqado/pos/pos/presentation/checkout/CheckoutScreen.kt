@@ -770,7 +770,6 @@ fun CheckoutScreen(
                         },
                         onAddCustomAmount = { selectedTab = InputTab.KEYPAD },
                         onRemoveItem = quitarLineaDelCarrito,
-                        onApplyTaxPercent = { cartViewModel.applyOrderTaxPercent(it) },
                         onDiscountTap = { showOrderDiscountSheet = true },
                         customerName = selectedCustomer?.name,
                         customerId = selectedCustomer?.id,
@@ -1096,7 +1095,6 @@ fun CheckoutScreen(
                 selectedTab = InputTab.KEYPAD
             },
             onRemoveItem = quitarLineaDelCarrito,
-            onApplyTaxPercent = { cartViewModel.applyOrderTaxPercent(it) },
             onDiscountTap = {
                 // Mismo patrón que dividir cuenta: el carrito de teléfono ocupa
                 // la pantalla completa, así que se cierra ANTES o la hoja del
@@ -1369,6 +1367,16 @@ fun CheckoutScreen(
             message = "Producto sin existencias",
             subtitle = aviso,
             onDismiss = cartViewModel::consumeStockWarning,
+        )
+    }
+
+    // D13 (IVA por producto, plan 7a): un carrito guardado que sumaba impuesto aparte se restauró sin él. Aviso ámbar, nunca bloqueo.
+    val avisoDelCarrito by cartViewModel.avisoDelCarrito.collectAsState()
+    avisoDelCarrito?.let { aviso ->
+        AvoqadoWarningToast(
+            message = "Impuesto aparte retirado",
+            subtitle = aviso,
+            onDismiss = cartViewModel::consumeAvisoDelCarrito,
         )
     }
 
@@ -2058,7 +2066,6 @@ private fun IPhoneCartSheet(
     onSaveCart: () -> Unit,
     onAddCustomAmount: () -> Unit,
     onRemoveItem: (String) -> Unit,
-    onApplyTaxPercent: (Int?) -> Unit,
     /** Descuento de la cuenta completa. 🔴 SIN default, misma lección que `onSplitPayment`. */
     onDiscountTap: () -> Unit,
     staffName: String,
@@ -2140,7 +2147,6 @@ private fun IPhoneCartSheet(
                 onSaveCart = onSaveCart,
                 onAddCustomAmount = onAddCustomAmount,
                 onRemoveItem = onRemoveItem,
-                onApplyTaxPercent = onApplyTaxPercent,
                 onDiscountTap = onDiscountTap,
                 customerName = customerName,
                 customerId = customerId,
