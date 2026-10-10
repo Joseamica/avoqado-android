@@ -80,11 +80,19 @@ class TablesViewModel @Inject constructor(
     /** Pestañas, mesas puestas, elementos, «sin acomodar» y la lista del teléfono, armados de mesas + plano. */
     // `floorPlanVersionFromTables` se asigna ANTES de publicar las mesas (Task 5): al emitir, ya es la de esas mesas. Con
     // ella el armador sabe si el plano guardado está atrasado (corrección C6).
-    val layout: StateFlow<FloorLayout> = combine(repository.tables, floorPlanRepository.plan) { t, p ->
-        FloorLayoutBuilder.build(t, p, repository.floorPlanVersionFromTables)
+    // Perezoso y sólo mientras alguien lo mira: Cobrar y la cuenta de la mesa también crean este ViewModel y no dibujan el
+    // plano. Arranca armado con lo que ya hay en memoria (sin un primer cuadro vacío al volver a Mesas).
+    val layout: StateFlow<FloorLayout> by lazy {
+        combine(repository.tables, floorPlanRepository.plan) { t, p ->
+            FloorLayoutBuilder.build(t, p, repository.floorPlanVersionFromTables)
+        }
+            .flowOn(Dispatchers.Default)
+            .stateIn(
+                viewModelScope,
+                SharingStarted.WhileSubscribed(5_000),
+                FloorLayoutBuilder.build(repository.tables.value, floorPlanRepository.plan.value, repository.floorPlanVersionFromTables),
+            )
     }
-        .flowOn(Dispatchers.Default)
-        .stateIn(viewModelScope, SharingStarted.Eagerly, FloorLayout())
 
     private val _rememberedTab = MutableStateFlow<String?>(null)
 

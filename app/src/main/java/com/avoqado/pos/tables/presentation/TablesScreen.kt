@@ -153,7 +153,13 @@ fun TablesScreen(
     // Tablet con plano ⇒ el lienzo; tablet sin plano y teléfono ⇒ la lista con pestañas (spec 2026-10-09 §4.2-4.3).
     val showPlan = isTablet && layout.hasPlan
     val activeTabKey = FloorLayoutBuilder.pickActiveTab(if (showPlan) layout.tabs else layout.listTabs, rememberedTab)
+    // El plano se arma fuera del hilo principal: si las mesas ya llegaron y el armado todavía no (un cuadro), no se pinta
+    // «No hay mesas en esta área» ni el aviso de armar el plano. Con mesas, la lista siempre tiene al menos una pestaña.
+    val layoutAlDia = tables.isEmpty() || layout.listByTab.isNotEmpty()
     var showUnplaced by remember { mutableStateOf(false) }
+    // La hoja «sin acomodar» no se queda abierta y vacía (se acomodaron todas, o ya no hay plano).
+    val hayQueAcomodar = showPlan && layout.unplaced.isNotEmpty()
+    LaunchedEffect(hayQueAcomodar) { if (!hayQueAcomodar) showUnplaced = false }
 
     // Square's flow: tapping an OCCUPIED table goes STRAIGHT to the
     // table screen (no intermediate sheet); long-press keeps the check
@@ -254,7 +260,7 @@ fun TablesScreen(
                     Spacer(modifier = Modifier.weight(1f))
                 }
             } else {
-                if (isTablet && !layout.hasPlan && viewModel.canConfigureTables) {
+                if (isTablet && !layout.hasPlan && tables.isNotEmpty() && layoutAlDia && viewModel.canConfigureTables) {
                     Text(
                         text = "Arma el plano en tu computadora: Configuración › Mesas y plano",
                         style = MaterialTheme.typography.bodySmall,
@@ -262,8 +268,8 @@ fun TablesScreen(
                         modifier = Modifier.padding(bottom = AvoqadoTheme.spacing.sm),
                     )
                 }
-                if (tables.isEmpty()) {
-                    Spacer(modifier = Modifier.weight(1f)) // primera carga sin nada guardado
+                if (tables.isEmpty() || !layoutAlDia) {
+                    Spacer(modifier = Modifier.weight(1f)) // primera carga sin nada guardado, o el armado va un cuadro atrás
                 } else {
                     TableAreaList(
                         tables = activeTabKey?.let { layout.listByTab[it] }.orEmpty(),
@@ -424,7 +430,7 @@ fun TablesScreen(
         }
     }
 
-    if (showUnplaced) {
+    if (showUnplaced && hayQueAcomodar) {
         UnplacedTablesSheet(
             tables = layout.unplaced,
             selectionMode = selectionMode,

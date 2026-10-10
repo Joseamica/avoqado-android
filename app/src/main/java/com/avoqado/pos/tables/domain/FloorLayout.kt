@@ -1,5 +1,6 @@
 package com.avoqado.pos.tables.domain
 
+import androidx.compose.runtime.Immutable
 import com.avoqado.pos.tables.data.DiningTable
 import com.avoqado.pos.tables.data.FloorPlanPayload
 import java.text.Collator
@@ -10,7 +11,12 @@ import java.util.Locale
 /** Una pestaña de área. `floorShape` decide la proporción del lienzo (null ⇒ WIDE). */
 data class FloorTab(val key: String, val title: String, val floorShape: String?)
 
-/** Una mesa ya puesta en su área, en cuadros: centro (cx, cy), tamaño (w × h) y giro. */
+/**
+ * Una mesa ya puesta en su área, en cuadros: centro (cx, cy), tamaño (w × h) y giro. `@Immutable` (sólo la anotación de
+ * Compose, sin Android): cada armado crea instancias nuevas, y así una mesa que no cambió se compara por igualdad y no se
+ * vuelve a dibujar.
+ */
+@Immutable
 data class PlacedTable(
     val table: DiningTable,
     val cx: Double,

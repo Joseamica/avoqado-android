@@ -1,6 +1,5 @@
 package com.avoqado.pos.tables.presentation
 
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -50,6 +49,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
@@ -225,7 +226,8 @@ internal fun FloorPlanCanvas(
                             p = p,
                             cellPx = cellPx,
                             selected = p.table.id in selectedIds,
-                            nowMs = nowMs,
+                            // Sólo una mesa ocupada usa el reloj: las libres no se recomponen cada 30 s.
+                            nowMs = if (p.table.isOccupied) nowMs else 0L,
                             onTap = { onTap(p.table) },
                             onLongPress = { onLongPress(p.table) },
                         )
@@ -331,65 +333,85 @@ private fun FloorElementsLayer(model: ElementsLayerModel, modifier: Modifier = M
     val zoneStroke = MaterialTheme.colorScheme.outline.copy(alpha = 0.6f)
     val doorStroke = MaterialTheme.colorScheme.outline
     val measurer = rememberTextMeasurer()
-    Canvas(modifier = modifier.clearAndSetSemantics { }) {
-        val c = model.cellPx
-        fun pt(x: Double, y: Double) = Offset((x * c).toFloat(), (y * c).toFloat())
-        fun boxSize(e: FloorGeometry.CellElement) = Size(((e.w ?: 1.0) * c).toFloat(), ((e.h ?: 1.0) * c).toFloat())
-        fun centeredLabel(text: String, e: FloorGeometry.CellElement) {
-            val w = e.w ?: 1.0
-            val h = e.h ?: 1.0
-            val fontPx = (FloorGeometry.labelFontCells(text, w, h) * c).toFloat()
-            val layout = measurer.measure(text, TextStyle(color = muted, fontSize = fontPx.toDp().toSp(), fontWeight = FontWeight.Medium))
-            val center = pt(e.x + w / 2, e.y + h / 2)
-            drawText(layout, topLeft = Offset(center.x - layout.size.width / 2f, center.y - layout.size.height / 2f))
-        }
-        model.elements.forEach { e ->
-            when (e.type) {
-                "WALL" -> drawLine(
-                    color = wall,
-                    start = pt(e.x, e.y),
-                    end = pt(e.x2 ?: e.x, e.y2 ?: e.y),
-                    strokeWidth = 0.6f * c,
-                    cap = StrokeCap.Round,
-                )
-                "LABEL" -> e.label?.let { text ->
-                    val layout = measurer.measure(text, TextStyle(color = muted, fontSize = (1.4f * c).toDp().toSp(), fontWeight = FontWeight.Medium))
-                    drawText(layout, topLeft = pt(e.x, e.y))
+    Spacer(
+        modifier = modifier
+            // Capa propia, SIN recorte (A2): lo que cambie arriba (una mesa, «x/y ocupadas», el giro de refrescar) no la
+            // vuelve a grabar (spec §8).
+            .graphicsLayer { }
+            .clearAndSetSemantics { }
+            // Trazos, punteados y letreros medidos se arman UNA vez por (modelo, tamaño); cada cuadro sólo los pinta.
+            .drawWithCache {
+                val c = model.cellPx
+                fun pt(x: Double, y: Double) = Offset((x * c).toFloat(), (y * c).toFloat())
+                fun boxSize(e: FloorGeometry.CellElement) = Size(((e.w ?: 1.0) * c).toFloat(), ((e.h ?: 1.0) * c).toFloat())
+                fun text(label: String, fontPx: Float) =
+                    measurer.measure(label, TextStyle(color = muted, fontSize = fontPx.toDp().toSp(), fontWeight = FontWeight.Medium))
+                fun centeredLabel(label: String, e: FloorGeometry.CellElement): DrawScope.() -> Unit {
+                    val w = e.w ?: 1.0
+                    val h = e.h ?: 1.0
+                    val layout = text(label, (FloorGeometry.labelFontCells(label, w, h) * c).toFloat())
+                    val center = pt(e.x + w / 2, e.y + h / 2)
+                    val topLeft = Offset(center.x - layout.size.width / 2f, center.y - layout.size.height / 2f)
+                    return { drawText(layout, topLeft = topLeft) }
                 }
-                "BAR_COUNTER" -> {
-                    drawRoundRect(color = barFill, topLeft = pt(e.x, e.y), size = boxSize(e), cornerRadius = CornerRadius(0.35f * c))
-                    e.label?.let { centeredLabel(it, e) }
-                }
-                "SERVICE_AREA" -> {
-                    drawRoundRect(color = zoneFill, topLeft = pt(e.x, e.y), size = boxSize(e), cornerRadius = CornerRadius(0.25f * c))
-                    drawRoundRect(
-                        color = zoneStroke,
-                        topLeft = pt(e.x, e.y),
-                        size = boxSize(e),
-                        cornerRadius = CornerRadius(0.25f * c),
-                        style = Stroke(width = 0.12f * c, pathEffect = PathEffect.dashPathEffect(floatArrayOf(0.5f * c, 0.35f * c))),
-                    )
-                    e.label?.let { centeredLabel(it, e) }
-                }
-                "DOOR" -> {
-                    val d = FloorGeometry.doorDrawing(e)
-                    drawRect(color = doorStroke, topLeft = pt(d.x, d.y), size = Size((d.w * c).toFloat(), (d.h * c).toFloat()), style = Stroke(width = 0.12f * c))
-                    drawLine(color = doorStroke, start = pt(d.leafFrom.x, d.leafFrom.y), end = pt(d.leafTo.x, d.leafTo.y), strokeWidth = 0.1f * c)
-                    val arc = Path().apply {
-                        d.arc.forEachIndexed { i, q ->
-                            val o = pt(q.x, q.y)
-                            if (i == 0) moveTo(o.x, o.y) else lineTo(o.x, o.y)
+                val zoneStyle = Stroke(width = 0.12f * c, pathEffect = PathEffect.dashPathEffect(floatArrayOf(0.5f * c, 0.35f * c)))
+                val doorStyle = Stroke(width = 0.12f * c)
+                val arcStyle = Stroke(width = 0.1f * c, pathEffect = PathEffect.dashPathEffect(floatArrayOf(0.3f * c, 0.2f * c)))
+                val ops: List<DrawScope.() -> Unit> = model.elements.flatMap { e ->
+                    when (e.type) {
+                        "WALL" -> {
+                            val start = pt(e.x, e.y)
+                            val end = pt(e.x2 ?: e.x, e.y2 ?: e.y)
+                            listOf<DrawScope.() -> Unit>({ drawLine(color = wall, start = start, end = end, strokeWidth = 0.6f * c, cap = StrokeCap.Round) })
                         }
+                        "LABEL" -> e.label?.let { label ->
+                            val layout = text(label, 1.4f * c)
+                            val topLeft = pt(e.x, e.y)
+                            listOf<DrawScope.() -> Unit>({ drawText(layout, topLeft = topLeft) })
+                        }.orEmpty()
+                        "BAR_COUNTER" -> {
+                            val topLeft = pt(e.x, e.y)
+                            val size = boxSize(e)
+                            listOfNotNull<DrawScope.() -> Unit>(
+                                { drawRoundRect(color = barFill, topLeft = topLeft, size = size, cornerRadius = CornerRadius(0.35f * c)) },
+                                e.label?.let { centeredLabel(it, e) },
+                            )
+                        }
+                        "SERVICE_AREA" -> {
+                            val topLeft = pt(e.x, e.y)
+                            val size = boxSize(e)
+                            listOfNotNull<DrawScope.() -> Unit>(
+                                {
+                                    drawRoundRect(color = zoneFill, topLeft = topLeft, size = size, cornerRadius = CornerRadius(0.25f * c))
+                                    drawRoundRect(color = zoneStroke, topLeft = topLeft, size = size, cornerRadius = CornerRadius(0.25f * c), style = zoneStyle)
+                                },
+                                e.label?.let { centeredLabel(it, e) },
+                            )
+                        }
+                        "DOOR" -> {
+                            val d = FloorGeometry.doorDrawing(e)
+                            val topLeft = pt(d.x, d.y)
+                            val size = Size((d.w * c).toFloat(), (d.h * c).toFloat())
+                            val leafFrom = pt(d.leafFrom.x, d.leafFrom.y)
+                            val leafTo = pt(d.leafTo.x, d.leafTo.y)
+                            val arc = Path().apply {
+                                d.arc.forEachIndexed { i, q ->
+                                    val o = pt(q.x, q.y)
+                                    if (i == 0) moveTo(o.x, o.y) else lineTo(o.x, o.y)
+                                }
+                            }
+                            listOf<DrawScope.() -> Unit>({
+                                drawRect(color = doorStroke, topLeft = topLeft, size = size, style = doorStyle)
+                                drawLine(color = doorStroke, start = leafFrom, end = leafTo, strokeWidth = 0.1f * c)
+                                drawPath(path = arc, color = doorStroke, style = arcStyle)
+                            })
+                        }
+                        else -> emptyList()
                     }
-                    drawPath(
-                        path = arc,
-                        color = doorStroke,
-                        style = Stroke(width = 0.1f * c, pathEffect = PathEffect.dashPathEffect(floatArrayOf(0.3f * c, 0.2f * c))),
-                    )
                 }
-            }
-        }
-    }
+                onDrawBehind { ops.forEach { it(this) } }
+            },
+    )
 }
 
 // MARK: - «N sin acomodar» (D4): una hoja con las mesas que no están en el plano
