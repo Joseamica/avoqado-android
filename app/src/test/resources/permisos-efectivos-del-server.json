@@ -2,7 +2,7 @@
   "generatedFrom": {
     "repo": "avoqado-server",
     "fn": "getEffectiveRolePermissions(role, null)",
-    "digest": "94580b4cfdc1a4a7"
+    "digest": "edac2f7b48511e0e"
   },
   "roles": {
     "SUPERADMIN": {
@@ -727,6 +727,7 @@
         "sim-custody:assign-to-promoter",
         "sim-custody:collect-from-promoter",
         "sim-custody:view-all-supervisors",
+        "tables:configure",
         "tables:manage-all",
         "tables:read",
         "tables:update",
@@ -872,6 +873,7 @@
         "sim-custody:assign-to-promoter",
         "sim-custody:collect-from-promoter",
         "sim-custody:view-all-supervisors",
+        "tables:configure",
         "tables:manage-all",
         "tables:pay-any",
         "tables:read",
