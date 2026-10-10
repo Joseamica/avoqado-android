@@ -282,4 +282,49 @@ class ConteoNoAplicadoTest {
         val limpio = ComprobanteDeConteo.desde(conteo.copy(items = listOf(linea("b"))), negocio = null, fecha = "x")
         assertFalse(ESCPOSPrinter(PaperWidth.MM58).generateCountReceipt(limpio).toString(Charsets.ISO_8859_1).contains("No se aplic"))
     }
+
+    // MARK: - Fix round 1 (M1): releer el GET que falla no se lee como «todo se aplicó»
+
+    @Test
+    fun `el texto de no comprobado es el mismo de iOS`() {
+        assertEquals(
+            "No se pudo comprobar si todo se aplicó; revisa este conteo en el historial cuando vuelva la red.",
+            ConteoNoAplicado.SIN_COMPROBAR,
+        )
+    }
+
+    @Test
+    fun `tras releer - sin noAplicados y el GET falla, no se puede decir que todo se aplico`() {
+        val t = ConteoNoAplicado.trasReleer("v", "c1", delConfirm = null, releyo = false, conteos = emptyList())
+        assertNull(t.resultado)
+        assertTrue(t.sinComprobar)
+    }
+
+    @Test
+    fun `tras releer - con noAplicados y el GET falla, se queda lo del confirm y no hace falta el aviso`() {
+        val delConfirm = ConteoNoAplicado.desdeConfirm("v", "c1", listOf(NoAplicadoDelConfirm("p-a", MotivoNoAplicado.ENVIO_EN_CAMINO)), listOf(linea("a")))
+        val t = ConteoNoAplicado.trasReleer("v", "c1", delConfirm, releyo = false, conteos = emptyList())
+        assertEquals(delConfirm, t.resultado)
+        assertFalse(t.sinComprobar)
+    }
+
+    @Test
+    fun `tras releer - el GET trae el conteo cerrado y manda`() {
+        val retenida = item("""{"id":"a","productId":"p1","productName":"Café","countedAt":"t","shopifyHeld":{"motivo":"DUDA_POR_REVISAR"}}""")
+        val conteos = listOf(StockCount(id = "otro", status = "COMPLETED"), StockCount(id = "c1", status = "COMPLETED", items = listOf(retenida)))
+        val t = ConteoNoAplicado.trasReleer("v", "c1", delConfirm = null, releyo = true, conteos = conteos)
+        assertEquals(listOf("p1"), t.resultado!!.lineas.map { it.productId })
+        assertFalse(t.sinComprobar)
+        // Todo aplicado de verdad: el GET lo trae sin retenidas.
+        val limpio = ConteoNoAplicado.trasReleer("v", "c1", null, releyo = true, conteos = listOf(StockCount(id = "c1", status = "COMPLETED", items = listOf(linea("b")))))
+        assertNull(limpio.resultado)
+        assertFalse(limpio.sinComprobar)
+    }
+
+    @Test
+    fun `tras releer - el GET contesto pero sin el conteo tampoco comprueba nada`() {
+        val t = ConteoNoAplicado.trasReleer("v", "c1", delConfirm = null, releyo = true, conteos = listOf(StockCount(id = "otro", status = "COMPLETED")))
+        assertNull(t.resultado)
+        assertTrue(t.sinComprobar)
+    }
 }

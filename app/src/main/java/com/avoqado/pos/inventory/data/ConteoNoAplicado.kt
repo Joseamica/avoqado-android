@@ -69,7 +69,38 @@ data class ResultadoNoAplicado(
     val hayRestoAplicado: Boolean get() = contadas > lineas.size
 }
 
+/**
+ * El conteo se cerró pero no se pudo comprobar si TODO se aplicó: el confirm no trajo `noAplicados` (servidor viejo,
+ * todo aplicado, o el reintento `alreadyCompleted`) y releer el conteo falló. Callarlo se leería como «todo se aplicó»;
+ * se dice en ámbar, nunca en rojo (fix round 1, M1).
+ */
+data class ConteoSinComprobar(val venueId: String, val countId: String)
+
+/** Lo que queda tras releer el GET: la tarjeta (si hay líneas que no se aplicaron) y si hace falta el aviso. */
+data class TrasReleer(val resultado: ResultadoNoAplicado?, val sinComprobar: Boolean)
+
 object ConteoNoAplicado {
+    const val SIN_COMPROBAR =
+        "No se pudo comprobar si todo se aplicó; revisa este conteo en el historial cuando vuelva la red."
+
+    /**
+     * Combina lo que dijo el confirm con la relectura del GET.
+     * - La relectura trae el conteo: manda el GET (`shopifyHeld`), sumado a lo que dijo el confirm.
+     * - La relectura falló, o contestó sin el conteo: se queda lo del confirm; y si el confirm no dijo nada, NO se
+     *   sabe si todo se aplicó ⇒ `sinComprobar`.
+     */
+    fun trasReleer(
+        venueId: String,
+        countId: String,
+        delConfirm: ResultadoNoAplicado?,
+        releyo: Boolean,
+        conteos: List<StockCount>,
+    ): TrasReleer {
+        val conteo = (if (releyo) conteos.firstOrNull { it.id == countId } else null)
+            ?: return TrasReleer(delConfirm, sinComprobar = delConfirm == null)
+        return TrasReleer(combinar(delConfirm, desdeConteo(venueId, conteo)), sinComprobar = false)
+    }
+
     const val ETIQUETA = "No se aplicó"
     const val TEXTO_ENVIO_EN_CAMINO =
         "Había un envío a Shopify en camino: vuelve a contar este producto en unos minutos."

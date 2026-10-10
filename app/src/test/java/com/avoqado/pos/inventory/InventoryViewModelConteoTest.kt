@@ -2060,14 +2060,29 @@ class InventoryViewModelConteoTest {
             },
         )
         val completado = conteoFull("a", "b").copy(status = "COMPLETED", items = listOf(retenida, linea("b", counted = 4.0, countedAt = "t")))
-        val vm = buildViewModel(conteos = listOf(completado))
+        val vm = buildViewModel()
+        // M4: el conteo cerrado sólo existe en la lista que se pide DESPUÉS del confirm. Leer la lista de antes
+        // (o no releer) no puede producir el resultado.
+        val orden = mutableListOf<String>()
+        val lista = MutableStateFlow<List<StockCount>>(emptyList())
+        every { repository.stockCounts } returns lista
         // El servidor contesta el `alreadyCompleted` sin `noAplicados`; la verdad queda en la línea.
-        coEvery { repository.confirmarConteo(any()) } returns RespuestaHttp(200, """{"success":true,"revision":5}""")
+        coEvery { repository.confirmarConteo(any()) } coAnswers {
+            orden += "confirm"
+            RespuestaHttp(200, """{"success":true,"revision":5}""")
+        }
+        coEvery { repository.fetchStockCounts() } coAnswers {
+            orden += "fetch"
+            if ("confirm" in orden) lista.value = listOf(completado)
+            Result.success(Unit)
+        }
         vm.resumeCount(conteoFull("a", "b"))
         vm.contar(0, "3"); vm.contar(1, "4")
         vm.finishCounting(); vm.confirmCount()
 
-        coVerify(atLeast = 1) { repository.fetchStockCounts() }
+        assertEquals("se relee DESPUÉS del confirm", "fetch", orden.last())
+        assertTrue(orden.indexOf("confirm") < orden.lastIndexOf("fetch"))
+        assertNull(vm.conteoSinComprobar.value)
         val r = vm.resultadoNoAplicado.value!!
         assertEquals(listOf("p-a"), r.lineas.map { it.productId })
         assertEquals(com.avoqado.pos.inventory.data.MotivoNoAplicado.DUDA_POR_REVISAR, r.lineas.single().motivo)
@@ -2106,5 +2121,58 @@ class InventoryViewModelConteoTest {
         val r = vm.resultadoNoAplicado.value!!
         venueActual = "otra"
         assertFalse(vm.esResultadoDeEstaSucursal(r))
+    }
+
+    @Test
+    fun `P1 M1 - reintento sin noAplicados y la relectura falla, se dice que no se pudo comprobar (no todo aplicado)`() = runTest(scheduler) {
+        val vm = buildViewModel()
+        coEvery { repository.confirmarConteo(any()) } returns RespuestaHttp(200, """{"success":true,"revision":5}""")
+        coEvery { repository.fetchStockCounts() } returns Result.failure(Exception("sin red"))
+        vm.resumeCount(conteoFull("a"))
+        vm.contar(0, "3")
+        vm.finishCounting(); vm.confirmCount()
+
+        assertNull(vm.resultadoNoAplicado.value)
+        val aviso = vm.conteoSinComprobar.value!!
+        assertEquals("full-1", aviso.countId)
+        assertTrue(vm.esDeEstaSucursal(aviso.venueId))
+        // Informativo: el conteo sí se cerró y no se pinta como error.
+        assertFalse(vm.showReview.value)
+        assertNull(vm.errorMessage.value)
+        vm.conteoSinComprobarVisto()
+        assertNull(vm.conteoSinComprobar.value)
+    }
+
+    @Test
+    fun `M1 - con noAplicados y la relectura falla, se ensena lo del confirm sin el aviso de no comprobado`() = runTest(scheduler) {
+        val vm = buildViewModel()
+        coEvery { repository.confirmarConteo(any()) } returns RespuestaHttp(
+            200,
+            """{"success":true,"noAplicados":[{"productId":"p-a","motivo":"ENVIO_EN_CAMINO"}]}""",
+        )
+        coEvery { repository.fetchStockCounts() } returns Result.failure(Exception("sin red"))
+        vm.resumeCount(conteoFull("a"))
+        vm.contar(0, "3")
+        vm.finishCounting(); vm.confirmCount()
+
+        assertEquals(listOf("p-a"), vm.resultadoNoAplicado.value!!.lineas.map { it.productId })
+        assertNull(vm.conteoSinComprobar.value)
+    }
+
+    @Test
+    fun `M1 - todo aplicado de verdad (el GET trae el conteo sin retenidas) no deja ni tarjeta ni aviso`() = runTest(scheduler) {
+        val vm = buildViewModel()
+        val lista = MutableStateFlow<List<StockCount>>(emptyList())
+        every { repository.stockCounts } returns lista
+        coEvery { repository.fetchStockCounts() } coAnswers {
+            lista.value = listOf(conteoFull("a").copy(status = "COMPLETED"))
+            Result.success(Unit)
+        }
+        vm.resumeCount(conteoFull("a"))
+        vm.contar(0, "3")
+        vm.finishCounting(); vm.confirmCount()
+
+        assertNull(vm.resultadoNoAplicado.value)
+        assertNull(vm.conteoSinComprobar.value)
     }
 }

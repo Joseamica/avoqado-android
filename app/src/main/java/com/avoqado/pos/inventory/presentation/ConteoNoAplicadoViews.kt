@@ -93,6 +93,34 @@ fun ResultadoNoAplicadoCard(
     }
 }
 
+/**
+ * El conteo se cerró pero no se pudo comprobar si todo se aplicó (sin `noAplicados` y la relectura falló, M1). Ámbar
+ * como la tarjeta: es un aviso honesto, no un error. Espejo de `SinComprobarCard` en iOS.
+ */
+@Composable
+fun SinComprobarCard(onEntendido: () -> Unit) {
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = AvoqadoTheme.spacing.lg, vertical = AvoqadoTheme.spacing.sm),
+        shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.lg),
+        color = Warning.copy(alpha = 0.12f),
+    ) {
+        Row(
+            modifier = Modifier.padding(AvoqadoTheme.spacing.lg),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = ConteoNoAplicado.SIN_COMPROBAR,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.weight(1f),
+            )
+            TextButton(onClick = onEntendido) { Text(ConteoNoAplicado.ENTENDIDO) }
+        }
+    }
+}
+
 /** La insignia «No se aplicó» de una línea en el detalle del conteo, con su motivo debajo. */
 @Composable
 fun EtiquetaNoAplicado(motivo: MotivoNoAplicado) {
