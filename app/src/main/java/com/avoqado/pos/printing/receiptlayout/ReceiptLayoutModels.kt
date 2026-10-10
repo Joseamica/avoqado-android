@@ -85,9 +85,12 @@ data class ReceiptSale(
     val timezone: String,
     val items: List<ReceiptSaleItem> = emptyList(),
     val subtotalCents: Long,
+    /** 🔴 SÓLO el IVA cobrado APARTE (D3, plan 7). Con IVA incluido va 0 y el ticket imprime la leyenda. */
     val taxCents: Long,
     val discountCents: Long? = null,
     val tipCents: Long? = null,
+    /** Cargo por servicio. Se imprime cuando existe (regla de cuadre, IVA por producto plan 7). */
+    val serviceChargeCents: Long? = null,
     val totalCents: Long,
     /** null = pre-cuenta: todavía no hay pago y el bloque `payment` no imprime nada. */
     val tender: ReceiptTender? = null,
@@ -178,7 +181,10 @@ object ReceiptLabels {
     const val CORTESIA = "CORTESÍA"
     const val SUBTOTAL = "Subtotal:"
     const val DESCUENTO = "Descuento:"
-    const val IVA_INCLUIDO = "IVA incluido:"
+    // D3 (IVA por producto, plan 7) — espejo literal de labels.es.ts.
+    const val IVA_INCLUIDO_CUANDO_APLICA = "IVA incluido cuando aplica"
+    const val IVA_AGREGADO = "IVA agregado:"
+    const val CARGO_POR_SERVICIO = "Cargo por servicio:"
     const val PROPINA = "Propina:"
     const val TOTAL = "TOTAL:"
     const val PAGO = "Pago:"

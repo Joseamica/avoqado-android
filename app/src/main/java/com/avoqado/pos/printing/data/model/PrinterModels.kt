@@ -348,6 +348,10 @@ data class ReceiptData(
      * «Reimpresión: …» con esta hora y conserva `date` (la de la venta).
      */
     val reprintedAt: Date? = null,
+    /** Cargo por servicio en centavos (reimpresión de un cobro único y completo; el 7b lo usará en la mesa). Null = no hubo. */
+    val serviceChargeAmount: Int? = null,
+    /** Comprobante de una devolución: importes en positivo y título DEVOLUCIÓN (IVA por producto, plan 7, r1 #2). */
+    val isRefund: Boolean = false,
 ) {
     val isCashPayment: Boolean
         get() = paymentMethod == "Efectivo"

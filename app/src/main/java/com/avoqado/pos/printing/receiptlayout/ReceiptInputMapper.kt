@@ -15,7 +15,7 @@ object ReceiptInputMapper {
         ReceiptInput(sale = sale(receipt, timezone, appVersion), venue = venue(receipt, info, hasLogo))
 
     private fun sale(r: ReceiptData, timezone: String, appVersion: String?) = ReceiptSale(
-        kind = "SALE",
+        kind = if (r.isRefund) "REFUND" else "SALE", // comprobante de devolución: magnitudes y título DEVOLUCIÓN (plan 7, r1 #2)
         orderNumber = r.orderNumber,
         orderType = r.orderType,
         occurredAt = r.date.toInstant().toString(),
@@ -39,6 +39,7 @@ object ReceiptInputMapper {
         taxCents = r.taxAmount.toLong(),
         discountCents = r.discountAmount?.toLong(),
         tipCents = r.tipAmount?.toLong(),
+        serviceChargeCents = r.serviceChargeAmount?.toLong(),
         totalCents = r.total.toLong(),
         tender = tender(r),
         staffName = r.cashierName,

@@ -42,4 +42,31 @@ class ReceiptLayoutGoldenTest {
             }
         }
     }
+
+    // m1 (revisión de la T2): dos casos de `footer.test.ts` del servidor que NINGÚN golden fija. Espejo literal en iOS (I1).
+    private fun totales(taxCents: Long = 0, serviceChargeCents: Long? = null, subtotalCents: Long = 4500, totalCents: Long = 4500) =
+        ReceiptLayoutInterpreter.interpret(
+            listOf(ReceiptBlock.Totals(showSubtotal = true, showTax = true, showDiscount = true, showTip = true)),
+            ReceiptInput(
+                sale = ReceiptSale(
+                    orderNumber = "1", orderType = "En tienda", occurredAt = "2026-10-09T18:00:00Z", timezone = "America/Mexico_City",
+                    subtotalCents = subtotalCents, taxCents = taxCents, serviceChargeCents = serviceChargeCents, totalCents = totalCents,
+                ),
+                venue = ReceiptVenueInfo(name = "Testarudo Cafe"),
+            ),
+            32,
+        ).filterIsInstance<LogicalLine.Text>().map { it.text }
+
+    @Test
+    fun `P1 un IVA negativo nunca se imprime - sale la leyenda`() {
+        val textos = totales(taxCents = -50)
+        assertTrue(textos.toString(), "IVA incluido cuando aplica" in textos)
+        assertTrue(textos.toString(), textos.none { it.startsWith("IVA agregado") })
+    }
+
+    @Test
+    fun `P1 un cargo de 12345 pesos 67 cabe en 32 columnas sin partirse`() {
+        val textos = totales(serviceChargeCents = 1_234_567, totalCents = 1_239_067)
+        assertTrue(textos.toString(), "Cargo por servicio:" + " ".repeat(3) + "\$12,345.67" in textos)
+    }
 }

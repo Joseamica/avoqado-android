@@ -142,4 +142,25 @@ class ReceiptInputMapperTest {
         assertEquals("2.19.0", s.appVersion)
         assertEquals("America/Mexico_City", s.timezone)
     }
+
+    @Test
+    fun `el cargo por servicio viaja al interprete y el IVA es solo el agregado`() {
+        val sale = ReceiptInputMapper.map(
+            receipt().copy(taxAmount = 0, serviceChargeAmount = 1500),
+            info = null, hasLogo = false, timezone = "America/Mexico_City", appVersion = null,
+        ).sale
+        assertEquals(1500L, sale.serviceChargeCents)
+        assertEquals(0L, sale.taxCents)
+    }
+
+    @Test
+    fun `sin cargo por servicio el campo va nulo y el ticket queda como hoy`() {
+        assertNull(ReceiptInputMapper.map(receipt(), null, false, "America/Mexico_City", null).sale.serviceChargeCents)
+    }
+
+    @Test
+    fun `P1 un comprobante de devolucion sale como REFUND - titulo DEVOLUCION`() {
+        assertEquals("REFUND", ReceiptInputMapper.map(receipt().copy(isRefund = true), null, false, "America/Mexico_City", null).sale.kind)
+        assertEquals("SALE", ReceiptInputMapper.map(receipt(), null, false, "America/Mexico_City", null).sale.kind)
+    }
 }
