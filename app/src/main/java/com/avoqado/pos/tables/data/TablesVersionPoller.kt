@@ -101,7 +101,9 @@ class TablesVersionPoller(
         if (!sigueEn(venueId)) return
         when (r) {
             is ConsultaDeVersiones.Versiones -> {
-                if (r.tablesVersion != mesas.tablesVersion) {
+                // También si sólo cambió el plano: publicar paredes o un nombre de área no mueve `tablesVersion`, y la
+                // versión del plano que anuncian las mesas se quedaría atrás ⇒ el plano nuevo se vería «atrasado» (A10).
+                if (r.tablesVersion != mesas.tablesVersion || r.floorPlanVersion != mesas.floorPlanVersionFromTables) {
                     mesas.refresh(venueId)
                     if (!sigueEn(venueId)) return
                 }

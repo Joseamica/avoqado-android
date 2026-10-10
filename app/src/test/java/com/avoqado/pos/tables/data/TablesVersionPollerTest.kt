@@ -94,10 +94,13 @@ class TablesVersionPollerTest {
     }
 
     @Test
-    fun `cambia la version del plano y pide solo el plano`() = runTest {
+    fun `cambia la version del plano y pide el plano y las mesas`() = runTest {
+        // Publicar sólo paredes o un nombre de área no mueve `tablesVersion` (el servidor publica por diferencias). Si no
+        // se piden también las mesas, la versión del plano que ellas anuncian se queda atrás y el plano nuevo se vería
+        // «atrasado» (enmienda A10).
         respuesta = ConsultaDeVersiones.Versiones("t1", "p2")
         poller.consultar("v1")
-        coVerify(exactly = 0) { mesas.refresh(any()) }
+        coVerify(exactly = 1) { mesas.refresh("v1") }
         coVerify(exactly = 1) { plano.refresh("v1") }
     }
 
