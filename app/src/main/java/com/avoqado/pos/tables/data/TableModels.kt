@@ -22,6 +22,9 @@ data class DiningTable(
     val currentOrder: TableOrder? = null,
     /** Multi-cheque: TODAS las cuentas abiertas de la mesa (resumen ligero). */
     val openOrders: List<OpenCheckSummary> = emptyList(),
+    /** Plano en el POS (2026-10-09): orden y forma del área. Servidores viejos no los mandan. */
+    val areaSortOrder: Int? = null,
+    val areaFloorShape: String? = null,
 ) {
     /**
      * ¿Hay dinero vivo en esta mesa? Se mira la CUENTA, no el campo `status`.
@@ -175,6 +178,9 @@ data class TablesResponse(
     /** Propiedad de mesa (PRO) — siblings aditivos; servers viejos no los mandan. */
     val settings: TableServiceSettings? = null,
     val viewer: TableServiceViewer? = null,
+    /** Plano en el POS (2026-10-09): versión de mesas y del plano de esta respuesta. Sin ellas = servidor viejo. */
+    val tablesVersion: String? = null,
+    val floorPlanVersion: String? = null,
 )
 
 /** VenueSettings que afectan al módulo de mesas. */
