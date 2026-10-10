@@ -19,6 +19,13 @@ class CandadoDeInstanciaTest {
         } finally {
             otro.destroyForcibly().waitFor(10, TimeUnit.SECONDS)
         }
-        assertTrue(CandadoDeInstancia.tomar(carpeta), "el sistema suelta el candado aunque el proceso muera a la fuerza")
+        // Windows libera el bloqueo después de terminar el proceso; el kernel puede tardar en soltarlo.
+        val limite = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+        var tomado = CandadoDeInstancia.tomar(carpeta)
+        while (!tomado && System.nanoTime() < limite) {
+            Thread.sleep(20)
+            tomado = CandadoDeInstancia.tomar(carpeta)
+        }
+        assertTrue(tomado, "el sistema suelta el candado aunque el proceso muera a la fuerza")
     }
 }

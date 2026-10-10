@@ -12,6 +12,10 @@ import java.nio.charset.StandardCharsets.UTF_8
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.attribute.PosixFilePermissions
+import java.nio.file.attribute.AclFileAttributeView
+import java.nio.file.attribute.AclEntry
+import java.nio.file.attribute.AclEntryType
+import java.nio.file.attribute.AclEntryPermission
 import java.security.MessageDigest
 import java.util.Base64
 
@@ -55,12 +59,9 @@ internal class Carpeta {
 
     /** Corre [bloque] con la carpeta sin permiso de escritura: no se puede crear, borrar ni mover nada. */
     fun sinEscritura(bloque: () -> Unit) {
-        Files.setPosixFilePermissions(dir, PosixFilePermissions.fromString("r-x------"))
-        try {
+        conPermisosDePrueba(dir, "r-x------") {
             Assume.assumeFalse("corre como root: no hay carpeta sin permiso", Files.isWritable(dir))
             bloque()
-        } finally {
-            Files.setPosixFilePermissions(dir, PosixFilePermissions.fromString("rwx------"))
         }
     }
 
@@ -70,6 +71,43 @@ internal class Carpeta {
         else Files.list(dir).use { s -> s.toList() }
             .associate { it.fileName.toString() to Base64.getEncoder().encodeToString(Files.readAllBytes(it)) }
             .toSortedMap()
+}
+
+/** Cambia sólo los permisos de fixtures temporales y restaura los originales, incluso si el test lanza. */
+internal fun conPermisosDePrueba(path: Path, permisos: String, bloque: () -> Unit) {
+    if (Files.getFileStore(path).supportsFileAttributeView("posix")) {
+        val originales = Files.getPosixFilePermissions(path)
+        try {
+            Files.setPosixFilePermissions(path, PosixFilePermissions.fromString(permisos))
+            bloque()
+        } finally { Files.setPosixFilePermissions(path, originales) }
+        return
+    }
+    val usuario = path.fileSystem.userPrincipalLookupService.lookupPrincipalByName(System.getProperty("user.name"))
+    val denegados = when (permisos) {
+        "-w-------" -> setOf(AclEntryPermission.READ_DATA)
+        "r-x------" -> setOf(AclEntryPermission.WRITE_DATA, AclEntryPermission.APPEND_DATA,
+            AclEntryPermission.DELETE, AclEntryPermission.DELETE_CHILD, AclEntryPermission.WRITE_ATTRIBUTES,
+            AclEntryPermission.WRITE_NAMED_ATTRS)
+        // Windows permite atravesar carpetas: denegar atributos de los hijos simula la misma existencia desconocida.
+        "rw-------" -> setOf(AclEntryPermission.READ_DATA, AclEntryPermission.READ_ATTRIBUTES, AclEntryPermission.EXECUTE)
+        else -> error("permisos de fixture no soportados: $permisos")
+    }
+    val rutas = if (Files.isDirectory(path)) Files.walk(path).use { it.toList() } else listOf(path)
+    val originales = rutas.map { ruta ->
+        val vista = checkNotNull(Files.getFileAttributeView(ruta, AclFileAttributeView::class.java))
+        vista to vista.acl
+    }
+    val negar = AclEntry.newBuilder().setType(AclEntryType.DENY).setPrincipal(usuario).setPermissions(denegados).build()
+    try {
+        originales.forEach { (vista, acl) -> vista.acl = listOf(negar) + acl }
+        when (permisos) {
+            "-w-------" -> check(!Files.isReadable(path)) { "el fixture de Windows sigue legible" }
+            "r-x------" -> check(!Files.isWritable(path)) { "el fixture de Windows sigue escribible" }
+            "rw-------" -> check(rutas.drop(1).all { !Files.exists(it) && !Files.notExists(it) }) { "la existencia del fixture sigue accesible" }
+        }
+        bloque()
+    } finally { originales.forEach { (vista, acl) -> vista.acl = acl } }
 }
 
 /** «El proceso murió aquí»: un Error, así que ningún `catch (Exception)` lo limpia, igual que un apagón. */

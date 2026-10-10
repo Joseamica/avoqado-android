@@ -4,7 +4,6 @@ import org.junit.Assume
 import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
-import java.nio.file.attribute.PosixFilePermissions
 import kotlin.concurrent.thread
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
@@ -17,6 +16,17 @@ import kotlin.test.assertTrue
 class PreferenciasEnArchivoTest {
     private val carpeta = Files.createTempDirectory("Avoqado POS José ñ")
     private fun abrir() = PreferenciasEnArchivo(carpeta.resolve("shared_prefs/avoqado prefs.json"))
+
+    @Test fun `los permisos del fixture se restauran aunque el bloque falle`() {
+        val archivo = carpeta.resolve("restaurar.json")
+        Files.writeString(archivo, "original")
+        assertFailsWith<IllegalStateException> {
+            conPermisosDePrueba(archivo, "-w-------") { error("fallo simulado") }
+        }
+        assertEquals("original", Files.readString(archivo))
+        Files.writeString(archivo, "nuevo")
+        assertEquals("nuevo", Files.readString(archivo))
+    }
 
     @Test fun `persiste todos los tipos entre instancias`() {
         abrir().edit().putString("s", "hola ñ").putBoolean("b", true).putInt("i", 7).putLong("l", 9_000_000_000L)
@@ -57,13 +67,10 @@ class PreferenciasEnArchivoTest {
         // 1) Carpeta sin permiso de escritura: ni el temporal se puede crear.
         val soloLectura = Files.createDirectories(carpeta.resolve("solo lectura"))
         val p = PreferenciasEnArchivo(soloLectura.resolve("prefs.json"))
-        soloLectura.toFile().setWritable(false)
-        try {
+        conPermisosDePrueba(soloLectura, "r-x------") {
             Assume.assumeFalse("corre como root: no hay carpeta sin permiso", Files.isWritable(soloLectura))
             assertFalse(p.edit().putString("token", "t").commit())
             p.edit().putString("token", "t2").apply()   // apply() tampoco lanza
-        } finally {
-            soloLectura.toFile().setWritable(true)
         }
         assertTrue(huerfanos(soloLectura).isEmpty())
 
@@ -105,12 +112,9 @@ class PreferenciasEnArchivoTest {
         val archivo = carpeta.resolve("shared_prefs/avoqado_secure_prefs.json")
         val original = Files.readString(archivo)
         val otro = ContextoDeEscritorio(carpeta)   // contexto nuevo: todavía no lo tiene abierto
-        Files.setPosixFilePermissions(archivo, PosixFilePermissions.fromString("-w-------"))
-        try {
+        conPermisosDePrueba(archivo, "-w-------") {
             Assume.assumeFalse("corre como root: no hay archivo sin permiso de lectura", Files.isReadable(archivo))
             assertFailsWith<IOException> { otro.getSharedPreferences("avoqado_secure_prefs", 0) }
-        } finally {
-            Files.setPosixFilePermissions(archivo, PosixFilePermissions.fromString("rw-------"))
         }
         assertEquals(original, Files.readString(archivo))
         assertTrue(Files.list(archivo.parent).use { s -> s.noneMatch { ".corrupto-" in it.fileName.toString() } })
@@ -121,12 +125,9 @@ class PreferenciasEnArchivoTest {
         val sinEscritura = Files.createDirectories(carpeta.resolve("sin escritura"))
         val archivo = sinEscritura.resolve("prefs.json")
         Files.writeString(archivo, "{\"a\":")
-        Files.setPosixFilePermissions(sinEscritura, PosixFilePermissions.fromString("r-x------"))   // ni move ni copy al .corrupto-
-        try {
+        conPermisosDePrueba(sinEscritura, "r-x------") {
             Assume.assumeFalse("corre como root: no hay carpeta sin permiso", Files.isWritable(sinEscritura))
             assertFailsWith<IOException> { PreferenciasEnArchivo(archivo) }
-        } finally {
-            Files.setPosixFilePermissions(sinEscritura, PosixFilePermissions.fromString("rwx------"))
         }
         assertEquals("{\"a\":", Files.readString(archivo))
         assertTrue(Files.list(sinEscritura).use { s -> s.noneMatch { ".corrupto-" in it.fileName.toString() } })
@@ -137,12 +138,9 @@ class PreferenciasEnArchivoTest {
         val archivo = sinBusqueda.resolve("prefs.json")
         PreferenciasEnArchivo(archivo).edit().putString("pendientes", "cobro-1").commit()
         val original = Files.readString(archivo)
-        Files.setPosixFilePermissions(sinBusqueda, PosixFilePermissions.fromString("rw-------"))   // sin x: no se puede ni ver el archivo
-        try {
+        conPermisosDePrueba(sinBusqueda, "rw-------") {
             Assume.assumeFalse("corre como root: la existencia sí se puede saber", Files.exists(archivo) || Files.notExists(archivo))
             assertFailsWith<IOException> { PreferenciasEnArchivo(archivo) }
-        } finally {
-            Files.setPosixFilePermissions(sinBusqueda, PosixFilePermissions.fromString("rwx------"))
         }
         assertEquals(original, Files.readString(archivo))
         assertEquals("cobro-1", PreferenciasEnArchivo(archivo).getString("pendientes", null))
@@ -210,12 +208,9 @@ class PreferenciasEnArchivoTest {
 
     /** Corre [bloque] con [dir] sin permiso de escritura (no se puede crear ni reemplazar nada dentro). */
     private fun sinEscrituraEn(dir: Path, bloque: () -> Unit) {
-        Files.setPosixFilePermissions(dir, PosixFilePermissions.fromString("r-x------"))
-        try {
+        conPermisosDePrueba(dir, "r-x------") {
             Assume.assumeFalse("corre como root: no hay carpeta sin permiso", Files.isWritable(dir))
             bloque()
-        } finally {
-            Files.setPosixFilePermissions(dir, PosixFilePermissions.fromString("rwx------"))
         }
     }
 

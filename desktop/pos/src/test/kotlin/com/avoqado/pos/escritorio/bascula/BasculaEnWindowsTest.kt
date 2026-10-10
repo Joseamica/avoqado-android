@@ -68,6 +68,7 @@ class BasculaEnWindowsTest {
         val estado = esperar { it is ScaleConnectionState.Problem }
         assertIs<ScaleConnectionState.Problem>(estado)
         assertTrue(estado.message.startsWith("Se perdió la conexión con la báscula"))
+        esperar { canal.cerrado }
         assertTrue(canal.cerrado)
     }
 

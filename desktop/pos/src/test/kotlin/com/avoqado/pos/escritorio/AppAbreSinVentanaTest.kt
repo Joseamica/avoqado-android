@@ -4,7 +4,6 @@ import androidx.compose.ui.graphics.toAwtImage
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.onAllNodesWithText
-import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.runDesktopComposeUiTest
 import com.avoqado.escritorio.Bitacora
 import com.avoqado.escritorio.Escritorio
@@ -34,7 +33,7 @@ class AppAbreSinVentanaTest {
         waitForIdle()
         System.getProperty("avoqado.evidencia")?.let { dir ->
             File(dir).mkdirs()
-            ImageIO.write(onRoot().captureToImage().toAwtImage(), "png", File(dir, "humo-01-inicio.png"))
+            ImageIO.write(captureToImage().toAwtImage(), "png", File(dir, "humo-01-inicio.png"))
             // SIN VENTANA (Mac, dibujo por software, reloj de prueba): NO es el arranque que verá el cajero en Windows.
             File(dir, "humo-arranque.txt").writeText(
                 "sin ventana: de setContent a «Iniciar sesión» en pantalla = $ms ms de reloj real " +

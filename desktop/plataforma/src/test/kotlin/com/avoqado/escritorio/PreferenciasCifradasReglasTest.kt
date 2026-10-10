@@ -9,7 +9,6 @@ import java.nio.file.FileAlreadyExistsException
 import java.nio.file.FileSystemException
 import java.nio.file.Files
 import java.nio.file.NoSuchFileException
-import java.nio.file.attribute.PosixFilePermissions
 import kotlin.test.Test
 import kotlin.test.assertContentEquals
 import kotlin.test.assertEquals
@@ -39,13 +38,10 @@ class PreferenciasCifradasReglasTest {
         val c = Carpeta()
         c.sembrarClaro()
         val antes = c.foto()
-        Files.setPosixFilePermissions(c.claro, PosixFilePermissions.fromString("-w-------"))
-        try {
+        conPermisosDePrueba(c.claro, "-w-------") {
             Assume.assumeFalse("corre como root: no hay archivo sin permiso de lectura", Files.isReadable(c.claro))
             val e = assertFailsWith<PreferenciasIlegibles> { c.abrir() }
             assertTrue("no se pudo leer" in e.motivo, e.motivo)
-        } finally {
-            Files.setPosixFilePermissions(c.claro, PosixFilePermissions.fromString("rw-------"))
         }
         assertEquals(antes, c.foto())
     }
@@ -80,13 +76,10 @@ class PreferenciasCifradasReglasTest {
         c.sembrarClaro()
         c.abrir()   // convierte: cifrado + marcador
         val antes = c.foto()
-        Files.setPosixFilePermissions(c.dir, PosixFilePermissions.fromString("rw-------"))   // sin x: no se puede ni ver un archivo
-        try {
+        conPermisosDePrueba(c.dir, "rw-------") {
             Assume.assumeFalse("corre como root: la existencia sí se puede saber", Files.exists(c.marcador) || Files.notExists(c.marcador))
             val e = assertFailsWith<PreferenciasIlegibles> { c.abrir() }
             assertTrue("no se pudo leer" in e.motivo, e.motivo)
-        } finally {
-            Files.setPosixFilePermissions(c.dir, PosixFilePermissions.fromString("rwx------"))
         }
         assertEquals(antes, c.foto())
     }
@@ -164,13 +157,10 @@ class PreferenciasCifradasReglasTest {
         c.abrir()   // convierte: cifrado + marcador
         PreferenciasEnArchivo(c.claro).edit().putString("accessToken", "claro-viejo").commit()
         val antes = c.foto()
-        Files.setPosixFilePermissions(c.cifrado, PosixFilePermissions.fromString("-w-------"))
-        try {
+        conPermisosDePrueba(c.cifrado, "-w-------") {
             Assume.assumeFalse("corre como root: no hay archivo sin permiso de lectura", Files.isReadable(c.cifrado))
             val e = assertFailsWith<PreferenciasIlegibles> { c.abrir() }
             assertTrue("no se pudo leer" in e.motivo, e.motivo)
-        } finally {
-            Files.setPosixFilePermissions(c.cifrado, PosixFilePermissions.fromString("rw-------"))
         }
         assertEquals(antes, c.foto())
     }
@@ -266,12 +256,9 @@ class PreferenciasCifradasReglasTest {
         val valores = c.sembrarClaro()
         assertFailsWith<MuerteSimulada> { c.abrir { if (it == PasoDeConversion.MARCADOR_PUBLICADO) throw MuerteSimulada() } }
         val antes = c.foto()
-        Files.setPosixFilePermissions(c.claro, PosixFilePermissions.fromString("-w-------"))
-        try {
+        conPermisosDePrueba(c.claro, "-w-------") {
             Assume.assumeFalse("corre como root: no hay archivo sin permiso de lectura", Files.isReadable(c.claro))
             assertEquals(valores, c.abrir().all)
-        } finally {
-            Files.setPosixFilePermissions(c.claro, PosixFilePermissions.fromString("rw-------"))
         }
         assertEquals(antes, c.foto(), "se borró o apartó un claro que no se pudo leer")
         assertEquals(valores, c.abrir().all)
@@ -284,12 +271,9 @@ class PreferenciasCifradasReglasTest {
         val valores = c.sembrarClaro()
         val original = Files.readAllBytes(c.claro)
         assertFailsWith<MuerteSimulada> { c.abrir { if (it == PasoDeConversion.MARCADOR_PUBLICADO) throw MuerteSimulada() } }
-        Files.setPosixFilePermissions(c.marcador, PosixFilePermissions.fromString("-w-------"))
-        try {
+        conPermisosDePrueba(c.marcador, "-w-------") {
             Assume.assumeFalse("corre como root: no hay archivo sin permiso de lectura", Files.isReadable(c.marcador))
             assertEquals(valores, c.abrir().all)
-        } finally {
-            Files.setPosixFilePermissions(c.marcador, PosixFilePermissions.fromString("rw-------"))
         }
         assertFalse(Files.exists(c.claro))
         assertContentEquals(original, Files.readAllBytes(c.apartados().single()))
