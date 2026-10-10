@@ -2021,4 +2021,90 @@ class InventoryViewModelConteoTest {
         coVerify(exactly = 0) { coordinator.cerrarManualmente(any(), any()) }
         coVerify(exactly = 0) { repository.enviarFinal(any(), any(), any()) }
     }
+
+    // MARK: - C12: las líneas que el servidor NO aplicó por Shopify
+
+    @Test
+    fun `P1 confirmar con noAplicados deja el resultado con el nombre de cada producto`() = runTest(scheduler) {
+        val vm = buildViewModel() // ANTES del coEvery: `buildViewModel` fija su propio confirm `{}`
+        coEvery { repository.confirmarConteo(any()) } returns RespuestaHttp(
+            200,
+            """{"success":true,"revision":5,"noAplicados":[{"productId":"p-b","motivo":"ENVIO_EN_CAMINO"}]}""",
+        )
+        vm.resumeCount(conteoFull("a", "b"))
+        vm.contar(0, "3"); vm.contar(1, "4")
+        vm.finishCounting(); vm.confirmCount()
+
+        val r = vm.resultadoNoAplicado.value!!
+        assertEquals("full-1", r.countId)
+        assertEquals(listOf("Prod b"), r.lineas.map { it.nombre })
+        assertEquals(com.avoqado.pos.inventory.data.MotivoNoAplicado.ENVIO_EN_CAMINO, r.lineas.single().motivo)
+        assertTrue(r.hayRestoAplicado)
+        // El conteo se cerró como siempre: un resultado así NO es un error.
+        assertFalse(vm.showReview.value)
+        assertNull(vm.errorMessage.value)
+        assertTrue(vm.esResultadoDeEstaSucursal(r))
+    }
+
+    @Test
+    fun `P1 un reintento del confirm (sin noAplicados) relee el GET y usa shopifyHeld`() = runTest(scheduler) {
+        val retenida = StockCountItem(
+            id = "a",
+            productId = "p-a",
+            productName = "Prod a",
+            expected = 10.0,
+            counted = 3.0,
+            countedAt = "t",
+            shopifyHeld = kotlinx.serialization.json.buildJsonObject {
+                put("motivo", kotlinx.serialization.json.JsonPrimitive("DUDA_POR_REVISAR"))
+            },
+        )
+        val completado = conteoFull("a", "b").copy(status = "COMPLETED", items = listOf(retenida, linea("b", counted = 4.0, countedAt = "t")))
+        val vm = buildViewModel(conteos = listOf(completado))
+        // El servidor contesta el `alreadyCompleted` sin `noAplicados`; la verdad queda en la línea.
+        coEvery { repository.confirmarConteo(any()) } returns RespuestaHttp(200, """{"success":true,"revision":5}""")
+        vm.resumeCount(conteoFull("a", "b"))
+        vm.contar(0, "3"); vm.contar(1, "4")
+        vm.finishCounting(); vm.confirmCount()
+
+        coVerify(atLeast = 1) { repository.fetchStockCounts() }
+        val r = vm.resultadoNoAplicado.value!!
+        assertEquals(listOf("p-a"), r.lineas.map { it.productId })
+        assertEquals(com.avoqado.pos.inventory.data.MotivoNoAplicado.DUDA_POR_REVISAR, r.lineas.single().motivo)
+    }
+
+    @Test
+    fun `un conteo que se aplico entero no deja resultado y el aviso se puede cerrar`() = runTest(scheduler) {
+        val vm = buildViewModel()
+        vm.resumeCount(conteoFull("a"))
+        vm.contar(0, "3")
+        vm.finishCounting(); vm.confirmCount()
+        assertNull(vm.resultadoNoAplicado.value)
+
+        coEvery { repository.confirmarConteo(any()) } returns RespuestaHttp(
+            200,
+            """{"success":true,"noAplicados":[{"productId":"p-a","motivo":"DUDA_POR_REVISAR"}]}""",
+        )
+        vm.resumeCount(conteoFull("a"))
+        vm.contar(0, "3")
+        vm.finishCounting(); vm.confirmCount()
+        assertNotNull(vm.resultadoNoAplicado.value)
+        vm.resultadoNoAplicadoVisto()
+        assertNull(vm.resultadoNoAplicado.value)
+    }
+
+    @Test
+    fun `el resultado de otra sucursal no se ensena aqui`() = runTest(scheduler) {
+        val vm = buildViewModel()
+        coEvery { repository.confirmarConteo(any()) } returns RespuestaHttp(
+            200,
+            """{"success":true,"noAplicados":[{"productId":"p-a","motivo":"ENVIO_EN_CAMINO"}]}""",
+        )
+        vm.resumeCount(conteoFull("a"))
+        vm.contar(0, "3")
+        vm.finishCounting(); vm.confirmCount()
+        val r = vm.resultadoNoAplicado.value!!
+        venueActual = "otra"
+        assertFalse(vm.esResultadoDeEstaSucursal(r))
+    }
 }

@@ -22,7 +22,14 @@ data class ComprobanteDeConteo(
     val total: Int,
     val sinContar: Int,
 ) {
-    data class Renglon(val nombre: String, val esperado: String, val contado: String, val diferencia: String) {
+    data class Renglon(
+        val nombre: String,
+        val esperado: String,
+        val contado: String,
+        val diferencia: String,
+        /** El servidor NO aplicó esta línea por Shopify (C12): su diferencia no movió el stock. */
+        val noAplicado: Boolean = false,
+    ) {
         val cuadra: Boolean get() = diferencia == "0"
     }
 
@@ -35,6 +42,7 @@ data class ComprobanteDeConteo(
                     esperado = item.expectedDisplay,
                     contado = item.countedDisplay,
                     diferencia = conSigno(item.counted - item.expected, item.unit),
+                    noAplicado = item.noSeAplico,
                 )
             }.sortedBy { it.cuadra } // estable: las diferencias primero, en su orden original
             return ComprobanteDeConteo(

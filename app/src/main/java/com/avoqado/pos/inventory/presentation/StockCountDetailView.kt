@@ -160,6 +160,10 @@ fun StockCountDetailView(
             )
         }
 
+        // C12: las líneas que el servidor NO aplicó por Shopify. Cada una lleva su insignia abajo.
+        val noAplicadas = count.items.count { it.noSeAplico }
+        if (noAplicadas > 0) FranjaNoAplicadas(noAplicadas)
+
         // Info row
         Row(
             modifier = Modifier
@@ -277,10 +281,13 @@ private fun DetailItemRow(
     isTablet: Boolean,
 ) {
     val diff = item.counted - item.expected
+    val motivoNoAplicado = item.motivoNoAplicado
     val diffColor = when {
         // Sin contar no hay diferencia que enseñar: pintarla en rojo le dice al
         // gerente que falta mercancía cuando lo que falta es contarla.
         !item.yaSeConto -> MaterialTheme.colorScheme.onSurfaceVariant
+        // C12: una línea que no se aplicó no movió el stock; su diferencia en verde o rojo se leería como ajuste.
+        motivoNoAplicado != null -> MaterialTheme.colorScheme.onSurfaceVariant
         diff > 0 -> Success
         diff < 0 -> MaterialTheme.colorScheme.error
         else -> MaterialTheme.colorScheme.onSurfaceVariant
@@ -311,12 +318,15 @@ private fun DetailItemRow(
                     )
                 }
                 Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
-                Text(
-                    text = item.productName,
-                    style = MaterialTheme.typography.bodyMedium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                Column {
+                    Text(
+                        text = item.productName,
+                        style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    motivoNoAplicado?.let { EtiquetaNoAplicado(it) }
+                }
             }
             Text(
                 text = item.sku ?: "-",
@@ -375,6 +385,7 @@ private fun DetailItemRow(
                 Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.lg)) {
                     Text(text = "${viewModel.formatQuantity(item.expected)} / $contadoTexto", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
+                motivoNoAplicado?.let { EtiquetaNoAplicado(it) }
             }
             Text(
                 text = if (!item.yaSeConto) diferenciaTexto

@@ -20,6 +20,8 @@ import com.avoqado.pos.inventory.data.ConflictoRevision
 import com.avoqado.pos.inventory.data.ReceiveItemRequest
 import com.avoqado.pos.inventory.data.RespuestaHttp
 import com.avoqado.pos.inventory.data.ResultadoDeAvanceCoordinado
+import com.avoqado.pos.inventory.data.ConteoNoAplicado
+import com.avoqado.pos.inventory.data.ResultadoNoAplicado
 import com.avoqado.pos.inventory.data.SIN_VENUE
 import com.avoqado.pos.inventory.data.model.InventoryTransfer
 import com.avoqado.pos.inventory.data.model.PurchaseOrder
@@ -210,6 +212,23 @@ class InventoryViewModel @Inject constructor(
 
     private val _selectedDetail = MutableStateFlow<StockCount?>(null)
     val selectedDetail: StateFlow<StockCount?> = _selectedDetail.asStateFlow()
+
+    /**
+     * C12 (conector Shopify): las líneas del ÚLTIMO conteo confirmado que el servidor NO aplicó. Se enseña como
+     * tarjeta informativa en la lista de conteos (nunca en rojo de error: el conteo sí se cerró) hasta que el cajero
+     * la cierra. Nace de `noAplicados` del confirm y se completa releyendo el GET (`shopifyHeld`): un reintento del
+     * confirm (`alreadyCompleted`) no trae `noAplicados`, y leerlo como «todo se aplicó» sería mentir.
+     */
+    private val _resultadoNoAplicado = MutableStateFlow<ResultadoNoAplicado?>(null)
+    val resultadoNoAplicado: StateFlow<ResultadoNoAplicado?> = _resultadoNoAplicado.asStateFlow()
+
+    fun resultadoNoAplicadoVisto() {
+        _resultadoNoAplicado.value = null
+    }
+
+    /** El resultado de OTRA sucursal (se cambió de sucursal después de confirmar) no se enseña aquí. */
+    fun esResultadoDeEstaSucursal(resultado: ResultadoNoAplicado): Boolean =
+        resultado.venueId.isNotBlank() && resultado.venueId == repository.venueIdActual()
 
     private val _estadoDelDetalle = MutableStateFlow(EstadoDelDetalleDeConteo.SIN_VERIFICAR)
     val estadoDelDetalle: StateFlow<EstadoDelDetalleDeConteo> = _estadoDelDetalle.asStateFlow()
@@ -2168,6 +2187,15 @@ class InventoryViewModel @Inject constructor(
                 }
 
                 cierreConfirmado?.let { cierre ->
+                    // C12: lo que el servidor NO aplicó por Shopify, nombrado con las líneas que el cajero tenía
+                    // en pantalla. ANTES de limpiar el estado: después ya no hay líneas con qué nombrarlo.
+                    val delConfirm = ConteoNoAplicado.desdeConfirm(
+                        venueId = cierre.venueId,
+                        countId = cierre.countId,
+                        noAplicados = cierre.confirm?.noAplicados.orEmpty(),
+                        lineasLocales = _countItems.value,
+                    )
+                    _resultadoNoAplicado.value = delConfirm
                     // Success - close and refresh (data preserved on failure)
                     val vigente = borradores.leer(cierre.venueId)
                     if (vigente?.countId == cierre.countId && !borradores.borrar(cierre.venueId)) {
@@ -2186,6 +2214,15 @@ class InventoryViewModel @Inject constructor(
                     // general se queda con las cantidades de antes de contar.
                     refreshStockLevels()
                     repository.fetchStockCounts()
+                    // El GET es la verdad (`shopifyHeld` por línea): cubre el reintento sin `noAplicados`. Si el
+                    // GET falló, la lista vieja no trae el conteo cerrado y se conserva lo que dijo el confirm. Si
+                    // el cajero ya cerró la tarjeta mientras se releía, no se le vuelve a abrir.
+                    if (repository.venueIdActual() == cierre.venueId && _resultadoNoAplicado.value == delConfirm) {
+                        val delServidor = repository.stockCounts.value
+                            .firstOrNull { it.id == cierre.countId }
+                            ?.let { ConteoNoAplicado.desdeConteo(cierre.venueId, it) }
+                        _resultadoNoAplicado.value = ConteoNoAplicado.combinar(delConfirm, delServidor)
+                    }
                     Log.d(TAG, "✅ Stock count confirmed")
                 }
             } catch (e: Exception) {
