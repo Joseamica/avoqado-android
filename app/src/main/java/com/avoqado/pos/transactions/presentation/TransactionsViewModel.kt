@@ -523,6 +523,19 @@ internal fun Transaction.toReceiptData(
     val isCard = method == "CARD" || method == "CREDIT_CARD" || method == "DEBIT_CARD"
     val lastFour = maskedPan?.takeIf { it.length >= 4 }?.takeLast(4)
 
+    // D3 (IVA por producto, plan 7a; r1 #2 y #9; r2 R2-6 y R2-9; r3 R3-11; ruling A7-R6): con el comprobante del servidor, TODAS
+    // las cifras salen de él —el recibo emitido no cambia aunque el pago se haya corregido después—. Sólo con un servidor anterior
+    // se cae a importe y propina del pago, en magnitud, con la devolución deducida de los signos.
+    val comprobante = ticketTotals
+    val esDevolucion = comprobante?.let { it.kind == "DEVOLUCION" } ?: (amount < 0 || (amount == 0.0 && tipAmount < 0))
+    val subtotal = comprobante?.let { cents(it.subtotal) } ?: cents(kotlin.math.abs(amount))
+    // Subtotal BRUTO + su descuento cuando el servidor desglosa (A7-R6): el mismo papel que el del cobro.
+    val descuento = comprobante?.discount?.let { cents(it) }?.takeIf { it > 0 } ?: 0
+    val cargo = if (esDevolucion) 0 else comprobante?.let { cents(it.serviceCharge) }?.takeIf { it > 0 } ?: 0
+    val impuestoAgregado = if (esDevolucion) 0 else comprobante?.let { cents(it.addedTax) }?.takeIf { it > 0 } ?: 0
+    val propina = comprobante?.let { cents(it.tip) } ?: cents(kotlin.math.abs(tipAmount))
+    val total = comprobante?.let { cents(it.total) } ?: (cents(kotlin.math.abs(amount)) + propina)
+
     val receiptItems = if (items.isNotEmpty()) {
         items.map { item ->
             ReceiptItem(
@@ -535,17 +548,20 @@ internal fun Transaction.toReceiptData(
         }
     } else {
         // Sales without line items (quick amounts / older records): one summary line.
-        listOf(ReceiptItem(name = "Venta", quantity = 1, unitPrice = cents(amount), totalPrice = cents(amount)))
+        listOf(ReceiptItem(name = "Venta", quantity = 1, unitPrice = subtotal, totalPrice = subtotal))
     }
 
     return ReceiptData(
         orderNumber = orderNumber ?: id.takeLast(4),
         orderType = "En tienda",
         items = receiptItems,
-        subtotal = cents(amount),
-        taxAmount = 0,
-        tipAmount = if (tipAmount > 0) cents(tipAmount) else null,
-        total = cents(totalAmount),
+        subtotal = subtotal,
+        taxAmount = impuestoAgregado,
+        tipAmount = propina.takeIf { it > 0 },
+        discountAmount = descuento.takeIf { it > 0 },
+        total = total,
+        serviceChargeAmount = cargo.takeIf { it > 0 },
+        isRefund = esDevolucion,
         paymentMethod = if (isCard) PaymentMethodDisplay.label(method) else methodDescription,
         cardLastFour = if (isCard) lastFour else null,
         cardBrand = if (isCard) cardBrand else null,

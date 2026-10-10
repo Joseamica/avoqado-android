@@ -163,6 +163,8 @@ data class OrderDetail(
     val refundState: String = "NONE",
     /** Lo devuelto, en PESOS y POSITIVO. 0 cuando no hay reembolsos. */
     val refundedAmount: Double = 0.0,
+    /** IVA que la orden SUMA aparte (servidor, aditivo, plan 7, r2 R2-13). Null = servidor anterior. */
+    val addedTaxAmount: Double? = null,
 ) {
     @Transient
     val orderStatus: OrderStatus = when (status.uppercase()) {

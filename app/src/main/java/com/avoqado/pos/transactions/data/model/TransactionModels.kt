@@ -43,6 +43,23 @@ object PaymentMethodDisplay {
         }
 }
 
+/**
+ * El comprobante COMPLETO de un cobro, tal como lo vio el cliente (servidor, aditivo, plan 7a; r2 R2-9, r3 R3-11). Pesos y
+ * magnitudes; `subtotal − discount + serviceCharge + addedTax + tip = total` siempre. Con recibo digital emitido, son SUS cifras.
+ * `subtotal` es el BRUTO cuando desglosa y `discount` sólo llega si desglosa y es > 0 (ruling A7-R6).
+ */
+@Serializable
+data class TicketTotalsDto(
+    val kind: String, // "COBRO" | "DEVOLUCION"
+    val desglosado: Boolean,
+    val subtotal: Double,
+    val serviceCharge: Double,
+    val addedTax: Double,
+    val tip: Double,
+    val total: Double,
+    val discount: Double? = null,
+)
+
 @Serializable
 data class Transaction(
     val id: String,
@@ -72,6 +89,8 @@ data class Transaction(
     val cardBrand: String? = null,
     val maskedPan: String? = null,
     val referenceNumber: String? = null,
+    /** Comprobante completo (servidor, aditivo, plan 7a). Null = servidor anterior: se cae a importe y propina del pago. */
+    val ticketTotals: TicketTotalsDto? = null,
 ) {
     val paymentMethod: String? get() = method
 

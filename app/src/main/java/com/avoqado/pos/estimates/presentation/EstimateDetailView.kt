@@ -133,8 +133,10 @@ fun EstimateDetailView(
             Column(modifier = Modifier.padding(AvoqadoTheme.spacing.lg)) {
                 TotalRow("Subtotal", formatMoney(estimate.subtotal))
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
-                TotalRow("Impuestos", formatMoney(estimate.taxAmount))
-                Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+                if (estimate.taxAmount > 0) {
+                    TotalRow("IVA agregado", formatMoney(estimate.taxAmount))
+                    Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
+                }
                 HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
                 Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.sm))
                 TotalRow("Total", estimate.displayTotal, bold = true)

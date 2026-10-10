@@ -691,6 +691,12 @@ private fun OrderItemsSection(items: List<OrderDetailItem>) {
 
 // MARK: - Totals Section
 
+/**
+ * IVA que la orden sumó APARTE, o null si no hay fila que mostrar (IVA por producto, plan 7, r2 R2-13). Lo dice el servidor por
+ * contrato (`addedTaxAmount`); un servidor anterior (sin el campo) nunca afirma un IVA agregado.
+ */
+internal fun ivaAgregadoDeLaOrden(order: OrderDetail): Double? = order.addedTaxAmount?.takeIf { it > 0 }
+
 @Composable
 private fun OrderTotalsSection(order: OrderDetail) {
     Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
@@ -713,7 +719,9 @@ private fun OrderTotalsSection(order: OrderDetail) {
                 verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.xs),
             ) {
                 TotalRow(label = "Subtotal", amount = "$%,.2f".format(order.subtotal))
-                TotalRow(label = "IVA", amount = "$%,.2f".format(order.taxAmount))
+                // D3 (IVA por producto, plan 7; r2 R2-13): sin fila de IVA en $0 ni con contrato IVA incluido. Sólo una venta que
+                // cobró el IVA APARTE la muestra, con el importe que el servidor calcula por contrato.
+                ivaAgregadoDeLaOrden(order)?.let { iva -> TotalRow(label = "IVA agregado", amount = "$%,.2f".format(iva)) }
                 if (order.discountAmount > 0) {
                     TotalRow(label = "Descuento", amount = "-$%,.2f".format(order.discountAmount))
                 }
