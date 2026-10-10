@@ -280,6 +280,13 @@
     },
     {
       "kind": "text",
+      "text": "Propina:                                  $35.00",
+      "align": "left",
+      "bold": false,
+      "double": false
+    },
+    {
+      "kind": "text",
       "text": "------------------------------------------------",
       "align": "left",
       "bold": false,

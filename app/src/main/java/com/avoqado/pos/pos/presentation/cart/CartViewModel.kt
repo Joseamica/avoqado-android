@@ -625,6 +625,8 @@ class CartViewModel @Inject constructor(
                     } else if (selectedId.isNotBlank() && selected == null) {
                         secureStorage.clearSelectedStaffForCurrentVenue()
                         _cartState.value = defaultCartState()
+                        // El aviso era del carrito que se acaba de vaciar (igual que en `clearCart()`; A3 m1).
+                        _avisoDelCarrito.value = null
                         // Segundo reemplazo directo de `_cartState` que no pasa por
                         // `clearCart()`: el vínculo con la venta a medio cobrar se
                         // limpia aquí por la misma razón que en `restoreSavedCart`.

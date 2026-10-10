@@ -2,17 +2,18 @@ package com.avoqado.pos.transactions.presentation
 
 import com.avoqado.pos.printing.data.model.PaperWidth
 import com.avoqado.pos.printing.data.model.ReceiptData
-import com.avoqado.pos.printing.data.model.TotalesDelTicket
 import com.avoqado.pos.printing.receiptlayout.LogicalLine
 import com.avoqado.pos.printing.receiptlayout.ReceiptBlock
 import com.avoqado.pos.printing.receiptlayout.ReceiptInputMapper
 import com.avoqado.pos.printing.receiptlayout.ReceiptLayoutInterpreter
 import com.avoqado.pos.transactions.data.model.TicketTotalsDto
 import com.avoqado.pos.transactions.data.model.Transaction
+import com.avoqado.pos.transactions.data.model.TransactionDetailResponse
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -148,17 +149,10 @@ class TransactionReprintReceiptTest {
     }
 
     @Test
-    fun `P1 A7-R6 - venta de 100 con 10 de descuento cobrada en 90 - el papel reimpreso es el mismo que el del cobro`() {
-        // El papel del cobro (A2): `buildReceiptSnapshot` arma sus renglones con `TotalesDelTicket.desdeLoCobrado` y los pone así.
-        val papel = TotalesDelTicket.desdeLoCobrado(cobrado = 9000, propina = 0, subtotalBruto = 10000, cargo = 0, impuestoAgregado = 0)
-        val delCobro = ReceiptData(
-            orderNumber = "42", orderType = "En tienda", items = emptyList(), venueName = "T",
-            subtotal = papel.subtotal, taxAmount = papel.impuesto, tipAmount = null,
-            discountAmount = papel.descuento.takeIf { it > 0 }, total = papel.total,
-            serviceChargeAmount = papel.cargo.takeIf { it > 0 },
-        )
+    fun `P1 A7-R6 - venta de 100 con 10 de descuento cobrada en 90 - la reimpresion trae el bruto, el descuento y su renglon Venta`() {
         // La reimpresión: el detalle de venta con el comprobante TAL COMO lo manda el servidor (Tarea 4): subtotal BRUTO + discount.
-        // El pago vivo dice 85 (corregido después): no se lee.
+        // El pago vivo dice 85 (corregido después): no se lee. Que el papel sea EL MISMO que el del cobro lo fija, con el productor
+        // real del cobro (`buildReceiptSnapshot`), `OrderRequestPromotionTest` (A5 m4).
         val tx = Json { ignoreUnknownKeys = true }.decodeFromString<Transaction>(
             """{"id":"pay_1","method":"CASH","amount":85.0,"ticketTotals":{"kind":"COBRO","desglosado":true,"subtotal":100,"discount":10,"serviceCharge":0,"addedTax":0,"tip":0,"total":90}}""",
         )
@@ -168,8 +162,87 @@ class TransactionReprintReceiptTest {
         assertNull(r.serviceChargeAmount)
         assertNull(r.tipAmount)
         assertEquals(true, cuadra(r))
-        // Mismas cifras y mismo orden en el papel: Subtotal → Descuento → leyenda → TOTAL.
-        assertEquals(renglonesDelPapel(delCobro), renglonesDelPapel(r))
+        // A5 m3: venta sin renglones ⇒ un renglón «Venta» por el SUBTOTAL del comprobante, nunca por el pago vivo ($85).
+        assertEquals(listOf("Venta"), r.items.map { it.name })
+        assertEquals(listOf(10000), r.items.map { it.totalPrice })
+    }
+
+    // MARK: - Lo que decide el comprobante y no el pago vivo (A5 m1, m2; espejo de I4 M1-M3 en iOS)
+
+    @Test
+    fun `P1 el kind del comprobante manda sobre los signos del pago - en los dos sentidos (A5 m1)`() {
+        // Un REFUND con importe positivo: el servidor lo marca DEVOLUCION por su tipo (`ticketTotals.ts`).
+        val devolucion = Transaction(id = "ref_9", method = "CASH", amount = 116.0, tipAmount = 0.0,
+            ticketTotals = comprobante(kind = "DEVOLUCION", desglosado = false, subtotal = 116.0))
+            .toReceiptData(venueName = "T", reprintedAt = cuando)
+        assertEquals(true, devolucion.isRefund)
+        assertEquals(11600, devolucion.total)
+        // Y al revés: un pago con signo de devolución que el comprobante dice COBRO se reimprime como cobro.
+        val cobro = Transaction(id = "pay_9", method = "CASH", amount = -116.0, tipAmount = 0.0,
+            ticketTotals = comprobante(subtotal = 116.0))
+            .toReceiptData(venueName = "T", reprintedAt = cuando)
+        assertEquals(false, cobro.isRefund)
+    }
+
+    @Test
+    fun `P1 el TOTAL se lee del comprobante, nunca se recalcula - aunque a proposito no cuadre (A5 m2)`() {
+        // 100 + 16 + 10 = 126, pero el recibo emitido dice 130: el papel repite el recibo, no lo corrige.
+        val r = Transaction(id = "pay_1", method = "CASH", amount = 126.0, tipAmount = 10.0,
+            ticketTotals = TicketTotalsDto("COBRO", true, subtotal = 100.0, serviceCharge = 0.0, addedTax = 16.0, tip = 10.0, total = 130.0))
+            .toReceiptData(venueName = "T", reprintedAt = cuando)
+        assertEquals(listOf(10000, 1600, 1000, 13000), listOf(r.subtotal, r.taxAmount, r.tipAmount, r.total))
+    }
+
+    @Test
+    fun `P1 una devolucion nunca imprime cargo ni IVA agregado aunque el comprobante los traiga (A5 m2)`() {
+        val r = Transaction(id = "ref_1", method = "CASH", amount = -116.0,
+            ticketTotals = TicketTotalsDto("DEVOLUCION", false, subtotal = 116.0, serviceCharge = 15.0, addedTax = 16.0, tip = 0.0, total = 116.0))
+            .toReceiptData(venueName = "T", reprintedAt = cuando)
+        assertEquals(true, r.isRefund)
+        assertNull("una devolución no lleva cargo por servicio", r.serviceChargeAmount)
+        assertEquals("una devolución no lleva IVA agregado", 0, r.taxAmount)
+        assertEquals(listOf(11600, 11600), listOf(r.subtotal, r.total))
+    }
+
+    // MARK: - A7-R8 (A5 m5): el comprobante se lee tolerante, como iOS
+
+    @Test
+    fun `P1 A7-R8 - un comprobante incompleto o raro se ignora y el detalle de la venta no se cae`() {
+        val json = Json { ignoreUnknownKeys = true } // la misma configuración que `TransactionRepository`
+        for (raro in listOf(
+            """{"kind":"COBRO","desglosado":true,"subtotal":100,"addedTax":16,"tip":0,"total":116}""", // sin serviceCharge
+            """{"kind":"COBRO","desglosado":true,"subtotal":100,"serviceCharge":0,"addedTax":16,"tip":0}""", // sin total
+            """{"kind":"COBRO","desglosado":true,"subtotal":"cien","serviceCharge":0,"addedTax":16,"tip":0,"total":116}""",
+            """{"kind":"COBRO","desglosado":true,"subtotal":100,"serviceCharge":0,"addedTax":16,"tip":0,"total":null}""",
+            """{"kind":"CANCELACION","desglosado":true,"subtotal":100,"serviceCharge":0,"addedTax":16,"tip":0,"total":116}""",
+            """{"kind":7,"desglosado":true,"subtotal":100,"serviceCharge":0,"addedTax":16,"tip":0,"total":116}""",
+            """[116]""",
+            "\"116\"",
+        )) {
+            val tx = runCatching {
+                json.decodeFromString<TransactionDetailResponse>(
+                    """{"success":true,"transaction":{"id":"p","method":"CASH","amount":116.0,"tipAmount":0,"ticketTotals":$raro}}""",
+                ).transaction
+            }.getOrNull()
+            assertNotNull("el detalle de la venta se cayó por el comprobante $raro", tx)
+            assertNull(raro, tx!!.ticketTotals)
+            // La reimpresión cae al respaldo de hoy: el importe del pago, sin desglose.
+            val r = tx.toReceiptData(venueName = "T", reprintedAt = cuando)
+            assertEquals(listOf(11600, 0, 11600), listOf(r.subtotal, r.taxAmount, r.total))
+        }
+    }
+
+    @Test
+    fun `control A7-R8 - el comprobante completo y el null siguen decodificando igual`() {
+        val json = Json { ignoreUnknownKeys = true }
+        fun detalle(tt: String) = json.decodeFromString<TransactionDetailResponse>(
+            """{"success":true,"transaction":{"id":"p","method":"CASH","amount":116.0,"ticketTotals":$tt}}""",
+        ).transaction!!
+        assertEquals(
+            TicketTotalsDto("DEVOLUCION", false, 100.0, 0.0, 16.0, 0.0, 116.0, discount = 3.0),
+            detalle("""{"kind":"DEVOLUCION","desglosado":false,"subtotal":100,"discount":3,"serviceCharge":0,"addedTax":16,"tip":0,"total":116}""").ticketTotals,
+        )
+        assertNull(detalle("null").ticketTotals)
     }
 
     @Test

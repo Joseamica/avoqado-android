@@ -126,14 +126,15 @@ object ReceiptLayoutInterpreter {
         fun money(label: String, cents: Long) = T.twoColumnLines(label, ReceiptFormat.money(cents), width).map { text(it) }
         val lines = mutableListOf<LogicalLine>()
         if (block.showSubtotal) lines += money(L.SUBTOTAL, sale.subtotalCents)
-        if (block.showDiscount && (sale.discountCents ?: 0L) != 0L) lines += money(L.DESCUENTO, -abs(sale.discountCents!!))
-        // D3 (plan 7 de IVA), espejo de `renderTotals` del servidor: el cargo y el IVA cobrado APARTE son parte de la suma
-        // del ticket y salen siempre que existan; `showTax` sólo apaga la leyenda.
+        // D3 (plan 7 de IVA), espejo de `renderTotals` del servidor: el descuento, el cargo, el IVA cobrado APARTE y la propina
+        // son parte de la suma del ticket y salen siempre que sean ≠ 0 (A7-R7: ni Square ni Toast dejan ocultar la propina
+        // cobrada); `showDiscount`/`showTip` sólo evitarían un renglón en $0, que no sale; `showTax` sólo apaga la leyenda.
+        if ((sale.discountCents ?: 0L) != 0L) lines += money(L.DESCUENTO, -abs(sale.discountCents!!))
         val cargo = sale.serviceChargeCents ?: 0L
         if (cargo > 0L) lines += money(L.CARGO_POR_SERVICIO, cargo)
         if (sale.taxCents > 0L) lines += money(L.IVA_AGREGADO, sale.taxCents)
         else if (block.showTax) lines += text(L.IVA_INCLUIDO_CUANDO_APLICA)
-        if (block.showTip && (sale.tipCents ?: 0L) != 0L) lines += money(L.PROPINA, sale.tipCents!!)
+        if ((sale.tipCents ?: 0L) != 0L) lines += money(L.PROPINA, sale.tipCents!!)
         lines += text(T.divider(width))
         val total = ReceiptFormat.money(sale.totalCents)
         val half = width / 2

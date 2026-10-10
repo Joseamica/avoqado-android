@@ -53,6 +53,7 @@ import com.avoqado.pos.referrals.domain.usecase.CaptureReferralUseCase
 import com.avoqado.pos.referrals.domain.usecase.ValidateReferralUseCase
 import com.avoqado.pos.tpvsettings.data.TpvSettings
 import com.avoqado.pos.tpvsettings.data.TpvSettingsRepository
+import com.avoqado.pos.transactions.presentation.toReceiptData
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
@@ -803,6 +804,48 @@ class OrderRequestPromotionTest {
         assertEquals(listOf(10000, 1600, 11600), listOf(r.subtotal, r.taxAmount, r.total))
         assertNull(r.discountAmount)
         assertTrue(cuadra(r))
+    }
+
+    /** Los renglones de dinero tal como salen en el PAPEL (intérprete real, bloque de totales). */
+    private fun renglonesDelPapel(r: ReceiptData): List<String> =
+        com.avoqado.pos.printing.receiptlayout.ReceiptLayoutInterpreter.interpret(
+            listOf(com.avoqado.pos.printing.receiptlayout.ReceiptBlock.Totals()),
+            com.avoqado.pos.printing.receiptlayout.ReceiptInputMapper.map(
+                r, info = null, hasLogo = false, timezone = "America/Mexico_City", appVersion = null,
+            ),
+            com.avoqado.pos.printing.data.model.PaperWidth.MM80.charsPerLine,
+        ).filterIsInstance<com.avoqado.pos.printing.receiptlayout.LogicalLine.Text>().map { it.text }
+
+    @Test
+    fun `P1 el servidor cobra menos que el bruto - subtotal bruto y descuento, y la reimpresion imprime el mismo papel (A2 m2, A5 m4)`() = runTest {
+        // Combo de 99 en el carrito; el servidor lo resuelve en 89 (la promoción que confirmó él). Los $100 recibidos lo cubren.
+        every { cashPaymentRepository.processCashPayment(9900, 10000) } returns CashPaymentResult.Success(changeCents = 100)
+        coEvery { orderRepository.createOrder(any(), any(), any(), any(), any()) } returns
+            Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-1", total = 89.0)))
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any()) } returns
+            Result.success(OrderRepository.CashPayResult(paymentId = "pay-1", receiptAccessKey = null))
+        val impreso = slot<ReceiptData>()
+        coEvery { printerService.autoPrintReceipt(capture(impreso)) } returns Unit
+
+        paymentViewModel.startPaymentFlow(CartState(items = lineasDelCombo()))
+        paymentViewModel.selectPaymentMethod(PaymentMethod.CASH)
+        paymentViewModel.processCashPayment(10000)
+        advanceUntilIdle()
+
+        val r = impreso.captured
+        assertEquals("TOTAL = lo que cobró el servidor", 8900, r.total)
+        assertEquals("el subtotal es el BRUTO de los renglones", 9900, r.subtotal)
+        assertEquals("el descuento es lo que falta del bruto a lo cobrado", 1000, r.discountAmount)
+        assertTrue("subtotal − descuento + IVA + propina = TOTAL", cuadra(r))
+
+        // La reimpresión de esa venta, con el comprobante TAL COMO lo manda el servidor (A7-R6: bruto + discount): el papel del
+        // cobro de arriba sale del productor real (`buildReceiptSnapshot`), no de una copia de su mapeo.
+        val reimpreso = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+            .decodeFromString(
+                com.avoqado.pos.transactions.data.model.Transaction.serializer(),
+                """{"id":"pay-1","method":"CASH","amount":89.0,"ticketTotals":{"kind":"COBRO","desglosado":true,"subtotal":99,"discount":10,"serviceCharge":0,"addedTax":0,"tip":0,"total":89}}""",
+            )
+        assertEquals("mismos renglones de dinero y en el mismo orden", renglonesDelPapel(r), renglonesDelPapel(reimpreso.toReceiptData(venueName = "T")))
     }
 
     // MARK: - Andamiaje

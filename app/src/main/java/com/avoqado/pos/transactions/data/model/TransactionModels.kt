@@ -4,8 +4,14 @@ import com.avoqado.pos.core.util.VenueDateTimeFormatter
 import com.avoqado.pos.core.util.VenueTimeZone
 import com.avoqado.pos.core.util.formatMoney
 
+import kotlinx.serialization.KSerializer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.builtins.nullable
+import kotlinx.serialization.descriptors.SerialDescriptor
+import kotlinx.serialization.encoding.Decoder
+import kotlinx.serialization.encoding.Encoder
+import kotlinx.serialization.json.JsonDecoder
 import java.time.LocalDate
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
@@ -60,6 +66,28 @@ data class TicketTotalsDto(
     val discount: Double? = null,
 )
 
+/**
+ * A7-R8 (A5 m5): el comprobante se lee TOLERANTE, como iOS. Si le falta un campo, trae uno raro o un `kind` desconocido, cuenta
+ * como AUSENTE (`null`) y la reimpresión cae al respaldo de hoy, en vez de tumbar el detalle de la venta (sin detalle no se puede
+ * reimprimir ni devolver). Nunca se rellena con ceros: el TOTAL ya trae la propina y el papel dejaría de cuadrar.
+ */
+internal object TicketTotalsTolerante : KSerializer<TicketTotalsDto?> {
+    private val estricto = TicketTotalsDto.serializer()
+    override val descriptor: SerialDescriptor = estricto.nullable.descriptor
+
+    override fun deserialize(decoder: Decoder): TicketTotalsDto? {
+        val json = decoder as? JsonDecoder ?: return decoder.decodeSerializableValue(estricto.nullable)
+        val elemento = json.decodeJsonElement()
+        return try {
+            json.json.decodeFromJsonElement(estricto, elemento).takeIf { it.kind == "COBRO" || it.kind == "DEVOLUCION" }
+        } catch (e: IllegalArgumentException) { // SerializationException y NumberFormatException lo son
+            null
+        }
+    }
+
+    override fun serialize(encoder: Encoder, value: TicketTotalsDto?) = encoder.encodeSerializableValue(estricto.nullable, value)
+}
+
 @Serializable
 data class Transaction(
     val id: String,
@@ -89,7 +117,8 @@ data class Transaction(
     val cardBrand: String? = null,
     val maskedPan: String? = null,
     val referenceNumber: String? = null,
-    /** Comprobante completo (servidor, aditivo, plan 7a). Null = servidor anterior: se cae a importe y propina del pago. */
+    /** Comprobante completo (servidor, aditivo, plan 7a). Null = servidor anterior (o comprobante raro, A7-R8): se cae a importe y propina del pago. */
+    @Serializable(with = TicketTotalsTolerante::class)
     val ticketTotals: TicketTotalsDto? = null,
 ) {
     val paymentMethod: String? get() = method

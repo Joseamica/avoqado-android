@@ -44,13 +44,17 @@ class ReceiptLayoutGoldenTest {
     }
 
     // m1 (revisión de la T2): dos casos de `footer.test.ts` del servidor que NINGÚN golden fija. Espejo literal en iOS (I1).
-    private fun totales(taxCents: Long = 0, serviceChargeCents: Long? = null, subtotalCents: Long = 4500, totalCents: Long = 4500) =
+    private fun totales(
+        taxCents: Long = 0, serviceChargeCents: Long? = null, subtotalCents: Long = 4500, totalCents: Long = 4500,
+        discountCents: Long? = null, tipCents: Long? = null, showDiscount: Boolean = true, showTip: Boolean = true,
+    ) =
         ReceiptLayoutInterpreter.interpret(
-            listOf(ReceiptBlock.Totals(showSubtotal = true, showTax = true, showDiscount = true, showTip = true)),
+            listOf(ReceiptBlock.Totals(showSubtotal = true, showTax = true, showDiscount = showDiscount, showTip = showTip)),
             ReceiptInput(
                 sale = ReceiptSale(
                     orderNumber = "1", orderType = "En tienda", occurredAt = "2026-10-09T18:00:00Z", timezone = "America/Mexico_City",
                     subtotalCents = subtotalCents, taxCents = taxCents, serviceChargeCents = serviceChargeCents, totalCents = totalCents,
+                    discountCents = discountCents, tipCents = tipCents,
                 ),
                 venue = ReceiptVenueInfo(name = "Testarudo Cafe"),
             ),
@@ -68,5 +72,19 @@ class ReceiptLayoutGoldenTest {
     fun `P1 un cargo de 12345 pesos 67 cabe en 32 columnas sin partirse`() {
         val textos = totales(serviceChargeCents = 1_234_567, totalCents = 1_239_067)
         assertTrue(textos.toString(), "Cargo por servicio:" + " ".repeat(3) + "\$12,345.67" in textos)
+    }
+
+    // A7-R7 (I-1 de la revisión final del 7a), espejo de `footer.test.ts` del servidor: la propina y el descuento son parte de la
+    // suma y salen SIEMPRE que sean ≠ 0; `showTip`/`showDiscount` ya no los esconden (la propina la fija además `appointments`).
+    @Test
+    fun `P1 la propina cobrada sale aunque la plantilla la oculte - el papel suma`() {
+        val textos = totales(subtotalCents = 35_000, tipCents = 3_500, totalCents = 38_500, showTip = false)
+        assertTrue(textos.toString(), textos.any { it.startsWith("Propina:") && it.endsWith("\$35.00") })
+    }
+
+    @Test
+    fun `P1 el descuento aplicado sale aunque el negocio apague Mostrar descuentos - el papel suma`() {
+        val textos = totales(subtotalCents = 10_000, discountCents = 1_000, totalCents = 9_000, showDiscount = false)
+        assertTrue(textos.toString(), textos.any { it.startsWith("Descuento:") && it.endsWith("-\$10.00") })
     }
 }

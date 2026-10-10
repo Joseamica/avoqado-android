@@ -598,6 +598,18 @@ class CartPromotionTest {
     }
 
     @Test
+    fun `P1 si el vendedor guardado ya no existe, vaciar el carrito tambien suelta su aviso (A3 m1)`() {
+        val vm = createViewModel()
+        vm.restoreSavedCart(guardadoConImpuesto())
+        assertEquals(AVISO_CARRITO_SIN_IMPUESTO, vm.avisoDelCarrito.value)
+        // El otro reemplazo directo del carrito: el vendedor seleccionado ya no está en la lista (lo dieron de baja).
+        vm.selectStaff("staff-fantasma", "Ana")
+        vm.fetchStaff()
+        assertTrue("montaje: fetchStaff vació el carrito", vm.cartState.value.isEmpty)
+        assertNull("el carrito vacío no conserva el aviso del carrito anterior", vm.avisoDelCarrito.value)
+    }
+
+    @Test
     fun `control - D13 no cambia el ciclo de la copia guardada - se borra al restaurar como hoy (el 7b lo cambia a proposito)`() {
         val vm = createViewModel()
         // Lo que había en el carrito EN EL MOMENTO de borrar la copia (no después): así mover el borrado antes de
