@@ -1060,7 +1060,7 @@ private fun ItemsBody(
                         )
                         Spacer(modifier = Modifier.width(spacing.sm))
                     }
-                    val displayAmount = if (fullyRefunded) item.refundedAmount.takeIf { it > 0 } ?: item.amount else effectiveAmount
+                    val displayAmount = if (fullyRefunded) item.refundedAmount.takeIf { it > 0 } ?: item.chargedLineTotal else effectiveAmount
                     Text(
                         text = formatMoney(displayAmount),
                         style = MaterialTheme.typography.bodyMedium,

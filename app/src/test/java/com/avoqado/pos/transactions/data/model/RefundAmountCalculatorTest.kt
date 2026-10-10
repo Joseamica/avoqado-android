@@ -1,6 +1,8 @@
 package com.avoqado.pos.transactions.data.model
 
+import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class RefundAmountCalculatorTest {
@@ -122,5 +124,96 @@ class RefundAmountCalculatorTest {
         assertEquals(2, lineaConDevoluciones(refundedQty = 1).refundableQty)
         assertEquals(0, lineaConDevoluciones(refundedQty = 3).refundableQty)
         assertEquals(3, TransactionItem(id = "oi_5", quantity = 3, amount = 10.0).refundableQty)
+    }
+
+    // ── Lo COBRADO, no el bruto (IVA C2, decisión A del founder, 9-oct-2026) ──
+    // El servidor devuelve por artículo lo que el renglón COBRÓ (`chargedTotal`, sin su descuento
+    // propio ni su parte del de la cuenta). La pantalla tiene que pedir ese mismo número: con el
+    // bruto, una venta con descuento pedía más que lo que queda del cobro y «Reembolsar» se
+    // bloqueaba, o enseñaba una cifra que el servidor no iba a devolver. Mismos casos en iOS
+    // (`RefundAmountCalculatorTests.swift`).
+
+    private fun monto(item: TransactionItem, qty: Int? = null) =
+        RefundAmountCalculator.calculateSelectedAmount(
+            items = listOf(item),
+            selectedIds = setOf(item.id!!),
+            refundQtyByItem = qty?.let { mapOf(item.id!! to it) } ?: emptyMap(),
+        )
+
+    @Test
+    fun `P1 a line with total 100 that charged 90 refunds 90`() {
+        val item = TransactionItem(id = "oi_a", productName = "A", quantity = 1, amount = 100.0, chargedTotal = 90.0)
+
+        assertEquals(90.0, monto(item), 0.001)
+    }
+
+    @Test
+    fun `P1 three units that charged 10 split the cents of what was charged`() {
+        val item = TransactionItem(id = "oi_b", productName = "Pan", quantity = 3, amount = 12.0, chargedTotal = 10.0)
+
+        assertEquals(3.34, monto(item, qty = 1), 0.001)
+    }
+
+    @Test
+    fun `P1 after refunding one charged unit the remaining two are 6_66`() {
+        val item = TransactionItem(
+            id = "oi_b",
+            productName = "Pan",
+            quantity = 3,
+            amount = 12.0,
+            chargedTotal = 10.0,
+            refundedQty = 1,
+            remainingQty = 2,
+        )
+
+        assertEquals(6.66, monto(item), 0.001)
+    }
+
+    @Test
+    fun `without chargedTotal the line total is used as always`() {
+        val item = TransactionItem(id = "oi_c", productName = "C", quantity = 1, amount = 100.0)
+
+        assertEquals(100.0, monto(item), 0.001)
+    }
+
+    @Test
+    fun `P1 a courtesy line that charged 0 refunds nothing`() {
+        val item = TransactionItem(id = "oi_d", productName = "Cortesía", quantity = 2, amount = 50.0, chargedTotal = 0.0)
+
+        assertEquals(0.0, monto(item), 0.001)
+    }
+
+    // El detalle se decodifica con este mismo `Json` (`TransactionRepository.json`, sin coerción):
+    // el campo nuevo no puede tumbar la venta ni con `null` ni ausente (el `name: null` del 11-sep).
+    private val json = Json { ignoreUnknownKeys = true }
+
+    private fun detalleConItem(chargedTotal: String?) = json.decodeFromString<Transaction>(
+        """{ "id": "p1", "amount": 140, "tipAmount": 0, "method": "CASH", "status": "COMPLETED",
+            "items": [ { "id": "oi_a", "productName": "A", "quantity": 1, "unitPrice": 100, "total": 100
+            ${chargedTotal?.let { ", \"chargedTotal\": $it" } ?: ""} } ] }""",
+    ).items.single()
+
+    @Test
+    fun `chargedTotal is decoded from the transaction detail`() {
+        val item = detalleConItem("90.5")
+
+        assertEquals(90.5, item.chargedTotal!!, 0.001)
+        assertEquals(90.5, monto(item), 0.001)
+    }
+
+    @Test
+    fun `chargedTotal null decodes as null and refunds the line total`() {
+        val item = detalleConItem("null")
+
+        assertNull(item.chargedTotal)
+        assertEquals(100.0, monto(item), 0.001)
+    }
+
+    @Test
+    fun `chargedTotal absent decodes as null and refunds the line total`() {
+        val item = detalleConItem(null)
+
+        assertNull(item.chargedTotal)
+        assertEquals(100.0, monto(item), 0.001)
     }
 }

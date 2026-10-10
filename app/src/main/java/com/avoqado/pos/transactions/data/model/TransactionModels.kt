@@ -182,6 +182,12 @@ data class TransactionItem(
     val unitPrice: Double = 0.0,
     @SerialName("total")
     val amount: Double = 0.0,
+    /**
+     * Lo que COBRÓ el renglón completo (sin su descuento propio ni su parte del de la cuenta;
+     * cortesía = 0). Servidor aditivo (IVA C2, 9-oct-2026): ausente o `null` en servidores
+     * anteriores y cuando no puede repartir los descuentos ⇒ se usa `amount`, el bruto.
+     */
+    val chargedTotal: Double? = null,
     val productImageUrl: String? = null,
     val trackInventory: Boolean = false,
     /** Quantity already refunded across prior REFUND payments on this payment. */
@@ -194,6 +200,8 @@ data class TransactionItem(
 ) {
     val name: String get() = productName
     val formattedTotal: String get() = formatMoney(amount)
+    /** Base de la devolución por artículos: lo cobrado, o el bruto si el servidor no lo manda (espejo de iOS). */
+    val chargedLineTotal: Double get() = chargedTotal ?: amount
     /** True when every unit on this line has been refunded. */
     val fullyRefunded: Boolean get() = refundedQty >= quantity && quantity > 0
     /** True when some — but not all — units have been refunded. */

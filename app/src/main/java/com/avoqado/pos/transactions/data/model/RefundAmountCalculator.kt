@@ -3,8 +3,10 @@ package com.avoqado.pos.transactions.data.model
 import kotlin.math.roundToInt
 
 /**
- * Lo que devolverá el servidor, al centavo. Espejo EXACTO de `getUnitRefundCents`
- * (avoqado-server refund.dashboard.service.ts): reparte los centavos del renglón entre sus piezas
+ * Lo que devolverá el servidor, al centavo. Espejo EXACTO de `parteDeUnidades`
+ * (avoqado-server shared/parteDeUnidades.ts, que usa refund.dashboard.service.ts): reparte los
+ * centavos de lo que COBRÓ el renglón (`chargedTotal`: sin su descuento propio ni su parte del de
+ * la cuenta; el bruto `total` sólo si el servidor no lo manda) entre sus piezas
  * —$10 / 3 = [3.34, 3.33, 3.33]— y cobra desde la pieza que sigue a lo YA devuelto. Mismo
  * algoritmo en iOS (`RefundAmountCalculator.swift`) y en el dashboard (`refundAmount.ts`).
  */
@@ -23,7 +25,7 @@ object RefundAmountCalculator {
                 if (remaining <= 0) return@sumOf 0
                 // Sin tocar el contador se devuelve lo que QUEDA, no la cantidad original.
                 val requestedQty = (refundQtyByItem[item.id] ?: remaining).coerceIn(1, remaining)
-                val lineTotalCents = (item.amount * 100).roundToInt()
+                val lineTotalCents = (item.chargedLineTotal * 100).roundToInt()
                 unitRefundCents(
                     totalCents = lineTotalCents,
                     quantity = quantity,
