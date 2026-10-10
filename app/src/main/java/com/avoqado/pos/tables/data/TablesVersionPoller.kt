@@ -1,6 +1,8 @@
 package com.avoqado.pos.tables.data
 
 import com.avoqado.pos.core.data.network.ApiService
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import retrofit2.HttpException
 import javax.inject.Inject
 import kotlin.coroutines.cancellation.CancellationException
@@ -12,7 +14,13 @@ sealed interface ConsultaDeVersiones {
     /** 404: el servidor no conoce la ruta (todavía no se despliega la fase 4a). */
     data object ServidorViejo : ConsultaDeVersiones
 
-    /** Sin red, tiempo agotado u otro error: no se sabe nada y no se toca nada. */
+    /**
+     * Otro error HTTP (p. ej. 500 del manejador global): la red SÍ funciona, sólo falló la versión. Esa vuelta baja
+     * `/tables` completo, sin marcar servidor viejo (enmienda A7): si no, las mesas se congelarían en silencio.
+     */
+    data object ErrorDelServidor : ConsultaDeVersiones
+
+    /** Sin red, tiempo agotado u otro error que no es del servidor: no se sabe nada y no se toca nada. */
     data object SinRespuesta : ConsultaDeVersiones
 }
 
@@ -31,7 +39,7 @@ class ApiFuenteDeVersiones @Inject constructor(private val apiService: ApiServic
     } catch (e: CancellationException) {
         throw e
     } catch (e: HttpException) {
-        if (e.code() == 404) ConsultaDeVersiones.ServidorViejo else ConsultaDeVersiones.SinRespuesta
+        if (e.code() == 404) ConsultaDeVersiones.ServidorViejo else ConsultaDeVersiones.ErrorDelServidor
     } catch (e: Exception) {
         ConsultaDeVersiones.SinRespuesta
     }
@@ -53,11 +61,27 @@ class TablesVersionPoller(
     var servidorViejo: Boolean = false
         private set
 
+    /** La sucursal de la última `entrar`: lo que llega tarde de otra no vuelve a apuntar los repositorios a ella (A8). */
+    private var venueEnPantalla: String? = null
+
+    /**
+     * Después de cada espera: ¿sigue en pantalla esta sucursal? Y la corrutina viva: `TableServiceRepository.refresh` se
+     * traga la cancelación (`runCatching`), y sin esto una vuelta cancelada seguiría pidiendo.
+     */
+    private suspend fun sigueEn(venueId: String): Boolean {
+        currentCoroutineContext().ensureActive()
+        return venueEnPantalla == null || venueEnPantalla == venueId
+    }
+
     suspend fun entrar(venueId: String) {
+        venueEnPantalla = venueId
         servidorViejo = false
         mesas.hydrate(venueId)
+        if (!sigueEn(venueId)) return
         plano.hydrate(venueId)
+        if (!sigueEn(venueId)) return
         val mesasAlDia = mesas.refresh(venueId).isSuccess
+        if (!sigueEn(venueId)) return
         if (mesasAlDia && mesas.tablesVersion == null) {
             servidorViejo = true
             return
@@ -73,15 +97,21 @@ class TablesVersionPoller(
             mesas.refresh(venueId)
             return
         }
-        when (val r = versiones.consultar(venueId)) {
+        val r = versiones.consultar(venueId)
+        if (!sigueEn(venueId)) return
+        when (r) {
             is ConsultaDeVersiones.Versiones -> {
-                if (r.tablesVersion != mesas.tablesVersion) mesas.refresh(venueId)
+                if (r.tablesVersion != mesas.tablesVersion) {
+                    mesas.refresh(venueId)
+                    if (!sigueEn(venueId)) return
+                }
                 if (r.floorPlanVersion != plano.floorPlanVersion) plano.refresh(venueId)
             }
             ConsultaDeVersiones.ServidorViejo -> {
                 servidorViejo = true
                 mesas.refresh(venueId)
             }
+            ConsultaDeVersiones.ErrorDelServidor -> mesas.refresh(venueId)
             // Sin red: lo guardado se queda; el aviso «Sin conexión» ya lo pone el banner de conectividad.
             ConsultaDeVersiones.SinRespuesta -> Unit
         }
@@ -90,6 +120,7 @@ class TablesVersionPoller(
     /** El botón de refrescar: las dos cosas completas, sin mirar versiones. */
     suspend fun refrescarTodo(venueId: String) {
         mesas.refresh(venueId)
+        if (!sigueEn(venueId)) return
         if (!servidorViejo) plano.refresh(venueId)
     }
 }

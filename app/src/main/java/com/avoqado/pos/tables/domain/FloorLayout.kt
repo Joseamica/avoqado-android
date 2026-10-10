@@ -2,6 +2,9 @@ package com.avoqado.pos.tables.domain
 
 import com.avoqado.pos.tables.data.DiningTable
 import com.avoqado.pos.tables.data.FloorPlanPayload
+import java.text.Collator
+import java.time.Instant
+import java.time.OffsetDateTime
 import java.util.Locale
 
 /** Una pestaña de área. `floorShape` decide la proporción del lienzo (null ⇒ WIDE). */
@@ -43,7 +46,10 @@ object FloorLayoutBuilder {
 
     private data class AreaInfo(val id: String, val name: String, val floorShape: String?, val sortOrder: Int)
 
-    /** Áreas en el orden del dueño: `sortOrder`, empate por nombre sin mayúsculas, luego id. Sin plano: de las mesas. */
+    /**
+     * Áreas en el orden del dueño: `sortOrder`, empate por nombre como el dashboard (`localeCompare(b, 'es')`: collation
+     * en español sin distinguir mayúsculas, enmienda A1), luego id. Sin plano: de las mesas.
+     */
     private fun areasOf(tables: List<DiningTable>, plan: FloorPlanPayload?): List<FloorTab> {
         val areas = if (plan != null) {
             plan.areas.map { AreaInfo(it.id, it.name, it.floorShape, it.sortOrder) }
@@ -51,8 +57,9 @@ object FloorLayoutBuilder {
             tables.mapNotNull { t -> t.areaId?.let { AreaInfo(it, t.areaName ?: "Área", t.areaFloorShape, t.areaSortOrder ?: 0) } }
                 .distinctBy { it.id }
         }
+        val porNombre = Collator.getInstance(Locale("es")).apply { strength = Collator.SECONDARY }
         return areas
-            .sortedWith(compareBy<AreaInfo>({ it.sortOrder }, { it.name.lowercase(Locale.ROOT) }, { it.id }))
+            .sortedWith(compareBy<AreaInfo> { it.sortOrder }.thenBy(porNombre) { it.name }.thenBy { it.id })
             .map { FloorTab(it.id, it.name, it.floorShape) }
     }
 
@@ -68,7 +75,13 @@ object FloorLayoutBuilder {
         val elements = when {
             plan == null -> emptyList()
             planAlDia -> plan.elements
-            else -> plan.elements.filter { it.areaId != null && it.areaId in areaIds }
+            // Atrasado: sólo los de un área que sigue existiendo Y con la misma forma que anuncian las mesas; si la forma
+            // cambió, sus coordenadas 0–1 viejas caerían en otro lugar (enmienda A6).
+            else -> {
+                val formaGuardada = plan.areas.associate { it.id to FloorGeometry.gridOf(it.floorShape) }
+                val formaDeLasMesas = areas.associate { it.key to FloorGeometry.gridOf(it.floorShape) }
+                plan.elements.filter { it.areaId != null && it.areaId in areaIds && formaGuardada[it.areaId] == formaDeLasMesas[it.areaId] }
+            }
         }
         val sinArea = FloorTab(SIN_AREA_KEY, SIN_AREA_TITLE, null)
 
@@ -92,22 +105,29 @@ object FloorLayoutBuilder {
             }
             val g = FloorGeometry.gridOf(shapeOf[key])
             val size = FloorGeometry.tableSizeCells(t.shape, t.capacity)
+            // `positionX/Y` son Float: 0.525f llega como 0.52499997… y daría 20.999999. Redondeado primero a 6 decimales
+            // cae exacto, como en iOS y el dashboard (enmienda A5).
             placed.getOrPut(key) { mutableListOf() } += PlacedTable(
                 table = t,
-                cx = FloorGeometry.round6(t.positionX!!.toDouble() * g.cols),
-                cy = FloorGeometry.round6(t.positionY!!.toDouble() * g.rows),
+                cx = FloorGeometry.round6(FloorGeometry.round6(t.positionX!!.toDouble()) * g.cols),
+                cy = FloorGeometry.round6(FloorGeometry.round6(t.positionY!!.toDouble()) * g.rows),
                 w = size.w,
                 h = size.h,
                 rotation = t.rotation,
             )
         }
 
-        // Un elemento sin área (o con un área borrada) cae en la primera pestaña, como en el dashboard.
+        // Un elemento sin área (o con un área borrada) cae en la primera pestaña, como en el dashboard. Con el plano
+        // truncado (overLimit), uno de un área que el tope cortó se omite: no es de la primera (enmienda A3).
         val elementsByTab = linkedMapOf<String, MutableList<FloorGeometry.CellElement>>()
         val firstKey = tabs.firstOrNull()?.key
         if (firstKey != null) {
             elements.forEach { e ->
-                val key = if (e.areaId != null && e.areaId in areaIds) e.areaId else firstKey
+                val key = when {
+                    e.areaId != null && e.areaId in areaIds -> e.areaId
+                    e.areaId != null && plan?.overLimit == true -> return@forEach
+                    else -> firstKey
+                }
                 elementsByTab.getOrPut(key) { mutableListOf() } += FloorGeometry.elementToCells(e, FloorGeometry.gridOf(shapeOf[key]))
             }
         }
@@ -153,10 +173,10 @@ object FloorLayoutBuilder {
     fun minutesSince(iso: String?, nowMs: Long): Int? {
         if (iso.isNullOrBlank()) return null
         val startMs = try {
-            java.time.Instant.parse(iso).toEpochMilli()
+            Instant.parse(iso).toEpochMilli()
         } catch (_: Exception) {
             try {
-                java.time.OffsetDateTime.parse(iso).toInstant().toEpochMilli()
+                OffsetDateTime.parse(iso).toInstant().toEpochMilli()
             } catch (_: Exception) {
                 return null
             }

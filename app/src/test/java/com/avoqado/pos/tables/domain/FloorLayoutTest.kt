@@ -55,6 +55,57 @@ class FloorLayoutTest {
     }
 
     @Test
+    fun `un area con acento empata como en el dashboard`() {
+        // El dashboard: `a.name.localeCompare(b.name, 'es')` ⇒ ['Área común', 'azotea', 'Barra'] (node, 9-oct). Por código
+        // de punto «Área común» (Á = U+00C1) caería al final.
+        val empate = FloorPlanPayload(
+            areas = listOf(FloorPlanArea("b", "Barra", null, 0), FloorPlanArea("a2", "Área común", null, 0), FloorPlanArea("a1", "azotea", null, 0)),
+        )
+        assertEquals(listOf("Área común", "azotea", "Barra"), FloorLayoutBuilder.build(emptyList(), empate).tabs.map { it.title })
+    }
+
+    @Test
+    fun `con el plano truncado un elemento de un area cortada no se dibuja`() {
+        // overLimit: el servidor mandó sólo las primeras 30 áreas. Lo de un área cortada no cae en la primera pestaña.
+        val truncado = FloorPlanPayload(
+            floorPlanVersion = "p1",
+            areas = listOf(FloorPlanArea("a1", "Salón", null, 0)),
+            elements = listOf(
+                FloorPlanElement(id = "e1", type = "WALL", areaId = "a1", endX = 1.0, endY = 0.0),
+                FloorPlanElement(id = "e2", type = "WALL", areaId = "cortada", endX = 1.0, endY = 0.0),
+                FloorPlanElement(id = "e3", type = "LABEL", areaId = null, label = "VIP"),
+            ),
+            overLimit = true,
+        )
+        assertEquals(listOf("e1", "e3"), FloorLayoutBuilder.build(listOf(t1), truncado).elementsByTab["a1"]?.map { it.id })
+    }
+
+    @Test
+    fun `una posicion de seis decimales cae exacta en su cuadro`() {
+        // 0.525f como Double es 0.52499997…: sin redondear antes, 0.525 × 40 daba 20.999999 (iOS y el dashboard: 21.0).
+        val placed = FloorLayoutBuilder.build(listOf(mesa("t1", areaId = "a1", x = 0.525f, y = 0.4f)), plano).placedByTab["a1"]!!.single()
+        assertEquals(21.0, placed.cx, 0.0)
+        assertEquals(10.0, placed.cy, 0.0)
+    }
+
+    @Test
+    fun `con el plano atrasado y el area con otra forma sus elementos no se dibujan`() {
+        // Guardado «p1»: Salón ancho (null) y Terraza larga. Las mesas anuncian «p2» y dicen que la Terraza ahora es
+        // CUADRADA: las coordenadas 0–1 viejas de su barra caerían en otro lugar. El Salón no cambió de forma.
+        val guardado = plano.copy(
+            elements = listOf(
+                FloorPlanElement(id = "e1", type = "WALL", areaId = "a1", endX = 1.0, endY = 0.0),
+                FloorPlanElement(id = "e3", type = "BAR_COUNTER", areaId = "a2", positionX = 0.1, positionY = 0.1, width = 0.2, height = 0.1),
+            ),
+        )
+        val enSalon = mesa("t1", areaId = "a1", x = 0.5f, y = 0.5f, areaName = "Salón", areaSortOrder = 0, areaFloorShape = null)
+        val enTerraza = mesa("t2", areaId = "a2", x = 0.5f, y = 0.5f, areaName = "Terraza", areaSortOrder = 1, areaFloorShape = "SQUARE")
+        val layout = FloorLayoutBuilder.build(listOf(enSalon, enTerraza), guardado, tablesFloorPlanVersion = "p2")
+        assertEquals(listOf("e1"), layout.elementsByTab["a1"]?.map { it.id })
+        assertNull(layout.elementsByTab["a2"])
+    }
+
+    @Test
     fun `una mesa con posicion y sin area va a la pestana Sin area`() {
         val layout = FloorLayoutBuilder.build(mesas, plano)
         assertEquals(listOf(PlacedTable(t2, 20.0, 12.5, 4.0, 4.0, 0)), layout.placedByTab[SIN_AREA_KEY])

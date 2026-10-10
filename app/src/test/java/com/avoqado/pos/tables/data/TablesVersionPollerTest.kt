@@ -1,16 +1,24 @@
 package com.avoqado.pos.tables.data
 
+import com.avoqado.pos.core.data.network.ApiService
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.coVerifyOrder
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import retrofit2.HttpException
+import retrofit2.Response
 
 /** Qué se pide al entrar, cada 10 s y al refrescar (spec 2026-10-09 §4.1). Espejo: avoqado-ios `TablesVersionPollerTests`. */
 class TablesVersionPollerTest {
@@ -129,6 +137,45 @@ class TablesVersionPollerTest {
         assertEquals(0, consultas)
         coVerify(exactly = 1) { mesas.refresh("v1") }
         coVerify(exactly = 1) { plano.refresh("v1") }
+    }
+
+    @Test
+    fun `un error del servidor en la version baja las mesas completas`() = runTest {
+        // Un 500 del manejador global: la red SÍ funciona. Esa vuelta baja /tables completo y la siguiente vuelve a preguntar.
+        val api = mockk<ApiService>()
+        val cuerpo = """{"message":"Ocurrió un error inesperado en el servidor."}""".toResponseBody("application/json".toMediaType())
+        coEvery { api.getTablesVersion("v1") } throws HttpException(Response.error<Any>(500, cuerpo))
+        val conServidor = TablesVersionPoller(mesas, plano, ApiFuenteDeVersiones(api))
+        conServidor.consultar("v1")
+        conServidor.consultar("v1")
+        assertFalse(conServidor.servidorViejo)
+        coVerify(exactly = 2) { api.getTablesVersion("v1") }
+        coVerify(exactly = 2) { mesas.refresh("v1") }
+        coVerify(exactly = 0) { plano.refresh(any()) }
+    }
+
+    @Test
+    fun `una consulta tardia de otra sucursal no la vuelve a pintar`() = runTest {
+        coEvery { mesas.refresh(any()) } returns Result.success(emptyList())
+        coEvery { plano.refresh(any()) } returns Result.success(FloorPlanPayload(floorPlanVersion = "p1"))
+        val respuestaDeA = CompletableDeferred<ConsultaDeVersiones>()
+        val lenta = TablesVersionPoller(
+            mesas,
+            plano,
+            object : FuenteDeVersiones {
+                override suspend fun consultar(venueId: String): ConsultaDeVersiones =
+                    if (venueId == "A") respuestaDeA.await() else ConsultaDeVersiones.Versiones("t1", "p1")
+            },
+        )
+        lenta.entrar("A")
+        val tardia = launch { lenta.consultar("A") }
+        runCurrent() // la consulta de A queda esperando su respuesta
+        lenta.entrar("B") // el mesero cambió de sucursal
+        respuestaDeA.complete(ConsultaDeVersiones.Versiones("t2", "p2")) // A sí había cambiado
+        tardia.join()
+        coVerify(exactly = 1) { mesas.refresh("A") } // sólo la de entrar(A)
+        coVerify(exactly = 0) { plano.refresh("A") }
+        assertFalse(lenta.servidorViejo)
     }
 
     @Test

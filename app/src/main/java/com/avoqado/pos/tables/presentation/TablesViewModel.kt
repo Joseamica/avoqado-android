@@ -7,15 +7,25 @@ import com.avoqado.pos.printing.data.PrinterService
 import com.avoqado.pos.printing.data.model.PrinterRole
 import com.avoqado.pos.printing.data.model.ReceiptData
 import com.avoqado.pos.printing.data.model.ReceiptItem
+import com.avoqado.pos.tables.data.ApiFuenteDeVersiones
 import com.avoqado.pos.tables.data.DiningTable
+import com.avoqado.pos.tables.data.FloorPlanRepository
 import com.avoqado.pos.tables.data.TableServiceRepository
 import com.avoqado.pos.tables.data.TableSession
+import com.avoqado.pos.tables.data.TablesVersionPoller
+import com.avoqado.pos.tables.domain.FloorLayout
+import com.avoqado.pos.tables.domain.FloorLayoutBuilder
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -44,6 +54,9 @@ class TablesViewModel @Inject constructor(
     private val secureStorage: SecureStorage,
     private val syncOutbox: com.avoqado.pos.core.data.sync.SyncOutbox,
     private val lanHub: com.avoqado.pos.core.data.lan.LanHubService,
+    private val floorPlanRepository: FloorPlanRepository,
+    private val roleManager: com.avoqado.pos.core.domain.RoleManager,
+    versionSource: ApiFuenteDeVersiones,
 ) : ViewModel() {
 
     init {
@@ -58,6 +71,34 @@ class TablesViewModel @Inject constructor(
 
     val tables: StateFlow<List<DiningTable>> = repository.tables
     val isLoading: StateFlow<Boolean> = repository.isLoading
+
+    // MARK: - Plano (spec 2026-10-09)
+
+    /** Uno por pantalla: el «servidor viejo» se recuerda sólo durante esta visita. Se maneja sólo desde el hilo principal. */
+    private val poller = TablesVersionPoller(repository, floorPlanRepository, versionSource)
+
+    /** Pestañas, mesas puestas, elementos, «sin acomodar» y la lista del teléfono, armados de mesas + plano. */
+    // `floorPlanVersionFromTables` se asigna ANTES de publicar las mesas (Task 5): al emitir, ya es la de esas mesas. Con
+    // ella el armador sabe si el plano guardado está atrasado (corrección C6).
+    val layout: StateFlow<FloorLayout> = combine(repository.tables, floorPlanRepository.plan) { t, p ->
+        FloorLayoutBuilder.build(t, p, repository.floorPlanVersionFromTables)
+    }
+        .flowOn(Dispatchers.Default)
+        .stateIn(viewModelScope, SharingStarted.Eagerly, FloorLayout())
+
+    private val _rememberedTab = MutableStateFlow<String?>(null)
+
+    /** La pestaña de área que este aparato dejó abierta en este venue (spec §4.2). */
+    val rememberedTab: StateFlow<String?> = _rememberedTab.asStateFlow()
+
+    fun selectTab(key: String) {
+        _rememberedTab.value = key
+        venueId?.let { secureStorage.setFloorAreaTab(it, key) }
+    }
+
+    /** Sólo decide si se ve el aviso «Arma el plano en tu computadora…» cuando no hay plano. */
+    val canConfigureTables: Boolean
+        get() = roleManager.canConfigureTables
 
     /**
      * Aviso para el mesero, por el Snackbar del plano.
@@ -114,8 +155,19 @@ class TablesViewModel @Inject constructor(
     fun startPolling() {
         if (pollJob?.isActive == true) return
         pollJob = viewModelScope.launch {
+            var enPantalla: String? = null
             while (isActive) {
-                venueId?.let { repository.refresh(it) }
+                val vId = venueId
+                if (vId != null && vId == enPantalla) {
+                    // Cada 10 s, sólo «¿cambió algo?»; se baja sólo lo que cambió (spec §4.1).
+                    poller.consultar(vId)
+                } else if (vId != null) {
+                    // Al entrar —o si cambió la sucursal—: lo guardado de inmediato, luego /tables y (si cambió o falta)
+                    // /floor-plan. Nunca se sigue consultando la sucursal anterior (enmienda A8).
+                    enPantalla = vId
+                    _rememberedTab.value = secureStorage.floorAreaTab(vId)
+                    poller.entrar(vId)
+                }
                 delay(POLL_MS)
             }
         }
@@ -126,8 +178,9 @@ class TablesViewModel @Inject constructor(
         pollJob = null
     }
 
+    /** El botón de refrescar: mesas y plano completos, sin mirar versiones. */
     fun refresh() {
-        viewModelScope.launch { venueId?.let { repository.refresh(it) } }
+        viewModelScope.launch { venueId?.let { poller.refrescarTodo(it) } }
     }
 
     // MARK: - Selection

@@ -6,6 +6,9 @@ import com.avoqado.pos.core.di.NetworkModule
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
@@ -73,6 +76,22 @@ class FloorPlanRepositoryTest {
 
         assertNull(repo.plan.value)
         assertNull(repo.floorPlanVersion)
+    }
+
+    @Test
+    fun `una respuesta tardia del plano de otra sucursal no se pinta`() = runTest {
+        val respuestaDeA = CompletableDeferred<FloorPlanResponse>()
+        coEvery { api.getFloorPlan("A") } coAnswers { respuestaDeA.await() }
+        coEvery { cache.load(PayloadCache.TYPE_FLOOR_PLAN, "B") } returns
+            PayloadCache.Cached(json.encodeToString(FloorPlanPayload.serializer(), plano("p-B")), System.currentTimeMillis())
+        val tardia = launch { repo.refresh("A") }
+        runCurrent() // /floor-plan de A queda esperando
+        repo.hydrate("B") // el mesero cambió de sucursal
+
+        respuestaDeA.complete(FloorPlanResponse(data = plano("p-A")))
+        tardia.join()
+
+        assertEquals("p-B", repo.plan.value?.floorPlanVersion)
     }
 
     @Test
