@@ -11,9 +11,11 @@ import com.avoqado.pos.articles.data.model.ModifierGroup
 import com.avoqado.pos.articles.data.model.ProductOption
 import com.avoqado.pos.articles.data.model.ProductOptionsListResponse
 import com.avoqado.pos.articles.data.model.RawMaterial
+import com.avoqado.pos.core.data.local.PayloadCache
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.network.ApiConstants
 import com.avoqado.pos.core.data.network.ServerErrorText
+import com.avoqado.pos.pos.data.model.Product
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -50,6 +52,8 @@ private data class CustomerBalanceEnvelope(
 class ArticlesRepository @Inject constructor(
     private val secureStorage: SecureStorage,
     private val client: OkHttpClient,
+    /** El catálogo que guarda el cobro (`ProductsRepository`): sin red, Artículos lo enseña en lectura (IVA plan 7). */
+    private val payloadCache: PayloadCache,
 ) {
     private val json = Json { ignoreUnknownKeys = true }
 
@@ -75,6 +79,10 @@ class ArticlesRepository @Inject constructor(
 
     private val _products = MutableStateFlow<List<ArticleProduct>>(emptyList())
     val products: StateFlow<List<ArticleProduct>> = _products.asStateFlow()
+
+    /** La lista vino del catálogo guardado porque no hubo red: Artículos lo DICE y sus fichas son de lectura (IVA plan 7). */
+    private val _vistaSinConexion = MutableStateFlow(false)
+    val vistaSinConexion: StateFlow<Boolean> = _vistaSinConexion.asStateFlow()
 
     private val _categories = MutableStateFlow<List<ArticleCategory>>(emptyList())
     val categories: StateFlow<List<ArticleCategory>> = _categories.asStateFlow()
@@ -164,21 +172,41 @@ class ArticlesRepository @Inject constructor(
             if (code in 200..299 && body.isNotEmpty()) {
                 val list = decodeListEnvelope(body, ArticleProduct.serializer())
                 _products.value = list
+                _vistaSinConexion.value = false
                 Log.d(TAG, "✅ Loaded ${list.size} products")
                 Result.success(Unit)
             } else {
                 // Fallo tipado, datos previos INTACTOS; error visible sólo sin datos (spec §4.1/§6).
                 Log.e(TAG, "❌ fetchProducts error: HTTP $code")
+                val e = Exception("Products HTTP $code")
+                if (_products.value.isEmpty() && hidratarDelCatalogoGuardado()) return Result.failure(e)
                 if (_products.value.isEmpty()) _errorMessage.value = "Error al cargar productos"
-                Result.failure(Exception("Products HTTP $code"))
+                Result.failure(e)
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ fetchProducts exception: ${e.message}", e)
+            // Sin red (IVA por producto, plan 7, spec §10): sin lista, se enseña el catálogo que ya guardó el cobro, con su IVA.
+            // Es lectura: crear o editar sigue necesitando red. Nunca pisa una lista buena.
+            if (_products.value.isEmpty() && hidratarDelCatalogoGuardado()) return Result.failure(e)
             if (_products.value.isEmpty()) _errorMessage.value = "Error al cargar productos"
             Result.failure(e)
         } finally {
             _isLoading.value = false
         }
+    }
+
+    /** El catálogo que guardó el cobro (`ProductsRepository`, mismo endpoint), en lectura. `true` si había algo que enseñar. */
+    private suspend fun hidratarDelCatalogoGuardado(): Boolean {
+        val venue = secureStorage.venueId ?: return false
+        val guardado = payloadCache.load(PayloadCache.TYPE_PRODUCTS, venue) ?: return false
+        val productos = runCatching {
+            json.decodeFromString(kotlinx.serialization.builtins.ListSerializer(Product.serializer()), guardado.json)
+        }.getOrNull().orEmpty()
+        if (productos.isEmpty()) return false
+        _products.value = productos.map { it.aArticuloDeLectura() }
+        _vistaSinConexion.value = true
+        Log.w(TAG, "📴 Sin red: Artículos enseña el catálogo guardado (${productos.size} productos, hace ${guardado.ageMinutes} min)")
+        return true
     }
 
     suspend fun createProduct(productJson: String): Boolean {
@@ -280,12 +308,13 @@ class ArticlesRepository @Inject constructor(
             } else {
                 // Fallo tipado, datos previos INTACTOS; error visible sólo sin datos (spec §4.1/§6).
                 Log.e(TAG, "❌ fetchCategories error: HTTP $code")
-                if (_categories.value.isEmpty()) _errorMessage.value = "Error al cargar categorías"
+                if (_categories.value.isEmpty() && !_vistaSinConexion.value) _errorMessage.value = "Error al cargar categorías"
                 Result.failure(Exception("Categories HTTP $code"))
             }
         } catch (e: Exception) {
             Log.e(TAG, "❌ fetchCategories exception: ${e.message}", e)
-            if (_categories.value.isEmpty()) _errorMessage.value = "Error al cargar categorías"
+            // Sin red con el catálogo guardado la banda ámbar ya lo dice (como iOS): sin un segundo aviso rojo encima.
+            if (_categories.value.isEmpty() && !_vistaSinConexion.value) _errorMessage.value = "Error al cargar categorías"
             Result.failure(e)
         } finally {
             _isLoading.value = false
@@ -1108,3 +1137,18 @@ class ArticlesRepository @Inject constructor(
         }
     }
 }
+
+/** El producto del catálogo guardado, en la forma de Artículos (sólo lectura, IVA por producto plan 7). */
+internal fun Product.aArticuloDeLectura() = ArticleProduct(
+    id = id, name = name, description = description, type = type, sku = sku, gtin = gtin, price = priceValue,
+    priceType = priceType, active = active, trackInventory = trackInventory, inventoryMethod = inventoryMethod, unit = unit,
+    categoryId = categoryId, category = category?.let { ArticleCategory(id = it.id, name = it.name, color = it.color) },
+    durationMinutes = duration, ivaTratamiento = ivaTratamiento,
+    desdeCatalogoGuardado = true, // r2 R2-14: la ficha que se abra de aquí es de sólo lectura
+)
+
+internal const val AVISO_FICHA_SIN_CONEXION =
+    "Esta ficha se abrió sin conexión: ciérrala y vuelve a abrirla con conexión para editarla."
+
+internal const val AVISO_CATALOGO_GUARDADO =
+    "Sin conexión: estás viendo el catálogo guardado. Para crear o editar productos necesitas conexión."

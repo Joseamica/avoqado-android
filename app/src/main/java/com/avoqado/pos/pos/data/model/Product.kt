@@ -62,6 +62,8 @@ data class Product(
     val availableQuantityExact: Double? = null,
     /** QUANTITY | RECIPE — para que el modal de agotado explique la causa. */
     val inventoryMethod: String? = null,
+    /** IVA del producto (IVA por producto). Se guarda con el catálogo para que la ficha lo muestre sin red (plan 7). */
+    val ivaTratamiento: String? = null,
     /** Insumo cuello de botella de la receta (null sin receta / backend viejo). */
     val limitingIngredient: IngredientShortage? = null,
     /** Insumos con los que ya no alcanza NI para una porción. */

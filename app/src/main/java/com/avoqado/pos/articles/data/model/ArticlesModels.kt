@@ -115,6 +115,10 @@ data class ArticleProduct(
     val cost: Double? = null,
     val priceType: String? = null,
     val taxRate: Double? = null,
+    /** IVA del producto (IVA por producto). Sólo se MUESTRA (plan 7, D2): se cambia en el dashboard. */
+    val ivaTratamiento: String? = null,
+    /** Vino del catálogo guardado (sin red): su ficha es de sólo lectura (plan 7, r2 R2-14). No viaja. */
+    @kotlinx.serialization.Transient val desdeCatalogoGuardado: Boolean = false,
     val active: Boolean? = null,
     val trackInventory: Boolean? = null,
     val inventoryMethod: String? = null,

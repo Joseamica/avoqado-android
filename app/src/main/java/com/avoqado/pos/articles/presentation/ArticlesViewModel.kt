@@ -68,6 +68,8 @@ class ArticlesViewModel @Inject constructor(
     val productOptions = repository.productOptions
     val isLoading = repository.isLoading
     val errorMessage = repository.errorMessage
+    /** Sin red, la lista es el catálogo guardado: la pantalla lo DICE (IVA por producto, plan 7). */
+    val vistaSinConexion = repository.vistaSinConexion
 
     // MARK: - Local state
 
@@ -210,7 +212,6 @@ class ArticlesViewModel @Inject constructor(
         priceType: PriceType,
         price: Double? = null,
         cost: Double? = null,
-        taxRate: Double,
         isActive: Boolean,
         trackInventory: Boolean,
         inventoryMethod: String? = null,
@@ -223,6 +224,7 @@ class ArticlesViewModel @Inject constructor(
                 repository.clearError()
                 // Generate SKU if not provided (mobile route may require it)
                 val resolvedSku = sku ?: UUID.randomUUID().toString().take(8).uppercase()
+                // IVA por producto, plan 7 (D2): la app nunca manda IVA. Se cambia en el dashboard; un alta nace al 16 % (default del servidor).
                 val payload = buildJsonObject {
                     put("name", name)
                     if (description != null) put("description", description)
@@ -233,7 +235,6 @@ class ArticlesViewModel @Inject constructor(
                     put("priceType", priceType.name)
                     if (price != null) put("price", price)
                     if (cost != null) put("cost", cost)
-                    put("taxRate", taxRate)
                     put("active", isActive)
                     put("trackInventory", trackInventory)
                     if (inventoryMethod != null) put("inventoryMethod", inventoryMethod)
@@ -263,17 +264,20 @@ class ArticlesViewModel @Inject constructor(
         priceType: PriceType,
         price: Double? = null,
         cost: Double? = null,
-        taxRate: Double,
         isActive: Boolean,
         trackInventory: Boolean,
         inventoryMethod: String? = null,
         unit: String? = null,
+        /** La ficha se abrió desde el catálogo guardado (sin red): trae datos viejos y no se guarda (r2 R2-14). */
+        abiertaSinConexion: Boolean = false,
         onResult: (Boolean) -> Unit = {},
     ) {
+        if (abiertaSinConexion) { onResult(false); return } // r2 R2-14: la ficha trae datos viejos
         viewModelScope.launch {
             _isSaving.value = true
             try {
                 repository.clearError()
+                // IVA por producto, plan 7 (D2): la app nunca manda IVA. Se cambia en el dashboard; un alta nace al 16 % (default del servidor).
                 val payload = buildJsonObject {
                     put("name", name)
                     if (description != null) put("description", description)
@@ -284,7 +288,6 @@ class ArticlesViewModel @Inject constructor(
                     put("priceType", priceType.name)
                     if (price != null) put("price", price)
                     if (cost != null) put("cost", cost)
-                    put("taxRate", taxRate)
                     put("active", isActive)
                     put("trackInventory", trackInventory)
                     if (inventoryMethod != null) put("inventoryMethod", inventoryMethod)

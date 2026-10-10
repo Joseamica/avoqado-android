@@ -49,12 +49,15 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.avoqado.pos.articles.data.AVISO_FICHA_SIN_CONEXION
 import com.avoqado.pos.articles.data.model.ArticleProduct
+import com.avoqado.pos.articles.data.model.IvaEnLectura
 import com.avoqado.pos.articles.data.model.InventoryMethod
 import com.avoqado.pos.articles.data.model.MeasurementUnit
 import com.avoqado.pos.articles.data.model.PriceType
 import com.avoqado.pos.articles.data.model.ProductType
 import com.avoqado.pos.articles.presentation.ArticlesViewModel
+import com.avoqado.pos.inventory.presentation.BandaDeAvisoDeConteo
 import com.avoqado.pos.designsystem.components.AvoqadoFullScreenModal
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
 import com.avoqado.pos.designsystem.theme.Success
@@ -84,7 +87,8 @@ fun ProductDetailView(
     }
     var price by remember { mutableStateOf(product?.price?.toString() ?: "") }
     var cost by remember { mutableStateOf(product?.cost?.toString() ?: "") }
-    var taxRate by remember { mutableStateOf(product?.taxRate ?: 0.16) }
+    // r2 R2-14: una ficha abierta desde el catálogo guardado (sin red) queda en lectura toda su vida; se fija al ABRIR.
+    val abiertaSinConexion = remember { product?.desdeCatalogoGuardado == true }
     var isActive by remember { mutableStateOf(product?.active ?: true) }
     var trackInventory by remember { mutableStateOf(product?.trackInventory ?: false) }
     var inventoryMethod by remember {
@@ -120,7 +124,6 @@ fun ProductDetailView(
                 priceType = priceType,
                 price = price.toDoubleOrNull(),
                 cost = cost.toDoubleOrNull(),
-                taxRate = taxRate,
                 isActive = isActive,
                 trackInventory = trackInventory,
                 inventoryMethod = if (trackInventory) inventoryMethod.name else null,
@@ -139,11 +142,11 @@ fun ProductDetailView(
                 priceType = priceType,
                 price = price.toDoubleOrNull(),
                 cost = cost.toDoubleOrNull(),
-                taxRate = taxRate,
                 isActive = isActive,
                 trackInventory = trackInventory,
                 inventoryMethod = if (trackInventory) inventoryMethod.name else null,
                 unit = if (trackInventory) unit.name else null,
+                abiertaSinConexion = abiertaSinConexion,
                 onResult = handle,
             )
         }
@@ -166,8 +169,8 @@ fun ProductDetailView(
         onDismiss = onDismiss,
         primaryActionText = if (product == null) "Crear" else "Guardar",
         onPrimaryAction = { onSave() },
-        primaryActionEnabled = name.isNotBlank() && !isSaving,
-        primaryActionDisabledReason = if (isSaving) null else "Ponle nombre al artículo",
+        primaryActionEnabled = name.isNotBlank() && !isSaving && !abiertaSinConexion,
+        primaryActionDisabledReason = if (isSaving || abiertaSinConexion) null else "Ponle nombre al artículo",
     ) {
         LazyColumn(
             modifier = Modifier
@@ -176,6 +179,9 @@ fun ProductDetailView(
                 .padding(AvoqadoTheme.spacing.lg),
             verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.lg),
         ) {
+
+            // Abierta sin red: trae precio y campos viejos; para editar se cierra y se abre con conexión (r2 R2-14).
+            if (abiertaSinConexion) item { BandaDeAvisoDeConteo(AVISO_FICHA_SIN_CONEXION) }
 
             // MARK: 1. Avatar
             item {
@@ -334,16 +340,18 @@ fun ProductDetailView(
                 }
             }
 
-            // MARK: 5. IMPUESTOS
+            // MARK: 5. IMPUESTOS — D2 (IVA por producto, plan 7): en lectura; se cambia en el dashboard.
             item {
-                val taxOptions = listOf(0.16 to "IVA 16%", 0.0 to "Exento")
                 SectionCard(title = "IMPUESTOS") {
-                    DropdownSelector(
-                        label = "Tasa de impuesto",
-                        options = taxOptions,
-                        selected = taxOptions.find { it.first == taxRate } ?: taxOptions.first(),
-                        display = { it.second },
-                        onSelected = { taxRate = it.first },
+                    Text(
+                        text = if (product == null) IvaEnLectura.TITULO_ALTA else IvaEnLectura.titulo(product.ivaTratamiento),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurface,
+                    )
+                    Text(
+                        text = IvaEnLectura.AYUDA,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
             }
@@ -435,10 +443,10 @@ fun ProductDetailView(
             if (product != null) {
                 item {
                     Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                        TextButton(onClick = { showDeleteDialog = true }) {
+                        TextButton(onClick = { showDeleteDialog = true }, enabled = !abiertaSinConexion) {
                             Text(
                                 text = "Eliminar artículo",
-                                color = MaterialTheme.colorScheme.error,
+                                color = if (abiertaSinConexion) MaterialTheme.colorScheme.onSurfaceVariant else MaterialTheme.colorScheme.error,
                             )
                         }
                     }

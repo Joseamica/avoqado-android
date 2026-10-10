@@ -52,7 +52,9 @@ import com.avoqado.pos.articles.data.model.PriceType
 import com.avoqado.pos.articles.data.model.ProductType
 import android.widget.Toast
 import androidx.compose.ui.platform.LocalContext
+import com.avoqado.pos.articles.data.AVISO_CATALOGO_GUARDADO
 import com.avoqado.pos.articles.presentation.ArticlesViewModel
+import com.avoqado.pos.inventory.presentation.BandaDeAvisoDeConteo
 import com.avoqado.pos.designsystem.components.AvoqadoLoadingState
 import com.avoqado.pos.designsystem.components.AvoqadoSuccessToast
 import com.avoqado.pos.designsystem.components.SearchPillField
@@ -66,6 +68,7 @@ fun ProductListView(viewModel: ArticlesViewModel) {
     val categories by viewModel.categories.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
+    val vistaSinConexion by viewModel.vistaSinConexion.collectAsState()
     val lastSaveSuccess by viewModel.lastSaveSuccess.collectAsState()
     val context = LocalContext.current
 
@@ -108,6 +111,9 @@ fun ProductListView(viewModel: ArticlesViewModel) {
     val searchHeight = if (denseListMode) 40.dp else adaptive.listSearchFieldHeight
 
     Column(modifier = Modifier.fillMaxSize()) {
+        // Sin red con el catálogo guardado (IVA por producto, plan 7, spec §10): se ve, no se edita, y lo DICE. Espejo de iOS.
+        if (vistaSinConexion) BandaDeAvisoDeConteo(AVISO_CATALOGO_GUARDADO)
+
         // MARK: - Header
         Row(
             modifier = Modifier
@@ -214,7 +220,6 @@ fun ProductListView(viewModel: ArticlesViewModel) {
                                     type = ProductType.REGULAR,
                                     priceType = PriceType.FIXED,
                                     price = quickAddPrice.toDoubleOrNull(),
-                                    taxRate = 0.16,
                                     isActive = true,
                                     trackInventory = false,
                                 )

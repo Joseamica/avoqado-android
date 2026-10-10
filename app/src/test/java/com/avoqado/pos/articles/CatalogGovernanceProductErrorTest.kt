@@ -48,8 +48,8 @@ class CatalogGovernanceProductErrorTest {
 
     @Test
     fun `Articles create and update preserve the master catalog explanation`() = runTest {
-        val createRepository = ArticlesRepository(secureStorage(), clientReturning(422, governanceBody))
-        val updateRepository = ArticlesRepository(secureStorage(), clientReturning(422, governanceBody))
+        val createRepository = ArticlesRepository(secureStorage(), clientReturning(422, governanceBody), mockk(relaxed = true))
+        val updateRepository = ArticlesRepository(secureStorage(), clientReturning(422, governanceBody), mockk(relaxed = true))
 
         assertTrue(!createRepository.createProduct("{}"))
         assertTrue(!updateRepository.updateProduct("product-1", "{}"))

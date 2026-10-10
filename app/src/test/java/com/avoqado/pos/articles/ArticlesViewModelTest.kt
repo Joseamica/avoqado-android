@@ -10,12 +10,16 @@ import io.mockk.coVerify
 import io.mockk.coEvery
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.slot
 import io.mockk.verify
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -155,6 +159,67 @@ class ArticlesViewModelTest {
 
     // MARK: - Products CRUD
 
+    // MARK: - IVA por producto, plan 7 (D2): la app nunca manda IVA; espejo de iOS I2
+
+    @Test
+    fun `P1 crear un producto no manda IVA - nace al 16 por ciento en el servidor`() = runTest {
+        val payload = slot<String>()
+        coEvery { repository.createProduct(capture(payload)) } returns true
+        createViewModel().createProduct(
+            name = "Agua",
+            type = com.avoqado.pos.articles.data.model.ProductType.FOOD_AND_BEV,
+            priceType = com.avoqado.pos.articles.data.model.PriceType.FIXED,
+            price = 25.0,
+            isActive = true,
+            trackInventory = false,
+        )
+        advanceUntilIdle()
+        val json = Json.parseToJsonElement(payload.captured).jsonObject
+        assertEquals("Agua", json["name"]?.toString()?.trim('"'))
+        assertFalse(json.containsKey("taxRate"))
+        assertFalse(json.containsKey("ivaTratamiento"))
+    }
+
+    @Test
+    fun `P1 editar un producto no manda IVA - una ficha abierta antes de un cambio no lo regresa a 16`() = runTest {
+        val payload = slot<String>()
+        coEvery { repository.updateProduct("p1", capture(payload)) } returns true
+        createViewModel().updateProduct(
+            productId = "p1",
+            name = "GRN TURISMO 2 KG",
+            type = com.avoqado.pos.articles.data.model.ProductType.FOOD_AND_BEV,
+            priceType = com.avoqado.pos.articles.data.model.PriceType.FIXED,
+            price = 520.0,
+            isActive = true,
+            trackInventory = false,
+        )
+        advanceUntilIdle()
+        val json = Json.parseToJsonElement(payload.captured).jsonObject
+        assertEquals("GRN TURISMO 2 KG", json["name"]?.toString()?.trim('"'))
+        assertFalse(json.containsKey("taxRate"))
+        assertFalse(json.containsKey("ivaTratamiento"))
+    }
+
+    @Test
+    fun `P1 una ficha abierta sin conexion no guarda aunque la red ya volvio - mandaria precio y campos viejos (r2 R2-14)`() = runTest {
+        var resultado: Boolean? = null
+        coEvery { repository.updateProduct(any(), any()) } returns true
+        createViewModel().updateProduct(
+            productId = "p1",
+            name = "GRN TURISMO 2 KG",
+            type = com.avoqado.pos.articles.data.model.ProductType.FOOD_AND_BEV,
+            priceType = com.avoqado.pos.articles.data.model.PriceType.FIXED,
+            price = 480.0,
+            isActive = true,
+            trackInventory = false,
+            abiertaSinConexion = true,
+            onResult = { resultado = it },
+        )
+        advanceUntilIdle()
+        coVerify(exactly = 0) { repository.updateProduct(any(), any()) }
+        assertEquals(false, resultado)
+    }
+
     @Test
     fun `create product does not replace the actionable repository error`() = runTest {
         repositoryError.value = "Este producto debe crearse o activarse desde el Catálogo maestro."
@@ -166,7 +231,6 @@ class ArticlesViewModelTest {
             type = com.avoqado.pos.articles.data.model.ProductType.FOOD_AND_BEV,
             priceType = com.avoqado.pos.articles.data.model.PriceType.FIXED,
             price = 25.0,
-            taxRate = 0.16,
             isActive = true,
             trackInventory = false,
         )
