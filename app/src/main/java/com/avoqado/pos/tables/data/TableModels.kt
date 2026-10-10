@@ -178,7 +178,10 @@ data class TablesResponse(
     /** Propiedad de mesa (PRO) — siblings aditivos; servers viejos no los mandan. */
     val settings: TableServiceSettings? = null,
     val viewer: TableServiceViewer? = null,
-    /** Plano en el POS (2026-10-09): versión de mesas y del plano de esta respuesta. Sin ellas = servidor viejo. */
+    /**
+     * Plano en el POS (2026-10-09): versión de mesas y del plano de esta respuesta. Sin ellas: servidor viejo, o el nuevo no
+     * pudo calcularlas (sólo un 404 de /tables/version dice cuál).
+     */
     val tablesVersion: String? = null,
     val floorPlanVersion: String? = null,
 )

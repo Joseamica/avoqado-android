@@ -55,8 +55,9 @@ class TablesVersionPoller(
     private val versiones: FuenteDeVersiones,
 ) {
     /**
-     * El servidor no conoce `/tables/version` (404) o sus mesas no traen versión: se pide `/tables` completo cada vez, como
-     * antes de esta fase. Se recuerda en memoria y se olvida al volver a entrar a la pantalla (a lo más un 404 por visita).
+     * El servidor no conoce `/tables/version` (404): se pide `/tables` completo cada vez, como antes de esta fase. SÓLO un 404
+     * lo marca: un `/tables` sin versiones no basta, porque el servidor nuevo lo manda así si falla calcularlas (auditoría
+     * Codex del código, hallazgo 2). Se recuerda en memoria y se olvida al volver a entrar (a lo más un 404 por visita).
      */
     var servidorViejo: Boolean = false
         private set
@@ -82,10 +83,8 @@ class TablesVersionPoller(
         if (!sigueEn(venueId)) return
         val mesasAlDia = mesas.refresh(venueId).isSuccess
         if (!sigueEn(venueId)) return
-        if (mesasAlDia && mesas.tablesVersion == null) {
-            servidorViejo = true
-            return
-        }
+        // Mesas sin versión NO es servidor viejo (eso lo decide la primera consulta, con un 404): sin plano guardado se pide
+        // igual, y si las mesas no anuncian versión tampoco se puede dar por bueno el guardado.
         val guardado = plano.floorPlanVersion
         if (guardado == null || (mesasAlDia && mesas.floorPlanVersionFromTables != guardado)) {
             plano.refresh(venueId)

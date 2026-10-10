@@ -1,6 +1,7 @@
 package com.avoqado.pos.tables.data
 
 import com.avoqado.pos.core.data.network.ApiService
+import io.mockk.clearMocks
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.coVerifyOrder
@@ -115,14 +116,30 @@ class TablesVersionPollerTest {
     }
 
     @Test
-    fun `mesas sin version es servidor viejo y no pide plano ni version`() = runTest {
+    fun `un tables sin version al entrar no es servidor viejo`() = runTest {
+        // El servidor nuevo manda /tables sin versiones si falla calcularlas (auditoría Codex del código, hallazgo 2). Sólo
+        // un 404 de /tables/version es servidor viejo: la siguiente vuelta pregunta la versión y refrescar baja el plano.
         every { mesas.tablesVersion } returns null
+        every { mesas.floorPlanVersionFromTables } returns null
         poller.entrar("v1")
+        assertFalse(poller.servidorViejo)
+
         poller.consultar("v1")
-        assertTrue(poller.servidorViejo)
-        assertEquals(0, consultas)
-        coVerify(exactly = 0) { plano.refresh(any()) }
-        coVerify(exactly = 2) { mesas.refresh("v1") }
+        assertEquals("la siguiente vuelta pregunta la versión", 1, consultas)
+        assertFalse(poller.servidorViejo)
+
+        clearMocks(plano, answers = false, recordedCalls = true)
+        poller.refrescarTodo("v1")
+        coVerify(exactly = 1) { plano.refresh("v1") }
+    }
+
+    @Test
+    fun `sin plano guardado al entrar se pide aunque las mesas no traigan version`() = runTest {
+        every { mesas.tablesVersion } returns null
+        every { mesas.floorPlanVersionFromTables } returns null
+        every { plano.floorPlanVersion } returns null
+        poller.entrar("v1")
+        coVerify(exactly = 1) { plano.refresh("v1") }
     }
 
     @Test
