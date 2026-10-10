@@ -13,6 +13,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.ImageComposeScene
 import androidx.compose.ui.InternalComposeUiApi
@@ -58,14 +59,17 @@ class TecladoEnLaEscenaTest {
      * cajero real (entre dos toques hay decenas de cuadros). Sin esto, en el runner lento de GitHub la tecla siguiente se
      * aplicaba sobre el texto viejo y se «perdían» letras: «Hol andú» en vez de «Hola ñandú» (run 37054232000).
      */
-    private fun ImageComposeScene.teclas(caja: Caja) = EscritorDeTeclas(object : java.awt.Component() {}) {
-        sendKeyEvent(teclaDeCompose(it))
+    private fun ImageComposeScene.entregarTecla(tecla: java.awt.event.KeyEvent, caja: Caja) {
+        // Publica el cambio antes del cuadro, sin competir con las notificaciones globales de otras escenas.
+        Snapshot.withMutableSnapshot { sendKeyEvent(teclaDeCompose(tecla)) }
         cuadros()
         var vueltas = 0
         while (caja.compuesto != caja.texto && vueltas++ < 200) { Thread.sleep(2); cuadros() }
         check(caja.compuesto == caja.texto) { "el campo no se recompuso: compuesto=«${caja.compuesto}» texto=«${caja.texto}»" }
     }
 
+    private fun ImageComposeScene.teclas(caja: Caja) =
+        EscritorDeTeclas(object : java.awt.Component() {}) { entregarTecla(it, caja) }
 
     private class Caja { @Volatile var texto = ""; @Volatile var compuesto = ""; var hecho = 0 }
 
@@ -198,12 +202,13 @@ class TecladoEnLaEscenaTest {
                     if (abierto) androidx.compose.ui.window.Dialog(onDismissRequest = { abierto = false }) {
                         var v by remember { mutableStateOf("") }
                         BasicTextField(value = v, onValueChange = { v = it; cajaB.texto = it }, modifier = Modifier.width(300.dp).height(60.dp))
+                        SideEffect { cajaB.compuesto = v }
                     }
                 }
             }
         }
         try {
-            TecladoDeLaVentana.configurar(lienzo, null) { escena.sendKeyEvent(teclaDeCompose(it)); escena.cuadros() }
+            TecladoDeLaVentana.configurar(lienzo, null) { escena.entregarTecla(it, cajaB) }
             TecladoDeLaVentana.capaEnfocada = { escena.interna().capaEnfocadaReal() }
             escena.cuadros(3)
             val dedo = { TecladoDeLaVentana.alPuntero(Puntero.DEDO) }
