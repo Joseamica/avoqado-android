@@ -5,6 +5,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -61,7 +62,11 @@ import com.avoqado.pos.designsystem.components.AvoqadoErrorToast
 import com.avoqado.pos.designsystem.components.PlanGateScreen
 import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
+import com.avoqado.pos.designsystem.theme.OnSurfaceDark
+import com.avoqado.pos.designsystem.theme.OutlineVariantDark
 import com.avoqado.pos.designsystem.theme.Success
+import com.avoqado.pos.designsystem.theme.SurfaceDark
+import com.avoqado.pos.designsystem.theme.SurfaceVariantDark
 import com.avoqado.pos.tables.data.DiningTable
 import com.avoqado.pos.tables.domain.FloorLayoutBuilder
 import java.util.Locale
@@ -77,6 +82,21 @@ internal val OccupiedColor = Color(0xFF1A1A1A)
 internal val ReservedColor = Color(0xFFE8A33D)
 internal val FreeFill = Color(0xFFEDEDED)
 internal val FreeBorder = Color(0xFFC9C9C9)
+
+/** Relleno, letra y borde de una mesa (plano y lista); seleccionada y reservada cambian sólo el borde. */
+internal data class TableColors(val fill: Color, val content: Color, val border: Color)
+
+/**
+ * En oscuro la paleta se invierte, como iOS (`Color.primary` / `systemGray5` / `systemGray3`): la ocupada clara con letra
+ * oscura y la libre gris oscuro con letra clara. Con los colores de claro, la ocupada medía 1.08:1 contra el área oscura y
+ * casi desaparecía (D1, prueba real del 9-oct). En claro, la de siempre.
+ */
+internal fun tableColors(occupied: Boolean, dark: Boolean): TableColors = when {
+    occupied && dark -> TableColors(OnSurfaceDark, SurfaceDark, OnSurfaceDark)
+    occupied -> TableColors(OccupiedColor, Color.White, OccupiedColor)
+    dark -> TableColors(SurfaceVariantDark, OnSurfaceDark, OutlineVariantDark)
+    else -> TableColors(FreeFill, Color(0xFF1A1A1A), FreeBorder)
+}
 
 /**
  * "0:03" = 3 minutes, "1:12" = 1h12m — Square's exact elapsed format on the
@@ -617,8 +637,8 @@ private fun BulkAction(
 
 // MARK: - Table visuals
 
-private fun statusColor(table: DiningTable): Color = when {
-    table.isOccupied -> OccupiedColor
+private fun statusColor(table: DiningTable, dark: Boolean): Color = when {
+    table.isOccupied -> tableColors(occupied = true, dark = dark).fill
     table.isReserved -> ReservedColor
     else -> Success
 }
@@ -629,17 +649,17 @@ internal fun TableCard(table: DiningTable, onTap: () -> Unit, onLongPress: () ->
     // Square-style, same language as the canvas nodes: occupied = solid dark
     // card with light text + "total · h:mm"; free = flat light gray.
     val occupied = table.isOccupied
-    val fill = if (occupied) OccupiedColor else FreeFill
-    val content = if (occupied) Color.White else Color(0xFF1A1A1A)
+    val colors = tableColors(occupied, isSystemInDarkTheme())
+    val content = colors.content
     val nowMs = rememberFloorClock()
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
-            .background(fill)
+            .background(colors.fill)
             .border(
                 width = if (selected) 3.dp else if (table.isReserved) 2.dp else 1.dp,
-                color = if (selected) Success else if (table.isReserved) ReservedColor else if (occupied) OccupiedColor else FreeBorder,
+                color = if (selected) Success else if (table.isReserved) ReservedColor else colors.border,
                 shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.md),
             )
             .combinedClickable(onClick = onTap, onLongClick = onLongPress)
@@ -701,7 +721,7 @@ private fun TableCheckSheet(
                     else -> "Libre"
                 },
                 style = MaterialTheme.typography.bodyMedium,
-                color = statusColor(table),
+                color = statusColor(table, isSystemInDarkTheme()),
                 fontWeight = FontWeight.SemiBold,
             )
         }

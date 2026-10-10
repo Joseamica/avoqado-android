@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -48,7 +49,6 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
@@ -282,9 +282,8 @@ private fun FloorTableNode(
     val table = p.table
     val density = LocalDensity.current
     val shape = if (table.shape.uppercase(Locale.ROOT) == "ROUND") CircleShape else RoundedCornerShape(with(density) { (0.6f * cellPx).toDp() })
-    val occupied = table.isOccupied
-    val fill = if (occupied) OccupiedColor else FreeFill
-    val content = if (occupied) Color.White else Color(0xFF1A1A1A)
+    val colors = tableColors(table.isOccupied, isSystemInDarkTheme())
+    val content = colors.content
     val widthDp = with(density) { (p.w * cellPx).toFloat().toDp() }
     val heightDp = with(density) { (p.h * cellPx).toFloat().toDp() }
     val left = ((p.cx - p.w / 2) * cellPx).roundToInt()
@@ -300,10 +299,10 @@ private fun FloorTableNode(
             .size(widthDp, heightDp)
             .graphicsLayer { rotationZ = p.rotation.toFloat() }
             .clip(shape)
-            .background(fill)
+            .background(colors.fill)
             .border(
                 width = if (selected) 3.dp else if (table.isReserved) 2.dp else 1.dp,
-                color = if (selected) Success else if (table.isReserved) ReservedColor else if (occupied) OccupiedColor else FreeBorder,
+                color = if (selected) Success else if (table.isReserved) ReservedColor else colors.border,
                 shape = shape,
             )
             .semantics(mergeDescendants = true) {
