@@ -58,7 +58,7 @@ class ConteoNoAplicadoTest {
     fun `los textos son los del brief, con acentos`() {
         assertEquals("No se aplicó", ConteoNoAplicado.ETIQUETA)
         assertEquals(
-            "Había un envío a Shopify en camino: vuelve a contar este producto en unos minutos.",
+            "Este producto se estaba sincronizando con Shopify cuando confirmaste el conteo; vuelve a contarlo cuando termine.",
             MotivoNoAplicado.ENVIO_EN_CAMINO.texto,
         )
         assertEquals(

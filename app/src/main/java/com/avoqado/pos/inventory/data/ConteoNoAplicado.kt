@@ -21,7 +21,7 @@ import kotlinx.serialization.json.JsonPrimitive
  * Espejo exacto de `MotivoNoAplicado` en iOS (mismos textos, palabra por palabra).
  */
 enum class MotivoNoAplicado {
-    /** Se resuelve solo: en unos minutos el envío llega y el producto se puede volver a contar. */
+    /** El producto se estaba sincronizando con Shopify (un envío en camino o la pareja sin iniciar): recontar al terminar. */
     ENVIO_EN_CAMINO,
 
     /** Hay una DEAD_LETTER ambigua o una revisión abierta: recontar no sirve hasta resolverla en «Por revisar». */
@@ -103,7 +103,7 @@ object ConteoNoAplicado {
 
     const val ETIQUETA = "No se aplicó"
     const val TEXTO_ENVIO_EN_CAMINO =
-        "Había un envío a Shopify en camino: vuelve a contar este producto en unos minutos."
+        "Este producto se estaba sincronizando con Shopify cuando confirmaste el conteo; vuelve a contarlo cuando termine."
     const val TEXTO_DUDA_POR_REVISAR =
         "Hay una diferencia con Shopify por revisar: pídele al dueño que la resuelva en el dashboard " +
             "(Integraciones → Shopify → Por revisar)."
