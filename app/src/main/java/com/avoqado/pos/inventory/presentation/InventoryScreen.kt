@@ -957,6 +957,8 @@ private fun StockCountsContent(
     viewModel: InventoryViewModel,
 ) {
     val borrador by viewModel.borradorLocal.collectAsState()
+    val resultadoNoAplicado by viewModel.resultadoNoAplicado.collectAsState()
+    val conteoSinComprobar by viewModel.conteoSinComprobar.collectAsState()
     // Se relee al volver a la lista: el borrador pudo nacer o morir en la pantalla
     // de conteo, y el StateFlow no se entera de un cambio hecho en disco.
     LaunchedEffect(Unit) { viewModel.refrescarBorradorLocal() }
@@ -966,6 +968,14 @@ private fun StockCountsContent(
     // esto el aparato diria «No hay conteos» encima del trabajo del cajero.
     Column(modifier = Modifier.fillMaxSize()) {
         borrador?.let { BorradorPendienteCard(it) { viewModel.continuarBorrador() } }
+        // C12: lo que el último conteo NO aplicó por Shopify. Informativo (ámbar), nunca un error.
+        resultadoNoAplicado?.takeIf { viewModel.esResultadoDeEstaSucursal(it) }?.let {
+            ResultadoNoAplicadoCard(it, onEntendido = viewModel::resultadoNoAplicadoVisto)
+        }
+        // M1: sin `noAplicados` y sin poder releer el conteo, no se sabe si todo se aplicó: se dice.
+        conteoSinComprobar?.takeIf { viewModel.esDeEstaSucursal(it.venueId) }?.let {
+            SinComprobarCard(onEntendido = viewModel::conteoSinComprobarVisto)
+        }
 
         // `weight(1f)` y no `fillMaxSize()`: deja explicito quien absorbe el alto
         // sobrante, y sigue siendo correcto si manana alguien mete otro hermano debajo

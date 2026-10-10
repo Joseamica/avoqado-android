@@ -1,6 +1,9 @@
 package com.avoqado.pos.inventory.data.model
 
+import com.avoqado.pos.inventory.data.ConteoNoAplicado
+import com.avoqado.pos.inventory.data.MotivoNoAplicado
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonElement
 import java.util.Locale
 
 @Serializable
@@ -114,7 +117,20 @@ data class StockCountItem(
      * 2026-08-03 sobre un conteo EN PROGRESO.
      */
     val countedAt: String? = null,
+    /**
+     * La línea contada que el servidor NO aplicó por Shopify (C9b/C12): `{ at, motivo }` o `null`. Se guarda como
+     * [JsonElement] y no como una clase estricta a propósito: una forma que esta versión no espera (un motivo
+     * numérico, un objeto distinto) no puede tumbar la lista ENTERA de conteos. Se lee con [noSeAplico] y
+     * [motivoNoAplicado]; null en servidores anteriores a C9b.
+     */
+    val shopifyHeld: JsonElement? = null,
 ) {
+    /** El servidor dejó esta línea sin aplicar (el stock no cambió por ella). */
+    val noSeAplico: Boolean get() = ConteoNoAplicado.retenida(shopifyHeld)
+
+    /** Por qué no se aplicó; un motivo desconocido o ilegible se lee como la duda. null = sí se aplicó. */
+    val motivoNoAplicado: MotivoNoAplicado? get() = if (noSeAplico) MotivoNoAplicado.desdeJson(shopifyHeld) else null
+
     val isIngredient: Boolean get() = itemType == "RAW_MATERIAL"
 
     /** Si esta línea ya se contó. Un 0 contado es un dato; un 0 sin contar, no. */
