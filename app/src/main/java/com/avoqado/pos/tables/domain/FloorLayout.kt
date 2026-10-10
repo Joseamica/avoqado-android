@@ -72,10 +72,11 @@ object FloorLayoutBuilder {
     /**
      * `tablesFloorPlanVersion`: la versión del plano que anunciaron las mesas (`/tables`). Si el plano guardado es OTRO
      * (llegaron las mesas y falló `/floor-plan`), está atrasado: pestañas, orden y forma salen de las mesas, y sólo se
-     * dibujan los elementos de áreas que siguen existiendo. Nunca mesas nuevas sobre un área vieja (auditoría Codex C6).
+     * dibujan los elementos de áreas que siguen existiendo. Nunca mesas nuevas sobre un área vieja (auditoría Codex C6). Una versión ausente —el servidor no pudo
+     * calcularla— no confirma el plano guardado: camino atrasado.
      */
     fun build(tables: List<DiningTable>, plan: FloorPlanPayload?, tablesFloorPlanVersion: String? = null): FloorLayout {
-        val planAlDia = plan != null && (tablesFloorPlanVersion == null || plan.floorPlanVersion == tablesFloorPlanVersion)
+        val planAlDia = plan != null && plan.floorPlanVersion == tablesFloorPlanVersion
         val areas = areasOf(tables, plan.takeIf { planAlDia })
         val areaIds = areas.map { it.key }.toSet()
         val elements = when {
@@ -111,12 +112,14 @@ object FloorLayoutBuilder {
             }
             val g = FloorGeometry.gridOf(shapeOf[key])
             val size = FloorGeometry.tableSizeCells(t.shape, t.capacity)
+            // Una mesa heredada en el borde se mete al lienzo (sin reacomodar): regla de `placeTable` del dashboard (S3).
+            val e = FloorGeometry.rotatedExtent(size.w, size.h, t.rotation)
             // `positionX/Y` son Float: 0.525f llega como 0.52499997… y daría 20.999999. Redondeado primero a 6 decimales
             // cae exacto, como en iOS y el dashboard (enmienda A5).
             placed.getOrPut(key) { mutableListOf() } += PlacedTable(
                 table = t,
-                cx = FloorGeometry.round6(FloorGeometry.round6(t.positionX!!.toDouble()) * g.cols),
-                cy = FloorGeometry.round6(FloorGeometry.round6(t.positionY!!.toDouble()) * g.rows),
+                cx = (FloorGeometry.round6(t.positionX!!.toDouble()) * g.cols).let { FloorGeometry.round6(it).coerceIn(e.w / 2, g.cols - e.w / 2) },
+                cy = (FloorGeometry.round6(t.positionY!!.toDouble()) * g.rows).let { FloorGeometry.round6(it).coerceIn(e.h / 2, g.rows - e.h / 2) },
                 w = size.w,
                 h = size.h,
                 rotation = t.rotation,

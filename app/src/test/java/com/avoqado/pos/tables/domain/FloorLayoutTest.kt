@@ -30,6 +30,10 @@ class FloorLayoutTest {
         areaName = areaName, areaSortOrder = areaSortOrder, areaFloorShape = areaFloorShape,
     )
 
+    // Desde S2 una versión ausente NO confirma el plano: las pruebas que quieren «al día» pasan la del plano explícita.
+    private fun armar(tables: List<DiningTable>, plan: FloorPlanPayload?, tablesFloorPlanVersion: String? = plan?.floorPlanVersion) =
+        FloorLayoutBuilder.build(tables, plan, tablesFloorPlanVersion)
+
     private val plano = FloorPlanPayload(
         floorPlanVersion = "p1",
         areas = listOf(FloorPlanArea("a2", "Terraza", "TALL", 1), FloorPlanArea("a1", "Salón", null, 0)),
@@ -47,11 +51,11 @@ class FloorLayoutTest {
 
     @Test
     fun `las pestanas siguen el orden del dueno y empatan por nombre`() {
-        val layout = FloorLayoutBuilder.build(mesas, plano)
+        val layout = armar(mesas, plano)
         assertEquals(listOf("a1", "a2", SIN_AREA_KEY), layout.tabs.map { it.key })
         assertEquals(listOf("Salón", "Terraza", "Sin área"), layout.tabs.map { it.title })
         val empate = FloorPlanPayload(areas = listOf(FloorPlanArea("b", "Barra", null, 0), FloorPlanArea("a", "azotea", null, 0)))
-        assertEquals(listOf("a", "b"), FloorLayoutBuilder.build(emptyList(), empate).tabs.map { it.key })
+        assertEquals(listOf("a", "b"), armar(emptyList(), empate).tabs.map { it.key })
     }
 
     @Test
@@ -61,7 +65,7 @@ class FloorLayoutTest {
         val empate = FloorPlanPayload(
             areas = listOf(FloorPlanArea("b", "Barra", null, 0), FloorPlanArea("a2", "Área común", null, 0), FloorPlanArea("a1", "azotea", null, 0)),
         )
-        assertEquals(listOf("Área común", "azotea", "Barra"), FloorLayoutBuilder.build(emptyList(), empate).tabs.map { it.title })
+        assertEquals(listOf("Área común", "azotea", "Barra"), armar(emptyList(), empate).tabs.map { it.title })
     }
 
     @Test
@@ -77,13 +81,13 @@ class FloorLayoutTest {
             ),
             overLimit = true,
         )
-        assertEquals(listOf("e1", "e3"), FloorLayoutBuilder.build(listOf(t1), truncado).elementsByTab["a1"]?.map { it.id })
+        assertEquals(listOf("e1", "e3"), armar(listOf(t1), truncado).elementsByTab["a1"]?.map { it.id })
     }
 
     @Test
     fun `una posicion de seis decimales cae exacta en su cuadro`() {
         // 0.525f como Double es 0.52499997…: sin redondear antes, 0.525 × 40 daba 20.999999 (iOS y el dashboard: 21.0).
-        val placed = FloorLayoutBuilder.build(listOf(mesa("t1", areaId = "a1", x = 0.525f, y = 0.4f)), plano).placedByTab["a1"]!!.single()
+        val placed = armar(listOf(mesa("t1", areaId = "a1", x = 0.525f, y = 0.4f)), plano).placedByTab["a1"]!!.single()
         assertEquals(21.0, placed.cx, 0.0)
         assertEquals(10.0, placed.cy, 0.0)
     }
@@ -100,22 +104,22 @@ class FloorLayoutTest {
         )
         val enSalon = mesa("t1", areaId = "a1", x = 0.5f, y = 0.5f, areaName = "Salón", areaSortOrder = 0, areaFloorShape = null)
         val enTerraza = mesa("t2", areaId = "a2", x = 0.5f, y = 0.5f, areaName = "Terraza", areaSortOrder = 1, areaFloorShape = "SQUARE")
-        val layout = FloorLayoutBuilder.build(listOf(enSalon, enTerraza), guardado, tablesFloorPlanVersion = "p2")
+        val layout = armar(listOf(enSalon, enTerraza), guardado, tablesFloorPlanVersion = "p2")
         assertEquals(listOf("e1"), layout.elementsByTab["a1"]?.map { it.id })
         assertNull(layout.elementsByTab["a2"])
     }
 
     @Test
     fun `una mesa con posicion y sin area va a la pestana Sin area`() {
-        val layout = FloorLayoutBuilder.build(mesas, plano)
+        val layout = armar(mesas, plano)
         assertEquals(listOf(PlacedTable(t2, 20.0, 12.5, 4.0, 4.0, 0)), layout.placedByTab[SIN_AREA_KEY])
         // Sin mesas así, no hay pestaña «Sin área» en la tablet.
-        assertEquals(listOf("a1", "a2"), FloorLayoutBuilder.build(listOf(t1, t3), plano).tabs.map { it.key })
+        assertEquals(listOf("a1", "a2"), armar(listOf(t1, t3), plano).tabs.map { it.key })
     }
 
     @Test
     fun `sin acomodar son las mesas sin posicion o con un area que ya no existe`() {
-        assertEquals(listOf(t3, t4), FloorLayoutBuilder.build(mesas, plano).unplaced)
+        assertEquals(listOf(t3, t4), armar(mesas, plano).unplaced)
     }
 
     @Test
@@ -124,7 +128,7 @@ class FloorLayoutTest {
         // guardado sigue en «p1» (auditoría Codex C6).
         val enTerraza = mesa("t5", areaId = "a2", x = 0.5f, y = 0.5f, areaName = "Terraza", areaSortOrder = 1, areaFloorShape = "SQUARE")
         val enPatio = mesa("t6", areaId = "a9", x = 0.5f, y = 0.5f, areaName = "Patio", areaSortOrder = 2, areaFloorShape = "WIDE")
-        val layout = FloorLayoutBuilder.build(listOf(enTerraza, enPatio), plano, tablesFloorPlanVersion = "p2")
+        val layout = armar(listOf(enTerraza, enPatio), plano, tablesFloorPlanVersion = "p2")
         assertEquals(listOf("a2", "a9"), layout.tabs.map { it.key })
         assertEquals("SQUARE", layout.tabs.first { it.key == "a2" }.floorShape)
         assertEquals(emptyList<DiningTable>(), layout.unplaced) // el Patio nuevo NO cae en «sin acomodar»
@@ -135,20 +139,20 @@ class FloorLayoutTest {
 
     @Test
     fun `con el plano al dia manda el plano`() {
-        assertEquals(FloorLayoutBuilder.build(mesas, plano), FloorLayoutBuilder.build(mesas, plano, tablesFloorPlanVersion = "p1"))
+        assertEquals(armar(mesas, plano), armar(mesas, plano, tablesFloorPlanVersion = "p1"))
     }
 
     @Test
     fun `las posiciones se convierten a cuadros de su area`() {
         val enTerraza = mesa("t9", areaId = "a2", x = 0.5f, y = 0.5f, capacity = 8)
-        val layout = FloorLayoutBuilder.build(listOf(t1, enTerraza), plano)
+        val layout = armar(listOf(t1, enTerraza), plano)
         assertEquals(listOf(PlacedTable(t1, 10.0, 10.0, 4.0, 4.0, 0)), layout.placedByTab["a1"])
         assertEquals(listOf(PlacedTable(enTerraza, 12.5, 20.0, 6.0, 6.0, 0)), layout.placedByTab["a2"])
     }
 
     @Test
     fun `un elemento sin area cae en la primera area`() {
-        val layout = FloorLayoutBuilder.build(mesas, plano)
+        val layout = armar(mesas, plano)
         assertEquals(
             listOf(
                 FloorGeometry.CellElement("e1", "WALL", 0.0, 0.0, null, null, 0, 40.0, 0.0),
@@ -161,24 +165,24 @@ class FloorLayoutTest {
 
     @Test
     fun `hay plano si hay una mesa con posicion o un elemento`() {
-        assertFalse(FloorLayoutBuilder.build(listOf(t3), FloorPlanPayload(areas = plano.areas)).hasPlan)
-        assertTrue(FloorLayoutBuilder.build(listOf(t3), plano).hasPlan)
-        assertTrue(FloorLayoutBuilder.build(listOf(t1), FloorPlanPayload(areas = plano.areas)).hasPlan)
-        assertFalse(FloorLayoutBuilder.build(emptyList(), null).hasPlan)
+        assertFalse(armar(listOf(t3), FloorPlanPayload(areas = plano.areas)).hasPlan)
+        assertTrue(armar(listOf(t3), plano).hasPlan)
+        assertTrue(armar(listOf(t1), FloorPlanPayload(areas = plano.areas)).hasPlan)
+        assertFalse(armar(emptyList(), null).hasPlan)
     }
 
     @Test
     fun `sin plano del servidor las pestanas salen de las mesas`() {
         val patio = mesa("t1", areaId = "x", x = 0.5f, y = 0.5f, areaName = "Patio", areaSortOrder = 2, areaFloorShape = "SQUARE")
         val bar = mesa("t2", areaId = "y", areaName = "Bar", areaSortOrder = 1)
-        val layout = FloorLayoutBuilder.build(listOf(patio, bar), null)
+        val layout = armar(listOf(patio, bar), null)
         assertEquals(listOf(FloorTab("y", "Bar", null), FloorTab("x", "Patio", "SQUARE")), layout.tabs)
         assertEquals(listOf(PlacedTable(patio, 20.0, 20.0, 4.0, 4.0, 0)), layout.placedByTab["x"])
     }
 
     @Test
     fun `la pestana recordada se respeta y si ya no existe gana la primera`() {
-        val tabs = FloorLayoutBuilder.build(mesas, plano).tabs
+        val tabs = armar(mesas, plano).tabs
         assertEquals("a2", FloorLayoutBuilder.pickActiveTab(tabs, "a2"))
         assertEquals("a1", FloorLayoutBuilder.pickActiveTab(tabs, "area-borrada"))
         assertEquals("a1", FloorLayoutBuilder.pickActiveTab(tabs, null))
@@ -188,7 +192,7 @@ class FloorLayoutTest {
     @Test
     fun `el telefono agrupa por area con las mismas pestanas`() {
         val conPatio = plano.copy(areas = plano.areas + FloorPlanArea("a3", "Patio", "WIDE", 2))
-        val layout = FloorLayoutBuilder.build(mesas, conPatio)
+        val layout = armar(mesas, conPatio)
         assertEquals(listOf("a1", "a2", "a3", SIN_AREA_KEY), layout.listTabs.map { it.key })
         assertEquals(listOf(t1), layout.listByTab["a1"])
         assertEquals(listOf(t3), layout.listByTab["a2"])
@@ -212,5 +216,29 @@ class FloorLayoutTest {
         assertEquals("Mesa 7, libre, 1 persona", FloorLayoutBuilder.tableAccessibilityLabel(DiningTable(id = "t7", number = "7", capacity = 1), 0))
         assertEquals("Mesa 7, libre", FloorLayoutBuilder.tableAccessibilityLabel(DiningTable(id = "t7", number = "7", capacity = 0), 0))
         assertEquals("Mesa 7, reservada", FloorLayoutBuilder.tableAccessibilityLabel(DiningTable(id = "t7", number = "7", status = "RESERVED"), 0))
+    }
+
+    @Test
+    fun `version ausente no confirma el plano guardado`() {
+        val guardado = FloorPlanPayload(
+            floorPlanVersion = "p1",
+            areas = listOf(FloorPlanArea("a1", "Salón", "WIDE", 0)),
+            elements = listOf(FloorPlanElement(id = "e1", type = "WALL", areaId = "a1", endX = 1.0, endY = 0.0)),
+        )
+        val m = mesa("t1", areaId = "a1", x = 0.5f, y = 0.5f, areaName = "Salón", areaSortOrder = 0, areaFloorShape = "TALL")
+        val layout = armar(listOf(m), guardado, tablesFloorPlanVersion = null)
+        assertEquals("TALL", layout.tabs.single().floorShape)
+        assertNull(layout.elementsByTab["a1"])
+    }
+
+    @Test
+    fun `mesa heredada en el borde se dibuja dentro`() {
+        val plano40 = FloorPlanPayload(floorPlanVersion = "p1", areas = listOf(FloorPlanArea("a1", "Salón", "WIDE", 0)))
+        val borde = mesa("t1", areaId = "a1", x = 0f, y = 0f, capacity = 8).copy(shape = "RECTANGLE")
+        val p = armar(listOf(borde), plano40).placedByTab["a1"]!!.single()
+        assertEquals(5.0, p.cx, 0.0)
+        assertEquals(2.0, p.cy, 0.0)
+        val control = mesa("t2", areaId = "a1", x = 0.525f, y = 0.5f, capacity = 8).copy(shape = "RECTANGLE")
+        assertEquals(21.0, armar(listOf(control), plano40).placedByTab["a1"]!!.single().cx, 0.0)
     }
 }

@@ -198,12 +198,15 @@ class TableServiceRepository @Inject constructor(
                 val tables = preserveLocalChecks(venueId, response.data, cachedFloor(venueId)?.tables ?: _tables.value)
                 val ownership = TableOwnership(response.settings?.enforceTableOwnership == true,
                     response.viewer?.staffId, response.viewer?.canManageAllTables ?: true, roleManager.canSettleAnyTable)
+                // Con cuentas provisionales la lista no está reconciliada: sin versión, la siguiente vuelta vuelve a pedir
+                // /tables, como antes del poller.
+                val versionGuardada = if (tables.any { t -> t.openOrders.any { it.isProvisional } }) null else response.tablesVersion
                 // Espejo en disco ANTES de pintar, con su versión (plano en el POS, spec 2026-10-09 §4.1): si el proceso
                 // muere aquí, lo que el mesero vio ya está guardado y su versión también.
                 payloadCache.save(com.avoqado.pos.core.data.local.PayloadCache.TYPE_TABLES, venueId,
                     cacheJson.encodeToString(TablesCacheBlob.serializer(), TablesCacheBlob(tables, ownership.enforced, ownership.staffId,
-                        ownership.canManageAll, response.tablesVersion, response.floorPlanVersion)))
-                tablesVersion = response.tablesVersion
+                        ownership.canManageAll, versionGuardada, response.floorPlanVersion)))
+                tablesVersion = versionGuardada
                 _floorPlanVersionFromTables.value = response.floorPlanVersion
                 _tables.value = tables
                 _ownership.value = ownership
