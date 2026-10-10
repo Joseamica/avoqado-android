@@ -218,6 +218,14 @@ class RoleManager @Inject constructor(
         get() = hasVenuePermission("tables:pay-any", fallbackRoles = MANAGER_UP)
 
     /**
+     * Configurar el plano de mesas — espejo EXACTO de `tables:configure` del server (`permissions.ts`, 2026-10-08).
+     * En el POS hoy sólo decide si se ve el aviso «Arma el plano en tu computadora…» (spec 2026-10-09 §4.2); editar
+     * desde el POS es la fase siguiente. Respaldo MANAGER+, el mismo default del server. Paridad: iOS `canConfigureTables`.
+     */
+    val canConfigureTables: Boolean
+        get() = hasVenuePermission("tables:configure", fallbackRoles = MANAGER_UP)
+
+    /**
      * Resolver la CUARENTENA de sincronización: MANAGER, ADMIN, OWNER, SUPERADMIN
      *
      * ⚠️ DIVERGE, y **NO hay permiso que espejar — ni lo habrá mientras estas

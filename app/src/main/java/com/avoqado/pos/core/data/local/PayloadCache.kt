@@ -67,5 +67,8 @@ class PayloadCache @Inject constructor(
         const val TYPE_MENUS = "menus"
         const val TYPE_PRINT_CONFIG = "print_config"
         const val TYPE_AREA_TICKET_SETTINGS = "area_ticket_settings"
+
+        /** Plano en el POS (spec 2026-10-09 §4.1). Mismo nombre que iOS `CachedPayloadStore.typeFloorPlan`. */
+        const val TYPE_FLOOR_PLAN = "floor_plan"
     }
 }
