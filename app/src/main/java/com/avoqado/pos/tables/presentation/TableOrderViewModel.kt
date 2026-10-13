@@ -545,7 +545,9 @@ class TableOrderViewModel @Inject constructor(
         val existing = _pending.value.firstOrNull { line ->
             line.course == course &&
                 (line.item.type as? CartItemType.ProductItem)?.productId == product.id &&
-                line.item.selectedModifiers.isEmpty() && line.item.promotionInstanceId == null && line.item.serviceCourse == selectedSnapshot()
+                line.item.selectedModifiers.isEmpty() && line.item.promotionInstanceId == null && line.item.serviceCourse == selectedSnapshot() &&
+                // Una línea anotada («sin aceite») es de UN platillo: el siguiente toque va en su propia línea.
+                line.item.itemNote.isNullOrBlank()
         }
         pendingLines = if (existing != null) {
             _pending.value.map { line ->
@@ -610,6 +612,14 @@ class TableOrderViewModel @Inject constructor(
                 }
                 line.copy(seat = next)
             }
+        }
+    }
+
+    /** Nota de una línea pendiente («sin aceite»). Se guarda en el borrador del aparato antes de pintarse. */
+    fun updatePendingNote(lineItemId: String, note: String?) {
+        val limpia = note?.trim()?.takeIf { it.isNotEmpty() }
+        pendingLines = _pending.value.map { line ->
+            if (line.item.id == lineItemId) line.copy(item = line.item.copy(itemNote = limpia)) else line
         }
     }
 
