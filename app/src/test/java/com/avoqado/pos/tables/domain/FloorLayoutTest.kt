@@ -289,4 +289,15 @@ class FloorLayoutTest {
         assertEquals(20.0, p.cx, 1e-9)
         assertEquals(5.0, p.cy, 1e-9) // pegada a la orilla, como el `clamp` del dashboard y el `min(max())` de iOS
     }
+
+    @Test
+    fun `una redonda girada se mide por su diametro y no se recorre`() {
+        // Codex C2: un círculo girado es el mismo círculo. Antes se medía como cuadrado girado (25 a 45° = 35.36) y la
+        // redonda de 25 centrada en 40 × 25, que sí cabe, se recorría a Y = 7.3223305 con parte fuera del lienzo.
+        val redonda = mesa("t9", areaId = "a1", x = 0.5f, y = 0.5f, shape = "ROUND", rotation = 45, width = 0.625, height = 1.0)
+        val p = armar(listOf(redonda), plano).placedByTab.getValue("a1").single()
+        assertEquals(25.0, p.w, 1e-9)
+        assertEquals(20.0, p.cx, 1e-9)
+        assertEquals(12.5, p.cy, 1e-9)
+    }
 }

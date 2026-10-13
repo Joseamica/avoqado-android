@@ -115,7 +115,8 @@ object FloorLayoutBuilder {
             val g = FloorGeometry.gridOf(shapeOf[key])
             val size = FloorGeometry.tableSize(t.shape, t.capacity, t.width, t.height, g)
             // Una mesa heredada en el borde se mete al lienzo (sin reacomodar): regla de `placeTable` del dashboard (S3).
-            val e = FloorGeometry.rotatedExtent(size.w, size.h, t.rotation)
+            // La redonda es un círculo: diámetro × diámetro a cualquier giro (`tableExtent` del dashboard, Codex C2).
+            val e = if (t.shape == "ROUND") size else FloorGeometry.rotatedExtent(size.w, size.h, t.rotation)
             // `positionX/Y` son Float: 0.525f llega como 0.52499997… y daría 20.999999. Redondeado primero a 6 decimales
             // cae exacto, como en iOS y el dashboard (enmienda A5).
             placed.getOrPut(key) { mutableListOf() } += PlacedTable(
