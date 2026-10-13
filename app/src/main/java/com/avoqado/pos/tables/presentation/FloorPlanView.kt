@@ -48,6 +48,7 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
@@ -288,7 +289,7 @@ private fun FloorTableNode(
     val heightDp = with(density) { (p.h * cellPx).toFloat().toDp() }
     val left = ((p.cx - p.w / 2) * cellPx).roundToInt()
     val top = ((p.cy - p.h / 2) * cellPx).roundToInt()
-    val numberCells = FloorGeometry.tableNumberFontCells(table.number, table.shape, table.capacity, p.rotation)
+    val numberCells = FloorGeometry.tableNumberFontCells(table.number, table.shape, FloorGeometry.CellSize(p.w, p.h), p.rotation)
     val numberSp = with(density) { (numberCells * cellPx).toFloat().toDp().toSp() }
     val subSp = with(density) { (0.75f * cellPx).toDp().toSp() }
     val sub = nodeSubtitle(p, nowMs)
@@ -375,7 +376,16 @@ private fun FloorElementsLayer(model: ElementsLayerModel, modifier: Modifier = M
                 val zoneStyle = Stroke(width = 0.12f * c, pathEffect = PathEffect.dashPathEffect(floatArrayOf(0.5f * c, 0.35f * c)))
                 val doorStyle = Stroke(width = 0.12f * c)
                 val arcStyle = Stroke(width = 0.1f * c, pathEffect = PathEffect.dashPathEffect(floatArrayOf(0.3f * c, 0.2f * c)))
-                val ops: List<DrawScope.() -> Unit> = model.elements.flatMap { e ->
+                // Por capas, como el editor (de2907e8): zonas, barras, paredes, puertas y letreros.
+                val ordered = FloorGeometry.inDrawOrder(model.elements)
+                // Todas las barras en UN trazo de esquinas rectas: dos barras pegadas (una «L») se ven como una sola pieza,
+                // sin la mancha más oscura donde se enciman ni el hueco de la esquina redonda.
+                val primeraBarra = ordered.firstOrNull { it.type == "BAR_COUNTER" }
+                val barras = Path().apply {
+                    ordered.filter { it.type == "BAR_COUNTER" }.forEach { addRect(Rect(pt(it.x, it.y), boxSize(it))) }
+                }
+                val pintarBarras: DrawScope.() -> Unit = { drawPath(path = barras, color = barFill) }
+                val ops: List<DrawScope.() -> Unit> = ordered.flatMap { e ->
                     when (e.type) {
                         "WALL" -> {
                             val start = pt(e.x, e.y)
@@ -388,10 +398,8 @@ private fun FloorElementsLayer(model: ElementsLayerModel, modifier: Modifier = M
                             listOf<DrawScope.() -> Unit>({ drawText(layout, topLeft = topLeft) })
                         }.orEmpty()
                         "BAR_COUNTER" -> {
-                            val topLeft = pt(e.x, e.y)
-                            val size = boxSize(e)
                             listOfNotNull<DrawScope.() -> Unit>(
-                                { drawRoundRect(color = barFill, topLeft = topLeft, size = size, cornerRadius = CornerRadius(0.35f * c)) },
+                                if (e === primeraBarra) pintarBarras else null,
                                 e.label?.let { centeredLabel(it, e) },
                             )
                         }

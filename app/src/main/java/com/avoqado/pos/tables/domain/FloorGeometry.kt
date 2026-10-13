@@ -13,8 +13,8 @@ import kotlin.math.sin
 
 /**
  * Reglas de dibujo del plano (spec 2026-10-08 §4.2-4.3), copiadas POR VALOR de avoqado-web-dashboard
- * `src/pages/Settings/FloorPlan/model/floorGeometry.ts` (gridOf, tableSizeCells, rotatedExtent), `planMapping.ts`
- * (0–1 → cuadros de SU área), `editorReducer.ts` (normalizeRectElement) y `editor/FloorDrawing.tsx` (abatimiento de la
+ * `src/pages/Settings/FloorPlan/model/floorGeometry.ts` (gridOf, tableSizeCells, tableSize, rotatedExtent), `planMapping.ts`
+ * (0–1 → cuadros de SU área), `editorReducer.ts` (normalizeRectElement) y `editor/FloorDrawing.tsx` (capas, abatimiento de la
  * puerta, letra del número y de los nombres). Espejo exacto: avoqado-ios `Tables/FloorGeometry.swift`.
  *
  * 🔴 Si cambias una regla, cámbiala en los TRES (dashboard, Android, iOS) y en sus pruebas (`floorGeometry.test.ts`,
@@ -84,6 +84,39 @@ object FloorGeometry {
         val side = SIDES[band]
         return CellSize(side, side)
     }
+
+    /** Lado mínimo de una mesa con tamaño propio (el editor no baja de 2 cuadros). */
+    private const val MIN_TABLE_SIDE = 2.0
+
+    /**
+     * LA conversión del tamaño guardado (0–1 de cada eje de su área) a cuadros enteros (spec 2026-10-12). Idéntica, con este
+     * nombre y esta fórmula, en el dashboard (`floorGeometry.ts`), iOS y el MCP:
+     *   w = clamp(floor(width × cols + 0.5), 2, cols) · h = clamp(floor(height × rows + 0.5), 2, rows)
+     *   redonda y cuadrada: los dos = min(w, h) · si falta uno: null (automático).
+     * `floor(x + 0.5)` y no `roundToInt()`: el mismo double da el mismo entero en las cuatro.
+     */
+    fun customSizeCells(shape: String, width: Double?, height: Double?, grid: Grid): CellSize? {
+        if (width == null || height == null) return null
+        val w = floor(width * grid.cols + 0.5).coerceIn(MIN_TABLE_SIDE, grid.cols.toDouble())
+        val h = floor(height * grid.rows + 0.5).coerceIn(MIN_TABLE_SIDE, grid.rows.toDouble())
+        if (shape.uppercase(Locale.ROOT) == "RECTANGLE") return CellSize(w, h)
+        val side = min(w, h)
+        return CellSize(side, side)
+    }
+
+    /**
+     * Tamaño de una mesa en cuadros (`tableSize` del dashboard): el propio (`customSizeCells`) o, si no trae los dos, el
+     * automático por forma y personas. Espejo: avoqado-ios `FloorGeometry.tableSize`.
+     */
+    fun tableSize(shape: String, capacity: Int, width: Double?, height: Double?, grid: Grid): CellSize =
+        customSizeCells(shape, width, height, grid) ?: tableSizeCells(shape, capacity)
+
+    /** Capas del editor (`FloorDrawing.tsx`, de2907e8): zonas al fondo, luego barras, paredes, puertas (tapan la pared) y letreros. */
+    private val LAYERS = listOf("SERVICE_AREA", "BAR_COUNTER", "WALL", "DOOR", "LABEL")
+
+    /** Los elementos en el orden en que se dibujan; dentro de cada capa, el orden en que llegaron (orden estable). */
+    fun inDrawOrder(elements: List<CellElement>): List<CellElement> =
+        elements.sortedBy { e -> LAYERS.indexOf(e.type).let { if (it < 0) LAYERS.size else it } }
 
     /** Caja que ocupa una pieza girada. */
     fun rotatedExtent(w: Double, h: Double, rotation: Int): CellSize {
@@ -182,8 +215,7 @@ object FloorGeometry {
      * Letra del número de mesa, en cuadros (`tableNumberSize` de FloorDrawing.tsx): la de siempre, pero un número largo se
      * achica hasta caber a lo ancho de la mesa tal como se ve (el texto va derecho aunque la mesa esté girada).
      */
-    fun tableNumberFontCells(number: String, shape: String, capacity: Int, rotation: Int): Double {
-        val size = tableSizeCells(shape, capacity)
+    fun tableNumberFontCells(number: String, shape: String, size: CellSize, rotation: Int): Double {
         val turn = ((rotation % 180) + 180) % 180
         val across = if (shape.uppercase(Locale.ROOT) == "ROUND") {
             size.w * 0.78

@@ -6,6 +6,7 @@ import com.avoqado.pos.tables.data.FloorPlanElement
 import com.avoqado.pos.tables.data.FloorPlanPayload
 import com.avoqado.pos.tables.data.OpenCheckSummary
 import com.avoqado.pos.tables.domain.FloorLayoutBuilder.SIN_AREA_KEY
+import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -25,9 +26,14 @@ class FloorLayoutTest {
         areaName: String? = null,
         areaSortOrder: Int? = null,
         areaFloorShape: String? = null,
+        shape: String = "SQUARE",
+        rotation: Int = 0,
+        width: Double? = null,
+        height: Double? = null,
     ) = DiningTable(
         id = id, number = id.removePrefix("t"), capacity = capacity, positionX = x, positionY = y, areaId = areaId,
         areaName = areaName, areaSortOrder = areaSortOrder, areaFloorShape = areaFloorShape,
+        shape = shape, rotation = rotation, width = width, height = height,
     )
 
     // Desde S2 una versión ausente NO confirma el plano: las pruebas que quieren «al día» pasan la del plano explícita.
@@ -240,5 +246,47 @@ class FloorLayoutTest {
         assertEquals(2.0, p.cy, 0.0)
         val control = mesa("t2", areaId = "a1", x = 0.525f, y = 0.5f, capacity = 8).copy(shape = "RECTANGLE")
         assertEquals(21.0, armar(listOf(control), plano40).placedByTab["a1"]!!.single().cx, 0.0)
+    }
+
+    @Test
+    fun `una mesa con tamano propio se dibuja con el`() {
+        val larga = mesa("t9", areaId = "a1", x = 0.5f, y = 0.5f, shape = "RECTANGLE", width = 0.075, height = 0.16)
+        val p = armar(listOf(larga), plano).placedByTab.getValue("a1").single()
+        assertEquals(3.0, p.w, 1e-9)
+        assertEquals(4.0, p.h, 1e-9)
+    }
+
+    @Test
+    fun `una mesa guardada sin tamano se lee automatica`() {
+        // Así llega de un servidor de antes, o del último plano guardado en el aparato antes de esta versión (sin red).
+        val json = """{"id":"t9","number":"9","capacity":4,"shape":"RECTANGLE","positionX":0.5,"positionY":0.5,"areaId":"a1"}"""
+        val vieja = Json { ignoreUnknownKeys = true }.decodeFromString(DiningTable.serializer(), json)
+        assertNull(vieja.width)
+        val p = armar(listOf(vieja), plano).placedByTab.getValue("a1").single()
+        assertEquals(6.0, p.w, 1e-9)
+        assertEquals(4.0, p.h, 1e-9)
+    }
+
+    @Test
+    fun `una mesa con tamano propio sobrevive al espejo en disco`() {
+        // El espejo de mesas (`TablesCacheBlob`, `TableServiceRepository`) serializa `DiningTable` con este mismo Json: lo
+        // que se ve sin red tras reabrir la app es lo que se guardó con red.
+        val json = Json { ignoreUnknownKeys = true }
+        val conTamano = mesa("t9", areaId = "a1", x = 0.5f, y = 0.5f, shape = "RECTANGLE", width = 0.075, height = 0.16)
+        val leida = json.decodeFromString(DiningTable.serializer(), json.encodeToString(DiningTable.serializer(), conTamano))
+        assertEquals(conTamano, leida)
+        val p = armar(listOf(leida), plano).placedByTab.getValue("a1").single()
+        assertEquals(3.0, p.w, 1e-9)
+        assertEquals(4.0, p.h, 1e-9)
+    }
+
+    @Test
+    fun `una mesa que no cabe girada no truena el plano`() {
+        // Sólo puede venir de la PAX (gira una mesa que el editor dejó de 40 de ancho). Antes `coerceIn` lanzaba
+        // IllegalArgumentException con el rango vacío y tumbaba la pantalla de Mesas.
+        val rara = mesa("t9", areaId = "a1", x = 0.5f, y = 0.5f, shape = "RECTANGLE", rotation = 90, width = 1.0, height = 0.16)
+        val p = armar(listOf(rara), plano).placedByTab.getValue("a1").single()
+        assertEquals(20.0, p.cx, 1e-9)
+        assertEquals(5.0, p.cy, 1e-9) // pegada a la orilla, como el `clamp` del dashboard y el `min(max())` de iOS
     }
 }

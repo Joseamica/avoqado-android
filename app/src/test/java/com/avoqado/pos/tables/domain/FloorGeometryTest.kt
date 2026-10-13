@@ -117,11 +117,11 @@ class FloorGeometryTest {
 
     @Test
     fun `el numero de mesa se achica si es largo y segun el giro`() {
-        assertEquals(1.5, FloorGeometry.tableNumberFontCells("7", "SQUARE", 4, 0), 1e-9)
-        assertEquals(1.26, FloorGeometry.tableNumberFontCells("12", "ROUND", 2, 0), 1e-9)
-        assertEquals(0.554839, FloorGeometry.tableNumberFontCells("FULLTEST-1", "SQUARE", 4, 0), 1e-9)
-        assertEquals(0.832258, FloorGeometry.tableNumberFontCells("FULLTEST-1", "RECTANGLE", 4, 0), 1e-9)
-        assertEquals(0.554839, FloorGeometry.tableNumberFontCells("FULLTEST-1", "RECTANGLE", 4, 90), 1e-9)
+        assertEquals(1.5, FloorGeometry.tableNumberFontCells("7", "SQUARE", FloorGeometry.tableSizeCells("SQUARE", 4), 0), 1e-9)
+        assertEquals(1.26, FloorGeometry.tableNumberFontCells("12", "ROUND", FloorGeometry.tableSizeCells("ROUND", 2), 0), 1e-9)
+        assertEquals(0.554839, FloorGeometry.tableNumberFontCells("FULLTEST-1", "SQUARE", FloorGeometry.tableSizeCells("SQUARE", 4), 0), 1e-9)
+        assertEquals(0.832258, FloorGeometry.tableNumberFontCells("FULLTEST-1", "RECTANGLE", FloorGeometry.tableSizeCells("RECTANGLE", 4), 0), 1e-9)
+        assertEquals(0.554839, FloorGeometry.tableNumberFontCells("FULLTEST-1", "RECTANGLE", FloorGeometry.tableSizeCells("RECTANGLE", 4), 90), 1e-9)
     }
 
     @Test
@@ -147,5 +147,48 @@ class FloorGeometryTest {
     fun `el nombre de barra o cocina cabe en su caja`() {
         assertEquals(1.2, FloorGeometry.labelFontCells("Cocina", 8.0, 6.0), 1e-9)
         assertEquals(0.9, FloorGeometry.labelFontCells("Barra", 8.0, 2.0), 1e-9)
+    }
+
+    @Test
+    fun `la mesa con tamano propio usa el suyo y la redonda el lado menor`() {
+        val ancha = Grid(40, 25)
+        assertEquals(CellSize(3.0, 4.0), FloorGeometry.tableSize("RECTANGLE", 4, 0.075, 0.16, ancha))
+        assertEquals(CellSize(4.0, 4.0), FloorGeometry.tableSize("ROUND", 4, 0.15, 0.16, ancha))
+        assertEquals(CellSize(5.0, 5.0), FloorGeometry.tableSize("SQUARE", 4, 0.2, 0.125, Grid(25, 40)))
+    }
+
+    @Test
+    fun `sin los dos lados la mesa es automatica`() {
+        val ancha = Grid(40, 25)
+        assertEquals(CellSize(6.0, 4.0), FloorGeometry.tableSize("RECTANGLE", 4, null, null, ancha))
+        assertEquals(CellSize(6.0, 4.0), FloorGeometry.tableSize("RECTANGLE", 4, 0.075, null, ancha))
+    }
+
+    @Test
+    fun `el tamano propio no baja de 2 ni pasa el lado del area`() {
+        assertEquals(CellSize(2.0, 25.0), FloorGeometry.tableSize("RECTANGLE", 4, 0.01, 1.5, Grid(40, 25)))
+    }
+
+    @Test
+    fun `la conversion a cuadros es la misma que en el dashboard iOS y el MCP`() {
+        // El caso fijo: 0.05 × 25 = 1.25 → 1 → mínimo 2; 0.08 × 40 = 3.2 → 3. Entero, nunca 2 × 3.2.
+        assertEquals(CellSize(2.0, 3.0), FloorGeometry.customSizeCells("RECTANGLE", 0.05, 0.08, Grid(25, 40)))
+        assertEquals(CellSize(3.0, 4.0), FloorGeometry.customSizeCells("RECTANGLE", 0.075, 0.16, Grid(40, 25)))
+        assertEquals(null, FloorGeometry.customSizeCells("RECTANGLE", 0.075, null, Grid(40, 25)))
+    }
+
+    @Test
+    fun `la letra del numero se mide con el tamano que se dibuja`() {
+        assertEquals(0.416129, FloorGeometry.tableNumberFontCells("FULLTEST-1", "RECTANGLE", CellSize(3.0, 3.0), 0), 1e-9)
+    }
+
+    @Test
+    fun `se dibuja por capas como el editor`() {
+        fun e(id: String, type: String) = CellElement(id = id, type = type, x = 0.0, y = 0.0)
+        val llegada = listOf(
+            e("l", "LABEL"), e("w1", "WALL"), e("d", "DOOR"), e("b1", "BAR_COUNTER"),
+            e("z", "SERVICE_AREA"), e("b2", "BAR_COUNTER"), e("w2", "WALL"),
+        )
+        assertEquals(listOf("z", "b1", "b2", "w1", "w2", "d", "l"), FloorGeometry.inDrawOrder(llegada).map { it.id })
     }
 }

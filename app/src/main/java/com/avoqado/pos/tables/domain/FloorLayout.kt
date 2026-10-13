@@ -7,6 +7,8 @@ import java.text.Collator
 import java.time.Instant
 import java.time.OffsetDateTime
 import java.util.Locale
+import kotlin.math.max
+import kotlin.math.min
 
 /** Una pestaña de área. `floorShape` decide la proporción del lienzo (null ⇒ WIDE). */
 data class FloorTab(val key: String, val title: String, val floorShape: String?)
@@ -111,15 +113,17 @@ object FloorLayoutBuilder {
                 return@forEach
             }
             val g = FloorGeometry.gridOf(shapeOf[key])
-            val size = FloorGeometry.tableSizeCells(t.shape, t.capacity)
+            val size = FloorGeometry.tableSize(t.shape, t.capacity, t.width, t.height, g)
             // Una mesa heredada en el borde se mete al lienzo (sin reacomodar): regla de `placeTable` del dashboard (S3).
             val e = FloorGeometry.rotatedExtent(size.w, size.h, t.rotation)
             // `positionX/Y` son Float: 0.525f llega como 0.52499997… y daría 20.999999. Redondeado primero a 6 decimales
             // cae exacto, como en iOS y el dashboard (enmienda A5).
             placed.getOrPut(key) { mutableListOf() } += PlacedTable(
                 table = t,
-                cx = (FloorGeometry.round6(t.positionX!!.toDouble()) * g.cols).let { FloorGeometry.round6(it).coerceIn(e.w / 2, g.cols - e.w / 2) },
-                cy = (FloorGeometry.round6(t.positionY!!.toDouble()) * g.rows).let { FloorGeometry.round6(it).coerceIn(e.h / 2, g.rows - e.h / 2) },
+                // `min(max())` y no `coerceIn`: una mesa que ya girada no cabe (sólo puede venir de la PAX) no tumba la
+                // pantalla con un rango vacío; queda pegada a la orilla, como el `clamp` del dashboard y iOS.
+                cx = (FloorGeometry.round6(t.positionX!!.toDouble()) * g.cols).let { min(max(FloorGeometry.round6(it), e.w / 2), g.cols - e.w / 2) },
+                cy = (FloorGeometry.round6(t.positionY!!.toDouble()) * g.rows).let { min(max(FloorGeometry.round6(it), e.h / 2), g.rows - e.h / 2) },
                 w = size.w,
                 h = size.h,
                 rotation = t.rotation,

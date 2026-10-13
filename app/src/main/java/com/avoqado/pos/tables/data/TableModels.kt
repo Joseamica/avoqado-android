@@ -25,6 +25,9 @@ data class DiningTable(
     /** Plano en el POS (2026-10-09): orden y forma del área. Servidores viejos no los mandan. */
     val areaSortOrder: Int? = null,
     val areaFloorShape: String? = null,
+    /** Tamaño propio (spec 2026-10-12), 0–1 de la cuadrícula de su área; null = automático. Servidores viejos no lo mandan. */
+    val width: Double? = null,
+    val height: Double? = null,
 ) {
     /**
      * ¿Hay dinero vivo en esta mesa? Se mira la CUENTA, no el campo `status`.
