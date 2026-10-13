@@ -26,7 +26,8 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const ANDROID = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const SERVER = resolve(ANDROID, '..', 'avoqado-server')
+// Desde un worktree, el server hermano no está en `..`: `AVQ_SERVER=<ruta del server> node scripts/…`.
+const SERVER = process.env.AVQ_SERVER ? resolve(process.env.AVQ_SERVER) : resolve(ANDROID, '..', 'avoqado-server')
 const KT = resolve(ANDROID, 'app/src/test/java/com/avoqado/pos/core/domain/PermisosRealesDelServer.kt')
 const KT_RUTAS = resolve(ANDROID, 'app/src/test/java/com/avoqado/pos/core/domain/PermisosDeRutasDelServer.kt')
 const JSON_SNAPSHOT = resolve(ANDROID, 'app/src/test/resources/permisos-efectivos-del-server.json')

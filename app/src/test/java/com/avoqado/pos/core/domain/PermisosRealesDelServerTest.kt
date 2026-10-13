@@ -134,6 +134,15 @@ class PermisosRealesDelServerTest {
     }
 
     @Test
+    fun `tables configure es del gerente y no del mesero`() {
+        // Plano de mesas (fase 4a): `RoleManager.canConfigureTables` decide quién ve «Arma el plano en tu computadora».
+        // Su respaldo es MANAGER+; aquí se fija que el server de verdad lo da así, por nombre EXACTO.
+        fun tiene(rol: String) = "tables:configure" in PermisosRealesDelServer.PorRol.getValue(rol)
+        assertTrue("MANAGER configura el plano", tiene("MANAGER"))
+        assertTrue("el MESERO no configura el plano", !tiene("WAITER"))
+    }
+
+    @Test
     fun `el fixture no trae duplicados ni entradas vacias`() {
         PermisosRealesDelServer.PorRol.forEach { (rol, permisos) ->
             assertEquals("$rol trae permisos repetidos", permisos.distinct().size, permisos.size)

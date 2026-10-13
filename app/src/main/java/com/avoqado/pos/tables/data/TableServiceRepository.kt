@@ -81,6 +81,9 @@ class TableServiceRepository @Inject constructor(
         val enforced: Boolean = false,
         val staffId: String? = null,
         val canManageAll: Boolean = true,
+        /** Plano en el POS (2026-10-09): la versión de estas mesas — lo guardado al día no se vuelve a bajar. */
+        val tablesVersion: String? = null,
+        val floorPlanVersion: String? = null,
     )
 
     private val floorWrites = Mutex()
@@ -132,6 +135,34 @@ class TableServiceRepository @Inject constructor(
     private val _ownership = MutableStateFlow(TableOwnership())
     val ownership: StateFlow<TableOwnership> = _ownership.asStateFlow()
 
+    /** Plano en el POS (spec 2026-10-09 §4.1): versión de mesas de la última respuesta buena (o de la guardada). */
+    @Volatile
+    var tablesVersion: String? = null
+        private set
+
+    /**
+     * La versión del plano que trajo esa misma respuesta de /tables. Es un flujo porque el armado del plano la observa: tras
+     * un fallo parcial, /tables puede volver con la MISMA lista (no re-emite) y sólo cambia esta versión (auditoría Codex del
+     * código, hallazgo 1). Se asigna ANTES que las mesas.
+     */
+    private val _floorPlanVersionFromTables = MutableStateFlow<String?>(null)
+    val floorPlanVersionFromTablesFlow: StateFlow<String?> = _floorPlanVersionFromTables.asStateFlow()
+    val floorPlanVersionFromTables: String? get() = _floorPlanVersionFromTables.value
+
+    /**
+     * Cambiar de sucursal vacía mesas, propiedad y VERSIONES antes de hidratar la nueva: la versión de A nunca se compara
+     * con la de B. Siempre dentro de `floorWrites` (el Mutex no es reentrante: no lo tomes aquí).
+     */
+    private suspend fun mirarA(venueId: String) {
+        if (loadedVenueId == venueId) return
+        loadedVenueId = venueId
+        _tables.value = emptyList()
+        _ownership.value = TableOwnership()
+        tablesVersion = null
+        _floorPlanVersionFromTables.value = null
+        hydrateFromCache(venueId)
+    }
+
     private suspend fun cachedFloor(venueId: String): TablesCacheBlob? {
         val cached = payloadCache.load(com.avoqado.pos.core.data.local.PayloadCache.TYPE_TABLES, venueId) ?: return null
         return cacheJson.decodeFromString(TablesCacheBlob.serializer(), cached.json)
@@ -158,14 +189,7 @@ class TableServiceRepository @Inject constructor(
     }
 
     suspend fun refresh(venueId: String): Result<List<DiningTable>> = runCatching {
-        floorWrites.withLock {
-            if (loadedVenueId != venueId) {
-                loadedVenueId = venueId
-                _tables.value = emptyList()
-                _ownership.value = TableOwnership()
-                hydrateFromCache(venueId)
-            }
-        }
+        floorWrites.withLock { mirarA(venueId) }
         _isLoading.value = true
         try {
             val response = apiService.getTables(venueId)
@@ -174,8 +198,16 @@ class TableServiceRepository @Inject constructor(
                 val tables = preserveLocalChecks(venueId, response.data, cachedFloor(venueId)?.tables ?: _tables.value)
                 val ownership = TableOwnership(response.settings?.enforceTableOwnership == true,
                     response.viewer?.staffId, response.viewer?.canManageAllTables ?: true, roleManager.canSettleAnyTable)
+                // Con cuentas provisionales la lista no está reconciliada: sin versión, la siguiente vuelta vuelve a pedir
+                // /tables, como antes del poller.
+                val versionGuardada = if (tables.any { t -> t.openOrders.any { it.isProvisional } }) null else response.tablesVersion
+                // Espejo en disco ANTES de pintar, con su versión (plano en el POS, spec 2026-10-09 §4.1): si el proceso
+                // muere aquí, lo que el mesero vio ya está guardado y su versión también.
                 payloadCache.save(com.avoqado.pos.core.data.local.PayloadCache.TYPE_TABLES, venueId,
-                    cacheJson.encodeToString(TablesCacheBlob.serializer(), TablesCacheBlob(tables, ownership.enforced, ownership.staffId, ownership.canManageAll)))
+                    cacheJson.encodeToString(TablesCacheBlob.serializer(), TablesCacheBlob(tables, ownership.enforced, ownership.staffId,
+                        ownership.canManageAll, versionGuardada, response.floorPlanVersion)))
+                tablesVersion = versionGuardada
+                _floorPlanVersionFromTables.value = response.floorPlanVersion
                 _tables.value = tables
                 _ownership.value = ownership
                 tables
@@ -201,7 +233,8 @@ class TableServiceRepository @Inject constructor(
             if (table.id != tableId) table else table.copy(status = "OCCUPIED", openOrders = table.openOrders.filterNot { it.id == check.id } + check)
         }
         payloadCache.saveDurable(com.avoqado.pos.core.data.local.PayloadCache.TYPE_TABLES, venueId,
-            cacheJson.encodeToString(TablesCacheBlob.serializer(), TablesCacheBlob(tables, _ownership.value.enforced, _ownership.value.staffId, _ownership.value.canManageAll)))
+            cacheJson.encodeToString(TablesCacheBlob.serializer(), TablesCacheBlob(tables, _ownership.value.enforced, _ownership.value.staffId,
+                _ownership.value.canManageAll, tablesVersion, floorPlanVersionFromTables)))
         _tables.value = tables
     }
 
@@ -209,9 +242,16 @@ class TableServiceRepository @Inject constructor(
         if (_tables.value.isNotEmpty()) return
         runCatching {
             val blob = cachedFloor(venueId) ?: return
+            tablesVersion = blob.tablesVersion
+            _floorPlanVersionFromTables.value = blob.floorPlanVersion
             _tables.value = blob.tables
             _ownership.value = TableOwnership(blob.enforced, blob.staffId, blob.canManageAll, roleManager.canSettleAnyTable)
         }.onFailure { Log.e(TAG, "❌ Cache de mesas corrupto: ${it.message}") }
+    }
+
+    /** Plano en el POS: pinta lo guardado al entrar, antes de tocar la red (sólo si no hay mesas en memoria). */
+    suspend fun hydrate(venueId: String) = floorWrites.withLock {
+        if (loadedVenueId != venueId) mirarA(venueId) else hydrateFromCache(venueId)
     }
 
     /** Opens a table (reuses its active order or creates an empty one). Returns the order. */

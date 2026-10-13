@@ -415,6 +415,7 @@ private fun MainScaffold(
                             // a plain navigate() here corrupts the per-tab stacks.
                             onGoToCheckout = { navigateToTab(MainTab.CHECKOUT) },
                             onOpenTableOrder = { navController.navigate("table-order") },
+                            isTablet = true,
                         )
                     }
                     composable("table-order") {
@@ -715,6 +716,7 @@ private fun MainScaffold(
                             // a plain navigate() here corrupts the per-tab stacks.
                             onGoToCheckout = { navigateToTab(MainTab.CHECKOUT) },
                             onOpenTableOrder = { navController.navigate("table-order") },
+                            isTablet = false,
                         )
                     }
                     composable("table-order") {
