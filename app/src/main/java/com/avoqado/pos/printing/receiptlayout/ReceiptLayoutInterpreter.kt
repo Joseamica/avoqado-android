@@ -13,7 +13,24 @@ object ReceiptLayoutInterpreter {
     private const val AVOQADO_MARK_WIDTH_PCT = 15
 
     fun interpret(blocks: List<ReceiptBlock>, input: ReceiptInput, width: Int): List<LogicalLine> =
-        blocks.flatMap { render(it, input, width) }
+        preBillLines(input, width) + blocks.flatMap { render(it, input, width) }
+
+    /** La identidad y el saldo de la precuenta no dependen de los bloques configurables. */
+    private fun preBillLines(input: ReceiptInput, width: Int): List<LogicalLine> {
+        val sale = input.sale
+        if (sale.kind != "PRE_BILL") return emptyList()
+        val lines = mutableListOf<LogicalLine>()
+        lines += T.wrap("PRE-CUENTA", width).map { text(it, Align.CENTER, bold = true) }
+        lines += T.wrap("NO ACREDITA PAGO", width).map { text(it, Align.CENTER, bold = true) }
+        val paid = sale.paidCents
+        val remaining = sale.remainingCents
+        if (paid != null && paid > 0L && remaining != null) {
+            lines += T.twoColumnLines("Ya pagado:", ReceiptFormat.money(paid), width).map { text(it) }
+            lines += T.twoColumnLines("Por pagar:", ReceiptFormat.money(remaining), width).map { text(it, bold = true) }
+        }
+        lines += feed()
+        return lines
+    }
 
     private fun text(value: String, align: Align = Align.LEFT, bold: Boolean = false, double: Boolean = false) =
         LogicalLine.Text(value, align, bold, double)

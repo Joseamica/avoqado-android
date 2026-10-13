@@ -388,12 +388,11 @@ private fun CustomDatePickerSection(
     val spacing = AvoqadoTheme.spacing
     val cornerRadius = AvoqadoTheme.cornerRadius
     val context = LocalContext.current
-    val zoneId = remember { com.avoqado.pos.core.util.VenueTimeZone.zoneId() }
     val dateFormatter = remember {
         java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy", Locale.US)
     }
     fun formatDate(epochMillis: Long): String =
-        java.time.Instant.ofEpochMilli(epochMillis).atZone(zoneId).format(dateFormatter)
+        com.avoqado.pos.core.util.VenueTimeZone.at(java.time.Instant.ofEpochMilli(epochMillis)).format(dateFormatter)
 
     Surface(
         color = MaterialTheme.colorScheme.surface,

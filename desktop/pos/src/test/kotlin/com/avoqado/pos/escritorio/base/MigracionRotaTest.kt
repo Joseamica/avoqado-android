@@ -24,8 +24,8 @@ class MigracionRotaTest {
                 SIEMBRA_V12.forEach { v12.execSQL(it) }
                 v12.volcar("pending_payments")
             }
-            val respaldo = assertNotNull(respaldarSiVaAMigrar(base.toFile(), 13))
-            val rota = object : Migration(12, 13) {
+            val respaldo = assertNotNull(respaldarSiVaAMigrar(base.toFile(), versionDeLaApp()))
+            val rota = object : Migration(12, versionDeLaApp()) {
                 override fun migrate(connection: SQLiteConnection) {
                     connection.execSQL("UPDATE pending_payments SET amountCents = 1, syncStatus = 'SYNCED'")
                     connection.execSQL("CREATE TABLE testigo (x TEXT)")

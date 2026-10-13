@@ -5,6 +5,8 @@ import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.local.database.PendingPaymentDao
 import com.avoqado.pos.core.util.ConnectivityMonitor
+import com.avoqado.pos.core.data.sync.SyncOutbox
+import com.avoqado.pos.core.data.sync.TrabajoSinResolver
 import com.avoqado.pos.payment.data.PaymentSyncService
 import io.mockk.coEvery
 import io.mockk.coVerify
@@ -46,6 +48,7 @@ class PaymentSyncCajonPrimeroTest {
     private val client = mockk<OkHttpClient>(relaxed = true)
     private val connectivityMonitor = mockk<ConnectivityMonitor>(relaxed = true)
     private val cajon = mockk<CashDrawerRepository>(relaxed = true)
+    private val outbox = mockk<SyncOutbox>(relaxed = true)
 
     private var service: PaymentSyncService? = null
 
@@ -61,7 +64,8 @@ class PaymentSyncCajonPrimeroTest {
         every { connectivityMonitor.isServerReachable } returns MutableStateFlow(true)
         coEvery { dao.getPendingCount() } returns flowOf(0)
         coEvery { dao.getFailedCount() } returns flowOf(0)
-        return PaymentSyncService(dao, secureStorage, client, connectivityMonitor, cajon)
+        coEvery { outbox.trabajoSinResolverDeLaOrden(any(), any()) } returns TrabajoSinResolver(0, 0, emptySet(), 0)
+        return PaymentSyncService(dao, secureStorage, client, connectivityMonitor, cajon, outbox)
             .also {
                 it.usarContextoDeSincronizacion(StandardTestDispatcher(testScheduler))
                 service = it

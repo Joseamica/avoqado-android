@@ -199,14 +199,14 @@ class AvisoDuraderoDeOtrasVentasTest {
 
         every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(showReviewScreen = false, showTipScreen = false)
         every { areaTicketRepository.session.current() } returns null
-        coEvery { orderRepository.createOrder(any(), any(), any(), any(), any()) } returns
+        coEvery { orderRepository.createOrder(any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
             Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-1")))
         coEvery { kdsRepository.createOrder(any(), any(), any(), any()) } returns Result.success(Unit)
         coEvery { printerService.autoPrintReceipt(any()) } returns Unit
         coEvery { printerService.autoPrintKitchenTicket(any()) } returns ResultadoLegado(intentadas = 1, fallidas = emptyList())
         coEvery { printConfigRepository.refresh(any()) } returns Unit
         every { printConfigRepository.getCurrentConfig() } returns PrintConfig()
-        coEvery { cashDrawerRepository.addCashSale(any(), any()) } returns null
+        coEvery { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any()) } returns null
 
         servicio = nuevoServicio()
     }

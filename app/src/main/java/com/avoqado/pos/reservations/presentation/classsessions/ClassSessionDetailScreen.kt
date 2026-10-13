@@ -1,5 +1,6 @@
 package com.avoqado.pos.reservations.presentation.classsessions
 
+import com.avoqado.pos.core.util.VenueTimeZone
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -439,8 +440,8 @@ private fun InfoRow(label: String, value: String) {
 }
 
 private fun formatRange(session: ClassSession, zone: ZoneId): String {
-    val start = ZonedDateTime.parse(session.startsAt).withZoneSameInstant(zone)
-    val end = ZonedDateTime.parse(session.endsAt).withZoneSameInstant(zone)
+    val start = VenueTimeZone.at(ZonedDateTime.parse(session.startsAt).toInstant(), zone.id)
+    val end = VenueTimeZone.at(ZonedDateTime.parse(session.endsAt).toInstant(), zone.id)
     val date = start.format(DateTimeFormatter.ofPattern("EEE d MMM", Locale("es"))).replaceFirstChar { it.uppercase() }
     return "$date · ${start.format(TIME)}-${end.format(TIME)}"
 }

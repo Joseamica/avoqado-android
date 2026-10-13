@@ -103,11 +103,10 @@ fun TimeClockSheet(
     val clockFontSize = if (compactSheetLayout) 52.sp else 64.sp
 
     // Live clock in venue timezone (matching iOS: ticks every second)
-    val zoneId = remember { com.avoqado.pos.core.util.VenueTimeZone.zoneId() }
-    var currentTime by remember { mutableStateOf(LocalTime.now(zoneId)) }
+    var currentTime by remember { mutableStateOf(com.avoqado.pos.core.util.VenueTimeZone.now().toLocalTime()) }
     LaunchedEffect(Unit) {
         while (true) {
-            currentTime = LocalTime.now(zoneId)
+            currentTime = com.avoqado.pos.core.util.VenueTimeZone.now().toLocalTime()
             delay(1000)
         }
     }
@@ -521,7 +520,7 @@ fun TimeClockSheet(
 /** Hora del NEGOCIO para el acuse — no la del aparato: un reloj mal puesto haría que
  *  el acuse de una checada cante una hora que no cuadra con lo que registró el server. */
 private fun horaActual(): String =
-    java.time.ZonedDateTime.now(com.avoqado.pos.core.util.VenueTimeZone.zoneId())
+    com.avoqado.pos.core.util.VenueTimeZone.now()
         .format(DateTimeFormatter.ofPattern("HH:mm"))
 
 /**
@@ -545,7 +544,7 @@ private fun duracionDesde(clockInIso: String): String? {
 
 private fun formatClockInTime(iso: String): String? = try {
     java.time.Instant.parse(iso)
-        .atZone(com.avoqado.pos.core.util.VenueTimeZone.zoneId())
+        .let { com.avoqado.pos.core.util.VenueTimeZone.at(it) }
         .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"))
 } catch (_: Exception) {
     null

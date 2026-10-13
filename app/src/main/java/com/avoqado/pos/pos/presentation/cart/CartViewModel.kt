@@ -94,6 +94,9 @@ data class CartState(
     /** Set when the cart was seeded from a walk-in class reservation; flows
      *  through to the order so the sale links back to the reservation. */
     val reservationId: String? = null,
+    val carritoGuardadoId: String? = null,
+    /** Identidad de la venta en memoria; guardar una copia no la cambia. */
+    val identidadDeVenta: String = UUID.randomUUID().toString(),
 ) {
     val itemCount: Int get() = items.sumOf { it.quantity }
 
@@ -192,6 +195,11 @@ private fun formatCents(cents: Int): String {
 
 internal const val AVISO_CARRITO_SIN_IMPUESTO =
     "Este carrito guardado sumaba impuesto aparte. Ya no se suma: el precio ya incluye el IVA."
+
+sealed interface Restauracion {
+    data object Hecha : Restauracion
+    data class PideConfirmacion(val cobroIniciadoEn: Long) : Restauracion
+}
 
 @HiltViewModel
 class CartViewModel @Inject constructor(
@@ -1129,12 +1137,13 @@ class CartViewModel @Inject constructor(
         if (state.isEmpty || state.items.any { it.locked }) return false
 
         val cartName = name ?: "Carrito ${
-            java.time.ZonedDateTime.now(com.avoqado.pos.core.util.VenueTimeZone.zoneId())
+            com.avoqado.pos.core.util.VenueTimeZone.now()
                 .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"))
         }"
         val savedCart = SavedCart(
-            id = UUID.randomUUID().toString(),
+            id = state.carritoGuardadoId ?: UUID.randomUUID().toString(),
             name = cartName,
+            cobroIniciadoEn = savedCartsRepository.savedCarts.value.firstOrNull { it.id == state.carritoGuardadoId }?.cobroIniciadoEn,
             items = state.items.map { item ->
                 SavedCartItem(
                     productId = when (val type = item.type) {
@@ -1177,7 +1186,7 @@ class CartViewModel @Inject constructor(
             reservationId = state.reservationId,
             attachedCustomerId = _selectedCustomer.value?.id,
         )
-        savedCartsRepository.saveCart(savedCart)
+        if (!savedCartsRepository.saveCart(savedCart)) return false
         // El cliente se fue CON el carrito guardado (`attachedCustomerId` arriba), así
         // que aquí la venta terminó: si no se suelta, se queda en el encabezado y la
         // venta siguiente nace con él.
@@ -1269,6 +1278,7 @@ class CartViewModel @Inject constructor(
          * que refirió nunca recibía su crédito. `null` = no había referido válido.
          */
         val referralPendiente: ReferralPendiente?,
+        val aplicadoAlCarritoActual: Boolean = true,
     )
 
     /**
@@ -1295,10 +1305,23 @@ class CartViewModel @Inject constructor(
         remainingBalanceCents: Int,
         /** Lo que el servidor confirmó del premio (0 = lo rechazó); null = la venta no llevaba premio. */
         premioConfirmadoCents: Int? = null,
+        carritoGuardadoDelCobro: String? = _cartState.value.carritoGuardadoId,
+        identidadDeVentaDelCobro: String? = null,
     ): CobroAplicado {
         // 🔴 Se fotografía ANTES de tocar nada: cerrar la venta borra la validación,
         // el código y el staff, y la captura corre después. Ver [ReferralPendiente].
+        val identidadOriginal = _cartState.value.identidadDeVenta
+        // El recibo retira su copia; una respuesta tardía no puede tocar la venta siguiente.
+        carritoGuardadoDelCobro?.let {
+            if (!savedCartsRepository.deleteCart(it)) Log.w("🛒", "No se confirmó el retiro de la copia marcada $it")
+        }
+        val esLaMismaVenta = identidadDeVentaDelCobro?.let { it == identidadOriginal }
+            ?: (carritoGuardadoDelCobro == _cartState.value.carritoGuardadoId)
+        if (!esLaMismaVenta) {
+            return CobroAplicado(RamaCobro.PAGO_COMPLETO, false, null, aplicadoAlCarritoActual = false)
+        }
         val referralPendiente = snapshotReferralPendiente()
+        _cartState.update { it.copy(carritoGuardadoId = null) }
         // 🔴 El premio ya se canjeó (o no) sobre la ORDEN entera al crearla. Lo que quede por cobrar
         // descuenta lo que el servidor CONFIRMÓ, nunca un estimado nuevo sobre los renglones que quedan
         // (hallazgo P1 de Codex, 27-sep): un monto fijo con lo confirmado, o nada si lo rechazó.
@@ -1324,6 +1347,7 @@ class CartViewModel @Inject constructor(
             remainingBalanceCents > 0 -> {
                 // El cliente sobrevive: `clearCart()` no lo toca, a propósito.
                 clearCart()
+                _cartState.update { it.copy(identidadDeVenta = identidadOriginal) }
                 addCustomAmount(name = "Saldo pendiente", amountCents = remainingBalanceCents)
                 RamaCobro.QUEDA_SALDO
             }
@@ -1335,6 +1359,9 @@ class CartViewModel @Inject constructor(
 
         val ventaTerminada = remainingBalanceCents <= 0 && _cartState.value.isEmpty
         if (ventaTerminada) {
+            if (_cartState.value.identidadDeVenta == identidadOriginal) {
+                _cartState.update { it.copy(identidadDeVenta = UUID.randomUUID().toString()) }
+            }
             // 🔴 Arrastrar al cliente a la venta siguiente es PEOR que perderlo:
             // perderlo deja un dato faltante; arrastrarlo atribuye lealtad, CFDI e
             // historial a quien no compró.
@@ -1734,7 +1761,13 @@ class CartViewModel @Inject constructor(
         )
     }
 
-    fun restoreSavedCart(savedCart: SavedCart) {
+    fun prepararCobroDelCarritoGuardado(): Boolean =
+        _cartState.value.carritoGuardadoId?.let { savedCartsRepository.marcarCobroIniciado(it) } ?: true
+
+    fun restoreSavedCart(savedCart: SavedCart, confirmado: Boolean = false): Restauracion {
+        savedCart.cobroIniciadoEn?.let {
+            if (!confirmado || !savedCartsRepository.quitarMarca(savedCart.id)) return Restauracion.PideConfirmacion(it)
+        }
         val items = savedCart.items.map { savedItem ->
             CartItem(
                 type = when {
@@ -1784,12 +1817,13 @@ class CartViewModel @Inject constructor(
             orderNote = savedCart.orderNote,
             orderTaxPercent = null,
             reservationId = savedCart.reservationId,
+            carritoGuardadoId = savedCart.id,
             selectedStaffId = _cartState.value.selectedStaffId,
             selectedStaffName = _cartState.value.selectedStaffName,
         )
         // D13 (IVA por producto, plan 7a): «Agregar impuesto» ya no existe — en México el precio ya trae el IVA (LFPC 7 Bis).
         // Un carrito guardado con impuesto aparte se restaura SIN él, y se dice; uno sin impuesto limpia el aviso anterior
-        // (r1 #15). Lo ya cobrado y lo encolado no se tocan. La copia guardada sigue su ciclo de hoy (el 7b lo arregla).
+        // (r1 #15). Lo ya cobrado y lo encolado no se tocan. La copia guardada se conserva hasta el primer cobro confirmado.
         _avisoDelCarrito.value = if ((savedCart.orderTaxPercent ?: 0) > 0) AVISO_CARRITO_SIN_IMPUESTO else null
         // 🔴 DINERO. Este camino reemplaza el carrito SIN pasar por `clearCart()`,
         // así que el vínculo con una venta a medio cobrar se limpia aquí. Hoy los
@@ -1804,8 +1838,8 @@ class CartViewModel @Inject constructor(
         // cliente llegue al cobro, que antes se perdía por el mismo motivo que el
         // bug de rotación: la pantalla tenía su propia copia y ésta no la tocaba.
         setSelectedCustomer(savedCart.attachedCustomerId)
-        savedCartsRepository.deleteCart(savedCart.id)
         Log.d("🛒", "Restored saved cart: ${savedCart.name}")
+        return Restauracion.Hecha
     }
 
     fun deleteSavedCart(cartId: String) {

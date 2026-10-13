@@ -1292,6 +1292,6 @@ private fun paymentMethodIcon(method: String) = when (method.uppercase()) {
 
 private fun formatDetailDate(isoString: String): String {
     val instant = com.avoqado.pos.core.util.VenueDateTimeFormatter.parseIso(isoString) ?: return ""
-    return instant.atZone(com.avoqado.pos.core.util.VenueTimeZone.zoneId())
+    return instant.let { com.avoqado.pos.core.util.VenueTimeZone.at(it) }
         .format(detailDateOutputFormatter)
 }

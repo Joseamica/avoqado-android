@@ -1,5 +1,6 @@
 package com.avoqado.pos.reservations.presentation.calendar
 
+import com.avoqado.pos.core.util.VenueTimeZone
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
@@ -240,7 +241,7 @@ fun CalendarTabHost(
     val sheetSlot = pendingSlot
     if (sheetSlot != null || showSheetForNow) {
         val target = sheetSlot
-            ?: (state.selectedDate to LocalTime.now(venueZone))
+            ?: (state.selectedDate to VenueTimeZone.now(venueZone.id).toLocalTime())
         ActionSheetCenter(
             onDismiss = {
                 pendingSlot = null
@@ -260,7 +261,7 @@ fun CalendarTabHost(
                     onClick = {
                         pendingSlot = null
                         showSheetForNow = false
-                        onCreateReservation(LocalDate.now(venueZone), LocalTime.now(venueZone), true)
+                        onCreateReservation(VenueTimeZone.now(venueZone.id).toLocalDate(), VenueTimeZone.now(venueZone.id).toLocalTime(), true)
                     },
                 ),
                 ActionSheetItem(

@@ -125,7 +125,7 @@ class PaymentFlowCancelacionDurableTest {
         // Un `Result<Unit>` de un mock relajado no es `Result.success(Unit)`: su `fold` revienta
         // con ClassCastException al cerrar la venta.
         coEvery { kdsRepository.createOrder(any(), any(), any(), any()) } returns Result.success(Unit)
-        coEvery { cashDrawerRepository.addCashSale(any(), any()) } returns null
+        coEvery { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any()) } returns null
 
         // El coordinador REAL, con disco en memoria y transporte falso, corriendo en el despachador
         // de pruebas (Main). Sin `start()`: sin reloj de fondo que haga girar a `advanceUntilIdle`.
@@ -173,7 +173,7 @@ class PaymentFlowCancelacionDurableTest {
     )
 
     private fun stubOrdenCreada(id: String = "order-1") {
-        coEvery { orderRepository.createOrder(any(), any(), any(), any(), any(), any()) } returns
+        coEvery { orderRepository.createOrder(any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
             Result.success(CreateOrderResponse(success = true, data = OrderData(id = id)))
     }
 
@@ -289,7 +289,7 @@ class PaymentFlowCancelacionDurableTest {
     @Test
     fun `P1 cancelar mientras se crea la orden no envia el cobro y cancela esa orden`() = runTest {
         val orden = CompletableDeferred<Result<CreateOrderResponse>>()
-        coEvery { orderRepository.createOrder(any(), any(), any(), any(), any(), any()) } coAnswers { orden.await() }
+        coEvery { orderRepository.createOrder(any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } coAnswers { orden.await() }
 
         cobrarConTarjeta()
         runCurrent()
@@ -309,7 +309,7 @@ class PaymentFlowCancelacionDurableTest {
     @Test
     fun `P1 cancelar mientras se crea la orden en efectivo no registra el pago`() = runTest {
         val orden = CompletableDeferred<Result<CreateOrderResponse>>()
-        coEvery { orderRepository.createOrder(any(), any(), any(), any(), any(), any()) } coAnswers { orden.await() }
+        coEvery { orderRepository.createOrder(any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } coAnswers { orden.await() }
 
         viewModel.startPaymentFlow(cardCart())
         viewModel.confirmCashPreset(2_000)
@@ -319,7 +319,7 @@ class PaymentFlowCancelacionDurableTest {
         orden.complete(Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-1"))))
         advanceUntilIdle()
 
-        coVerify(exactly = 0) { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) }
         assertEquals(listOf("DELETE:order-1"), transporte.llamadas)
         assertTrue(viewModel.debeSalir.value)
     }
@@ -327,7 +327,7 @@ class PaymentFlowCancelacionDurableTest {
     @Test
     fun `cancelar mientras se crea una orden que al final no se creo solo sale`() = runTest {
         val orden = CompletableDeferred<Result<CreateOrderResponse>>()
-        coEvery { orderRepository.createOrder(any(), any(), any(), any(), any(), any()) } coAnswers { orden.await() }
+        coEvery { orderRepository.createOrder(any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } coAnswers { orden.await() }
 
         cobrarConTarjeta()
         runCurrent()
@@ -430,7 +430,7 @@ class PaymentFlowCancelacionDurableTest {
 
         val intencion = transporte.llamadas
         assertTrue("jamás DELETE de la cuenta de la mesa: $intencion", transporte.llamadasBorrar.isEmpty())
-        coVerify(exactly = 0) { orderRepository.createOrder(any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { orderRepository.createOrder(any(), any(), any(), any(), any(), any(), capturedVenueId = any()) }
         assertTrue(viewModel.debeSalir.value)
     }
 

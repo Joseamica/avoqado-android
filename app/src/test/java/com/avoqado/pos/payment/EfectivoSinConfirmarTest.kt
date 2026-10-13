@@ -84,11 +84,11 @@ class EfectivoSinConfirmarTest {
         every { tpvSettingsRepository.getCurrentSettings() } returns TpvSettings(showReviewScreen = false, showTipScreen = false)
         coEvery { terminalPaymentService.fetchOnlineTerminals(any()) } returns TerminalListResult.Success(emptyList())
         every { cashPaymentRepository.processCashPayment(any(), any()) } returns CashPaymentResult.Success(changeCents = 0)
-        coEvery { cashPaymentRepository.queueCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) } answers {
+        coEvery { cashPaymentRepository.queueCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), venueId = any()) } answers {
             arg<String?>(8) ?: "sin-llave"
         }
         every { cashPaymentRepository.observarEstado(any()) } returns estadoEnCola
-        coEvery { cashDrawerRepository.addCashSale(any(), any()) } returns null
+        coEvery { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any()) } returns null
         coEvery { kdsRepository.createOrder(any(), any(), any(), any()) } returns Result.success(Unit)
         coEvery { kdsOrderBus.publish(any()) } returns Unit
         every { secureStorage.userId } returns "user-456"
@@ -125,7 +125,7 @@ class EfectivoSinConfirmarTest {
 
     private fun llaveReservada(): String {
         val llave = slot<String>()
-        coVerify { cashPaymentRepository.reservarCobro(any(), any(), any(), any(), any(), any(), any(), any(), capture(llave), any(), any()) }
+        coVerify { cashPaymentRepository.reservarCobro(any(), any(), any(), any(), any(), any(), any(), any(), capture(llave), any(), any(), any(), any(), any(), venueId = any()) }
         return llave.captured
     }
 
@@ -133,7 +133,7 @@ class EfectivoSinConfirmarTest {
 
     @Test
     fun `P1 el cobro rapido se reserva ANTES de mandarse al servidor`() = runTest {
-        coEvery { orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), any(), any(), any()) } returns
+        coEvery { orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
             Result.success(OrderRepository.CashPayResult(paymentId = "pago-1", receiptAccessKey = null))
 
         viewModel.startPaymentFlow(otroImporte())
@@ -141,15 +141,15 @@ class EfectivoSinConfirmarTest {
         advanceUntilIdle()
 
         coVerifyOrder {
-            cashPaymentRepository.reservarCobro(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
-            orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), any(), any(), any())
+            cashPaymentRepository.reservarCobro(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), venueId = any())
+            orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
         }
     }
 
     @Test
     fun `P1 si el servidor lo registra la reserva se suelta con la misma llave del cobro`() = runTest {
         val llaveDelPost = slot<String>()
-        coEvery { orderRepository.recordFastCashPayment(any(), any(), any(), any(), capture(llaveDelPost), any(), any(), any()) } returns
+        coEvery { orderRepository.recordFastCashPayment(any(), any(), any(), any(), capture(llaveDelPost), any(), any(), any(), capturedVenueId = any()) } returns
             Result.success(OrderRepository.CashPayResult(paymentId = "pago-1", receiptAccessKey = null))
 
         viewModel.startPaymentFlow(otroImporte())
@@ -163,7 +163,7 @@ class EfectivoSinConfirmarTest {
 
     @Test
     fun `P1 sin red se encola con la MISMA llave de la reserva (la reemplaza) y se suelta despues`() = runTest {
-        coEvery { orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), any(), any(), any()) } returns
+        coEvery { orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
             Result.failure(IOException("timeout"))
 
         viewModel.startPaymentFlow(otroImporte())
@@ -172,7 +172,7 @@ class EfectivoSinConfirmarTest {
 
         val llave = llaveReservada()
         coVerifyOrder {
-            cashPaymentRepository.queueCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), llave, any(), any())
+            cashPaymentRepository.queueCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), llave, any(), any(), any(), any(), any(), venueId = any())
             cashPaymentRepository.soltarReserva(llave)
         }
         val exito = viewModel.state.value as PaymentFlowState.Success
@@ -182,7 +182,7 @@ class EfectivoSinConfirmarTest {
 
     @Test
     fun `P1 un rechazo del servidor suelta la reserva y no encola nada`() = runTest {
-        coEvery { orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), any(), any(), any()) } returns
+        coEvery { orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
             Result.failure(OrderRepository.ServerException(400, "monto inválido"))
 
         viewModel.startPaymentFlow(otroImporte())
@@ -191,7 +191,7 @@ class EfectivoSinConfirmarTest {
 
         val llave = llaveReservada()
         coVerify { cashPaymentRepository.soltarReserva(llave) }
-        coVerify(exactly = 0) { cashPaymentRepository.queueCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) }
+        coVerify(exactly = 0) { cashPaymentRepository.queueCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), venueId = any()) }
         assertTrue(viewModel.state.value is PaymentFlowState.Error)
     }
 
@@ -199,7 +199,7 @@ class EfectivoSinConfirmarTest {
 
     @Test
     fun `P1 el aviso pasa de pendiente a sincronizada cuando la cola sube la venta`() = runTest {
-        coEvery { orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), any(), any(), any()) } returns
+        coEvery { orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
             Result.failure(IOException("sin red"))
 
         viewModel.startPaymentFlow(otroImporte())
@@ -218,7 +218,7 @@ class EfectivoSinConfirmarTest {
 
     @Test
     fun `P1 si el servidor rechaza la venta encolada la pantalla lo dice, no se esconde`() = runTest {
-        coEvery { orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), any(), any(), any()) } returns
+        coEvery { orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
             Result.failure(IOException("sin red"))
 
         viewModel.startPaymentFlow(otroImporte())

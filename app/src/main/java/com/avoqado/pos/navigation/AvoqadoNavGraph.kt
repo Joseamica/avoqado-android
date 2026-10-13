@@ -127,6 +127,7 @@ fun AvoqadoNavGraph(
     val avisoDeCocinaSinRed by appState.avisoDeCocinaSinRed.collectAsState()
     val avisoDeRacha by appState.avisoDeRacha.collectAsState()
     val reconciliationCount by appState.reconciliationCount.collectAsState()
+    val q15HistoryUnavailable by appState.q15HistoryUnavailable.collectAsState()
     val sessionGuardMessage by appState.sessionGuardMessage.collectAsState()
     val visibleTabs by appState.visibleTabs.collectAsState()
     val mainNavigation by appState.mainNavigation.collectAsState()
@@ -155,6 +156,7 @@ fun AvoqadoNavGraph(
                     avisoDeCocinaSinRed = avisoDeCocinaSinRed,
                     avisoDeRacha = avisoDeRacha,
                     syncIssueCount = reconciliationCount,
+                    q15HistoryUnavailable = q15HistoryUnavailable,
                     onTabsShouldRefresh = { appState.refreshTabs() },
                 )
             }
@@ -238,6 +240,7 @@ private fun MainScaffold(
     /** Ver `AppState.avisoDeRacha`: tras 3 entregas sin acuse, la pantalla que no se alcanza se DICE, con o sin red (KDS 3.5). */
     avisoDeRacha: String? = null,
     syncIssueCount: Int = 0,
+    q15HistoryUnavailable:Boolean=false,
     onTabsShouldRefresh: () -> Unit = {},
 ) {
     // Status bar icons: follow theme (light icons on dark, dark icons on light)
@@ -381,7 +384,7 @@ private fun MainScaffold(
                         avisoDeCocina = avisoDeCocinaSinRed,
                         avisoDeRacha = avisoDeRacha,
                     )
-                    com.avoqado.pos.sync.presentation.QuarantineBanner(count = syncIssueCount) { showQuarantineSheet = true }
+                    com.avoqado.pos.sync.presentation.QuarantineBanner(count=syncIssueCount,historyAvailable=roleManager.canResolveQuarantine,historyUnavailable=q15HistoryUnavailable) { showQuarantineSheet = true }
                     // Cancelaciones de cobro que no se pudieron confirmar: se ven aquí —Cobrar
                     // incluido— y se resuelven en la misma hoja de pendientes.
                     com.avoqado.pos.sync.presentation.CancelacionesPendientesBanner { showQuarantineSheet = true }
@@ -662,7 +665,7 @@ private fun MainScaffold(
                         avisoDeCocina = avisoDeCocinaSinRed,
                         avisoDeRacha = avisoDeRacha,
                     )
-                    com.avoqado.pos.sync.presentation.QuarantineBanner(count = syncIssueCount) { showQuarantineSheet = true }
+                    com.avoqado.pos.sync.presentation.QuarantineBanner(count=syncIssueCount,historyAvailable=roleManager.canResolveQuarantine,historyUnavailable=q15HistoryUnavailable) { showQuarantineSheet = true }
                     // Cancelaciones de cobro que no se pudieron confirmar: se ven aquí —Cobrar
                     // incluido— y se resuelven en la misma hoja de pendientes.
                     com.avoqado.pos.sync.presentation.CancelacionesPendientesBanner { showQuarantineSheet = true }

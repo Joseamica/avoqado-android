@@ -15,6 +15,7 @@ data class SavedCart(
     val reservationId: String? = null,
     val attachedCustomerId: String? = null,
     val createdAt: Long = System.currentTimeMillis(),
+    val cobroIniciadoEn: Long? = null,
 ) {
     val itemCount: Int get() = items.sumOf { it.quantity }
 }

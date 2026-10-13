@@ -8,8 +8,56 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface PendingPaymentDao {
+    @Query(Q16_RECOVER_ORDER_SQL)
+    suspend fun recuperarOrdenSqlQ16(venueId: String, id: String, originalOrderId: String?, recoveredOrderId: String): Int
+    suspend fun recuperarOrdenQ16(venueId: String, id: String, originalOrderId: String?, recoveredOrderId: String): Int =
+        com.avoqado.pos.core.data.sync.AdmisionDePrecioQ16.write(venueId) {
+            recuperarOrdenSqlQ16(venueId,id,originalOrderId,recoveredOrderId)
+        }
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insert(payment: PendingPaymentEntity)
+    suspend fun insertRawSqlQ16(payment: PendingPaymentEntity)
+    suspend fun insertRaw(payment: PendingPaymentEntity) = com.avoqado.pos.core.data.sync.AdmisionDePrecioQ16.write(payment.venueId) {
+        insertRawSqlQ16(payment)
+    }
+
+
+    suspend fun insert(payment: PendingPaymentEntity) = com.avoqado.pos.core.data.sync.AdmisionDePrecioQ16.write(payment.venueId) {
+        insertTransactionQ16(payment)
+    }
+    @androidx.room.Transaction
+    suspend fun insertTransactionQ16(payment: PendingPaymentEntity) {
+        val old = findByIdQ15(payment.id)
+        require(old == null || old.venueId == payment.venueId) { "La reserva pertenece a otro negocio" }
+        require(old==null || payment.q15CaptureJson==null || (old.q15CaptureJson!=null && old.q15Reason==null)) {
+            "Falta comprobar la evidencia original de este pago"
+        }
+        if (old?.syncStatus == "SYNCED") return
+        insertRaw(if (old == null) payment else payment.copy(
+            q15CaptureJson = old.q15CaptureJson ?: payment.q15CaptureJson,
+            capturedOrderRef = old.capturedOrderRef ?: payment.capturedOrderRef,
+            q15InitialResultJson = old.q15InitialResultJson, q15ResultJson = old.q15ResultJson,
+            q15Reason = old.q15Reason, q15DetectedAt = old.q15DetectedAt,
+            q15ReviewedAt = old.q15ReviewedAt, q15ReviewedBy = old.q15ReviewedBy, q15ReviewRole = old.q15ReviewRole))
+    }
+    @Query("SELECT * FROM pending_payments WHERE id=:id")
+    suspend fun findByIdQ15(id: String): PendingPaymentEntity?
+    @Query("SELECT * FROM pending_payments WHERE venueId=:venueId AND id=:id")
+    suspend fun findForVenue(venueId: String, id: String): PendingPaymentEntity?
+    @Query(Q15_PAYMENT_RESULT_SQL)
+    suspend fun registrarResultadoQ15(venueId: String, id: String, aplicado: Boolean, motivo: String?, resultadoJson: String?, ahora: Long): Int
+    @Query(Q15_PAYMENT_HOLD_SQL)
+    suspend fun retenerPagoQ15(venueId: String, id: String, motivo: String, ahora: Long): Int
+    @Query(Q15_PAYMENT_REVIEW_SQL)
+    suspend fun revisarPagoQ15(venueId: String, id: String, actor: String, rol: String, ahora: Long): Int
+    @Query(Q15_INTENT_REVIEW_SQL)
+    suspend fun revisarIntentQ15(venueId: String, id: String, actor: String, rol: String, ahora: Long): Int
+    @Query(Q15_HISTORY_COUNT_SQL)
+    suspend fun contarRevisionesQ15(venueId: String, revisadas: Boolean, busqueda: String): Int
+    @Query(Q15_HISTORY_PAGE_SQL)
+    suspend fun paginaRevisionesQ15(venueId: String, revisadas: Boolean, busqueda: String, cursorFecha: Long?, cursorOrigen: String?, cursorId: String?): List<RevisionDelCobroRecord>
+    @Query(Q15_CAPTURED_ORDER_EXISTS_SQL)
+    suspend fun hayCapturaDeOrdenQ15(venueId: String, orderRef: String): Boolean
 
     @Query("SELECT * FROM pending_payments WHERE syncStatus = 'PENDING' ORDER BY createdAt ASC LIMIT :limit")
     suspend fun getPendingPayments(limit: Int = 10): List<PendingPaymentEntity>
@@ -17,7 +65,7 @@ interface PendingPaymentDao {
     @Query("SELECT * FROM pending_payments WHERE syncStatus IN ('PENDING', 'SYNCING') ORDER BY createdAt ASC")
     suspend fun getUnsyncedPayments(): List<PendingPaymentEntity>
 
-    @Query("SELECT * FROM pending_payments WHERE syncStatus = 'FAILED' ORDER BY createdAt DESC")
+    @Query("SELECT * FROM pending_payments WHERE syncStatus = 'FAILED' AND q15Reason IS NULL ORDER BY createdAt DESC")
     suspend fun getFailedPayments(): List<PendingPaymentEntity>
 
     /**
@@ -45,7 +93,7 @@ interface PendingPaymentDao {
     @Query("UPDATE pending_payments SET syncStatus = 'PENDING' WHERE syncStatus = 'SYNCING'")
     suspend fun resetSyncingToPending()
 
-    @Query("UPDATE pending_payments SET syncStatus = 'PENDING', retryCount = 0, lastError = NULL, lastRetryAt = NULL WHERE id = :id AND syncStatus = 'FAILED'")
+    @Query("UPDATE pending_payments SET syncStatus = 'PENDING', retryCount = 0, lastError = NULL, lastRetryAt = NULL WHERE id = :id AND syncStatus = 'FAILED' AND q15Reason IS NULL")
     suspend fun retryFailed(id: String)
 
     /** Estado actual de UN cobro. Lo usa el reintento manual para saber cómo le
@@ -62,20 +110,20 @@ interface PendingPaymentDao {
      * entró y reintentar jamás va a prosperar). SOLO borra filas FAILED: una
      * PENDING/SYNCING sigue viva y borrarla perdería un cobro real.
      */
-    @Query("DELETE FROM pending_payments WHERE id = :id AND syncStatus = 'FAILED'")
+    @Query(Q15_PAYMENT_DELETE_FAILED_SQL)
     suspend fun deleteFailed(id: String): Int
 
-    @Query("DELETE FROM pending_payments WHERE syncStatus = 'SYNCED' AND createdAt < :olderThan")
+    @Query(Q15_PAYMENT_TTL_SQL)
     suspend fun deleteSynced(olderThan: Long)
 
     // MARK: - Cobro en vuelo (guardado ANTES de tocar la red; ver `CashPaymentRepository.reservarCobro`)
 
-    /** Suelta una reserva. Condicionado a EN_VUELO: una fila que la cola ya volvió PENDING (sin red) no se toca. */
-    @Query("DELETE FROM pending_payments WHERE id = :id AND syncStatus = 'EN_VUELO'")
+    /** Retain uncertain reservations; neither cleanup nor an assertion erases payment evidence. */
+    @Query("DELETE FROM pending_payments WHERE id = :id AND syncStatus = 'EN_VUELO' AND 0")
     suspend fun borrarSiEnVuelo(id: String): Int
 
     /** «Sí se cobró»: la reserva pasa a la cola con su MISMA llave (el servidor deduplica si ya la tenía). */
-    @Query("UPDATE pending_payments SET syncStatus = 'PENDING' WHERE id = :id AND syncStatus = 'EN_VUELO'")
+    @Query("UPDATE pending_payments SET syncStatus = 'PENDING' WHERE id = :id AND syncStatus = 'EN_VUELO' AND q15CaptureJson IS NOT NULL AND q15Reason IS NULL")
     suspend fun enVueloAPendiente(id: String): Int
 
     @Query("SELECT * FROM pending_payments WHERE venueId = :venueId AND syncStatus = 'EN_VUELO' ORDER BY createdAt ASC")
@@ -94,12 +142,17 @@ interface PendingPaymentDao {
     @Query("SELECT COUNT(*) FROM pending_payments WHERE syncStatus = 'PENDING'")
     fun getPendingCount(): Flow<Int>
 
-    @Query("SELECT COUNT(*) FROM pending_payments WHERE syncStatus = 'FAILED'")
+    @Query("SELECT COUNT(*) FROM pending_payments WHERE syncStatus = 'FAILED' AND q15Reason IS NULL")
     fun getFailedCount(): Flow<Int>
 
-    @Query("DELETE FROM pending_payments")
+    @Query("DELETE FROM pending_payments WHERE syncStatus='SYNCED' AND q15CaptureJson IS NULL AND q15Reason IS NULL")
     suspend fun deleteAll()
 
-    @Query("DELETE FROM pending_payments WHERE venueId = :venueId")
+    @Query("DELETE FROM pending_payments WHERE venueId = :venueId AND syncStatus='SYNCED' AND q15CaptureJson IS NULL AND q15Reason IS NULL")
     suspend fun deleteForVenue(venueId: String)
 }
+
+// Restore identity only; capture/body/money/retries remain untouched. No legacy release.
+const val Q16_RECOVER_ORDER_SQL = """UPDATE pending_payments SET orderId=:recoveredOrderId,q15Reason=NULL
+ WHERE id=:id AND venueId=:venueId AND orderId IS :originalOrderId
+ AND syncStatus='PENDING' AND q15Reason='PRICE_PROOF_PENDING' AND q15CaptureJson IS NOT NULL"""

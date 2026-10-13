@@ -32,6 +32,7 @@ import com.avoqado.pos.reservations.data.PendingReservationActionEntity
         CachedPayloadEntity::class,
         // v6 — offline-first Corte B: outbox de intents (comandas/mesas offline)
         SyncIntentEntity::class,
+        SyncSequenceStateEntity::class,
         // v11 — catálogo de artículos para declarar merma, por sucursal
         WasteCatalogEntity::class,
         // v12 — la cola durable de mermas por subir (folio = llave)
@@ -40,7 +41,7 @@ import com.avoqado.pos.reservations.data.PendingReservationActionEntity
         EntregaKdsPendienteEntity::class,
         KdsTicketLocalEntity::class,
     ],
-    version = 13,
+    version = 16,
     exportSchema = true,
 )
 abstract class AvoqadoDatabase : RoomDatabase() {

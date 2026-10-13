@@ -63,7 +63,7 @@ class ReceiptBranding @Inject constructor(
             receipt = receipt,
             info = ticket?.info,
             hasLogo = logoRaster != null,
-            timezone = VenueTimeZone.zoneId().id,
+            timezone = VenueTimeZone.timeZoneFor().id,
             appVersion = BuildConfig.VERSION_NAME,
         )
         val rasterFor: (ImageRef, Int) -> MonoRaster? = { ref, widthPct ->

@@ -1,6 +1,8 @@
 package com.avoqado.pos.core.util
 
 import com.avoqado.pos.core.data.local.SecureStorage
+import java.io.DataInputStream
+import java.io.File
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -10,6 +12,7 @@ import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 import java.time.format.DateTimeParseException
 import java.util.Locale
+import java.util.TimeZone
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -45,15 +48,15 @@ class VenueDateTimeFormatter @Inject constructor(
     fun formatShort(iso: String?): String = format(parseIso(iso), SHORT_PATTERN)
     fun formatShort(epochMillis: Long?): String = format(epochMillis?.let(Instant::ofEpochMilli), SHORT_PATTERN)
 
-    fun toZonedDateTime(iso: String?): ZonedDateTime? = parseIso(iso)?.atZone(zoneId())
+    fun toZonedDateTime(iso: String?): ZonedDateTime? = parseIso(iso)?.let { VenueTimeZone.at(it, secureStorage.venueTimezone) }
     fun toZonedDateTime(epochMillis: Long?): ZonedDateTime? =
-        epochMillis?.let { Instant.ofEpochMilli(it).atZone(zoneId()) }
+        epochMillis?.let { VenueTimeZone.at(Instant.ofEpochMilli(it), secureStorage.venueTimezone) }
 
     fun toLocalDate(iso: String?): LocalDate? = toZonedDateTime(iso)?.toLocalDate()
 
     private fun format(instant: Instant?, pattern: String): String {
         if (instant == null) return "N/A"
-        val zoned = instant.atZone(zoneId())
+        val zoned = VenueTimeZone.at(instant, secureStorage.venueTimezone)
         return zoned.format(DateTimeFormatter.ofPattern(pattern, SPANISH_MX))
     }
 
@@ -97,6 +100,74 @@ class VenueDateTimeFormatter @Inject constructor(
  */
 object VenueTimeZone {
     @Volatile private var currentId: String = DEFAULT_TZ
+
+    // Algunos fabricantes actualizan tzdata pero dejan ICU viejo; nunca sustituir un ICU más reciente.
+    private val usarSistema by lazy {
+        val versionSistema = rutasDelSistema(android.os.Build.VERSION.SDK_INT).firstNotNullOfOrNull { ruta ->
+            runCatching {
+                DataInputStream(File(ruta).inputStream()).use { entrada ->
+                    val cabecera = ByteArray(12)
+                    entrada.readFully(cabecera)
+                    Regex("tzdata([0-9]{4}[a-z]+)\\u0000").matchEntire(String(cabecera, Charsets.US_ASCII))?.groupValues?.get(1)
+                }
+            }.getOrNull()
+        }
+        // ICU es API pública en Android; lectura opcional porque este archivo también compila en Windows.
+        val versionIcu = runCatching {
+            Class.forName("android.icu.util.TimeZone").getMethod("getTZDataVersion").invoke(null) as String
+        }.getOrNull()
+        usarReglasDelSistema(versionSistema, versionIcu)
+    }
+
+    // Orden del cargador de tzdata de AOSP: Android 10/11 aún aceptan actualizaciones en /data.
+    internal fun rutasDelSistema(sdk: Int): List<String> {
+        val data = "/data/misc/zoneinfo/current/tzdata"
+        val apex = "/apex/com.android.tzdata/etc/tz/tzdata"
+        val system = "/system/usr/share/zoneinfo/tzdata"
+        return when {
+            sdk >= 31 -> listOf(apex)
+            sdk == 30 -> listOf(data, apex)
+            sdk == 29 -> listOf(data, apex, "/apex/com.android.runtime/etc/tz/tzdata", system)
+            else -> listOf(data, system)
+        }
+    }
+
+    internal fun usarReglasDelSistema(sistema: String?, icu: String?): Boolean =
+        sistema != null && icu != null && sistema > icu
+
+    fun timeZoneFor(timezone: String? = null): TimeZone {
+        val id = timezone?.takeIf { it.isNotBlank() } ?: currentId
+        val normalized = when {
+            id == "Z" -> "GMT"
+            id.startsWith("UTC") -> "GMT" + id.removePrefix("UTC")
+            id == "UT" || id.startsWith("UT+") || id.startsWith("UT-") -> "GMT" + id.removePrefix("UT")
+            id.startsWith("+") || id.startsWith("-") -> "GMT$id"
+            else -> id
+        }
+        return TimeZone.getTimeZone(normalized).takeIf { it.id != "GMT" || normalized == "GMT" }
+            ?: TimeZone.getTimeZone(DEFAULT_TZ)
+    }
+
+    fun at(instant: Instant, timezone: String? = null): ZonedDateTime =
+        if (usarSistema) instant.atZone(ZoneOffset.ofTotalSeconds(timeZoneFor(timezone).getOffset(instant.toEpochMilli()) / 1000))
+        else instant.atZone(zoneIdFor(timezone))
+
+    fun now(timezone: String? = null): ZonedDateTime = at(Instant.now(), timezone)
+
+    fun fromLocalDateTime(local: LocalDateTime, timezone: String? = null, preferredOffset: ZoneOffset? = null): ZonedDateTime =
+        if (usarSistema) at(instanteConReglasDelSistema(local, timeZoneFor(timezone), preferredOffset), timezone)
+        else ZonedDateTime.ofLocal(local, zoneIdFor(timezone), preferredOffset)
+
+    internal fun instanteConReglasDelSistema(local: LocalDateTime, timezone: TimeZone, preferredOffset: ZoneOffset? = null): Instant {
+        val wall = local.toInstant(ZoneOffset.UTC).toEpochMilli()
+        val offsets = listOf(-172_800_000L, 0L, 172_800_000L).map { timezone.getOffset(Math.addExact(wall, it)) }.distinct()
+        val candidates = offsets.map { offset -> Math.subtractExact(wall, offset.toLong()) to offset }
+        val valid = candidates.filter { (instant, offset) -> timezone.getOffset(instant) == offset }
+        // Como atZone: primera ocurrencia en un solapamiento; avanzar por el hueco de primavera.
+        val resolved = valid.firstOrNull { it.second == preferredOffset?.totalSeconds?.times(1000) }?.first
+            ?: valid.minOfOrNull { it.first } ?: candidates.maxOf { it.first }
+        return Instant.ofEpochMilli(resolved).plusNanos(local.nano % 1_000_000L)
+    }
 
     val current: String get() = currentId
 

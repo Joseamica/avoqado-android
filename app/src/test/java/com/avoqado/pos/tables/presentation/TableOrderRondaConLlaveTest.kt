@@ -4,6 +4,7 @@ import androidx.lifecycle.viewModelScope
 import com.avoqado.pos.MainDispatcherRule
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.sync.SyncOutbox
+import com.avoqado.pos.core.data.sync.TrabajoSinResolver
 import com.avoqado.pos.core.domain.printing.ComandaDispatcher
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.pos.data.model.Product
@@ -167,14 +168,23 @@ class TableOrderRondaConLlaveTest {
             assertEquals(lines, subject.pending.value)
             assertEquals(9900, subject.pendingTotalCents)
             assertEquals(4900, subject.payableTotalCents)
+            coEvery { syncOutbox.trabajoSinResolverDeLaOrden("venue-1", any()) } returns TrabajoSinResolver(0, 0, emptySet(), 0)
+            val beforePay = tableSession.current()
+            assertEquals(false, subject.preparePagar())
+            assertEquals(beforePay, tableSession.current())
+            assertEquals(lines, store.load("venue-1", "real").pending)
+            coEvery { repository.getOrderDetail("venue-1", "real") } returns Result.success(store.load("venue-1", "real").cachedCheck!!)
+            subject.loadCheck(); advanceUntilIdle()
             assertEquals(true, subject.preparePagar())
             assertEquals(4900, tableSession.current()!!.totalCents)
+            assertEquals(lines, subject.pending.value)
         } finally { subject?.viewModelScope?.cancel(); root.deleteRecursively() }
     }
 
     @Test fun `cold offline restart keeps previous bill and completed partial payments beside new round`() = runTest {
         val root = java.nio.file.Files.createTempDirectory("table-balance").toFile()
         try {
+            coEvery { syncOutbox.trabajoSinResolverDeLaOrden("venue-1", any()) } returns TrabajoSinResolver(0, 0, emptySet(), 0)
             val warm = vm(draftStore = com.avoqado.pos.tables.data.TableRoundDraftStore(root))
             coEvery { repository.getOrderDetail(any(), any()) } returns Result.success(OrderDetail(
                 id = "o1", total = 109.0, subtotal = 99.0, version = 3,
@@ -186,24 +196,30 @@ class TableOrderRondaConLlaveTest {
             warm.addCustomAmount("Café", 4500)
             coEvery { repository.addRound(any(), any(), any(), any()) } returns Result.failure(IOException("sin red"))
             warm.sendRound(); advanceUntilIdle()
-            assertEquals(12400, warm.payableTotalCents)
+            coEvery { syncOutbox.trabajoSinResolverDeLaOrden("venue-1", any()) } returns TrabajoSinResolver(1, 0, setOf("ADD_ITEMS"), 0)
+            assertEquals(4900, warm.payableTotalCents)
             val cold = vm(draftStore = com.avoqado.pos.tables.data.TableRoundDraftStore(root))
             coEvery { repository.getOrderDetail(any(), any()) } returns Result.failure(IOException("sin red"))
             coEvery { syncOutbox.observarEstado(any()) } returns MutableStateFlow("PENDING")
             cold.loadCheck(); advanceUntilIdle()
-            assertEquals(12400, cold.payableTotalCents)
+            assertEquals(4900, cold.payableTotalCents)
             assertEquals(2, cold.queued.value.size)
             assertEquals(109.0, cold.check.value!!.total, 0.0)
-            assertEquals(true, cold.preparePagar())
-            assertEquals(12400, tableSession.current()!!.totalCents)
+            val beforePay = tableSession.current()
+            assertEquals(false, cold.preparePagar())
+            assertEquals(beforePay, tableSession.current())
+            coEvery { syncOutbox.trabajoSinResolverDeLaOrden("venue-1", any()) } returns TrabajoSinResolver(0, 0, emptySet(), 0)
+            assertEquals(false, cold.preparePagar())
+            assertEquals(beforePay, tableSession.current())
             val acknowledgedCold = vm(draftStore = com.avoqado.pos.tables.data.TableRoundDraftStore(root))
             coEvery { repository.getOrderDetail(any(), any()) } returns Result.failure(IOException("sin red"))
             coEvery { syncOutbox.observarEstado(any()) } returns MutableStateFlow("ACKED")
             acknowledgedCold.loadCheck(); advanceUntilIdle()
-            assertEquals("An ack alone cannot replace the previous cached bill", 12400, acknowledgedCold.payableTotalCents)
+            assertEquals("An ack alone cannot replace the previous cached bill", 4900, acknowledgedCold.payableTotalCents)
+            assertEquals(false, acknowledgedCold.preparePagar())
             coEvery { repository.getOrderDetail(any(), any()) } returns Result.success(acknowledgedCold.check.value!!)
             acknowledgedCold.loadCheck(); advanceUntilIdle()
-            assertEquals("A successful detail without the round cannot consume its local amount", 12400, acknowledgedCold.payableTotalCents)
+            assertEquals("A detail without the round preserves it without adding it to the server balance", 4900, acknowledgedCold.payableTotalCents)
             assertEquals(2, acknowledgedCold.queued.value.size)
             val complete = acknowledgedCold.check.value!!.copy(total = 184.0,
                 items = acknowledgedCold.queued.value.mapIndexed { index, line -> com.avoqado.pos.tables.data.OrderDetailItem(id = "sent-$index", externalId = line.externalId) })
@@ -211,6 +227,8 @@ class TableOrderRondaConLlaveTest {
             acknowledgedCold.loadCheck(); advanceUntilIdle()
             assertEquals(12400, acknowledgedCold.payableTotalCents)
             assertEquals(0, acknowledgedCold.queued.value.size)
+            assertEquals(true, acknowledgedCold.preparePagar())
+            assertEquals(12400, tableSession.current()!!.totalCents)
             val reconciledCold = vm(draftStore = com.avoqado.pos.tables.data.TableRoundDraftStore(root))
             coEvery { repository.getOrderDetail(any(), any()) } returns Result.failure(IOException("sin red"))
             reconciledCold.loadCheck(); advanceUntilIdle()
@@ -282,6 +300,8 @@ class TableOrderRondaConLlaveTest {
         assertEquals(listOf("sync:$llave:0", "sync:$llave:1"), vm.queued.value.map { it.externalId })
         assertEquals(true, ok)
         assertEquals(TableOrderViewModel.MENSAJE_RONDA_SIN_CONEXION, mensaje)
+        org.junit.Assert.assertFalse("Guardar la ronda no confirma que salió en papel",
+            mensaje.orEmpty().contains("impresa") || mensaje.orEmpty().contains("imprimió"))
     }
 
     @Test

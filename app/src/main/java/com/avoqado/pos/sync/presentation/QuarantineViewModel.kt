@@ -49,9 +49,9 @@ class QuarantineViewModel @Inject constructor(
     fun confirmarCobroInterrumpido(id: String) {
         if (!canResolve) return
         viewModelScope.launch {
-            cashPaymentRepository.confirmarQueSeCobro(id)
-            paymentSyncService.syncNow()
-            _successMessage.value = "Cobro enviado a sincronizar"
+            if(cashPaymentRepository.confirmarQueSeCobro(id)) {
+                paymentSyncService.syncNow();_successMessage.value="Cobro enviado a sincronizar"
+            } else {_errorMessage.value="El pago se conserva hasta comprobar su resultado. No vuelvas a cobrar."}
         }
     }
 
@@ -60,7 +60,7 @@ class QuarantineViewModel @Inject constructor(
         if (!canResolve) return
         viewModelScope.launch {
             cashPaymentRepository.descartarPorqueNoSeCobro(id)
-            _successMessage.value = "Cobro descartado"
+            _errorMessage.value="El pago se conserva hasta comprobar su resultado. No vuelvas a cobrar."
         }
     }
 
@@ -122,7 +122,7 @@ class QuarantineViewModel @Inject constructor(
         val venueId = secureStorage.venueId ?: return
         viewModelScope.launch {
             _items.value = syncOutbox.rejectedIntents(venueId)
-            _failedPayments.value = paymentSyncService.failedPayments()
+            _failedPayments.value = paymentSyncService.failedPayments().filter {it.venueId==venueId && it.q15Reason==null}
             _failedReservationActions.value = reservationRepository.quarantinedActions()
         }
     }
@@ -132,8 +132,12 @@ class QuarantineViewModel @Inject constructor(
         if (!canResolve) return
         val venueId = secureStorage.venueId ?: return
         viewModelScope.launch {
-            syncOutbox.dismissRejected(venueId, id)
-            _successMessage.value = "Operación marcada como resuelta"
+            if(_items.value.firstOrNull {it.id==id}?.type=="PAY_CASH") {
+                _errorMessage.value="El pago se conserva hasta comprobar su resultado. No vuelvas a cobrar."
+                return@launch
+            }
+            syncOutbox.dismissRejected(venueId,id)
+            _successMessage.value="Operación marcada como resuelta"
             load()
         }
     }
@@ -153,7 +157,7 @@ class QuarantineViewModel @Inject constructor(
                 is PaymentSyncService.RetryOutcome.Applied ->
                     _successMessage.value = "Cobro sincronizado"
                 is PaymentSyncService.RetryOutcome.StillQueued ->
-                    _successMessage.value = "Sin conexión — el cobro quedó en cola y se reintentará solo"
+                    _errorMessage.value = "El pago sigue guardado y su resultado no está confirmado. No vuelvas a cobrar."
                 is PaymentSyncService.RetryOutcome.Rejected ->
                     _errorMessage.value = outcome.error?.let { detalleRechazo(it) }
                         ?: "El servidor volvió a rechazar el cobro"
@@ -175,8 +179,9 @@ class QuarantineViewModel @Inject constructor(
     fun dismissPayment(id: String) {
         if (!canResolve) return
         viewModelScope.launch {
-            paymentSyncService.dismissFailedPayment(id)
-            _successMessage.value = "Cobro marcado como resuelto"
+            val removed=paymentSyncService.dismissFailedPayment(id)
+            if(removed) _successMessage.value="Cobro marcado como resuelto"
+            else _errorMessage.value="El pago se conserva hasta comprobar su resultado. No vuelvas a cobrar."
             load()
         }
     }
@@ -244,7 +249,9 @@ class QuarantineViewModel @Inject constructor(
     }
 
     /** Guía de resolución según la razón del rechazo. */
-    fun resolutionHint(errorCode: String?, type: String): String = when (errorCode) {
+    fun resolutionHint(errorCode: String?, type: String): String = if(type=="PAY_CASH" && errorCode!="STALE_DEVICE_SEQUENCE") {
+        "El resultado de este pago no está confirmado. Conserva su folio y el efectivo registrado. No vuelvas a cobrar."
+    } else when (errorCode) {
         // 🔴 Esta cuenta NO se puede anular ni fusionar hasta que su cobro con tarjeta termine:
         // lo que hace falta es resolver el cobro, no volver a intentar la operación.
         com.avoqado.pos.payment.domain.CancelacionDeCobro.ORDER_CANCEL_BLOCKED_BY_TERMINAL_CHARGE ->
@@ -253,9 +260,9 @@ class QuarantineViewModel @Inject constructor(
         "FEATURE_LOCKED" -> "El plan del local no tiene esta función activa. Contacta a administración."
         "ORDER_NOT_FOUND" -> "La orden ya no existe (pudo cancelarse). No requiere acción."
         "OUTCOME_UNKNOWN" -> "El servidor evitó repetirla porque su resultado quedó incierto. Revisa la cuenta y la caja antes de hacer cualquier corrección."
-        "STALE_DEVICE_SEQUENCE" -> "El dispositivo intentó reutilizar una secuencia anterior. Revisa la operación y vuelve a iniciar sesión antes de continuar."
+        "STALE_DEVICE_SEQUENCE" -> "El dispositivo detectó una numeración anterior. Revisa la cuenta y los cobros antes de repetir esta operación."
         else -> if (type == "PAY_CASH") {
-            "El cobro no se registró. El efectivo está en caja: vuelve a cobrar esta cuenta desde el POS y luego descártalo."
+            "El resultado de este pago no está confirmado. Conserva su folio y el efectivo registrado. No vuelvas a cobrar."
         } else {
             "El server rechazó esta operación. Revísala y vuelve a hacerla manualmente si sigue aplicando."
         }
@@ -279,8 +286,7 @@ class QuarantineViewModel @Inject constructor(
      */
     fun detalleRechazo(error: String): String = when {
         error.contains("already paid", ignoreCase = true) ->
-            "Esta cuenta YA está pagada en el servidor: el cobro sí quedó registrado. " +
-                "NO lo vuelvas a cobrar — márcalo como resuelto."
+            "El servidor informa que la cuenta está pagada. Comprueba este pago por su folio; no vuelvas a cobrar."
         error.contains("401") ->
             "La sesión expiró. Inicia sesión de nuevo cuando no queden operaciones pendientes y vuelve a intentar."
         error.contains("403") ->

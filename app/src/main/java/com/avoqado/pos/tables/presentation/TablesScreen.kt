@@ -698,10 +698,10 @@ private fun TableNode(table: DiningTable, size: Dp, selected: Boolean = false, m
             } else {
                 // primaryCheck: con el puntero desincronizado la mesa quedaba sin
                 // hora NI total — un bloque negro sin ninguna pista del saldo.
-                elapsedLabel(table.primaryCheck?.createdAt, nowMs) ?: table.primaryCheck?.totalDisplay
+                elapsedLabel(table.primaryCheck?.createdAt, nowMs) ?: table.primaryCheck?.let(::textoCuentaEnPlano)
             }
         } else {
-            table.primaryCheck?.totalDisplay
+            table.primaryCheck?.let(::textoCuentaEnPlano)
         }
         sub?.let {
             Text(
@@ -745,7 +745,7 @@ private fun TableCard(table: DiningTable, onTap: () -> Unit, onLongPress: () -> 
         Text(
             text = when {
                 occupied -> {
-                    val total = table.primaryCheck?.totalDisplay ?: "Ocupada"
+                    val total = table.primaryCheck?.let(::textoCuentaEnPlano) ?: "Ocupada"
                     val elapsed = elapsedLabel(table.primaryCheck?.createdAt, nowMs)
                     if (elapsed != null) "$total · $elapsed" else total
                 }
@@ -902,14 +902,14 @@ private fun TableCheckSheet(
                     HorizontalDivider(modifier = Modifier.padding(vertical = AvoqadoTheme.spacing.sm))
                     Row {
                         Text("Total", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
-                        Text(order.totalDisplay, fontWeight = FontWeight.Bold)
+                        Text(check?.let(::textoCuentaEnPlano) ?: order.totalDisplay, fontWeight = FontWeight.Bold)
                     }
                 } else {
                     Text(
                         text = if (check != null && check.total > 0) {
                             // Hay cuenta y hay dinero, sólo no llegaron los renglones:
                             // decir "sin productos" sería mentir sobre el saldo.
-                            "Cuenta ${check.orderNumber} • ${check.totalDisplay} — ábrela para ver el detalle."
+                            "Cuenta ${check.orderNumber} • ${textoCuentaEnPlano(check)} — ábrela para ver el detalle."
                         } else {
                             "Sin productos todavía — agrega la primera ronda."
                         },
@@ -933,7 +933,7 @@ private fun TableCheckSheet(
                     // TOTAL COMPLETO sin restar pagos parciales. Ahora este botón
                     // abre la pantalla de mesa, cuyo Pagar cobra solo lo restante.
                     PrimaryButton(
-                        text = "Cobrar cuenta • ${check.totalDisplay}",
+                        text = "Cobrar cuenta • ${textoCuentaEnPlano(check)}",
                         onClick = { viewModel.startOrdering(table, onReady = onOpenTableOrder) },
                         fullWidth = true,
                     )
@@ -1110,3 +1110,5 @@ private fun StatusLine(message: String, color: Color) {
         modifier = Modifier.padding(bottom = AvoqadoTheme.spacing.sm),
     )
 }
+
+internal fun textoCuentaEnPlano(check:com.avoqado.pos.tables.data.OpenCheckSummary):String = if(check.isProvisional) "Por sincronizar" else check.totalDisplay

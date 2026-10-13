@@ -1,5 +1,6 @@
 package com.avoqado.pos.reservations.presentation.detail
 
+import com.avoqado.pos.core.util.VenueTimeZone
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -157,7 +158,7 @@ fun RescheduleConfirmSheet(
                         pillTextColor = MaterialTheme.colorScheme.onSurfaceVariant,
                         title = reservation.displayServiceName ?: "Servicio",
                         datetime = formatSlot(
-                            ZonedDateTime.parse(reservation.startsAt).withZoneSameInstant(venueZone),
+                            VenueTimeZone.at(ZonedDateTime.parse(reservation.startsAt).toInstant(), venueZone.id),
                         ),
                         textColor = MaterialTheme.colorScheme.onSurface,
                     )

@@ -67,10 +67,12 @@ jobs:
       - name: Compilar y probar escritorio
         run: ./gradlew -p desktop :pos:verificarExcluidos :plataforma:test :pos:test --console=plain
 
-      - name: Reportes de pruebas (si falla)
-        if: failure()
+      - name: Reportes y resultados de pruebas
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: reportes-escritorio
-          path: desktop/*/build/reports/tests/
+          path: |
+            desktop/*/build/reports/tests/
+            desktop/*/build/test-results/
           retention-days: 7

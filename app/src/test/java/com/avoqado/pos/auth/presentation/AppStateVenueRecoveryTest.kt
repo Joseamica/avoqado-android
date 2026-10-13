@@ -176,6 +176,24 @@ class AppStateVenueRecoveryTest {
         }
     }
 
+    @Test
+    fun `Q15 arranque y cambio PIN sincronizan contexto antes de iniciar observador`() {
+        var contextReady = false
+        val contextsAtStart = mutableListOf<Boolean>()
+        val appState = createAppState(
+            repairResult = true, onRepair = {}, onPaymentStart = {}, onInventoryStart = {},
+            onTableStart = { contextReady = true },
+            onOutboxStart = { contextsAtStart += contextReady },
+        )
+        org.junit.Assert.assertTrue(contextsAtStart.isNotEmpty())
+        assertEquals("El contador debe capturar la identidad vigente al arrancar", true, contextsAtStart.all { it })
+        contextReady = false // cambio de identidad por PIN: refreshTabs es el caller real
+        val previousStarts = contextsAtStart.size
+        appState.refreshTabs()
+        org.junit.Assert.assertTrue(contextsAtStart.size > previousStarts)
+        assertEquals("El contador debe capturar la identidad vigente tras PIN", true, contextsAtStart.drop(previousStarts).all { it })
+    }
+
     private fun createAppState(
         repairResult: Boolean,
         onRepair: () -> Unit,
@@ -183,6 +201,7 @@ class AppStateVenueRecoveryTest {
         onInventoryStart: () -> Unit,
         onInventoryStop: () -> Unit = {},
         onOutboxStart: () -> Unit,
+        onTableStart: () -> Unit = {},
         connected: MutableStateFlow<Boolean> = MutableStateFlow(true),
         onSettingsRefresh: () -> Unit = {},
         printConfigRepository: com.avoqado.pos.printing.routing.PrintConfigRepository =
@@ -244,7 +263,9 @@ class AppStateVenueRecoveryTest {
             replayDeComandas = mockk(relaxed = true),
             syncOutbox = syncOutbox,
             reservationRepository = reservationRepository,
-            tableSyncCoordinator = mockk<TableSyncCoordinator>(relaxed = true),
+            tableSyncCoordinator = mockk<TableSyncCoordinator>(relaxed = true) {
+                every { start() } answers { onTableStart() }
+            },
             posModeManager = posModeManager,
             inventoryCountSyncCoordinator = inventorySync,
             cashDrawerRepository = mockk<com.avoqado.pos.cashdrawer.data.CashDrawerRepository>(relaxed = true) {

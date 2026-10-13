@@ -353,6 +353,7 @@ fun CheckoutScreen(
     var showCreateCustomer by remember { mutableStateOf(false) }
     var createCustomerSearchText by remember { mutableStateOf("") }
     var showSavedSnackbar by remember { mutableStateOf(false) }
+    var savedCartError by remember { mutableStateOf<String?>(null) }
     var showBarcodeScanner by remember { mutableStateOf(false) }
     var showCreateProduct by remember { mutableStateOf(false) }
     var createProductInitialName by remember { mutableStateOf("") }
@@ -478,6 +479,11 @@ fun CheckoutScreen(
      * lo borraría después — el negocio regala el producto y la orden ni lo registra.
      */
     fun proceedToPayment(cart: CartState = cartViewModel.cartState.value) {
+        if (!cartViewModel.prepararCobroDelCarritoGuardado()) {
+            savedCartError = "No se pudo preparar el cobro del carrito guardado. Intenta de nuevo."
+            return
+        }
+
         // 🔴 DINERO. Del FLUJO, no de la variable capturada: quién recibe las
         // membresías se decide con el cliente de AHORA. Mismo criterio que el
         // carrito en la firma de esta función.
@@ -766,6 +772,8 @@ fun CheckoutScreen(
                         onSaveCart = {
                             if (cartViewModel.saveCurrentCart()) {
                                 showSavedSnackbar = true
+                            } else if (!cartState.isEmpty && cartState.items.none { it.locked }) {
+                                savedCartError = "No se pudo guardar el carrito. Sigue aquí; intenta de nuevo."
                             }
                         },
                         onAddCustomAmount = { selectedTab = InputTab.KEYPAD },
@@ -1088,6 +1096,8 @@ fun CheckoutScreen(
             onSaveCart = {
                 if (cartViewModel.saveCurrentCart()) {
                     showSavedSnackbar = true
+                } else if (!cartState.isEmpty && cartState.items.none { it.locked }) {
+                    savedCartError = "No se pudo guardar el carrito. Sigue aquí; intenta de nuevo."
                 }
             },
             onAddCustomAmount = {
@@ -1605,7 +1615,10 @@ fun CheckoutScreen(
                         paidItemIds = completion.paidItemIds,
                         remainingBalanceCents = completion.remainingBalanceCents,
                         premioConfirmadoCents = completion.premioConfirmadoCents,
+                        carritoGuardadoDelCobro = completion.carritoGuardadoDelCobro,
+                        identidadDeVentaDelCobro = completion.identidadDeVenta,
                     )
+                    if (!cobro.aplicadoAlCarritoActual) return@PaymentFlowScreen
                     when (cobro.rama) {
                         CartViewModel.RamaCobro.RENGLONES_PAGADOS -> Unit
                         CartViewModel.RamaCobro.QUEDA_SALDO -> {
@@ -1797,12 +1810,7 @@ fun CheckoutScreen(
             onConfirm = { splitConfig ->
                 showSplitPayment = false
                 pendingSplitConfig = splitConfig
-                paymentCartSnapshot = cartState.paymentSnapshot()
-                // Misma resolución que en `proceedToPayment`: dividir la cuenta
-                // es otra puerta al MISMO cobro, y sin esto la parte 2 hecha
-                // desde aquí volvería a nacer sin orden.
-                if (isTablePaying) cartViewModel.releaseChargingOrder() else cartViewModel.resolvePendingSplitOrderForCharge()
-                showPaymentFlow = true
+                proceedToPayment()
             },
         )
     }
@@ -1894,6 +1902,11 @@ fun CheckoutScreen(
                 )
             }
         }
+    }
+
+    savedCartError?.let { message ->
+        AvoqadoDialog(title = "Carrito guardado", description = message, onDismiss = { savedCartError = null },
+            actionButton = { PrimaryButton(text = "Entendido", onClick = { savedCartError = null }, fullWidth = true) }) {}
     }
 
     payLaterError?.let { message ->

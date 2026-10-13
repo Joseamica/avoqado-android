@@ -7,6 +7,7 @@ import com.avoqado.pos.core.data.local.database.PendingPaymentDao
 import com.avoqado.pos.core.data.local.database.PendingPaymentEntity
 import com.avoqado.pos.core.data.local.database.PaymentSyncStatus
 import com.avoqado.pos.core.data.network.ApiConstants
+import com.avoqado.pos.core.data.sync.SyncOutbox
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -51,6 +52,7 @@ class PaymentSyncService @Inject constructor(
      * replay del cajón se engancha aquí en vez de estrenar un servicio y un timer paralelos.
      */
     private val cajon: CashDrawerRepository,
+    private val syncOutbox: SyncOutbox,
 ) {
     // MARK: - Constants
 
@@ -157,7 +159,7 @@ class PaymentSyncService @Inject constructor(
                 put("method", manual?.serverMethod ?: "CASH")
                 manual?.externalSource?.let { put("externalSource", it) }
             }
-            put("splitType", "FULLPAYMENT")
+            put("splitType", payment.splitType)
             put("staffId", payment.staffId)
             put("source", "AVOQADO_ANDROID")
             put("idempotencyKey", payment.id)
@@ -226,6 +228,9 @@ class PaymentSyncService @Inject constructor(
         data class PermanentFailure(val message: String) : OrderResolution
         data object AuthExpired : OrderResolution
     }
+
+    /** Waits for the real launched drain; no alternate test pipeline. */
+    internal suspend fun esperarSincronizacionActualQ16() { syncJob?.join() }
 
     // MARK: - Lifecycle
 
@@ -297,6 +302,44 @@ class PaymentSyncService @Inject constructor(
         }
     }
 
+    private suspend fun recuperarOrdenRetenidaQ16(payment: PendingPaymentEntity) {
+        if (payment.paymentType != "ORDER" || payment.q15Reason != ConciliacionDelCobro.PRICE_PROOF_PENDING ||
+            (!payment.orderId.isNullOrBlank() && syncOutbox.aliasDurableQ16(payment.venueId,payment.orderId)?.isNotBlank() != true) || payment.venueId.isBlank() ||
+            ConciliacionDelCobro.leerCaptura(payment.q15CaptureJson,payment.venueId,payment.id) == null) return
+        try {
+            val original = json.parseToJsonElement(payment.orderRequestJson ?: return) as? kotlinx.serialization.json.JsonObject ?: return
+            val external = (original["externalId"] as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { it.isString && it.content.isNotBlank() && it.content.length <= 256 }?.content ?: return
+            val request = Request.Builder().url("${ApiConstants.BASE_URL}/mobile/venues/${payment.venueId}/sync/recovery")
+                .post(buildJsonObject { put("externalOrderIds",kotlinx.serialization.json.JsonArray(listOf(kotlinx.serialization.json.JsonPrimitive(external)))) }.toString().toRequestBody(JSON_MEDIA)).build()
+            val response = withContext(Dispatchers.IO) { client.newCall(request).execute().use { if (!it.isSuccessful) null else it.body?.string() } } ?: return
+            val data = json.parseToJsonElement(response).jsonObject["data"] as? kotlinx.serialization.json.JsonObject ?: return
+            if ((data["intents"] as? kotlinx.serialization.json.JsonArray)?.isEmpty() != true) return
+            val orders = data["orders"] as? kotlinx.serialization.json.JsonArray ?: return
+            if (orders.size != 1) return
+            val order = orders.single() as? kotlinx.serialization.json.JsonObject ?: return
+            val ref = (order["externalId"] as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { it.isString }?.content
+            val id = (order["orderId"] as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { it.isString && it.content.isNotBlank() }?.content ?: return
+            if (ref != external) return
+            if (!payment.orderId.isNullOrBlank() && syncOutbox.aliasDurableQ16(payment.venueId,payment.orderId) != id) return
+            check(dao.recuperarOrdenQ16(payment.venueId,payment.id,payment.orderId,id) == 1)
+        } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+        catch (error: Exception) { Log.w(TAG,"La orden original sigue esperando: ${error.message}") }
+    }
+
+    private suspend fun requierePruebaDePrecio(payment: PendingPaymentEntity): Boolean {
+        if (payment.paymentType == "ORDER") return try {
+            payment.orderId.isNullOrBlank() || syncOutbox.aliasDurableQ16(payment.venueId,payment.orderId)?.isNotBlank() == true
+        } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+        catch (_: Exception) { true }
+        if (payment.paymentType != "FAST") return true
+        // Sólo FAST sin artículos conserva su ruta; no degradar una orden a venta rápida.
+        if (payment.orderRequestJson != null) return true
+        return payment.itemsJson?.let { raw ->
+            val items = runCatching { json.parseToJsonElement(raw) as? kotlinx.serialization.json.JsonArray }.getOrNull()
+            items == null || items.isNotEmpty()
+        } ?: false
+    }
+
     // MARK: - Core Sync Logic
 
     fun syncNow() {
@@ -350,6 +393,31 @@ class PaymentSyncService @Inject constructor(
                             }
                         }
 
+                        if (payment.q15Reason != null) {
+                            recuperarOrdenRetenidaQ16(payment)
+                            shouldStopDrain = true; break
+                        }
+                        if (ConciliacionDelCobro.leerCaptura(payment.q15CaptureJson, payment.venueId, payment.id) == null) {
+                            check(dao.retenerPagoQ15(payment.venueId, payment.id, ConciliacionDelCobro.CAPTURA_SIN_EVIDENCIA, System.currentTimeMillis()) == 1) { "No se pudo conservar el cobro por revisar" }
+                            shouldStopDrain = true
+                            break
+                        }
+                        if (requierePruebaDePrecio(payment)) {
+                            check(dao.retenerPagoQ15(payment.venueId, payment.id, ConciliacionDelCobro.PRICE_PROOF_PENDING, System.currentTimeMillis()) == 1)
+                            shouldStopDrain = true
+                            break
+                        }
+                        if (payment.orderId != null) {
+                            val trabajo = syncOutbox.trabajoSinResolverDeLaOrden(
+                                payment.venueId, setOf(payment.orderId),
+                            )
+                            if (trabajo.enCamino > 0) {
+                                Log.d(TAG, "Stopping drain at ${payment.id} — order changes still queued")
+                                shouldStopDrain = true
+                                break
+                            }
+                        }
+
                         dao.updateStatus(payment.id, PaymentSyncStatus.SYNCING.name)
                         if (syncPayment(payment)) {
                             shouldStopDrain = true
@@ -385,6 +453,18 @@ class PaymentSyncService @Inject constructor(
      * es peor que no tener el botón.
      */
     suspend fun retryFailedPayment(id: String): RetryOutcome {
+        val venue = secureStorage.venueId ?: return RetryOutcome.StillQueued
+        val original = dao.findForVenue(venue, id) ?: return RetryOutcome.StillQueued
+        if (original.syncStatus == "SYNCED") return RetryOutcome.Applied
+        if (original.q15Reason != null) return RetryOutcome.StillQueued
+        if (ConciliacionDelCobro.leerCaptura(original.q15CaptureJson, original.venueId, original.id) == null) {
+            check(dao.retenerPagoQ15(original.venueId, original.id, ConciliacionDelCobro.CAPTURA_SIN_EVIDENCIA, System.currentTimeMillis()) == 1)
+            return RetryOutcome.StillQueued
+        }
+        if (requierePruebaDePrecio(original)) {
+            check(dao.retenerPagoQ15(original.venueId, original.id, ConciliacionDelCobro.PRICE_PROOF_PENDING, System.currentTimeMillis()) == 1)
+            return RetryOutcome.StillQueued
+        }
         dao.retryFailed(id)
         syncNow()
         // `syncNow()` corre en su propio scope: hay que ESPERAR (con tope) el
@@ -401,7 +481,8 @@ class PaymentSyncService @Inject constructor(
             while (outcome == null) {
                 outcome = when (dao.syncStatusOf(id)) {
                     // La fila desaparece si otra pasada ya la limpió: se aplicó.
-                    null, PaymentSyncStatus.SYNCED.name -> RetryOutcome.Applied
+                    PaymentSyncStatus.SYNCED.name -> RetryOutcome.Applied
+                    null -> RetryOutcome.StillQueued
                     PaymentSyncStatus.FAILED.name -> RetryOutcome.Rejected(dao.lastErrorOf(id))
                     else -> {
                         delay(400)
@@ -491,6 +572,19 @@ class PaymentSyncService @Inject constructor(
                 url = "${ApiConstants.BASE_URL}/mobile/venues/$venueId/fast"
             }
 
+            val capture = ConciliacionDelCobro.leerCaptura(payment.q15CaptureJson,venueId,payment.id)
+            val originalId = capture?.orderId
+            val aliasComprobado = if (esCobroDeOrden && originalId != null && originalId != resolvedOrderId) {
+                val external = runCatching { json.parseToJsonElement(payment.orderRequestJson ?: "").jsonObject["externalId"] as? kotlinx.serialization.json.JsonPrimitive }.getOrNull()
+                val durable = try { syncOutbox.aliasDurableQ16(venueId,originalId) }
+                    catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                    catch (_: Exception) { null }
+                if (external?.isString != true || external.content.isBlank() || durable != resolvedOrderId) {
+                    check(dao.retenerPagoQ15(venueId,payment.id,ConciliacionDelCobro.PRICE_PROOF_PENDING,System.currentTimeMillis()) == 1)
+                    return true
+                }
+                originalId to requireNotNull(resolvedOrderId)
+            } else null
             val bodyJson = buildReplayBody(payment, venueId, esCobroDeOrden)
 
             val request = Request.Builder()
@@ -507,9 +601,10 @@ class PaymentSyncService @Inject constructor(
                 )
             }
 
-            return handleSyncResult(payment, code, responseBody, headers.first, headers.second)
+            return handleSyncResult(payment, code, responseBody, headers.first, headers.second, aliasComprobado)
 
-        } catch (e: java.net.UnknownHostException) {
+        } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+        catch (e: java.net.UnknownHostException) {
             handleNetworkError(payment, "Sin conexión")
             return true
         } catch (e: java.net.ConnectException) {
@@ -544,7 +639,8 @@ class PaymentSyncService @Inject constructor(
                     Log.d(TAG, "✅ Recreated order for queued payment ${payment.id}: ${it.orderId}")
                 }
             }
-        } catch (e: java.net.UnknownHostException) {
+        } catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+        catch (e: java.net.UnknownHostException) {
             OrderResolution.RetryableFailure("Sin conexión")
         } catch (e: java.net.ConnectException) {
             OrderResolution.RetryableFailure("No se pudo conectar al servidor")
@@ -564,19 +660,39 @@ class PaymentSyncService @Inject constructor(
         body: String,
         contentType: String? = null,
         ngrokError: String? = null,
+        aliasComprobado: Pair<String,String>? = null,
     ): Boolean {
         return when {
             code in 200..299 -> {
-                // Success
-                Log.d(TAG, "✅ Payment ${payment.id} synced successfully")
-                dao.updateStatus(payment.id, PaymentSyncStatus.SYNCED.name)
-                false  // continue batch
+                val evaluation = ConciliacionDelCobro.evaluar(payment.q15CaptureJson, payment.venueId, payment.id,
+                    if (payment.paymentType == "FAST") CanalDelCobro.FAST else CanalDelCobro.ORDER, body, aliasComprobado)
+                try {
+                    check(dao.registrarResultadoQ15(payment.venueId, payment.id, evaluation.aplicado,
+                        evaluation.motivo, evaluation.resultadoJson, System.currentTimeMillis()) == 1) { "No se pudo conservar el resultado del cobro" }
+                } catch (e: kotlinx.coroutines.CancellationException) { throw e }
+                catch (e: Exception) {
+                    runCatching { dao.retenerPagoQ15(payment.venueId,payment.id,ConciliacionDelCobro.RESULTADO_NO_COMPROBADO,System.currentTimeMillis()) }
+                    Log.e(TAG,"No se pudo conservar el resultado; el cobro sigue guardado",e)
+                    return true
+                }
+                !evaluation.aplicado // Unknown identity holds this UUID and the FIFO; applied never replays.
             }
             code == 401 -> {
                 // Auth expired — don't burn retries, stop batch
                 Log.w(TAG, "⚠️ Auth expired — pausing sync, payment ${payment.id} stays PENDING")
                 dao.updateStatus(payment.id, PaymentSyncStatus.PENDING.name)
                 true  // STOP batch
+            }
+            code == 409 && runCatching {
+                val value = json.parseToJsonElement(body) as? kotlinx.serialization.json.JsonObject
+                val reason = value?.get("code") ?: (value?.get("error") as? kotlinx.serialization.json.JsonObject)?.get("code")
+                (reason as? kotlinx.serialization.json.JsonPrimitive)?.let { it.isString && it.content == ConciliacionDelCobro.PRICE_PROOF_PENDING } == true
+            }.getOrDefault(false) -> {
+                try { check(dao.registrarResultadoQ15(payment.venueId, payment.id, false,
+                    ConciliacionDelCobro.PRICE_PROOF_PENDING, null, System.currentTimeMillis()) == 1) }
+                catch (cancelled: kotlinx.coroutines.CancellationException) { throw cancelled }
+                catch (error: Exception) { Log.e(TAG, "No se pudo conservar la espera de precio", error) }
+                true
             }
             code == 409 -> {
                 // 🔴 Un 409 NO afirma que el cobro haya quedado registrado.

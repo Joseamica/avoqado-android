@@ -64,7 +64,7 @@ internal fun tenderLabel(method: String): String = when (method) {
 
 private fun hhmm(iso: String): String = try {
     java.time.Instant.parse(iso)
-        .atZone(com.avoqado.pos.core.util.VenueTimeZone.zoneId())
+        .let { com.avoqado.pos.core.util.VenueTimeZone.at(it) }
         .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm"))
 } catch (_: Exception) {
     ""

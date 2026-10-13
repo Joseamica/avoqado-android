@@ -10,8 +10,8 @@ enum class CalendarView { DAY, WEEK }
 
 data class CalendarUiState(
     val view: CalendarView = CalendarView.DAY,
-    val selectedDate: LocalDate = LocalDate.now(VenueTimeZone.zoneId()),
-    val today: LocalDate = LocalDate.now(VenueTimeZone.zoneId()),
+    val selectedDate: LocalDate = VenueTimeZone.now().toLocalDate(),
+    val today: LocalDate = VenueTimeZone.now().toLocalDate(),
     val reservations: List<Reservation> = emptyList(),
     val classSessions: List<ClassSession> = emptyList(),
     val isLoading: Boolean = false,

@@ -966,4 +966,32 @@ class TerminalPaymentServiceHttpTest {
             assertTrue("$falla", (cortado.fetchOnlineTerminals() as com.avoqado.pos.payment.data.TerminalListResult.Error).sinRed)
         }
     }
+    @Test
+    fun `receipt HTTP preserves service charge and omits it for an ordinary sale`() = runBlocking {
+        val charged = com.avoqado.pos.printing.data.model.ReceiptData(
+            orderNumber = "A-1", orderType = "En tienda", items = emptyList(),
+            subtotal = 10000, taxAmount = 0, tipAmount = 1000, total = 12500,
+            venueName = "Negocio A", serviceChargeAmount = 1500,
+        )
+        for (receipt in listOf(charged, charged.copy(subtotal = 8000, tipAmount = null, total = 8000, serviceChargeAmount = null))) {
+            enqueue(200, "{}")
+            assertTrue(service.printReceiptOnTerminal("terminal-A", receipt).isSuccess)
+            val request = requireNotNull(server.takeRequest(3, java.util.concurrent.TimeUnit.SECONDS))
+            assertEquals("/api/v1/mobile/venues/venue-1/terminals/terminal-A/print-receipt", request.path)
+            val body = org.json.JSONObject(request.body.readUtf8()).getJSONObject("receipt")
+            assertEquals(receipt.subtotal, body.getInt("subtotal"))
+            assertEquals(receipt.total, body.getInt("total"))
+            assertEquals(0, body.getInt("taxAmount"))
+            assertFalse(body.has("discountAmount"))
+            if (receipt.serviceChargeAmount != null) {
+                assertEquals(1500, body.getInt("serviceChargeAmount"))
+                assertEquals(1000, body.getInt("tipAmount"))
+            } else {
+                assertFalse(body.has("serviceChargeAmount"))
+                assertFalse(body.has("tipAmount"))
+            }
+        }
+        assertEquals(2, server.requestCount)
+    }
+
 }

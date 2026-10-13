@@ -121,12 +121,11 @@ object CorteTicketBuilder {
          */
         sinConfirmar: Boolean = false,
     ): ByteArray {
-        val zone = com.avoqado.pos.core.util.VenueTimeZone.zoneId()
         val fecha = java.time.format.DateTimeFormatter.ofPattern("dd MMM yyyy", java.util.Locale("es", "MX"))
         val hora = java.time.format.DateTimeFormatter.ofPattern("HH:mm", java.util.Locale("es", "MX"))
         // El signo va ANTES del símbolo («-$129.00»), como en pantalla (`formatMoneyFromCents`).
         fun money(cents: Int) = com.avoqado.pos.core.util.formatMoneyFromCents(cents)
-        fun at(millis: Long) = java.time.Instant.ofEpochMilli(millis).atZone(zone)
+        fun at(millis: Long) = com.avoqado.pos.core.util.VenueTimeZone.at(java.time.Instant.ofEpochMilli(millis))
 
         fun sumOf(type: CashDrawerEventType) =
             events.filter { it.type == type.name }.sumOf { it.amountCents }
@@ -180,7 +179,7 @@ object CorteTicketBuilder {
         p.printLine(
             if (isPartial) {
                 "Apertura: " + at(session.openedAt).format(hora) +
-                    "  Impreso: " + java.time.ZonedDateTime.now(zone).format(hora)
+                    "  Impreso: " + com.avoqado.pos.core.util.VenueTimeZone.now().format(hora)
             } else {
                 "Apertura: " + at(session.openedAt).format(hora) +
                     "  Cierre: " + (session.closedAt?.let { at(it).format(hora) } ?: "--")

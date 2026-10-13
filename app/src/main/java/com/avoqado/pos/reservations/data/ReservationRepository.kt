@@ -1,5 +1,6 @@
 package com.avoqado.pos.reservations.data
 
+import com.avoqado.pos.core.util.VenueTimeZone
 import com.avoqado.pos.core.util.ConnectivityMonitor
 import com.avoqado.pos.reservations.data.model.CancelReservationRequest
 import com.avoqado.pos.reservations.data.model.CreateReservationRequest
@@ -139,7 +140,7 @@ class ReservationRepository @Inject constructor(
             slots.mapNotNull { slot ->
                 runCatching {
                     ReservationTimeSlot(
-                        time = java.time.Instant.parse(slot.startsAt).atZone(zone).toLocalTime(),
+                        time = VenueTimeZone.at(java.time.Instant.parse(slot.startsAt), zone.id).toLocalTime(),
                         available = slot.available,
                         reason = slot.reason,
                     )
