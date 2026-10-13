@@ -906,7 +906,7 @@ private fun OpenDrawerContent(
             com.avoqado.pos.core.util.VenueDateTimeFormatter.SPANISH_MX
                 .let { locale ->
                     java.time.Instant.ofEpochMilli(session.openedAt)
-                        .atZone(com.avoqado.pos.core.util.VenueTimeZone.zoneId())
+                        .let { com.avoqado.pos.core.util.VenueTimeZone.at(it) }
                         .format(java.time.format.DateTimeFormatter.ofPattern("dd MMM, HH:mm", locale))
                 }
         }
@@ -1135,7 +1135,7 @@ private fun SummaryCard(
 private fun EventRow(event: CashDrawerEventEntity) {
     val timeText = remember(event.createdAt) {
         java.time.Instant.ofEpochMilli(event.createdAt)
-            .atZone(com.avoqado.pos.core.util.VenueTimeZone.zoneId())
+            .let { com.avoqado.pos.core.util.VenueTimeZone.at(it) }
             .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm", Locale("es", "MX")))
     }
 
@@ -1245,7 +1245,7 @@ private fun ClosedSessionCard(
     val closedAtMillis = session.closedAt ?: session.openedAt
     val sessionDateText = remember(closedAtMillis) {
         java.time.Instant.ofEpochMilli(closedAtMillis)
-            .atZone(com.avoqado.pos.core.util.VenueTimeZone.zoneId())
+            .let { com.avoqado.pos.core.util.VenueTimeZone.at(it) }
             .format(java.time.format.DateTimeFormatter.ofPattern("dd MMM yyyy, HH:mm", Locale("es", "MX")))
     }
 
@@ -1603,7 +1603,7 @@ private fun AvisoDeCajaAdoptada(
 /** La hora en el reloj del NEGOCIO, no en el del aparato (regla del workspace). */
 private fun horaDelVenue(millis: Long): String =
     java.time.Instant.ofEpochMilli(millis)
-        .atZone(com.avoqado.pos.core.util.VenueTimeZone.zoneId())
+        .let { com.avoqado.pos.core.util.VenueTimeZone.at(it) }
         .format(java.time.format.DateTimeFormatter.ofPattern("HH:mm", Locale("es", "MX")))
 
 private fun etiquetaDeOperacion(kind: String): String = when (kind) {

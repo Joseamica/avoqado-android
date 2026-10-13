@@ -664,7 +664,7 @@ class ESCPOSPrinter(
             info = null,
             // D15: un logo que no cabe en el papel es lo mismo que no tener logo — sin hueco.
             hasLogo = receipt.venueLogoRaster?.let { it.widthDots <= paperWidth.dots } == true,
-            timezone = VenueTimeZone.zoneId().id,
+            timezone = VenueTimeZone.timeZoneFor().id,
             appVersion = null,
         )
         val lines = ReceiptLayoutInterpreter.interpret(CanonicalLayout.BLOCKS, input, paperWidth.charsPerLine)
@@ -755,7 +755,7 @@ class ESCPOSPrinter(
         // Timestamp (in venue timezone)
         setAlignment(TextAlignment.CENTER)
         val ticketTime = ticket.timestamp.toInstant()
-            .atZone(com.avoqado.pos.core.util.VenueTimeZone.zoneId())
+            .let { com.avoqado.pos.core.util.VenueTimeZone.at(it) }
             .format(
                 java.time.format.DateTimeFormatter.ofPattern(
                     "dd/MM/yyyy HH:mm:ss",
@@ -1079,7 +1079,7 @@ class ESCPOSPrinter(
         printLine("Impresora configurada!")
         printLine()
 
-        val nowFormatted = java.time.ZonedDateTime.now(com.avoqado.pos.core.util.VenueTimeZone.zoneId())
+        val nowFormatted = com.avoqado.pos.core.util.VenueTimeZone.now()
             .format(
                 java.time.format.DateTimeFormatter.ofPattern(
                     "dd/MM/yyyy HH:mm:ss",

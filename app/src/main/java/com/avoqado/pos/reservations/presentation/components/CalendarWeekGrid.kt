@@ -1,5 +1,6 @@
 package com.avoqado.pos.reservations.presentation.components
 
+import com.avoqado.pos.core.util.VenueTimeZone
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -74,11 +75,11 @@ fun CalendarWeekGrid(
                             date = d,
                             hour = hour,
                             reservations = reservations.filter {
-                                val starts = ZonedDateTime.parse(it.startsAt).withZoneSameInstant(venueZone)
+                                val starts = VenueTimeZone.at(ZonedDateTime.parse(it.startsAt).toInstant(), venueZone.id)
                                 starts.toLocalDate() == d && starts.hour == hour
                             },
                             classSessions = classSessions.filter {
-                                val starts = ZonedDateTime.parse(it.startsAt).withZoneSameInstant(venueZone)
+                                val starts = VenueTimeZone.at(ZonedDateTime.parse(it.startsAt).toInstant(), venueZone.id)
                                 starts.toLocalDate() == d && starts.hour == hour
                             },
                             venueZone = venueZone,
@@ -151,12 +152,20 @@ private fun DayHourCell(
                             val deltaMin = ((dyPx / hourHeightPx) * 60f / 15f).roundToInt() * 15
                             val deltaDays = (dxPx / dayColumnWidthPx).roundToInt()
                             if (deltaMin != 0 || deltaDays != 0) {
-                                val origStarts = ZonedDateTime.parse(r.startsAt).withZoneSameInstant(venueZone)
-                                val origEnds = ZonedDateTime.parse(r.endsAt).withZoneSameInstant(venueZone)
+                                val origStarts = VenueTimeZone.at(ZonedDateTime.parse(r.startsAt).toInstant(), venueZone.id)
+                                val origEnds = VenueTimeZone.at(ZonedDateTime.parse(r.endsAt).toInstant(), venueZone.id)
                                 cb(
                                     r,
-                                    origStarts.plusMinutes(deltaMin.toLong()).plusDays(deltaDays.toLong()),
-                                    origEnds.plusMinutes(deltaMin.toLong()).plusDays(deltaDays.toLong()),
+                                    VenueTimeZone.at(origStarts.toInstant().plusSeconds(deltaMin.toLong() * 60), venueZone.id).let { moved ->
+                                        if (deltaDays == 0) moved else VenueTimeZone.fromLocalDateTime(
+                                            moved.toLocalDateTime().plusDays(deltaDays.toLong()), venueZone.id, moved.offset,
+                                        )
+                                    },
+                                    VenueTimeZone.at(origEnds.toInstant().plusSeconds(deltaMin.toLong() * 60), venueZone.id).let { moved ->
+                                        if (deltaDays == 0) moved else VenueTimeZone.fromLocalDateTime(
+                                            moved.toLocalDateTime().plusDays(deltaDays.toLong()), venueZone.id, moved.offset,
+                                        )
+                                    },
                                 )
                             }
                         }

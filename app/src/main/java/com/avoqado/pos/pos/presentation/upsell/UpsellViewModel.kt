@@ -127,7 +127,7 @@ class UpsellViewModel @Inject constructor(
             catalog = catalog,
             // El resolver espera hora LOCAL DEL VENUE: con el reloj del aparato, una
             // tablet mal configurada dispara las reglas de otra franja horaria.
-            nowLocal = LocalDateTime.now(VenueTimeZone.zoneId()),
+            nowLocal = VenueTimeZone.now().toLocalDateTime(),
         )
         if (cards.isEmpty()) return null
 

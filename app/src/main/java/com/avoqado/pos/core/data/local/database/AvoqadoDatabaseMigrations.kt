@@ -251,4 +251,53 @@ object AvoqadoDatabaseMigrations {
             database.execSQL(KdsLanSql.CREAR_TICKETS)
         }
     }
+
+    /** F04: estado de instalación independiente de operaciones eliminables. */
+    val MIGRATION_13_14 = object : Migration(13, 14) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(CREATE_SYNC_SEQUENCE_SQL)
+            db.execSQL(SEED_SYNC_SEQUENCE_SQL)
+        }
+    }
+
+    /** H1: preserva la etiqueta del pago parcial; filas anteriores siguen como FULLPAYMENT. */
+    val MIGRATION_14_15 = object : Migration(14, 15) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL("ALTER TABLE pending_payments ADD COLUMN splitType TEXT NOT NULL DEFAULT 'FULLPAYMENT'")
+        }
+    }
+
+    /** Q15 appended after H1 15; legacy evidence remains NULL. */
+    val MIGRATION_15_16 = object : Migration(15, 16) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            Q15_MIGRATION_SQL.forEach(db::execSQL)
+            restaurarReferenciasQ15(db)
+        }
+    }
+
+    /** Identity-only legacy link, inside the migration transaction. Evidence and monetary fields stay NULL. */
+    fun restaurarReferenciasQ15(db: SupportSQLiteDatabase) {
+        fun tabla(nombre: String, venueCol: String, originalCol: String, payload: Boolean) {
+            var cursor: String? = null
+            while (true) {
+                val tipo = if (payload) " AND type='PAY_CASH'" else ""
+                val rows = db.query("SELECT id,$venueCol,$originalCol FROM $nombre WHERE capturedOrderRef IS NULL$tipo AND (? IS NULL OR id>?) ORDER BY id ASC LIMIT 50", arrayOf(cursor,cursor)).use { result ->
+                    buildList {
+                        while (result.moveToNext()) add(Triple(result.getString(0),result.getString(1),result.getString(2)))
+                    }
+                }
+                for ((id,venue,original) in rows) {
+                    val ref = if (payload) original?.let(::referenciaOriginalDelCobro) else original?.takeIf { it.isNotBlank() }
+                    if (ref != null && !venue.isNullOrBlank()) {
+                        db.execSQL("UPDATE $nombre SET capturedOrderRef=? WHERE id=? AND $venueCol=? AND capturedOrderRef IS NULL",arrayOf(ref,id,venue))
+                    }
+                }
+                if (rows.size < 50) break
+                cursor = rows.last().first
+            }
+        }
+        tabla("pending_payments","venueId","orderId",false)
+        tabla("pos_sync_intents","venue_id","payload_json",true)
+    }
+
 }

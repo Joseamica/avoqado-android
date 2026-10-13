@@ -148,12 +148,12 @@ data class Transaction(
 
     /** Parsed [createdAt] as a [ZonedDateTime] in the active venue's timezone. */
     val parsedDateTime: ZonedDateTime?
-        get() = VenueDateTimeFormatter.parseIso(createdAt)?.atZone(VenueTimeZone.zoneId())
+        get() = VenueDateTimeFormatter.parseIso(createdAt)?.let { VenueTimeZone.at(it) }
 
     val dateGroup: String
         get() {
             val date = parsedDateTime?.toLocalDate() ?: return "Sin fecha"
-            val today = LocalDate.now(VenueTimeZone.zoneId())
+            val today = VenueTimeZone.now().toLocalDate()
             return when {
                 date == today -> "Hoy"
                 date == today.minusDays(1) -> "Ayer"
@@ -226,7 +226,7 @@ data class TransactionRefund(
 
     /** "01/10/26, 10:54" en la zona del negocio (el servidor manda UTC). */
     val dateShortDisplay: String?
-        get() = VenueDateTimeFormatter.parseIso(createdAt)?.atZone(VenueTimeZone.zoneId())
+        get() = VenueDateTimeFormatter.parseIso(createdAt)?.let { VenueTimeZone.at(it) }
             ?.format(DateTimeFormatter.ofPattern("dd/MM/yy, HH:mm"))
 
     val reasonDisplay: String

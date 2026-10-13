@@ -1,5 +1,6 @@
 package com.avoqado.pos.reservations.presentation.detail
 
+import com.avoqado.pos.core.util.VenueTimeZone
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -54,7 +55,7 @@ fun RescheduleSheet(
     val overCapacityConfirmation by viewModel.overCapacityConfirmation.collectAsState()
     val reservation = state.reservation
 
-    var date by remember { mutableStateOf(LocalDate.now(venueTimezone)) }
+    var date by remember { mutableStateOf(VenueTimeZone.now(venueTimezone.id).toLocalDate()) }
     var startTime by remember { mutableStateOf(LocalTime.of(10, 0)) }
     var endTime by remember { mutableStateOf(LocalTime.of(11, 0)) }
     val isValid = endTime.isAfter(startTime)
@@ -210,8 +211,8 @@ fun RescheduleSheet(
             Spacer(Modifier.padding(12.dp))
             Button(
                 onClick = {
-                    val starts = ZonedDateTime.of(date, startTime, venueTimezone)
-                    val ends = ZonedDateTime.of(date, endTime, venueTimezone)
+                    val starts = VenueTimeZone.fromLocalDateTime(date.atTime(startTime), venueTimezone.id)
+                    val ends = VenueTimeZone.fromLocalDateTime(date.atTime(endTime), venueTimezone.id)
                     pendingConfirm = starts to ends
                 },
                 enabled = isValid && state.pendingAction != ReservationAction.RESCHEDULE && reservation != null,

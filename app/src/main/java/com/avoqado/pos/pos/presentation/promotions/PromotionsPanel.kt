@@ -290,7 +290,7 @@ fun PromotionsPanel(
     puedeAplicar: Boolean,
     onPromotionTap: (Promotion) -> Unit,
     modifier: Modifier = Modifier,
-    ahora: LocalTime = LocalTime.now(VenueTimeZone.zoneId()),
+    ahora: LocalTime = VenueTimeZone.now().toLocalTime(),
 ) {
     var busqueda by remember { mutableStateOf("") }
 

@@ -67,6 +67,7 @@ class CartSplitContinuidadTest {
         every { productsRepository.categories } returns MutableStateFlow<List<ProductCategory>>(emptyList())
         every { productsRepository.isLoading } returns MutableStateFlow(false)
         every { savedCartsRepository.savedCarts } returns MutableStateFlow<List<SavedCart>>(emptyList())
+        every { savedCartsRepository.saveCart(any()) } returns true
         every { discountsRepository.discounts } returns MutableStateFlow<List<Discount>>(emptyList())
         every { authRepository.venueSwitched } returns MutableSharedFlow<Unit>(extraBufferCapacity = 1)
         every { secureStorage.venueId } returns "venue-1"

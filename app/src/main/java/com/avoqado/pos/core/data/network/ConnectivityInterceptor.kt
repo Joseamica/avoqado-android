@@ -13,6 +13,7 @@ class ConnectivityInterceptor(
         val response = try {
             chain.proceed(chain.request())
         } catch (e: IOException) {
+            if (e is com.avoqado.pos.core.data.sync.AdmisionDePrecioQ16.Changed) throw e
             connectivityMonitor.reportServerError()
             throw e
         }

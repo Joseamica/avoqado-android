@@ -87,6 +87,8 @@ import com.avoqado.pos.pos.data.model.SavedCart
 import com.avoqado.pos.pos.data.model.SelectedModifier
 import com.avoqado.pos.pos.presentation.cart.CartState
 import com.avoqado.pos.pos.presentation.cart.CartViewModel
+import com.avoqado.pos.pos.presentation.cart.Restauracion
+import com.avoqado.pos.designsystem.theme.Warning
 import com.avoqado.pos.core.data.network.ServerErrorText
 
 // MARK: - Shortcut Action Colors (Square-style muted tones)
@@ -1445,6 +1447,7 @@ private fun SavedCartsSubView(
     onBack: () -> Unit,
 ) {
     val savedCarts by cartViewModel.savedCarts.collectAsState()
+    var confirmarRestauracion by remember { mutableStateOf<SavedCart?>(null) }
 
     Column(modifier = Modifier.fillMaxSize()) {
         BreadcrumbHeader(title = "Carritos guardados", onBack = onBack)
@@ -1482,14 +1485,37 @@ private fun SavedCartsSubView(
                     SavedCartCard(
                         cart = cart,
                         onRestore = {
-                            cartViewModel.restoreSavedCart(cart)
-                            onBack()
+                            when (cartViewModel.restoreSavedCart(cart)) {
+                                Restauracion.Hecha -> onBack()
+                                is Restauracion.PideConfirmacion -> confirmarRestauracion = cart
+                            }
                         },
                         onDelete = {
                             cartViewModel.deleteSavedCart(cart.id)
                         },
                     )
                 }
+            }
+        }
+    }
+
+    confirmarRestauracion?.let { copia ->
+        val hora = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date(copia.cobroIniciadoEn!!))
+        AvoqadoDialog(
+            title = "¿Restaurar este carrito?",
+            description = "Este carrito ya se mandó a cobrar a las $hora. Revisa en Ventas que no se haya cobrado.",
+            onDismiss = { confirmarRestauracion = null },
+            actionButton = {
+                PrimaryButton(text = "Restaurar de todos modos", fullWidth = true, onClick = {
+                    if (cartViewModel.restoreSavedCart(copia, confirmado = true) == Restauracion.Hecha) {
+                        confirmarRestauracion = null
+                        onBack()
+                    }
+                })
+            },
+        ) {
+            OutlinedButton(onClick = { confirmarRestauracion = null }, shape = RoundedCornerShape(50), modifier = Modifier.fillMaxWidth()) {
+                Text("Cancelar")
             }
         }
     }
@@ -1524,6 +1550,12 @@ private fun SavedCartCard(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+
+        cart.cobroIniciadoEn?.let { inicio ->
+            val hora = java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date(inicio))
+            Text("Cobro iniciado a las $hora: revisa Ventas antes de cobrarlo otra vez.",
+                style = MaterialTheme.typography.bodySmall, color = Warning)
         }
 
         cart.items.take(3).forEach { item ->

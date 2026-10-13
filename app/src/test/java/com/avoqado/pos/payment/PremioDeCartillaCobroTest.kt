@@ -99,7 +99,7 @@ class PremioDeCartillaCobroTest {
     fun `una venta con premio aplicado cobra el total con el premio descontado`() = runTest {
         val premioEnviado = slot<String?>()
         coEvery {
-            orderRepository.createOrder(any(), any(), any(), any(), any(), captureNullable(premioEnviado), any())
+            orderRepository.createOrder(any(), any(), any(), any(), any(), captureNullable(premioEnviado), any(), capturedVenueId = any())
         } returns respuesta(StampRewardOnOrder(applied = true, discountAmount = 30.0, rewardLabel = "\$30 de premio"))
         val monto = slot<Int>()
         coEvery {
@@ -121,11 +121,11 @@ class PremioDeCartillaCobroTest {
         every { cashPaymentRepository.processCashPayment(7000, 10000) } returns CashPaymentResult.Success(changeCents = 3000)
         val premioEnviado = slot<String?>()
         coEvery {
-            orderRepository.createOrder(any(), any(), any(), any(), any(), captureNullable(premioEnviado), any())
+            orderRepository.createOrder(any(), any(), any(), any(), any(), captureNullable(premioEnviado), any(), capturedVenueId = any())
         } returns respuesta(StampRewardOnOrder(applied = true, discountAmount = 30.0))
         val cobrado = slot<Int>()
         coEvery {
-            orderRepository.recordCashPayment(any(), capture(cobrado), any(), any(), any(), any(), any())
+            orderRepository.recordCashPayment(any(), capture(cobrado), any(), any(), any(), any(), any(), capturedVenueId = any())
         } returns Result.success(OrderRepository.CashPayResult(paymentId = "pay-1", receiptAccessKey = null))
 
         paymentViewModel.startPaymentFlow(carritoConPremio)
@@ -142,7 +142,7 @@ class PremioDeCartillaCobroTest {
     @Test
     fun `P1 si el servidor confirma otro monto, manda el servidor`() = runTest {
         coEvery {
-            orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any())
+            orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
         } returns respuesta(StampRewardOnOrder(applied = true, discountAmount = 25.0))
         val monto = slot<Int>()
         coEvery {
@@ -160,7 +160,7 @@ class PremioDeCartillaCobroTest {
     @Test
     fun `P1 si el servidor NO aplico el premio se cobra completo y la caja lo dice`() = runTest {
         coEvery {
-            orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any())
+            orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
         } returns respuesta(StampRewardOnOrder(applied = false, reason = "Este premio ya fue canjeado."))
         val monto = slot<Int>()
         coEvery {
@@ -186,11 +186,11 @@ class PremioDeCartillaCobroTest {
         every { cashPaymentRepository.processCashPayment(7000, 7000) } returns CashPaymentResult.Success(changeCents = 0)
         every { cashPaymentRepository.processCashPayment(10000, 10000) } returns CashPaymentResult.Success(changeCents = 0)
         coEvery {
-            orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any())
+            orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
         } returns respuesta(StampRewardOnOrder(applied = false, reason = "Este premio ya venció."))
         val cobrado = mutableListOf<Int>()
         coEvery {
-            orderRepository.recordCashPayment(any(), capture(cobrado), any(), any(), any(), any(), any())
+            orderRepository.recordCashPayment(any(), capture(cobrado), any(), any(), any(), any(), any(), capturedVenueId = any())
         } returns Result.success(OrderRepository.CashPayResult(paymentId = "pay-1", receiptAccessKey = null))
 
         paymentViewModel.startPaymentFlow(carritoConPremio)
@@ -210,22 +210,23 @@ class PremioDeCartillaCobroTest {
         paymentViewModel.processCashPayment(10000)
         advanceUntilIdle()
         assertEquals(listOf(10000), cobrado)
-        io.mockk.coVerify(exactly = 1) { orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any()) }
+        io.mockk.coVerify(exactly = 1) { orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) }
     }
 
     @Test
     fun `P1 si el premio fue rechazado y el pago se encola, la cola guarda lo que de verdad se cobro`() = runTest {
         every { cashPaymentRepository.processCashPayment(any(), any()) } returns CashPaymentResult.Success(changeCents = 0)
         coEvery {
-            orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any())
+            orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
         } returns respuesta(StampRewardOnOrder(applied = false, reason = "Este premio ya fue canjeado."))
         coEvery {
-            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any())
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
         } returns Result.failure(java.net.UnknownHostException())
         val encolado = slot<CreateOrderRequest>()
+        val capturado = slot<Int>()
         coEvery {
             cashPaymentRepository.queueCashPayment(
-                capture(encolado), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
+                capture(encolado), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), capture(capturado), any(), any(), venueId = any()
             )
         } returns "queued-1"
 
@@ -234,17 +235,18 @@ class PremioDeCartillaCobroTest {
         paymentViewModel.processCashPayment(10000)
         advanceUntilIdle()
 
-        assertEquals("el pago encolado vale lo cobrado ($100), no el estimado del carrito ($70)", 10000, encolado.captured.total)
+        assertEquals("el pago encolado vale lo cobrado ($100), no el estimado del carrito ($70)", 10000, capturado.captured)
+        assertEquals("el pedido conserva su estimado original", 7000, encolado.captured.total)
     }
 
     @Test
     fun `P1 en pago dividido con premio rechazado el resto se mide contra el precio completo`() = runTest {
         every { cashPaymentRepository.processCashPayment(5000, 5000) } returns CashPaymentResult.Success(changeCents = 0)
         coEvery {
-            orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any())
+            orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
         } returns respuesta(StampRewardOnOrder(applied = false, reason = "Este premio ya fue canjeado."))
         coEvery {
-            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any())
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
         } returns Result.success(OrderRepository.CashPayResult(paymentId = "pay-1", receiptAccessKey = null))
 
         paymentViewModel.setSplitConfig(type = "CUSTOMAMOUNT", customAmountCents = 5000)
@@ -261,11 +263,11 @@ class PremioDeCartillaCobroTest {
     fun `P1 un premio que deja la cuenta en cero cierra la venta sin mandar $0 a la terminal`() = runTest {
         val premioTotal = PremioPorAplicar(id = "rw1", etiqueta = "Café gratis", tipo = "FIXED_AMOUNT", valor = 100.0)
         coEvery {
-            orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any())
+            orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
         } returns respuesta(StampRewardOnOrder(applied = true, discountAmount = 100.0))
         val cobrado = slot<Int>()
         coEvery {
-            orderRepository.recordCashPayment(any(), capture(cobrado), any(), any(), any(), any(), any())
+            orderRepository.recordCashPayment(any(), capture(cobrado), any(), any(), any(), any(), any(), capturedVenueId = any())
         } returns Result.success(OrderRepository.CashPayResult(paymentId = "pay-1", receiptAccessKey = null))
 
         paymentViewModel.startPaymentFlow(CartState(items = listOf(cafe), pendingStampReward = premioTotal))
@@ -282,10 +284,10 @@ class PremioDeCartillaCobroTest {
     fun `P1 el ticket IMPRESO cuadra - el premio sale como descuento`() = runTest {
         every { cashPaymentRepository.processCashPayment(7000, 7000) } returns CashPaymentResult.Success(changeCents = 0)
         coEvery {
-            orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any())
+            orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
         } returns respuesta(StampRewardOnOrder(applied = true, discountAmount = 30.0))
         coEvery {
-            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any())
+            orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
         } returns Result.success(OrderRepository.CashPayResult(paymentId = "pay-1", receiptAccessKey = null))
         val impreso = slot<com.avoqado.pos.printing.data.model.ReceiptData>()
         coEvery { printerService.manualPrintReceipt(capture(impreso)) } returns mockk(relaxed = true)
@@ -308,7 +310,7 @@ class PremioDeCartillaCobroTest {
         // abría huecos de dinero al reconectar (hallazgos de Codex, rondas 1 y 2). Sin red se dice y
         // el cajero reintenta o quita el premio.
         coEvery {
-            orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any())
+            orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
         } returns Result.failure(java.net.UnknownHostException())
 
         paymentViewModel.startPaymentFlow(carritoConPremio)
@@ -317,9 +319,9 @@ class PremioDeCartillaCobroTest {
         advanceUntilIdle()
 
         io.mockk.coVerify(exactly = 0) {
-            cashPaymentRepository.queueCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any())
+            cashPaymentRepository.queueCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), venueId = any())
         }
-        io.mockk.coVerify(exactly = 0) { cashDrawerRepository.addCashSale(any(), any()) }
+        io.mockk.coVerify(exactly = 0) { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any()) }
         val estado = paymentViewModel.state.value
         assertTrue("$estado", estado is PaymentFlowState.Error)
         assertTrue((estado as PaymentFlowState.Error).message.contains("necesita internet"))
@@ -328,7 +330,7 @@ class PremioDeCartillaCobroTest {
     @Test
     fun `en pago dividido la parte que eligio el cajero no se toca`() = runTest {
         coEvery {
-            orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any())
+            orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
         } returns respuesta(StampRewardOnOrder(applied = true, discountAmount = 30.0))
         val monto = slot<Int>()
         coEvery {
@@ -347,7 +349,7 @@ class PremioDeCartillaCobroTest {
     @Test
     fun `P1 el ticket cuadra - el premio sale como descuento con el monto que confirmo el servidor`() = runTest {
         coEvery {
-            orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any())
+            orderRepository.createOrder(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
         } returns respuesta(StampRewardOnOrder(applied = true, discountAmount = 25.0))
         coEvery {
             terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any())
@@ -374,7 +376,7 @@ class PremioDeCartillaCobroTest {
     fun `sin premio, la venta se cobra exactamente como antes`() = runTest {
         val premioEnviado = slot<String?>()
         coEvery {
-            orderRepository.createOrder(any(), any(), any(), any(), any(), captureNullable(premioEnviado), any())
+            orderRepository.createOrder(any(), any(), any(), any(), any(), captureNullable(premioEnviado), any(), capturedVenueId = any())
         } returns Result.success(CreateOrderResponse(success = true, data = OrderData(id = "order-1", total = 1.0)))
         val monto = slot<Int>()
         coEvery {
@@ -457,7 +459,7 @@ class PremioDeCartillaCobroTest {
             )
         every { cashPaymentRepository.processCashPayment(any(), any()) } returns
             CashPaymentResult.Success(changeCents = 0)
-        coEvery { cashDrawerRepository.addCashSale(any(), any()) } returns null
+        coEvery { cashDrawerRepository.addCashSale(any(), any(), any(), any(), any()) } returns null
         coEvery { kdsRepository.createOrder(any(), any(), any(), any()) } returns Result.success(Unit)
         every { secureStorage.venueName } returns "Avoqado Test"
         every { secureStorage.userId } returns "user-1"

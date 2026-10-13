@@ -25,10 +25,14 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.After
+import java.io.File
+import java.nio.file.Files
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
@@ -43,6 +47,7 @@ class SyncOutboxRetenidoTest {
 
     private val dao = mockk<SyncIntentDao>(relaxed = true)
     private val apiService = mockk<ApiService>(relaxed = true)
+    init { com.avoqado.pos.core.data.sync.vincularCallFixtureQ16(apiService) }
     private val connectivityMonitor = mockk<ConnectivityMonitor>(relaxed = true)
     private val secureStorage = mockk<SecureStorage>(relaxed = true)
     private val cajon = mockk<CashDrawerRepository>(relaxed = true)
@@ -51,7 +56,15 @@ class SyncOutboxRetenidoTest {
     private val cola = CopyOnWriteArrayList<SyncIntentEntity>()
     private val mandados = CopyOnWriteArrayList<String>()
     private val vacio = JsonObject(emptyMap())
+    private val ordenImpaga = JsonObject(mapOf("localOrderId" to JsonPrimitive("local-order")))
     private val startupReleases = java.util.concurrent.atomic.AtomicInteger()
+    private val outboxesPropios = mutableListOf<SyncOutbox>()
+    private val directoriosPropios = mutableListOf<File>()
+
+    @After fun limpiarRecursosPropios() {
+        try { outboxesPropios.forEach { it.stop() } }
+        finally { directoriosPropios.forEach { it.deleteRecursively() } }
+    }
 
     private suspend fun startReady(subject: SyncOutbox) {
         val before = startupReleases.get()
@@ -60,14 +73,15 @@ class SyncOutboxRetenidoTest {
     }
 
     private fun intent(id: String, seq: Long, type: String, status: String = STATUS_PENDING) =
-        SyncIntentEntity(id = id, venueId = VENUE, staffId = "staff-1", seq = seq, type = type, payloadJson = "{}", status = status)
+        SyncIntentEntity(id = id, venueId = VENUE, staffId = "staff-1", seq = seq, type = type, payloadJson = if (type == "OPEN_TABLE" || type == "ADD_ITEMS") ordenImpaga.toString() else "{}", status = status)
 
     private fun outbox(inicial: List<SyncIntentEntity> = emptyList(), filesDirectory: java.io.File? = null): SyncOutbox {
         cola.clear(); cola.addAll(inicial); mandados.clear()
         val prefs = mockk<SharedPreferences>(relaxed = true)
         every { prefs.getString(any(), any()) } returns "device-fijo"
         val context = mockk<Context>(relaxed = true)
-        if (filesDirectory != null) every { context.filesDir } returns filesDirectory
+        val directory = filesDirectory ?: Files.createTempDirectory("sync-retenido-owned").toFile().also { directoriosPropios += it }
+        every { context.filesDir } returns directory
         every { context.getSharedPreferences(any(), any()) } returns prefs
         every { connectivityMonitor.isConnected } returns MutableStateFlow(true)
         every { connectivityMonitor.isServerReachable } returns MutableStateFlow(true)
@@ -111,9 +125,16 @@ class SyncOutboxRetenidoTest {
         coEvery { apiService.syncIntents(VENUE, any()) } answers {
             val request = secondArg<SyncIntentsRequest>()
             mandados += request.intents.map { it.id }
-            SyncIntentsResponse(data = request.intents.map { SyncAck(id = it.id, status = "ACKED") })
+            SyncIntentsResponse(data = request.intents.map { wire ->
+                val result = if (wire.type == "OPEN_TABLE") JsonObject(mapOf(
+                    "localOrderId" to requireNotNull(wire.payload["localOrderId"]),
+                    "orderId" to JsonPrimitive("real-order"),
+                )) else null
+                SyncAck(id = wire.id, status = "ACKED", result = result)
+            })
         }
         return SyncOutbox(dao, apiService, connectivityMonitor, secureStorage, cajon, context, cachedPayloads)
+            .also { outboxesPropios += it }
     }
 
     @Test fun `negotiated preparation passes held financial round without advancing cash`() = runTest {
@@ -259,7 +280,7 @@ class SyncOutboxRetenidoTest {
 
     @Test fun `recovered round preserves original local timestamp for promotion pricing`() = runTest {
         val outbox = outbox()
-        outbox.enqueue(VENUE, "ADD_ITEMS", vacio, id = "recovered", retenido = true, createdAtLocal = 1_234_567_890_000L)
+        outbox.enqueue(VENUE, "ADD_ITEMS", ordenImpaga, id = "recovered", retenido = true, createdAtLocal = 1_234_567_890_000L)
         assertEquals(1_234_567_890_000L, cola.single().createdAt)
         outbox.stop()
     }
@@ -274,8 +295,8 @@ class SyncOutboxRetenidoTest {
         val outbox = outbox()
         outbox.start(VENUE)
         coVerify(timeout = 2_000) { dao.soltarRetenidos() }
-        outbox.enqueue(VENUE, "OPEN_TABLE", vacio, id = "a")
-        outbox.enqueue(VENUE, "ADD_ITEMS", vacio, id = "ronda", retenido = true)
+        outbox.enqueue(VENUE, "OPEN_TABLE", ordenImpaga, id = "a")
+        outbox.enqueue(VENUE, "ADD_ITEMS", ordenImpaga, id = "ronda", retenido = true)
         outbox.enqueue(VENUE, "CLEAR_TABLE", vacio, id = "b")
 
         outbox.replayNow(VENUE)
@@ -291,8 +312,8 @@ class SyncOutboxRetenidoTest {
         val outbox = outbox()
         outbox.start(VENUE)
         coVerify(timeout = 2_000) { dao.soltarRetenidos() }
-        outbox.enqueue(VENUE, "OPEN_TABLE", vacio, id = "a")
-        outbox.enqueue(VENUE, "ADD_ITEMS", vacio, id = "ronda", retenido = true)
+        outbox.enqueue(VENUE, "OPEN_TABLE", ordenImpaga, id = "a")
+        outbox.enqueue(VENUE, "ADD_ITEMS", ordenImpaga, id = "ronda", retenido = true)
         outbox.enqueue(VENUE, "CLEAR_TABLE", vacio, id = "b")
 
         outbox.soltar(VENUE, "ronda")
@@ -308,7 +329,7 @@ class SyncOutboxRetenidoTest {
         val outbox = outbox()
         outbox.start(VENUE)
         coVerify(timeout = 2_000) { dao.soltarRetenidos() }
-        outbox.enqueue(VENUE, "ADD_ITEMS", vacio, id = "ronda", retenido = true)
+        outbox.enqueue(VENUE, "ADD_ITEMS", ordenImpaga, id = "ronda", retenido = true)
         outbox.enqueue(VENUE, "CLEAR_TABLE", vacio, id = "b")
 
         outbox.descartar(VENUE, "ronda")
@@ -335,7 +356,7 @@ class SyncOutboxRetenidoTest {
         val outbox = outbox()
         outbox.start(VENUE)
         coVerify(timeout = 2_000, exactly = 1) { dao.soltarRetenidos() }
-        outbox.enqueue(VENUE, "ADD_ITEMS", vacio, id = "ronda", retenido = true)
+        outbox.enqueue(VENUE, "ADD_ITEMS", ordenImpaga, id = "ronda", retenido = true)
 
         outbox.stop()
         outbox.start(VENUE)

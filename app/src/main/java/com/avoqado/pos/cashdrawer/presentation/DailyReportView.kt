@@ -82,13 +82,12 @@ fun DailyReportView(
     onDismiss: () -> Unit,
 ) {
     val context = LocalContext.current
-    val zone = com.avoqado.pos.core.util.VenueTimeZone.zoneId()
     val datePattern = java.time.format.DateTimeFormatter.ofPattern("dd MMM yyyy", Locale("es", "MX"))
     val timePattern = java.time.format.DateTimeFormatter.ofPattern("HH:mm", Locale("es", "MX"))
     fun formatDate(epochMillis: Long): String =
-        java.time.Instant.ofEpochMilli(epochMillis).atZone(zone).format(datePattern)
+        com.avoqado.pos.core.util.VenueTimeZone.at(java.time.Instant.ofEpochMilli(epochMillis)).format(datePattern)
     fun formatTime(epochMillis: Long): String =
-        java.time.Instant.ofEpochMilli(epochMillis).atZone(zone).format(timePattern)
+        com.avoqado.pos.core.util.VenueTimeZone.at(java.time.Instant.ofEpochMilli(epochMillis)).format(timePattern)
 
     // Compute totals from events
     val cashSalesCents = events

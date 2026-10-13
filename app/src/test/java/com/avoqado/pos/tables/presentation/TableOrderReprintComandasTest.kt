@@ -1,5 +1,7 @@
 package com.avoqado.pos.tables.presentation
 
+import androidx.lifecycle.viewModelScope
+import kotlinx.serialization.decodeFromString
 import com.avoqado.pos.MainDispatcherRule
 import com.avoqado.pos.core.data.local.SecureStorage
 import com.avoqado.pos.core.data.sync.SyncOutbox
@@ -15,6 +17,7 @@ import com.avoqado.pos.printing.routing.PrinterInfo
 import com.avoqado.pos.printing.routing.StationInfo
 import com.avoqado.pos.tables.data.OrderDetail
 import com.avoqado.pos.tables.data.OrderDetailItem
+import com.avoqado.pos.tables.data.OrderDetailModifier
 import com.avoqado.pos.tables.data.TableServiceRepository
 import com.avoqado.pos.tables.data.TableSession
 import io.mockk.coEvery
@@ -23,12 +26,15 @@ import io.mockk.every
 import io.mockk.mockk
 import io.mockk.slot
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runTest
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -58,6 +64,14 @@ class TableOrderReprintComandasTest {
 
     @get:Rule
     val mainDispatcherRule = MainDispatcherRule()
+
+    private val subjects = mutableListOf<TableOrderViewModel>()
+
+    @After
+    fun closeSubjects() {
+        subjects.forEach { it.viewModelScope.cancel() }
+        subjects.clear()
+    }
 
     // MARK: - Fixtures
 
@@ -107,13 +121,16 @@ class TableOrderReprintComandasTest {
         items: List<OrderDetailItem> = listOf(linea("i1", "Taco")),
         config: PrintConfig = configConEstacion,
         defaultKitchenPrinter: SavedPrinter? = impresoraCocina,
+        initialTotalCents: Int = 12000,
+        order: OrderDetail? = null,
+        readOrder: (suspend () -> Result<OrderDetail>)? = null,
     ): TableOrderViewModel {
         val repository = mockk<TableServiceRepository>(relaxed = true)
         every { repository.tables } returns MutableStateFlow(emptyList())
         every { repository.ownership } returns MutableStateFlow(TableServiceRepository.TableOwnership())
-        coEvery { repository.getOrderDetail(any(), any()) } returns Result.success(
-            OrderDetail(id = "o1", orderNumber = "ORD-1", items = items),
-        )
+        coEvery { repository.getOrderDetail(any(), any()) } coAnswers {
+            readOrder?.invoke() ?: Result.success(order ?: OrderDetail(id = "o1", orderNumber = "ORD-1", items = items))
+        }
 
         val secureStorage = mockk<SecureStorage>(relaxed = true)
         every { secureStorage.venueId } returns "venue-1"
@@ -137,7 +154,7 @@ class TableOrderReprintComandasTest {
                 orderId = "o1",
                 orderNumber = "ORD-1",
                 version = 1,
-                totalCents = 12000,
+                totalCents = initialTotalCents,
                 mode = TableSession.Mode.ORDERING,
             ),
         )
@@ -155,7 +172,7 @@ class TableOrderReprintComandasTest {
             timeEntryRepository = mockk(relaxed = true),
             comandaDispatcher = mockk(relaxed = true),
             comandasPendientesStore = mockk(relaxed = true),
-        ).also { it.loadCheck() }
+        ).also { subjects += it; it.loadCheck() }
     }
 
     // MARK: - 🔴 El bug: nada impreso NUNCA es éxito
@@ -412,6 +429,74 @@ class TableOrderReprintComandasTest {
         roles = listOf(PrinterRole.RECEIPT.value),
     )
 
+    private fun cuentaConCargoYExtra() = OrderDetail(
+        id = "o1",
+        orderNumber = "ORD-1",
+        subtotal = 170.0,
+        serviceChargeAmount = 17.0,
+        total = 187.0,
+        items = listOf(
+            linea("cafe-1", "Café Mesas C2").copy(unitPrice = 80.0, total = 80.0),
+            linea("cafe-2", "Café Mesas C2").copy(
+                unitPrice = 80.0,
+                total = 90.0,
+                modifiers = listOf(OrderDetailModifier(name = "Extra Mesas C2", price = 10.0)),
+            ),
+        ),
+    )
+
+    @Test
+    fun `precuenta conserva subtotal de productos sin sumar el cargo`() = runTest {
+        every { printerService.getDefaultPrinter(PrinterRole.RECEIPT) } returns impresoraRecibos
+        val impreso = slot<ReceiptData>()
+        coEvery { printerService.printReceipt(capture(impreso), any()) } returns Unit
+
+        buildVm(order = cuentaConCargoYExtra()).printPreBill()
+
+        assertEquals(17000, impreso.captured.subtotal)
+        assertEquals(18700, impreso.captured.total)
+        assertNull(impreso.captured.discountAmount)
+    }
+
+    @Test
+    fun `precuenta entrega el cargo separado al impresor`() = runTest {
+        every { printerService.getDefaultPrinter(PrinterRole.RECEIPT) } returns impresoraRecibos
+        val impreso = slot<ReceiptData>()
+        coEvery { printerService.printReceipt(capture(impreso), any()) } returns Unit
+
+        buildVm(order = cuentaConCargoYExtra()).printPreBill()
+
+        assertEquals(1700, impreso.captured.serviceChargeAmount)
+        assertEquals(18700, impreso.captured.total)
+    }
+
+    @Test
+    fun `precuenta conserva el nombre del extra sin volver a sumarlo`() = runTest {
+        every { printerService.getDefaultPrinter(PrinterRole.RECEIPT) } returns impresoraRecibos
+        val impreso = slot<ReceiptData>()
+        coEvery { printerService.printReceipt(capture(impreso), any()) } returns Unit
+
+        buildVm(order = cuentaConCargoYExtra()).printPreBill()
+
+        assertEquals(listOf("Extra Mesas C2"), impreso.captured.items[1].modifiers)
+        assertEquals(9000, impreso.captured.items[1].totalPrice)
+        assertEquals(18700, impreso.captured.total)
+    }
+
+    @Test
+    fun `precuenta conserva descuento del servidor sin recalcular el total`() = runTest {
+        every { printerService.getDefaultPrinter(PrinterRole.RECEIPT) } returns impresoraRecibos
+        val impreso = slot<ReceiptData>()
+        coEvery { printerService.printReceipt(capture(impreso), any()) } returns Unit
+
+        buildVm(order = cuentaConCargoYExtra().copy(discountAmount = 10.0, total = 177.0)).printPreBill()
+
+        assertEquals(1000, impreso.captured.discountAmount)
+        assertEquals(17000, impreso.captured.subtotal)
+        assertEquals(1700, impreso.captured.serviceChargeAmount)
+        assertEquals(17700, impreso.captured.total)
+    }
+
     /**
      * iOS ya manda `isCortesia` en la pre-cuenta (`TableOrderViewModel.swift:1253-1275`); Android
      * no lo mandaba, así que un artículo de cortesía imprimía su PRECIO en la pre-cuenta de la
@@ -431,5 +516,191 @@ class TableOrderReprintComandasTest {
             "la pre-cuenta debe marcar el artículo como cortesía, igual que la del iPad para la misma cuenta",
             impreso.captured.items.single().isCortesia,
         )
+    }
+    private fun product4Panel(kind: String, readOrder: (suspend () -> Result<OrderDetail>)? = null): Pair<TableOrderViewModel, io.mockk.CapturingSlot<ReceiptData>> {
+        every { printerService.getDefaultPrinter(PrinterRole.RECEIPT) } returns impresoraRecibos
+        val captured = slot<ReceiptData>()
+        coEvery { printerService.printReceipt(capture(captured), any()) } returns Unit
+        val order = PreCuentaProducto4Fixtures.order(kind)
+        return buildVm(order = order, initialTotalCents = kotlin.math.round(order.total * 100).toInt(), readOrder = readOrder) to captured
+    }
+
+    @Test fun `P4 detalle transporta IVA agregado16 sin recalcular total116`() = runTest {
+        val (panel, receipt) = product4Panel("taxAdded")
+        panel.printPreBill()
+        assertTrue("Debe imprimirse el recibo real del VM", receipt.isCaptured)
+        assertEquals(1600, receipt.captured.taxAmount)
+        assertEquals(11600, receipt.captured.total)
+        val text = PreCuentaProducto4Fixtures.text(receipt.captured)
+        PreCuentaProducto4Fixtures.amount(text, "IVA agregado:", "$16.00")
+        assertFalse(text.contains("IVA incluido cuando aplica"))
+    }
+
+    @Test fun `P4 detalle no agrega IVA cuando el servidor declara agregado0`() = runTest {
+        val (panel, receipt) = product4Panel("taxIncluded")
+        panel.printPreBill()
+        assertTrue("Debe imprimirse el recibo real del VM", receipt.isCaptured)
+        assertEquals(0, receipt.captured.taxAmount)
+        assertEquals(10000, receipt.captured.total)
+        val text = PreCuentaProducto4Fixtures.text(receipt.captured)
+        assertFalse(text.contains("IVA agregado:"))
+        assertTrue(text.contains("IVA incluido cuando aplica"))
+    }
+
+    @Test fun `P4 detalle imprime abono50 propina10 con snapshot197 pagado60 porpagar137`() = runTest {
+        val (panel, receipt) = product4Panel("partialTip")
+        panel.printPreBill()
+        assertTrue("Cuenta abierta con snapshot de saldo sí imprime", receipt.isCaptured)
+        assertEquals(17000, receipt.captured.subtotal)
+        assertEquals(1700, receipt.captured.serviceChargeAmount)
+        assertEquals(19700, receipt.captured.total)
+        assertEquals(1000, receipt.captured.tipAmount)
+        assertEquals(13700, panel.payableTotalCents)
+        val text = PreCuentaProducto4Fixtures.text(receipt.captured)
+        PreCuentaProducto4Fixtures.amount(text, "Ya pagado", "$60.00")
+        PreCuentaProducto4Fixtures.amount(text, "Por pagar", "$137.00")
+        val withoutTotals = PreCuentaProducto4Fixtures.text(receipt.captured, listOf(com.avoqado.pos.printing.receiptlayout.ReceiptBlock.OrderInfo(showOrderType = false)))
+        PreCuentaProducto4Fixtures.amount(withoutTotals, "Ya pagado", "$60.00")
+        PreCuentaProducto4Fixtures.amount(withoutTotals, "Por pagar", "$137.00")
+    }
+
+    @Test fun `P4 detalle imprime abono50 sin propina con snapshot187 pagado50 porpagar137`() = runTest {
+        val (panel, receipt) = product4Panel("partialNoTip")
+        panel.printPreBill()
+        assertTrue("Cuenta abierta con snapshot de saldo sí imprime", receipt.isCaptured)
+        assertEquals(17000, receipt.captured.subtotal)
+        assertEquals(1700, receipt.captured.serviceChargeAmount)
+        assertEquals(18700, receipt.captured.total)
+        assertNull(receipt.captured.tipAmount)
+        assertEquals(13700, panel.payableTotalCents)
+        val text = PreCuentaProducto4Fixtures.text(receipt.captured)
+        PreCuentaProducto4Fixtures.amount(text, "Ya pagado", "$50.00")
+        PreCuentaProducto4Fixtures.amount(text, "Por pagar", "$137.00")
+        val withoutTotals = PreCuentaProducto4Fixtures.text(receipt.captured, listOf(com.avoqado.pos.printing.receiptlayout.ReceiptBlock.OrderInfo(showOrderType = false)))
+        PreCuentaProducto4Fixtures.amount(withoutTotals, "Ya pagado", "$50.00")
+        PreCuentaProducto4Fixtures.amount(withoutTotals, "Por pagar", "$137.00")
+    }
+
+    @Test fun `P4 detalle descuento legacy125 aplica100 y conserva cargo10 y total10`() = runTest {
+        val (panel, receipt) = product4Panel("cappedDiscount")
+        panel.printPreBill()
+        assertTrue(receipt.isCaptured)
+        assertEquals(10000, receipt.captured.subtotal)
+        assertEquals(10000, receipt.captured.discountAmount)
+        assertEquals(1000, receipt.captured.serviceChargeAmount)
+        assertEquals(1000, receipt.captured.total)
+
+    }
+
+    @Test fun `P4 detalle getter usa restante137 del snapshot legacy y no127`() = runTest {
+        val (panel, _) = product4Panel("partialTip")
+        assertEquals(13700, panel.payableTotalCents)
+
+    }
+
+    @Test fun `P4 detalle REFUND completado no reabre deuda con snapshot restante0`() = runTest {
+        val (panel, _) = product4Panel("refundZero")
+        assertEquals(0, panel.payableTotalCents)
+
+    }
+
+    @Test fun `P4 detalle con abono completado sin snapshot sigue sin imprimir`() = runTest {
+        val (panel, receipt) = product4Panel("noSnapshot")
+        panel.printPreBill()
+        assertFalse(receipt.isCaptured)
+        assertTrue(panel.blockedNotice.value != null || panel.actionMessage.value != null)
+
+    }
+
+    @Test fun `P4 detalle cache fresco no imprime cuando el GET nuevo falla sin red`() = runTest {
+        var response = Result.success(PreCuentaProducto4Fixtures.order("base"))
+        var reads = 0
+        val (panel, receipt) = product4Panel("base") { reads++; response }
+        assertTrue(panel.chequeAlDia.value)
+        response = Result.failure(java.io.IOException("sin red"))
+        panel.printPreBill()
+        assertEquals("La impresión debe intentar otro GET", 2, reads)
+        assertFalse(receipt.isCaptured)
+        val message = panel.blockedNotice.value ?: panel.actionMessage.value.orEmpty()
+        assertTrue("Debe explicar el bloqueo de lectura: $message", message.contains("conex", true) || message.contains("servidor", true) || message.contains("actualiz", true))
+
+    }
+
+    @Test fun `P4 detalle cache187 imprime207 del GET posterior sin pendientes`() = runTest {
+        var response = Result.success(PreCuentaProducto4Fixtures.order("base"))
+        var reads = 0
+        val (panel, receipt) = product4Panel("base") { reads++; response }
+        assertEquals(187.0, panel.check.value!!.total, 0.0)
+        response = Result.success(PreCuentaProducto4Fixtures.order("updated"))
+        panel.printPreBill()
+        assertEquals(2, reads)
+        assertTrue(receipt.isCaptured)
+        assertEquals(19000, receipt.captured.subtotal)
+        assertEquals(20700, receipt.captured.total)
+
+    }
+
+    @Test fun `P4 detalle cache PENDING rechaza GET fresco CANCELLED y COMPLETED`() = runTest {
+        for (kind in listOf("terminalDeleted", "terminalCancelled", "terminalCompleted")) {
+            var response = Result.success(PreCuentaProducto4Fixtures.order("base"))
+            val (panel, receipt) = product4Panel("base") { response }
+            assertEquals("PENDING", panel.check.value!!.status)
+            response = Result.success(PreCuentaProducto4Fixtures.order(kind))
+            panel.printPreBill()
+            assertFalse("Estado terminal leído del servidor no imprime: $kind", receipt.isCaptured)
+            assertTrue(panel.blockedNotice.value != null || panel.actionMessage.value != null)
+        }
+
+    }
+
+    @Test fun `P4 detalle mantiene marca fija cuando showOrderType es false`() = runTest {
+        val (panel, receipt) = product4Panel("base")
+        panel.printPreBill()
+        assertTrue(receipt.isCaptured)
+        val text = PreCuentaProducto4Fixtures.text(receipt.captured, listOf(com.avoqado.pos.printing.receiptlayout.ReceiptBlock.OrderInfo(showOrderType = false)))
+        assertTrue(text.contains("PRE-CUENTA"))
+        assertTrue(text.contains("NO ACREDITA PAGO"))
+    }
+
+    @Test fun `P4 detalle mantiene marca fija aunque Interpreter reciba bloques vacios`() = runTest {
+        val (panel, receipt) = product4Panel("base")
+        panel.printPreBill()
+        assertTrue(receipt.isCaptured)
+        val text = PreCuentaProducto4Fixtures.text(receipt.captured, emptyList())
+        assertTrue(text.contains("PRE-CUENTA"))
+        assertTrue(text.contains("NO ACREDITA PAGO"))
+    }
+
+}
+
+/** Literal server inputs; the production DTO decoder intentionally ignores currently unknown fields. */
+internal object PreCuentaProducto4Fixtures {
+    private val wire = kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
+    fun order(kind: String): OrderDetail = wire.decodeFromString<com.avoqado.pos.tables.data.OrderDetailResponse>(body(kind)).order!!
+    fun body(kind: String): String = when (kind) {
+        "base" -> """{"success":true,"order":{"id":"o1","orderNumber":"ORD-P4","version":9,"status":"PENDING","paymentStatus":"PENDING","subtotal":170,"discountAmount":0,"serviceChargeAmount":17,"taxAmount":0,"addedTaxAmount":0,"tipAmount":0,"total":187,"payments":[],"items":[{"id":"coffee","productId":"coffee","productName":"Cafe base","quantity":1,"unitPrice":170,"total":170,"modifiers":[],"isCortesia":false}],"preBillBalance":{"orderTotalCents":18700,"totalPaidCents":0,"remainingBalanceCents":18700,"tipAmountCents":0}}}"""
+        "taxAdded" -> """{"success":true,"order":{"id":"o1","orderNumber":"ORD-P4","version":9,"status":"PENDING","paymentStatus":"PENDING","subtotal":100,"discountAmount":0,"serviceChargeAmount":0,"taxAmount":16,"addedTaxAmount":16,"tipAmount":0,"total":116,"payments":[],"items":[{"id":"coffee","productId":"coffee","productName":"Cafe base","quantity":1,"unitPrice":100,"total":100,"modifiers":[],"isCortesia":false}],"preBillBalance":{"orderTotalCents":11600,"totalPaidCents":0,"remainingBalanceCents":11600,"tipAmountCents":0}}}"""
+        "taxIncluded" -> """{"success":true,"order":{"id":"o1","orderNumber":"ORD-P4","version":9,"status":"PENDING","paymentStatus":"PENDING","subtotal":100,"discountAmount":0,"serviceChargeAmount":0,"taxAmount":16,"addedTaxAmount":0,"tipAmount":0,"total":100,"payments":[],"items":[{"id":"coffee","productId":"coffee","productName":"Cafe base","quantity":1,"unitPrice":100,"total":100,"modifiers":[],"isCortesia":false}],"preBillBalance":{"orderTotalCents":10000,"totalPaidCents":0,"remainingBalanceCents":10000,"tipAmountCents":0}}}"""
+        "partialTip" -> """{"success":true,"order":{"id":"o1","orderNumber":"ORD-P4","version":9,"status":"PENDING","paymentStatus":"PARTIAL","subtotal":170,"discountAmount":0,"serviceChargeAmount":17,"taxAmount":0,"addedTaxAmount":0,"tipAmount":0,"total":187,"payments":[{"id":"pay50","status":"COMPLETED","amount":50,"tipAmount":10}],"items":[{"id":"coffee","productId":"coffee","productName":"Cafe base","quantity":1,"unitPrice":170,"total":170,"modifiers":[],"isCortesia":false}],"preBillBalance":{"orderTotalCents":19700,"totalPaidCents":6000,"remainingBalanceCents":13700,"tipAmountCents":1000}}}"""
+        "partialNoTip" -> """{"success":true,"order":{"id":"o1","orderNumber":"ORD-P4","version":9,"status":"PENDING","paymentStatus":"PARTIAL","subtotal":170,"discountAmount":0,"serviceChargeAmount":17,"taxAmount":0,"addedTaxAmount":0,"tipAmount":0,"total":187,"payments":[{"id":"pay50","status":"COMPLETED","amount":50,"tipAmount":0}],"items":[{"id":"coffee","productId":"coffee","productName":"Cafe base","quantity":1,"unitPrice":170,"total":170,"modifiers":[],"isCortesia":false}],"preBillBalance":{"orderTotalCents":18700,"totalPaidCents":5000,"remainingBalanceCents":13700,"tipAmountCents":0}}}"""
+        "noSnapshot" -> """{"success":true,"order":{"id":"o1","orderNumber":"ORD-P4","version":9,"status":"PENDING","paymentStatus":"PARTIAL","subtotal":170,"discountAmount":0,"serviceChargeAmount":17,"taxAmount":0,"addedTaxAmount":0,"tipAmount":0,"total":187,"payments":[{"id":"pay50","status":"COMPLETED","amount":50,"tipAmount":10}],"items":[{"id":"coffee","productId":"coffee","productName":"Cafe base","quantity":1,"unitPrice":170,"total":170,"modifiers":[],"isCortesia":false}]}}"""
+        "refundZero" -> """{"success":true,"order":{"id":"o1","orderNumber":"ORD-P4","version":9,"status":"COMPLETED","paymentStatus":"PAID","subtotal":170,"discountAmount":0,"serviceChargeAmount":17,"taxAmount":0,"addedTaxAmount":0,"tipAmount":0,"total":187,"payments":[{"id":"paid187","status":"COMPLETED","amount":187,"tipAmount":0},{"id":"refund187","status":"COMPLETED","amount":-187,"tipAmount":0}],"items":[{"id":"coffee","productId":"coffee","productName":"Cafe base","quantity":1,"unitPrice":170,"total":170,"modifiers":[],"isCortesia":false}],"preBillBalance":{"orderTotalCents":18700,"totalPaidCents":18700,"remainingBalanceCents":0,"tipAmountCents":0},"refundState":"FULL"}}"""
+        "updated" -> """{"success":true,"order":{"id":"o1","orderNumber":"ORD-P4","version":10,"status":"PENDING","paymentStatus":"PENDING","subtotal":190,"discountAmount":0,"serviceChargeAmount":17,"taxAmount":0,"addedTaxAmount":0,"tipAmount":0,"total":207,"payments":[],"items":[{"id":"coffee","productId":"coffee","productName":"Cafe base","quantity":1,"unitPrice":190,"total":190,"modifiers":[],"isCortesia":false}],"preBillBalance":{"orderTotalCents":20700,"totalPaidCents":0,"remainingBalanceCents":20700,"tipAmountCents":0}}}"""
+        "cappedDiscount" -> """{"success":true,"order":{"id":"o1","orderNumber":"ORD-P4","version":9,"status":"PENDING","paymentStatus":"PENDING","subtotal":100,"discountAmount":125,"serviceChargeAmount":10,"taxAmount":0,"addedTaxAmount":0,"tipAmount":0,"total":10,"payments":[],"items":[{"id":"coffee","productId":"coffee","productName":"Cafe base","quantity":1,"unitPrice":100,"total":100,"modifiers":[],"isCortesia":false}],"preBillBalance":{"orderTotalCents":1000,"totalPaidCents":0,"remainingBalanceCents":1000,"tipAmountCents":0}}}"""
+        "terminalDeleted" -> """{"success":true,"order":{"id":"o1","orderNumber":"ORD-P4","version":9,"status":"DELETED","paymentStatus":"PENDING","subtotal":170,"discountAmount":0,"serviceChargeAmount":17,"taxAmount":0,"addedTaxAmount":0,"tipAmount":0,"total":187,"payments":[],"items":[{"id":"coffee","productId":"coffee","productName":"Cafe base","quantity":1,"unitPrice":170,"total":170,"modifiers":[],"isCortesia":false}],"preBillBalance":{"orderTotalCents":18700,"totalPaidCents":0,"remainingBalanceCents":18700,"tipAmountCents":0}}}"""
+        "terminalCancelled" -> """{"success":true,"order":{"id":"o1","orderNumber":"ORD-P4","version":9,"status":"CANCELLED","paymentStatus":"PENDING","subtotal":170,"discountAmount":0,"serviceChargeAmount":17,"taxAmount":0,"addedTaxAmount":0,"tipAmount":0,"total":187,"payments":[],"items":[{"id":"coffee","productId":"coffee","productName":"Cafe base","quantity":1,"unitPrice":170,"total":170,"modifiers":[],"isCortesia":false}]}}"""
+        "terminalCompleted" -> """{"success":true,"order":{"id":"o1","orderNumber":"ORD-P4","version":9,"status":"COMPLETED","paymentStatus":"PAID","subtotal":170,"discountAmount":0,"serviceChargeAmount":17,"taxAmount":0,"addedTaxAmount":0,"tipAmount":0,"total":187,"payments":[],"items":[{"id":"coffee","productId":"coffee","productName":"Cafe base","quantity":1,"unitPrice":170,"total":170,"modifiers":[],"isCortesia":false}]}}"""
+        else -> error("Fixture desconocida: $kind")
+    }
+    fun text(receipt: ReceiptData, blocks: List<com.avoqado.pos.printing.receiptlayout.ReceiptBlock> = listOf(
+        com.avoqado.pos.printing.receiptlayout.ReceiptBlock.OrderInfo(),
+        com.avoqado.pos.printing.receiptlayout.ReceiptBlock.Totals(),
+    )): String {
+        val input = com.avoqado.pos.printing.receiptlayout.ReceiptInputMapper.map(receipt, null, false, "America/Mexico_City", null)
+        return com.avoqado.pos.printing.receiptlayout.ReceiptLayoutInterpreter.interpret(blocks, input, 48)
+            .filterIsInstance<com.avoqado.pos.printing.receiptlayout.LogicalLine.Text>().joinToString("\n") { it.text }
+    }
+    fun amount(text: String, label: String, value: String) {
+        org.junit.Assert.assertTrue("Falta $label $value: $text", Regex(Regex.escape(label) + "[^\r\n]*" + Regex.escape(value), RegexOption.IGNORE_CASE).containsMatchIn(text))
     }
 }

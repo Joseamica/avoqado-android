@@ -276,15 +276,14 @@ data class OrderPage(
 
 private fun parseTimeDisplay(isoString: String): String {
     val instant = VenueDateTimeFormatter.parseIso(isoString) ?: return ""
-    return instant.atZone(VenueTimeZone.zoneId())
+    return instant.let { VenueTimeZone.at(it) }
         .format(DateTimeFormatter.ofPattern("HH:mm"))
 }
 
 private fun parseDateGroup(isoString: String): String {
     val instant = VenueDateTimeFormatter.parseIso(isoString) ?: return ""
-    val zone = VenueTimeZone.zoneId()
-    val date = instant.atZone(zone).toLocalDate()
-    val today = LocalDate.now(zone)
+    val date = VenueTimeZone.at(instant).toLocalDate()
+    val today = VenueTimeZone.now().toLocalDate()
     return when {
         date == today -> "Hoy"
         date == today.minusDays(1) -> "Ayer"

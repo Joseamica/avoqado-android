@@ -55,7 +55,7 @@ data class Estimate(
         get() {
             val instant = com.avoqado.pos.core.util.VenueDateTimeFormatter.parseIso(createdAt)
                 ?: return createdAt?.take(10) ?: "—"
-            return instant.atZone(com.avoqado.pos.core.util.VenueTimeZone.zoneId())
+            return instant.let { com.avoqado.pos.core.util.VenueTimeZone.at(it) }
                 .format(java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy"))
         }
 

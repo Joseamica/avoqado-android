@@ -1,5 +1,6 @@
 package com.avoqado.pos.reservations.presentation.calendar
 
+import com.avoqado.pos.core.util.VenueTimeZone
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -76,7 +77,7 @@ fun CalendarDayView(
                 reservations = state.visibleReservations,
                 classSessions = state.visibleClassSessions,
                 venueZone = venueZone,
-                nowTime = LocalTime.now(venueZone),
+                nowTime = VenueTimeZone.now(venueZone.id).toLocalTime(),
                 onReservationClick = onReservationClick,
                 onClassSessionClick = onClassSessionClick,
                 onSlotTap = { time -> onSlotTap(date, time) },

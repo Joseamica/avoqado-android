@@ -21,7 +21,7 @@ data class CreateReservationDraft(
     val productName: String? = null,
     val productType: String? = null,
     val durationMinutes: Int = 60,
-    val date: LocalDate = LocalDate.now(VenueTimeZone.zoneId()),
+    val date: LocalDate = VenueTimeZone.now().toLocalDate(),
     val time: LocalTime = LocalTime.of(9, 0),
     val partySize: Int = 1,
     val tableId: String? = null,
@@ -60,7 +60,7 @@ data class CreateReservationDraft(
         useBaseWindow: Boolean = false,
         allowOverCapacity: Boolean = false,
     ): CreateReservationRequest {
-        val startLocal = ZonedDateTime.of(date, time, zone)
+        val startLocal = VenueTimeZone.fromLocalDateTime(date.atTime(time), zone.id)
         val endLocal = startLocal.plusMinutes(durationMinutes.toLong())
         val iso = DateTimeFormatter.ISO_INSTANT
         return CreateReservationRequest(

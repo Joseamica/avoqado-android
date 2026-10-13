@@ -1,6 +1,8 @@
 package com.avoqado.pos.core.data.local.database
 
+import androidx.room.ColumnInfo
 import androidx.room.Entity
+import androidx.room.Index
 import androidx.room.PrimaryKey
 
 enum class PaymentSyncStatus {
@@ -18,7 +20,7 @@ enum class PaymentSyncStatus {
     EN_VUELO,
 }
 
-@Entity(tableName = "pending_payments")
+@Entity(tableName = "pending_payments", indices = [Index(value = ["venueId", "q15Reason", "q15ReviewedAt", "q15DetectedAt", "id"]), Index(value = ["venueId", "capturedOrderRef"])])
 data class PendingPaymentEntity(
     @PrimaryKey val id: String,           // UUID (idempotency key)
     val venueId: String,
@@ -63,4 +65,16 @@ data class PendingPaymentEntity(
      * atorar la cola.
      */
     val customerId: String? = null,
+    /** La parte capturada se reproduce con su etiqueta original. Legacy conserva FULLPAYMENT. */
+    @ColumnInfo(defaultValue = "'FULLPAYMENT'") val splitType: String = "FULLPAYMENT",
+    // Q15: NULL on legacy rows; never infer original financial evidence during migration.
+    val q15CaptureJson: String? = null,
+    val q15InitialResultJson: String? = null,
+    val q15ResultJson: String? = null,
+    val q15Reason: String? = null,
+    val q15DetectedAt: Long? = null,
+    val q15ReviewedAt: Long? = null,
+    val q15ReviewedBy: String? = null,
+    val q15ReviewRole: String? = null,
+    val capturedOrderRef: String? = null,
 )

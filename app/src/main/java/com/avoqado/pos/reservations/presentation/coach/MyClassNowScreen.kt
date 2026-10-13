@@ -1,5 +1,6 @@
 package com.avoqado.pos.reservations.presentation.coach
 
+import com.avoqado.pos.core.util.VenueTimeZone
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -180,5 +181,5 @@ private fun Empty(title: String, body: String, actionLabel: String?, onAction: (
  * aparato. Una tablet mal configurada pintaría la clase de las 7 a otra hora.
  */
 private fun hora(iso: String, zone: ZoneId): String = runCatching {
-    DateTimeFormatter.ofPattern("h:mm a").format(Instant.parse(iso).atZone(zone))
+    DateTimeFormatter.ofPattern("h:mm a").format(VenueTimeZone.at(Instant.parse(iso), zone.id))
 }.getOrDefault("")

@@ -85,6 +85,8 @@ data class PaymentCompletion(
      * descuente lo confirmado y no vuelva a estimar (`CartViewModel.aplicarCobroConfirmado`).
      */
     val premioConfirmadoCents: Int? = null,
+    val carritoGuardadoDelCobro: String? = null,
+    val identidadDeVenta: String? = null,
 )
 
 const val LOCAL_PRINTER_UNAVAILABLE = "__LOCAL_PRINTER_UNAVAILABLE__"
@@ -179,6 +181,9 @@ class PaymentFlowViewModel @Inject constructor(
     val terminalAvailability: StateFlow<TerminalAvailability> = _terminalAvailability.asStateFlow()
 
     private var cartState: CartState? = null
+    // Copias del cobro, anteriores a cualquier suspensión; el piso/sucursal vivos pueden cambiar después.
+    private var mesaDelCobro: com.avoqado.pos.tables.data.TableSession.Active? = null
+    private var nombreDelNegocioDelCobro: String = "Avoqado"
     private var selectedMethod: PaymentMethod? = null
     private var currentRating: Int? = null
     private var currentTipCents: Int = 0
@@ -273,39 +278,57 @@ class PaymentFlowViewModel @Inject constructor(
      * mesa abierta sin red (va por el outbox, que ya guarda antes) y venta con premio de lealtad (el
      * canje es en línea a propósito).
      */
-    private suspend fun reservarEfectivo(cart: CartState?, total: Int, cashReceivedCents: Int, changeCents: Int) {
+    private suspend fun reservarEfectivo(
+        cart: CartState?,
+        total: Int,
+        cashReceivedCents: Int,
+        changeCents: Int,
+        tipCapturado: Int,
+        splitCapturado: String,
+        llave: String,
+        manualCapturado: com.avoqado.pos.payment.domain.ManualPaymentMethod?,
+        tenderCapturado: com.avoqado.pos.payment.domain.TenderTypeOption?,
+        pedido: CreateOrderRequest?,
+        ordenCapturada: String?,
+        empleadoCapturado: String,
+        clienteCapturado: String?,
+        ratingCapturado: Int?,
+        venueCapturado: String,
+        provisionalCapturada: Boolean,
+        permiteColaCapturada: Boolean,
+    ) {
         soltarReservaDeEfectivo() // una reserva vieja nunca sobrevive a un cobro nuevo
-        if (cart == null) return
-        if (areaTicketRepository.session.current() != null) return
-        if (tableSession.current()?.isProvisional == true) return
+        if (cart == null || pedido == null) return
+        if (!permiteColaCapturada) return
+        if (provisionalCapturada) return
         if (cart.pendingStampRewardId != null && cart.premioAplica) return
-        val llave = sessionIdempotencyKey()
-        val ordenExistente = createdOrderId?.takeIf { it.isNotBlank() }
-        val pedido = buildOrderRequest(cart)
+        val ordenExistente = ordenCapturada?.takeIf { it.isNotBlank() }
         try {
             cashPaymentRepository.reservarCobro(
-                // Con orden ya creada se registra lo que se cobra; sin orden, el pedido tal cual (así lo
-                // encola el camino sin red).
-                orderRequest = if (ordenExistente != null) pedido.copy(total = total, tip = currentTipCents) else pedido,
-                staffId = selectedStaffId(),
+                orderRequest = pedido,
+                amountCents = total - tipCapturado,
+                tipCents = tipCapturado,
+                splitType = splitCapturado,
+                staffId = empleadoCapturado,
                 cashTenderedCents = cashReceivedCents,
                 changeCents = changeCents,
-                rating = currentRating,
+                rating = ratingCapturado,
                 orderId = ordenExistente,
                 // La MISMA identidad con que se crea la orden en línea: si la creación sí llegó, el
                 // reintento la encuentra en vez de crear otra.
                 orderExternalId = if (ordenExistente == null) llave else null,
-                customerId = attachedCustomerId,
+                customerId = clienteCapturado,
                 idempotencyKey = llave,
-                manualMethod = manualMethod,
-                tenderType = selectedTender,
+                manualMethod = manualCapturado,
+                tenderType = tenderCapturado,
+                venueId = venueCapturado,
             )
             reservaDeEfectivo = llave
         } catch (e: kotlinx.coroutines.CancellationException) {
             throw e
         } catch (e: Exception) {
-            // Guardar en el aparato nunca puede impedir un cobro: se sigue como hasta hoy.
-            Log.w("💵", "No se pudo reservar el cobro en el aparato: ${e.message}")
+            // No POST without its original durable capture. The caller presents the error.
+            throw IllegalStateException("No se pudo guardar el cobro. Intenta de nuevo antes de recibir el pago.", e)
         }
     }
 
@@ -974,6 +997,8 @@ class PaymentFlowViewModel @Inject constructor(
         // Una venta nueva arranca sin cobro propio: el pendiente de SU orden se lee vivo de la lista, al elegir tarjeta.
         undeterminedRequestId = null
         cartState = cart
+        mesaDelCobro = tableSession.current()?.takeIf { it.mode == com.avoqado.pos.tables.data.TableSession.Mode.PAYING }
+        nombreDelNegocioDelCobro = secureStorage.venueName ?: "Avoqado"
         completionConsumed = false
         // 🔴 Un `Insistiendo` de la venta anterior SÍ se borra: describe algo que ya terminó,
         // y arrastrarlo culparía a una impresora que en esta venta puede estar perfecta.
@@ -1048,9 +1073,7 @@ class PaymentFlowViewModel @Inject constructor(
         // against it via recordCashPaymentForOrder — and NO new order is ever
         // created for this charge. With no session active this is a no-op and
         // every retail/quick flow is byte-identical.
-        tableSession.current()
-            ?.takeIf { it.mode == com.avoqado.pos.tables.data.TableSession.Mode.PAYING }
-            ?.let { createdOrderId = it.orderId }
+        mesaDelCobro?.let { createdOrderId = it.orderId }
         selectedTerminalId = null
         _canPrintOnTerminal.value = false
         lastPaymentId = null
@@ -1453,7 +1476,26 @@ class PaymentFlowViewModel @Inject constructor(
         if (isProcessingPayment) return
         val cart = cartState ?: return
         isProcessingPayment = true
-        val total = currentBaseAmount() + currentTipCents
+        val venueCapturado = secureStorage.venueId.orEmpty()
+        val actorCapturado = secureStorage.userId.orEmpty()
+        val nombreActorCapturado = "${secureStorage.userFirstName.orEmpty()} ${secureStorage.userLastName.orEmpty()}"
+            .trim().ifEmpty { secureStorage.userEmail ?: "Staff" }
+        val metodoCapturado = selectedMethod
+        val manualCapturado = manualMethod
+        val tenderCapturado = selectedTender
+        val tipCapturado = currentTipCents
+        val splitCapturado = _splitType.value
+        val llaveCapturada = sessionIdempotencyKey()
+        val total = currentBaseAmount() + tipCapturado
+        val pedidoCapturado = buildOrderRequest(cart)
+        val ordenCapturada = createdOrderId
+        val provisionalCapturada = tableSession.current()?.let {
+            it.isProvisional && it.orderId == ordenCapturada
+        } == true
+        val permiteColaCapturada = areaTicketRepository.session.current() == null
+        val empleadoCapturado = selectedStaffId()
+        val clienteCapturado = attachedCustomerId
+        val ratingCapturado = currentRating
         _state.value = PaymentFlowState.Processing(total)
         // 🔴 La generación con la que entró este cobro. Crear la orden tarda, y en ese rato el
         // cajero puede tocar «Cancelar»: si cuando vuelve la creación la generación cambió, el
@@ -1462,27 +1504,27 @@ class PaymentFlowViewModel @Inject constructor(
 
         viewModelScope.launch {
             try {
-                if (areaTicketRepository.session.current() != null) {
+                if (!permiteColaCapturada) {
                     if (!materializeAreaTicketCheckout(cart)) return@launch
                     if (generacion != paymentGeneration) {
                         cancelarLoCreadoTrasCancelar(orderId = null)
                         return@launch
                     }
-                    processPaymentMethod(total, generacion)
+                    processPaymentMethod(total, generacion, tipCapturado, splitCapturado, llaveCapturada, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado, metodoCapturado, pedidoCapturado, createdOrderId, empleadoCapturado, clienteCapturado, ratingCapturado, provisionalCapturada, permiteColaCapturada)
                     return@launch
                 }
                 val hasRealProducts = hasProductItems(cart)
 
                 if (hasRealProducts) {
-                    if (createdOrderId == null) {
+                    if (ordenCapturada == null) {
                         // Create order only once per payment session.
-                        val orderRequest = buildOrderRequest(cart)
-                        val orderExternalId = sessionIdempotencyKey()
+                        val orderRequest = requireNotNull(pedidoCapturado)
+                        val orderExternalId = llaveCapturada
                         externalIdDeLaVenta = orderExternalId
                         val orderResult = orderRepository.createOrder(
                             orderRequest,
-                            staffId = selectedStaffId(),
-                            customerId = attachedCustomerId,
+                            staffId = empleadoCapturado,
+                            customerId = clienteCapturado,
                             orderType = cart.orderType,
                             externalId = orderExternalId,
                             // 🔴 El premio viaja EN LA CREACIÓN. El total que devuelva
@@ -1492,6 +1534,7 @@ class PaymentFlowViewModel @Inject constructor(
                             // la cuenta al total completo.
                             stampRewardId = cart.pendingStampRewardId?.takeIf { cart.premioAplica },
                             stampRewardExpectedDiscount = cart.stampRewardCents.takeIf { it > 0 },
+                            capturedVenueId = venueCapturado,
                         )
 
                         orderResult.fold(
@@ -1516,7 +1559,7 @@ class PaymentFlowViewModel @Inject constructor(
                                 // La orden ya existe y todavía no se ha tomado
                                 // dinero: se cobra lo que dice el server, no el
                                 // estimado del carrito. Ver `totalACobrarCents`.
-                                processPaymentMethod(adoptarTotalDelServer(orderRequest, response, total), generacion)
+                                processPaymentMethod(adoptarTotalDelServer(orderRequest, response, total), generacion, tipCapturado, splitCapturado, llaveCapturada, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado, metodoCapturado, pedidoCapturado, orderId, empleadoCapturado, clienteCapturado, ratingCapturado, provisionalCapturada, permiteColaCapturada)
                             },
                             onFailure = { error ->
                                 if (generacion != paymentGeneration) {
@@ -1526,7 +1569,7 @@ class PaymentFlowViewModel @Inject constructor(
                                     return@fold
                                 }
                                 // For CASH payments: queue offline if network/server error
-                                if (selectedMethod == PaymentMethod.CASH) {
+                                if (metodoCapturado == PaymentMethod.CASH) {
                                     val isQueueable = OrderRepository.isQueueableError(error) ||
                                         (error is OrderRepository.ServerException && OrderRepository.isQueueableHttpCode(error.code))
 
@@ -1541,19 +1584,23 @@ class PaymentFlowViewModel @Inject constructor(
                                     } else if (isQueueable) {
                                         val idEnCola = cashPaymentRepository.queueCashPayment(
                                             orderRequest = orderRequest,
-                                            staffId = selectedStaffId(),
-                                            customerId = attachedCustomerId,
-                                            idempotencyKey = sessionIdempotencyKey(),
+                                            amountCents = total - tipCapturado,
+                                            tipCents = tipCapturado,
+                                            splitType = splitCapturado,
+                                            staffId = empleadoCapturado,
+                                            customerId = clienteCapturado,
+                                            idempotencyKey = llaveCapturada,
                                             cashTenderedCents = null,
                                             changeCents = null,
-                                            rating = currentRating,
+                                            rating = ratingCapturado,
                                             orderId = null,
                                             orderExternalId = orderExternalId,
-                                            manualMethod = manualMethod,
-                                            tenderType = selectedTender,
+                                            manualMethod = manualCapturado,
+                                            tenderType = tenderCapturado,
+                                            venueId = venueCapturado,
                                         )
                                         // Record cash sale in drawer (defensive: same fix as B4)
-                                        recordCashSale(total, null)
+                                        recordCashSale(total, null, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado)
                                         _state.value = PaymentFlowState.Success(
                                             totalAmount = total,
                                             method = PaymentMethod.CASH,
@@ -1584,12 +1631,12 @@ class PaymentFlowViewModel @Inject constructor(
                         // mostrador— la parte 2 de una venta por artículos, donde el
                         // carrito conserva productos reales y crear una segunda orden
                         // duplicaría esas líneas en base.
-                        processPaymentMethod(total, generacion)
+                        processPaymentMethod(total, generacion, tipCapturado, splitCapturado, llaveCapturada, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado, metodoCapturado, pedidoCapturado, ordenCapturada, empleadoCapturado, clienteCapturado, ratingCapturado, provisionalCapturada, permiteColaCapturada)
                     }
                 } else {
                     // Custom amount only — use Fast Payment endpoint
                     Log.d("💰", "Custom amount payment (fast) - total: $total")
-                    processPaymentMethod(total, generacion)
+                    processPaymentMethod(total, generacion, tipCapturado, splitCapturado, llaveCapturada, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado, metodoCapturado, pedidoCapturado, ordenCapturada, empleadoCapturado, clienteCapturado, ratingCapturado, provisionalCapturada, permiteColaCapturada)
                 }
             } catch (e: Exception) {
                 Log.e("💰", "Payment error: ${e.message}")
@@ -1601,8 +1648,27 @@ class PaymentFlowViewModel @Inject constructor(
         }
     }
 
-    private suspend fun processPaymentMethod(total: Int, generacion: Int = paymentGeneration) {
-        when (selectedMethod) {
+    private suspend fun processPaymentMethod(
+        total: Int,
+        generacion: Int,
+        tipCapturado: Int,
+        splitCapturado: String,
+        llaveCapturada: String,
+        manualCapturado: com.avoqado.pos.payment.domain.ManualPaymentMethod?,
+        tenderCapturado: com.avoqado.pos.payment.domain.TenderTypeOption?,
+        venueCapturado: String,
+        actorCapturado: String,
+        nombreActorCapturado: String,
+        metodoCapturado: PaymentMethod?,
+        pedidoCapturado: CreateOrderRequest?,
+        ordenCapturada: String?,
+        empleadoCapturado: String,
+        clienteCapturado: String?,
+        ratingCapturado: Int?,
+        provisionalCapturada: Boolean,
+        permiteColaCapturada: Boolean,
+    ) {
+        when (metodoCapturado) {
             PaymentMethod.CARD -> {
                 val terminalId = selectedTerminalId
                 if (terminalId == null) {
@@ -1622,15 +1688,27 @@ class PaymentFlowViewModel @Inject constructor(
                 // 🔴 Un premio que deja la cuenta en $0 (un café gratis como único producto): no hay nada que
                 // cobrarle a una tarjeta, y el servidor rechaza un cobro de terminal ≤ 0. La orden se cierra
                 // con un registro de $0, igual que una cortesía total.
-                val ordenEnCero = createdOrderId
-                val carritoEnCero = cartState
-                if (total <= 0 && !ordenEnCero.isNullOrBlank() && carritoEnCero != null) {
+                val ordenEnCero = ordenCapturada
+                if (total <= 0 && !ordenEnCero.isNullOrBlank() && pedidoCapturado != null) {
                     recordCashPaymentForOrder(
                         orderId = ordenEnCero,
                         total = 0,
                         cashReceivedCents = 0,
                         changeCents = 0,
-                        orderRequest = buildOrderRequest(carritoEnCero),
+                        orderRequest = pedidoCapturado,
+                        tipCapturado = 0,
+                        splitCapturado = splitCapturado,
+                        llaveCapturada = llaveCapturada,
+                        manualCapturado = manualCapturado,
+                        tenderCapturado = tenderCapturado,
+                        venueCapturado = venueCapturado,
+                        actorCapturado = actorCapturado,
+                        nombreActorCapturado = nombreActorCapturado,
+                        empleadoCapturado = empleadoCapturado,
+                        clienteCapturado = clienteCapturado,
+                        ratingCapturado = ratingCapturado,
+                        provisionalCapturada = provisionalCapturada,
+                        permiteColaCapturada = permiteColaCapturada,
                     )
                     return
                 }
@@ -1687,18 +1765,19 @@ class PaymentFlowViewModel @Inject constructor(
             }
             PaymentMethod.CASH -> {
                 // Record cash payment on the order
-                val orderId = createdOrderId
+                val orderId = ordenCapturada
                 if (orderId != null) {
-                    val subtotal = total - currentTipCents
+                    val subtotal = total - tipCapturado
                     val payResult = orderRepository.recordCashPayment(
                         orderId = orderId,
                         amount = subtotal,
-                        staffId = selectedStaffId(),
-                        tip = currentTipCents,
-                        splitType = _splitType.value,
-                        idempotencyKey = sessionIdempotencyKey(),
-                        manualMethod = manualMethod,
-                                            tenderType = selectedTender,
+                        staffId = empleadoCapturado,
+                        tip = tipCapturado,
+                        splitType = splitCapturado,
+                        idempotencyKey = llaveCapturada,
+                        manualMethod = manualCapturado,
+                        tenderType = tenderCapturado,
+                        capturedVenueId = venueCapturado,
                     )
                     payResult.fold(
                         onSuccess = { result ->
@@ -1711,7 +1790,7 @@ class PaymentFlowViewModel @Inject constructor(
                             result.receiptAccessKey?.let { lastReceiptAccessKey = it }
                             result.receiptUrl?.let { lastReceiptUrl = it }
                             finishAreaTicketPayment()
-                            recordCashSale(total, orderId)
+                            recordCashSale(total, orderId, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado)
                             _state.value = PaymentFlowState.Success(
                                 totalAmount = total,
                                 method = PaymentMethod.CASH,
@@ -1728,21 +1807,24 @@ class PaymentFlowViewModel @Inject constructor(
                             // Queue for offline sync if error is transient, otherwise show Error.
                             val isQueueable = OrderRepository.isQueueableError(error) ||
                                 (error is OrderRepository.ServerException && OrderRepository.isQueueableHttpCode(error.code))
-                            val cart = cartState
-                            if (isQueueable && cart != null && areaTicketRepository.session.current() == null) {
+                            if (isQueueable && pedidoCapturado != null && permiteColaCapturada) {
                                 val idEnCola = cashPaymentRepository.queueCashPayment(
-                                    orderRequest = buildOrderRequest(cart),
-                                    staffId = selectedStaffId(),
-                                    customerId = attachedCustomerId,
-                                    idempotencyKey = sessionIdempotencyKey(),
+                                    orderRequest = requireNotNull(pedidoCapturado),
+                                    amountCents = total - tipCapturado,
+                                    tipCents = tipCapturado,
+                                    splitType = splitCapturado,
+                                    staffId = empleadoCapturado,
+                                    customerId = clienteCapturado,
+                                    idempotencyKey = llaveCapturada,
                                     cashTenderedCents = null,
                                     changeCents = null,
-                                    rating = currentRating,
+                                    rating = ratingCapturado,
                                     orderId = orderId,
-                                    manualMethod = manualMethod,
-                                            tenderType = selectedTender,
+                                    manualMethod = manualCapturado,
+                                    tenderType = tenderCapturado,
+                                    venueId = venueCapturado,
                                 )
-                                recordCashSale(total, orderId)
+                                recordCashSale(total, orderId, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado)
                                 _state.value = PaymentFlowState.Success(
                                     totalAmount = total,
                                     method = PaymentMethod.CASH,
@@ -1760,7 +1842,7 @@ class PaymentFlowViewModel @Inject constructor(
                     )
                 } else {
                     // No orderId — fast payment path. Let caller handle.
-                    recordCashSale(total)
+                    recordCashSale(total, null, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado)
                     _state.value = PaymentFlowState.Success(
                         totalAmount = total,
                         method = PaymentMethod.CASH,
@@ -1782,7 +1864,26 @@ class PaymentFlowViewModel @Inject constructor(
         if (isProcessingPayment) return
         isProcessingPayment = true
         lastCashTenderedCents = cashReceivedCents
-        val total = currentBaseAmount() + currentTipCents
+        val cart = cartState
+        val venueCapturado = secureStorage.venueId.orEmpty()
+        val actorCapturado = secureStorage.userId.orEmpty()
+        val nombreActorCapturado = "${secureStorage.userFirstName.orEmpty()} ${secureStorage.userLastName.orEmpty()}"
+            .trim().ifEmpty { secureStorage.userEmail ?: "Staff" }
+        val manualCapturado = manualMethod
+        val tenderCapturado = selectedTender
+        val tipCapturado = currentTipCents
+        val splitCapturado = _splitType.value
+        val llaveCapturada = sessionIdempotencyKey()
+        val total = currentBaseAmount() + tipCapturado
+        val pedidoCapturado = cart?.let(::buildOrderRequest)
+        val ordenCapturada = createdOrderId
+        val provisionalCapturada = tableSession.current()?.let {
+            it.isProvisional && it.orderId == ordenCapturada
+        } == true
+        val permiteColaCapturada = areaTicketRepository.session.current() == null
+        val empleadoCapturado = selectedStaffId()
+        val clienteCapturado = attachedCustomerId
+        val ratingCapturado = currentRating
         // Misma puerta que en tarjeta: crear la orden tarda, y si el cajero cancela mientras
         // tanto, el efectivo NO se registra contra una venta que él ya dio por cancelada.
         val generacion = paymentGeneration
@@ -1792,29 +1893,54 @@ class PaymentFlowViewModel @Inject constructor(
                 viewModelScope.launch {
                     _state.value = PaymentFlowState.Processing(total)
 
-                    val cart = cartState
-                    if (cart != null && areaTicketRepository.session.current() != null) {
+                    if (cart != null && !permiteColaCapturada) {
                         if (!materializeAreaTicketCheckout(cart)) return@launch
                         recordCashPaymentForOrder(
                             orderId = createdOrderId!!,
                             total = total,
                             cashReceivedCents = cashReceivedCents,
                             changeCents = result.changeCents,
-                            orderRequest = buildOrderRequest(cart),
+                            orderRequest = requireNotNull(pedidoCapturado),
+                            tipCapturado = tipCapturado,
+                            splitCapturado = splitCapturado,
+                            llaveCapturada = llaveCapturada,
+                            manualCapturado = manualCapturado,
+                            tenderCapturado = tenderCapturado,
+                            venueCapturado = venueCapturado,
+                            actorCapturado = actorCapturado,
+                            nombreActorCapturado = nombreActorCapturado,
+                            empleadoCapturado = empleadoCapturado,
+                            clienteCapturado = clienteCapturado,
+                            ratingCapturado = ratingCapturado,
+                            provisionalCapturada = provisionalCapturada,
+                            permiteColaCapturada = permiteColaCapturada,
                         )
                         return@launch
                     }
                     // 🔴 Antes de la primera llamada de red (crear la orden o registrar el cobro).
-                    reservarEfectivo(cart, total, cashReceivedCents, result.changeCents)
+                    try {
+                        reservarEfectivo(cart, total, cashReceivedCents, result.changeCents, tipCapturado, splitCapturado, llaveCapturada, manualCapturado, tenderCapturado, pedidoCapturado, ordenCapturada, empleadoCapturado, clienteCapturado, ratingCapturado, venueCapturado, provisionalCapturada, permiteColaCapturada)
+                    } catch (e: kotlinx.coroutines.CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        // Una reserva de otra apertura o identidad no modifica la venta vigente.
+                        if (generacion == paymentGeneration && secureStorage.venueId == venueCapturado && secureStorage.userId == actorCapturado) {
+                            _state.value = PaymentFlowState.Error(
+                                message = e.message ?: "No se pudo guardar el cobro. Intenta de nuevo antes de recibir el pago.",
+                                source = PaymentErrorSource.UNKNOWN,
+                            )
+                        }
+                        return@launch
+                    }
                     val hasRealProducts = cart?.let(::hasProductItems) ?: false
 
                     // TABLE_SERVICE: a preset createdOrderId (PAYING table session)
                     // routes cash through the order-based path even though the
                     // seeded cart only carries the "Cuenta Mesa N" amount line.
-                    if (hasRealProducts || (!createdOrderId.isNullOrBlank() && cart != null)) {
+                    if (hasRealProducts || (!ordenCapturada.isNullOrBlank() && cart != null)) {
                         // Order-based cash payment: create order once, then reuse it across retries.
-                        val orderRequest = buildOrderRequest(cart)
-                        val existingOrderId = createdOrderId
+                        val orderRequest = requireNotNull(pedidoCapturado)
+                        val existingOrderId = ordenCapturada
                         if (!existingOrderId.isNullOrBlank()) {
                             recordCashPaymentForOrder(
                                 orderId = existingOrderId,
@@ -1822,14 +1948,27 @@ class PaymentFlowViewModel @Inject constructor(
                                 cashReceivedCents = cashReceivedCents,
                                 changeCents = result.changeCents,
                                 orderRequest = orderRequest,
+                                tipCapturado = tipCapturado,
+                                splitCapturado = splitCapturado,
+                                llaveCapturada = llaveCapturada,
+                                manualCapturado = manualCapturado,
+                                tenderCapturado = tenderCapturado,
+                                venueCapturado = venueCapturado,
+                                actorCapturado = actorCapturado,
+                                nombreActorCapturado = nombreActorCapturado,
+                                empleadoCapturado = empleadoCapturado,
+                                clienteCapturado = clienteCapturado,
+                                ratingCapturado = ratingCapturado,
+                                provisionalCapturada = provisionalCapturada,
+                                permiteColaCapturada = permiteColaCapturada,
                             )
                         } else {
-                            val orderExternalId = sessionIdempotencyKey()
+                            val orderExternalId = llaveCapturada
                             externalIdDeLaVenta = orderExternalId
                             val orderResult = orderRepository.createOrder(
                                 orderRequest,
-                                staffId = selectedStaffId(),
-                                customerId = attachedCustomerId,
+                                staffId = empleadoCapturado,
+                                customerId = clienteCapturado,
                                 orderType = cart.orderType,
                                 externalId = orderExternalId,
                                 // 🔴 El premio viaja también en EFECTIVO. Antes este camino
@@ -1837,6 +1976,7 @@ class PaymentFlowViewModel @Inject constructor(
                                 // el cliente pagaba completo sin que nadie se enterara.
                                 stampRewardId = cart.pendingStampRewardId?.takeIf { cart.premioAplica },
                                 stampRewardExpectedDiscount = cart.stampRewardCents.takeIf { it > 0 },
+                                capturedVenueId = venueCapturado,
                             )
                             orderResult.fold(
                                 onSuccess = { orderResponse ->
@@ -1888,6 +2028,19 @@ class PaymentFlowViewModel @Inject constructor(
                                             (cashReceivedCents - totalFinal).coerceAtLeast(0)
                                         },
                                         orderRequest = orderRequest,
+                                        tipCapturado = tipCapturado,
+                                        splitCapturado = splitCapturado,
+                                        llaveCapturada = llaveCapturada,
+                                        manualCapturado = manualCapturado,
+                                        tenderCapturado = tenderCapturado,
+                                        venueCapturado = venueCapturado,
+                                        actorCapturado = actorCapturado,
+                                        nombreActorCapturado = nombreActorCapturado,
+                                        empleadoCapturado = empleadoCapturado,
+                                        clienteCapturado = clienteCapturado,
+                                        ratingCapturado = ratingCapturado,
+                                        provisionalCapturada = provisionalCapturada,
+                                        permiteColaCapturada = permiteColaCapturada,
                                     )
                                 },
                                 onFailure = { error ->
@@ -1908,19 +2061,23 @@ class PaymentFlowViewModel @Inject constructor(
                                     } else if (isQueueable) {
                                         val idEnCola = cashPaymentRepository.queueCashPayment(
                                             orderRequest = orderRequest,
-                                            staffId = selectedStaffId(),
-                                            customerId = attachedCustomerId,
-                                            idempotencyKey = sessionIdempotencyKey(),
+                                            amountCents = total - tipCapturado,
+                                            tipCents = tipCapturado,
+                                            splitType = splitCapturado,
+                                            staffId = empleadoCapturado,
+                                            customerId = clienteCapturado,
+                                            idempotencyKey = llaveCapturada,
                                             cashTenderedCents = cashReceivedCents,
                                             changeCents = result.changeCents,
-                                            rating = currentRating,
+                                            rating = ratingCapturado,
                                             orderId = null,
                                             orderExternalId = orderExternalId,
-                                            manualMethod = manualMethod,
-                                            tenderType = selectedTender,
+                                            manualMethod = manualCapturado,
+                                            tenderType = tenderCapturado,
+                                            venueId = venueCapturado,
                                         )
                                         // FIX B4: Record cash sale in drawer even on offline queue
-                                        recordCashSale(total, null)
+                                        recordCashSale(total, null, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado)
                                         _state.value = PaymentFlowState.Success(
                                             totalAmount = total,
                                             method = PaymentMethod.CASH,
@@ -1943,20 +2100,21 @@ class PaymentFlowViewModel @Inject constructor(
                     } else {
                         // Fast payment (custom amount, no products)
                         // Send amount WITHOUT tip, tip separately
-                        val subtotal = total - currentTipCents
+                        val subtotal = total - tipCapturado
                         val fastResult = orderRepository.recordFastCashPayment(
                             amount = subtotal,
-                            staffId = selectedStaffId(),
-                            tip = currentTipCents,
-                            splitType = _splitType.value,
-                            idempotencyKey = sessionIdempotencyKey(),
-                            manualMethod = manualMethod,
-                                            tenderType = selectedTender,
+                            staffId = empleadoCapturado,
+                            tip = tipCapturado,
+                            splitType = splitCapturado,
+                            idempotencyKey = llaveCapturada,
+                            manualMethod = manualCapturado,
+                            tenderType = tenderCapturado,
                             // 🔴 EL CLIENTE DE LA VENTA. Es el valor CONGELADO al abrir el
                             // cobro (`clienteDelCobro` de CheckoutScreen → startPaymentFlow),
                             // nunca el flujo vivo del carrito. Sin esta línea la venta rápida
                             // nacía anónima aunque el cajero sí lo hubiera elegido.
-                            customerId = attachedCustomerId,
+                            customerId = clienteCapturado,
+                            capturedVenueId = venueCapturado,
                         )
                         fastResult.fold(
                             onSuccess = { fast ->
@@ -1972,7 +2130,7 @@ class PaymentFlowViewModel @Inject constructor(
                                     attachedCustomerId = null
                                     _attachedCustomerName.value = null
                                 }
-                                recordCashSale(total, null)
+                                recordCashSale(total, null, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado)
                                 // 🔴 D16: este camino (cobro rápido en efectivo) NUNCA pasa por
                                 // `autoPrintAfterPayment`, así que sin
                                 // congelar `lastReceipt` AQUÍ, el primer toque de «Imprimir» en la
@@ -2000,21 +2158,25 @@ class PaymentFlowViewModel @Inject constructor(
                                     // FIX B4: Also record cash sale in drawer
                                     val idEnCola = if (cart != null) {
                                         cashPaymentRepository.queueCashPayment(
-                                            orderRequest = buildOrderRequest(cart),
-                                            staffId = selectedStaffId(),
-                                            customerId = attachedCustomerId,
-                                            idempotencyKey = sessionIdempotencyKey(),
+                                            orderRequest = requireNotNull(pedidoCapturado),
+                                            amountCents = total - tipCapturado,
+                                            tipCents = tipCapturado,
+                                            splitType = splitCapturado,
+                                            staffId = empleadoCapturado,
+                                            customerId = clienteCapturado,
+                                            idempotencyKey = llaveCapturada,
                                             cashTenderedCents = cashReceivedCents,
                                             changeCents = result.changeCents,
-                                            rating = currentRating,
+                                            rating = ratingCapturado,
                                             orderId = null,
-                                            manualMethod = manualMethod,
-                                            tenderType = selectedTender,
+                                            manualMethod = manualCapturado,
+                                            tenderType = tenderCapturado,
+                                            venueId = venueCapturado,
                                         )
                                     } else {
                                         null
                                     }
-                                    recordCashSale(total, null)
+                                    recordCashSale(total, null, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado)
                                     // 🔴 Mismo hueco de D16 que arriba, camino encolado: sin esto
                                     // el ticket de una venta rápida que se guardó offline también
                                     // toma la hora de cuando alguien la imprima, no la de la venta.
@@ -2059,9 +2221,22 @@ class PaymentFlowViewModel @Inject constructor(
         cashReceivedCents: Int,
         changeCents: Int,
         orderRequest: CreateOrderRequest,
+        tipCapturado: Int,
+        splitCapturado: String,
+        llaveCapturada: String,
+        manualCapturado: com.avoqado.pos.payment.domain.ManualPaymentMethod?,
+        tenderCapturado: com.avoqado.pos.payment.domain.TenderTypeOption?,
+        venueCapturado: String,
+        actorCapturado: String,
+        nombreActorCapturado: String,
+        empleadoCapturado: String,
+        clienteCapturado: String?,
+        ratingCapturado: Int?,
+        provisionalCapturada: Boolean,
+        permiteColaCapturada: Boolean,
     ) {
         // Send amount WITHOUT tip, tip separately
-        val subtotal = total - currentTipCents
+        val subtotal = total - tipCapturado
 
         // Offline-first Corte C: mesa abierta SIN red (sesión provisional) —
         // la orden aún no existe en el server, así que el cobro va como intent
@@ -2069,26 +2244,29 @@ class PaymentFlowViewModel @Inject constructor(
         // del OPEN_TABLE/ADD_ITEMS del mismo dispositivo (FIFO). Regla
         // "Backgrounded": si el replay lo rechaza, la cuenta queda visible en
         // cuarentena — jamás se pierde una venta en silencio.
-        val provisionalSession = tableSession.current()?.takeIf { it.isProvisional && it.orderId == orderId }
-        if (provisionalSession != null) {
-            val vId = secureStorage.venueId
-            if (vId != null) {
+        if (provisionalCapturada) {
+            val vId = venueCapturado
+            if (vId.isNotBlank()) {
                 val idEnCola = syncOutbox.enqueue(
                     vId,
                     com.avoqado.pos.core.data.sync.SyncIntentTypes.PAY_CASH,
                     kotlinx.serialization.json.buildJsonObject {
                         put("localOrderId", kotlinx.serialization.json.JsonPrimitive(orderId))
                         put("amountCents", kotlinx.serialization.json.JsonPrimitive(subtotal))
-                        put("tipCents", kotlinx.serialization.json.JsonPrimitive(currentTipCents))
+                        put("tipCents", kotlinx.serialization.json.JsonPrimitive(tipCapturado))
                         // Sin esto, un cobro con terminal ajena hecho sin red
                         // se reproduciría como EFECTIVO y descuadraría el corte.
-                        manualMethod?.let { m ->
+                        if (tenderCapturado != null) {
+                            put("tenderTypeId", kotlinx.serialization.json.JsonPrimitive(tenderCapturado.id))
+                            put("tenderRevision", kotlinx.serialization.json.JsonPrimitive(tenderCapturado.revision))
+                        } else manualCapturado?.let { m ->
                             put("method", kotlinx.serialization.json.JsonPrimitive(m.serverMethod))
                             m.externalSource?.let { put("externalSource", kotlinx.serialization.json.JsonPrimitive(it)) }
                         }
                     },
+                    cashTenderedCents = cashReceivedCents, changeCents = changeCents, splitType = splitCapturado,
                 )
-                recordCashSale(total, orderId)
+                recordCashSale(total, orderId, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado)
                 _state.value = PaymentFlowState.Success(
                     totalAmount = total,
                     method = PaymentMethod.CASH,
@@ -2103,12 +2281,13 @@ class PaymentFlowViewModel @Inject constructor(
         val payResult = orderRepository.recordCashPayment(
             orderId = orderId,
             amount = subtotal,
-            staffId = selectedStaffId(),
-            tip = currentTipCents,
-            splitType = _splitType.value,
-            idempotencyKey = sessionIdempotencyKey(),
-            manualMethod = manualMethod,
-                                            tenderType = selectedTender,
+            staffId = empleadoCapturado,
+            tip = tipCapturado,
+            splitType = splitCapturado,
+            idempotencyKey = llaveCapturada,
+            manualMethod = manualCapturado,
+            tenderType = tenderCapturado,
+            capturedVenueId = venueCapturado,
         )
         payResult.fold(
             onSuccess = { result ->
@@ -2154,7 +2333,7 @@ class PaymentFlowViewModel @Inject constructor(
                 result.receiptAccessKey?.let { lastReceiptAccessKey = it }
                 result.receiptUrl?.let { lastReceiptUrl = it }
                 finishAreaTicketPayment()
-                recordCashSale(authoritativeTotal, orderId)
+                recordCashSale(authoritativeTotal, orderId, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado)
                 _state.value = PaymentFlowState.Success(
                     totalAmount = authoritativeTotal,
                     method = PaymentMethod.CASH,
@@ -2169,22 +2348,25 @@ class PaymentFlowViewModel @Inject constructor(
             onFailure = { error ->
                 val isQueueable = OrderRepository.isQueueableError(error) ||
                     (error is OrderRepository.ServerException && OrderRepository.isQueueableHttpCode(error.code))
-                if (isQueueable && areaTicketRepository.session.current() == null) {
+                if (isQueueable && permiteColaCapturada) {
                     val idEnCola = cashPaymentRepository.queueCashPayment(
-                        // 🔴 Lo que se COBRÓ, no el estimado del carrito: con un premio rechazado se
-                        // cobraron $100 y el pedido traía $70 — la cola registraría $70 al sincronizar.
-                        orderRequest = orderRequest.copy(total = total, tip = currentTipCents),
-                        staffId = selectedStaffId(),
-                        customerId = attachedCustomerId,
-                        idempotencyKey = sessionIdempotencyKey(),
+                        // El pago capturado y el pedido completo son datos distintos.
+                        orderRequest = orderRequest,
+                        amountCents = total - tipCapturado,
+                        tipCents = tipCapturado,
+                        splitType = splitCapturado,
+                        staffId = empleadoCapturado,
+                        customerId = clienteCapturado,
+                        idempotencyKey = llaveCapturada,
                         cashTenderedCents = cashReceivedCents,
                         changeCents = changeCents,
-                        rating = currentRating,
+                        rating = ratingCapturado,
                         orderId = orderId,
-                        manualMethod = manualMethod,
-                                            tenderType = selectedTender,
+                        manualMethod = manualCapturado,
+                        tenderType = tenderCapturado,
+                        venueId = venueCapturado,
                     )
-                    recordCashSale(total, orderId)
+                    recordCashSale(total, orderId, manualCapturado, tenderCapturado, venueCapturado, actorCapturado, nombreActorCapturado)
                     _state.value = PaymentFlowState.Success(
                         totalAmount = total,
                         method = PaymentMethod.CASH,
@@ -2864,39 +3046,25 @@ class PaymentFlowViewModel @Inject constructor(
      *
      * @param amountCents el total CON propina — el dinero que quedó en el cajón.
      */
-    private fun recordCashSale(amountCents: Int, orderId: String? = null) {
-        // Un cobro declarado a mano (terminal ajena, transferencia) NUNCA entró al
-        // cajón. Meterlo como venta en efectivo le inventa al cajero un faltante por
-        // ese monto al cerrar el turno — justo el descuadre que el método manual vino
-        // a evitar. El cobro sí se registra en el server con su método real; lo único
-        // que NO debe tocar es el arqueo de efectivo.
-        manualMethod?.let { declarado ->
-            Log.d("💰", "Cobro '${declarado.label}' fuera de Avoqado: no entra al arqueo de efectivo")
-            return
-        }
-        // 🔴 Una venta en CERO (cuenta cortesiada al 100%) no movió efectivo. El server
-        // ya la rechaza a propósito (`postCashSaleToDrawer` → `NOT_DRAWER_CASH` cuando
-        // el total es <= 0, "sólo ensucia el listado del corte"), así que una fila local
-        // en cero es un huérfano permanente: su gemelo del server no va a existir nunca
-        // y ninguna confirmación la puede limpiar.
-        //
-        // También es lo que hace coincidir POR CONSTRUCCIÓN los dos guards del cobro
-        // rápido encolado, donde esta llamada vive fuera del `if (cart != null)` que
-        // encola: sin carrito el total es forzosamente 0 (`currentBaseAmount()` sale de
-        // `cartState`/`splitBaseAmountOverride`, y los dos nacen del carrito), así que
-        // la única fila que ese `if` dejaba entrar al cajón sin nadie en la cola que la
-        // respaldara es exactamente la que aquí ya no se escribe.
-        if (amountCents <= 0) {
-            Log.d("💰", "Venta en \$0: no movió efectivo, no entra al arqueo")
-            return
-        }
+    private fun recordCashSale(
+        amountCents: Int,
+        orderId: String?,
+        manualCapturado: com.avoqado.pos.payment.domain.ManualPaymentMethod?,
+        tenderCapturado: com.avoqado.pos.payment.domain.TenderTypeOption?,
+        venueCapturado: String,
+        actorCapturado: String,
+        nombreActorCapturado: String,
+    ) {
+        // Todos los callers son registros de efectivo: conservar el medio de ESA captura,
+        // antes de cualquier await, y aplicar la misma política del pulso al arqueo.
+        if (!CajonDeDinero.debeAbrirse(PaymentMethod.CASH, manualCapturado, tenderCapturado, amountCents)) return
         viewModelScope.launch {
             try {
                 // addCashSale returns null gracefully when no drawer is open
                 // (normal — not every venue runs one). A thrown exception is a
                 // REAL insert failure: the drawer total will drift from recorded
                 // sales, so log at error level instead of a silent Log.d.
-                cashDrawerRepository.addCashSale(amountCents, orderId)
+                cashDrawerRepository.addCashSale(amountCents, orderId, venueCapturado, actorCapturado, nombreActorCapturado)
             } catch (e: Exception) {
                 Log.e("💰", "Cash drawer insert FAILED (drawer total will drift): ${e.message}", e)
             }
@@ -3213,15 +3381,23 @@ class PaymentFlowViewModel @Inject constructor(
         // el TOTAL del servidor, así que una promoción que el servidor redondeó distinto ($99 contra $98.99) imprimía un papel
         // que no cuadraba. Ahora el descuento es lo que falta del bruto a lo cobrado: absorbe promociones y el premio de
         // cartilla que confirmó el servidor. Un pago parcial imprime sólo lo cobrado (nunca prorratea descuento ni IVA).
-        // Plan 7a: cargo 0 SIEMPRE. El cobro de una mesa con cargo queda en el renglón único de hoy (cargo dentro del
-        // subtotal, mismo total); separarlo es del 7b, que sabe cuándo la cuenta está al día.
+        // Sólo la captura de la cuenta garantizada, sin abonos y en cobro completo, separa el cargo.
+        // El carrito de mesa trae una línea de importe con el cargo dentro; ningún split lo prorratea.
+        val cargoDeLaMesa = mesaDelCobro
+            ?.takeIf { !it.isProvisional && it.orderId == createdOrderId && isFullPayment && splitBaseAmountOverride == null && cart != null &&
+                cart.items.singleOrNull()?.let { item -> item.type == com.avoqado.pos.pos.data.model.CartItemType.CustomAmount && item.quantity == 1 } == true &&
+                cart.taxCents == 0 && cart.subtotalCents == it.totalCents }
+            ?.serviceChargeCents?.takeIf { it > 0 && it <= (cart?.subtotalCents ?: 0) && it <= receiptTotal - currentTipCents } ?: 0
         val papel = com.avoqado.pos.printing.data.model.TotalesDelTicket.desdeLoCobrado(
             cobrado = receiptTotal - currentTipCents,
             propina = currentTipCents,
-            subtotalBruto = if (cart != null && isFullPayment) cart.subtotalCents else baseAmount,
-            cargo = 0,
+            subtotalBruto = (if (cart != null && isFullPayment) cart.subtotalCents else baseAmount) - cargoDeLaMesa,
+            cargo = cargoDeLaMesa,
             impuestoAgregado = if (cart != null && isFullPayment) cart.taxCents else 0,
         )
+        val renglones = if (cargoDeLaMesa > 0) receiptItems.map {
+            it.copy(unitPrice = it.unitPrice - cargoDeLaMesa, totalPrice = it.totalPrice - cargoDeLaMesa)
+        } else receiptItems
         val resolvedChange = changeCents ?: successState?.changeAmount
 
         // Folio real del backend; solo si falta cae a los últimos 4 del id (mejor
@@ -3239,7 +3415,7 @@ class PaymentFlowViewModel @Inject constructor(
         return ReceiptData(
             orderNumber = folio,
             orderType = "En tienda",
-            items = receiptItems,
+            items = renglones,
             subtotal = papel.subtotal,
             taxAmount = papel.impuesto,
             tipAmount = if (currentTipCents > 0) currentTipCents else null,
@@ -3253,7 +3429,7 @@ class PaymentFlowViewModel @Inject constructor(
             },
             cardLastFour = if (resolvedMethod == PaymentMethod.CARD && manualMethodLabel == null) lastCardLastFour else null,
             cardBrand = if (resolvedMethod == PaymentMethod.CARD && manualMethodLabel == null) lastCardBrand else null,
-            venueName = secureStorage.venueName ?: "Avoqado",
+            venueName = nombreDelNegocioDelCobro,
             // 🔴 «Atendió: X» = el vendedor elegido en «Vendiendo» cuando lo hay, con
             // respaldo a quien inició sesión — `cart.selectedStaffName` YA resuelve esa
             // precedencia (`CartViewModel.defaultCartState`). Sin esto, el bloque `staff`
@@ -3422,7 +3598,7 @@ class PaymentFlowViewModel @Inject constructor(
                     premioConfirmadoCents = premioConfirmadoCents,
                 )
             }
-        }
+        }.copy(carritoGuardadoDelCobro = cart.carritoGuardadoId, identidadDeVenta = cart.identidadDeVenta)
     }
 
     /**

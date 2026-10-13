@@ -88,7 +88,10 @@ class MigracionesDeAndroidTest {
             base.close()
 
             BundledSQLiteDriver().open(archivo.toString()).use { c ->
-                assertEquals(antes, listOf(c.volcar("pending_payments"), c.volcar("pos_sync_intents")))
+                assertEquals(antes, listOf(c.volcar("pending_payments").map { it.take(22) }, c.volcar("pos_sync_intents").map { it.take(11) }))
+                c.prepare("SELECT capturedOrderRef,q15CaptureJson,q15ResultJson FROM pending_payments WHERE id='pago-1'").use { q ->
+                    q.step();assertEquals("orden-9",q.getText(0));assertEquals(true,q.isNull(1));assertEquals(true,q.isNull(2))
+                }
             }
             val respaldo = Files.list(archivo.parent.resolve("respaldos")).use { l -> l.toList() }.single()
             BundledSQLiteDriver().open(respaldo.toString()).use { c ->

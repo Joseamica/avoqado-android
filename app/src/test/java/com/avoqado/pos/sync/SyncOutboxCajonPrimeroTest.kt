@@ -12,15 +12,22 @@ import com.avoqado.pos.core.data.sync.SyncIntentsRequest
 import com.avoqado.pos.core.data.sync.SyncIntentsResponse
 import com.avoqado.pos.core.data.sync.SyncOutbox
 import com.avoqado.pos.core.util.ConnectivityMonitor
+import com.avoqado.pos.payment.data.ConciliacionDelCobro
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.every
 import io.mockk.mockk
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.junit.After
+import java.io.File
+import java.nio.file.Files
 import java.util.concurrent.CopyOnWriteArrayList
 
 /**
@@ -41,6 +48,7 @@ class SyncOutboxCajonPrimeroTest {
 
     private val dao = mockk<SyncIntentDao>(relaxed = true)
     private val apiService = mockk<ApiService>(relaxed = true)
+    init { com.avoqado.pos.core.data.sync.vincularCallFixtureQ16(apiService) }
     private val connectivityMonitor = mockk<ConnectivityMonitor>(relaxed = true)
     private val secureStorage = mockk<SecureStorage>(relaxed = true)
     private val cajon = mockk<CashDrawerRepository>(relaxed = true)
@@ -52,15 +60,22 @@ class SyncOutboxCajonPrimeroTest {
      */
     private val pendientes = CopyOnWriteArrayList<SyncIntentEntity>()
     private val pedidos = CopyOnWriteArrayList<SyncIntentsRequest>()
+    private val recursos = mutableListOf<Pair<SyncOutbox, File>>()
 
-    private fun intent(id: String, seq: Long, type: String) = SyncIntentEntity(
-        id = id,
-        venueId = VENUE,
-        staffId = "staff-1",
-        seq = seq,
-        type = type,
-        payloadJson = "{}",
-    )
+    @After fun limpiarRecursosPropios() {
+        try { recursos.forEach { it.first.stop() } }
+        finally { recursos.forEach { it.second.deleteRecursively() } }
+    }
+
+    private fun intent(id: String, seq: Long, type: String, localOrderId: String = id): SyncIntentEntity {
+        val payload = if (type == "PAY_CASH") """{"orderId":"order-cajon","amountCents":13300,"tipCents":0,"method":"CASH"}"""
+            else if (type == "OPEN_TABLE" || type == "ADD_ITEMS") """{"localOrderId":"$localOrderId"}""" else "{}"
+        return SyncIntentEntity(
+            id = id, venueId = VENUE, staffId = "staff-1", seq = seq, type = type, payloadJson = payload,
+            q15CaptureJson = if (type == "PAY_CASH") requireNotNull(ConciliacionDelCobro.capturarIntent(VENUE, id, payload)) else null,
+            capturedOrderRef = if (type == "PAY_CASH") "order-cajon" else null,
+        )
+    }
 
     private fun outbox(cola: List<SyncIntentEntity>): SyncOutbox {
         pendientes.clear()
@@ -68,21 +83,44 @@ class SyncOutboxCajonPrimeroTest {
         val prefs = mockk<SharedPreferences>(relaxed = true)
         every { prefs.getString(any(), any()) } returns "device-fijo"
         val context = mockk<Context>(relaxed = true)
+        val directory = Files.createTempDirectory("sync-cajon-owned").toFile()
+        every { context.filesDir } returns directory
         every { context.getSharedPreferences(any(), any()) } returns prefs
         every { connectivityMonitor.isConnected } returns MutableStateFlow(true)
         every { connectivityMonitor.isServerReachable } returns MutableStateFlow(true)
         coEvery { dao.pendingFifo(VENUE, any()) } answers { pendientes.toList() }
         coEvery { dao.resolve(any(), any(), any(), any(), any()) } answers {
-            val id = firstArg<String>()
-            pendientes.removeIf { it.id == id }
+            val id = firstArg<String>(); val status = arg<String>(1)
+            if (status == SyncIntentEntity.STATUS_PENDING) pendientes.replaceAll {
+                if (it.id == id) it.copy(status = status, errorCode = arg(2), message = arg(3), resultJson = arg(4)) else it
+            } else pendientes.removeIf { it.id == id }
             Unit
+        }
+        coEvery { dao.resolverCobroQ15(any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) } answers {
+            val id = firstArg<String>()
+            assertEquals(VENUE, arg<String>(1))
+            assertEquals("ACKED", arg<String>(3))
+            assertEquals(null, arg<String?>(7))
+            assertTrue(arg<String?>(8) != null)
+            pendientes.removeIf { it.id == id }
+            Unit // Stateful replay fixture; Room transaction has its own instrumented controls.
         }
         coEvery { apiService.syncIntents(VENUE, any()) } answers {
             val request = secondArg<SyncIntentsRequest>()
             pedidos += request
-            SyncIntentsResponse(data = request.intents.map { SyncAck(id = it.id, status = "ACKED") })
+            SyncIntentsResponse(data = request.intents.map { wire ->
+                val result = if (wire.type == "PAY_CASH") JsonObject(mapOf(
+                    "paymentId" to JsonPrimitive("server-" + wire.id), "orderId" to JsonPrimitive("order-cajon"),
+                    "amount" to JsonPrimitive(13300), "tipAmount" to JsonPrimitive(0), "method" to JsonPrimitive("CASH"),
+                )) else if (wire.type == "OPEN_TABLE") JsonObject(mapOf(
+                    "localOrderId" to requireNotNull(wire.payload["localOrderId"]),
+                    "orderId" to JsonPrimitive("real-order"),
+                )) else null
+                SyncAck(id = wire.id, status = "ACKED", result = result)
+            })
         }
         return SyncOutbox(dao, apiService, connectivityMonitor, secureStorage, cajon, context, mockk(relaxed = true))
+            .also { recursos += it to directory }
     }
 
     /** Los tipos que el outbox llegó a mandar, en orden, a lo largo de toda la corrida. */
@@ -103,7 +141,7 @@ class SyncOutboxCajonPrimeroTest {
         val outbox = outbox(
             listOf(
                 intent("i1", 1, "OPEN_TABLE"),
-                intent("i2", 2, "ADD_ITEMS"),
+                intent("i2", 2, "ADD_ITEMS", localOrderId = "i1"),
                 intent("i3", 3, "PAY_CASH"),
                 intent("i4", 4, "CLEAR_TABLE"),
             ),
@@ -188,6 +226,33 @@ class SyncOutboxCajonPrimeroTest {
             0,
             SyncOutbox.cuantosIntentsSePuedenMandar(listOf("PAY_CASH", "CLEAR_TABLE"), cobrosPuedenSalir = false),
         )
+    }
+
+
+    @Test
+    fun legacyWithoutCaptureSendsOnlyPrefixAndPreservesPayAndClear() = runTest {
+        coEvery { cajon.sincronizarCajonPrimero() } returns true
+        val legacy = intent("legacy-pay", 2, "PAY_CASH").copy(q15CaptureJson = null)
+        val outbox = outbox(listOf(intent("open", 1, "OPEN_TABLE"), legacy, intent("clear", 3, "CLEAR_TABLE")))
+        coEvery { dao.retenerIntentQ15(VENUE, legacy.id, ConciliacionDelCobro.CAPTURA_SIN_EVIDENCIA, any()) } answers {
+            val index = pendientes.indexOfFirst { it.id == legacy.id }
+            check(index >= 0)
+            pendientes[index] = pendientes[index].copy(status = "HELD", q15Reason = ConciliacionDelCobro.CAPTURA_SIN_EVIDENCIA)
+            1
+        }
+        try {
+            outbox.start(VENUE)
+            outbox.replayNow(VENUE)
+            assertEquals(listOf("OPEN_TABLE"), tiposMandados())
+            assertEquals(listOf(legacy.id, "clear"), pendientes.map { it.id })
+            val retained = pendientes.single { it.id == legacy.id }
+            assertEquals("HELD", retained.status)
+            assertEquals(ConciliacionDelCobro.CAPTURA_SIN_EVIDENCIA, retained.q15Reason)
+            assertEquals(legacy.payloadJson, retained.payloadJson)
+            assertEquals(null, retained.q15CaptureJson)
+            coVerify(atLeast = 1) { dao.retenerIntentQ15(VENUE, legacy.id, ConciliacionDelCobro.CAPTURA_SIN_EVIDENCIA, any()) }
+            coVerify(exactly = 0) { dao.resolverCobroQ15(any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) }
+        } finally { outbox.stop() }
     }
 
     private companion object {

@@ -127,7 +127,7 @@ class AreaTicketPdfGenerator @Inject constructor() {
         canvas.drawTwoColumns("Vale #:", ticket.areaTicketCode, y, boldValue = true)
         y += 13f
         val timestamp = ticket.timestamp.toInstant()
-            .atZone(VenueTimeZone.zoneId())
+            .let { VenueTimeZone.at(it) }
             .format(
                 DateTimeFormatter.ofPattern(
                     "dd/MM/yyyy HH:mm",

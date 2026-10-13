@@ -40,7 +40,11 @@ class TableSyncCoordinator @Inject constructor(
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var started = false
 
+    fun onSessionChanged() { tableSession.sincronizarContexto(secureStorage.userId, secureStorage.venueId) }
+    fun onSessionInvalidated() { tableSession.clear() }
+
     fun start() {
+        onSessionChanged()
         if (started) return
         started = true
         scope.launch {
@@ -51,6 +55,9 @@ class TableSyncCoordinator @Inject constructor(
     }
 
     internal suspend fun handle(ack: com.avoqado.pos.core.data.sync.SyncAck) {
+        // Null is compatibility for manual fixtures; SyncOutbox tags every real emission.
+        val sessionEpoch = ack.contextoDeSesion ?: tableSession.contextoActual()
+        if (tableSession.contextoActual() != sessionEpoch) return
         if (!ack.isAcked) {
             Log.w(TAG, "🚫 Intent rechazado (${ack.errorCode}): ${ack.message}")
             return
@@ -60,7 +67,7 @@ class TableSyncCoordinator @Inject constructor(
         val type = intents.preparationStatuses(venueId, listOf(ack.id)).singleOrNull()?.type
         // Preparation revisions belong to kitchen items, never to the table order.
         if (type == SyncIntentTypes.KDS_ITEM_PROGRESS || type == SyncIntentTypes.KDS_TICKET_MARK) return
-        if (secureStorage.venueId != venueId) return
+        if (secureStorage.venueId != venueId || tableSession.contextoActual() != sessionEpoch) return
         val localOrderId = result["localOrderId"]?.jsonPrimitive?.contentOrNull
         val orderId = result["orderId"]?.jsonPrimitive?.contentOrNull
         val orderNumber = result["orderNumber"]?.jsonPrimitive?.contentOrNull
@@ -68,10 +75,13 @@ class TableSyncCoordinator @Inject constructor(
 
         if (localOrderId != null && orderId != null) {
             Log.d(TAG, "⬆️ Promoviendo sesión provisional $localOrderId → $orderId")
-            tableSession.promoteProvisional(localOrderId, orderId, orderNumber, version ?: 1)
-        } else if (version != null && orderId != null && tableSession.current()?.orderId == orderId) {
-            // Ronda/cobro de la sesión activa confirmado: versión fresca evita 409.
-            tableSession.updateVersion(version)
+            tableSession.promoteProvisional(venueId, localOrderId, orderId, orderNumber, version ?: 1, sessionEpoch)
+        }
+        val ids = setOfNotNull(orderId, localOrderId)
+        if (ids.isNotEmpty()) {
+            val remaining = if (type == SyncIntentTypes.PAY_CASH) result["remainingBalanceCents"]?.jsonPrimitive?.intOrNull else null
+            if (remaining == 0) tableSession.finalizar(venueId, ids, sessionEpoch)
+            else tableSession.confirmarCambio(venueId, ids, version, remaining, sessionEpoch)
         }
 
         // Server reconciliation: el plano se rebasea a la verdad del server.

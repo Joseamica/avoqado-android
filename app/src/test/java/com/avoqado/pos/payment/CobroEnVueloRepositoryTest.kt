@@ -6,6 +6,8 @@ import com.avoqado.pos.core.data.local.database.PaymentSyncStatus
 import com.avoqado.pos.core.data.local.database.PendingPaymentDao
 import com.avoqado.pos.core.data.local.database.PendingPaymentEntity
 import com.avoqado.pos.payment.data.CashPaymentRepository
+import com.avoqado.pos.payment.data.ConciliacionDelCobro
+import com.avoqado.pos.payment.data.CapturaDelCobro
 import com.avoqado.pos.payment.data.model.CreateOrderRequest
 import io.mockk.coEvery
 import io.mockk.coVerify
@@ -16,6 +18,8 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Assert.assertFalse
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -100,16 +104,24 @@ class CobroEnVueloRepositoryTest {
 
     @Test
     fun `«sí se cobró» la manda a la cola con la MISMA llave`() = runTest {
-        repository.confirmarQueSeCobro("llave-vieja")
+        val original=fila("llave-vieja").copy(q15CaptureJson=ConciliacionDelCobro.guardarCaptura(CapturaDelCobro("venue-1","llave-vieja",amountCents=10_000,tipCents=0)))
+        coEvery {dao.findForVenue("venue-1","llave-vieja")} returns original
+        coEvery {dao.enVueloAPendiente("llave-vieja")} returns 1
+        assertTrue(repository.confirmarQueSeCobro("llave-vieja"))
 
         coVerify { dao.enVueloAPendiente("llave-vieja") }
+        coVerify(exactly=0) {dao.borrarSiEnVuelo("llave-vieja")}
     }
 
     @Test
-    fun `«no se cobró» la borra, y sólo si seguía EN_VUELO`() = runTest {
-        repository.descartarPorqueNoSeCobro("llave-vieja")
+    fun `«no se cobró» conserva el cobro incierto y su identidad original`() = runTest {
+        val original=fila("llave-vieja")
+        coEvery {dao.findForVenue("venue-1","llave-vieja")} returns original
+        assertFalse(repository.descartarPorqueNoSeCobro("llave-vieja"))
 
-        coVerify { dao.borrarSiEnVuelo("llave-vieja") }
+        coVerify(exactly=0) {dao.borrarSiEnVuelo("llave-vieja")}
+        coVerify(exactly=1) {dao.retenerPagoQ15("venue-1","llave-vieja",ConciliacionDelCobro.CAPTURA_SIN_EVIDENCIA,any())}
+        coVerify(exactly=0) {dao.enVueloAPendiente("llave-vieja")}
     }
 
     @Test

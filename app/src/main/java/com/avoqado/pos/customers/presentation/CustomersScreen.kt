@@ -856,7 +856,7 @@ private fun buildContactLine(customer: Customer): String? {
 private fun formatDate(isoDate: String?): String {
     if (isoDate.isNullOrBlank()) return ""
     val zoned = com.avoqado.pos.core.util.VenueDateTimeFormatter.parseIso(isoDate)
-        ?.atZone(com.avoqado.pos.core.util.VenueTimeZone.zoneId())
+        ?.let { com.avoqado.pos.core.util.VenueTimeZone.at(it) }
     return zoned?.format(
         java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy"),
     ) ?: isoDate.take(10)

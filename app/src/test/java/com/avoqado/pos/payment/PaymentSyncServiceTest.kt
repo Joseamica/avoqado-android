@@ -7,7 +7,11 @@ import com.avoqado.pos.core.data.local.database.PendingPaymentDao
 import com.avoqado.pos.core.data.local.database.PaymentSyncStatus
 import com.avoqado.pos.core.data.local.database.PendingPaymentEntity
 import com.avoqado.pos.core.util.ConnectivityMonitor
+import com.avoqado.pos.core.data.sync.SyncOutbox
+import com.avoqado.pos.core.data.sync.TrabajoSinResolver
 import com.avoqado.pos.payment.data.PaymentSyncService
+import com.avoqado.pos.payment.data.CapturaDelCobro
+import com.avoqado.pos.payment.data.ConciliacionDelCobro
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -36,6 +40,7 @@ class PaymentSyncServiceTest {
     private val client = mockk<OkHttpClient>(relaxed = true)
     private val connectivityMonitor = mockk<ConnectivityMonitor>(relaxed = true)
     private val cajon = mockk<CashDrawerRepository>(relaxed = true)
+    private val outbox = mockk<SyncOutbox>(relaxed = true)
 
     private lateinit var service: PaymentSyncService
 
@@ -51,7 +56,8 @@ class PaymentSyncServiceTest {
         // Sin apertura pendiente en la cola del cajón: los cobros salen como siempre.
         coEvery { cajon.sincronizarCajonPrimero() } returns true
 
-        service = PaymentSyncService(dao, secureStorage, client, connectivityMonitor, cajon)
+        coEvery { outbox.trabajoSinResolverDeLaOrden(any(), any()) } returns TrabajoSinResolver(0, 0, emptySet(), 0)
+        service = PaymentSyncService(dao, secureStorage, client, connectivityMonitor, cajon, outbox)
     }
 
     @After
@@ -178,10 +184,16 @@ class PaymentSyncServiceTest {
 
     @Test
     fun `200 si marca el pago como sincronizado (no rompimos el camino feliz)`() = runTest {
-        val stop = service.handleSyncResult(pendingPayment(), 200, """{"success":true}""")
+        val original = conCaptura(pendingPayment())
+        val expectedResult = """{"paymentId":"server-payment","orderId":"order-1","amountCents":4500,"tipCents":0,"method":"CASH","splitType":"FULLPAYMENT","camposDiferentes":[],"camposNoComprobados":[]}"""
+        coEvery { dao.registrarResultadoQ15("venue-123", "local-pay-1", true, null, expectedResult, any()) } returns 1
+        val stop = service.handleSyncResult(original, 200,
+            """{"success":true,"payment":{"paymentId":"server-payment","orderId":"order-1","venueId":"venue-123","amount":4500,"tipAmount":0,"method":"CASH","splitType":"FULLPAYMENT","status":"COMPLETED"}}""")
 
         assertTrue("el camino feliz no corta el batch", !stop)
-        coVerify(exactly = 1) { dao.updateStatus("local-pay-1", PaymentSyncStatus.SYNCED.name) }
+        // Atomic outcome persistence replaces the old independent SYNCED write.
+        coVerify(exactly = 1) { dao.registrarResultadoQ15("venue-123", "local-pay-1", true, null, expectedResult, any()) }
+        coVerify(exactly = 0) { dao.updateStatus("local-pay-1", PaymentSyncStatus.SYNCED.name) }
     }
 
     @Test
@@ -331,9 +343,14 @@ class PaymentSyncServiceTest {
 
     @Test
     fun `retryFailedPayment reopens the same idempotency key`() = runTest {
-        service.retryFailedPayment("pay-original-id")
+        val original = conCaptura(payment("pay-original-id", PaymentSyncStatus.FAILED.name))
+        coEvery { dao.findForVenue("venue-123", original.id) } returns original
+        // The unresolved lookup does not claim any server outcome applied.
+        coEvery { dao.syncStatusOf(original.id) } returns null
+        assertEquals(PaymentSyncService.RetryOutcome.StillQueued, service.retryFailedPayment("pay-original-id"))
 
         coVerify(exactly = 1) { dao.retryFailed("pay-original-id") }
+        coVerify(exactly = 1) { dao.findForVenue("venue-123", "pay-original-id") }
     }
 
     // MARK: - El CLIENTE viaja al reproducir la cola
@@ -393,4 +410,34 @@ class PaymentSyncServiceTest {
         paymentType = "FAST",
         syncStatus = status,
     )
+    private fun conCaptura(payment: PendingPaymentEntity) = payment.copy(
+        q15CaptureJson = ConciliacionDelCobro.guardarCaptura(CapturaDelCobro(
+            venueId = payment.venueId, key = payment.id, orderId = payment.orderId,
+            amountCents = payment.amountCents, tipCents = payment.tipCents,
+            method = payment.method, splitType = payment.splitType,
+        )),
+        capturedOrderRef = payment.orderId,
+    )
+
+    @Test fun legacyRetryWithoutCaptureNeverReopensOrClaimsApplied() = runTest {
+        val legacy = payment("legacy-original-key", PaymentSyncStatus.FAILED.name)
+        coEvery { dao.findForVenue("venue-123", legacy.id) } returns legacy
+        coEvery { dao.retenerPagoQ15("venue-123", legacy.id, ConciliacionDelCobro.CAPTURA_SIN_EVIDENCIA, any()) } returns 1
+        assertEquals(PaymentSyncService.RetryOutcome.StillQueued, service.retryFailedPayment(legacy.id))
+        coVerify(exactly = 1) { dao.retenerPagoQ15("venue-123", legacy.id, ConciliacionDelCobro.CAPTURA_SIN_EVIDENCIA, any()) }
+        coVerify(exactly = 0) { dao.retryFailed(any()) }
+        coVerify(exactly = 0) { client.newCall(any()) }
+    }
+
+    @Test fun successWithoutAppliedIdentityKeepsCaptureAndStopsBatch() = runTest {
+        val original = conCaptura(pendingPayment())
+        coEvery { dao.registrarResultadoQ15(original.venueId, original.id, false,
+            ConciliacionDelCobro.RESULTADO_NO_COMPROBADO, null, any()) } returns 1
+        assertTrue(service.handleSyncResult(original, 200, """{"success":true}"""))
+        coVerify(exactly = 1) { dao.registrarResultadoQ15(original.venueId, original.id, false,
+            ConciliacionDelCobro.RESULTADO_NO_COMPROBADO, null, any()) }
+        coVerify(exactly = 0) { dao.updateStatus(any(), PaymentSyncStatus.SYNCED.name) }
+        coVerify(exactly = 0) { dao.retryFailed(any()) }
+    }
+
 }

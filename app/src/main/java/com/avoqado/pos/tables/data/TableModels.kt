@@ -330,6 +330,18 @@ data class OrderDetail(
     /** Dueño del cheque — read-only de propiedad de mesa (aditivo del server). */
     val waiter: TableWaiter? = null,
     val items: List<OrderDetailItem> = emptyList(),
+    /** IVA cobrado aparte, en pesos; ausencia en servidores antiguos conserva 0. */
+    val addedTaxAmount: Double = 0.0,
+    /** Saldo autoritativo opcional; sus cuatro importes son centavos y no se reconstruyen aquí. */
+    val preBillBalance: PreBillBalance? = null,
+)
+
+@Serializable
+data class PreBillBalance(
+    val orderTotalCents: Int,
+    val totalPaidCents: Int,
+    val remainingBalanceCents: Int,
+    val tipAmountCents: Int,
 )
 
 @Serializable

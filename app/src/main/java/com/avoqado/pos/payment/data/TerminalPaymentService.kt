@@ -1162,6 +1162,7 @@ class TerminalPaymentService @Inject constructor(
                 put("taxAmount", receipt.taxAmount)
                 receipt.tipAmount?.let { put("tipAmount", it) }
                 receipt.discountAmount?.let { put("discountAmount", it) }
+                receipt.serviceChargeAmount?.let { put("serviceChargeAmount", it) }
                 put("total", receipt.total)
                 receipt.paymentMethod?.let { put("paymentMethod", it) }
                 receipt.cardLastFour?.let { put("cardLastFour", it) }

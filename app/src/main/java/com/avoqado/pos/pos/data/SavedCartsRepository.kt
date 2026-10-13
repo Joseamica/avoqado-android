@@ -34,17 +34,26 @@ class SavedCartsRepository @Inject constructor(
         }
     }
 
-    fun saveCart(cart: SavedCart) {
-        val updated = _savedCarts.value.toMutableList()
-        updated.removeAll { it.id == cart.id }
-        updated.add(0, cart)
-        _savedCarts.value = updated
-        persistCarts()
+    // commit=false may have changed the process cache; publish only a confirmed disk write.
+    private fun escribir(lista: List<SavedCart>): Boolean {
+        if (!prefs.edit().putString("carts", json.encodeToString(lista)).commit()) return false
+        _savedCarts.value = lista
+        return true
     }
 
-    fun deleteCart(cartId: String) {
-        _savedCarts.value = _savedCarts.value.filter { it.id != cartId }
-        persistCarts()
+    fun saveCart(cart: SavedCart): Boolean =
+        escribir(listOf(cart) + _savedCarts.value.filterNot { it.id == cart.id })
+
+    fun deleteCart(cartId: String): Boolean = escribir(_savedCarts.value.filterNot { it.id == cartId })
+
+    fun marcarCobroIniciado(cartId: String, ahora: Long = System.currentTimeMillis()): Boolean {
+        if (_savedCarts.value.none { it.id == cartId }) return false
+        return escribir(_savedCarts.value.map { if (it.id == cartId) it.copy(cobroIniciadoEn = ahora) else it })
+    }
+
+    fun quitarMarca(cartId: String): Boolean {
+        if (_savedCarts.value.none { it.id == cartId }) return false
+        return escribir(_savedCarts.value.map { if (it.id == cartId) it.copy(cobroIniciadoEn = null) else it })
     }
 
     fun clearCache() {
@@ -52,7 +61,4 @@ class SavedCartsRepository @Inject constructor(
         prefs.edit().clear().apply()
     }
 
-    private fun persistCarts() {
-        prefs.edit().putString("carts", json.encodeToString(_savedCarts.value)).apply()
-    }
 }

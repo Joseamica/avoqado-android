@@ -293,7 +293,6 @@ private fun fechaCortaOc(iso: String?): String? {
     return runCatching {
         java.time.format.DateTimeFormatter
             .ofPattern("d MMM, HH:mm", java.util.Locale("es", "MX"))
-            .withZone(com.avoqado.pos.core.util.VenueTimeZone.zoneId())
-            .format(java.time.Instant.parse(texto))
+            .format(com.avoqado.pos.core.util.VenueTimeZone.at(java.time.Instant.parse(texto)))
     }.getOrNull()
 }
