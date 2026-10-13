@@ -492,7 +492,7 @@ class TableOrderCuentaGarantizadaTest {
     private val ownedVenue = "v-cuenta-garantizada"
     private fun floor(): TablesViewModel {
         every { repository.isLoading } returns MutableStateFlow(false)
-        return TablesViewModel(repository, mockk(relaxed = true), session, mockk(relaxed = true), storage, outbox, mockk(relaxed = true))
+        return TablesViewModel(repository, mockk(relaxed = true), session, mockk(relaxed = true), storage, outbox, mockk(relaxed = true), com.avoqado.pos.tables.data.FloorPlanRepository(io.mockk.mockk(relaxed = true), io.mockk.mockk(relaxed = true)), io.mockk.mockk(relaxed = true), io.mockk.mockk<com.avoqado.pos.tables.data.ApiFuenteDeVersiones>(relaxed = true))
     }
     private fun table(id: String = "o1", tableId: String = "t1", provisional: Boolean = true) =
         DiningTable(tableId, "5", openOrders = listOf(OpenCheckSummary(id, "LOCAL", total = 0.0, isProvisional = provisional)))

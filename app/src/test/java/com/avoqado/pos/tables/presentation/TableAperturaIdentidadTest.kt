@@ -34,7 +34,7 @@ class TableAperturaIdentidadTest {
         session.sincronizarContexto("actor",venue)
         coEvery { hub.acquire(any(),any(),any()) } returns LeaseOutcome.NoHub
         return TablesViewModel(repository=repository,planManager=mockk(relaxed=true),tableSession=session,
-            printerService=mockk(relaxed=true),secureStorage=storage,syncOutbox=outbox,lanHub=hub)
+            printerService=mockk(relaxed=true),secureStorage=storage,syncOutbox=outbox,lanHub=hub,floorPlanRepository=com.avoqado.pos.tables.data.FloorPlanRepository(io.mockk.mockk(relaxed=true),io.mockk.mockk(relaxed=true)),roleManager=io.mockk.mockk(relaxed=true),versionSource=io.mockk.mockk<com.avoqado.pos.tables.data.ApiFuenteDeVersiones>(relaxed=true))
     }
     @Test fun apertura_B_pendiente_no_sustituye_A_que_ya_esta_cobrando()=runTest {
         val held=CompletableDeferred<Result<OpenedOrder>>()
@@ -133,7 +133,7 @@ class TableAperturaIdentidadTest {
         every {outbox.nextLocalFolio(venue)} returns "L-disk"
         coEvery {outbox.enqueue(any(),any(),any(),any(),any(),any(),any(),any())} returns "intent-preservado"
         val subject=TablesViewModel(repository=real,planManager=mockk(relaxed=true),tableSession=session,
-            printerService=mockk(relaxed=true),secureStorage=storage,syncOutbox=outbox,lanHub=hub)
+            printerService=mockk(relaxed=true),secureStorage=storage,syncOutbox=outbox,lanHub=hub,floorPlanRepository=com.avoqado.pos.tables.data.FloorPlanRepository(io.mockk.mockk(relaxed=true),io.mockk.mockk(relaxed=true)),roleManager=io.mockk.mockk(relaxed=true),versionSource=io.mockk.mockk<com.avoqado.pos.tables.data.ApiFuenteDeVersiones>(relaxed=true))
         var navigation=0
         try {
             subject.openTableAndStartOrdering(target,2){navigation++};advanceUntilIdle()
