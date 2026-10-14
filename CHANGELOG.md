@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Added
+- **Nota por artículo en Mesas («sin aceite»).** En la ronda que todavía no se manda, tocar el nombre de un artículo abre «Nota del artículo»; la nota se ve en naranja bajo el artículo, viaja a cocina con la ronda (`ADD_ITEMS.items[].notes`) y se guarda en el aparato antes de tocar la red, así que sobrevive a cerrar la app y a no tener internet. Un mismo producto con nota y sin nota quedan en líneas separadas. No aplica a líneas de combo/promoción ni mientras la ronda se está enviando. iOS: pendiente (fase iOS de Mesas).
+
 ### Fixed
 - **Mesas y el hub LAN ya no se regalan en planes que no los incluyen.** `TABLE_SERVICE` (PRO) y `OFFLINE_LAN_HUB` (PREMIUM) no estaban en el mapa de planes y un código ausente se permite en cualquier plan: un negocio FREE veía el plano de mesas (y el servidor le rechazaba cada acción) y el hub LAN arrancaba en todos. Ahora FREE ve «Servicio de mesas · plan PRO» y el hub LAN sólo corre en Premium. Exentos y plan desconocido siguen igual (en prod, los 5 negocios con mesas son exentos). Una prueba barre el código y falla si alguien consulta al plan un código que no esté en el mapa. Espejo exacto en iOS.
 - **La duda de una venta ya no frena la tarjeta de las demás (founder, 25-sep: «ninguna duda apaga la terminal»).** El cobro pendiente con terminal pasa de una llave única a una LISTA (`PendientesDeTarjeta`), escrita ANTES del POST, que sobrevive a matar la app y a actualizarla (hereda la llave vieja). La MISMA venta con un pendiente espera («Quedó un cobro sin confirmar de esta venta.»); OTRA venta cobra y avisa al instante con una línea ámbar. Si ese cobro SÍ pasó, se dice («El cobro de $X de otra venta SÍ pasó…») durante 10 min, igual que las dudas, y nunca traba nada. Positivo gana a cualquier negativo tardío. Espejo exacto en iOS.
