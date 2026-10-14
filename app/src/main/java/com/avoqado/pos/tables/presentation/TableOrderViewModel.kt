@@ -280,6 +280,7 @@ class TableOrderViewModel @Inject constructor(
                         return@collect
                     }
                     if (!ack.isAcked) return@collect
+                    rondasConfirmadas += ack.id
                     if (localRef != null && ackOrder != null) {
                         tableSession.promoteProvisional(vId, localRef, ackOrder,
                             (result["orderNumber"] as? kotlinx.serialization.json.JsonPrimitive)?.content,
@@ -437,7 +438,7 @@ class TableOrderViewModel @Inject constructor(
                     if (draftScope != scope || venueId != vId) break
                     try {
                         when (syncOutbox.observarEstado(key).first()) {
-                            "ACKED" -> Unit // Retire the draft only after its lines are present in the check.
+                            "ACKED" -> rondasConfirmadas += key // Retire the draft only after its lines are present in the check.
                             "REJECTED" -> showError("Una ronda guardada necesita revisión", "Abre la cola de sincronización para ver el motivo.")
                             "HELD" -> syncOutbox.soltar(vId, key)
                             null -> {
@@ -1892,7 +1893,14 @@ class TableOrderViewModel @Inject constructor(
      * Encontrado en la Sunmi T3 Pro el 2026-07-28.
      */
     // Una ronda guardada sin red en una mesa del servidor todavía no está en su saldo: «Pagar $0.00» mentía (QA 2.24, 14-oct).
-    internal val saldoDeMesaConocido: Boolean get() = tableSession.contextoActual() == contextoDeSesion && venueId == venueDeSesion && tableSession.current()?.let { if (it.isProvisional) it.saldoSinRedConocido else (!it.requiereLecturaServidor || cuentaAlDiaAqui) && _queued.value.isEmpty() } == true
+    // Cuenta que el servidor la haya CONFIRMADO, no que siga pintada: un renglón separado a otra cuenta deja la tarjeta
+    // (la ronda sólo se retira cuando todos sus renglones están en ESTA cuenta) sin ocultar el saldo (auditoría Codex).
+    internal val saldoDeMesaConocido: Boolean get() = tableSession.contextoActual() == contextoDeSesion && venueId == venueDeSesion && tableSession.current()?.let { if (it.isProvisional) it.saldoSinRedConocido else (!it.requiereLecturaServidor || cuentaAlDiaAqui) && !hayRondaSinConfirmar() } == true
+
+    /** Llaves de ronda (ADD_ITEMS) que el servidor ya confirmó en esta vida del VM o al reabrir. */
+    private val rondasConfirmadas = mutableSetOf<String>()
+    private fun hayRondaSinConfirmar(): Boolean =
+        _queued.value.any { linea -> rondasConfirmadas.none { llave -> linea.externalId?.startsWith("sync:$llave:") == true } }
 
     val payableTotalCents: Int
         get() {

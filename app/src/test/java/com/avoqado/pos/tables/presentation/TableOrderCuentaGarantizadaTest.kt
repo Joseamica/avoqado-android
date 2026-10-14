@@ -289,6 +289,26 @@ class TableOrderCuentaGarantizadaTest {
         } finally { subject.viewModelScope.cancel() }
     }
 
+    // Auditoría Codex (14-oct): si sin red se separa un artículo de la ronda guardada, al sincronizar ese renglón vive en
+    // OTRA cuenta y la ronda nunca se retira de la tarjeta (debilidad previa). Una ronda que el servidor YA confirmó no
+    // puede seguir ocultando el saldo: lo que cuenta es que esté confirmada, no que siga pintada.
+    @Test fun `ronda ya confirmada por el servidor no oculta el saldo aunque su renglón se haya ido a otra cuenta`() = runTest {
+        val subject = vm()
+        val llaves = mutableListOf<String>()
+        coEvery { outbox.enqueue(any(), any(), any(), any(), any(), any()) } answers { arg<String>(3).also { llaves += it } }
+        coEvery { repository.getOrderDetail(any(), any()) } returns Result.success(detail(0.0))
+        coEvery { repository.addRound(any(), any(), any(), any()) } returns Result.failure(IOException("sin red"))
+        try {
+            subject.loadCheck(); advanceUntilIdle()
+            subject.addCustomAmount("Agua", 3000); subject.sendRound(); advanceUntilIdle()
+            assertFalse(subject.saldoDeMesaConocido)
+            acks.emit(SyncAck(llaves.last(), "ACKED", result = buildJsonObject { put("orderId", "o1") }))
+            advanceUntilIdle()
+            assertEquals("La tarjeta sigue: su renglón no está en esta cuenta", 1, subject.queued.value.size)
+            assertTrue("Confirmada y con la cuenta recién leída, el saldo sí se conoce", subject.saldoDeMesaConocido)
+        } finally { subject.viewModelScope.cancel() }
+    }
+
     @Test fun `el subtotal cuenta sólo los artículos que su importe incluye`() {
         val check = detail().copy(items = listOf(OrderDetailItem(id = "a", quantity = 2, unitPrice = 50.0, total = 100.0),
             OrderDetailItem(id = "b", quantity = 1, unitPrice = 30.0, total = 30.0)))
