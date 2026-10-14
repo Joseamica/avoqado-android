@@ -1520,7 +1520,7 @@ internal fun TableCheckPanel(
             // Subtotal (N) + Total — Square shows both on the check card.
             Row(modifier = Modifier.fillMaxWidth().padding(horizontal = AvoqadoTheme.spacing.xs)) {
                 Text(
-                    text = "Subtotal ($itemCount)",
+                    text = "Subtotal (${articulosEnElSubtotal(check)})",
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.weight(1f),
                 )
@@ -3514,6 +3514,10 @@ private fun SplitCheckDialog(
             }
     }
 }
+
+/** El número entre paréntesis cuenta sólo lo que el importe de al lado incluye: el borrador y las rondas sin sincronizar
+ *  tienen su propia tarjeta; mezclarlos daba «Subtotal (2) $0.00» (QA de la 2.24, 14-oct). */
+internal fun articulosEnElSubtotal(check: OrderDetail?): Int = check?.items.orEmpty().sumOf { it.quantity }
 
 internal fun textoSubtotalDeMesa(check:OrderDetail?):String {
     if(check==null) return "Por confirmar"

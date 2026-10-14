@@ -274,6 +274,28 @@ class TableOrderCuentaGarantizadaTest {
         } finally { subject.viewModelScope.cancel() }
     }
 
+    // QA de la 2.24 (14-oct): mesa abierta con red + ronda guardada sin red ⇒ el botón decía «Pagar $0.00» y el subtotal
+    // «$0.00» aunque la ronda de $30 ya salió a cocina. El servidor todavía no la tiene: el saldo NO se conoce y se dice.
+    @Test fun `ronda guardada sin red en mesa del servidor deja el saldo por confirmar, no en cero`() = runTest {
+        val subject = vm()
+        coEvery { repository.getOrderDetail(any(), any()) } returns Result.success(detail(0.0))
+        coEvery { repository.addRound(any(), any(), any(), any()) } returns Result.failure(IOException("sin red"))
+        try {
+            subject.loadCheck(); advanceUntilIdle()
+            assertTrue("Cuenta al día y sin rondas en cola: el saldo sí se conoce", subject.saldoDeMesaConocido)
+            subject.addCustomAmount("Agua", 3000); subject.sendRound(); advanceUntilIdle()
+            assertEquals(1, subject.queued.value.size)
+            assertFalse("Con una ronda que el servidor no tiene, el saldo no se conoce", subject.saldoDeMesaConocido)
+        } finally { subject.viewModelScope.cancel() }
+    }
+
+    @Test fun `el subtotal cuenta sólo los artículos que su importe incluye`() {
+        val check = detail().copy(items = listOf(OrderDetailItem(id = "a", quantity = 2, unitPrice = 50.0, total = 100.0),
+            OrderDetailItem(id = "b", quantity = 1, unitPrice = 30.0, total = 30.0)))
+        assertEquals(3, articulosEnElSubtotal(check))
+        assertEquals(0, articulosEnElSubtotal(null))
+    }
+
     @Test fun `servidor con rondas pendientes espera y luego cobra saldo sin volver a sumar UI`() = runTest {
         val subject = vm()
         coEvery { repository.getOrderDetail(any(), any()) } returns Result.success(detail(110.0))

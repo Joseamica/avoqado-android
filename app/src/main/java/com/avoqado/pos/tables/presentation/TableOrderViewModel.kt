@@ -1891,7 +1891,8 @@ class TableOrderViewModel @Inject constructor(
      * el mesero tocaba y NO PASABA NADA — sin red no se podía cobrar una mesa.
      * Encontrado en la Sunmi T3 Pro el 2026-07-28.
      */
-    internal val saldoDeMesaConocido: Boolean get() = tableSession.contextoActual() == contextoDeSesion && venueId == venueDeSesion && tableSession.current()?.let { if (it.isProvisional) it.saldoSinRedConocido else !it.requiereLecturaServidor || cuentaAlDiaAqui } == true
+    // Una ronda guardada sin red en una mesa del servidor todavía no está en su saldo: «Pagar $0.00» mentía (QA 2.24, 14-oct).
+    internal val saldoDeMesaConocido: Boolean get() = tableSession.contextoActual() == contextoDeSesion && venueId == venueDeSesion && tableSession.current()?.let { if (it.isProvisional) it.saldoSinRedConocido else (!it.requiereLecturaServidor || cuentaAlDiaAqui) && _queued.value.isEmpty() } == true
 
     val payableTotalCents: Int
         get() {
