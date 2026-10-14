@@ -1897,8 +1897,9 @@ class TableOrderViewModel @Inject constructor(
     // (la ronda sólo se retira cuando todos sus renglones están en ESTA cuenta) sin ocultar el saldo (auditoría Codex).
     internal val saldoDeMesaConocido: Boolean get() = tableSession.contextoActual() == contextoDeSesion && venueId == venueDeSesion && tableSession.current()?.let { if (it.isProvisional) it.saldoSinRedConocido else (!it.requiereLecturaServidor || cuentaAlDiaAqui) && !hayRondaSinConfirmar() } == true
 
-    /** Llaves de ronda (ADD_ITEMS) que el servidor ya confirmó en esta vida del VM o al reabrir. */
-    private val rondasConfirmadas = mutableSetOf<String>()
+    /** Llaves de ronda (ADD_ITEMS) que el servidor ya confirmó en esta vida del VM o al reabrir. Estado observable (como
+     *  trabajoParaSaldo): la confirmación al reabrir llega DESPUÉS de pintar y la pantalla tiene que enterarse sola. */
+    private var rondasConfirmadas by mutableStateOf(emptySet<String>())
     private fun hayRondaSinConfirmar(): Boolean =
         _queued.value.any { linea -> rondasConfirmadas.none { llave -> linea.externalId?.startsWith("sync:$llave:") == true } }
 

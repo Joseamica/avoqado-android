@@ -25,6 +25,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.test.*
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -307,6 +308,34 @@ class TableOrderCuentaGarantizadaTest {
             assertEquals("La tarjeta sigue: su renglón no está en esta cuenta", 1, subject.queued.value.size)
             assertTrue("Confirmada y con la cuenta recién leída, el saldo sí se conoce", subject.saldoDeMesaConocido)
         } finally { subject.viewModelScope.cancel() }
+    }
+
+    // Codex r2 (14-oct): al REABRIR, la confirmación de la ronda llega por una consulta que puede terminar después de pintar
+    // la cuenta. La pantalla tiene que enterarse sola (mismo patrón que el saldo leído de disco), no quedarse en «por confirmar».
+    @Test fun `la confirmacion de la ronda leida al reabrir notifica a la pantalla sin otro toque`() = runTest {
+        val root = java.nio.file.Files.createTempDirectory("ronda-confirmada").toFile(); val drafts = TableRoundDraftStore(root)
+        val a = vm(drafts = drafts); var b: TableOrderViewModel? = null
+        coEvery { repository.getOrderDetail(any(), any()) } returns Result.success(detail(0.0))
+        coEvery { repository.addRound(any(), any(), any(), any()) } returns Result.failure(IOException("sin red"))
+        val estado = CompletableDeferred<String?>()
+        val observer = SnapshotStateObserver { it() }
+        var mostrado: Boolean? = null
+        try {
+            a.loadCheck(); advanceUntilIdle()
+            a.addCustomAmount("Agua", 3000); a.sendRound(); advanceUntilIdle()
+            a.viewModelScope.cancel()
+            every { outbox.observarEstado(any()) } returns flow { emit(estado.await()) }
+            b = vm(keepSession = true, drafts = drafts)
+            b.loadCheck(); advanceUntilIdle()
+            assertEquals(1, b.queued.value.size)
+            observer.start()
+            observer.observeReads(Unit, { mostrado = b.saldoDeMesaConocido }) { mostrado = b.saldoDeMesaConocido }
+            assertEquals(false, mostrado)
+            estado.complete("ACKED"); advanceUntilIdle()
+            Snapshot.sendApplyNotifications()
+            assertTrue(b.saldoDeMesaConocido)
+            assertEquals("La UI debe enterarse de la confirmación sin un toque que fuerce recomponer", true, mostrado)
+        } finally { estado.complete(null); observer.stop(); observer.clear(); a.viewModelScope.cancel(); b?.viewModelScope?.cancel(); root.deleteRecursively() }
     }
 
     @Test fun `el subtotal cuenta sólo los artículos que su importe incluye`() {
