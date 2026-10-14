@@ -2155,6 +2155,14 @@ internal fun QueuedRoundsCard(queuedLines: List<TableOrderViewModel.PendingLine>
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
+                    // La nota («sin aceite») también se ve mientras la ronda espera la red, igual que antes y después de enviarla.
+                    line.item.itemNote?.takeIf { it.isNotBlank() }?.let {
+                        Text(
+                            text = "Nota: $it",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color(0xFFFF9500),
+                        )
+                    }
                     if (line.item.isCortesia) {
                         Text(
                             text = "Cortesía" + (line.item.cortesiaReason?.let { " · $it" } ?: ""),
