@@ -45,7 +45,7 @@ class TablesCobroDelPlanoTest {
         every { repository.isLoading } returns MutableStateFlow(false)
         val storage = mockk<SecureStorage>(relaxed = true)
         every { storage.venueId } returns "v-plano"
-        return TablesViewModel(repository, mockk(relaxed = true), session, printer, storage, outbox, mockk(relaxed = true))
+        return TablesViewModel(repository, mockk(relaxed = true), session, printer, storage, outbox, mockk(relaxed = true), com.avoqado.pos.tables.data.FloorPlanRepository(io.mockk.mockk(relaxed = true), io.mockk.mockk(relaxed = true)), io.mockk.mockk(relaxed = true), io.mockk.mockk<com.avoqado.pos.tables.data.ApiFuenteDeVersiones>(relaxed = true))
     }
 
     private fun impresorDePlano(order: OrderDetail): Pair<TablesViewModel, CapturingSlot<ReceiptData>> {
@@ -193,7 +193,7 @@ class TablesCobroDelPlanoTest {
             connectivityMonitor = mockk(relaxed = true), secureStorage = storage,
             cajon = mockk(relaxed = true), context = context, cachedPayloads = mockk(relaxed = true), tableSession = session)
         private fun newFloor() = TablesViewModel(repository, mockk(relaxed = true), session, printer,
-            storage, actualOutbox, mockk(relaxed = true))
+            storage, actualOutbox, mockk(relaxed = true), com.avoqado.pos.tables.data.FloorPlanRepository(io.mockk.mockk(relaxed = true), io.mockk.mockk(relaxed = true)), io.mockk.mockk(relaxed = true), io.mockk.mockk<com.avoqado.pos.tables.data.ApiFuenteDeVersiones>(relaxed = true))
         fun restartWithoutMemory() {
             floor.viewModelScope.cancel(); actualOutbox.stop()
             session.clear(); session.sincronizarContexto("staff-plano", venue)

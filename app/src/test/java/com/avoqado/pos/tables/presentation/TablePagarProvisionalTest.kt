@@ -107,7 +107,7 @@ class TablePagarProvisionalTest {
         coEvery { outbox.enqueue(any(), any(), capture(payloads), any(), any(), isNull()) } answers { arg<String>(3) }
         val hub = mockk<LanHubService>(relaxed = true)
         coEvery { hub.acquire(any(), any(), any()) } returns LeaseOutcome.NoHub
-        val vm = TablesViewModel(repository, mockk(relaxed = true), session, mockk(relaxed = true), storage, outbox, hub)
+        val vm = TablesViewModel(repository, mockk(relaxed = true), session, mockk(relaxed = true), storage, outbox, hub, com.avoqado.pos.tables.data.FloorPlanRepository(io.mockk.mockk(relaxed = true), io.mockk.mockk(relaxed = true)), io.mockk.mockk(relaxed = true), io.mockk.mockk<com.avoqado.pos.tables.data.ApiFuenteDeVersiones>(relaxed = true))
         var ready = 0
         try {
             vm.openTableAndStartOrdering(table, 2) { ready++ }

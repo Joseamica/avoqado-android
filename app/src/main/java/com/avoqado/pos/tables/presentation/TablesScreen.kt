@@ -5,26 +5,20 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.grid.GridCells
-import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
-import androidx.compose.foundation.lazy.grid.items
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -47,7 +41,6 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -60,17 +53,22 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import com.avoqado.pos.designsystem.components.AvoqadoDialog
 import com.avoqado.pos.designsystem.components.AvoqadoSuccessToast
 import com.avoqado.pos.designsystem.components.AvoqadoErrorToast
 import com.avoqado.pos.designsystem.components.PlanGateScreen
 import com.avoqado.pos.designsystem.components.PrimaryButton
 import com.avoqado.pos.designsystem.theme.AvoqadoTheme
+import com.avoqado.pos.designsystem.theme.OnSurfaceDark
+import com.avoqado.pos.designsystem.theme.OutlineVariantDark
 import com.avoqado.pos.designsystem.theme.Success
+import com.avoqado.pos.designsystem.theme.SurfaceDark
+import com.avoqado.pos.designsystem.theme.SurfaceVariantDark
 import com.avoqado.pos.tables.data.DiningTable
+import com.avoqado.pos.tables.domain.FloorLayoutBuilder
 import java.util.Locale
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.material3.SnackbarDuration
@@ -80,27 +78,33 @@ import com.avoqado.pos.designsystem.components.AvoqadoModalBottomSheet
 
 // Status palette (floor plan), Square-style: occupied = solid dark block with
 // light text + elapsed h:mm timer; free = flat light gray; reserved = amber.
-private val OccupiedColor = Color(0xFF1A1A1A)
-private val ReservedColor = Color(0xFFE8A33D)
-private val FreeFill = Color(0xFFEDEDED)
-private val FreeBorder = Color(0xFFC9C9C9)
+internal val OccupiedColor = Color(0xFF1A1A1A)
+internal val ReservedColor = Color(0xFFE8A33D)
+internal val FreeFill = Color(0xFFEDEDED)
+internal val FreeBorder = Color(0xFFC9C9C9)
+
+/** Relleno, letra y borde de una mesa (plano y lista); seleccionada y reservada cambian sólo el borde. */
+internal data class TableColors(val fill: Color, val content: Color, val border: Color)
+
+/**
+ * En oscuro la paleta se invierte, como iOS (`Color.primary` / `systemGray5` / `systemGray3`): la ocupada clara con letra
+ * oscura y la libre gris oscuro con letra clara. Con los colores de claro, la ocupada medía 1.08:1 contra el área oscura y
+ * casi desaparecía (D1, prueba real del 9-oct). En claro, la de siempre.
+ */
+internal fun tableColors(occupied: Boolean, dark: Boolean): TableColors = when {
+    occupied && dark -> TableColors(OnSurfaceDark, SurfaceDark, OnSurfaceDark)
+    occupied -> TableColors(OccupiedColor, Color.White, OccupiedColor)
+    dark -> TableColors(SurfaceVariantDark, OnSurfaceDark, OutlineVariantDark)
+    else -> TableColors(FreeFill, Color(0xFF1A1A1A), FreeBorder)
+}
 
 /**
  * "0:03" = 3 minutes, "1:12" = 1h12m — Square's exact elapsed format on the
  * canvas. [nowMs] is a ticking clock so the label refreshes while on screen.
  */
-private fun elapsedLabel(createdAt: String?, nowMs: Long): String? {
-    if (createdAt.isNullOrBlank()) return null
-    val startMs = try {
-        java.time.Instant.parse(createdAt).toEpochMilli()
-    } catch (_: Exception) {
-        try {
-            java.time.OffsetDateTime.parse(createdAt).toInstant().toEpochMilli()
-        } catch (_: Exception) {
-            return null
-        }
-    }
-    val minutes = ((nowMs - startMs).coerceAtLeast(0L) / 60_000L).toInt()
+internal fun elapsedLabel(createdAt: String?, nowMs: Long): String? {
+    // El mismo parseo que la etiqueta del lector de pantalla (un solo lugar, enmienda A4).
+    val minutes = FloorLayoutBuilder.minutesSince(createdAt, nowMs) ?: return null
     val hours = minutes / 60
     // Pasado un día, "116:03" deja de comunicar (se lee como 116 minutos) y
     // además ESCONDE el problema real: una mesa lleva días sin cerrarse.
@@ -111,7 +115,7 @@ private fun elapsedLabel(createdAt: String?, nowMs: Long): String? {
 
 /** Shared 30s clock for the floor's timers. */
 @Composable
-private fun rememberFloorClock(): Long {
+internal fun rememberFloorClock(): Long {
     val now = androidx.compose.runtime.produceState(initialValue = System.currentTimeMillis()) {
         while (true) {
             kotlinx.coroutines.delay(30_000)
@@ -132,6 +136,7 @@ private fun rememberFloorClock(): Long {
 fun TablesScreen(
     onGoToCheckout: () -> Unit = {},
     onOpenTableOrder: () -> Unit = {},
+    isTablet: Boolean = false,
     viewModel: TablesViewModel = hiltViewModel(),
 ) {
     // TABLE_SERVICE (PRO) — mirror of the server gate by exact code name.
@@ -163,9 +168,44 @@ fun TablesScreen(
     fun exitSelection() { selectionMode = false; selectedIds = emptySet() }
     val selectedOccupied = tables.filter { it.id in selectedIds && it.isOccupied }
 
-    DisposableEffect(Unit) {
+    val layout by viewModel.layout.collectAsState()
+    val rememberedTab by viewModel.rememberedTab.collectAsState()
+    // Tablet con plano ⇒ el lienzo; tablet sin plano y teléfono ⇒ la lista con pestañas (spec 2026-10-09 §4.2-4.3).
+    val showPlan = isTablet && layout.hasPlan
+    val activeTabKey = FloorLayoutBuilder.pickActiveTab(if (showPlan) layout.tabs else layout.listTabs, rememberedTab)
+    // El plano se arma fuera del hilo principal: si las mesas ya llegaron y el armado todavía no (un cuadro), no se pinta
+    // «No hay mesas en esta área» ni el aviso de armar el plano. Con mesas, la lista siempre tiene al menos una pestaña.
+    val layoutAlDia = tables.isEmpty() || layout.listByTab.isNotEmpty()
+    var showUnplaced by remember { mutableStateOf(false) }
+    // La hoja «sin acomodar» no se queda abierta y vacía (se acomodaron todas, o ya no hay plano).
+    val hayQueAcomodar = showPlan && layout.unplaced.isNotEmpty()
+    LaunchedEffect(hayQueAcomodar) { if (!hayQueAcomodar) showUnplaced = false }
+
+    // Square's flow: tapping an OCCUPIED table goes STRAIGHT to the
+    // table screen (no intermediate sheet); long-press keeps the check
+    // sheet (cobrar/imprimir/anular). Free tables still open the covers
+    // sheet on tap. (Plano en el POS: mismas dos acciones, ahora también desde la hoja «sin acomodar».)
+    val onTableTap: (DiningTable) -> Unit = { t ->
+        if (selectionMode) {
+            if (t.isOccupied) {
+                selectedIds = if (t.id in selectedIds) selectedIds - t.id else selectedIds + t.id
+            }
+        } else if (t.isOccupied) {
+            // Entra SIEMPRE a la cuenta principal de la mesa (Square no
+            // interpone un modal): si hay varias, se cambia desde el
+            // selector de la barra de contexto dentro del cheque.
+            viewModel.startOrdering(t, onReady = onOpenTableOrder)
+        } else {
+            viewModel.selectTable(t.id)
+        }
+    }
+    val onTableLongPress: (DiningTable) -> Unit = { viewModel.selectTable(it.id) }
+
+    // Consulta sólo con la pantalla abierta y en primer plano (spec §4.1). Al volver de segundo plano entra de nuevo:
+    // pinta lo guardado y pide lo fresco.
+    LifecycleResumeEffect(Unit) {
         viewModel.startPolling()
-        onDispose { viewModel.stopPolling() }
+        onPauseOrDispose { viewModel.stopPolling() }
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -174,94 +214,91 @@ fun TablesScreen(
             .fillMaxSize()
             .padding(horizontal = AvoqadoTheme.spacing.lg),
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(vertical = AvoqadoTheme.spacing.lg),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                text = if (selectionMode) "Seleccionar cheques" else "Mesas",
-                style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Bold,
-                modifier = Modifier.weight(1f),
+        if (showPlan) {
+            FloorTopBar(
+                tabs = layout.tabs,
+                activeKey = activeTabKey,
+                onSelectTab = viewModel::selectTab,
+                unplacedCount = layout.unplaced.size,
+                onShowUnplaced = { showUnplaced = true },
+                selectionMode = selectionMode,
+                selectedCount = selectedOccupied.size,
+                occupiedCount = tables.count { it.isOccupied },
+                totalCount = tables.size,
+                isLoading = isLoading,
+                onRefresh = { viewModel.refresh() },
+                onAcciones = { selectionMode = true },
+                onListo = { exitSelection() },
             )
-            if (selectionMode) {
-                // Las acciones viven ABAJO (BulkActionBar): aquí solo cuántas
-                // llevas y la salida. Antes los cinco botones se apretaban
-                // contra el título y quedaban ilegibles en pantallas angostas.
-                Text(
-                    text = when (selectedOccupied.size) {
-                        0 -> "Ninguna seleccionada"
-                        1 -> "1 seleccionada"
-                        else -> "${selectedOccupied.size} seleccionadas"
-                    },
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+        } else {
+            TablesHeader(
+                selectionMode = selectionMode,
+                selectedCount = selectedOccupied.size,
+                occupiedCount = tables.count { it.isOccupied },
+                totalCount = tables.size,
+                isLoading = isLoading,
+                onAcciones = { selectionMode = true },
+                onListo = { exitSelection() },
+                onRefresh = { viewModel.refresh() },
+            )
+            if (tables.isNotEmpty()) {
+                FloorAreaTabs(
+                    tabs = layout.listTabs,
+                    activeKey = activeTabKey,
+                    onSelect = viewModel::selectTab,
+                    modifier = Modifier.padding(bottom = AvoqadoTheme.spacing.sm),
                 )
-                Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.md))
-                TextButton(onClick = { exitSelection() }) { Text("Listo") }
-            } else {
-                val occupied = tables.count { it.isOccupied }
-                if (tables.isNotEmpty()) {
-                    Text(
-                        text = "$occupied/${tables.size} ocupadas",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-                Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
-                TextButton(onClick = { selectionMode = true }) { Text("Acciones") }
-                if (isLoading) {
-                    CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
-                } else {
-                    IconButton(onClick = { viewModel.refresh() }) {
-                        Icon(Icons.Filled.Refresh, contentDescription = "Actualizar")
-                    }
-                }
             }
         }
 
         if (tables.isEmpty() && !isLoading) {
             EmptyFloor()
         } else {
-            // Square's flow: tapping an OCCUPIED table goes STRAIGHT to the
-            // table screen (no intermediate sheet); long-press keeps the check
-            // sheet (cobrar/imprimir/anular). Free tables still open the
-            // covers sheet on tap.
-            val onTableTap: (DiningTable) -> Unit = { t ->
-                if (selectionMode) {
-                    if (t.isOccupied) {
-                        selectedIds = if (t.id in selectedIds) selectedIds - t.id else selectedIds + t.id
-                    }
-                } else if (t.isOccupied) {
-                    // Entra SIEMPRE a la cuenta principal de la mesa (Square no
-                    // interpone un modal): si hay varias, se cambia desde el
-                    // selector de la barra de contexto dentro del cheque.
-                    viewModel.startOrdering(t, onReady = onOpenTableOrder)
-                } else {
-                    viewModel.selectTable(t.id)
+            if (showPlan) {
+                if (layout.overLimit) {
+                    Text(
+                        text = "Este plano tiene más piezas de las que el POS puede mostrar. Revísalo en tu computadora.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(bottom = AvoqadoTheme.spacing.sm),
+                    )
                 }
-            }
-            val onTableLongPress: (DiningTable) -> Unit = { viewModel.selectTable(it.id) }
-
-            val positioned = tables.filter { it.hasPosition }
-            if (positioned.size >= 2) {
-                FloorCanvas(
-                    tables = tables,
-                    onTap = onTableTap,
-                    onLongPress = onTableLongPress,
-                    selectedIds = if (selectionMode) selectedIds else emptySet(),
-                    modifier = Modifier.weight(1f),
-                )
+                val tab = layout.tabs.firstOrNull { it.key == activeTabKey }
+                if (tab != null) {
+                    FloorPlanCanvas(
+                        tab = tab,
+                        placed = layout.placedByTab[tab.key].orEmpty(),
+                        elements = layout.elementsByTab[tab.key].orEmpty(),
+                        selectedIds = if (selectionMode) selectedIds else emptySet(),
+                        onTap = onTableTap,
+                        onLongPress = onTableLongPress,
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(bottom = AvoqadoTheme.spacing.md),
+                    )
+                } else {
+                    Spacer(modifier = Modifier.weight(1f))
+                }
             } else {
-                TableGrid(
-                    tables = tables,
-                    onTap = onTableTap,
-                    onLongPress = onTableLongPress,
-                    selectedIds = if (selectionMode) selectedIds else emptySet(),
-                    modifier = Modifier.weight(1f),
-                )
+                if (isTablet && !layout.hasPlan && tables.isNotEmpty() && layoutAlDia && viewModel.canConfigureTables) {
+                    Text(
+                        text = "Arma el plano en tu computadora: Configuración › Mesas y plano",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(bottom = AvoqadoTheme.spacing.sm),
+                    )
+                }
+                if (tables.isEmpty() || !layoutAlDia) {
+                    Spacer(modifier = Modifier.weight(1f)) // primera carga sin nada guardado, o el armado va un cuadro atrás
+                } else {
+                    TableAreaList(
+                        tables = activeTabKey?.let { layout.listByTab[it] }.orEmpty(),
+                        onTap = onTableTap,
+                        onLongPress = onTableLongPress,
+                        selectedIds = if (selectionMode) selectedIds else emptySet(),
+                        modifier = Modifier.weight(1f),
+                    )
+                }
             }
 
             if (selectionMode) {
@@ -413,6 +450,17 @@ fun TablesScreen(
         }
     }
 
+    if (showUnplaced && hayQueAcomodar) {
+        UnplacedTablesSheet(
+            tables = layout.unplaced,
+            selectionMode = selectionMode,
+            selectedIds = if (selectionMode) selectedIds else emptySet(),
+            onTap = onTableTap,
+            onLongPress = onTableLongPress,
+            onDismiss = { showUnplaced = false },
+        )
+    }
+
     if (selectedTableId != null) {
         val table = tables.firstOrNull { it.id == selectedTableId }
         if (table != null) {
@@ -464,7 +512,68 @@ private fun EmptyFloor() {
     }
 }
 
-// MARK: - Floor canvas (positioned tables)
+// MARK: - Encabezado (teléfono y tablet sin plano): el de siempre
+
+@Composable
+private fun TablesHeader(
+    selectionMode: Boolean,
+    selectedCount: Int,
+    occupiedCount: Int,
+    totalCount: Int,
+    isLoading: Boolean,
+    onAcciones: () -> Unit,
+    onListo: () -> Unit,
+    onRefresh: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = AvoqadoTheme.spacing.lg),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = if (selectionMode) "Seleccionar cheques" else "Mesas",
+            style = MaterialTheme.typography.headlineMedium,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.weight(1f),
+        )
+        if (selectionMode) {
+            // Las acciones viven ABAJO (BulkActionBar): aquí solo cuántas
+            // llevas y la salida. Antes los cinco botones se apretaban
+            // contra el título y quedaban ilegibles en pantallas angostas.
+            Text(
+                text = when (selectedCount) {
+                    0 -> "Ninguna seleccionada"
+                    1 -> "1 seleccionada"
+                    else -> "$selectedCount seleccionadas"
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.md))
+            TextButton(onClick = onListo) { Text("Listo") }
+        } else {
+            if (totalCount > 0) {
+                Text(
+                    text = "$occupiedCount/$totalCount ocupadas",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
+            TextButton(onClick = onAcciones) { Text("Acciones") }
+            if (isLoading) {
+                CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp)
+            } else {
+                IconButton(onClick = onRefresh) {
+                    Icon(Icons.Filled.Refresh, contentDescription = "Actualizar")
+                }
+            }
+        }
+    }
+}
+
+// MARK: - Acciones masivas
 
 /**
  * Acciones masivas del plano (estilo Square): abajo, con icono y etiqueta, no
@@ -526,210 +635,31 @@ private fun BulkAction(
     }
 }
 
-/**
- * Ancho real de una mesa en el plano. Vive en UN solo lugar a propósito: el
- * bug de las mesas cortadas nació de que el dibujo usaba 1.5× para las
- * rectangulares y el cálculo de posición asumía el tamaño base. Si vuelve a
- * haber dos fórmulas, vuelve el corte.
- */
-private fun tableNodeWidth(table: DiningTable, size: Dp): Dp =
-    if (table.shape.uppercase(Locale.US) == "RECTANGLE") size * 1.5f else size
-
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-private fun FloorCanvas(
-    tables: List<DiningTable>,
-    onTap: (DiningTable) -> Unit,
-    onLongPress: (DiningTable) -> Unit,
-    selectedIds: Set<String> = emptySet(),
-    modifier: Modifier = Modifier,
-) {
-    val positioned = tables.filter { it.hasPosition }
-    val unpositioned = tables.filter { !it.hasPosition }
-
-    Column(modifier = modifier) {
-        BoxWithConstraints(
-            modifier = Modifier
-                .fillMaxWidth()
-                .weight(1f)
-                .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.lg))
-                .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.35f)),
-        ) {
-            val minX = positioned.minOf { it.positionX!! }
-            val maxX = positioned.maxOf { it.positionX!! }
-            val minY = positioned.minOf { it.positionY!! }
-            val maxY = positioned.maxOf { it.positionY!! }
-            val spanX = (maxX - minX).takeIf { it > 0f } ?: 1f
-            val spanY = (maxY - minY).takeIf { it > 0f } ?: 1f
-
-            val tableSize = 64.dp
-            val availH = maxHeight - tableSize
-
-            positioned.forEach { table ->
-                val fx = (table.positionX!! - minX) / spanX
-                val fy = (table.positionY!! - minY) / spanY
-                // 🔴 El ancho se descuenta POR MESA, no con el tamaño base: una
-                // mesa RECTANGLE mide 1.5× y la que caía pegada a la derecha se
-                // salía media mesa del plano (se veía cortada; las redondas no,
-                // porque esas sí miden lo que se descontaba).
-                TableNode(
-                    table = table,
-                    size = tableSize,
-                    selected = table.id in selectedIds,
-                    modifier = Modifier
-                        .offset(x = (maxWidth - tableNodeWidth(table, tableSize)) * fx, y = availH * fy)
-                        .combinedClickable(
-                            onClick = { onTap(table) },
-                            onLongClick = { onLongPress(table) },
-                        ),
-                )
-            }
-        }
-
-        if (unpositioned.isNotEmpty()) {
-            Spacer(modifier = Modifier.height(AvoqadoTheme.spacing.md))
-            Text(
-                text = "Sin ubicación en el plano",
-                style = MaterialTheme.typography.titleSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            LazyVerticalGrid(
-                columns = GridCells.Adaptive(minSize = 96.dp),
-                horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
-                verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm),
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .height(120.dp)
-                    .padding(vertical = AvoqadoTheme.spacing.sm),
-            ) {
-                items(unpositioned, key = { it.id }) { table ->
-                    TableCard(table = table, onTap = { onTap(table) }, onLongPress = { onLongPress(table) }, selected = table.id in selectedIds)
-                }
-            }
-        }
-    }
-}
-
-// MARK: - Grid fallback (no floor layout)
-
-@Composable
-private fun TableGrid(
-    tables: List<DiningTable>,
-    onTap: (DiningTable) -> Unit,
-    onLongPress: (DiningTable) -> Unit,
-    selectedIds: Set<String> = emptySet(),
-    modifier: Modifier = Modifier,
-) {
-    val byArea = tables.groupBy { it.areaName ?: "General" }
-    LazyColumn(modifier = modifier) {
-        byArea.forEach { (area, areaTables) ->
-            item(key = "area_$area") {
-                Text(
-                    text = area,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(vertical = AvoqadoTheme.spacing.sm),
-                )
-            }
-            item(key = "grid_$area") {
-                val rows = areaTables.chunked(4)
-                Column(verticalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
-                    rows.forEach { row ->
-                        Row(horizontalArrangement = Arrangement.spacedBy(AvoqadoTheme.spacing.sm)) {
-                            row.forEach { table ->
-                                Box(modifier = Modifier.weight(1f)) {
-                                    TableCard(table = table, onTap = { onTap(table) }, onLongPress = { onLongPress(table) }, selected = table.id in selectedIds)
-                                }
-                            }
-                            repeat(4 - row.size) { Spacer(modifier = Modifier.weight(1f)) }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
 // MARK: - Table visuals
 
-private fun statusColor(table: DiningTable): Color = when {
-    table.isOccupied -> OccupiedColor
+private fun statusColor(table: DiningTable, dark: Boolean): Color = when {
+    table.isOccupied -> tableColors(occupied = true, dark = dark).fill
     table.isReserved -> ReservedColor
     else -> Success
 }
 
-@Composable
-private fun TableNode(table: DiningTable, size: Dp, selected: Boolean = false, modifier: Modifier = Modifier) {
-    val shape = when (table.shape.uppercase(Locale.US)) {
-        "ROUND" -> CircleShape
-        else -> RoundedCornerShape(12.dp)
-    }
-    // Square-style: occupied = solid dark block, light text, elapsed h:mm;
-    // free = flat light gray; reserved keeps the amber accent border.
-    val occupied = table.isOccupied
-    val fill = if (occupied) OccupiedColor else FreeFill
-    val content = if (occupied) Color.White else Color(0xFF1A1A1A)
-    val nowMs = rememberFloorClock()
-
-    Column(
-        modifier = modifier
-            .size(width = tableNodeWidth(table, size), height = size)
-            .clip(shape)
-            .background(fill)
-            .border(
-                width = if (selected) 3.dp else if (table.isReserved) 2.dp else 1.dp,
-                color = if (selected) Success else if (table.isReserved) ReservedColor else if (occupied) OccupiedColor else FreeBorder,
-                shape = shape,
-            ),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
-    ) {
-        Text(
-            text = table.number,
-            style = MaterialTheme.typography.titleMedium,
-            fontWeight = FontWeight.Bold,
-            color = content,
-            textAlign = TextAlign.Center,
-        )
-        val sub = if (occupied) {
-            if (table.openOrders.size > 1) {
-                "${table.openOrders.size} cuentas"
-            } else {
-                // primaryCheck: con el puntero desincronizado la mesa quedaba sin
-                // hora NI total — un bloque negro sin ninguna pista del saldo.
-                elapsedLabel(table.primaryCheck?.createdAt, nowMs) ?: table.primaryCheck?.let(::textoCuentaEnPlano)
-            }
-        } else {
-            table.primaryCheck?.let(::textoCuentaEnPlano)
-        }
-        sub?.let {
-            Text(
-                text = it,
-                style = MaterialTheme.typography.labelSmall,
-                color = content.copy(alpha = 0.75f),
-            )
-        }
-    }
-}
-
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun TableCard(table: DiningTable, onTap: () -> Unit, onLongPress: () -> Unit = {}, selected: Boolean = false) {
+internal fun TableCard(table: DiningTable, onTap: () -> Unit, onLongPress: () -> Unit = {}, selected: Boolean = false) {
     // Square-style, same language as the canvas nodes: occupied = solid dark
     // card with light text + "total · h:mm"; free = flat light gray.
     val occupied = table.isOccupied
-    val fill = if (occupied) OccupiedColor else FreeFill
-    val content = if (occupied) Color.White else Color(0xFF1A1A1A)
+    val colors = tableColors(occupied, isSystemInDarkTheme())
+    val content = colors.content
     val nowMs = rememberFloorClock()
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(AvoqadoTheme.cornerRadius.md))
-            .background(fill)
+            .background(colors.fill)
             .border(
                 width = if (selected) 3.dp else if (table.isReserved) 2.dp else 1.dp,
-                color = if (selected) Success else if (table.isReserved) ReservedColor else if (occupied) OccupiedColor else FreeBorder,
+                color = if (selected) Success else if (table.isReserved) ReservedColor else colors.border,
                 shape = RoundedCornerShape(AvoqadoTheme.cornerRadius.md),
             )
             .combinedClickable(onClick = onTap, onLongClick = onLongPress)
@@ -791,7 +721,7 @@ private fun TableCheckSheet(
                     else -> "Libre"
                 },
                 style = MaterialTheme.typography.bodyMedium,
-                color = statusColor(table),
+                color = statusColor(table, isSystemInDarkTheme()),
                 fontWeight = FontWeight.SemiBold,
             )
         }

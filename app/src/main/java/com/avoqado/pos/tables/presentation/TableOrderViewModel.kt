@@ -280,6 +280,7 @@ class TableOrderViewModel @Inject constructor(
                         return@collect
                     }
                     if (!ack.isAcked) return@collect
+                    rondasConfirmadas += ack.id
                     if (localRef != null && ackOrder != null) {
                         tableSession.promoteProvisional(vId, localRef, ackOrder,
                             (result["orderNumber"] as? kotlinx.serialization.json.JsonPrimitive)?.content,
@@ -437,7 +438,7 @@ class TableOrderViewModel @Inject constructor(
                     if (draftScope != scope || venueId != vId) break
                     try {
                         when (syncOutbox.observarEstado(key).first()) {
-                            "ACKED" -> Unit // Retire the draft only after its lines are present in the check.
+                            "ACKED" -> rondasConfirmadas += key // Retire the draft only after its lines are present in the check.
                             "REJECTED" -> showError("Una ronda guardada necesita revisión", "Abre la cola de sincronización para ver el motivo.")
                             "HELD" -> syncOutbox.soltar(vId, key)
                             null -> {
@@ -545,7 +546,9 @@ class TableOrderViewModel @Inject constructor(
         val existing = _pending.value.firstOrNull { line ->
             line.course == course &&
                 (line.item.type as? CartItemType.ProductItem)?.productId == product.id &&
-                line.item.selectedModifiers.isEmpty() && line.item.promotionInstanceId == null && line.item.serviceCourse == selectedSnapshot()
+                line.item.selectedModifiers.isEmpty() && line.item.promotionInstanceId == null && line.item.serviceCourse == selectedSnapshot() &&
+                // Una línea anotada («sin aceite») es de UN platillo: el siguiente toque va en su propia línea.
+                line.item.itemNote.isNullOrBlank()
         }
         pendingLines = if (existing != null) {
             _pending.value.map { line ->
@@ -610,6 +613,17 @@ class TableOrderViewModel @Inject constructor(
                 }
                 line.copy(seat = next)
             }
+        }
+    }
+
+    /** Nota de una línea pendiente («sin aceite»). Se guarda en el borrador del aparato antes de pintarse. */
+    fun updatePendingNote(lineItemId: String, note: String?) {
+        // Mientras se envía, la ronda ya quedó capturada: una nota nueva se vería pero no viajaría (Codex, 13-oct).
+        if (_isSending.value) return
+        val limpia = note?.trim()?.takeIf { it.isNotEmpty() }
+        pendingLines = _pending.value.map { line ->
+            // Un componente de combo viaja como paquete (`promotionRef`) y su nota no llega al servidor: no se anota.
+            if (line.item.id == lineItemId && line.item.promotionInstanceId == null) line.copy(item = line.item.copy(itemNote = limpia)) else line
         }
     }
 
@@ -1878,7 +1892,16 @@ class TableOrderViewModel @Inject constructor(
      * el mesero tocaba y NO PASABA NADA — sin red no se podía cobrar una mesa.
      * Encontrado en la Sunmi T3 Pro el 2026-07-28.
      */
-    internal val saldoDeMesaConocido: Boolean get() = tableSession.contextoActual() == contextoDeSesion && venueId == venueDeSesion && tableSession.current()?.let { if (it.isProvisional) it.saldoSinRedConocido else !it.requiereLecturaServidor || cuentaAlDiaAqui } == true
+    // Una ronda guardada sin red en una mesa del servidor todavía no está en su saldo: «Pagar $0.00» mentía (QA 2.24, 14-oct).
+    // Cuenta que el servidor la haya CONFIRMADO, no que siga pintada: un renglón separado a otra cuenta deja la tarjeta
+    // (la ronda sólo se retira cuando todos sus renglones están en ESTA cuenta) sin ocultar el saldo (auditoría Codex).
+    internal val saldoDeMesaConocido: Boolean get() = tableSession.contextoActual() == contextoDeSesion && venueId == venueDeSesion && tableSession.current()?.let { if (it.isProvisional) it.saldoSinRedConocido else (!it.requiereLecturaServidor || cuentaAlDiaAqui) && !hayRondaSinConfirmar() } == true
+
+    /** Llaves de ronda (ADD_ITEMS) que el servidor ya confirmó en esta vida del VM o al reabrir. Estado observable (como
+     *  trabajoParaSaldo): la confirmación al reabrir llega DESPUÉS de pintar y la pantalla tiene que enterarse sola. */
+    private var rondasConfirmadas by mutableStateOf(emptySet<String>())
+    private fun hayRondaSinConfirmar(): Boolean =
+        _queued.value.any { linea -> rondasConfirmadas.none { llave -> linea.externalId?.startsWith("sync:$llave:") == true } }
 
     val payableTotalCents: Int
         get() {

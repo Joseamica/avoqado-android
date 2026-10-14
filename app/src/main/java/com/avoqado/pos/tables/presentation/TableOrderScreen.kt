@@ -176,6 +176,7 @@ fun TableOrderScreen(
 
     val context = LocalContext.current
     var selectedProduct by remember { mutableStateOf<Product?>(null) }
+    var notaDeLinea by remember { mutableStateOf<String?>(null) }
     var showSearch by remember { mutableStateOf(false) }
     // Square's right-panel tabs: Cuenta (the check) / Acciones (the catalog).
     var panelTab by remember { mutableStateOf(PanelTab.CUENTA) }
@@ -419,6 +420,7 @@ fun TableOrderScreen(
                                 onAddCourse = { viewModel.addExtraCourse() },
                                 onUrgent = { if (!blockIfReadOnly()) showUrgentPreparation = true },
                                 onRemovePending = { viewModel.removePending(it) },
+                                onEditNote = { id -> if (!isSending && !blockIfReadOnly()) notaDeLinea = id },
                                 onCycleSeat = { id ->
                                     val maxSeats = (check?.covers ?: floorTable?.currentOrder?.covers ?: 4).coerceAtLeast(1)
                                     viewModel.cyclePendingSeat(id, maxSeats)
@@ -592,6 +594,7 @@ fun TableOrderScreen(
                                 onAddCourse = { viewModel.addExtraCourse() },
                                 onUrgent = { if (!blockIfReadOnly()) showUrgentPreparation = true },
                                 onRemovePending = { viewModel.removePending(it) },
+                                onEditNote = { id -> if (!isSending && !blockIfReadOnly()) notaDeLinea = id },
                                 onCycleSeat = { id ->
                                     val maxSeats = (check?.covers ?: floorTable?.currentOrder?.covers ?: 4).coerceAtLeast(1)
                                     viewModel.cyclePendingSeat(id, maxSeats)
@@ -701,6 +704,18 @@ fun TableOrderScreen(
         orderId = active.orderId, onDismiss = { showPreparation = false })
     if (showUrgentPreparation) com.avoqado.pos.kds.presentation.PreparationServiceScreen(
         orderId = active.orderId, onDismiss = { showUrgentPreparation = false }, urgentSelection = true)
+    }
+
+    // Nota de una línea pendiente («sin aceite»): la misma hoja que el carrito de Mostrador.
+    // Si la línea ya se envió mientras la hoja estaba abierta, simplemente no se pinta.
+    notaDeLinea?.let { id -> pendingLines.firstOrNull { it.item.id == id } }?.let { linea ->
+        val id = linea.item.id
+        NotaDeLineaPendiente(
+            isTablet = isTablet,
+            nota = linea.item.itemNote.orEmpty(),
+            onGuardar = { viewModel.updatePendingNote(id, it); notaDeLinea = null },
+            onCerrar = { notaDeLinea = null },
+        )
     }
 
     // Product detail (modifiers/notes) — adds land on the SELECTED course.
@@ -1417,6 +1432,7 @@ internal fun TableCheckPanel(
     onAddCourse: () -> Unit,
     onUrgent: (() -> Unit)? = null,
     onRemovePending: (String) -> Unit,
+    onEditNote: (String) -> Unit = {},
     onCycleSeat: (String) -> Unit = {},
     onSentItemTap: (OrderDetailItem) -> Unit,
     onCourseMenu: (String?, String) -> Unit = { _, _ -> },
@@ -1495,6 +1511,7 @@ internal fun TableCheckPanel(
                 onAddCourse = onAddCourse,
                 onUrgent = onUrgent,
                 onRemovePending = onRemovePending,
+                onEditNote = onEditNote,
                 onCycleSeat = onCycleSeat,
             )
 
@@ -1503,7 +1520,7 @@ internal fun TableCheckPanel(
             // Subtotal (N) + Total — Square shows both on the check card.
             Row(modifier = Modifier.fillMaxWidth().padding(horizontal = AvoqadoTheme.spacing.xs)) {
                 Text(
-                    text = "Subtotal ($itemCount)",
+                    text = "Subtotal (${articulosEnElSubtotal(check)})",
                     style = MaterialTheme.typography.bodyMedium,
                     modifier = Modifier.weight(1f),
                 )
@@ -1775,6 +1792,7 @@ private fun PendingCard(
     onAddCourse: () -> Unit,
     onUrgent: (() -> Unit)? = null,
     onRemovePending: (String) -> Unit,
+    onEditNote: (String) -> Unit = {},
     onCycleSeat: (String) -> Unit = {},
 ) {
     val allCourses: List<String?> = (availableCourses.map { it.legacyCourse } + pendingLines.map { it.course }).distinct()
@@ -1825,8 +1843,16 @@ private fun PendingCard(
                         ) {
                             Text("${line.item.quantity}×", color = MaterialTheme.colorScheme.onSurfaceVariant)
                             Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
-                            Column(modifier = Modifier.weight(1f)) {
+                            // Los componentes de un combo viajan como paquete y su nota no llegaría: no se anotan.
+                            Column(modifier = Modifier.weight(1f).clickable(enabled = line.item.promotionInstanceId == null) { onEditNote(line.item.id) }) {
                                 Text(line.item.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                line.item.itemNote?.takeIf { it.isNotBlank() }?.let {
+                                    Text(
+                                        text = "Nota: $it",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = Color(0xFFFF9500),
+                                    )
+                                }
                                 line.item.modifiersSummary?.let {
                                     Text(
                                         text = it,
@@ -2128,6 +2154,14 @@ internal fun QueuedRoundsCard(queuedLines: List<TableOrderViewModel.PendingLine>
                             text = it,
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    // La nota («sin aceite») también se ve mientras la ronda espera la red, igual que antes y después de enviarla.
+                    line.item.itemNote?.takeIf { it.isNotBlank() }?.let {
+                        Text(
+                            text = "Nota: $it",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = Color(0xFFFF9500),
                         )
                     }
                     if (line.item.isCortesia) {
@@ -3480,6 +3514,10 @@ private fun SplitCheckDialog(
             }
     }
 }
+
+/** El número entre paréntesis cuenta sólo lo que el importe de al lado incluye: el borrador y las rondas sin sincronizar
+ *  tienen su propia tarjeta; mezclarlos daba «Subtotal (2) $0.00» (QA de la 2.24, 14-oct). */
+internal fun articulosEnElSubtotal(check: OrderDetail?): Int = check?.items.orEmpty().sumOf { it.quantity }
 
 internal fun textoSubtotalDeMesa(check:OrderDetail?):String {
     if(check==null) return "Por confirmar"

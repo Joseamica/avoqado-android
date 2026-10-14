@@ -25,6 +25,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.test.*
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -274,6 +275,76 @@ class TableOrderCuentaGarantizadaTest {
         } finally { subject.viewModelScope.cancel() }
     }
 
+    // QA de la 2.24 (14-oct): mesa abierta con red + ronda guardada sin red ⇒ el botón decía «Pagar $0.00» y el subtotal
+    // «$0.00» aunque la ronda de $30 ya salió a cocina. El servidor todavía no la tiene: el saldo NO se conoce y se dice.
+    @Test fun `ronda guardada sin red en mesa del servidor deja el saldo por confirmar, no en cero`() = runTest {
+        val subject = vm()
+        coEvery { repository.getOrderDetail(any(), any()) } returns Result.success(detail(0.0))
+        coEvery { repository.addRound(any(), any(), any(), any()) } returns Result.failure(IOException("sin red"))
+        try {
+            subject.loadCheck(); advanceUntilIdle()
+            assertTrue("Cuenta al día y sin rondas en cola: el saldo sí se conoce", subject.saldoDeMesaConocido)
+            subject.addCustomAmount("Agua", 3000); subject.sendRound(); advanceUntilIdle()
+            assertEquals(1, subject.queued.value.size)
+            assertFalse("Con una ronda que el servidor no tiene, el saldo no se conoce", subject.saldoDeMesaConocido)
+        } finally { subject.viewModelScope.cancel() }
+    }
+
+    // Auditoría Codex (14-oct): si sin red se separa un artículo de la ronda guardada, al sincronizar ese renglón vive en
+    // OTRA cuenta y la ronda nunca se retira de la tarjeta (debilidad previa). Una ronda que el servidor YA confirmó no
+    // puede seguir ocultando el saldo: lo que cuenta es que esté confirmada, no que siga pintada.
+    @Test fun `ronda ya confirmada por el servidor no oculta el saldo aunque su renglón se haya ido a otra cuenta`() = runTest {
+        val subject = vm()
+        val llaves = mutableListOf<String>()
+        coEvery { outbox.enqueue(any(), any(), any(), any(), any(), any()) } answers { arg<String>(3).also { llaves += it } }
+        coEvery { repository.getOrderDetail(any(), any()) } returns Result.success(detail(0.0))
+        coEvery { repository.addRound(any(), any(), any(), any()) } returns Result.failure(IOException("sin red"))
+        try {
+            subject.loadCheck(); advanceUntilIdle()
+            subject.addCustomAmount("Agua", 3000); subject.sendRound(); advanceUntilIdle()
+            assertFalse(subject.saldoDeMesaConocido)
+            acks.emit(SyncAck(llaves.last(), "ACKED", result = buildJsonObject { put("orderId", "o1") }))
+            advanceUntilIdle()
+            assertEquals("La tarjeta sigue: su renglón no está en esta cuenta", 1, subject.queued.value.size)
+            assertTrue("Confirmada y con la cuenta recién leída, el saldo sí se conoce", subject.saldoDeMesaConocido)
+        } finally { subject.viewModelScope.cancel() }
+    }
+
+    // Codex r2 (14-oct): al REABRIR, la confirmación de la ronda llega por una consulta que puede terminar después de pintar
+    // la cuenta. La pantalla tiene que enterarse sola (mismo patrón que el saldo leído de disco), no quedarse en «por confirmar».
+    @Test fun `la confirmacion de la ronda leida al reabrir notifica a la pantalla sin otro toque`() = runTest {
+        val root = java.nio.file.Files.createTempDirectory("ronda-confirmada").toFile(); val drafts = TableRoundDraftStore(root)
+        val a = vm(drafts = drafts); var b: TableOrderViewModel? = null
+        coEvery { repository.getOrderDetail(any(), any()) } returns Result.success(detail(0.0))
+        coEvery { repository.addRound(any(), any(), any(), any()) } returns Result.failure(IOException("sin red"))
+        val estado = CompletableDeferred<String?>()
+        val observer = SnapshotStateObserver { it() }
+        var mostrado: Boolean? = null
+        try {
+            a.loadCheck(); advanceUntilIdle()
+            a.addCustomAmount("Agua", 3000); a.sendRound(); advanceUntilIdle()
+            a.viewModelScope.cancel()
+            every { outbox.observarEstado(any()) } returns flow { emit(estado.await()) }
+            b = vm(keepSession = true, drafts = drafts)
+            b.loadCheck(); advanceUntilIdle()
+            assertEquals(1, b.queued.value.size)
+            observer.start()
+            observer.observeReads(Unit, { mostrado = b.saldoDeMesaConocido }) { mostrado = b.saldoDeMesaConocido }
+            assertEquals(false, mostrado)
+            estado.complete("ACKED"); advanceUntilIdle()
+            Snapshot.sendApplyNotifications()
+            assertTrue(b.saldoDeMesaConocido)
+            assertEquals("La UI debe enterarse de la confirmación sin un toque que fuerce recomponer", true, mostrado)
+        } finally { estado.complete(null); observer.stop(); observer.clear(); a.viewModelScope.cancel(); b?.viewModelScope?.cancel(); root.deleteRecursively() }
+    }
+
+    @Test fun `el subtotal cuenta sólo los artículos que su importe incluye`() {
+        val check = detail().copy(items = listOf(OrderDetailItem(id = "a", quantity = 2, unitPrice = 50.0, total = 100.0),
+            OrderDetailItem(id = "b", quantity = 1, unitPrice = 30.0, total = 30.0)))
+        assertEquals(3, articulosEnElSubtotal(check))
+        assertEquals(0, articulosEnElSubtotal(null))
+    }
+
     @Test fun `servidor con rondas pendientes espera y luego cobra saldo sin volver a sumar UI`() = runTest {
         val subject = vm()
         coEvery { repository.getOrderDetail(any(), any()) } returns Result.success(detail(110.0))
@@ -492,7 +563,7 @@ class TableOrderCuentaGarantizadaTest {
     private val ownedVenue = "v-cuenta-garantizada"
     private fun floor(): TablesViewModel {
         every { repository.isLoading } returns MutableStateFlow(false)
-        return TablesViewModel(repository, mockk(relaxed = true), session, mockk(relaxed = true), storage, outbox, mockk(relaxed = true))
+        return TablesViewModel(repository, mockk(relaxed = true), session, mockk(relaxed = true), storage, outbox, mockk(relaxed = true), com.avoqado.pos.tables.data.FloorPlanRepository(io.mockk.mockk(relaxed = true), io.mockk.mockk(relaxed = true)), io.mockk.mockk(relaxed = true), io.mockk.mockk<com.avoqado.pos.tables.data.ApiFuenteDeVersiones>(relaxed = true))
     }
     private fun table(id: String = "o1", tableId: String = "t1", provisional: Boolean = true) =
         DiningTable(tableId, "5", openOrders = listOf(OpenCheckSummary(id, "LOCAL", total = 0.0, isProvisional = provisional)))

@@ -271,6 +271,14 @@ interface ApiService {
     @GET("mobile/venues/{venueId}/tables")
     suspend fun getTables(@Path("venueId") venueId: String): com.avoqado.pos.tables.data.TablesResponse
 
+    /** Plano en el POS (spec 2026-10-09 §3.2): la pregunta barata de cada 10 s. 404 = servidor viejo. */
+    @GET("mobile/venues/{venueId}/tables/version")
+    suspend fun getTablesVersion(@Path("venueId") venueId: String): com.avoqado.pos.tables.data.TablesVersionResponse
+
+    /** Plano en el POS: áreas + elementos activos (las mesas viajan en /tables). */
+    @GET("mobile/venues/{venueId}/floor-plan")
+    suspend fun getFloorPlan(@Path("venueId") venueId: String): com.avoqado.pos.tables.data.FloorPlanResponse
+
     @POST("mobile/venues/{venueId}/tables/{tableId}/open")
     suspend fun openTable(
         @Path("venueId") venueId: String,
