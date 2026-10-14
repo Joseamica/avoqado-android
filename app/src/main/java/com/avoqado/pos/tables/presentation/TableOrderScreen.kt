@@ -420,7 +420,7 @@ fun TableOrderScreen(
                                 onAddCourse = { viewModel.addExtraCourse() },
                                 onUrgent = { if (!blockIfReadOnly()) showUrgentPreparation = true },
                                 onRemovePending = { viewModel.removePending(it) },
-                                onEditNote = { id -> if (!blockIfReadOnly()) notaDeLinea = id },
+                                onEditNote = { id -> if (!isSending && !blockIfReadOnly()) notaDeLinea = id },
                                 onCycleSeat = { id ->
                                     val maxSeats = (check?.covers ?: floorTable?.currentOrder?.covers ?: 4).coerceAtLeast(1)
                                     viewModel.cyclePendingSeat(id, maxSeats)
@@ -594,7 +594,7 @@ fun TableOrderScreen(
                                 onAddCourse = { viewModel.addExtraCourse() },
                                 onUrgent = { if (!blockIfReadOnly()) showUrgentPreparation = true },
                                 onRemovePending = { viewModel.removePending(it) },
-                                onEditNote = { id -> if (!blockIfReadOnly()) notaDeLinea = id },
+                                onEditNote = { id -> if (!isSending && !blockIfReadOnly()) notaDeLinea = id },
                                 onCycleSeat = { id ->
                                     val maxSeats = (check?.covers ?: floorTable?.currentOrder?.covers ?: 4).coerceAtLeast(1)
                                     viewModel.cyclePendingSeat(id, maxSeats)
@@ -1843,7 +1843,8 @@ private fun PendingCard(
                         ) {
                             Text("${line.item.quantity}×", color = MaterialTheme.colorScheme.onSurfaceVariant)
                             Spacer(modifier = Modifier.width(AvoqadoTheme.spacing.sm))
-                            Column(modifier = Modifier.weight(1f).clickable { onEditNote(line.item.id) }) {
+                            // Los componentes de un combo viajan como paquete y su nota no llegaría: no se anotan.
+                            Column(modifier = Modifier.weight(1f).clickable(enabled = line.item.promotionInstanceId == null) { onEditNote(line.item.id) }) {
                                 Text(line.item.name, maxLines = 1, overflow = TextOverflow.Ellipsis)
                                 line.item.itemNote?.takeIf { it.isNotBlank() }?.let {
                                     Text(

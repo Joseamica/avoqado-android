@@ -617,9 +617,12 @@ class TableOrderViewModel @Inject constructor(
 
     /** Nota de una línea pendiente («sin aceite»). Se guarda en el borrador del aparato antes de pintarse. */
     fun updatePendingNote(lineItemId: String, note: String?) {
+        // Mientras se envía, la ronda ya quedó capturada: una nota nueva se vería pero no viajaría (Codex, 13-oct).
+        if (_isSending.value) return
         val limpia = note?.trim()?.takeIf { it.isNotEmpty() }
         pendingLines = _pending.value.map { line ->
-            if (line.item.id == lineItemId) line.copy(item = line.item.copy(itemNote = limpia)) else line
+            // Un componente de combo viaja como paquete (`promotionRef`) y su nota no llega al servidor: no se anota.
+            if (line.item.id == lineItemId && line.item.promotionInstanceId == null) line.copy(item = line.item.copy(itemNote = limpia)) else line
         }
     }
 

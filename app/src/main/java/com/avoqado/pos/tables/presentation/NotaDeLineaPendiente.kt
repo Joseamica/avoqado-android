@@ -38,6 +38,8 @@ internal fun NotaDeLineaPendiente(
         NoteSubView(currentNote = nota, onSave = { onGuardar(it) }, onClear = { onGuardar(null) }, onBack = onCerrar)
     }
     if (isTablet) {
+        // En tablet es un panel, no una hoja modal: sin esto, Atrás llegaba a la cuenta y ofrecía «Descartar y salir».
+        androidx.activity.compose.BackHandler(onBack = onCerrar)
         Box(
             modifier = Modifier
                 .fillMaxSize()

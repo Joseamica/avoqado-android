@@ -20,6 +20,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.advanceUntilIdle
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -122,6 +123,49 @@ class TableOrderNotaDeLineaTest {
             assertEquals(listOf("sin aceite", null), subject.pending.value.map { it.item.itemNote })
             subject.addProduct(ensalada)
             assertEquals("La línea nueva sin nota sí sigue sumando", listOf(2, 2), subject.pending.value.map { it.item.quantity })
+            subject.viewModelScope.cancel()
+        }
+    }
+
+    @Test fun `un componente de combo no se anota - su nota viajaría como paquete y no llegaría al servidor`() = runTest {
+        conDirectorio { root ->
+            val store = TableRoundDraftStore(root)
+            val componente = TableOrderViewModel.PendingLine(
+                com.avoqado.pos.pos.data.model.CartItem(
+                    id = "componente-1", type = com.avoqado.pos.pos.data.model.CartItemType.ProductItem("ensalada"), name = "Ensalada", unitPrice = 9900,
+                    promotionInstanceId = "instancia", promotionId = "combo", promotionGroupId = "grupo", promotionOptionId = "opcion",
+                ),
+                null,
+            )
+            store.save("venue-1", "o1", listOf(componente), emptyMap())
+            val subject = vm(store)
+            subject.loadCheck(); advanceUntilIdle()
+
+            subject.updatePendingNote("componente-1", "sin aceite")
+
+            assertNull(subject.pending.value.single().item.itemNote)
+            subject.viewModelScope.cancel()
+        }
+    }
+
+    @Test fun `mientras la ronda se envía no se acepta una nota que ya no viajaría`() = runTest {
+        conDirectorio { root ->
+            val puerta = kotlinx.coroutines.CompletableDeferred<Unit>()
+            coEvery { repository.addRound(any(), any(), any(), any()) } coAnswers {
+                puerta.await(); Result.success(com.avoqado.pos.tables.data.UpdatedOrder(id = "o1", version = 4))
+            }
+            val subject = vm(TableRoundDraftStore(root))
+            subject.loadCheck(); advanceUntilIdle()
+            subject.addProduct(ensalada)
+            val id = subject.pending.value.single().item.id
+
+            subject.sendRound { _, _ -> }
+            runCurrent()
+            assertEquals(true, subject.isSending.value)
+            subject.updatePendingNote(id, "sin aceite")
+
+            assertNull(subject.pending.value.firstOrNull { it.item.id == id }?.item?.itemNote)
+            puerta.complete(Unit)
             subject.viewModelScope.cancel()
         }
     }
