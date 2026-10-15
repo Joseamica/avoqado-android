@@ -2873,6 +2873,66 @@ class PaymentFlowViewModelTest {
         coVerify(exactly = 1) { terminalPaymentService.resolveOutcome("req-1", any()) }
     }
 
+    /**
+     * D2, ronda 2 de Codex (P2): la consulta vive en el VM y sobrevive a salir. Si la pantalla NUEVA hacía suya la espera de
+     * la consulta vieja, su desenlace se descartaba por la generación y la pantalla se quedaba en «Consultando…» para siempre.
+     */
+    @Test
+    fun `D2 salir y reabrir con la automatica en vuelo - el toque de la pantalla nueva recibe su desenlace`() = runTest {
+        enCobroSinConfirmar()
+        val respuesta = CompletableDeferred<TerminalPaymentResult>()
+        coEvery { terminalPaymentService.resolveOutcome("req-1", any()) } coAnswers { respuesta.await() }
+
+        viewModel.recheckCardCharge(automatica = true)
+        runCurrent()
+        viewModel.salirDejandoPendiente()
+        // Reabre la misma cuenta: la lista durable todavía guarda el cobro de esta orden.
+        every { terminalPaymentService.pendienteDeLaVenta(any()) } returns "req-1"
+        viewModel.startPaymentFlow(cardCart())
+        viewModel.selectPaymentMethod(PaymentMethod.CARD)
+        runCurrent()
+        assertTrue("montaje: la pantalla nueva habla del cobro", viewModel.state.value is PaymentFlowState.Undetermined)
+
+        viewModel.recheckCardCharge()
+        runCurrent()
+        val sinRed = "Sin conexión: no se pudo consultar el cobro."
+        respuesta.complete(TerminalPaymentResult.Undetermined(sinRed, "req-1"))
+        advanceUntilIdle()
+
+        val fin = viewModel.state.value as PaymentFlowState.Undetermined
+        assertFalse("no se queda en «Consultando…»", fin.checking)
+        assertTrue("la pantalla nueva ve la respuesta a su toque: ${fin.message}", fin.message.endsWith(sinRed))
+    }
+
+    /**
+     * D2, ronda 2: la declaración se resolvió (liberada) ANTES de que llegara la automática, y el cajero ya volvió a cobrar
+     * (req-2, otra vez sin confirmar). El desenlace tardío de req-1 no gobierna la pantalla de req-2.
+     */
+    @Test
+    fun `D2 declaracion liberada antes de la respuesta automatica - el desenlace viejo no pisa el cobro nuevo`() = runTest {
+        enCobroSinConfirmar()
+        val consulta = CompletableDeferred<TerminalPaymentResult>()
+        coEvery { terminalPaymentService.resolveOutcome("req-1", any()) } coAnswers { consulta.await() }
+        coEvery { terminalPaymentService.declararNoCobrado("req-1", any()) } returns ResultadoDeDeclaracion.Liberada
+
+        viewModel.recheckCardCharge(automatica = true)
+        runCurrent()
+        viewModel.declararNoCobrado()
+        runCurrent()
+        assertTrue("montaje: liberada", viewModel.state.value is PaymentFlowState.SelectingTerminal)
+        coEvery { terminalPaymentService.sendPaymentToTerminal(any(), any(), any(), any(), any(), any()) } returns
+            TerminalPaymentResult.Undetermined("No pudimos confirmar el cobro.", "req-2")
+        viewModel.selectTerminalAndPay("t1")
+        advanceUntilIdle()
+        val delCobroNuevo = viewModel.state.value
+        assertTrue("montaje: el cobro nuevo quedó sin confirmar", delCobroNuevo is PaymentFlowState.Undetermined)
+
+        consulta.complete(TerminalPaymentResult.Success(paymentId = "pay-viejo", requestId = "req-1"))
+        advanceUntilIdle()
+
+        assertEquals("el desenlace de req-1 no gobierna la pantalla de req-2", delCobroNuevo, viewModel.state.value)
+    }
+
     @Test
     fun `D2 declaracion manual en vuelo - la respuesta tardia de la consulta automatica no la pisa`() = runTest {
         enCobroSinConfirmar()

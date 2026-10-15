@@ -343,10 +343,18 @@ class PaymentFlowViewModel @Inject constructor(
     /// Invalidates in-flight terminal sends: cancel() bumps it, and a late
     /// result from a cancelled send is ignored instead of overwriting the
     /// screen, marking Success and PRINTING a receipt for a cancelled payment.
-    private var recoveryRequestId: String? = null
-    /** D2 (mesas40): la consulta en vuelo es la automática y el cajero todavía no la hizo suya con «Volver a consultar». */
-    private var consultaEnVueloEsAutomatica = false
     private var paymentGeneration = 0
+
+    /**
+     * La consulta de «cómo quedó el cobro» que va en vuelo, con la generación (pantalla) que la lanzó y si sigue siendo la
+     * automática de D2 (mesas40) o ya la hizo suya el cajero con «Volver a consultar».
+     *
+     * 🔴 Ronda 2 de Codex: la consulta vive en el VM y sobrevive a salir. Una pantalla NUEVA no hereda su espera —si la hacía
+     * suya, el desenlace se descartaba por la generación y se quedaba en «Consultando…» para siempre—: lanza la suya, y el
+     * servicio la une al mismo GET por `requestId`.
+     */
+    private class ConsultaEnVuelo(val requestId: String, val generacion: Int, var automatica: Boolean)
+    private var consultaEnVuelo: ConsultaEnVuelo? = null
 
     /** El toque de «Cobrar» que arrancó el cobro en pantalla. Ver `startPaymentFlow`. */
     private var aperturaEnCurso: String? = null
@@ -2581,18 +2589,19 @@ class PaymentFlowViewModel @Inject constructor(
      * pantalla honesta. **Nunca dispara un cargo.**
      */
     private fun reconcileThenOffer(requestId: String, total: Int, encabezado: String? = null, automatica: Boolean = false) {
-        if (recoveryRequestId != null) {
+        val enVuelo = consultaEnVuelo
+        if (enVuelo != null && enVuelo.generacion == paymentGeneration) {
             // D2 (relevo, 15-oct): el cajero tocó «Volver a consultar» con la automática en vuelo (con WiFi malo dura hasta
             // 35 s). No sale otra consulta: la que va en vuelo pasa a ser SUYA — ve «Consultando…» y su desenlace, también
             // «no se sabe». Si no, el botón parecía muerto.
-            if (!automatica && consultaEnVueloEsAutomatica && recoveryRequestId == requestId) {
-                consultaEnVueloEsAutomatica = false
+            if (!automatica && enVuelo.automatica && enVuelo.requestId == requestId) {
+                enVuelo.automatica = false
                 (_state.value as? PaymentFlowState.Undetermined)?.let { _state.value = it.copy(checking = true) }
             }
             return
         }
-        recoveryRequestId = requestId
-        consultaEnVueloEsAutomatica = automatica
+        val propia = ConsultaEnVuelo(requestId, paymentGeneration, automatica)
+        consultaEnVuelo = propia
         // `encabezado` = se REVISA sin adoptar (`fromPreviousSale`). La pantalla tiene que seguir hablando de ESE cobro:
         // «Volver a consultar» y la declaración lo buscan aquí, porque no es el cobro de esta pantalla.
         val fromPreviousSale = encabezado != null
@@ -2607,22 +2616,26 @@ class PaymentFlowViewModel @Inject constructor(
                 fromPreviousSale = fromPreviousSale,
             )
         }
-        val generation = paymentGeneration
         viewModelScope.launch {
             val outcome = try {
                 terminalPaymentService.resolveOutcome(requestId, enSegundoPlano = automatica)
-            } finally { recoveryRequestId = null }
+            } finally { if (consultaEnVuelo === propia) consultaEnVuelo = null }
             // Si el cajero la hizo suya a medio camino, se aplica como la del botón.
-            val sigueAutomatica = consultaEnVueloEsAutomatica.also { consultaEnVueloEsAutomatica = false }
-            if (generation != paymentGeneration) {
+            val sigueAutomatica = propia.automatica
+            if (propia.generacion != paymentGeneration) {
                 handleStaleCardResult(if (outcome is TerminalPaymentResult.Success) outcome.copy(requestId = requestId) else outcome)
                 return@launch
             }
             // D2: la automática sólo gobierna el «Cobro sin confirmar» QUIETO que la lanzó — una declaración en vuelo
             // (`checking`) manda sobre ella — y «no se sabe» (sin red, 403, 404) no toca la pantalla.
+            //
+            // Ronda 2: y sólo si la pantalla sigue hablando de ESE cobro. Una declaración liberada y un cobro nuevo de la
+            // venta (otra solicitud) no los gobierna el desenlace tardío de la anterior.
             if (sigueAutomatica) {
                 val actual = _state.value
-                if (actual !is PaymentFlowState.Undetermined || actual.checking || outcome is TerminalPaymentResult.Undetermined) {
+                if (actual !is PaymentFlowState.Undetermined || actual.checking || outcome is TerminalPaymentResult.Undetermined ||
+                    cobroSinConfirmarEnPantalla() != requestId
+                ) {
                     return@launch
                 }
             }
