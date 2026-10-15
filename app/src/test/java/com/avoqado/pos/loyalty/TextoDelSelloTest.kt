@@ -5,7 +5,7 @@ import com.avoqado.pos.loyalty.data.SaleStampReason
 import com.avoqado.pos.loyalty.domain.RenglonDelSello
 import com.avoqado.pos.loyalty.domain.TextosDelSello
 import com.avoqado.pos.loyalty.domain.textoDelSello
-import kotlinx.serialization.json.Json
+import com.avoqado.pos.payment.data.OrderRepository
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -15,8 +15,6 @@ import org.junit.Test
  * compartido con iOS, letra por letra: aquí se fijan para que nadie los «mejore» de un solo lado.
  */
 class TextoDelSelloTest {
-
-    private val json = Json { ignoreUnknownKeys = true; coerceInputValues = true }
 
     private fun sello(
         stamped: Boolean = false,
@@ -75,14 +73,48 @@ class TextoDelSelloTest {
         assertNull(textoDelSello(null))
     }
 
+    // MARK: - Lo que la app lee DE VERDAD (`OrderRepository.leerSelloDeLaVenta`, sin `coerceInputValues`)
+    // Revisión final (Minor #3): esta prueba fijaba una lectura con `coerceInputValues`, que producción no usa.
+
+    /** La respuesta de la liga tardía con [loyalty] dentro de `data`, como la manda el servidor. */
+    private fun liga(loyalty: String) = """{"success":true,"data":{"id":"orden-1","loyalty":$loyalty},"message":"ok"}"""
+
+    private fun leerLiga(loyalty: String) = OrderRepository.leerSelloDeLaVenta(liga(loyalty), dentroDeLoyalty = true)
+
     @Test
-    fun `P1 un objeto a medias o con nulos se lee con sus defaults en vez de romper`() {
-        val leido = json.decodeFromString(
-            SaleStampOutcome.serializer(),
-            """{"stampsEnabled":true,"stamped":false,"reason":"DAILY_LIMIT","stampsEarned":null,"campoNuevo":1}""",
+    fun `P1 un campo nuevo del servidor o sin los opcionales se lee y pinta su texto`() {
+        val leido = leerLiga(
+            """{"stampsEnabled":true,"stamped":false,"reason":"DAILY_LIMIT","stampsEarned":2,"stampsRequired":7,"campoNuevo":1}""",
         )
-        assertEquals(SaleStampOutcome(stampsEnabled = true, reason = "DAILY_LIMIT"), leido)
+        assertEquals(
+            SaleStampOutcome(stampsEnabled = true, stamped = false, reason = "DAILY_LIMIT", stampsEarned = 2, stampsRequired = 7, rewardReady = false),
+            leido,
+        )
         assertEquals("Ya recibió su sello de hoy", textoDelSello(leido))
+    }
+
+    @Test
+    fun `P1 un numero de la cartilla nulo descarta la lectura entera, no se vuelve cero`() {
+        assertNull(
+            leerLiga("""{"stampsEnabled":true,"stamped":false,"reason":"DAILY_LIMIT","stampsEarned":null,"stampsRequired":7}"""),
+        )
+    }
+
+    // Revisión final (Minor #2): con default 0, un objeto a medias con `stamped: true` decía «🎁 ¡Completó su tarjeta!».
+    @Test
+    fun `P1 un sello a medias sin los numeros de la cartilla no se lee, para no decir que completo la tarjeta`() {
+        assertNull(leerLiga("""{"stampsEnabled":true,"stamped":true}"""))
+        assertNull(
+            "la consulta del sello (GET) se lee igual",
+            OrderRepository.leerSelloDeLaVenta("""{"success":true,"data":{"stampsEnabled":true,"stamped":true}}""", dentroDeLoyalty = false),
+        )
+    }
+
+    @Test
+    fun `un servidor viejo sin el campo loyalty se lee como null y no pinta nada`() {
+        val leido = OrderRepository.leerSelloDeLaVenta("""{"success":true,"data":{"id":"orden-1"}}""", dentroDeLoyalty = true)
+        assertNull(leido)
+        assertNull(textoDelSello(leido))
     }
 
     @Test

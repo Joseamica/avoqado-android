@@ -10,17 +10,19 @@ enum class SaleStampReason { NOT_PAID, WINDOW_EXPIRED, OTHER_CUSTOMER, DAILY_LIM
  * (`POST /mobile/venues/:venueId/payments[/:paymentId]/customer`) o el `data` del GET
  * `/mobile/venues/:venueId/payments/:paymentId/loyalty`.
  *
- * Todos los campos con default: un servidor viejo que no manda el campo, o que manda uno a medias, se lee igual y la
- * pantalla simplemente no pinta nada. `reason` viaja como texto y se traduce en [reasonCode]: un motivo NUEVO del
- * servidor no puede tumbar la lectura de la respuesta entera.
+ * Un servidor viejo que no manda `loyalty` se lee como null y la pantalla no pinta nada. 🔴 `stampsEarned` y
+ * `stampsRequired` NO tienen default (revisión final, Minor #2): un objeto a medias con `stamped: true` se leía con
+ * `stampsEarned = 0` y decía «🎁 ¡Completó su tarjeta!» sin que fuera cierto; sin ellos la lectura falla y
+ * `OrderRepository.leerSelloDeLaVenta` devuelve null (no se pinta nada). `reason` viaja como texto y se traduce en
+ * [reasonCode]: un motivo NUEVO del servidor no puede tumbar la lectura de la respuesta entera.
  */
 @Serializable
 data class SaleStampOutcome(
     val stampsEnabled: Boolean = false,
     val stamped: Boolean = false,
     val reason: String? = null,
-    val stampsEarned: Int = 0,
-    val stampsRequired: Int = 0,
+    val stampsEarned: Int,
+    val stampsRequired: Int,
     val rewardReady: Boolean = false,
 ) {
     val reasonCode: SaleStampReason?
