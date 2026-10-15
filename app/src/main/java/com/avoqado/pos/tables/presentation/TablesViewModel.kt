@@ -462,7 +462,7 @@ class TablesViewModel @Inject constructor(
             if (existing != null && existing.mode == TableSession.Mode.PAYING && existing.orderId == order.id) {
                 // El piso conserva el saldo propio, pero no acredita si hubo abonos para separar el cargo.
                 // D4 (ronda 2 de Codex): el resumen ES la lectura de esta cuenta; sin mesero ahí, no se conserva el viejo.
-                tableSession.start(existing.copy(serviceChargeCents = 0, cuentaDelTicket = null,
+                tableSession.start(existing.copy(serviceChargeCents = 0,
                     meseroNombre = order.waiterName?.takeIf { it.isNotBlank() }))
                 _selectedTableId.value = null
                 _actionState.value = TableActionState.Idle

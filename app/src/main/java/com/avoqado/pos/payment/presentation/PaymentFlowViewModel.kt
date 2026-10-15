@@ -3437,13 +3437,10 @@ class PaymentFlowViewModel @Inject constructor(
         // Sólo la captura de la cuenta garantizada, sin abonos y en cobro completo, separa el cargo.
         // El carrito de mesa trae una línea de importe con el cargo dentro; ningún split lo prorratea.
         //
-        // D4 (mesas40; Codex r1 P2): los PLATILLOS de la cuenta, sólo cuando este cobro la paga completa, sin otros abonos
-        // (la captura no existe con abonos), y lo cobrado sin propina coincide EXACTO con lo que la cuenta debía — la misma
-        // regla que el servidor (`ticketTotals.ts`), nunca `Order.total`. Entonces los totales salen de la cuenta y no del
-        // renglón sintético. Sin esa certeza, «Cuenta Mesa N» como siempre: un pago parcial nunca imprime todos los platillos.
-        val cuentaDeLaMesa = mesaDelCobro?.takeIf { !it.isProvisional && it.orderId == createdOrderId }?.cuentaDelTicket
-            ?.takeIf { isFullPayment && splitBaseAmountOverride == null && receiptTotal - currentTipCents == it.baseCents }
-        val cargoDeLaMesa = if (cuentaDeLaMesa != null) 0 else mesaDelCobro
+        // D4 (mesas40, ronda 2 de Codex): los PLATILLOS de la cuenta no se imprimen aquí. Otra caja pudo cambiar la cuenta
+        // con el mismo importe (cortesía de un platillo + otro nuevo) y el cobro no devuelve la versión de la cuenta: nada en
+        // el aparato prueba que una foto tomada al tocar «Pagar» siga vigente. Sin esa evidencia, «Cuenta Mesa N».
+        val cargoDeLaMesa = mesaDelCobro
             ?.takeIf { !it.isProvisional && it.orderId == createdOrderId && isFullPayment && splitBaseAmountOverride == null && cart != null &&
                 cart.items.singleOrNull()?.let { item -> item.type == com.avoqado.pos.pos.data.model.CartItemType.CustomAmount && item.quantity == 1 } == true &&
                 cart.taxCents == 0 && cart.subtotalCents == it.totalCents }
@@ -3451,12 +3448,11 @@ class PaymentFlowViewModel @Inject constructor(
         val papel = com.avoqado.pos.printing.data.model.TotalesDelTicket.desdeLoCobrado(
             cobrado = receiptTotal - currentTipCents,
             propina = currentTipCents,
-            subtotalBruto = cuentaDeLaMesa?.subtotalBrutoCents
-                ?: ((if (cart != null && isFullPayment) cart.subtotalCents else baseAmount) - cargoDeLaMesa),
-            cargo = cuentaDeLaMesa?.cargoCents ?: cargoDeLaMesa,
-            impuestoAgregado = cuentaDeLaMesa?.impuestoAparteCents ?: (if (cart != null && isFullPayment) cart.taxCents else 0),
+            subtotalBruto = (if (cart != null && isFullPayment) cart.subtotalCents else baseAmount) - cargoDeLaMesa,
+            cargo = cargoDeLaMesa,
+            impuestoAgregado = if (cart != null && isFullPayment) cart.taxCents else 0,
         )
-        val renglones = cuentaDeLaMesa?.renglones ?: if (cargoDeLaMesa > 0) receiptItems.map {
+        val renglones = if (cargoDeLaMesa > 0) receiptItems.map {
             it.copy(unitPrice = it.unitPrice - cargoDeLaMesa, totalPrice = it.totalPrice - cargoDeLaMesa)
         } else receiptItems
         val resolvedChange = changeCents ?: successState?.changeAmount

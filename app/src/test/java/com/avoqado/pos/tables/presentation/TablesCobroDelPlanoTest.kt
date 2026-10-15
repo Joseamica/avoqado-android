@@ -505,7 +505,6 @@ class TablesCobroDelPlanoTest {
             subject.startCobrar(conMesero) {}; advanceUntilIdle()
             assertEquals(TableSession.Mode.PAYING, session.current()!!.mode)
             assertEquals("Ana", session.current()!!.meseroNombre)
-            assertNull("el piso no sabe si hubo abonos: sin platillos", session.current()!!.cuentaDelTicket)
         } finally { subject.viewModelScope.cancel() }
     }
 

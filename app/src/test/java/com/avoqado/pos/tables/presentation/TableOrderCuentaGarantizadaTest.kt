@@ -915,34 +915,8 @@ class TableOrderCuentaGarantizadaTest {
         } finally { subject.viewModelScope.cancel() }
     }
 
-    /** D4 (mesas40): quién ESCRIBE lo que imprime el ticket — «Pagar» lo copia del cheque que acaba de leer. */
-    @Test fun `D4 Pagar lleva el mesero y los platillos y totales del cheque garantizado`() = runTest {
-        val subject = vm()
-        coEvery { repository.getOrderDetail(any(), any()) } returns Result.success(detail(252.0).copy(
-            subtotal = 230.0, discountAmount = 30.0, serviceChargeAmount = 20.0, addedTaxAmount = 32.0,
-            waiter = TableWaiter("w-ana", "Ana"),
-            items = listOf(
-                OrderDetailItem("i1", productName = "Tacos", quantity = 2, unitPrice = 100.0, total = 200.0,
-                    modifiers = listOf(OrderDetailModifier(name = "Salsa verde"))),
-                OrderDetailItem("i2", productName = "Agua", quantity = 1, unitPrice = 30.0, total = 30.0, isCortesia = true),
-            ),
-        ))
-        try {
-            subject.loadCheck(); advanceUntilIdle(); assertTrue(subject.chequeAlDia.value)
-            assertTrue(subject.preparePagar())
-            val s = session.current()!!
-            assertEquals("Ana", s.meseroNombre)
-            val cuenta = s.cuentaDelTicket!!
-            assertEquals(listOf("Tacos", "Agua"), cuenta.renglones.map { it.name })
-            assertEquals(listOf(20000, 3000), cuenta.renglones.map { it.totalPrice })
-            assertEquals(listOf("Salsa verde"), cuenta.renglones.first().modifiers)
-            assertTrue(cuenta.renglones.last().isCortesia)
-            assertEquals(listOf(23000, 3000, 2000, 3200), listOf(cuenta.subtotalBrutoCents, cuenta.descuentoCents, cuenta.cargoCents, cuenta.impuestoAparteCents))
-            assertEquals("la base de la cuenta es lo que se va a cobrar", s.totalCents, cuenta.baseCents)
-        } finally { subject.viewModelScope.cancel() }
-    }
-
-    @Test fun `D4 tras un abono Pagar no lleva platillos, pero si el mesero`() = runTest {
+    /** D4 (mesas40): quién ESCRIBE el «Atendió» del ticket — «Pagar» lo copia del cheque que acaba de leer, también tras un abono. */
+    @Test fun `D4 Pagar lleva el mesero del cheque leido, tambien tras un abono`() = runTest {
         val subject = vm()
         coEvery { repository.getOrderDetail(any(), any()) } returns Result.success(detail(115.0).copy(
             waiter = TableWaiter("w-ana", "Ana"), payments = listOf(OrderDetailPayment("p1", 50.0, 0.0, "COMPLETED")),
@@ -950,7 +924,6 @@ class TableOrderCuentaGarantizadaTest {
         try {
             subject.loadCheck(); advanceUntilIdle(); assertTrue(subject.chequeAlDia.value)
             assertTrue(subject.preparePagar())
-            assertNull("un pago parcial nunca imprime todos los platillos", session.current()!!.cuentaDelTicket)
             assertEquals("Ana", session.current()!!.meseroNombre)
         } finally { subject.viewModelScope.cancel() }
     }
