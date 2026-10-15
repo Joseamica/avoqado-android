@@ -75,6 +75,7 @@ fun PaymentFlowScreen(
     val customersViewModel: CustomersViewModel = hiltViewModel()
     val customerAttachSending by viewModel.customerAttachSending.collectAsState()
     val customerAttachResult by viewModel.customerAttachResult.collectAsState()
+    val renglonDelSello by viewModel.renglonDelSello.collectAsState()
     // Una sola fuente para el nombre: la del ViewModel. Antes esta pantalla
     // guardaba el suyo aparte, arrancando siempre en null — de ahí que el
     // cliente del carrito no apareciera al terminar el cobro.
@@ -304,6 +305,7 @@ fun PaymentFlowScreen(
                             viewModel.clearCustomerAttachResult()
                             showCustomersSheet = true
                         },
+                        renglonDelSello = renglonDelSello,
                         onDone = {
                             // También cerrar la carrera de un toque inmediato contra el
                             // LaunchedEffect: exactamente uno de los dos consume el pago.

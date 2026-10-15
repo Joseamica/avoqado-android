@@ -10,6 +10,9 @@ import com.avoqado.pos.areatickets.data.NormalCheckoutItem
 import com.avoqado.pos.cashdrawer.data.CashDrawerRepository
 import com.avoqado.pos.kds.data.KDSRepository
 import com.avoqado.pos.kds.domain.KDSOrderBus
+import com.avoqado.pos.core.data.network.ServerErrorText
+import com.avoqado.pos.loyalty.domain.RenglonDelSello
+import com.avoqado.pos.loyalty.domain.TextosDelSello
 import com.avoqado.pos.payment.data.CashPaymentRepository
 import com.avoqado.pos.payment.data.CashPaymentResult
 import com.avoqado.pos.payment.data.ContextoDeCobro
@@ -835,18 +838,32 @@ class PaymentFlowViewModel @Inject constructor(
     /** Id del cliente que viaja en `POST /orders`. */
     private var attachedCustomerId: String? = null
 
+    /**
+     * Renglón del sello en «Cobro exitoso» (sellos tardíos, 14-oct): «✓ +1 sello · 3 de 7», el premio, o por qué no
+     * sumó. Es estado APARTE de [customerAttachResult] a propósito: «Imprimir» y «Enviar» borran ese aviso y el cajero
+     * tiene que seguir viendo si la venta sumó. null = no se pinta nada.
+     */
+    private val _renglonDelSello = MutableStateFlow<RenglonDelSello?>(null)
+    val renglonDelSello: StateFlow<RenglonDelSello?> = _renglonDelSello.asStateFlow()
+
     fun clearCustomerAttachResult() {
         _customerAttachResult.value = null
     }
 
     fun attachCustomerToCurrentPayment(customerId: String, customerName: String) {
+        // 🔴 Un doble toque en la fila del cliente llegaba aquí dos veces antes de que la hoja se cerrara: dos POST de
+        // liga. Se marca «enviando» ANTES de lanzar, así el segundo toque ya lo ve.
+        if (_customerAttachSending.value) return
         val paymentId = lastPaymentId
         val amountCents = currentBaseAmount()
         val tipCents = currentTipCents
+        // 🔴 La venta de ESTA liga (auditoría A #4). Si el cajero toca «Venta nueva» con la petición en vuelo, la respuesta
+        // llega a una pantalla que ya es de OTRA venta y no puede escribir nada en ella.
+        val generacion = paymentGeneration
+        _customerAttachSending.value = true
+        _customerAttachResult.value = null
 
         viewModelScope.launch {
-            _customerAttachSending.value = true
-            _customerAttachResult.value = null
             val result = if (!paymentId.isNullOrBlank()) {
                 orderRepository.attachCustomerToPayment(paymentId, customerId)
             } else {
@@ -857,12 +874,20 @@ class PaymentFlowViewModel @Inject constructor(
                     staffId = selectedStaffId(),
                 )
             }
+            if (generacion != paymentGeneration) {
+                // Ni cliente, ni nombre, ni aviso, ni renglón, ni «enviando» (lo reinició `startPaymentFlow` y puede ser ya
+                // el de la liga de la venta nueva). Éxito o error: igual. La liga del servidor quedó en la venta anterior.
+                Log.d("👤", "Respuesta de la liga de una venta anterior: no toca la venta en pantalla")
+                return@launch
+            }
             result
                 .fold(
-                    onSuccess = {
+                    onSuccess = { sello ->
                         attachedCustomerId = customerId
                         _attachedCustomerName.value = customerName
                         _customerAttachResult.value = "Cliente agregado: $customerName"
+                        // Sellos tardíos: el servidor ya sumó (o no) el sello al ligar; aquí sólo se dice.
+                        _renglonDelSello.value = RenglonDelSello.desde(sello)
                         // El aviso ya se resolvió: la venta SÍ tiene cliente ahora. Dejarlo
                         // puesto es estado que miente — y era la única divergencia con iOS
                         // en el campo que este cambio introdujo.
@@ -871,7 +896,13 @@ class PaymentFlowViewModel @Inject constructor(
                         }
                     },
                     onFailure = { error ->
-                        _customerAttachResult.value = error.message ?: "No se pudo agregar cliente"
+                        // Agregar cliente después de cobrar es online-only A PROPÓSITO (spec §4): sin red se dice en
+                        // llano y con el plazo, nunca «Unable to resolve host…».
+                        _customerAttachResult.value = if (ServerErrorText.isOffline(error)) {
+                            TextosDelSello.SIN_RED_AL_AGREGAR_CLIENTE
+                        } else {
+                            ServerErrorText.humanize(error, fallback = "No se pudo agregar el cliente. Inténtalo de nuevo.")
+                        }
                     },
                 )
             _customerAttachSending.value = false
@@ -1116,6 +1147,7 @@ class PaymentFlowViewModel @Inject constructor(
         _printSending.value = false
         _customerAttachResult.value = null
         _customerAttachSending.value = false
+        _renglonDelSello.value = null
         attachedCustomerId = customerId?.takeIf { it.isNotBlank() }
         _attachedCustomerName.value = customerName?.takeIf { it.isNotBlank() }
         lastReceipt = null
