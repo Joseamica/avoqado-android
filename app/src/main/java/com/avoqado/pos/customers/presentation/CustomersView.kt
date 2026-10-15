@@ -39,7 +39,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import com.avoqado.pos.customers.data.model.Customer
-import com.avoqado.pos.customers.domain.filtrarClientesLocal
 import com.avoqado.pos.designsystem.components.CloseButton
 import com.avoqado.pos.designsystem.components.AvoqadoBrandLoader
 import com.avoqado.pos.designsystem.components.SearchPillField
@@ -56,14 +55,20 @@ fun CustomersView(
 ) {
     val customers by viewModel.customers.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
+    val offline by viewModel.offline.collectAsState()
+    val avisoDeMas by viewModel.avisoDeMasResultados.collectAsState()
     var searchText by remember { mutableStateOf("") }
 
-    val filteredCustomers = remember(searchText, customers) {
-        filtrarClientesLocal(customers, searchText)
+    // El texto vive en Compose (el teclado no se desfasa); QUÉ lista se ve lo decide el ViewModel.
+    fun buscar(texto: String) {
+        searchText = texto
+        viewModel.onQueryChange(texto)
     }
 
+    // Cada vez que se abre: texto vacío y los recientes. El ViewModel puede venir de la pantalla anfitriona
+    // (Checkout lo conserva entre aperturas) y no debe arrastrar la búsqueda anterior.
     LaunchedEffect(Unit) {
-        viewModel.fetchCustomers()
+        viewModel.abrirLista()
     }
 
     val configuration = LocalConfiguration.current
@@ -140,13 +145,33 @@ fun CustomersView(
 
         SearchPillField(
             query = searchText,
-            onQueryChange = { searchText = it },
+            onQueryChange = { buscar(it) },
             placeholder = "Buscar cliente",
             height = AvoqadoTheme.adaptive.listSearchFieldHeight,
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = horizontalPadding),
         )
+
+        if (offline) {
+            AvisoSinRedDeClientes(
+                modifier = Modifier
+                    .padding(horizontal = horizontalPadding)
+                    .padding(top = AvoqadoTheme.spacing.sm),
+            )
+        }
+
+        // «2 de 120: escribe más para afinar» (auditoría A #10): hay más clientes con ese texto de los que se ven.
+        avisoDeMas?.let { aviso ->
+            Text(
+                text = aviso,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .padding(horizontal = horizontalPadding)
+                    .padding(top = AvoqadoTheme.spacing.sm),
+            )
+        }
 
         Spacer(modifier = Modifier.height(if (denseMode) AvoqadoTheme.spacing.sm else AvoqadoTheme.spacing.md))
 
@@ -169,7 +194,7 @@ fun CustomersView(
                 }
             }
 
-            filteredCustomers.isEmpty() && searchText.isNotEmpty() -> {
+            customers.isEmpty() && searchText.isNotBlank() -> {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -215,7 +240,8 @@ fun CustomersView(
 
             else -> {
                 LazyColumn(modifier = Modifier.weight(1f)) {
-                    if (filteredCustomers.isNotEmpty()) {
+                    // «Creados recientemente» sólo describe la lista SIN texto: con búsqueda son resultados.
+                    if (customers.isNotEmpty() && searchText.isBlank()) {
                         item {
                             Text(
                                 text = "Creados recientemente",
@@ -229,7 +255,7 @@ fun CustomersView(
                         }
                     }
 
-                    items(filteredCustomers, key = { it.id }) { customer ->
+                    items(customers, key = { it.id }) { customer ->
                         CustomerRow(
                             customer = customer,
                             denseMode = denseMode,

@@ -45,7 +45,13 @@ data class Customer(
 @Serializable
 data class CustomersResponse(
     val data: List<Customer> = emptyList(),
+    /** Respaldo: el servidor de hoy NO lo manda (manda `meta`); se conserva por si algún camino viejo lo usa. */
     val pagination: Pagination? = null,
+    /**
+     * Lo que el servidor manda de verdad: `{ data, meta: { totalCount, …, totalMatches?, searchCapped? } }` (auditoría
+     * A #10 y B3). Opcional: un servidor viejo o un campo nuevo no rompen la lectura (`ignoreUnknownKeys`).
+     */
+    val meta: Meta? = null,
 ) {
     @Serializable
     data class Pagination(
@@ -54,7 +60,34 @@ data class CustomersResponse(
         val limit: Int = 50,
         val totalPages: Int = 1,
     )
+
+    @Serializable
+    data class Meta(
+        /**
+         * Cuántos clientes cumplen la búsqueda y se pueden ALCANZAR paginando. Con más de 5000 coincidencias el servidor
+         * topa y aquí manda 5000 (auditoría B3: así el dashboard no ofrece páginas vacías); el exacto va en [totalMatches].
+         */
+        val totalCount: Int? = null,
+        /** Conteo EXACTO de coincidencias en TODO el negocio (B3). Campo nuevo: un servidor viejo no lo manda. */
+        val totalMatches: Int? = null,
+        /** true = más de 5000 coincidencias: el servidor sólo pagina las más nuevas. Ausente (servidor viejo) = false. */
+        val searchCapped: Boolean? = null,
+    )
+
+    /**
+     * El total que se le dice al cajero: el EXACTO (`meta.totalMatches`) si vino; si no, `meta.totalCount`, o
+     * `pagination.total`, o null si no vino ninguno (no se inventa).
+     */
+    val totalDelServidor: Int?
+        get() = meta?.totalMatches ?: meta?.totalCount ?: pagination?.total
 }
+
+/** Una respuesta de la búsqueda: lo que se pinta, cuántos cumplen en TODO el negocio y si el servidor tuvo que topar. */
+data class PaginaDeClientes(
+    val clientes: List<Customer>,
+    val total: Int?,
+    val busquedaTopada: Boolean = false,
+)
 
 @Serializable
 data class CreateCustomerResponse(

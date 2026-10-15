@@ -54,3 +54,15 @@ internal fun digitosDeTelefonoBuscado(texto: String): String? {
 /** Minúsculas y sin acentos («Muñoz» → «munoz»), como `unaccent` + `ILIKE` en el servidor. */
 internal fun sinAcentos(texto: String): String =
     Normalizer.normalize(texto.lowercase(), Normalizer.Form.NFD).replace(MARCAS_DE_ACENTO, "")
+
+/**
+ * «{n} de {total}: escribe más para afinar» (auditoría A #10 y B3). La tablet pide 50; el servidor dice cuántos cumplen
+ * la búsqueda en TODO el negocio — el exacto (`meta.totalMatches`) aunque haya topado en 5000. Sin «cargar más» a
+ * propósito: con texto, afinar es más rápido que hojear.
+ * null = no hay nada que decir: sin texto (la lista son los recientes), sin total (servidor viejo), o ya se ven todos.
+ */
+fun avisoDeMasResultados(texto: String, mostrados: Int, total: Int?, topada: Boolean): String? {
+    if (texto.isBlank() || total == null) return null
+    if (total <= mostrados && !topada) return null
+    return "$mostrados de $total: escribe más para afinar"
+}
