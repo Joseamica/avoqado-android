@@ -681,6 +681,15 @@ private fun SubViewHeader(
 
 // MARK: - Note Sub-View
 
+/**
+ * La nota tras tocar una nota rápida, sin pasar de [max] caracteres — el mismo tope del campo, que las notas rápidas
+ * se saltaban (D5, mesas40). Un emoji son dos `Char`: el corte nunca deja media pareja suelta.
+ */
+internal fun notaConNotaRapida(actual: String, chip: String, max: Int): String {
+    val nota = (if (actual.isBlank()) chip else "$actual, $chip").take(max)
+    return if (nota.isNotEmpty() && nota.last().isHighSurrogate()) nota.dropLast(1) else nota
+}
+
 @OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 // `internal` (no `private`) porque el panel de detalle del articulo DEL CARRITO
 // (CheckoutScreen.CartItemDetailContent) reusa esta misma sub-vista: la nota se
@@ -769,10 +778,7 @@ internal fun NoteSubView(
                                 MaterialTheme.colorScheme.surfaceVariant,
                                 RoundedCornerShape(AvoqadoTheme.cornerRadius.lg),
                             )
-                            .clickable {
-                                text = if (text.isBlank()) chip
-                                else "$text, $chip"
-                            }
+                            .clickable { text = notaConNotaRapida(text, chip, maxChars) }
                             .padding(
                                 horizontal = AvoqadoTheme.spacing.md,
                                 vertical = AvoqadoTheme.spacing.sm,
