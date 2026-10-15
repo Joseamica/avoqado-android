@@ -955,6 +955,32 @@ class TableOrderCuentaGarantizadaTest {
         } finally { subject.viewModelScope.cancel() }
     }
 
+    /** D4, ronda 2 de Codex (P2): cambiar a otra cuenta no hereda el mesero de la anterior (el ticket diría «Atendió: Ana»). */
+    @Test fun `D4 cambiar de la cuenta de Ana a una sin mesero - ni el cambio ni Pagar llevan a Ana`() = runTest {
+        val subject = vm()
+        session.start(session.current()!!.copy(meseroNombre = "Ana"))
+        coEvery { repository.getOrderDetail(any(), "b") } returns Result.success(detail(75.0, "b"))
+        try {
+            val next = subject.switchToCheck(OpenCheckSummary(id = "b", orderNumber = "B", total = 75.0, version = 4))!!
+            assertNull("la cuenta B no tiene mesero", next.meseroNombre)
+            advanceUntilIdle(); assertTrue(subject.chequeAlDia.value)
+            assertTrue(subject.preparePagar())
+            assertNull("«Atendió» cae a quien cobra, no a Ana", session.current()!!.meseroNombre)
+        } finally { subject.viewModelScope.cancel() }
+    }
+
+    /** D4, ronda 2: si el detalle de ESTA cuenta dice que ya no tiene mesero (se quitó la asignación), manda el detalle. */
+    @Test fun `D4 asignacion quitada - Pagar respeta el detalle sin mesero y no el nombre guardado`() = runTest {
+        val subject = vm()
+        session.start(session.current()!!.copy(meseroNombre = "Ana"))
+        coEvery { repository.getOrderDetail(any(), any()) } returns Result.success(detail(115.0))
+        try {
+            subject.loadCheck(); advanceUntilIdle(); assertTrue(subject.chequeAlDia.value)
+            assertTrue(subject.preparePagar())
+            assertNull(session.current()!!.meseroNombre)
+        } finally { subject.viewModelScope.cancel() }
+    }
+
     @Test fun `T4 Pagar saldo tras abono no vuelve a separar cargo de la cuenta original`() = runTest {
         val subject = vm()
         coEvery { repository.getOrderDetail(any(), any()) } returns Result.success(detail(115.0).copy(

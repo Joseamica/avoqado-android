@@ -1492,6 +1492,8 @@ class TableOrderViewModel @Inject constructor(
             openSplitOnArrival = mismaCuenta && current.openSplitOnArrival,
             saldoSinRedConocido = mismaCuenta && current.saldoSinRedConocido,
             requiereLecturaServidor = mismaCuenta && current.requiereLecturaServidor,
+            // D4 (ronda 2 de Codex): el mesero es de CADA cuenta; el de la anterior nunca pasa a la otra.
+            meseroNombre = if (mismaCuenta) current.meseroNombre else check.waiterName?.takeIf { it.isNotBlank() },
         )
         if (!mismaCuenta && !tableSession.estacionar(scopedVenue, current)) return null
         val next = if (mismaCuenta) candidate.also { tableSession.start(it) }
@@ -1970,9 +1972,10 @@ class TableOrderViewModel @Inject constructor(
         val cargoDeLaCuenta = chequeGarantizado
             ?.let { round(it.serviceChargeAmount * 100) }
             ?.takeIf { it.isFinite() && it >= 0 && it <= totalCents.toDouble() }?.toInt() ?: 0
-        // D4 (mesas40): «Atendió» del ticket = el mesero dueño de la cuenta (sin cheque leído, el que ya traía la sesión),
-        // y los platillos con los totales de ESE cheque garantizado: el cobro los imprime sólo si paga exacto su base.
-        val meseroDeLaCuenta = checkDeLaSesion?.waiter?.name?.takeIf { it.isNotBlank() } ?: session.meseroNombre
+        // D4 (mesas40): «Atendió» del ticket = el mesero dueño de la cuenta, y los platillos con los totales de ESE cheque
+        // garantizado: el cobro los imprime sólo si paga exacto su base. Ronda 2 de Codex: si hay detalle de ESTA cuenta, manda
+        // él, también cuando dice que no tiene mesero (asignación quitada); el nombre guardado sólo si falta el detalle.
+        val meseroDeLaCuenta = if (checkDeLaSesion != null) checkDeLaSesion.waiter?.name?.takeIf { it.isNotBlank() } else session.meseroNombre
         val cuentaDelTicket = chequeGarantizado?.cuentaDelTicket()
 
         if (totalCents <= 0) {
