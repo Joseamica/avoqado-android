@@ -29,6 +29,9 @@ class SelloDeLaVentaHttpTest {
     private lateinit var repository: OrderRepository
     private val secureStorage = mockk<SecureStorage>(relaxed = true)
 
+    /** Las preferencias del aparato: sobreviven a que la app se reinicie (un `OrderRepository` nuevo). */
+    private val preferencias = mutableMapOf<String, Boolean>()
+
     private val selloSumado =
         """{"stampsEnabled":true,"stamped":true,"reason":null,"stampsEarned":3,"stampsRequired":7,"rewardReady":false}"""
 
@@ -42,6 +45,10 @@ class SelloDeLaVentaHttpTest {
         server.start()
         every { secureStorage.venueId } returns "venue-1"
         every { secureStorage.accessToken } returns "token-1"
+        every { secureStorage.programaDeSellosActivo(any()) } answers { preferencias[firstArg<String>()] }
+        every { secureStorage.setProgramaDeSellosActivo(any(), any()) } answers {
+            preferencias[firstArg<String>()] = secondArg<Boolean>()
+        }
         repository = OrderRepository(secureStorage, OkHttpClient())
         repository.baseUrl = server.url("/api/v1").toString().trimEnd('/')
     }
@@ -101,6 +108,31 @@ class SelloDeLaVentaHttpTest {
         assertTrue("la liga sí quedó: es un éxito", resultado.isSuccess)
         assertNull("un sello ilegible no se pinta", resultado.getOrNull())
         assertNull(repository.programaDeSellosActivo("venue-1"))
+    }
+
+    // Revisión final (Minor #7): el recuerdo vivía sólo en memoria; tras reiniciar la app SIN red, la venta encolada
+    // con cliente nunca decía «El sello se suma al sincronizar» (spec §4.1).
+    @Test
+    fun `P1 tras reiniciar la app se recuerda si el negocio tiene sellos, y por negocio`() = runBlocking {
+        server.enqueue(MockResponse().setBody("""{"success":true,"data":{"id":"orden-1","loyalty":$selloSumado}}"""))
+        repository.attachCustomerToPayment("pago-1", "cm-dany").getOrThrow()
+
+        val trasReiniciar = OrderRepository(secureStorage, OkHttpClient())
+
+        assertEquals(true, trasReiniciar.programaDeSellosActivo("venue-1"))
+        assertNull("otro negocio no hereda el recuerdo", trasReiniciar.programaDeSellosActivo("venue-2"))
+    }
+
+    @Test
+    fun `un programa de sellos apagado tambien se recuerda tras reiniciar`() = runBlocking {
+        server.enqueue(
+            MockResponse().setBody(
+                """{"success":true,"data":{"stampsEnabled":false,"stamped":false,"reason":null,"stampsEarned":0,"stampsRequired":0,"rewardReady":false}}""",
+            ),
+        )
+        repository.consultarSelloDeLaVenta("pago-1")
+
+        assertEquals(false, OrderRepository(secureStorage, OkHttpClient()).programaDeSellosActivo("venue-1"))
     }
 
     @Test

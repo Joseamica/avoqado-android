@@ -93,15 +93,20 @@ class OrderRepository @Inject constructor(
     internal var baseUrl: String = ApiConstants.BASE_URL
 
     /**
-     * Último `stampsEnabled` que dijo el servidor, POR NEGOCIO (attach o consulta del sello). Sólo memoria: decide si
-     * una venta encolada sin red puede prometer «El sello se suma al sincronizar». null = no se sabe ⇒ no se promete.
+     * Último `stampsEnabled` que dijo el servidor, POR NEGOCIO (attach o consulta del sello): decide si una venta
+     * encolada sin red puede prometer «El sello se suma al sincronizar». null = no se sabe ⇒ no se promete.
+     * 🔴 También queda en las preferencias del aparato ([SecureStorage.programaDeSellosActivo]) y se lee de ahí si la
+     * memoria no lo tiene: sólo en memoria, tras reiniciar la app SIN red la promesa nunca salía (spec §4.1; revisión
+     * final, Minor #7).
      */
     private val programaDeSellosPorNegocio = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
 
-    fun programaDeSellosActivo(venueId: String): Boolean? = programaDeSellosPorNegocio[venueId]
+    fun programaDeSellosActivo(venueId: String): Boolean? =
+        programaDeSellosPorNegocio[venueId] ?: secureStorage.programaDeSellosActivo(venueId)
 
     private fun recordarProgramaDeSellos(venueId: String, sello: SaleStampOutcome) {
         programaDeSellosPorNegocio[venueId] = sello.stampsEnabled
+        secureStorage.setProgramaDeSellosActivo(venueId, sello.stampsEnabled)
     }
 
     // MARK: - Exception types
