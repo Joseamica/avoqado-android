@@ -553,7 +553,8 @@ internal fun Transaction.toReceiptData(
 
     return ReceiptData(
         orderNumber = orderNumber ?: id.takeLast(4),
-        orderType = "En tienda",
+        // D4: el mismo «Tipo» que el ticket del cobro, si el servidor lo manda (hoy no: «En tienda»).
+        orderType = com.avoqado.pos.tables.presentation.etiquetaDelTipoDeOrden(tableNumber, orderType),
         items = receiptItems,
         subtotal = subtotal,
         taxAmount = impuestoAgregado,

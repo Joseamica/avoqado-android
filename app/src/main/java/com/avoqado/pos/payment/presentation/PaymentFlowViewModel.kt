@@ -184,6 +184,8 @@ class PaymentFlowViewModel @Inject constructor(
     // Copias del cobro, anteriores a cualquier suspensión; el piso/sucursal vivos pueden cambiar después.
     private var mesaDelCobro: com.avoqado.pos.tables.data.TableSession.Active? = null
     private var nombreDelNegocioDelCobro: String = "Avoqado"
+    /** D4 (mesas40): quien tiene la sesión al abrir el cobro — «Atendió» sin mesero ni vendedor elegido. Nunca «Staff». */
+    private var nombreDeLaSesionDelCobro: String? = null
     private var selectedMethod: PaymentMethod? = null
     private var currentRating: Int? = null
     private var currentTipCents: Int = 0
@@ -342,6 +344,8 @@ class PaymentFlowViewModel @Inject constructor(
     /// result from a cancelled send is ignored instead of overwriting the
     /// screen, marking Success and PRINTING a receipt for a cancelled payment.
     private var recoveryRequestId: String? = null
+    /** D2 (mesas40): la consulta en vuelo es la automática y el cajero todavía no la hizo suya con «Volver a consultar». */
+    private var consultaEnVueloEsAutomatica = false
     private var paymentGeneration = 0
 
     /** El toque de «Cobrar» que arrancó el cobro en pantalla. Ver `startPaymentFlow`. */
@@ -999,6 +1003,8 @@ class PaymentFlowViewModel @Inject constructor(
         cartState = cart
         mesaDelCobro = tableSession.current()?.takeIf { it.mode == com.avoqado.pos.tables.data.TableSession.Mode.PAYING }
         nombreDelNegocioDelCobro = secureStorage.venueName ?: "Avoqado"
+        nombreDeLaSesionDelCobro = listOfNotNull(secureStorage.userFirstName, secureStorage.userLastName).joinToString(" ").trim()
+            .ifEmpty { secureStorage.userEmail.orEmpty() }.takeIf { it.isNotBlank() }
         completionConsumed = false
         // 🔴 Un `Insistiendo` de la venta anterior SÍ se borra: describe algo que ya terminó,
         // y arrastrarlo culparía a una impresora que en esta venta puede estar perfecta.
@@ -2574,26 +2580,51 @@ class PaymentFlowViewModel @Inject constructor(
      * cobró → flujo normal; no cobró → recién ahí se ofrece cobrar; sigue sin saberse → la
      * pantalla honesta. **Nunca dispara un cargo.**
      */
-    private fun reconcileThenOffer(requestId: String, total: Int, encabezado: String? = null) {
-        if (recoveryRequestId != null) return
+    private fun reconcileThenOffer(requestId: String, total: Int, encabezado: String? = null, automatica: Boolean = false) {
+        if (recoveryRequestId != null) {
+            // D2 (relevo, 15-oct): el cajero tocó «Volver a consultar» con la automática en vuelo (con WiFi malo dura hasta
+            // 35 s). No sale otra consulta: la que va en vuelo pasa a ser SUYA — ve «Consultando…» y su desenlace, también
+            // «no se sabe». Si no, el botón parecía muerto.
+            if (!automatica && consultaEnVueloEsAutomatica && recoveryRequestId == requestId) {
+                consultaEnVueloEsAutomatica = false
+                (_state.value as? PaymentFlowState.Undetermined)?.let { _state.value = it.copy(checking = true) }
+            }
+            return
+        }
         recoveryRequestId = requestId
+        consultaEnVueloEsAutomatica = automatica
         // `encabezado` = se REVISA sin adoptar (`fromPreviousSale`). La pantalla tiene que seguir hablando de ESE cobro:
         // «Volver a consultar» y la declaración lo buscan aquí, porque no es el cobro de esta pantalla.
         val fromPreviousSale = encabezado != null
         if (encabezado != null) cobroEnRevision = CobroEnRevision(requestId, encabezado)
         val pendingMessage = conEncabezado(encabezado, CardChargeDecision.UNDETERMINED_MESSAGE)
-        _state.value = PaymentFlowState.Undetermined(
-            totalAmount = total,
-            message = pendingMessage,
-            checking = true,
-            fromPreviousSale = fromPreviousSale,
-        )
+        // D2: la consulta automática no pinta «Consultando…»: el cajero no tocó nada.
+        if (!automatica) {
+            _state.value = PaymentFlowState.Undetermined(
+                totalAmount = total,
+                message = pendingMessage,
+                checking = true,
+                fromPreviousSale = fromPreviousSale,
+            )
+        }
         val generation = paymentGeneration
         viewModelScope.launch {
-            val outcome = try { terminalPaymentService.resolveOutcome(requestId) } finally { recoveryRequestId = null }
+            val outcome = try {
+                terminalPaymentService.resolveOutcome(requestId, enSegundoPlano = automatica)
+            } finally { recoveryRequestId = null }
+            // Si el cajero la hizo suya a medio camino, se aplica como la del botón.
+            val sigueAutomatica = consultaEnVueloEsAutomatica.also { consultaEnVueloEsAutomatica = false }
             if (generation != paymentGeneration) {
                 handleStaleCardResult(if (outcome is TerminalPaymentResult.Success) outcome.copy(requestId = requestId) else outcome)
                 return@launch
+            }
+            // D2: la automática sólo gobierna el «Cobro sin confirmar» QUIETO que la lanzó — una declaración en vuelo
+            // (`checking`) manda sobre ella — y «no se sabe» (sin red, 403, 404) no toca la pantalla.
+            if (sigueAutomatica) {
+                val actual = _state.value
+                if (actual !is PaymentFlowState.Undetermined || actual.checking || outcome is TerminalPaymentResult.Undetermined) {
+                    return@launch
+                }
             }
             when (outcome) {
                 is TerminalPaymentResult.Success -> {
@@ -2636,14 +2667,23 @@ class PaymentFlowViewModel @Inject constructor(
     /**
      * "Volver a consultar" desde la pantalla de cobro no confirmado. Es la acción SEGURA:
      * sólo pregunta, jamás cobra.
+     *
+     * @param automatica D2 (mesas40): la pantalla lo pregunta sola cada 5 s — el servidor resuelve hasta ~30 s después y
+     *   Android no tiene socket —, por ESTE mismo camino: misma solicitud, mismo desenlace (también `fromPreviousSale`).
+     *   Sólo cambia que no pinta «Consultando…» y que consulta en segundo plano; corre sobre «Cobro sin confirmar» quieto
+     *   y nunca mueve la pantalla sin una respuesta del servidor que lo acredite.
      */
-    fun recheckCardCharge() {
+    fun recheckCardCharge(automatica: Boolean = false) {
+        val enPantalla = _state.value as? PaymentFlowState.Undetermined
+        if (automatica && (enPantalla == null || enPantalla.checking)) return
         val total = currentBaseAmount() + currentTipCents
-        val fromPreviousSale = (_state.value as? PaymentFlowState.Undetermined)?.fromPreviousSale == true
+        val fromPreviousSale = enPantalla?.fromPreviousSale == true
         // La lista durable manda: si el proceso murió, `undeterminedRequestId` viene vacío
         // pero el cobro de esta venta sigue sin resolverse en disco.
         val pending = cobroSinConfirmarEnPantalla()
         if (pending == null) {
+            // Sin solicitud no hay a quién preguntar: la automática no mueve la pantalla por su cuenta.
+            if (automatica) return
             // Ya no hay nada pendiente que consultar: consta que no hay cargo vivo.
             if (fromPreviousSale) enterInitialState(total) else ofrecerTerminales(total)
             return
@@ -2655,7 +2695,7 @@ class PaymentFlowViewModel @Inject constructor(
             pending != undeterminedRequestId -> SAME_SALE_CHARGE_PREFIX
             else -> null
         }
-        reconcileThenOffer(pending, total, encabezado)
+        reconcileThenOffer(pending, total, encabezado, automatica)
     }
 
     /**
@@ -3383,7 +3423,14 @@ class PaymentFlowViewModel @Inject constructor(
         // cartilla que confirmó el servidor. Un pago parcial imprime sólo lo cobrado (nunca prorratea descuento ni IVA).
         // Sólo la captura de la cuenta garantizada, sin abonos y en cobro completo, separa el cargo.
         // El carrito de mesa trae una línea de importe con el cargo dentro; ningún split lo prorratea.
-        val cargoDeLaMesa = mesaDelCobro
+        //
+        // D4 (mesas40; Codex r1 P2): los PLATILLOS de la cuenta, sólo cuando este cobro la paga completa, sin otros abonos
+        // (la captura no existe con abonos), y lo cobrado sin propina coincide EXACTO con lo que la cuenta debía — la misma
+        // regla que el servidor (`ticketTotals.ts`), nunca `Order.total`. Entonces los totales salen de la cuenta y no del
+        // renglón sintético. Sin esa certeza, «Cuenta Mesa N» como siempre: un pago parcial nunca imprime todos los platillos.
+        val cuentaDeLaMesa = mesaDelCobro?.takeIf { !it.isProvisional && it.orderId == createdOrderId }?.cuentaDelTicket
+            ?.takeIf { isFullPayment && splitBaseAmountOverride == null && receiptTotal - currentTipCents == it.baseCents }
+        val cargoDeLaMesa = if (cuentaDeLaMesa != null) 0 else mesaDelCobro
             ?.takeIf { !it.isProvisional && it.orderId == createdOrderId && isFullPayment && splitBaseAmountOverride == null && cart != null &&
                 cart.items.singleOrNull()?.let { item -> item.type == com.avoqado.pos.pos.data.model.CartItemType.CustomAmount && item.quantity == 1 } == true &&
                 cart.taxCents == 0 && cart.subtotalCents == it.totalCents }
@@ -3391,11 +3438,12 @@ class PaymentFlowViewModel @Inject constructor(
         val papel = com.avoqado.pos.printing.data.model.TotalesDelTicket.desdeLoCobrado(
             cobrado = receiptTotal - currentTipCents,
             propina = currentTipCents,
-            subtotalBruto = (if (cart != null && isFullPayment) cart.subtotalCents else baseAmount) - cargoDeLaMesa,
-            cargo = cargoDeLaMesa,
-            impuestoAgregado = if (cart != null && isFullPayment) cart.taxCents else 0,
+            subtotalBruto = cuentaDeLaMesa?.subtotalBrutoCents
+                ?: ((if (cart != null && isFullPayment) cart.subtotalCents else baseAmount) - cargoDeLaMesa),
+            cargo = cuentaDeLaMesa?.cargoCents ?: cargoDeLaMesa,
+            impuestoAgregado = cuentaDeLaMesa?.impuestoAparteCents ?: (if (cart != null && isFullPayment) cart.taxCents else 0),
         )
-        val renglones = if (cargoDeLaMesa > 0) receiptItems.map {
+        val renglones = cuentaDeLaMesa?.renglones ?: if (cargoDeLaMesa > 0) receiptItems.map {
             it.copy(unitPrice = it.unitPrice - cargoDeLaMesa, totalPrice = it.totalPrice - cargoDeLaMesa)
         } else receiptItems
         val resolvedChange = changeCents ?: successState?.changeAmount
@@ -3414,7 +3462,8 @@ class PaymentFlowViewModel @Inject constructor(
         )
         return ReceiptData(
             orderNumber = folio,
-            orderType = "En tienda",
+            // D4: «Mesa N» en el cobro de una mesa; si no, el cumplimiento del carrito con las etiquetas de la cuenta.
+            orderType = com.avoqado.pos.tables.presentation.etiquetaDelTipoDeOrden(mesaDelCobro?.tableNumber, cart?.orderType),
             items = renglones,
             subtotal = papel.subtotal,
             taxAmount = papel.impuesto,
@@ -3435,7 +3484,15 @@ class PaymentFlowViewModel @Inject constructor(
             // precedencia (`CartViewModel.defaultCartState`). Sin esto, el bloque `staff`
             // de la receta imprimía vacío en Android aunque el diseñador lo ofreciera y el
             // iPad SÍ lo mostrara para la misma venta (revisión de conjunto, I1).
-            cashierName = cart?.selectedStaffName,
+            //
+            // D4 (mesas40, founder 14-oct, precedente Toast/Square): en el cobro de una MESA, «Atendió» = el mesero dueño
+            // de la cuenta aunque cobre otra persona (el pago sigue a nombre de quien cobra, `selectedStaffId`). Sin mesero,
+            // o en mostrador sin vendedor elegido, la sesión. Nunca el literal «Staff» del carrito sin vendedor.
+            cashierName = if (mesaDelCobro != null) {
+                mesaDelCobro?.meseroNombre ?: nombreDeLaSesionDelCobro
+            } else {
+                cart?.selectedStaffName?.takeIf { cart.selectedStaffId.isNotBlank() } ?: nombreDeLaSesionDelCobro
+            },
             customerName = _attachedCustomerName.value,
             // 🔴 EL BILLETE REAL QUE ENTREGÓ EL CLIENTE, no una resta al revés.
             //

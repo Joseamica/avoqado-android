@@ -33,6 +33,15 @@ class TransactionReprintReceiptTest {
         assertEquals("4242", r.cardLastFour)
     }
 
+    /** D4 (mesas40): la reimpresión dice el mismo tipo de orden que el ticket del cobro, cuando el servidor lo manda. */
+    @Test
+    fun `D4 la reimpresion dice Mesa N o el cumplimiento, y En tienda si el servidor no lo manda`() {
+        fun tipo(tx: Transaction) = tx.toReceiptData(venueName = "T", reprintedAt = cuando).orderType
+        assertEquals("Mesa 5", tipo(Transaction(id = "p1", method = "CASH", amount = 10.0, orderType = "DINE_IN", tableNumber = "5")))
+        assertEquals("Para llevar", tipo(Transaction(id = "p2", method = "CASH", amount = 10.0, orderType = "TAKEOUT")))
+        assertEquals("En tienda", tipo(Transaction(id = "p3", method = "CASH", amount = 10.0)))
+    }
+
     @Test
     fun `efectivo sigue siendo Efectivo y sin datos de tarjeta`() {
         val r = Transaction(id = "pay_1", method = "CASH", amount = 10.0).toReceiptData(venueName = "T", reprintedAt = cuando)

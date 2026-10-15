@@ -86,6 +86,34 @@ internal fun motivoParaNoCobrarLaMesa(provisional: Boolean, cheque: OrderDetail?
     else -> null
 }
 
+/** Los renglones de la cuenta tal como salen en papel: los de la pre-cuenta y, desde D4, los del ticket del cobro de mesa. */
+internal fun OrderDetail.renglonesDelTicket(): List<ReceiptItem> = items.map {
+    ReceiptItem(
+        name = it.productName ?: "Artículo",
+        quantity = it.quantity,
+        unitPrice = round(it.unitPrice * 100).toInt(),
+        totalPrice = round(it.total * 100).toInt(),
+        modifiers = it.modifiers.map { modifier -> modifier.name }.ifEmpty { null },
+        // I4 (revisión de conjunto): sin esto, un artículo de cortesía
+        // imprimía su precio en la pre-cuenta de Android mientras iOS ya
+        // imprimía «CORTESÍA» para la MISMA cuenta.
+        isCortesia = it.isCortesia,
+    )
+}
+
+/**
+ * D4 (mesas40): la cuenta leída, en centavos, para el ticket del cobro. Null si algún total es negativo: el servidor tampoco
+ * desglosa ese caso (`ticketTotals.ts`). El cobro decide después si la imprime (sólo si paga EXACTO su base).
+ */
+internal fun OrderDetail.cuentaDelTicket(): TableSession.CuentaDelTicket? {
+    fun cents(v: Double) = round(v * 100).toInt()
+    val descuento = cents(discountAmount)
+    val cargo = cents(serviceChargeAmount)
+    val impuesto = cents(addedTaxAmount)
+    if (descuento < 0 || cargo < 0 || impuesto < 0) return null
+    return TableSession.CuentaDelTicket(renglonesDelTicket(), cents(subtotal), descuento, cargo, impuesto)
+}
+
 private const val IMPORTE_RONDA_FUERA_DE_LIMITE = "El importe de esta ronda excede el límite de la cuenta. Ajusta la ronda antes de enviarla."
 
 /** No changes to Cart formulas: reject nonrepresentable intermediates before reading its Int total. */
@@ -461,7 +489,7 @@ class TableOrderViewModel @Inject constructor(
         val generacionAlSalir = generacion
         _chequeAlDia.value = false
         // Un GET nuevo todavía no acredita el cargo anterior, incluso si falla la lectura o el disco.
-        tableSession.start(session.copy(serviceChargeCents = 0))
+        tableSession.start(session.copy(serviceChargeCents = 0, cuentaDelTicket = null))
         venueId?.let { restoreDraft(it, session) }
         if (draftRecoveryFailed) { _chequeAlDia.value = false; _isLoadingCheck.value = false; return }
         session = tableSession.current() ?: return
@@ -1842,19 +1870,7 @@ class TableOrderViewModel @Inject constructor(
                 val receipt = ReceiptData(
                     orderNumber = order.orderNumber,
                     orderType = "Mesa ${session.tableNumber} - PRE-CUENTA",
-                    items = order.items.map {
-                        ReceiptItem(
-                            name = it.productName ?: "Artículo",
-                            quantity = it.quantity,
-                            unitPrice = cents(it.unitPrice),
-                            totalPrice = cents(it.total),
-                            modifiers = it.modifiers.map { modifier -> modifier.name }.ifEmpty { null },
-                            // I4 (revisión de conjunto): sin esto, un artículo de cortesía
-                            // imprimía su precio en la pre-cuenta de Android mientras iOS ya
-                            // imprimía «CORTESÍA» para la MISMA cuenta.
-                            isCortesia = it.isCortesia,
-                        )
-                    },
+                    items = order.renglonesDelTicket(),
                     subtotal = subtotal,
                     taxAmount = cents(order.addedTaxAmount),
                     discountAmount = cents(order.discountAmount).coerceIn(0, subtotal.coerceAtLeast(0)).takeIf { it > 0 },
@@ -1949,10 +1965,15 @@ class TableOrderViewModel @Inject constructor(
         // leerTrabajo ya actualizó el saldo scoped; el CTA y el cobro leen la misma fuente.
         val totalCents = payableTotalCents
         // Sólo el cheque leído aquí, sin abonos, acredita separar su cargo; nunca el respaldo del plano.
-        val cargoDeLaCuenta = checkDeLaSesion
+        val chequeGarantizado = checkDeLaSesion
             ?.takeIf { !session.isProvisional && cuentaAlDiaAqui && it.payments.none { p -> p.status == "COMPLETED" } }
+        val cargoDeLaCuenta = chequeGarantizado
             ?.let { round(it.serviceChargeAmount * 100) }
             ?.takeIf { it.isFinite() && it >= 0 && it <= totalCents.toDouble() }?.toInt() ?: 0
+        // D4 (mesas40): «Atendió» del ticket = el mesero dueño de la cuenta (sin cheque leído, el que ya traía la sesión),
+        // y los platillos con los totales de ESE cheque garantizado: el cobro los imprime sólo si paga exacto su base.
+        val meseroDeLaCuenta = checkDeLaSesion?.waiter?.name?.takeIf { it.isNotBlank() } ?: session.meseroNombre
+        val cuentaDelTicket = chequeGarantizado?.cuentaDelTicket()
 
         if (totalCents <= 0) {
             val articulos = (checkDeLaSesion?.items?.sumOf { it.quantity } ?: 0) +
@@ -1974,14 +1995,16 @@ class TableOrderViewModel @Inject constructor(
                     // cobra, y cobrar $0 es justo lo que la cierra. Anularla no
                     // es equivalente: el producto salió del almacén y la
                     // cortesía tiene que quedar registrada como venta en $0.
-                    tableSession.start(session.copy(mode = TableSession.Mode.PAYING, totalCents = 0, serviceChargeCents = 0))
+                    tableSession.start(session.copy(mode = TableSession.Mode.PAYING, totalCents = 0, serviceChargeCents = 0,
+                        meseroNombre = meseroDeLaCuenta, cuentaDelTicket = cuentaDelTicket))
                     return true
                 }
             }
             return false
         }
 
-        tableSession.start(session.copy(mode = TableSession.Mode.PAYING, totalCents = totalCents, serviceChargeCents = cargoDeLaCuenta))
+        tableSession.start(session.copy(mode = TableSession.Mode.PAYING, totalCents = totalCents, serviceChargeCents = cargoDeLaCuenta,
+            meseroNombre = meseroDeLaCuenta, cuentaDelTicket = cuentaDelTicket))
         return true
     }
 

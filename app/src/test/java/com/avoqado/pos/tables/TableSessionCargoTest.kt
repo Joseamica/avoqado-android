@@ -59,6 +59,28 @@ class TableSessionCargoTest {
         assertEquals(0, session.current()!!.serviceChargeCents); assertTrue(session.current()!!.requiereLecturaServidor)
     }
 
+    /** D4 (mesas40): los platillos del ticket tienen la MISMA validez que el cargo; el mesero no depende del saldo. */
+    @Test fun `D4 los platillos del ticket se invalidan junto con el cargo y el mesero se conserva`() {
+        val platillos = TableSession.CuentaDelTicket(emptyList(), 10000, 0, 1500, 0)
+        fun conPlatillos() = cuenta().copy(cuentaDelTicket = platillos, meseroNombre = "Ana")
+
+        session.start(conPlatillos(), "venue-A"); session.updateRemaining(6500)
+        assertNull("tras un cobro parcial", session.current()!!.cuentaDelTicket)
+        assertEquals("Ana", session.current()!!.meseroNombre)
+
+        session.start(conPlatillos(), "venue-A")
+        session.marcarSaldoDesconocido("venue-A", setOf("o1"), session.contextoActual())
+        assertNull("saldo desconocido", session.current()!!.cuentaDelTicket)
+
+        session.start(conPlatillos(), "venue-A")
+        session.confirmarCambio("venue-A", setOf("local-o1"), 9, 9000, session.contextoActual())
+        assertNull("cambio confirmado", session.current()!!.cuentaDelTicket)
+
+        session.start(conPlatillos(), "venue-A")
+        assertTrue(session.estacionar("venue-A", session.current()!!))
+        assertNull("al reabrir desde el piso", session.abrirDesdePiso("venue-A", conPlatillos())!!.cuentaDelTicket)
+    }
+
     @Test fun `T4 una actualizacion ajena no borra cargo ni dinero de la cuenta vigente`() {
         session.sincronizarContexto("staff-A", "venue-A"); session.start(cuenta(), "venue-A")
         val before = session.current()

@@ -1019,12 +1019,16 @@ class OrderRequestPromotionTest {
         } finally { subject.viewModelScope.cancel() }
     }
 
-    private suspend fun TestScope.cobrarMesaT4(split: String = "FULLPAYMENT", importe: Int = 11500): ReceiptData {
+    private suspend fun TestScope.cobrarMesaT4(
+        split: String = "FULLPAYMENT",
+        importe: Int = 11500,
+        mesa: com.avoqado.pos.tables.data.TableSession.Active = mesaT4(),
+    ): ReceiptData {
         coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
             Result.success(OrderRepository.CashPayResult(paymentId = "pay-A", receiptAccessKey = null))
         val impreso = slot<ReceiptData>()
         coEvery { printerService.autoPrintReceipt(capture(impreso)) } returns Unit
-        tableSession.start(mesaT4())
+        tableSession.start(mesa)
         val cart = carritoT4()
         paymentViewModel.setSplitConfig(split, selectedItemIds = cart.items.map { it.id },
             numberOfParts = if (split == "EQUALPARTS") 2 else null,
@@ -1186,6 +1190,104 @@ class OrderRequestPromotionTest {
             assertEquals("Negocio B", r.venueName); assertNull(r.serviceChargeAmount)
             assertEquals(11500, r.subtotal); assertEquals(11500, r.items.single().totalPrice)
             assertEquals(11500, r.total); assertTrue(cuadra(r))
+        } finally { paymentViewModel.viewModelScope.cancel() }
+    }
+
+    // MARK: - D4 (mesas40, 14-oct): el ticket del cobro de una MESA
+
+    private fun platillos(vararg r: Pair<String, Int>) = r.map { (nombre, total) ->
+        com.avoqado.pos.printing.data.model.ReceiptItem(name = nombre, quantity = 1, unitPrice = total, totalPrice = total)
+    }
+
+    /** La cuenta de [mesaT4] ($115 = $100 de platillos + $15 de cargo) tal como la captura «Pagar». */
+    private val cuentaDeMesaT4 = com.avoqado.pos.tables.data.TableSession.CuentaDelTicket(
+        renglones = platillos("Pizza" to 6000, "Refresco" to 4000),
+        subtotalBrutoCents = 10000, descuentoCents = 0, cargoCents = 1500, impuestoAparteCents = 0,
+    )
+
+    @Test fun `D4 mesero Ana, cobra Luis - Atendio Ana, el pago sigue a nombre de Luis y el tipo es Mesa 5`() = runTest {
+        // Luis es quien tiene la caja: el carrito lo trae como vendedor (lo que el pago registra como staffId).
+        every { secureStorage.selectedStaffIdForCurrentVenue } returns "staff-luis"
+        every { secureStorage.selectedStaffNameForCurrentVenue } returns "Luis"
+        try {
+            val r = cobrarMesaT4(mesa = mesaT4().copy(meseroNombre = "Ana"))
+            assertEquals("Atendió = el mesero dueño de la cuenta", "Ana", r.cashierName)
+            assertEquals("Mesa 5", r.orderType)
+            coVerify(exactly = 1) {
+                orderRepository.recordCashPayment("order-mesa-A", 11500, "staff-luis", any(), any(), any(), any(), any(), capturedVenueId = any())
+            }
+        } finally { paymentViewModel.viewModelScope.cancel() }
+    }
+
+    @Test fun `D4 cuenta sin mesero - Atendio es la sesion, nunca el literal Staff`() = runTest {
+        every { secureStorage.userFirstName } returns "Luis"
+        every { secureStorage.userLastName } returns "Cajero"
+        coEvery { orderRepository.recordCashPayment(any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any()) } returns
+            Result.success(OrderRepository.CashPayResult(paymentId = "pay-A", receiptAccessKey = null))
+        val impreso = slot<ReceiptData>()
+        coEvery { printerService.autoPrintReceipt(capture(impreso)) } returns Unit
+        tableSession.start(mesaT4(cargo = 0))
+        try {
+            // Así siembra «Pagar» de la pantalla de la mesa (TableOrderScreen): un CartState armado a mano, sin vendedor.
+            paymentViewModel.startPaymentFlow(CartState(items = listOf(CartItem(type = CartItemType.CustomAmount, name = "Cuenta Mesa 5", unitPrice = 11500, quantity = 1))))
+            paymentViewModel.selectPaymentMethod(PaymentMethod.CASH)
+            paymentViewModel.processCashPayment(11500)
+            advanceUntilIdle()
+            assertEquals("Luis Cajero", impreso.captured.cashierName)
+            assertEquals("Mesa 5", impreso.captured.orderType)
+        } finally { paymentViewModel.viewModelScope.cancel() }
+    }
+
+    @Test fun `D4 cobro completo con varios platillos, cargo, descuento e IVA aparte imprime los platillos y cuadra`() = runTest {
+        // Tacos $200 + Agua $30 = $230 bruto, −$30 de descuento, +$20 de cargo, +$32 de IVA aparte = $252.
+        val cuenta = com.avoqado.pos.tables.data.TableSession.CuentaDelTicket(
+            renglones = listOf(
+                com.avoqado.pos.printing.data.model.ReceiptItem(name = "Tacos", quantity = 2, unitPrice = 10000, totalPrice = 20000),
+                com.avoqado.pos.printing.data.model.ReceiptItem(name = "Agua", quantity = 1, unitPrice = 3000, totalPrice = 3000),
+            ),
+            subtotalBrutoCents = 23000, descuentoCents = 3000, cargoCents = 2000, impuestoAparteCents = 3200,
+        )
+        assertEquals(25200, cuenta.baseCents)
+        try {
+            val r = cobrarMesaT4(importe = 25200, mesa = mesaT4(cargo = 2000, total = 25200).copy(cuentaDelTicket = cuenta))
+            assertEquals(listOf("Tacos", "Agua"), r.items.map { it.name })
+            assertEquals("los renglones van tal cual: el cargo NO se descuenta de cada uno", listOf(20000, 3000), r.items.map { it.totalPrice })
+            assertEquals(23000, r.subtotal)
+            assertEquals(3000, r.discountAmount)
+            assertEquals(2000, r.serviceChargeAmount)
+            assertEquals(3200, r.taxAmount)
+            assertEquals(25200, r.total)
+            assertTrue("subtotal − descuento + cargo + IVA + propina = TOTAL", cuadra(r))
+        } finally { paymentViewModel.viewModelScope.cancel() }
+    }
+
+    @Test fun `D4 si lo cobrado no coincide exacto con la cuenta capturada, el renglon de hoy`() = runTest {
+        try {
+            // La cuenta capturada debe $115, pero se cobran $120 (la cuenta cambió): no hay certeza ⇒ «Cuenta Mesa 5».
+            val r = cobrarMesaT4(importe = 12000, mesa = mesaT4(total = 12000).copy(cuentaDelTicket = cuentaDeMesaT4))
+            assertEquals("Cuenta Mesa 5", r.items.single().name)
+            assertEquals(12000, r.total); assertTrue(cuadra(r))
+        } finally { paymentViewModel.viewModelScope.cancel() }
+    }
+
+    @Test fun `D4 con los platillos capturados, importe personalizado sigue en un renglon`() = runTest {
+        try {
+            val r = cobrarMesaT4("CUSTOMAMOUNT", 5000, mesa = mesaT4().copy(cuentaDelTicket = cuentaDeMesaT4))
+            assertEquals(5000, r.items.single().totalPrice); assertEquals(5000, r.total); assertTrue(cuadra(r))
+        } finally { paymentViewModel.viewModelScope.cancel() }
+    }
+
+    @Test fun `D4 con los platillos capturados, partes iguales siguen en un renglon`() = runTest {
+        try {
+            val r = cobrarMesaT4("EQUALPARTS", 5750, mesa = mesaT4().copy(cuentaDelTicket = cuentaDeMesaT4))
+            assertEquals(5750, r.items.single().totalPrice); assertEquals(5750, r.total); assertTrue(cuadra(r))
+        } finally { paymentViewModel.viewModelScope.cancel() }
+    }
+
+    @Test fun `D4 con los platillos capturados, dividir por producto sigue en un renglon`() = runTest {
+        try {
+            val r = cobrarMesaT4("BYPRODUCT", 11500, mesa = mesaT4().copy(cuentaDelTicket = cuentaDeMesaT4))
+            assertEquals(11500, r.items.single().totalPrice); assertEquals(11500, r.total); assertTrue(cuadra(r))
         } finally { paymentViewModel.viewModelScope.cancel() }
     }
 

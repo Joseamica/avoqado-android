@@ -879,10 +879,19 @@ class TerminalPaymentService @Inject constructor(
      * [CardChargeDecision] — aquí sólo se hace la red y se traduce al resultado del flujo.
      *
      * Público a propósito: `retry()` lo usa para re-consultar ANTES de ofrecer cobrar otra vez.
+     *
+     * @param enSegundoPlano D2 (mesas40): la consulta automática de «Cobro sin confirmar», que corre sola cada 5 s. Sus
+     *   GET van marcados: un 403 no saca el aviso global de permisos encima de la pantalla del cajero.
      */
-    suspend fun resolveOutcome(requestId: String): TerminalPaymentResult = resolveOutcome(requestId, fromPost = false)
+    suspend fun resolveOutcome(requestId: String, enSegundoPlano: Boolean = false): TerminalPaymentResult =
+        resolveOutcome(requestId, fromPost = false, enSegundoPlano = enSegundoPlano)
 
-    private suspend fun resolveOutcome(requestId: String, fromPost: Boolean, mensajeDeLaTerminal: String? = null): TerminalPaymentResult {
+    private suspend fun resolveOutcome(
+        requestId: String,
+        fromPost: Boolean,
+        mensajeDeLaTerminal: String? = null,
+        enSegundoPlano: Boolean = false,
+    ): TerminalPaymentResult {
         val (flight, owner) = synchronized(attemptLock) {
             val selected = recoveryFlights[requestId]?.let { it to false } ?: RecoveryFlight().let {
                 recoveryFlights[requestId] = it
@@ -904,7 +913,7 @@ class TerminalPaymentService @Inject constructor(
         }
         if (!owner) return forConsumer(flight.result.await())
         try {
-            val result = resolveOutcomeOnce(requestId, mensajeDeLaTerminal)
+            val result = resolveOutcomeOnce(requestId, mensajeDeLaTerminal, enSegundoPlano)
             synchronized(attemptLock) {
                 if (requestId in activePosts && result !is TerminalPaymentResult.Undetermined) recoveredPosts[requestId] = result
             }
@@ -921,7 +930,7 @@ class TerminalPaymentService @Inject constructor(
         }
     }
 
-    private suspend fun resolveOutcomeOnce(requestId: String, mensajeDeLaTerminal: String?): TerminalPaymentResult {
+    private suspend fun resolveOutcomeOnce(requestId: String, mensajeDeLaTerminal: String?, enSegundoPlano: Boolean): TerminalPaymentResult {
         // Tope de reloj de pared también AQUÍ: `statusClient` acota cada llamada, pero un
         // "Consultando…" que nunca termina es el mismo pecado que el "Procesando pago…" eterno.
         val resolved = kotlinx.coroutines.withTimeoutOrNull(RECONCILE_CEILING_MS) {
@@ -930,7 +939,7 @@ class TerminalPaymentService @Inject constructor(
                 // Respiro entre consultas (500ms → 2s): darle un momento a la terminal para asentarse.
                 if (attempt > 0) delay(if (attempt == 1) 500L else 2000L)
 
-                val probe = getPaymentStatus(requestId)
+                val probe = consultarEstado(requestId, venueId = null, enSegundoPlano).probe
                 when (val decision = CardChargeDecision.decide(probe, isFinalAttempt = attempt == attempts - 1, mensajeDeLaTerminal)) {
                     is ProbeDecision.Resolved -> return@withTimeoutOrNull decision.outcome
                     ProbeDecision.KeepPolling -> Unit // seguir preguntando

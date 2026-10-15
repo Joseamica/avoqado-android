@@ -496,6 +496,19 @@ class TablesCobroDelPlanoTest {
         } finally { subject.viewModelScope.cancel() }
     }
 
+    /** D4 (mesas40): cobrar desde el plano también lleva al ticket quién atiende la cuenta. */
+    @Test fun `D4 el piso lleva el mesero de la cuenta al cobro`() = runTest {
+        val subject = vm()
+        val conMesero = DiningTable("t1", "5", openOrders = listOf(OpenCheckSummary("o1", "ORD-1", total = 100.0, waiterName = "Ana")))
+        coEvery { outbox.trabajoSinResolverDeLaOrden(any(), any()) } returns TrabajoSinResolver(0, 0, emptySet(), 0)
+        try {
+            subject.startCobrar(conMesero) {}; advanceUntilIdle()
+            assertEquals(TableSession.Mode.PAYING, session.current()!!.mode)
+            assertEquals("Ana", session.current()!!.meseroNombre)
+            assertNull("el piso no sabe si hubo abonos: sin platillos", session.current()!!.cuentaDelTicket)
+        } finally { subject.viewModelScope.cancel() }
+    }
+
     @Test fun `T4 el piso limpio crea una sesion sin cargo que tampoco cambia el total del resumen`() = runTest {
         val subject = vm()
         coEvery { outbox.trabajoSinResolverDeLaOrden(any(), any()) } returns TrabajoSinResolver(0, 0, emptySet(), 0)
