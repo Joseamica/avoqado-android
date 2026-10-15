@@ -854,16 +854,6 @@ class PaymentFlowViewModel @Inject constructor(
     private var ventaDelSello: String? = null
     private var consultaDelSello: kotlinx.coroutines.Job? = null
 
-    init {
-        // Sellos tardíos: al llegar a «Cobro exitoso» con el cliente que venía del CARRITO se pregunta si la venta
-        // sumó sello. Un solo punto de entrada para los ~10 caminos que terminan en Success.
-        // Seguro aquí aunque haya propiedades declaradas más abajo: el primer valor es `Loading`, y `Success` sólo
-        // llega después de construir el ViewModel.
-        viewModelScope.launch {
-            _state.collect { estado -> if (estado is PaymentFlowState.Success) alLlegarAExito(estado) }
-        }
-    }
-
     /**
      * 🔴 Nunca bloquea ni retrasa «Cobro exitoso»: corre aparte, y cualquier fallo es silencio (el renglón no sale).
      * - Cuenta dividida con saldo: la venta aún no está saldada; el renglón (o la promesa sin red) lo da la parte que la
@@ -4042,6 +4032,21 @@ class PaymentFlowViewModel @Inject constructor(
                 (splitCustomAmountCents ?: cart.totalCents).coerceIn(0, cart.totalCents)
             }
             else -> null
+        }
+    }
+
+    // MARK: - Sellos tardíos: el colector de «Cobro exitoso» (va AL FINAL a propósito)
+
+    /**
+     * Sellos tardíos: al llegar a «Cobro exitoso» con el cliente que venía del CARRITO se pregunta si la venta sumó
+     * sello. Un solo punto de entrada para los ~10 caminos que terminan en Success.
+     * 🔴 Este `init` va DESPUÉS de todas las propiedades de la clase (revisión final, Minor #4): Kotlin inicializa en el
+     * orden en que se declara y `viewModelScope` colecta de inmediato (`Main.immediate`); [alLlegarAExito] lee
+     * propiedades que antes se declaraban más abajo (`_splitType`, vía `buildCompletion()`). No lo subas.
+     */
+    init {
+        viewModelScope.launch {
+            _state.collect { estado -> if (estado is PaymentFlowState.Success) alLlegarAExito(estado) }
         }
     }
 
