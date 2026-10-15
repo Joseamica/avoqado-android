@@ -43,8 +43,12 @@ fun filtrarClientesLocal(clientes: List<Customer>, texto: String): List<Customer
     }
 }
 
-/** ¿El texto escrito es un teléfono? Decide si siembra el TELÉFONO o el NOMBRE del alta de cliente. */
-fun esTextoDeTelefono(texto: String): Boolean = texto.isNotBlank() && SOLO_TELEFONO.matches(texto.trim())
+/**
+ * ¿El texto escrito es un teléfono? Decide si siembra el TELÉFONO o el NOMBRE del alta de cliente. Necesita al menos un
+ * dígito: «()» o «-» sueltos no son un teléfono (revisión final, Minor #5).
+ */
+fun esTextoDeTelefono(texto: String): Boolean =
+    texto.isNotBlank() && SOLO_TELEFONO.matches(texto.trim()) && texto.any { it.isDigit() }
 
 /** Los dígitos a buscar si el texto parece teléfono (≥ 4 dígitos), sin la lada sobrante; null si es un nombre. */
 internal fun digitosDeTelefonoBuscado(texto: String): String? {

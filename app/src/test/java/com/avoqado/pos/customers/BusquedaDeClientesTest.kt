@@ -75,4 +75,13 @@ class BusquedaDeClientesTest {
         assertFalse(esTextoDeTelefono(""))
         assertFalse(esTextoDeTelefono("   "))
     }
+
+    // Revisión final (Minor #5): «()» o «-» pasaban por teléfono y sembraban un TELÉFONO sin ningún número en el alta.
+    @Test
+    fun `un texto sin ningun digito no es telefono aunque solo traiga parentesis, guiones o mas`() {
+        assertFalse(esTextoDeTelefono("()"))
+        assertFalse(esTextoDeTelefono("-"))
+        assertFalse(esTextoDeTelefono("+ ( ) -"))
+        assertTrue("un solo dígito ya basta", esTextoDeTelefono("(8"))
+    }
 }
