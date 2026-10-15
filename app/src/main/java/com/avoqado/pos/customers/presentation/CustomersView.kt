@@ -58,6 +58,7 @@ fun CustomersView(
     val avisoDeGuardados by viewModel.avisoDeGuardados.collectAsState()
     val avisoDeMas by viewModel.avisoDeMasResultados.collectAsState()
     var searchText by remember { mutableStateOf("") }
+    val estado = estadoDeLaListaDeClientes(cargando = isLoading, hayClientes = customers.isNotEmpty(), texto = searchText)
 
     // El texto vive en Compose (el teclado no se desfasa); QUÉ lista se ve lo decide el ViewModel.
     fun buscar(texto: String) {
@@ -153,6 +154,14 @@ fun CustomersView(
                 .padding(horizontal = horizontalPadding),
         )
 
+        // La búsqueda va en camino (en WiFi malo tarda): también encima de una lista ya a la vista.
+        BarraDeCargaDeClientes(
+            cargando = estado.barraDeCarga,
+            modifier = Modifier
+                .padding(horizontal = horizontalPadding)
+                .padding(top = AvoqadoTheme.spacing.xs),
+        )
+
         // Sin red o con el servidor fallando, la lista sale de lo guardado en la tablet: se dice.
         avisoDeGuardados?.let { aviso ->
             AvisoSinRedDeClientes(
@@ -177,8 +186,8 @@ fun CustomersView(
 
         Spacer(modifier = Modifier.height(if (denseMode) AvoqadoTheme.spacing.sm else AvoqadoTheme.spacing.md))
 
-        when {
-            isLoading && customers.isEmpty() -> {
+        when (estado.contenido) {
+            ContenidoDeLaLista.CARGANDO -> {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -196,7 +205,7 @@ fun CustomersView(
                 }
             }
 
-            customers.isEmpty() && searchText.isNotBlank() -> {
+            ContenidoDeLaLista.SIN_RESULTADOS -> {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -240,7 +249,7 @@ fun CustomersView(
                 }
             }
 
-            else -> {
+            ContenidoDeLaLista.LISTA -> {
                 LazyColumn(modifier = Modifier.weight(1f)) {
                     // «Creados recientemente» sólo describe la lista SIN texto: con búsqueda son resultados.
                     if (customers.isNotEmpty() && searchText.isBlank()) {

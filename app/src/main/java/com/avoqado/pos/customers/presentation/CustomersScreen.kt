@@ -120,6 +120,7 @@ private fun TabletCustomersLayout(
     val isLoading by viewModel.isLoading.collectAsState()
     val avisoDeGuardados by viewModel.avisoDeGuardados.collectAsState()
     val avisoDeMas by viewModel.avisoDeMasResultados.collectAsState()
+    val estado = estadoDeLaListaDeClientes(cargando = isLoading, hayClientes = customers.isNotEmpty(), texto = searchText)
     var selectedCustomer by remember { mutableStateOf<Customer?>(null) }
     var showMenu by remember { mutableStateOf(false) }
     var showCreateCustomer by remember { mutableStateOf(false) }
@@ -250,6 +251,9 @@ private fun TabletCustomersLayout(
 
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
+            // La búsqueda va en camino (en WiFi malo tarda): también encima de una lista ya a la vista.
+            BarraDeCargaDeClientes(cargando = estado.barraDeCarga)
+
             // Sin red o con el servidor fallando, la lista sale de lo guardado en la tablet: se dice.
             avisoDeGuardados?.let { aviso ->
                 AvisoSinRedDeClientes(
@@ -271,8 +275,8 @@ private fun TabletCustomersLayout(
             }
 
             // Customer list
-            when {
-                isLoading && customers.isEmpty() -> {
+            when (estado.contenido) {
+                ContenidoDeLaLista.CARGANDO -> {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -290,7 +294,7 @@ private fun TabletCustomersLayout(
                     }
                 }
 
-                customers.isEmpty() && searchText.isNotBlank() -> {
+                ContenidoDeLaLista.SIN_RESULTADOS -> {
                     Column(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -306,7 +310,7 @@ private fun TabletCustomersLayout(
                     }
                 }
 
-                else -> {
+                ContenidoDeLaLista.LISTA -> {
                     LazyColumn(modifier = Modifier.weight(1f)) {
                         items(customers, key = { it.id }) { customer ->
                             CustomerListRow(
@@ -355,6 +359,7 @@ private fun PhoneCustomersLayout(
     val isLoading by viewModel.isLoading.collectAsState()
     val avisoDeGuardados by viewModel.avisoDeGuardados.collectAsState()
     val avisoDeMas by viewModel.avisoDeMasResultados.collectAsState()
+    val estado = estadoDeLaListaDeClientes(cargando = isLoading, hayClientes = customers.isNotEmpty(), texto = searchText)
     var selectedCustomer by remember { mutableStateOf<Customer?>(null) }
     var showMenu by remember { mutableStateOf(false) }
     var showCreateCustomer by remember { mutableStateOf(false) }
@@ -504,6 +509,9 @@ private fun PhoneCustomersLayout(
 
         HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
 
+        // La búsqueda va en camino (en WiFi malo tarda): también encima de una lista ya a la vista.
+        BarraDeCargaDeClientes(cargando = estado.barraDeCarga)
+
         // Sin red o con el servidor fallando, la lista sale de lo guardado en la tablet: se dice.
         avisoDeGuardados?.let { aviso ->
             AvisoSinRedDeClientes(
@@ -525,8 +533,8 @@ private fun PhoneCustomersLayout(
         }
 
         // Customer list content
-        when {
-            isLoading && customers.isEmpty() -> {
+        when (estado.contenido) {
+            ContenidoDeLaLista.CARGANDO -> {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -544,7 +552,7 @@ private fun PhoneCustomersLayout(
                 }
             }
 
-            customers.isEmpty() && searchText.isNotBlank() -> {
+            ContenidoDeLaLista.SIN_RESULTADOS -> {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -560,7 +568,7 @@ private fun PhoneCustomersLayout(
                 }
             }
 
-            else -> {
+            ContenidoDeLaLista.LISTA -> {
                 LazyColumn(modifier = Modifier.weight(1f)) {
                     items(customers, key = { it.id }) { customer ->
                         CustomerListRow(

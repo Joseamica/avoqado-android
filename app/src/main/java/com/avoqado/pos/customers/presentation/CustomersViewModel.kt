@@ -75,11 +75,14 @@ class CustomersViewModel @Inject constructor(
      * Al abrir la lista: texto vacío y los recientes («Creados recientemente»), sin esperar. Antes se borra lo de la
      * apertura anterior: el ViewModel vive con la pantalla de navegación, así que sus resultados —quizá de OTRA
      * sucursal— se verían bajo «Creados recientemente» hasta que llegaran los recientes. Con la lista vacía y la carga en
-     * vuelo se ve el cargador. Tampoco se arrastra un error viejo al diálogo de crear cliente.
+     * vuelo se ve el cargador. Tampoco se arrastra un error viejo al diálogo de crear cliente, ni el aviso ámbar de la
+     * vez anterior: la red pudo volver, y «Sin conexión» se dice cuando ESTA búsqueda falle (revisión final, Minor #6).
      */
     fun abrirLista() {
         _customers.value = emptyList()
         _avisoDeMasResultados.value = null
+        _avisoDeGuardados.value = null
+        _offline.value = false
         _error.value = null
         onQueryChange("")
     }
@@ -99,6 +102,15 @@ class CustomersViewModel @Inject constructor(
     private fun lanzarBusqueda(texto: String, esperar: Boolean) {
         busqueda?.cancel()
         _isLoading.value = true
+        // Revisión final #1: en WiFi malo el servidor tarda (hasta el plazo del cliente compartido, 30 s) y la lista del
+        // texto ANTERIOR se quedaba a la vista. Al instante se ve lo guardado en la tablet que cumple el texto NUEVO (el
+        // mismo filtro de sin red) y la barra de carga dice que viene la respuesta. Si no hay nadie, lista vacía + carga =
+        // el cargador, nunca «No se encontraron» + «Crear cliente» (duplicado). Sin texto no: «todo lo guardado» no son
+        // los recientes y al reabrir se ve el cargador (revisión A2, P2).
+        if (texto.isNotBlank()) {
+            _customers.value = filtrarClientesLocal(repository.clientesGuardados(), texto)
+            _avisoDeMasResultados.value = null
+        }
         busqueda = viewModelScope.launch {
             if (esperar) delay(DEBOUNCE_BUSQUEDA_MS)
             val result = repository.buscarClientes(search = texto.trim().ifEmpty { null })

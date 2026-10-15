@@ -7,7 +7,9 @@ import com.avoqado.pos.customers.data.model.Customer
 import com.avoqado.pos.customers.data.model.PaginaDeClientes
 import com.avoqado.pos.customers.domain.AVISO_SERVIDOR_FALLO_CLIENTES
 import com.avoqado.pos.customers.domain.AVISO_SIN_RED_CLIENTES
+import com.avoqado.pos.customers.presentation.ContenidoDeLaLista
 import com.avoqado.pos.customers.presentation.CustomersViewModel
+import com.avoqado.pos.customers.presentation.estadoDeLaListaDeClientes
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.every
@@ -45,6 +47,7 @@ class CustomersViewModelBusquedaTest {
 
     private val dany = Customer(id = "c1", firstName = "Dany", phone = "+528129440042")
     private val pedro = Customer(id = "c2", firstName = "Pedro", phone = "+525511112222")
+    private val zulema = Customer(id = "c3", firstName = "Zulema", phone = "+528133334444")
 
     /** Lo que contesta el servidor: la lista, cuántos cumplen en TODO el negocio y si topó. */
     private fun pagina(vararg c: Customer, total: Int? = c.size, topada: Boolean = false) =
@@ -257,5 +260,107 @@ class CustomersViewModelBusquedaTest {
 
         assertTrue(viewModel.offline.value)
         assertNull(viewModel.avisoDeMasResultados.value)
+    }
+
+    // MARK: - Revisión final #6: al reabrir no se arrastra el aviso de la vez anterior
+
+    @Test
+    fun `al reabrir la lista no se arrastra el aviso de guardados ni el sin red de la vez anterior`() = runTest {
+        coEvery { repository.buscarClientes("Dany") } returns Result.failure(java.net.UnknownHostException("sin red"))
+        viewModel.onQueryChange("Dany")
+        advanceUntilIdle()
+        assertTrue(viewModel.offline.value)
+        assertEquals(AVISO_SIN_RED_CLIENTES, viewModel.avisoDeGuardados.value)
+        coEvery { repository.buscarClientes(null) } coAnswers {
+            delay(1_000)
+            pagina(pedro)
+        }
+
+        viewModel.abrirLista()
+
+        assertFalse("la red pudo volver: no se dice «sin conexión» antes de preguntar", viewModel.offline.value)
+        assertNull(viewModel.avisoDeGuardados.value)
+        advanceUntilIdle()
+        assertEquals(listOf(pedro), viewModel.customers.value)
+        assertNull(viewModel.avisoDeGuardados.value)
+    }
+
+    // MARK: - Revisión final #1: mientras el servidor contesta (WiFi malo: hasta 30 s)
+
+    @Test
+    fun `P1 mientras el servidor contesta se ve al momento lo guardado que cumple el texto nuevo, no la lista del texto anterior`() = runTest {
+        every { repository.clientesGuardados() } returns listOf(dany, pedro)
+        coEvery { repository.buscarClientes("a") } returns pagina(dany, pedro, total = 120)
+        viewModel.onQueryChange("a")
+        advanceUntilIdle()
+        assertEquals("2 de 120: escribe más para afinar", viewModel.avisoDeMasResultados.value)
+        coEvery { repository.buscarClientes("ped") } coAnswers {
+            delay(5_000)
+            pagina(pedro)
+        }
+
+        viewModel.onQueryChange("ped")
+
+        assertEquals("al instante, sin esperar los 300 ms ni al servidor", listOf(pedro), viewModel.customers.value)
+        assertTrue(viewModel.isLoading.value)
+        assertNull("el «2 de 120» era del texto anterior", viewModel.avisoDeMasResultados.value)
+        advanceUntilIdle()
+        assertEquals(listOf(pedro), viewModel.customers.value)
+        assertFalse(viewModel.isLoading.value)
+    }
+
+    @Test
+    fun `P1 si lo guardado no tiene a nadie con el texto nuevo, mientras carga se ve el cargador y nunca Crear cliente`() = runTest {
+        every { repository.clientesGuardados() } returns listOf(dany, pedro)
+        coEvery { repository.buscarClientes("a") } returns pagina(dany, pedro)
+        viewModel.onQueryChange("a")
+        advanceUntilIdle()
+        coEvery { repository.buscarClientes("zulema") } coAnswers {
+            delay(5_000)
+            pagina(zulema)
+        }
+
+        viewModel.onQueryChange("zulema")
+
+        assertEquals(emptyList<Customer>(), viewModel.customers.value)
+        assertTrue(viewModel.isLoading.value)
+        val estado = estadoDeLaListaDeClientes(viewModel.isLoading.value, viewModel.customers.value.isNotEmpty(), "zulema")
+        assertEquals("lista vacía y cargando = el cargador, nunca «No se encontraron» + «Crear cliente»", ContenidoDeLaLista.CARGANDO, estado.contenido)
+        advanceUntilIdle()
+        assertEquals(listOf(zulema), viewModel.customers.value)
+    }
+
+    @Test
+    fun `sin texto no hay lista provisional, al reabrir se ve el cargador aunque haya clientes guardados`() = runTest {
+        // «Todo lo guardado» no son los recientes: bajo «Creados recientemente» mentiría el orden (revisión A2, P2).
+        every { repository.clientesGuardados() } returns listOf(dany, pedro)
+        coEvery { repository.buscarClientes(null) } coAnswers {
+            delay(1_000)
+            pagina(pedro)
+        }
+
+        viewModel.abrirLista()
+
+        assertEquals(emptyList<Customer>(), viewModel.customers.value)
+        assertTrue(viewModel.isLoading.value)
+        advanceUntilIdle()
+        assertEquals(listOf(pedro), viewModel.customers.value)
+    }
+
+    @Test
+    fun `la barra delgada de carga se ve siempre que el servidor va en camino, tambien encima de una lista`() {
+        assertTrue(estadoDeLaListaDeClientes(cargando = true, hayClientes = true, texto = "ped").barraDeCarga)
+        assertTrue(estadoDeLaListaDeClientes(cargando = true, hayClientes = false, texto = "").barraDeCarga)
+        assertFalse(estadoDeLaListaDeClientes(cargando = false, hayClientes = true, texto = "ped").barraDeCarga)
+    }
+
+    @Test
+    fun `que se pinta bajo el buscador en los tres layouts`() {
+        assertEquals(ContenidoDeLaLista.CARGANDO, estadoDeLaListaDeClientes(true, false, "zulema").contenido)
+        assertEquals(ContenidoDeLaLista.CARGANDO, estadoDeLaListaDeClientes(true, false, "").contenido)
+        assertEquals("con lista y cargando: la lista y la barra", ContenidoDeLaLista.LISTA, estadoDeLaListaDeClientes(true, true, "ped").contenido)
+        assertEquals(ContenidoDeLaLista.SIN_RESULTADOS, estadoDeLaListaDeClientes(false, false, "zulema").contenido)
+        assertEquals(ContenidoDeLaLista.LISTA, estadoDeLaListaDeClientes(false, false, "").contenido)
+        assertEquals(ContenidoDeLaLista.LISTA, estadoDeLaListaDeClientes(false, true, "ped").contenido)
     }
 }
