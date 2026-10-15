@@ -18,6 +18,7 @@ import com.avoqado.pos.payment.data.TerminalListResult
 import com.avoqado.pos.payment.data.TerminalPaymentService
 import com.avoqado.pos.payment.data.model.ColaDelCobro
 import com.avoqado.pos.payment.data.model.PaymentFlowState
+import com.avoqado.pos.payment.data.model.SincronizacionDelCobro
 import com.avoqado.pos.payment.presentation.PaymentFlowViewModel
 import com.avoqado.pos.pos.data.model.CartItem
 import com.avoqado.pos.pos.data.model.CartItemType
@@ -38,6 +39,7 @@ import io.mockk.mockk
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
@@ -488,5 +490,135 @@ class SelloDeLaVentaTest {
 
         assertTrue((viewModel.state.value as PaymentFlowState.Success).isQueued)
         assertNull("el sello lo trae la parte que salda la cuenta", viewModel.renglonDelSello.value)
+    }
+
+    // MARK: - Info-7 (QA en la D3, 15-oct): al sincronizar, la promesa se cambia por el sello que dio el servidor
+    // Antes: con «Venta sincronizada» arriba, el renglón seguía diciendo «El sello se suma al sincronizar».
+
+    /** El estado de la fila «fila-1» de la cola; la prueba lo mueve a mano, como la cola al subir la venta. */
+    private val estadoDeLaFila = MutableStateFlow<String?>("PENDING")
+
+    private fun pagoEnLinea() {
+        coEvery {
+            orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+        } returns Result.success(OrderRepository.CashPayResult(paymentId = "pago-1", receiptAccessKey = null))
+    }
+
+    /** Cobro rápido de $100 con Dany SIN red: se encola en «fila-1» y promete el sello. */
+    private fun cobrarSinRedConDany() {
+        every { orderRepository.programaDeSellosActivo("venue-1") } returns true
+        coEvery {
+            orderRepository.recordFastCashPayment(any(), any(), any(), any(), any(), any(), any(), any(), capturedVenueId = any())
+        } returns Result.failure(java.net.UnknownHostException("sin red"))
+        coEvery {
+            cashPaymentRepository.queueCashPayment(
+                any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(),
+            )
+        } returns "fila-1"
+        every { cashPaymentRepository.observarEstado("fila-1") } returns estadoDeLaFila
+        cobrar(customerId = "cm-dany", customerName = "Dany")
+    }
+
+    @Test
+    fun `P1 al sincronizar la venta encolada el renglon dice el sello que dio el servidor`() = runTest {
+        coEvery { cashPaymentRepository.pagoDelServidor("fila-1") } returns "pago-servidor-9"
+        coEvery { orderRepository.consultarSelloDeLaVenta("pago-servidor-9") } returns sello(stamped = true, earned = 2)
+        cobrarSinRedConDany()
+        advanceUntilIdle()
+        assertEquals("premisa: sin red se promete", RenglonDelSello.SE_SUMA_AL_SINCRONIZAR, viewModel.renglonDelSello.value)
+        coVerify(exactly = 0) { orderRepository.consultarSelloDeLaVenta(any()) }
+
+        estadoDeLaFila.value = "SYNCED" // la cola subió la venta
+        advanceUntilIdle()
+
+        assertEquals("premisa: arriba ya dice Venta sincronizada", SincronizacionDelCobro.SINCRONIZADA, viewModel.sincronizacionDelCobro.value)
+        assertEquals(RenglonDelSello("✓ +1 sello · 2 de 7", positivo = true), viewModel.renglonDelSello.value)
+    }
+
+    @Test
+    fun `P1 al sincronizar, si la consulta del sello falla, se quita la promesa`() = runTest {
+        coEvery { cashPaymentRepository.pagoDelServidor("fila-1") } returns "pago-servidor-9"
+        coEvery { orderRepository.consultarSelloDeLaVenta(any()) } returns null
+        cobrarSinRedConDany()
+        advanceUntilIdle()
+
+        estadoDeLaFila.value = "SYNCED"
+        advanceUntilIdle()
+
+        assertTrue((viewModel.state.value as PaymentFlowState.Success).isQueued)
+        assertNull("una promesa vieja miente: sin respuesta, el renglón se va", viewModel.renglonDelSello.value)
+    }
+
+    @Test
+    fun `si al sincronizar ya no se sabe el pago del servidor se quita la promesa sin preguntar`() = runTest {
+        coEvery { cashPaymentRepository.pagoDelServidor("fila-1") } returns null
+        cobrarSinRedConDany()
+        advanceUntilIdle()
+
+        estadoDeLaFila.value = null // la limpieza ya borró la fila: también se lee como «Venta sincronizada»
+        advanceUntilIdle()
+
+        assertNull(viewModel.renglonDelSello.value)
+        coVerify(exactly = 0) { orderRepository.consultarSelloDeLaVenta(any()) }
+    }
+
+    @Test
+    fun `al sincronizar, si la lealtad aun se procesa, reintenta una sola vez a los 2 s`() = runTest {
+        val momentos = mutableListOf<Long>()
+        coEvery { cashPaymentRepository.pagoDelServidor("fila-1") } returns "pago-servidor-9"
+        coEvery { orderRepository.consultarSelloDeLaVenta("pago-servidor-9") } coAnswers {
+            momentos += testScheduler.currentTime
+            if (momentos.size == 1) sello(reason = "PENDING") else sello(stamped = true, earned = 2)
+        }
+        cobrarSinRedConDany()
+        advanceUntilIdle()
+
+        estadoDeLaFila.value = "SYNCED"
+        advanceUntilIdle()
+
+        assertEquals(2, momentos.size)
+        assertEquals(2_000L, momentos[1] - momentos[0])
+        assertEquals(RenglonDelSello("✓ +1 sello · 2 de 7", positivo = true), viewModel.renglonDelSello.value)
+    }
+
+    @Test
+    fun `P1 si se empezo otra venta antes de sincronizar, el sello de la anterior no se pinta en ella`() = runTest {
+        coEvery { cashPaymentRepository.pagoDelServidor("fila-1") } returns "pago-servidor-9"
+        coEvery { orderRepository.consultarSelloDeLaVenta("pago-servidor-9") } returns sello(stamped = true, earned = 2)
+        cobrarSinRedConDany()
+        advanceUntilIdle()
+
+        pagoEnLinea()
+        cobrar() // «Venta nueva», sin cliente y ya con red
+        advanceUntilIdle()
+        assertEquals("premisa: la venta nueva ya cobró en línea", false, (viewModel.state.value as PaymentFlowState.Success).isQueued)
+
+        estadoDeLaFila.value = "SYNCED" // la venta ANTERIOR sube ahora
+        advanceUntilIdle()
+
+        assertNull(viewModel.renglonDelSello.value)
+        coVerify(exactly = 0) { orderRepository.consultarSelloDeLaVenta(any()) }
+    }
+
+    @Test
+    fun `P1 la consulta tardia de la venta encolada anterior no pisa el renglon de la venta nueva`() = runTest {
+        val selloDeLaAnterior = CompletableDeferred<SaleStampOutcome?>()
+        coEvery { cashPaymentRepository.pagoDelServidor("fila-1") } returns "pago-servidor-9"
+        coEvery { orderRepository.consultarSelloDeLaVenta("pago-servidor-9") } coAnswers { selloDeLaAnterior.await() }
+        coEvery { orderRepository.consultarSelloDeLaVenta("pago-1") } returns sello(stamped = true, earned = 5)
+        cobrarSinRedConDany()
+        advanceUntilIdle()
+        estadoDeLaFila.value = "SYNCED"
+        advanceUntilIdle() // la consulta de la venta anterior queda en vuelo
+
+        pagoEnLinea()
+        cobrar(customerId = "cm-beto", customerName = "Beto") // venta nueva, con red y con su propio cliente
+        advanceUntilIdle()
+        assertEquals(RenglonDelSello("✓ +1 sello · 5 de 7", positivo = true), viewModel.renglonDelSello.value)
+
+        selloDeLaAnterior.complete(sello(stamped = true, earned = 2)) // la de Dany llega tarde
+        advanceUntilIdle()
+
+        assertEquals(RenglonDelSello("✓ +1 sello · 5 de 7", positivo = true), viewModel.renglonDelSello.value)
     }
 }
